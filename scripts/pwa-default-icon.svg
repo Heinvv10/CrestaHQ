@@ -1,0 +1,33 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Default PWA app icon: a neutral "my CRM" mark in the custom landing's
+    emerald→teal gradient, shown until the agency owner uploads their own
+    icon (Agency → Settings → Mobile app icon). Rendered to the four
+    /public PNGs by scripts/render-pwa-icons.mjs — re-run that after
+    editing this file.
+  -->
+  <defs>
+    <linearGradient id="crm-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="55%" stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#6ee7b8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Full-bleed background matching the manifest theme color, so the
+       maskable wrapper's padding blends seamlessly. -->
+  <rect width="512" height="512" fill="#18181b"/>
+
+  <!-- "my" — quiet, serif-italic like the landing's display accents. -->
+  <text x="256" y="208" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', serif" font-style="italic"
+        font-size="88" fill="#a1a1aa">my</text>
+
+  <!-- "CRM" — the mark, in the landing's emerald→teal gradient. -->
+  <text x="256" y="348" text-anchor="middle"
+        font-family="Arial, 'Segoe UI', sans-serif" font-weight="bold"
+        font-size="150" letter-spacing="4" fill="url(#crm-grad)">CRM</text>
+
+  <!-- Gradient baseline swoosh — echoes the hero's gradient text bar. -->
+  <rect x="146" y="384" width="220" height="10" rx="5" fill="url(#crm-grad)"/>
+</svg>

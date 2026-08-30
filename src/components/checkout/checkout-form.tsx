@@ -1,0 +1,357 @@
+"use client";
+
+import { useMemo, useState, type FormEvent } from "react";
+import type { FormField } from "@/types/forms";
+
+/**
+ * Public checkout form + order bumps.
+ *
+ * Self-contained inline styles (no Tailwind classes that depend on the
+ * dashboard theme) for the same reason the web-chat window is: this renders
+ * on a public page that an operator may embed or theme, and host CSS bleed
+ * would be worse than verbose style objects.
+ *
+ * We own this page purely so bumps can exist — Stripe's hosted Checkout can't
+ * express "tick to add". Card fields stay on Stripe; nothing sensitive is
+ * typed here.
+ */
+
+export interface CheckoutBump {
+  id: string;
+  name: string;
+  pitch: string;
+  unitPriceCents: number;
+}
+
+export function CheckoutForm({
+  subAccountId,
+  slug,
+  fields,
+  bumps,
+  mainName,
+  mainPriceCents,
+  currency,
+  accent,
+  cancelled,
+  funnelSlug,
+}: {
+  subAccountId: string;
+  slug: string;
+  fields: FormField[];
+  bumps: CheckoutBump[];
+  mainName: string;
+  mainPriceCents: number;
+  currency: string;
+  accent: string;
+  cancelled: boolean;
+  /** Set when the buyer arrived via a Labs funnel — sent to the session route
+   *  so Stripe returns them to that funnel's thank-you step. */
+  funnelSlug?: string | null;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const money = useMemo(
+    () =>
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: currency.toUpperCase(),
+      }),
+    [currency],
+  );
+
+  const totalCents =
+    mainPriceCents +
+    bumps.reduce((sum, b) => (ticked.has(b.id) ? sum + b.unitPriceCents : sum), 0);
+
+  function fieldValue(mapsTo: string): string {
+    const f = fields.find((x) => x.mapsTo === mapsTo);
+    return f ? (values[f.id] ?? "") : "";
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    for (const f of fields) {
+      if (f.required && !(values[f.id] ?? "").trim()) {
+        setError(`${f.label || "A required field"} is required.`);
+        return;
+      }
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/co/${subAccountId}/${slug}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bumpProductIds: [...ticked],
+          ...(funnelSlug ? { funnelSlug } : {}),
+          name: fieldValue("name"),
+          email: fieldValue("email"),
+          phone: fieldValue("phone"),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        url?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.url) {
+        throw new Error(data.error ?? "Couldn't start checkout.");
+      }
+      // Hand off to Stripe's hosted page — card details never touch us.
+      window.location.href = data.url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't start checkout.");
+      setSubmitting(false);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid rgba(0,0,0,0.15)",
+    fontSize: 14,
+    fontFamily: "inherit",
+    background: "#fff",
+    color: "#18181b",
+    boxSizing: "border-box",
+  };
+
+  return (
+    <form onSubmit={handleSubmit} style={{ display: "grid", gap: 20 }}>
+      {cancelled && (
+        <div
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            background: "rgba(245,158,11,0.08)",
+            border: "1px solid rgba(245,158,11,0.3)",
+            fontSize: 13,
+            color: "#92400e",
+          }}
+        >
+          Checkout was cancelled — nothing was charged. You can try again below.
+        </div>
+      )}
+
+      {fields.length > 0 && (
+        <div style={{ display: "grid", gap: 12 }}>
+          {fields.map((f) => (
+            <div key={f.id} style={{ display: "grid", gap: 5 }}>
+              <label
+                htmlFor={`f-${f.id}`}
+                style={{ fontSize: 13, fontWeight: 600 }}
+              >
+                {f.label}
+                {f.required && <span style={{ color: "#dc2626" }}> *</span>}
+              </label>
+              {f.type === "textarea" ? (
+                <textarea
+                  id={`f-${f.id}`}
+                  rows={3}
+                  placeholder={f.placeholder}
+                  value={values[f.id] ?? ""}
+                  onChange={(e) =>
+                    setValues((v) => ({ ...v, [f.id]: e.target.value }))
+                  }
+                  style={{ ...inputStyle, resize: "vertical" }}
+                />
+              ) : f.type === "sms_consent" ? (
+                <label
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    color: "#52525b",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={values[f.id] === "yes"}
+                    onChange={(e) =>
+                      setValues((v) => ({
+                        ...v,
+                        [f.id]: e.target.checked ? "yes" : "",
+                      }))
+                    }
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>{f.consentText}</span>
+                </label>
+              ) : (
+                <input
+                  id={`f-${f.id}`}
+                  type={
+                    f.type === "email"
+                      ? "email"
+                      : f.type === "phone"
+                        ? "tel"
+                        : "text"
+                  }
+                  placeholder={f.placeholder}
+                  value={values[f.id] ?? ""}
+                  onChange={(e) =>
+                    setValues((v) => ({ ...v, [f.id]: e.target.value }))
+                  }
+                  style={inputStyle}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Order bumps — the reason this page exists rather than linking
+          straight to Stripe. */}
+      {bumps.length > 0 && (
+        <div style={{ display: "grid", gap: 8 }}>
+          {bumps.map((b) => {
+            const on = ticked.has(b.id);
+            return (
+              <label
+                key={b.id}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  padding: 14,
+                  borderRadius: 10,
+                  cursor: "pointer",
+                  border: on
+                    ? `2px solid ${accent}`
+                    : "2px dashed rgba(0,0,0,0.18)",
+                  background: on ? `${accent}0f` : "rgba(0,0,0,0.015)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={(e) =>
+                    setTicked((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(b.id);
+                      else next.delete(b.id);
+                      return next;
+                    })
+                  }
+                  style={{ marginTop: 3 }}
+                />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: "block",
+                      fontSize: 14,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {b.name}{" "}
+                    <span style={{ color: accent }}>
+                      + {money.format(b.unitPriceCents / 100)}
+                    </span>
+                  </span>
+                  {b.pitch && (
+                    <span
+                      style={{
+                        display: "block",
+                        marginTop: 3,
+                        fontSize: 12.5,
+                        lineHeight: 1.5,
+                        color: "#52525b",
+                      }}
+                    >
+                      {b.pitch}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      <div
+        style={{
+          borderTop: "1px solid rgba(0,0,0,0.1)",
+          paddingTop: 14,
+          display: "grid",
+          gap: 6,
+          fontSize: 13,
+        }}
+      >
+        <Row label={mainName} value={money.format(mainPriceCents / 100)} />
+        {bumps
+          .filter((b) => ticked.has(b.id))
+          .map((b) => (
+            <Row
+              key={b.id}
+              label={b.name}
+              value={money.format(b.unitPriceCents / 100)}
+            />
+          ))}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontWeight: 700,
+            fontSize: 16,
+            marginTop: 6,
+          }}
+        >
+          <span>Total</span>
+          <span>{money.format(totalCents / 100)}</span>
+        </div>
+      </div>
+
+      {error && (
+        <p style={{ fontSize: 13, color: "#dc2626", margin: 0 }}>{error}</p>
+      )}
+
+      <button
+        type="submit"
+        disabled={submitting}
+        style={{
+          padding: "13px 18px",
+          borderRadius: 10,
+          border: "none",
+          background: accent,
+          color: "#fff",
+          fontSize: 15,
+          fontWeight: 600,
+          fontFamily: "inherit",
+          cursor: submitting ? "default" : "pointer",
+          opacity: submitting ? 0.7 : 1,
+        }}
+      >
+        {submitting
+          ? "Taking you to checkout…"
+          : `Pay ${money.format(totalCents / 100)}`}
+      </button>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 11.5,
+          textAlign: "center",
+          color: "#71717a",
+        }}
+      >
+        Secure payment by Stripe. Card details are never handled by this page.
+      </p>
+    </form>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+      <span style={{ color: "#52525b", minWidth: 0 }}>{label}</span>
+      <span style={{ whiteSpace: "nowrap" }}>{value}</span>
+    </div>
+  );
+}
