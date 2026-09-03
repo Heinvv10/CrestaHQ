@@ -4,7 +4,8 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { checkCheckoutRateLimit, clientIpFrom } from "@/lib/checkout/rate-limit";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
+import { checkReviewRateLimit } from "@/lib/reviews/rate-limit";
 import { verifyReviewToken } from "@/lib/reviews/feedback-token";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import {
@@ -62,7 +63,7 @@ function modeFrom(raw: unknown): Mode {
 }
 
 export async function POST(request: Request) {
-  const rate = checkCheckoutRateLimit(clientIpFrom(request));
+  const rate = checkReviewRateLimit(clientIpFrom(request));
   if (!rate.ok) {
     return NextResponse.json(
       { error: "Too many attempts. Please try again shortly." },
@@ -146,21 +147,32 @@ export async function POST(request: Request) {
       };
     }
 
-    tx.set(feedbackRef, {
-      agencyId,
-      subAccountId,
-      contactId: verified.contactId,
-      rating,
-      comment,
-      clickedGoogle,
-      taskId: null,
-      submittedFromIp: ip,
-      submittedUserAgent: userAgent,
-      // Abuse-triage only. The daily api-cleanup sweep nulls the IP + UA once
-      // this passes, keeping the rating/comment forever (POPIA minimisation).
-      piiExpiresAt: new Date(Date.now() + REVIEW_PII_RETENTION_DAYS * 86_400_000),
-      createdAt: FieldValue.serverTimestamp(),
-    });
+    // ONLY a real submission creates a row. A click-through ping does not:
+    // it leaves the token live (below), so writing a doc per ping would let a
+    // caller replay one token forever and fill the collection. The ping is
+    // recorded as a single timestamp on the contact instead.
+    if (isSubmission) {
+      tx.set(feedbackRef, {
+        agencyId,
+        subAccountId,
+        contactId: verified.contactId,
+        rating,
+        comment,
+        // True if this submit carried the flag, or if the customer clicked
+        // through earlier in the same session (stamped on the contact).
+        clickedGoogle: clickedGoogle || contact.reviewGoogleClickedAt != null,
+        taskId: null,
+        submittedFromIp: ip,
+        submittedUserAgent: userAgent,
+        // Abuse-triage only. The daily api-cleanup sweep nulls the IP + UA
+        // once this passes, keeping the rating/comment forever (POPIA
+        // minimisation).
+        piiExpiresAt: new Date(
+          Date.now() + REVIEW_PII_RETENTION_DAYS * 86_400_000,
+        ),
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
 
     // Burn the token in the same commit, so a forwarded or replayed link
     // cannot be used again — including by a request already in flight.
