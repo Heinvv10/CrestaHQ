@@ -130,8 +130,11 @@ adapter lands first as a pure refactor with no behaviour change — that is inde
    behaviour.
 2. **No hosted billing portal.** The dunning banner's "Update card" opens Stripe's portal.
    Paystack offers only an email-token `manage_link`. Weaker, and a different UX.
-3. **Currency.** Paystack settles ZAR (plus NGN/GHS/KES). Existing plan docs carry `currency` and
-   the pricing is USD. Plans need a currency decision before any subscription is created.
+3. ~~**Currency.** Existing plan docs carry `currency` and the pricing is USD.~~ **RESOLVED
+   2026-09-03 — clean slate.** Firestore has **0 plan docs, 0 billingEvents, and all 4
+   sub-accounts comped** (no `billing` field at all); `STRIPE_SECRET_KEY` is not even set on this
+   deployment. Client Billing has never been used, so ZAR needs **no migration path** and no
+   immutable-Price reconciliation on live subscribers. Decide ZAR and move.
 
 **Prerequisite:** a live Paystack account for Brightsphere Technologies. The interface and the
 Stripe adapter can be built without it; the Paystack adapter cannot be verified without it.
@@ -220,3 +223,5 @@ Stop and reassess if any of these hold:
 2. Verify Meta's published ZA rate card against the measured $0.039795 / $0.007979 before
    treating "no markup" as settled.
 3. Who owns the GHL Private Integration Token for Phase 2?
+4. **Firestore has 4 sub-accounts; GHL has 5.** Missing locally: *Appliances Repairs JHB*
+   ($0.03/mo, so low stakes). Close the gap before Phase 2 rather than discovering it mid-import.
