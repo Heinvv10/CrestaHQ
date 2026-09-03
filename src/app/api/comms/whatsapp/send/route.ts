@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
-import { FieldValue, type Timestamp } from "firebase-admin/firestore";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   sendWhatsappForSubAccount,
   subAccountWhatsappIsConfigured,
 } from "@/lib/comms/twilio";
+import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
+import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
@@ -87,50 +89,55 @@ export async function POST(request: Request) {
     );
   }
 
-  // 24-hour session-window guard. Find the most recent INBOUND message and
-  // confirm it's within the window. We order by createdAt (single-field,
-  // auto-indexed) and scan for the latest inbound in code so no composite
-  // index is required.
+  // The 24-hour window decision, the rail choice and the send all belong to
+  // dispatchWhatsappSend now. This route used to re-implement the window check
+  // inline; keeping it here as well would let the two drift, which is exactly
+  // how a template gets sent into an open window at 5x the price.
   const windowHours =
     (await getChannelConfig(contact.subAccountId, "whatsapp"))?.whatsapp
       ?.sessionWindowHours ?? 24;
-  const recent = await db
-    .collection(`contacts/${contactId}/whatsappMessages`)
-    .orderBy("createdAt", "desc")
-    .limit(50)
-    .get();
-  let latestInboundMs: number | null = null;
-  for (const d of recent.docs) {
-    const m = d.data() as { direction?: string; createdAt?: Timestamp };
-    if (m.direction === "inbound") {
-      latestInboundMs = m.createdAt?.toDate?.().getTime() ?? null;
-      break;
-    }
-  }
-  const withinWindow =
-    latestInboundMs !== null &&
-    Date.now() - latestInboundMs < windowHours * 3600 * 1000;
-  if (!withinWindow) {
-    return NextResponse.json(
-      {
-        error: `WhatsApp's ${windowHours}-hour messaging window is closed — the contact hasn't messaged within that time. Re-opening the conversation requires an approved message template (coming in a later release).`,
-        code: "session_window_closed",
-      },
-      { status: 409 },
-    );
-  }
 
   let sid: string;
-  let fromNumber: string;
+  let fromNumber = "";
   try {
-    const result = await sendWhatsappForSubAccount({
+    const result = await dispatchWhatsappSend({
       subAccountId: contact.subAccountId,
       subAccount,
+      contactId,
       to: contact.phone,
       body,
+      windowHours,
+      // This is the manual free-form composer — it has no template to fall
+      // back on, so a closed window is a refusal, exactly as before.
+      template: null,
+      sendViaTwilio: async () => {
+        const r = await sendWhatsappForSubAccount({
+          subAccountId: contact.subAccountId,
+          subAccount,
+          to: contact.phone,
+          body,
+        });
+        fromNumber = r.from;
+        return { ok: true, messageId: r.sid };
+      },
     });
-    sid = result.sid;
-    fromNumber = result.from;
+
+    if (!result.ok) {
+      if (result.error === WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE) {
+        return NextResponse.json(
+          {
+            error: `WhatsApp's ${windowHours}-hour messaging window is closed — the contact hasn't messaged within that time. Re-opening the conversation requires an approved message template.`,
+            code: "session_window_closed",
+          },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json(
+        { error: result.error ?? "Failed to send WhatsApp message" },
+        { status: 502 },
+      );
+    }
+    sid = result.messageId ?? "";
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {
       return NextResponse.json({ error: err.message }, { status: 429 });
