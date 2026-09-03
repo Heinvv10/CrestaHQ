@@ -4,6 +4,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
+import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
 import {
   sendSmsForSubAccount,
   sendWhatsappTemplateForSubAccount,
@@ -340,13 +341,32 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   });
 
   try {
-    await sendWhatsappTemplateForSubAccount({
+    // Through the provider dispatcher, not Twilio directly: a workspace on the
+    // Cloud rail would otherwise fail this step with "WhatsApp is not
+    // configured" and log it as a generic send error.
+    const res = await dispatchWhatsappTemplateSend({
       subAccountId: ctx.subAccountId,
       subAccount: ctx.subAccount,
       to,
-      contentSid: tpl.contentSid,
-      contentVariables,
+      template: tpl,
+      values: contentVariables,
+      sendViaTwilio: async (contentSid) => {
+        const r = await sendWhatsappTemplateForSubAccount({
+          subAccountId: ctx.subAccountId,
+          subAccount: ctx.subAccount,
+          to,
+          contentSid,
+          contentVariables,
+        });
+        return { ok: true, messageId: r.sid };
+      },
     });
+    if (!res.ok) {
+      return {
+        result: { kind: "next" },
+        log: `error:${res.error ?? "send_failed"}`,
+      };
+    }
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {

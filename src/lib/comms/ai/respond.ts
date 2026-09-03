@@ -2,10 +2,8 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import {
-  sendSmsForSubAccount,
-  sendWhatsappForSubAccount,
-} from "@/lib/comms/twilio";
+import { sendSmsForSubAccount } from "@/lib/comms/twilio";
+import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
 import { sendMetaMessage } from "@/lib/comms/meta";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { isWithinBusinessHours } from "@/lib/comms/business-hours";
@@ -94,6 +92,8 @@ interface ChannelTransport {
     subAccount: SubAccountDoc;
     to: string;
     body: string;
+    /** Needed by rails that resolve the service window per contact. */
+    contactId: string;
   }) => Promise<{ sid: string; from: string }>;
   /** Provider-specific fields for the outbound thread row (message-id field
    *  naming + channel discriminator differ between Twilio and Meta rows). */
@@ -105,17 +105,28 @@ function getChannelTransport(
   metaChannel?: "messenger" | "instagram",
 ): ChannelTransport {
   if (channelId === "whatsapp") {
-    // NB: no 24-hour session-window guard here. This orchestrator only ever
-    // fires in response to a just-received inbound WhatsApp message, so the
-    // window is always open. The window IS enforced on the manual-send path
-    // (/api/comms/whatsapp/send), where an operator could try to message a
-    // contact who hasn't written in for >24h (templates required — a v2 add).
+    // Routed through the provider dispatcher, not Twilio directly, so a
+    // workspace on the Meta Cloud rail still gets AI replies. Calling the
+    // Twilio helper here would throw "WhatsApp is not configured" for a
+    // correctly-configured Cloud workspace, and the orchestrator swallows
+    // send errors — so the bot would simply go mute with nothing to see.
+    //
+    // The window is passed as "open": this orchestrator only ever fires in
+    // response to a just-received inbound, so a re-read could only race the
+    // webhook's own message write and wrongly report the window shut.
     return {
       messagesCollection: "whatsappMessages",
       label: "WhatsApp",
       isOptedOut: (c) => c.whatsappOptedOut === true,
-      send: ({ subAccountId, subAccount, to, body }) =>
-        sendWhatsappForSubAccount({ subAccountId, subAccount, to, body }),
+      send: ({ subAccountId, subAccount, to, body, contactId }) =>
+        sendWhatsappFreeFormForSubAccount({
+          subAccountId,
+          subAccount,
+          contactId,
+          to,
+          body,
+          lastInboundAt: new Date(),
+        }),
       outboundRowExtras: (sid) => ({ twilioMessageSid: sid }),
     };
   }
@@ -538,6 +549,7 @@ export async function maybeRespondWithAi(
       subAccount,
       to: replyTo,
       body: completion.text,
+      contactId: contact.id,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

@@ -5,12 +5,14 @@ import type { Firestore } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   sendSmsForSubAccount,
-  sendWhatsappForSubAccount,
   smsIsConfigured,
   subAccountTwilioIsConfigured,
   subAccountWhatsappIsConfigured,
   sendWhatsappTemplateForSubAccount,
 } from "@/lib/comms/twilio";
+import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
+import { isWithinServiceWindow } from "@/lib/comms/whatsapp/send-mode";
+import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
@@ -168,13 +170,21 @@ export async function maybeSendReviewRequest(
       if (channel === "whatsapp_manual") {
         // Free-form — only valid while the 24h session window is open (the
         // customer messaged recently). No approved template required.
-        const open = await whatsappWindowOpen(db, contact.id);
-        if (!open) return { sent: false, reason: "window_closed" };
-        const res = await sendWhatsappForSubAccount({
+        // Read the window ONCE and hand the timestamp to the dispatcher.
+        // Letting each re-read it would mean two queries that can disagree —
+        // and the caller needs the answer anyway, to report `window_closed`
+        // rather than a generic send failure.
+        const lastInboundAt = await whatsappLastInboundAt(db, contact.id);
+        if (!isWithinServiceWindow(lastInboundAt, new Date())) {
+          return { sent: false, reason: "window_closed" };
+        }
+        const res = await sendWhatsappFreeFormForSubAccount({
           subAccountId: input.subAccountId,
           subAccount,
+          contactId: contact.id,
           to: contact.phone,
           body: freeFormBody,
+          lastInboundAt,
         });
         sid = res.sid;
         fromNumber = res.from;
@@ -186,9 +196,9 @@ export async function maybeSendReviewRequest(
           .doc(`subAccounts/${input.subAccountId}/whatsappTemplates/${cfg.whatsappTemplateId}`)
           .get();
         const tpl = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
-        if (!tpl || tpl.status !== "approved" || !tpl.contentSid) {
-          return { sent: false, reason: "template_not_approved" };
-        }
+        // Approval is per-rail: a template cleared through Twilio's BSP has
+        // never been seen by our own WABA, so "approved" alone is not enough.
+        if (!tpl) return { sent: false, reason: "template_not_approved" };
         const subject = await buildSubject(db, contact, subAccount);
         const values = resolveTemplateVariables({
           variables: tpl.variables,
@@ -198,15 +208,28 @@ export async function maybeSendReviewRequest(
         if (values.some((v) => v.trim() === "")) {
           return { sent: false, reason: "template_var_missing" };
         }
-        const res = await sendWhatsappTemplateForSubAccount({
+        let templateFrom = "";
+        const res = await dispatchWhatsappTemplateSend({
           subAccountId: input.subAccountId,
           subAccount,
           to: contact.phone,
-          contentSid: tpl.contentSid,
-          contentVariables: values,
+          template: tpl,
+          values,
+          sendViaTwilio: async (contentSid) => {
+            const r = await sendWhatsappTemplateForSubAccount({
+              subAccountId: input.subAccountId,
+              subAccount,
+              to: contact.phone,
+              contentSid,
+              contentVariables: values,
+            });
+            templateFrom = r.from;
+            return { ok: true, messageId: r.sid };
+          },
         });
-        sid = res.sid;
-        fromNumber = res.from;
+        if (!res.ok) return { sent: false, reason: "template_not_approved" };
+        sid = res.messageId ?? "";
+        fromNumber = templateFrom;
         renderedBody = fillPositional(tpl.body, values);
       }
       writeRow = true;
@@ -307,16 +330,14 @@ export async function maybeSendReviewRequest(
 }
 
 /**
- * Is the WhatsApp 24h free-form window open for this contact? True when their
- * most recent message in the thread is an INBOUND within the window. Mirrors
- * the guard in /api/comms/whatsapp/send so manual free-form review sends only
- * go out when compliant.
+ * When did this contact last message in? Null when their most recent thread
+ * activity is not an inbound, which the shared send-mode rule reads as a shut
+ * window.
  */
-async function whatsappWindowOpen(
+async function whatsappLastInboundAt(
   db: Firestore,
   contactId: string,
-  windowHours = 24,
-): Promise<boolean> {
+): Promise<Date | null> {
   try {
     const snap = await db
       .collection(`contacts/${contactId}/whatsappMessages`)
@@ -333,12 +354,15 @@ async function whatsappWindowOpen(
           m.createdAt && typeof m.createdAt.toMillis === "function"
             ? m.createdAt.toMillis()
             : null;
-        return ms !== null && Date.now() - ms < windowHours * 60 * 60 * 1000;
+        return ms === null ? null : new Date(ms);
       }
     }
-    return false;
+    return null;
   } catch {
-    return false;
+    // A failed read degrades to "window shut", which forces a template or a
+    // refusal. Erring open would send free-form into a window Meta considers
+    // closed.
+    return null;
   }
 }
 

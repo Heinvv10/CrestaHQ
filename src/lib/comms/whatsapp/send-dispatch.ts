@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { getWabaCreds } from "./cloud-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
 import { resolveProviderForSubAccount } from "./resolve-provider";
@@ -10,9 +11,15 @@ import type { WhatsAppProviderId, WhatsAppSendResult } from "./provider";
 import type { SubAccountDoc } from "@/types";
 
 /**
- * The one place a WhatsApp message leaves the system, whichever rail carries
- * it. Reads the service window once, hands the decision to the provider's
- * sender, and returns the uniform result.
+ * Free-form WhatsApp send, whichever rail carries it. Reads the service window
+ * once, hands the decision to the provider's sender, and returns the uniform
+ * result. Template sends go through `dispatchWhatsappTemplateSend` below.
+ *
+ * Every WhatsApp send path routes through one of those two — the manual
+ * composer, the AI auto-reply, review requests, and workflow template steps.
+ * That matters more than tidiness: a call site that reaches
+ * `sendWhatsappForSubAccount` directly is hardcoded to Twilio, so it breaks
+ * silently the moment a workspace moves to another rail.
  *
  * Twilio's behaviour is preserved exactly: this route has no template to fall
  * back on, so an out-of-window send resolves to the same refusal the route
@@ -135,4 +142,46 @@ export async function dispatchWhatsappSend(
 
   const r = await input.sendViaTwilio();
   return { ...r, provider };
+}
+
+
+/**
+ * Free-form send for call sites that expect the Twilio helper's
+ * `{ sid, from }` shape and a throw on failure (the AI orchestrator, review
+ * requests). Wrapping rather than re-implementing keeps those paths on the
+ * same rail resolution and the same window rule as the manual composer.
+ */
+export async function sendWhatsappFreeFormForSubAccount(input: {
+  subAccountId: string;
+  subAccount: SubAccountDoc;
+  contactId: string;
+  to: string;
+  body: string;
+  /** Skips the window read for callers that already know it is open. */
+  lastInboundAt?: Date | null;
+}): Promise<{ sid: string; from: string }> {
+  let from = "";
+  const result = await dispatchWhatsappSend({
+    subAccountId: input.subAccountId,
+    subAccount: input.subAccount,
+    contactId: input.contactId,
+    to: input.to,
+    body: input.body,
+    lastInboundAt: input.lastInboundAt,
+    template: null,
+    sendViaTwilio: async () => {
+      const r = await sendWhatsappForSubAccount({
+        subAccountId: input.subAccountId,
+        subAccount: input.subAccount,
+        to: input.to,
+        body: input.body,
+      });
+      from = r.from;
+      return { ok: true, messageId: r.sid };
+    },
+  });
+  if (!result.ok) {
+    throw new Error(result.error ?? "Failed to send WhatsApp message");
+  }
+  return { sid: result.messageId ?? "", from };
 }

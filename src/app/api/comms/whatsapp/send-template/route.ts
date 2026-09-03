@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
 import {
   sendWhatsappTemplateForSubAccount,
   subAccountWhatsappIsConfigured,
@@ -97,12 +98,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Template not found" }, { status: 404 });
   }
   const tpl = tplSnap.data() as WhatsappTemplateDoc;
-  if (tpl.status !== "approved" || !tpl.contentSid) {
-    return NextResponse.json(
-      { error: "Only an approved template can be sent." },
-      { status: 409 },
-    );
-  }
+  // Per-rail approval is checked inside the dispatcher, which knows which rail
+  // this workspace sends on and can say which one the template is missing on.
 
   // Build the merge-tag subject (owner snapshot from the agency owner).
   let owner = { displayName: "", email: "" };
@@ -161,15 +158,33 @@ export async function POST(request: Request) {
   let sid: string;
   let fromNumber: string;
   try {
-    const result = await sendWhatsappTemplateForSubAccount({
+    let templateFrom = "";
+    const result = await dispatchWhatsappTemplateSend({
       subAccountId: contact.subAccountId,
       subAccount,
       to: contact.phone,
-      contentSid: tpl.contentSid,
-      contentVariables: values,
+      template: tpl,
+      values,
+      sendViaTwilio: async (contentSid) => {
+        const r = await sendWhatsappTemplateForSubAccount({
+          subAccountId: contact.subAccountId,
+          subAccount,
+          to: contact.phone,
+          contentSid,
+          contentVariables: values,
+        });
+        templateFrom = r.from;
+        return { ok: true, messageId: r.sid };
+      },
     });
-    sid = result.sid;
-    fromNumber = result.from;
+    if (!result.ok) {
+      return NextResponse.json(
+        { error: result.error ?? "Only an approved template can be sent." },
+        { status: 409 },
+      );
+    }
+    sid = result.messageId ?? "";
+    fromNumber = templateFrom;
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {
       return NextResponse.json({ error: err.message }, { status: 429 });
