@@ -28,9 +28,9 @@ export function Hero({ brand }: { brand: ResolvedBrand }) {
           </div>
 
           <h1 className="text-balance text-4xl font-semibold tracking-tighter sm:text-5xl md:text-6xl lg:text-[5rem] lg:leading-[1.04]">
-            The CRM your team will{" "}
+            You&apos;re losing customers to businesses that{" "}
             <span className="inline-block bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 bg-clip-text pr-1 font-serif font-normal text-transparent">
-              actually use
+              answer faster
             </span>
             .
           </h1>

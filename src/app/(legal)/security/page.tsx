@@ -67,8 +67,8 @@ export default function SecurityPage() {
         <p>
           {brand} isn&apos;t a shared platform you sign up to. When you
           purchase {brand}, you — the owner — spin up your{" "}
-          <strong>own private CRM</strong>, under your own brand
-          (&ldquo;YourCRM&rdquo;), running on accounts <em>you</em> control
+          <strong>own private CRM</strong>, under your own brand, running on
+          accounts <em>you</em> control
           with best-in-class providers for data, payments, and hosting. One
           deployment, one owner. Your client workspaces live inside your
           deployment and nowhere else. Everything below describes how that
