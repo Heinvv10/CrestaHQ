@@ -14,7 +14,10 @@
     "start": "next start",
     "lint": "node scripts/check-capability-tenancy.mjs && eslint",
     "check:tenancy": "node scripts/check-capability-tenancy.mjs",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "ci:check": "pnpm lint && npx tsc --noEmit && pnpm test && pnpm build"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -65,6 +68,7 @@
     "@types/react-dom": "^19",
     "@types/sanitize-html": "^2.16.1",
     "@types/web-push": "^3.6.4",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9",
     "eslint-config-next": "15.5.12",
     "eslint-config-prettier": "^10.1.8",
@@ -72,6 +76,7 @@
     "prettier": "^3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.11"
   }
 }
