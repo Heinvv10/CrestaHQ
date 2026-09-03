@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { checkCheckoutRateLimit, clientIpFrom } from "@/lib/checkout/rate-limit";
 import { verifyReviewToken } from "@/lib/reviews/feedback-token";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import {
@@ -20,6 +21,12 @@ import {
  * Records an optional star rating + comment, and opens an internal follow-up
  * task when the rating is low.
  *
+ * The token check and the token burn happen inside a single Firestore
+ * transaction along with the feedback write, so two concurrent requests
+ * carrying the same still-valid token cannot both succeed — the second reads
+ * the already-cleared `reviewTokenHash` and is rejected. Same shape as the
+ * public quote respond route, and for the same reason.
+ *
  * COMPLIANCE: this endpoint never decides whether the customer sees the Google
  * review link — the page shows it to everyone, before and after submitting.
  * See `types/review-feedback.ts` for why (Google prohibits review gating).
@@ -31,17 +38,36 @@ interface Body {
   clickedGoogle?: unknown;
 }
 
-function clientIp(request: Request): string | null {
-  const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0]!.trim().slice(0, 64) || null;
-  return request.headers.get("x-real-ip")?.slice(0, 64) ?? null;
+/** Mirrors the (unexported) Mode union in lib/server/tasks-service.ts. */
+type Mode = "live" | "test";
+
+/** Discriminated result of the feedback transaction. */
+type TxnResult =
+  | { ok: false; error: string; status: number }
+  | {
+      ok: true;
+      agencyId: string;
+      subAccountId: string;
+      contactName: string;
+      createdByUid: string;
+      mode: Mode;
+    };
+
+/** Narrow an untrusted Firestore field to the Mode union. Anything that isn't
+ *  an explicit "test" is treated as live — the safe default for a real
+ *  customer's feedback. */
+function modeFrom(raw: unknown): Mode {
+  return raw === "test" ? "test" : "live";
 }
 
-export async function POST(
-  request: Request,
-  ctx: { params: Promise<{ token?: string }> },
-) {
-  void ctx;
+export async function POST(request: Request) {
+  const rate = checkCheckoutRateLimit(clientIpFrom(request));
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "Too many attempts. Please try again shortly." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+    );
+  }
 
   let body: Body;
   try {
@@ -50,9 +76,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const token = typeof body === "object" && body !== null
-    ? (request.headers.get("x-review-token") ?? "")
-    : "";
+  const token = request.headers.get("x-review-token") ?? "";
   if (!token) {
     return NextResponse.json({ error: "Missing review token." }, { status: 400 });
   }
@@ -62,31 +86,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid or expired link." }, { status: 404 });
   }
 
-  const db = getAdminDb();
-  const contactRef = db.doc(`contacts/${verified.contactId}`);
-  const snap = await contactRef.get();
-  if (!snap.exists) {
-    return NextResponse.json({ error: "Invalid or expired link." }, { status: 404 });
-  }
-  const contact = snap.data() as Record<string, unknown>;
-
-  // The hash on the contact is the second half of the check — a validly signed
-  // token for a contact whose link has since been re-issued must not work.
-  if (contact.reviewTokenHash !== verified.hash) {
-    return NextResponse.json({ error: "Invalid or expired link." }, { status: 404 });
-  }
-
-  const agencyId = typeof contact.agencyId === "string" ? contact.agencyId : "";
-  const subAccountId =
-    typeof contact.subAccountId === "string" ? contact.subAccountId : "";
-  if (!agencyId || !subAccountId) {
-    return NextResponse.json(
-      { error: "Contact is missing tenancy metadata." },
-      { status: 500 },
-    );
-  }
-
-  // ── Validate the payload ────────────────────────────────────────────────
+  // ── Validate the payload before touching Firestore ──────────────────────
   let rating: number | null = null;
   if (body.rating !== undefined && body.rating !== null) {
     const n = Number(body.rating);
@@ -106,48 +106,108 @@ export async function POST(
   const clickedGoogle = body.clickedGoogle === true;
 
   if (rating === null && !comment && !clickedGoogle) {
-    return NextResponse.json(
-      { error: "Nothing to record." },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "Nothing to record." }, { status: 400 });
   }
 
+  /** A rating or a comment closes the link. A bare click-through ping does not. */
+  const isSubmission = rating !== null || comment.length > 0;
+
+  const db = getAdminDb();
+  const contactRef = db.doc(`contacts/${verified.contactId}`);
   const feedbackRef = db.collection("reviewFeedback").doc();
-  await feedbackRef.set({
-    agencyId,
-    subAccountId,
-    contactId: verified.contactId,
-    rating,
-    comment,
-    clickedGoogle,
-    taskId: null,
-    submittedFromIp: clientIp(request),
-    submittedUserAgent: request.headers.get("user-agent")?.slice(0, 300) ?? null,
-    createdAt: FieldValue.serverTimestamp(),
+  const ip = clientIpFrom(request);
+  const userAgent = request.headers.get("user-agent")?.slice(0, 300) ?? null;
+
+  // ── Atomic: verify the token, burn it, and write the feedback together ──
+  // Doing these as separate steps would let two concurrent requests with the
+  // same token both pass the hash check and both write.
+  const result: TxnResult = await db.runTransaction<TxnResult>(async (tx) => {
+    const snap = await tx.get(contactRef);
+    if (!snap.exists) {
+      return { ok: false, error: "Invalid or expired link.", status: 404 };
+    }
+    const contact = snap.data() as Record<string, unknown>;
+
+    // The stored hash is the second half of the check — a validly signed token
+    // for a contact whose link has since been re-issued or used must not work.
+    if (contact.reviewTokenHash !== verified.hash) {
+      return { ok: false, error: "Invalid or expired link.", status: 404 };
+    }
+
+    const agencyId = typeof contact.agencyId === "string" ? contact.agencyId : "";
+    const subAccountId =
+      typeof contact.subAccountId === "string" ? contact.subAccountId : "";
+    if (!agencyId || !subAccountId) {
+      return {
+        ok: false,
+        error: "Contact is missing tenancy metadata.",
+        status: 500,
+      };
+    }
+
+    tx.set(feedbackRef, {
+      agencyId,
+      subAccountId,
+      contactId: verified.contactId,
+      rating,
+      comment,
+      clickedGoogle,
+      taskId: null,
+      submittedFromIp: ip,
+      submittedUserAgent: userAgent,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    // Burn the token in the same commit, so a forwarded or replayed link
+    // cannot be used again — including by a request already in flight.
+    //
+    // A click-through to Google is NOT a submission: the page fires that ping
+    // when the customer opens the review link, and they can still come back
+    // and leave private feedback afterwards. Burning on the ping would 404
+    // that second request. Only a real rating/comment closes the link.
+    if (isSubmission) {
+      tx.update(contactRef, {
+        reviewTokenHash: FieldValue.delete(),
+        reviewFeedbackAt: FieldValue.serverTimestamp(),
+      });
+    } else {
+      tx.update(contactRef, { reviewGoogleClickedAt: FieldValue.serverTimestamp() });
+    }
+
+    return {
+      ok: true,
+      agencyId,
+      subAccountId,
+      contactName:
+        typeof contact.name === "string" && contact.name ? contact.name : "A customer",
+      createdByUid:
+        typeof contact.createdByUid === "string" ? contact.createdByUid : "system",
+      mode: modeFrom(contact.mode),
+    };
   });
 
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
+  }
+
   // ── Internal follow-up on an unhappy customer ───────────────────────────
-  // This is the point of capturing a rating at all: the owner hears about it
-  // now instead of reading it on Google next week. It changes nothing the
-  // customer sees.
+  // Outside the transaction: the feedback is already durable, and losing the
+  // task must not lose the customer's words. Changes nothing the customer sees.
   let taskId: string | null = null;
   const needsFollowUp =
     (rating !== null && rating <= REVIEW_FOLLOW_UP_THRESHOLD) ||
     (rating === null && comment.length > 0);
 
   if (needsFollowUp) {
-    const contactName =
-      typeof contact.name === "string" && contact.name ? contact.name : "A customer";
     try {
       const created = await createTaskServerSide({
-        subAccountId,
-        agencyId,
-        createdByUid:
-          typeof contact.createdByUid === "string" ? contact.createdByUid : "system",
-        mode: (contact.mode as never) ?? ("live" as never),
+        subAccountId: result.subAccountId,
+        agencyId: result.agencyId,
+        createdByUid: result.createdByUid,
+        mode: result.mode,
         title: rating
-          ? `Follow up: ${contactName} left ${rating}★ feedback`
-          : `Follow up: ${contactName} left feedback`,
+          ? `Follow up: ${result.contactName} left ${rating}★ feedback`
+          : `Follow up: ${result.contactName} left feedback`,
         notes: comment || "(no comment left)",
         dueAt: new Date(),
         contactId: verified.contactId,
@@ -156,20 +216,14 @@ export async function POST(
       });
       taskId = created.id;
       await feedbackRef.update({ taskId });
-    } catch {
-      // A failed task write must not lose the customer's feedback — the
-      // feedback doc is already committed above. Surface nothing to the
-      // customer; the row is still there for the owner to see.
+    } catch (err) {
+      // Swallowed deliberately: the feedback row is already committed, and a
+      // failed task write must not 500 a customer who did nothing wrong. The
+      // row is still there for the owner to see.
+      console.error("[reviews/feedback] follow-up task failed", err);
       taskId = null;
     }
   }
-
-  // Burn the token so a forwarded link can't be replayed. A re-send issues a
-  // fresh one.
-  await contactRef.update({
-    reviewTokenHash: FieldValue.delete(),
-    reviewFeedbackAt: FieldValue.serverTimestamp(),
-  });
 
   return NextResponse.json({ ok: true, taskCreated: taskId !== null });
 }
