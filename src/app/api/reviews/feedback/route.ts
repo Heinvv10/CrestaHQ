@@ -231,13 +231,23 @@ export async function POST(request: Request) {
         eventId: null,
       });
       taskId = created.id;
-      await feedbackRef.update({ taskId });
     } catch (err) {
       // Swallowed deliberately: the feedback row is already committed, and a
       // failed task write must not 500 a customer who did nothing wrong. The
       // row is still there for the owner to see.
       console.error("[reviews/feedback] follow-up task failed", err);
       taskId = null;
+    }
+
+    // Back-reference, in its OWN try. If this write fails the task still
+    // exists — clearing taskId here would report "no task" for a task that
+    // was created, leaving an orphan nobody looks for.
+    if (taskId) {
+      try {
+        await feedbackRef.update({ taskId });
+      } catch (err) {
+        console.error("[reviews/feedback] taskId back-reference failed", err);
+      }
     }
   }
 
