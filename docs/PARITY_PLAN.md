@@ -14,8 +14,10 @@ We are doing it for **control**:
 
 - **Paystack.** Stripe permanently blocks SA entities from SaaS-mode rebilling. GHL cannot fix
   this for us — ever. Here it is one seam.
-- **Template-category policy.** Marketing-class WhatsApp costs **5× utility**. On GHL that
-  classification is buried in their template UI; here it is ours to enforce in code.
+- **Send-path policy.** Marketing templates cost **5× utility and infinitely more than a
+  free-form message inside an open service window**. GHL leaves that choice to whoever built the
+  workflow; `ndzinga-lms` already enforces it in code (template mode only when the window is
+  closed). See 0.3 — it is worth 62% of the wallet bill.
 - **Invoicing automation** GHL does not offer.
 - **Not being repriced underneath us** — "Ask AI, AI Studio, and Managed Agents are now
   chargeable" appeared as a banner, not a negotiation.
@@ -34,20 +36,60 @@ the only item 100% dependent on an approval we do not control and have never obt
 |---|---|---|---|---|
 | 0.1 | **Fix the 4 review-gating branches** | ~1 h | Compliance. Google actively enforces since Apr 2026 | Hein (GHL UI) |
 | 0.2 | **Submit the Google BPA v4 quota request** | ~1 h | Starts the only clock we cannot compress | Hein |
-| 0.3 | **WhatsApp template-category audit** | ~half day | Up to **~$73/mo**, on GHL, no migration | Hein + Claude |
+| 0.3 | ~~Template-category audit~~ **Send review asks in-window as free-form** | ~half day | **~$87/mo — 62% of the wallet bill**, on GHL, no migration | Hein + Claude |
 | 0.4 | **Trial decision** — Unlimited $297 converts in ~7 days | 5 min | Avoid a surprise charge | Hein |
 
 **0.1 must precede 0.2.** The quota application asserts we do not gate reviews. Four live
 branches currently do. Submitting first risks a rejection that is slow to appeal and blocks
 Phase 3 entirely. Paste-ready fixes: [REVIEW_GATING_FIX.md](REVIEW_GATING_FIX.md).
 
-**0.3 detail.** August: 2,290 marketing messages cost **$91.13 (64% of the entire bill)**; 6,082
-utility cost $48.53. `ndzinga-lms/lib/whatsapp/template-submit.ts` already codifies "register as
-UTILITY" as deliberate cost policy — CrestaHQ does not. Audit every active template, identify
-transactional follow-ups misclassified as marketing, resubmit as UTILITY.
-**Caveat: Meta assigns the final category, not us.** A "leave us a Google review" ask reads as
-marketing; a "how did the installation go?" check-in has a genuine utility argument. This is a
-test, not a certainty — cheap and reversible either way.
+**0.3 detail — REVISED after audit 2026-09-03.** The original hypothesis (templates misclassified
+as marketing) is **wrong**. Velocity's templates are correctly classified: `experience_check_v2`
+is Utility, the review asks are Marketing, and Meta would rightly reject a "leave us a Google
+review" template as Utility.
+
+**The real finding is larger.** We are paying $0.040/msg for messages that should cost **$0.00**.
+
+The flow is: `velocity_experience_check_v2` (Utility, $0.008) is sent business-initiated → the
+customer taps a button ("Happy & connected") → **that tap opens a 24-hour service window** → and
+the review ask is then sent as `velocity_review_request_v2`, a **Marketing template at $0.040**,
+in the same minute. Inside an open service window a free-form message is **free** — GHL's own
+ledger confirms it: 1,802 service messages billed at $0.00.
+
+| | Marketing msgs (Aug) | Cost | Sent free-form in-window |
+|---|---:|---:|---:|
+| Velocity Fibre | 1,586 | $63.11 | $0.00 |
+| Blitz Fibre | 615 | $24.47 | $0.00 |
+| **Total** | **2,201** | **$87.58/mo** | **~$0** |
+
+**62% of the entire wallet bill**, recovered by changing *when* the message is sent, not what it
+says. Cost: the tappable "Leave a review" button is lost (free-form messages cannot carry
+buttons) — a plain URL does the same job.
+
+Not all 2,201 are post-tap; the reminder and cold-request templates legitimately need template
+sends because their window is closed. Scope the fix to the post-button review ask, which is the
+dominant path.
+
+`ndzinga-lms/lib/whatsapp-cloud.ts` already implements this decision — template mode **only** when
+the window is closed. Porting it (task 1.2) makes the saving structural rather than a workflow
+convention someone can undo.
+
+### August spend by sub-account (measured)
+
+| Sub-account | Aug 2026 | Marketing msgs | Utility msgs |
+|---|---:|---:|---:|
+| Velocity Fibre | $83.01 | 1,586 | 2,454 |
+| Blitz Fibre | $54.59 | 615 | 3,628 |
+| CrestaHQ | $2.29 | — | — |
+| Vortex Media | $1.38 | — | — |
+| Appliances Repairs JHB | $0.03 | — | — |
+
+Answers open question 1: **Vortex, Appliances Repairs and CrestaHQ together spend $3.70/mo.** They
+are cheap to migrate and cheap to leave. All meaningful usage is Velocity + Blitz — the two
+review operations, which are also the two gated on Google.
+
+GHL also bills **"Reviews AI" at $0.010/use** (105 events in Aug across both) — a line we would
+own outright post-migration.
 
 ---
 
@@ -131,15 +173,16 @@ Stop and reassess if any of these hold:
 
 - Google rejects the v4 quota request, or is silent past **60 days** → Phase 3 is dead; re-decide
   whether Phases 0–2 alone justify leaving GHL (they may, on control grounds).
-- Meta refuses UTILITY reclassification for the review flow → Phase 0.3 is worth ~$0; the cost
-  case weakens further.
+- ~~Meta refuses UTILITY reclassification~~ **Resolved: categories are already correct.** New risk:
+  if the post-tap review ask cannot be sent free-form in GHL's workflow builder (template-only
+  node), 0.3 is worth ~$0 until the Meta Cloud API port lands.
 - WABA quality tier drops below Medium after cutover → roll back to LeadConnector.
 - Phase 1 runs past 3 weeks → we were wrong that these were ports, not builds.
 
 ## Open questions
 
-1. Do Vortex and Appliances Repairs use GHL reputation, or only the request engine? Decides
-   whether they can migrate before Phase 3.
+1. ~~Do Vortex/Appliances use GHL reputation?~~ **Partly answered:** they spend $1.41/mo combined,
+   so nothing meaningful runs there. Still confirm no reputation dependency before migrating them.
 2. Verify Meta's published ZA rate card against the measured $0.039795 / $0.007979 before
    treating "no markup" as settled.
 3. Who owns the GHL Private Integration Token for Phase 2?
