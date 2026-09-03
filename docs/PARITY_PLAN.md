@@ -97,10 +97,44 @@ own outright post-migration.
 
 | # | Task | Effort | Notes |
 |---|---|---|---|
-| 1.1 | **Paystack rail** replacing Stripe in Client Billing | 3–5 d | `src/lib/stripe/sub-account-client.ts:148` is an explicit single seam — its own comment says swapping is "a one-line change here rather than a sweep" |
+| 1.1 | **Paystack rail** replacing Stripe in Client Billing | **5–8 d** (revised) | **NOT a one-line seam — that was an error.** See 1.1 detail |
 | 1.2 | **Meta Cloud API port** from `ndzinga-lms` | 2–3 d | Not a build. See table below |
 | 1.3 | **Recurring / automated invoicing** | 3–4 d | Genuinely absent here too — only Stripe subscriptions in `billing-service.ts`. Do not assume we inherit it |
 | 1.4 | **Test suite on billing + comms** | 3–4 d | 3 test files in 1,073. Feature parity without test parity means the first client migration finds the bugs |
+
+### 1.1 detail — CORRECTED 2026-09-03
+
+The plan originally cited `src/lib/stripe/sub-account-client.ts:148` as "an explicit single seam".
+**That is the wrong surface.** There are two independent Stripe integrations:
+
+| | Surface | Client | Whose money |
+|---|---|---|---|
+| **Payments v1** | sub-account → its own customers | `sub-account-client.ts` (the sub-account's own restricted key) | the client's |
+| **Client Billing** | agency → sub-account | `getStripeServer()` (the deployment's key) | ours |
+
+Paystack must replace the **second**. That one has no single seam — seven files touch it
+(`billing-service.ts`, `stripe/server.ts`, `checkout.ts`, `portal.ts`, `webhooks.ts`,
+`api/webhooks/stripe/route.ts`, `billing/portal/route.ts`) with ~17 direct `stripe.*` calls in
+`billing-service.ts` alone: `products.create`, `prices.create` (×4), `checkout.sessions.create`,
+`subscriptions.retrieve/update`, `customers.create`, `billingPortal.sessions.create`.
+
+**Approach: a `BillingProvider` interface**, with `StripeBillingProvider` wrapping today's
+behaviour exactly and `PaystackBillingProvider` alongside it. Not a find-and-replace. The Stripe
+adapter lands first as a pure refactor with no behaviour change — that is independently valuable
+(it is also the seam that makes 1.4's billing tests possible) and unblocks everything else.
+
+**Three semantic gaps that are product decisions, not code:**
+
+1. **No proration.** Stripe's `subscriptions.update` prorates a mid-cycle plan switch. Paystack
+   has no equivalent — you disable the subscription and create a new one. Plan switching changes
+   behaviour.
+2. **No hosted billing portal.** The dunning banner's "Update card" opens Stripe's portal.
+   Paystack offers only an email-token `manage_link`. Weaker, and a different UX.
+3. **Currency.** Paystack settles ZAR (plus NGN/GHS/KES). Existing plan docs carry `currency` and
+   the pricing is USD. Plans need a currency decision before any subscription is created.
+
+**Prerequisite:** a live Paystack account for Brightsphere Technologies. The interface and the
+Stripe adapter can be built without it; the Paystack adapter cannot be verified without it.
 
 ### 1.2 — what already exists in `ndzinga-lms`
 
