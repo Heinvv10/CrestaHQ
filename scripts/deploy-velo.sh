@@ -12,6 +12,8 @@
 #     can never leave a half-served app returning 500s.
 #   - A lock file prevents two concurrent deploys; a stale lock (no live pid)
 #     is cleared automatically.
+#   - Runs as a systemd USER service (velo has Linger=yes, no passwordless
+#     sudo). $SYSTEMCTL is overridable if that ever changes.
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.
@@ -23,11 +25,14 @@
 # =============================================================================
 set -euo pipefail
 
-DEPLOY_DIR="${DEPLOY_DIR:-/home/hein/crestahq}"
+DEPLOY_DIR="${DEPLOY_DIR:-/home/velo/crestahq}"
 SERVICE="${SERVICE:-crestahq}"
 PORT="${PORT:-4300}"
 BRANCH="${BRANCH:-main}"
-NODE_BIN="${NODE_BIN:-/home/hein/.nvm/versions/node/v22.21.1/bin}"
+NODE_BIN="${NODE_BIN:-/home/velo/.nvm/versions/node/v22.21.1/bin}"
+# systemd scope. velo has no passwordless sudo but does have Linger=yes, so the
+# app runs as a USER service (same as jarvis-bff / ollama-proxy on this box).
+SYSTEMCTL="${SYSTEMCTL:-systemctl --user}"
 LOCK="/tmp/crestahq-deploy.lock"
 HEALTH_URL="http://127.0.0.1:${PORT}/login"
 HEALTH_TRIES=30
@@ -116,7 +121,7 @@ cp -r .next/static .next/standalone/.next/static
 
 # ── Only now touch the running service ──────────────────────────────────────
 say "Restarting $SERVICE"
-sudo systemctl restart "$SERVICE" || die "systemctl restart $SERVICE"
+$SYSTEMCTL restart "$SERVICE" || die "restart $SERVICE"
 
 say "Health check"
 ok=0
@@ -127,7 +132,7 @@ for i in $(seq 1 $HEALTH_TRIES); do
 done
 if [ "$ok" -ne 1 ]; then
   echo "--- last 40 log lines ---"
-  sudo journalctl -u "$SERVICE" -n 40 --no-pager || true
+  journalctl --user -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
   die "health check never returned 200 on $HEALTH_URL"
 fi
 
