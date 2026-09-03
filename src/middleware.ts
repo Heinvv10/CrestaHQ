@@ -55,6 +55,13 @@ const PUBLIC_PATHS = [
   // Security: X-Hub-Signature-256 (HMAC of the raw body with the app secret)
   // verified inside the route; per-sub-account routing by Page / IG id.
   "/api/webhooks/meta",
+  // Meta WhatsApp Cloud API webhook — the `cloud` arm of the WhatsApp provider
+  // seam. GET is the verify-token handshake, POST carries inbound messages and
+  // delivery receipts. Security is the SAME X-Hub-Signature-256 check the
+  // Messenger/IG webhook uses (one Meta app, one app secret); routing is by
+  // metadata.phone_number_id. Kept a separate route because the payload shape
+  // and routing key differ. See docs/WHATSAPP_PROVIDER_PLAN.md.
+  "/api/webhooks/whatsapp-cloud",
   // Post-payment GitHub-invite endpoint. Public POST from the buyer's
   // browser on the /thank-you page. Security: 256-bit claim token in
   // the request body must hash-match the value stored on

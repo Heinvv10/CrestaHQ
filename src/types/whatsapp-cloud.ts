@@ -41,6 +41,16 @@ export interface WhatsappCloudSecret {
  * `whatsappCloudMeta`. Safe to render in settings UI.
  */
 export interface WhatsappCloudMeta {
+  /**
+   * The sending number's Meta resource id — DUPLICATED from the secret doc on
+   * purpose. Inbound webhooks identify the recipient by this id, so routing
+   * needs to query it, and querying it here beats a collection-group query
+   * across every sub-account's `private/` subcollection — which would build an
+   * index over documents that exist precisely to be unreadable. The id is an
+   * identifier, not a credential; only the access token is secret. Written
+   * atomically with the secret doc by the connection route.
+   */
+  phoneNumberId: string | null;
   /** E.164 display number for the connected sender, e.g. "+27784356159". */
   displayPhoneNumber: string | null;
   /** Meta's verified business name on the WABA, when readable. */
