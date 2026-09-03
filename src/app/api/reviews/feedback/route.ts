@@ -10,6 +10,7 @@ import { createTaskServerSide } from "@/lib/server/tasks-service";
 import {
   REVIEW_COMMENT_MAX,
   REVIEW_FOLLOW_UP_THRESHOLD,
+  REVIEW_PII_RETENTION_DAYS,
 } from "@/types/review-feedback";
 
 /**
@@ -155,6 +156,9 @@ export async function POST(request: Request) {
       taskId: null,
       submittedFromIp: ip,
       submittedUserAgent: userAgent,
+      // Abuse-triage only. The daily api-cleanup sweep nulls the IP + UA once
+      // this passes, keeping the rating/comment forever (POPIA minimisation).
+      piiExpiresAt: new Date(Date.now() + REVIEW_PII_RETENTION_DAYS * 86_400_000),
       createdAt: FieldValue.serverTimestamp(),
     });
 

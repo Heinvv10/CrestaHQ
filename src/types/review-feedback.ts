@@ -41,9 +41,15 @@ export interface ReviewFeedbackDoc {
   /** Set when the submission opened an internal follow-up task. */
   taskId: string | null;
 
-  /** Coarse provenance, for abuse triage on a public endpoint. */
+  /** Coarse provenance, for abuse triage on a public endpoint. Nulled by the
+   *  daily api-cleanup sweep once `piiExpiresAt` passes — the rating and
+   *  comment are kept forever, only the identifying fields age out. */
   submittedFromIp: string | null;
   submittedUserAgent: string | null;
+
+  /** When the two fields above become scrubbable. Set to null by the sweep,
+   *  which is what excludes an already-scrubbed row from later runs. */
+  piiExpiresAt: Date | null;
 
   createdAt: FirebaseFirestore.Timestamp | Date;
 }
@@ -51,6 +57,10 @@ export interface ReviewFeedbackDoc {
 /** Ratings at or below this open an internal follow-up task and notify the
  *  owner. It does NOT change what the customer is shown. */
 export const REVIEW_FOLLOW_UP_THRESHOLD = 3;
+
+/** Days the abuse-triage IP + user-agent are kept before the daily sweep
+ *  nulls them. The customer's rating and comment are never deleted. */
+export const REVIEW_PII_RETENTION_DAYS = 30;
 
 /** Hard cap on the free-text comment, enforced server-side. */
 export const REVIEW_COMMENT_MAX = 2000;

@@ -34,6 +34,8 @@ import { sweepOldWatchdogRuns } from "@/lib/server/agents-watchdog-service";
 
 const BATCH_LIMIT = 500;
 const CONTINUATION_DELAY_SEC = 60;
+/** Days to keep the IP/user-agent on a review-feedback row before scrubbing. */
+const REVIEW_PII_RETENTION_DAYS = 30;
 
 interface SweepResult {
   collection: string;
@@ -60,6 +62,45 @@ async function sweepFlatCollection(
   await batch.commit();
   return {
     collection: collectionGroupName,
+    deleted: snap.size,
+    hitCap: snap.size >= BATCH_LIMIT,
+  };
+}
+
+/**
+ * Scrub the abuse-triage PII off old review-feedback rows.
+ *
+ * Unlike every other sweep here this DELETES NOTHING — the customer's rating
+ * and comment are the point of the record and stay forever. It only nulls
+ * `submittedFromIp` + `submittedUserAgent`, which exist to triage abuse of a
+ * public unauthenticated endpoint and have no value once the submission is
+ * weeks old. POPIA data-minimisation: don't hold identifying data past its
+ * purpose.
+ */
+async function scrubReviewFeedbackPii(now: Date): Promise<SweepResult> {
+  const db = getAdminDb();
+  // Single inequality on the write-time stamp — same shape as the other
+  // sweeps here, so no composite index is needed. Scrubbing clears the field,
+  // which is also what excludes the row from every later run.
+  const snap = await db
+    .collection("reviewFeedback")
+    .where("piiExpiresAt", "<", now)
+    .limit(BATCH_LIMIT)
+    .get();
+  if (snap.empty) {
+    return { collection: "reviewFeedback/pii", deleted: 0, hitCap: false };
+  }
+  const batch = db.batch();
+  for (const doc of snap.docs) {
+    batch.update(doc.ref, {
+      submittedFromIp: null,
+      submittedUserAgent: null,
+      piiExpiresAt: null,
+    });
+  }
+  await batch.commit();
+  return {
+    collection: "reviewFeedback/pii",
     deleted: snap.size,
     hitCap: snap.size >= BATCH_LIMIT,
   };
@@ -117,6 +158,7 @@ export async function POST(request: Request) {
     results.push(await sweepFlatCollection("apiRequestLogs", now));
     results.push(await sweepFlatCollection("apiIdempotency", now));
     results.push(await sweepWebhookEvents(now));
+    results.push(await scrubReviewFeedbackPii(now));
     // Watchdog run logs older than 30 days (Labs custom agent).
     const watchdogDeleted = await sweepOldWatchdogRuns();
     results.push({
