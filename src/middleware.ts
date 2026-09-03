@@ -95,6 +95,11 @@ const PUBLIC_PATHS = [
   // verification inside the route; no session needed.
   "/q",
   "/api/quotes",
+  // Public review + feedback page — customer-facing /r/[token] view and its
+  // submit endpoint. Both gated by HMAC-signed token verification plus a
+  // `contact.reviewTokenHash` match inside the route; no session needed.
+  "/r",
+  "/api/reviews",
   // Public booking pages — /b/[saId]/[slug] hosted slot picker, plus the
   // availability + book POST endpoints. Security:
   //  - Page reads only return slots when `status === "published"`

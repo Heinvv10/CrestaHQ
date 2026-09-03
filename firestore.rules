@@ -951,6 +951,18 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Review feedback left on the public /r/[token] page. Written ONLY by the
+    // Admin SDK route (the signed token is the authorisation there — there is
+    // no session on a public page), so client writes are closed entirely.
+    // Members of the owning sub-account can read it back.
+    match /reviewFeedback/{feedbackId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
+
     // Workflow Builder definitions + runs. Fully server-only: the builder,
     // list, and run-log surfaces all read/write through the member-gated
     // Admin-SDK routes (/api/sub-accounts/[id]/workflows/** + the QStash step
