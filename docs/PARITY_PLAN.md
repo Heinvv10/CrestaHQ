@@ -100,7 +100,7 @@ own outright post-migration.
 | 1.1 | **Paystack rail** replacing Stripe in Client Billing | **5–8 d** (revised) | **NOT a one-line seam — that was an error.** See 1.1 detail |
 | 1.2 | **Meta Cloud API port** from `ndzinga-lms` | 2–3 d | Not a build. See table below |
 | 1.3 | **Recurring / automated invoicing** | 3–4 d | Genuinely absent here too — only Stripe subscriptions in `billing-service.ts`. Do not assume we inherit it |
-| 1.4 | **Test suite on billing + comms** | 3–4 d | 3 test files in 1,073. Feature parity without test parity means the first client migration finds the bugs |
+| 1.4 | ~~Test suite on billing + comms~~ **DONE 2026-09-03** (`cf3a445`, `35852ff`) | — | **3 tests → 233.** Guards, not happy paths; 61 verified by deleting the guard and confirming a test fails. See 1.4 detail |
 
 ### 1.1 detail — CORRECTED 2026-09-03
 
@@ -138,6 +138,26 @@ adapter lands first as a pure refactor with no behaviour change — that is inde
 
 **Prerequisite:** a live Paystack account for Brightsphere Technologies. The interface and the
 Stripe adapter can be built without it; the Paystack adapter cannot be verified without it.
+
+### 1.4 detail — DONE
+
+3 test files → 12; 3 tests → 233. Deliberately targets **guards**, not happy paths: the agency AI
+gates (per-channel opt-in vs opt-out defaults), the outbound-voice compliance gate
+(`voiceOptedOut` independent of `smsOptedOut`; window in the *contact's* timezone), the
+review-request guard ladder (an unapproved template can never reach Twilio), and the capture path
+where model output becomes CRM data.
+
+**61 guards verified by mutation** — each deleted from the production source, a test confirmed to
+fail, then reverted. Sharpest: the backfill guard that only fills blank fields. Drop it and a
+hallucinated address silently overwrites a verified one.
+
+Blind review caught that the first pass covered `capture.ts`'s pure parsers but nothing in the
+Firestore half — where the data-integrity risk actually lives. A mutation table cannot surface
+that: a guard nobody tested cannot be mutated into failing. Worth remembering when judging
+coverage by test count.
+
+**Still over the 300-line cap** (pre-existing, not blocking): `stripe-provider.test.ts` (427) and
+`api/reviews/feedback/route.test.ts` (357). Both have clean `describe` seams to split along.
 
 ### 1.2 — what already exists in `ndzinga-lms`
 
