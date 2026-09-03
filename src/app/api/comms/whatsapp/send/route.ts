@@ -3,8 +3,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   sendWhatsappForSubAccount,
-  subAccountWhatsappIsConfigured,
 } from "@/lib/comms/twilio";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
 import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
@@ -79,14 +79,16 @@ export async function POST(request: Request) {
       { status: 403 },
     );
   }
-  if (!subAccountWhatsappIsConfigured(subAccount?.twilioConfig)) {
-    return NextResponse.json(
-      {
-        error:
-          "WhatsApp isn't configured. Add a WhatsApp sender under Settings → SMS.",
-      },
-      { status: 503 },
-    );
+  // Readiness is per-rail. Checking Twilio's credentials for a workspace that
+  // runs on Meta Cloud is not a stricter check, it is the wrong one — it
+  // refuses a correctly configured Cloud workspace and would wave through one
+  // whose Cloud credentials are missing.
+  const readiness = await checkWhatsappReadiness({
+    subAccountId: contact.subAccountId,
+    subAccount,
+  });
+  if (!readiness.ready) {
+    return NextResponse.json({ error: readiness.error }, { status: 503 });
   }
 
   // The 24-hour window decision, the rail choice and the send all belong to

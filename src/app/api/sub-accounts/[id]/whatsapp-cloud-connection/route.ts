@@ -31,6 +31,15 @@ import type { SubAccountDoc } from "@/types";
  * no response body ever contains the token.
  */
 
+/** Thrown inside the connect transaction to abort it with a distinct reason,
+ *  so a genuine Firestore failure isn't reported to the operator as a clash. */
+class PhoneNumberInUseError extends Error {
+  constructor() {
+    super("phone number already connected");
+    this.name = "PhoneNumberInUseError";
+  }
+}
+
 interface PostBody {
   phoneNumberId?: string;
   wabaId?: string;
@@ -142,24 +151,6 @@ export async function POST(
     return NextResponse.json({ error: probe.error }, { status: 400 });
   }
 
-  // Another workspace already sending from this number would make inbound
-  // routing ambiguous — the webhook picks by phone_number_id and would resolve
-  // to whichever doc the query happened to return.
-  const clash = await db
-    .collection("subAccounts")
-    .where("whatsappCloudMeta.phoneNumberId", "==", phoneNumberId)
-    .limit(2)
-    .get();
-  if (clash.docs.some((d) => d.id !== subAccountId)) {
-    return NextResponse.json(
-      {
-        error:
-          "That WhatsApp number is already connected to another workspace. Disconnect it there first.",
-      },
-      { status: 409 },
-    );
-  }
-
   const meta: WhatsappCloudMeta = {
     phoneNumberId,
     displayPhoneNumber: probe.displayPhoneNumber,
@@ -168,21 +159,58 @@ export async function POST(
     connectedByUid: auth.uid,
   };
 
-  // Secret first. If the meta write then fails, the workspace is still on the
-  // Twilio rail and an orphaned secret is inert; the reverse order would
-  // route inbound traffic at credentials that do not exist yet.
+  // Secret first, and outside the transaction: if the transaction then aborts,
+  // the workspace is still on the Twilio rail and an orphaned secret is inert.
+  // The reverse order would briefly route inbound traffic at credentials that
+  // do not exist yet.
   await db
     .doc(whatsappCloudSecretPath(subAccountId))
     .set({ phoneNumberId, wabaId, accessToken });
 
-  await db.doc(`subAccounts/${subAccountId}`).set(
-    {
-      whatsappCloudMeta: meta,
-      whatsappProvider: "cloud",
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
+  // The uniqueness check and the write that satisfies it must be atomic.
+  // Checked outside a transaction, two operators connecting the same number to
+  // two workspaces at once both read "no clash" and both write — producing the
+  // exact ambiguous routing this check exists to prevent, since the inbound
+  // webhook resolves by phone_number_id and would deliver a customer's
+  // messages to whichever document the query happened to return first.
+  try {
+    await db.runTransaction(async (tx) => {
+      const clash = await tx.get(
+        db
+          .collection("subAccounts")
+          .where("whatsappCloudMeta.phoneNumberId", "==", phoneNumberId)
+          .limit(2),
+      );
+      if (clash.docs.some((d) => d.id !== subAccountId)) {
+        throw new PhoneNumberInUseError();
+      }
+      tx.set(
+        db.doc(`subAccounts/${subAccountId}`),
+        {
+          whatsappCloudMeta: meta,
+          whatsappProvider: "cloud",
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+  } catch (err) {
+    if (err instanceof PhoneNumberInUseError) {
+      // Roll the orphaned secret back so a refused connect leaves no trace.
+      await db
+        .doc(whatsappCloudSecretPath(subAccountId))
+        .delete()
+        .catch(() => {});
+      return NextResponse.json(
+        {
+          error:
+            "That WhatsApp number is already connected to another workspace. Disconnect it there first.",
+        },
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
 
   return NextResponse.json({
     ok: true,
