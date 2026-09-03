@@ -3,7 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { getStripeServer } from "@/lib/stripe/server";
+import { getBillingProvider } from "@/lib/billing/provider";
 import { billingStripeIsConfigured } from "@/lib/server/billing-service";
 
 /**
@@ -41,11 +41,11 @@ export async function POST(
 
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
   try {
-    const session = await getStripeServer().billingPortal.sessions.create({
-      customer: customerId,
-      return_url: `${base}/sa/${subAccountId}/dashboard/settings`,
+    const { url } = await getBillingProvider().createManagementLink({
+      customerId,
+      returnUrl: `${base}/sa/${subAccountId}/dashboard/settings`,
     });
-    return NextResponse.json({ url: session.url });
+    return NextResponse.json({ url });
   } catch (err) {
     console.error("[api/sub-accounts/billing/portal] failed", err);
     return NextResponse.json(

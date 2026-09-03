@@ -3,7 +3,7 @@ import "server-only";
 import type Stripe from "stripe";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { getStripeServer } from "@/lib/stripe/server";
+import { getBillingProvider } from "@/lib/billing/provider";
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
 import {
   buildChargeCheckoutUrl,
@@ -25,6 +25,11 @@ import {
   type SubAccountBilling,
   type SubAccountBillingStatus,
 } from "@/types/billing";
+import { BillingError } from "@/lib/billing/errors";
+import {
+  SUB_ACCOUNT_CHARGE_KIND,
+  SUB_ACCOUNT_PLAN_KIND,
+} from "@/lib/billing/kinds";
 
 /**
  * Client Billing v1 service — the single write path for agency plans
@@ -46,26 +51,22 @@ import {
  *                    legacy founders / user-subscription branches
  */
 
-export const SUB_ACCOUNT_PLAN_KIND = "subAccountPlan";
-/** metadata.kind for ONE-TIME charges (mode:"payment" checkouts). */
-export const SUB_ACCOUNT_CHARGE_KIND = "subAccountCharge";
+export { SUB_ACCOUNT_CHARGE_KIND, SUB_ACCOUNT_PLAN_KIND };
 
 /** Stripe's practical floor for a recurring charge, in cents. */
 const MIN_PRICE_CENTS = 100;
 const MAX_PRICE_CENTS = 100_000_000;
 
+/**
+ * Whether Client Billing can talk to its payment provider. Named for Stripe
+ * historically; it now asks the configured provider. Kept as an exported
+ * function so routes and the assistant keep importing it from here.
+ */
 export function billingStripeIsConfigured(): boolean {
-  return !!process.env.STRIPE_SECRET_KEY?.trim();
+  return getBillingProvider().isConfigured();
 }
 
-export class BillingError extends Error {
-  readonly status: number;
-  constructor(message: string, status = 400) {
-    super(message);
-    this.name = "BillingError";
-    this.status = status;
-  }
-}
+export { BillingError };
 
 function plansCollection(agencyId: string) {
   return getAdminDb().collection(`agencies/${agencyId}/plans`);
@@ -222,38 +223,18 @@ export async function createPlanForAgency(input: {
       503,
     );
   }
-  const stripe = getStripeServer();
+  const provider = getBillingProvider();
   const ref = plansCollection(input.agencyId).doc();
 
-  const product = await stripe.products.create({
+  const { productId, monthlyPriceId, annualPriceId } = await provider.createPlan({
+    agencyId: input.agencyId,
+    planId: ref.id,
     name: input.name,
-    ...(input.description ? { description: input.description } : {}),
-    metadata: {
-      kind: SUB_ACCOUNT_PLAN_KIND,
-      agencyId: input.agencyId,
-      planId: ref.id,
-    },
-  });
-  const price = await stripe.prices.create({
-    product: product.id,
-    unit_amount: input.priceMonthlyCents,
+    description: input.description,
     currency: input.currency,
-    recurring: { interval: "month" },
-    metadata: { planId: ref.id },
+    priceMonthlyCents: input.priceMonthlyCents,
+    priceAnnualCents: input.priceAnnualCents,
   });
-
-  // Optional annual price — a second recurring Price on the same Product.
-  let annualPriceId: string | null = null;
-  if (input.priceAnnualCents !== null) {
-    const annual = await stripe.prices.create({
-      product: product.id,
-      unit_amount: input.priceAnnualCents,
-      currency: input.currency,
-      recurring: { interval: "year" },
-      metadata: { planId: ref.id, interval: "year" },
-    });
-    annualPriceId = annual.id;
-  }
 
   await ref.set({
     id: ref.id,
@@ -267,8 +248,8 @@ export async function createPlanForAgency(input: {
     quotas: input.quotas ?? null,
     rates: input.rates ?? null,
     status: "active",
-    stripeProductId: product.id,
-    stripePriceId: price.id,
+    stripeProductId: productId,
+    stripePriceId: monthlyPriceId,
     stripeAnnualPriceId: annualPriceId,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -308,7 +289,7 @@ export async function updatePlanForAgency(input: {
   if (input.rates !== undefined) updates.rates = input.rates;
   if (input.status) updates.status = input.status;
 
-  const stripe = billingStripeIsConfigured() ? getStripeServer() : null;
+  const provider = billingStripeIsConfigured() ? getBillingProvider() : null;
 
   // Price change → mint a NEW Stripe Price and deactivate the old one.
   // Existing subscriptions keep the price they signed up at (standard
@@ -317,28 +298,28 @@ export async function updatePlanForAgency(input: {
     typeof input.priceMonthlyCents === "number" &&
     input.priceMonthlyCents !== plan.priceMonthlyCents
   ) {
-    if (!stripe || !plan.stripeProductId) {
+    if (!provider || !plan.stripeProductId) {
       throw new BillingError(
         "Stripe isn't configured — can't change the plan price.",
         503,
       );
     }
-    const price = await stripe.prices.create({
-      product: plan.stripeProductId,
-      unit_amount: input.priceMonthlyCents,
+    const { priceId } = await provider.createPrice({
+      productId: plan.stripeProductId,
+      unitAmountCents: input.priceMonthlyCents,
       currency: plan.currency,
-      recurring: { interval: "month" },
+      interval: "month",
       metadata: { planId: input.planId },
     });
     if (plan.stripePriceId) {
-      await stripe.prices
-        .update(plan.stripePriceId, { active: false })
+      await provider
+        .deactivatePrice(plan.stripePriceId)
         .catch((err) =>
           console.warn("[billing] failed to deactivate old price", err),
         );
     }
     updates.priceMonthlyCents = input.priceMonthlyCents;
-    updates.stripePriceId = price.id;
+    updates.stripePriceId = priceId;
   }
 
   // Annual price change — add, change, or remove the interval=year Price.
@@ -348,7 +329,7 @@ export async function updatePlanForAgency(input: {
     input.priceAnnualCents !== undefined &&
     input.priceAnnualCents !== currentAnnual
   ) {
-    if (!stripe || !plan.stripeProductId) {
+    if (!provider || !plan.stripeProductId) {
       throw new BillingError(
         "Stripe isn't configured — can't change the annual price.",
         503,
@@ -357,8 +338,8 @@ export async function updatePlanForAgency(input: {
     if (input.priceAnnualCents === null) {
       // Remove annual: deactivate the old yearly Price, clear the fields.
       if (plan.stripeAnnualPriceId) {
-        await stripe.prices
-          .update(plan.stripeAnnualPriceId, { active: false })
+        await provider
+          .deactivatePrice(plan.stripeAnnualPriceId)
           .catch((err) =>
             console.warn("[billing] failed to deactivate annual price", err),
           );
@@ -367,33 +348,33 @@ export async function updatePlanForAgency(input: {
       updates.stripeAnnualPriceId = null;
     } else {
       // Set or change annual: mint a new yearly Price, deactivate the old one.
-      const annual = await stripe.prices.create({
-        product: plan.stripeProductId,
-        unit_amount: input.priceAnnualCents,
+      const annual = await provider.createPrice({
+        productId: plan.stripeProductId,
+        unitAmountCents: input.priceAnnualCents,
         currency: plan.currency,
-        recurring: { interval: "year" },
+        interval: "year",
         metadata: { planId: input.planId, interval: "year" },
       });
       if (plan.stripeAnnualPriceId) {
-        await stripe.prices
-          .update(plan.stripeAnnualPriceId, { active: false })
+        await provider
+          .deactivatePrice(plan.stripeAnnualPriceId)
           .catch((err) =>
             console.warn("[billing] failed to deactivate old annual price", err),
           );
       }
       updates.priceAnnualCents = input.priceAnnualCents;
-      updates.stripeAnnualPriceId = annual.id;
+      updates.stripeAnnualPriceId = annual.priceId;
     }
   }
 
   // Keep the Stripe Product's display fields in sync (best-effort).
   if (
-    stripe &&
+    provider &&
     plan.stripeProductId &&
     (typeof input.name === "string" || input.description !== undefined)
   ) {
-    await stripe.products
-      .update(plan.stripeProductId, {
+    await provider
+      .updateProduct(plan.stripeProductId, {
         ...(typeof input.name === "string" ? { name: input.name } : {}),
         ...(input.description !== undefined
           ? { description: input.description ?? "" }
@@ -405,17 +386,17 @@ export async function updatePlanForAgency(input: {
   }
 
   // Archive → deactivate the standard price(s) so no new checkout can use them.
-  if (input.status === "archived" && stripe) {
+  if (input.status === "archived" && provider) {
     if (plan.stripePriceId) {
-      await stripe.prices
-        .update(plan.stripePriceId, { active: false })
+      await provider
+        .deactivatePrice(plan.stripePriceId)
         .catch((err) =>
           console.warn("[billing] failed to deactivate archived price", err),
         );
     }
     if (plan.stripeAnnualPriceId) {
-      await stripe.prices
-        .update(plan.stripeAnnualPriceId, { active: false })
+      await provider
+        .deactivatePrice(plan.stripeAnnualPriceId)
         .catch((err) =>
           console.warn(
             "[billing] failed to deactivate archived annual price",
@@ -516,19 +497,18 @@ async function resolveStripePrice(
   }
   if (specialPriceCents === null) return basePriceId;
   // One-off special price minted at the SAME interval so the cadence matches.
-  const stripe = getStripeServer();
-  const price = await stripe.prices.create({
-    product: plan.stripeProductId,
-    unit_amount: specialPriceCents,
+  const { priceId } = await getBillingProvider().createPrice({
+    productId: plan.stripeProductId,
+    unitAmountCents: specialPriceCents,
     currency: plan.currency,
-    recurring: { interval },
+    interval,
     metadata: {
       planId: plan.id,
       specialForSubAccountId: subAccountId,
       interval,
     },
   });
-  return price.id;
+  return priceId;
 }
 
 export interface AssignPlanResult {
@@ -604,20 +584,10 @@ export async function assignPlanToSubAccount(input: {
   if (hasLiveSubscription) {
     // Plan switch on a live subscription: move the single item to the new
     // price with standard prorations.
-    const stripe = getStripeServer();
-    const sub = await stripe.subscriptions.retrieve(
-      billing.stripeSubscriptionId as string,
-    );
-    const item = sub.items.data[0];
-    if (!item) {
-      throw new BillingError(
-        "The Stripe subscription has no items — resolve it in the Stripe dashboard.",
-        500,
-      );
-    }
-    await stripe.subscriptions.update(sub.id, {
-      items: [{ id: item.id, price: stripePriceId }],
-      proration_behavior: "create_prorations",
+    await getBillingProvider().switchSubscriptionPlan({
+      subscriptionId: billing.stripeSubscriptionId as string,
+      priceId: stripePriceId,
+      timing: "immediate_prorated",
       metadata: {
         kind: SUB_ACCOUNT_PLAN_KIND,
         agencyId: input.agencyId,
@@ -730,8 +700,8 @@ export async function compSubAccount(input: {
   const billing = readBilling(data);
 
   if (billing?.stripeSubscriptionId && billingStripeIsConfigured()) {
-    await getStripeServer()
-      .subscriptions.cancel(billing.stripeSubscriptionId)
+    await getBillingProvider()
+      .cancelSubscription(billing.stripeSubscriptionId)
       .catch((err) => {
         // Already-canceled/missing subscriptions shouldn't block the comp.
         console.warn("[billing] cancel-on-comp failed (continuing)", err);
@@ -826,52 +796,45 @@ export async function createSubAccountCheckoutSession(input: {
     throw new BillingError("This workspace isn't billed through checkout.", 409);
   }
 
-  const stripe = getStripeServer();
+  const provider = getBillingProvider();
   const agencyId = String(data.agencyId ?? "");
 
   // One Stripe customer per sub-account, reused across re-checkouts so
   // payment history stays attached to the client.
-  let customerId = billing.stripeCustomerId;
-  if (!customerId) {
-    const contact = data.accountContact as {
-      name?: string | null;
-      email?: string | null;
-    } | null;
-    const customer = await stripe.customers.create({
-      name: String(data.name ?? "Sub-account"),
-      ...(contact?.email ? { email: contact.email } : {}),
-      metadata: {
-        kind: SUB_ACCOUNT_PLAN_KIND,
-        agencyId,
-        subAccountId: input.subAccountId,
-      },
-    });
-    customerId = customer.id;
+  const contact = data.accountContact as {
+    name?: string | null;
+    email?: string | null;
+  } | null;
+  const { customerId, created } = await provider.ensureCustomer({
+    existingCustomerId: billing.stripeCustomerId ?? null,
+    name: String(data.name ?? "Sub-account"),
+    email: contact?.email ?? null,
+    metadata: {
+      kind: SUB_ACCOUNT_PLAN_KIND,
+      agencyId,
+      subAccountId: input.subAccountId,
+    },
+  });
+  if (created) {
     await ref.update({
       "billing.stripeCustomerId": customerId,
       "billing.updatedAt": FieldValue.serverTimestamp(),
     });
   }
 
-  const metadata = {
-    kind: SUB_ACCOUNT_PLAN_KIND,
-    agencyId,
-    subAccountId: input.subAccountId,
-    planId: billing.planId,
-  };
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    customer: customerId,
-    line_items: [{ price: billing.stripePriceId, quantity: 1 }],
-    success_url: input.successUrl,
-    cancel_url: input.cancelUrl,
-    metadata,
-    subscription_data: { metadata },
+  const { url } = await provider.createSubscriptionCheckout({
+    customerId,
+    priceId: billing.stripePriceId,
+    successUrl: input.successUrl,
+    cancelUrl: input.cancelUrl,
+    metadata: {
+      kind: SUB_ACCOUNT_PLAN_KIND,
+      agencyId,
+      subAccountId: input.subAccountId,
+      planId: billing.planId,
+    },
   });
-  if (!session.url) {
-    throw new BillingError("Stripe did not return a checkout URL.", 502);
-  }
-  return { url: session.url };
+  return { url };
 }
 
 // ---------------------------------------------------------------------------
@@ -1342,39 +1305,25 @@ export async function createChargeCheckoutSession(input: {
     ? readBilling(subSnap.data() as Record<string, unknown>)
     : null;
 
-  const stripe = getStripeServer();
-  const metadata = {
-    kind: SUB_ACCOUNT_CHARGE_KIND,
-    agencyId: charge.agencyId,
-    subAccountId: charge.subAccountId,
-    chargeId: input.chargeId,
-  };
-  const session = await stripe.checkout.sessions.create({
-    mode: "payment",
-    ...(billing?.stripeCustomerId ? { customer: billing.stripeCustomerId } : {}),
-    line_items: [
-      {
-        price_data: {
-          currency: charge.currency,
-          unit_amount: charge.amountCents,
-          product_data: { name: charge.description },
-        },
-        quantity: 1,
-      },
-    ],
-    success_url: input.successUrl,
-    cancel_url: input.cancelUrl,
-    metadata,
-    payment_intent_data: { metadata },
+  const { url, sessionId } = await getBillingProvider().createOneTimeCheckout({
+    customerId: billing?.stripeCustomerId ?? null,
+    currency: charge.currency,
+    amountCents: charge.amountCents,
+    productName: charge.description,
+    successUrl: input.successUrl,
+    cancelUrl: input.cancelUrl,
+    metadata: {
+      kind: SUB_ACCOUNT_CHARGE_KIND,
+      agencyId: charge.agencyId,
+      subAccountId: charge.subAccountId,
+      chargeId: input.chargeId,
+    },
   });
-  if (!session.url) {
-    throw new BillingError("Stripe did not return a checkout URL.", 502);
-  }
   await ref.update({
-    stripeCheckoutSessionId: session.id,
+    stripeCheckoutSessionId: sessionId,
     updatedAt: FieldValue.serverTimestamp(),
   });
-  return { url: session.url };
+  return { url };
 }
 
 /** checkout.session.completed with metadata.kind === "subAccountCharge". */
