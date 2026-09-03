@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Emit `.next/standalone/server.js` so the app can run under systemd on our
+  // own box (velo-server) without node_modules — the pattern every other
+  // Next.js service there already uses. Harmless on Vercel, which ignores it.
+  output: "standalone",
+
   // The AI "where do I get this key" guide route reads these docs from disk at
   // runtime. They aren't imported by code, so trace them into that function's
   // bundle explicitly — otherwise readFileSync 404s on Vercel.
