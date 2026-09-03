@@ -1,5 +1,6 @@
 import type { StripeConnectionMeta } from "@/types/payments";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
+import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
 
 export type AgencyRole = "owner" | "staff";
 export type SubAccountRole = "admin" | "collaborator";
@@ -466,6 +467,23 @@ export interface SubAccountDoc {
    * `metaInboxEnabledByAgency` is on). See {@link MetaConfig}.
    */
   metaConfig?: MetaConfig | null;
+  /**
+   * Which rail this sub-account's WhatsApp goes out on. Absent reads as
+   * "twilio" — every workspace predating the provider seam is on Twilio, and
+   * reading undefined as anything else would silently reroute a live rail.
+   *
+   * A cutover is this one field, so it is reversible in seconds. That matters
+   * because moving a number between BSPs resets its WABA quality tier and
+   * throttles it for weeks; an all-or-nothing switch would be untestable.
+   * See docs/WHATSAPP_PROVIDER_PLAN.md.
+   */
+  whatsappProvider?: "twilio" | "cloud" | "bridge" | null;
+  /**
+   * Non-secret display half of the Meta Cloud connection. The credentials
+   * themselves are in `private/whatsappCloudConnection` — this doc is
+   * member-readable. See {@link WhatsappCloudMeta}.
+   */
+  whatsappCloudMeta?: WhatsappCloudMeta | null;
   bookingConfig: BookingConfig | null;
   sendWindow: SendWindow | null;
   /**

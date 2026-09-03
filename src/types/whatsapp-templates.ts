@@ -82,7 +82,12 @@ export interface WhatsappTemplateDoc {
   body: string;
   variables: WhatsappTemplateVariable[];
   /** Twilio Content resource id (HX…). Null until submitted. The send path
-   *  references this; the approval-poll keys off it. */
+   *  references this; the approval-poll keys off it.
+   *
+   *  These flat fields ARE the `twilio` registration — see
+   *  `lib/comms/whatsapp/template-registrations.ts`. Approval belongs to a
+   *  WABA, so other rails carry their own state in `registrations` instead of
+   *  sharing these. */
   contentSid: string | null;
   status: WhatsappTemplateStatus;
   /** Populated when status is "rejected" (Meta's reason) or "failed" (the
@@ -95,6 +100,22 @@ export interface WhatsappTemplateDoc {
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
   approvedAt: Timestamp | FieldValue | null;
+  /** Per-provider approval state for rails other than Twilio. Absent on every
+   *  template predating the provider seam, which is why the reader falls back
+   *  to the flat fields above for `twilio` and to null for everything else. */
+  registrations?: Partial<
+    Record<"twilio" | "cloud" | "bridge", WhatsappTemplateRegistrationField>
+  > | null;
+}
+
+/** Mirrors `WhatsappTemplateRegistration` in the lib module; declared here so
+ *  the type file stays free of a server-only import. */
+export interface WhatsappTemplateRegistrationField {
+  externalId: string | null;
+  status: WhatsappTemplateStatus;
+  rejectionReason: string | null;
+  pollAttempts?: number;
+  approvedAt?: Timestamp | FieldValue | null;
 }
 
 /** Merge tags a WhatsApp template variable may map to. A curated subset of
