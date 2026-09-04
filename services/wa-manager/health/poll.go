@@ -50,10 +50,16 @@ type Poller struct {
 	// bridge only ever listens on loopback.
 	BaseURL func(store.Tenant) string
 
-	// Concurrency bounds how many bridges are polled at once. Zero means
-	// unbounded (fine for the tenant counts this manager expects).
+	// Concurrency bounds how many bridges are polled at once. Zero falls back
+	// to defaultConcurrency — this service is built to ramp to a few hundred
+	// numbers per host, and a zero value must bound the fan-out, not remove
+	// the bound: an unlimited poll of 200 tenants opens 200 simultaneous
+	// connections every cycle, a thundering herd against its own box.
 	Concurrency int
 }
+
+// defaultConcurrency is used when Concurrency is left at its zero value.
+const defaultConcurrency = 8
 
 // New builds a Poller. token derives the per-tenant bearer token the bridge
 // expects; it is never logged.
@@ -95,7 +101,7 @@ func (p *Poller) concurrency() int {
 	if p.Concurrency > 0 {
 		return p.Concurrency
 	}
-	return 1 << 20 // effectively unbounded
+	return defaultConcurrency
 }
 
 // poll fetches one tenant's health. A response that arrived at all — any
@@ -107,7 +113,9 @@ func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
 	url := p.BaseURL(t) + "/v1/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return Report{Reachable: false, Err: "building request: " + err.Error()}
+		// url.Parse's error embeds the raw URL verbatim — including any query
+		// string — so a malformed BaseURL must not surface err.Error() here.
+		return Report{Reachable: false, Err: "building request: malformed base URL"}
 	}
 	req.Header.Set("Authorization", "Bearer "+p.token(t))
 

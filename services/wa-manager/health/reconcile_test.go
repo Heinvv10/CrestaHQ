@@ -88,7 +88,11 @@ func TestReconcileLeavesStateAloneWhenUnreachable(t *testing.T) {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
-	reports := map[string]Report{"t1": {Reachable: false, Err: "unreachable: request failed"}}
+	// Killed:true is deliberate: this report would otherwise satisfy neither
+	// switch case in Reconcile, so dropping the !Reachable guard would be
+	// invisible to this test. With Killed:true, an unguarded Reconcile would
+	// hit the logged_out branch — pinning the guard, not just exercising it.
+	reports := map[string]Report{"t1": {Reachable: false, Killed: true, Err: "unreachable: request failed"}}
 	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
