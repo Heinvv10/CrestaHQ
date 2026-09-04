@@ -146,6 +146,7 @@ The first Labs experiment: an AUTONOMOUS agent (no confirm cards) that's safe by
 - **AI Agents** — one persona (system prompt + business hours + escalation keywords + optional Firecrawl-scraped website KB) shared across every active channel. Five live channels: **Web Chat** (embeddable iframe widget with inline lead-capture form), **SMS** (auto-replies to inbound SMS on the sub-account's dedicated Twilio number), **WhatsApp** (auto-replies on the Twilio WhatsApp sender — beta; agency-gated), **Voice** (Vapi-powered AI answering inbound calls on the same Twilio number — qualifies the lead + books a callback), and **Outbound Voice** (the AI proactively dials contacts — single click-to-call from a contact, or a bulk campaign over a filtered audience — behind a native dialing-compliance gate; agency-gated). Captures across all channels trigger an automatic Task + escalation email. Operator consoles: Web Chat → Sessions (transcripts), Voice → Calls (call summaries + transcripts), Outbound Voice → Campaigns (per-recipient status). Email + Google Business Profile are scaffolded as hidden "coming soon" placeholders.
 - **Social Planner** — schedule + auto-publish posts to a sub-account's connected Facebook Page / Instagram Business account. Gated `/social` sidebar entry with a content calendar + post list + composer (caption + pasted image URL + FB/IG targets + schedule). Posts queue through QStash and publish via the Graph API at the scheduled time. **Rides the same one `metaConfig` Meta connection as the inbox** (no second connection) — agency-gated via `socialPlannerEnabledByAgency`. v1 is Meta-only, single-image-URL (no upload). See "Social Planner v1".
 - **Get Leads (EXPERIMENTAL — PARKED)** — currently parked via `GET_LEADS_PARKED` in [src/lib/get-leads/business-types.ts](src/lib/get-leads/business-types.ts): hidden from the sidebar, the Manage-dialog gates, the Agency Assistant's gate capability, the assistant KB, the guided-setup env catalog, and `.env.example` — buyers can't reach it out of the box. Code/routes/gate remain intact; see the un-park checklist in "Get Leads v1". The feature: local-business prospecting per sub-account (positioned generically: "businesses that might need what you sell"): business-type picklist (curated top-20 + admin-managed custom service types on `subAccountDoc.getLeadsCustomTypes`) + location (geocoded or browser geolocation) + radius → Outscraper Google Maps search with email/social enrichment → results on a clustered Mapbox map + enriched list → checkbox-select + editable batch tag → import as contacts (`source: "get-leads"` + the tag, deduped by phone/email, enrichment extras in a note). Amber pins / "No website" filter flag businesses without a website. Agency-gated via `getLeadsEnabledByAgency` (spends the agency's shared `OUTSCRAPER_API_KEY` credits). Results are ephemeral; imports are the only durable output. Follow-up rides the tag (workflow trigger filters, broadcast audiences, voice campaigns). See "Get Leads v1".
+- **Snapshots** — GHL-style agency config templates. Capture one sub-account's forms, workflows, message templates, products, custom fields and AI persona into an agency-scoped snapshot, then stamp it onto another sub-account — from the Snapshots panel or the snapshot picker on the new-sub-account page. Create-only and credential-free; imported workflows arrive as drafts. See "Snapshots"
 - **Billing** — Stripe checkout + customer portal + webhooks, Free / Pro / Scale plans
 - **Client Billing (agency → sub-account)** — GHL SaaS-mode analog: the agency owner packages feature gates into monthly plans at Agency → Client billing and charges each sub-account through the deployment's own Stripe (no Connect). Tokenized checkout links (or in-app activation), gates auto-apply on payment, 7-day dunning grace then a hard paywall (data preserved), per-client special prices, comped default for every workspace. See "Client Billing v1"
 - **Marketing attribution** — every public form submission captures `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, `fbclid`, `gclid`, document referrer, and landing-page URL from the visitor's browser, then stores them on the contact's `attribution` field. `source` falls back to `utm_source` when present. Fires Meta Pixel `Lead` event client-side on successful submit.
@@ -296,6 +297,7 @@ firebase.json            Deploys firestore.rules only
 | `agencies/{agencyId}` | agency-read | Agency profile + Stripe billing (one per deployment in v1) |
 | `agencies/{agencyId}/agencyMembers/{uid}` | agency-read | Owner / staff list |
 | `agencies/{agencyId}/plans/{planId}` | server-only | Client Billing v1 plan docs (monthly price + feature-gate bundle + Stripe product/price ids). All access via the owner-only `/api/agency/plans` routes |
+| `agencies/{agencyId}/snapshots/{snapshotId}` | server-only | Agency config template — forms/workflows/templates/products/custom-fields/AI-persona payload captured from one sub-account, applied to another. Carries no customer data and no credentials. All access via the owner-only `/api/agency/snapshots` + apply routes |
 | `billingEvents/{id}` | server-only | Client Billing v1 append-only audit trail (plan assigned/switched, comped, activated, dunning transitions) |
 | `subAccounts/{subAccountId}` | members + agency owner | Workspace metadata; reserved fields for Workflow-Recipes Twilio/Resend/booking/sendWindow |
 | `subAccounts/{subAccountId}/subAccountMembers/{uid}` | admins | Per-sub-account membership rows |
@@ -669,6 +671,58 @@ A reusable product catalog plus an Invoice document type that shares the Quotes 
 ### Setup contract
 
 **No new env vars.** PayPal.me is a public username, not a secret — no encryption layer, no `SUB_ACCOUNT_KMS_KEY`, no platform credentials. Sub-account owners paste their PayPal.me username under Settings → Payments and they're done. Reuses `RESEND_API_KEY` + `EMAIL_FROM` (invoice email send), `AUTOMATIONS_TOKEN_SECRET` (public-link HMAC), Firebase (storage), `NEXT_PUBLIC_APP_URL` (public URL construction).
+
+## Snapshots (agency config templates)
+
+GoHighLevel-style reusable config templates, and the answer to "how do I onboard
+a new client fast". An agency owner captures one sub-account's CONFIG into an
+agency-scoped doc, then stamps it onto another sub-account in one click — at
+creation time (the **new sub-account page has a snapshot picker**) or later from
+the Snapshots panel. **This already exists — do not re-propose building it.**
+
+- **Storage**: `agencies/{agencyId}/snapshots/{snapshotId}` ({@link SnapshotDoc}
+  in [src/types/snapshots.ts](src/types/snapshots.ts)). Agency-owner read; all
+  writes go through Admin-SDK routes. `SNAPSHOT_VERSION` on every doc so a schema
+  change migrates on apply rather than breaking old snapshots.
+- **Payload**: forms, message templates, products, workflows, custom-field
+  definitions, and the AI agent persona. **Never** contacts, deals, submissions,
+  workflow runs, or credentials.
+- **Capture** ([src/lib/snapshots/capture.ts](src/lib/snapshots/capture.ts)) —
+  pure reads. Strips tenancy stamps (`id`/`agencyId`/`subAccountId`/
+  `createdByUid`/`createdAt`/`updatedAt`), keeping the original id as `sourceId`
+  so apply can remap. Resets runtime counters (`workflow.stats`,
+  `form.submissionCount`).
+- **Apply** ([src/lib/snapshots/apply.ts](src/lib/snapshots/apply.ts)) —
+  **CREATE-ONLY**: fresh ids, never overwrites/updates/deletes, so it is safe
+  against a live sub-account. Forms are written first to build an old→new id map;
+  workflow `trigger.formId` is remapped through it (or nulled). Workflows always
+  arrive as **drafts** so nothing enrolls a contact before review.
+  `whatsapp_template` nodes have `templateId` nulled — the target has its own
+  Meta-approved templates, so the source id would dangle.
+- **Two entities need a pre-read to honour create-only**, because they are not
+  addressed by a fresh auto-id: **custom fields** are keyed by `key` (unique per
+  subAccount+entity), so a key the target already defines is skipped rather than
+  redefined — two definitions would fight over the same `contact.customFields`
+  slot; and the **AI persona** lives at the fixed path `aiAgent/profile`, written
+  only when the target has none, so apply can never replace a tuned live agent.
+- **What deliberately does NOT travel in the persona** ({@link SnapshotAiProfile}):
+  `businessName` (source client's trading name — blanked so the prompt falls back
+  to the target's own name), `escalationNotifyEmail` (an inbox belonging to the
+  source client — carrying it routes one client's leads to another's team), and
+  `websiteUrl`/`websiteKb`/`websiteKbFetchedAt` (a Firecrawl scrape of the source
+  client's homepage — factual content about the wrong business is worse than no
+  KB, because the agent states it confidently). What travels is the reusable
+  half: persona prompt, hours, timezone, escalation keywords.
+- **Routes**: `GET/POST /api/agency/snapshots` (list summaries + counts / capture),
+  `POST /api/agency/sub-accounts/[id]/apply-snapshot`. Owner-only.
+- **UI**: [snapshots-section.tsx](src/components/agency/snapshots-section.tsx) on
+  `/agency/sub-accounts`, plus the picker on the new-sub-account page.
+- **No new env vars, no rules deploy** — snapshots are server-only (default-deny).
+
+**Not carried yet**: pipeline stage labels (`pipelineStages`), booking pages,
+per-channel AI config (the `aiAgent/{channelId}` docs — the persona travels, the
+channel toggles do not, deliberately: a new workspace must not start replying to
+customers before the operator reviews the imported persona).
 
 ## Client Billing v1 (agency → sub-account plans + paywall)
 

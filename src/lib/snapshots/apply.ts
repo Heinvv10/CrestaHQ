@@ -6,6 +6,7 @@ import {
   type DocumentReference,
 } from "firebase-admin/firestore";
 import type { WorkflowNode } from "@/types/workflows";
+import { DEFAULT_AI_AGENT_PROFILE } from "@/types/ai";
 import type { SnapshotApplyResult, SnapshotPayload } from "@/types/snapshots";
 
 interface ApplyScope {
@@ -65,6 +66,17 @@ function sanitizeNodes(
  * build an old→new form-id map, then workflows are created with their
  * `trigger.formId` remapped to the imported form (or nulled when the source
  * form isn't part of the snapshot).
+ *
+ * Two entities need a read before the write to honour create-only, because
+ * unlike the others they are not addressed by a fresh auto-id:
+ *
+ *   - Custom fields are keyed by `key`, unique per (subAccount, entity). A key
+ *     the target already defines is skipped, never redefined — a second
+ *     definition for the same key would fight the first over the same
+ *     `contact.customFields` slot.
+ *   - The AI persona lives at the fixed path `aiAgent/profile`. It is written
+ *     only when the target has none, so applying a snapshot can never silently
+ *     replace a persona an operator already tuned.
  */
 export async function applySnapshot(
   db: Firestore,
@@ -83,6 +95,15 @@ export async function applySnapshot(
   });
 
   const writes: PendingWrite[] = [];
+
+  // Pre-reads for the two create-only-by-content entities (see above).
+  const [existingFieldsSnap, existingProfileSnap] = await Promise.all([
+    db.collection(`subAccounts/${targetSubAccountId}/customFields`).get(),
+    db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`).get(),
+  ]);
+  const takenFieldKeys = new Set(
+    existingFieldsSnap.docs.map((d) => `${d.data().entity}:${d.data().key}`),
+  );
 
   // 1) Forms first — build old→new id map for the workflow remap.
   const formIdMap = new Map<string, string>();
@@ -138,6 +159,45 @@ export async function applySnapshot(
     ]);
   }
 
+  // 4) Custom-field definitions — skip any key the target already defines.
+  let customFieldsCreated = 0;
+  let customFieldsSkipped = 0;
+  for (const field of payload.customFields ?? []) {
+    if (takenFieldKeys.has(`${field.entity}:${field.key}`)) {
+      customFieldsSkipped += 1;
+      continue;
+    }
+    const ref = db
+      .collection(`subAccounts/${targetSubAccountId}/customFields`)
+      .doc();
+    writes.push([ref, { ...dropSourceId(field), id: ref.id, ...tenancy() }]);
+    customFieldsCreated += 1;
+  }
+
+  // 5) AI persona — only when the snapshot carries one and the target has none.
+  const existingPrompt = existingProfileSnap.data()?.systemPrompt;
+  const targetHasPersona =
+    typeof existingPrompt === "string" && existingPrompt.trim().length > 0;
+  const aiProfileApplied = Boolean(payload.aiProfile) && !targetHasPersona;
+  if (aiProfileApplied && payload.aiProfile) {
+    writes.push([
+      db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`),
+      {
+        ...DEFAULT_AI_AGENT_PROFILE,
+        ...payload.aiProfile,
+        // Re-blanked per SnapshotAiProfile: these belong to the source client
+        // and must be filled in for the target before the agent goes live.
+        businessName: "",
+        escalationNotifyEmail: null,
+        websiteUrl: null,
+        websiteKb: null,
+        websiteKbFetchedAt: null,
+        createdAt: stamp(),
+        updatedAt: stamp(),
+      },
+    ]);
+  }
+
   await commitInChunks(db, writes);
 
   return {
@@ -146,5 +206,8 @@ export async function applySnapshot(
     productsCreated: payload.products.length,
     workflowsCreated: payload.workflows.length,
     workflowsLinked,
+    customFieldsCreated,
+    customFieldsSkipped,
+    aiProfileApplied,
   };
 }
