@@ -74,6 +74,13 @@ func (s *server) handleKill(w http.ResponseWriter, r *http.Request, consumer con
 // it must not become one. A store it cannot read means every cap is blind —
 // that is "degraded", not "quiet", and it answers 503 so an off-box monitor
 // alerts on it without having to parse a body.
+//
+// It reports the SOCKET too. A bridge whose WhatsApp connection has quietly
+// died still accepts HTTP and still answers every counter, so a payload built
+// only from the store says "ok" about a number that can neither send nor
+// receive — the historical worst case, and the one the off-box monitor exists
+// for. connected and lastInboundAgeSeconds are the two fields that make it
+// visible from outside.
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	body := map[string]any{
 		"killed":         false,
@@ -81,6 +88,30 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"recordFailures": s.recordFailureCount(),
 	}
 	var problems []string
+
+	// Fail closed on an unwired Connection: reporting "connected" for something
+	// we cannot observe is exactly the silent failure this endpoint answers.
+	connected := false
+	if s.deps.Connection == nil {
+		problems = append(problems, "connection state unavailable")
+	} else {
+		connected = s.deps.Connection.Connected()
+		if !connected {
+			problems = append(problems, "whatsapp socket is not connected")
+		}
+	}
+	body["connected"] = connected
+
+	// nil rather than 0 when nobody has ever messaged the number: a fresh
+	// bridge is not a bridge that last heard from someone at the epoch, and a
+	// monitor thresholding on this must be able to tell those apart.
+	body["lastInboundAgeSeconds"] = nil
+	if at, err := s.deps.Store.LastInboundAt(); err != nil {
+		problems = append(problems, "last inbound unreadable")
+		log.Printf("WARNING health last inbound failed err=%v", err)
+	} else if !at.IsZero() {
+		body["lastInboundAgeSeconds"] = int(s.deps.Now().Sub(at) / time.Second)
+	}
 
 	killed, err := s.deps.Store.KillState()
 	if err != nil {

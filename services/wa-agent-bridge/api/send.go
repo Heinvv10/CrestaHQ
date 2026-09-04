@@ -144,8 +144,12 @@ func (s *server) writeRefusal(w http.ResponseWriter, consumer config.Consumer, b
 // expire under store.ReservationLease. Silence for 90 seconds is cheap; a
 // duplicate message to a customer is not.
 func (s *server) handleSendError(w http.ResponseWriter, consumer config.Consumer, body sendBody, storageKey string, sendErr error) {
+	// ErrSendCancelled joins ErrSendTimeout on the ambiguous side: a send we
+	// stopped waiting for may already have been delivered, so its reservation
+	// must NOT be released either. Only a definitive provider rejection is
+	// "failed".
 	outcome := "failed"
-	if errors.Is(sendErr, wa.ErrSendTimeout) {
+	if errors.Is(sendErr, wa.ErrSendTimeout) || errors.Is(sendErr, wa.ErrSendCancelled) {
 		outcome = "ambiguous"
 	} else if err := s.deps.Store.ReleaseIdempotency(storageKey); err != nil {
 		log.Printf("WARNING reservation not released consumer=%s err=%v", consumer.Name, err)

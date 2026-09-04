@@ -25,8 +25,8 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/wa"
 )
 
-// replayGate breaks the construction cycle between the WhatsApp client and the
-// fanout.
+// clientHolder breaks the construction cycle between the WhatsApp client and
+// everything constructed before it — the fanout and the HTTP API.
 //
 // api.NewFanout requires a non-nil replay predicate at construction time, and
 // wa.NewClient requires the fanout's Deliver at construction time. One of the
@@ -42,18 +42,34 @@ import (
 // replay wake every consumer, which is the sibling bridge's duplicate-ack
 // outage. The gap is only the microseconds between NewFanout and set(); the
 // socket is not connected until after.
-type replayGate struct {
+// It serves BOTH readers rather than growing a second handoff: the fanout's
+// replay predicate and the health endpoint's connection state have the same
+// ordering problem and the same race, so they get the same answer.
+type clientHolder struct {
 	client atomic.Pointer[wa.Client]
 }
 
-func (g *replayGate) set(c *wa.Client) { g.client.Store(c) }
+func (g *clientHolder) set(c *wa.Client) { g.client.Store(c) }
 
-func (g *replayGate) inReplayWindow() bool {
+func (g *clientHolder) inReplayWindow() bool {
 	c := g.client.Load()
 	if c == nil {
 		return true
 	}
 	return c.InReplayWindow()
+}
+
+// Connected satisfies api.ConnectionState. Before the client is set it answers
+// FALSE — the fail-closed direction here, and the opposite of
+// inReplayWindow's: claiming a connection we cannot observe is the silent
+// failure the health endpoint exists to catch, while claiming a replay we
+// cannot observe merely withholds a forward.
+func (g *clientHolder) Connected() bool {
+	c := g.client.Load()
+	if c == nil {
+		return false
+	}
+	return c.Connected()
 }
 
 // listenValidated binds the address config.Load already validated.
@@ -83,7 +99,7 @@ func main() {
 
 	engine := rails.NewEngine(st, cfg.Rails)
 
-	gate := &replayGate{}
+	gate := &clientHolder{}
 	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow)
 
 	client, err := wa.NewClient(
@@ -137,6 +153,9 @@ func main() {
 		Sender:    queue,
 		Consumers: cfg.Consumers,
 		Now:       time.Now,
+		// Set after this call, via gate.set(client) above; the holder answers
+		// "not connected" until then.
+		Connection: gate,
 	})
 
 	ln, err := listenValidated(cfg)

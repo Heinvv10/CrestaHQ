@@ -144,6 +144,20 @@ func (s *SQLite) RecordOutbound(jid, consumer, messageID string, at time.Time) e
 	return s.record(jid, true, consumer, messageID, at)
 }
 
+// LastInboundAt reports when anyone last messaged the number, zero when nobody
+// ever has. Served by idx_messages_at.
+func (s *SQLite) LastInboundAt() (time.Time, error) {
+	var at sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT MAX(at_unix) FROM messages WHERE outbound = 0`).Scan(&at); err != nil {
+		return time.Time{}, err
+	}
+	if !at.Valid {
+		return time.Time{}, nil
+	}
+	return time.Unix(at.Int64, 0), nil
+}
+
 func (s *SQLite) HasInboundFrom(jid string) (bool, error) {
 	var n int
 	err := s.db.QueryRow(

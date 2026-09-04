@@ -80,7 +80,7 @@ restart.**
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `GET` | `/v1/health` | none | For an off-box monitor. Discloses counters only — never a token, JID or body. `503` when degraded. |
+| `GET` | `/v1/health` | none | For an off-box monitor. Connection state + counters only — never a token, JID or body. `503` when degraded or disconnected. |
 | `POST` | `/v1/send` | bearer | `{"to","text","idempotencyKey"}`. `idempotencyKey` is **required**. |
 | `POST` | `/v1/allowlist` | bearer (**admin to add**) | `{"jid","remove":bool}` |
 | `POST` | `/v1/kill` | bearer (**admin to lift**) | `{"on":bool}` |
@@ -151,17 +151,35 @@ the two `.db` files into place, start.
 ## Health and alerting
 
 `GET /v1/health` needs no auth so an off-box monitor can poll it. It answers
-`503` when the store is unreadable. Alert on:
+`503` when the WhatsApp socket is down or the store is unreadable — both mean
+the bridge is not doing its job, and neither is visible from a plain "is the
+process up" check.
 
-1. HTTP `503`, or `degraded: true` — the caps are blind.
-2. `killed: true` unexpectedly (a `LoggedOut` or repeated record failures set it).
-3. `recordFailures` above zero.
-4. No inbound for N hours while connected — the silent-failure class, and the
-   one health cannot see for you.
-5. Rail refusals spiking in the log — a looping consumer, the early warning
+```json
+{ "ok": true, "degraded": false, "killed": false, "connected": true,
+  "lastInboundAgeSeconds": 412, "outboundLast24h": 7,
+  "dailyCap": 150, "recordFailures": 0 }
+```
+
+`connected` and `lastInboundAgeSeconds` are the two that catch a bridge which
+is ALIVE but whose socket has quietly died: it still accepts HTTP and still
+answers every counter. `lastInboundAgeSeconds` is `null` when nobody has ever
+messaged the number — treat null as unknown, not as zero. On a `503` the same
+fields are present alongside `problems`. Alert on:
+
+1. HTTP `503`, or `degraded: true` — the caps are blind, or the socket is down.
+2. `connected: false` — alive but unable to send or receive. Check the journal
+   for `LoggedOut` and re-pair if so.
+3. `killed: true` unexpectedly (a `LoggedOut` or repeated record failures set it).
+4. `recordFailures` above zero.
+5. `lastInboundAgeSeconds` climbing past N hours while `connected` is true —
+   the socket says it is up and nothing is arriving.
+6. Rail refusals spiking in the log — a looping consumer, the early warning
    that used to arrive as a ban.
-6. Health unreachable at all. The process exits if the initial WhatsApp connect
+7. Health unreachable at all. The process exits if the initial WhatsApp connect
    fails, so "no answer" is a real state, not a monitoring glitch.
+
+`deploy/monitor.sh` implements 1-4 and 7; run it from cron on a DIFFERENT box.
 
 Alerts must **not** route over WhatsApp. An alerting path that runs over the
 failing transport is not an alerting path.

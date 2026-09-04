@@ -20,7 +20,7 @@ import (
 // An unset gate must claim we are replaying. The opposite default lets history
 // replay wake every consumer after a reconnect.
 func TestReplayGateFailsClosedBeforeClientIsSet(t *testing.T) {
-	g := &replayGate{}
+	g := &clientHolder{}
 	if !g.inReplayWindow() {
 		t.Fatal("gate with no client answered false; inbound would be forwarded during history replay")
 	}
@@ -36,7 +36,7 @@ func TestReplayGateDelegatesToClientOnceSet(t *testing.T) {
 	}
 	defer c.Disconnect()
 
-	g := &replayGate{}
+	g := &clientHolder{}
 	g.set(c)
 	if g.inReplayWindow() != c.InReplayWindow() {
 		t.Fatalf("gate answered %v, client answers %v", g.inReplayWindow(), c.InReplayWindow())
@@ -55,7 +55,7 @@ func TestFanoutAcceptsTheGatePredicate(t *testing.T) {
 			t.Fatalf("NewFanout rejected the replay gate predicate: %v", r)
 		}
 	}()
-	g := &replayGate{}
+	g := &clientHolder{}
 	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow); f == nil {
 		t.Fatal("nil fanout")
 	}
@@ -101,5 +101,17 @@ func TestPublicAddressNeverReachesAListener(t *testing.T) {
 
 	if _, err := config.Load(); err == nil {
 		t.Fatal("config.Load accepted 0.0.0.0; main would then bind every interface behind a bearer token")
+	}
+}
+
+// TestClientHolderReportsNotConnectedBeforeSet: the health endpoint's
+// connection state must fail CLOSED in the construction gap, the opposite
+// direction to inReplayWindow. Answering true there would have the endpoint
+// whose whole job is catching a silently dead socket assert a socket that does
+// not exist yet.
+func TestClientHolderReportsNotConnectedBeforeSet(t *testing.T) {
+	g := &clientHolder{}
+	if g.Connected() {
+		t.Fatal("before the client exists the holder must report NOT connected")
 	}
 }

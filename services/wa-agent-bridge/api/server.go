@@ -23,12 +23,28 @@ type Sender interface {
 	Send(ctx context.Context, jid, text string) (string, error)
 }
 
+// ConnectionState is the narrow slice of the WhatsApp client the health
+// endpoint needs. It is an interface, and it is supplied AFTER construction in
+// production, for the same reason the replay predicate is: the client cannot
+// exist until the fanout does, and the fanout cannot exist until the API's
+// dependencies do. main.go holds it behind the same atomic pointer the replay
+// gate uses rather than inventing a second handoff — a plain shared *wa.Client
+// variable would be a data race between main and the whatsmeow goroutine.
+type ConnectionState interface {
+	Connected() bool
+}
+
 type Deps struct {
 	Engine    *rails.Engine
 	Store     rails.Store
 	Sender    Sender
 	Consumers []config.Consumer
 	Now       func() time.Time
+	// Connection reports whether the WhatsApp socket is up. A nil Connection
+	// makes health report degraded rather than healthy: an endpoint whose whole
+	// job is catching silent failure must not answer "ok" about a thing it
+	// cannot see.
+	Connection ConnectionState
 }
 
 // recordFailureLimit is how many CONSECUTIVE RecordOutbound failures are

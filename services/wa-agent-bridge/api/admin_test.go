@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/store"
 )
 
 func TestKillEndpointStopsSends(t *testing.T) {
@@ -122,4 +124,63 @@ func contains(haystack, needle string) bool {
 			}
 			return false
 		}()
+}
+
+// TestHealthReportsADisconnectedSocket is the regression guard for the failure
+// the off-box monitor exists to catch: a bridge that is ALIVE but whose
+// WhatsApp connection has quietly died. It still accepts HTTP and still
+// answers every store counter, so a payload built only from the store says
+// "ok" about a number that can neither send nor receive.
+func TestHealthReportsADisconnectedSocket(t *testing.T) {
+	st := store.NewMemory()
+	conn := &stubConnection{up: false}
+	h := newHandlerWithConnection(t, st, &stubSender{}, conn)
+
+	rec := get(h, "/v1/health")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a disconnected bridge must not answer 200; got %d %s", rec.Code, rec.Body.String())
+	}
+	out := decode(t, rec)
+	if out["connected"] != false {
+		t.Fatalf("health must report connected=false, got %v", out)
+	}
+	if out["ok"] != false {
+		t.Fatalf("a disconnected bridge is not ok, got %v", out)
+	}
+
+	conn.set(true)
+	rec = get(h, "/v1/health")
+	if rec.Code != http.StatusOK || decode(t, rec)["connected"] != true {
+		t.Fatalf("a connected bridge must answer 200 connected=true, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHealthReportsInboundAge: an inbound age that keeps climbing is the only
+// externally visible symptom of a socket that is up but no longer delivering.
+// nil, not 0, when nobody has ever messaged the number — a fresh bridge is not
+// a bridge that last heard from someone at the epoch.
+func TestHealthReportsInboundAge(t *testing.T) {
+	st := store.NewMemory()
+	h := newHandlerWithConnection(t, st, &stubSender{}, &stubConnection{up: true})
+
+	if age := decode(t, get(h, "/v1/health"))["lastInboundAgeSeconds"]; age != nil {
+		t.Fatalf("with no inbound ever, age must be null rather than 0, got %v", age)
+	}
+
+	st.RecordInbound(knownJID, fixedNow.Add(-90*time.Second))
+	age, ok := decode(t, get(h, "/v1/health"))["lastInboundAgeSeconds"].(float64)
+	if !ok || int(age) != 90 {
+		t.Fatalf("want lastInboundAgeSeconds 90, got %v (ok=%v)", age, ok)
+	}
+}
+
+// TestHealthFailsClosedWithoutConnectionState: an unwired Connection must
+// degrade, not report a healthy socket. The endpoint whose whole job is
+// catching silent failure must not become one over its own wiring.
+func TestHealthFailsClosedWithoutConnectionState(t *testing.T) {
+	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, nil)
+	rec := get(h, "/v1/health")
+	if rec.Code != http.StatusServiceUnavailable || decode(t, rec)["connected"] != false {
+		t.Fatalf("an unwired connection must degrade, got %d %s", rec.Code, rec.Body.String())
+	}
 }

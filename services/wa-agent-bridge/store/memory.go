@@ -83,6 +83,20 @@ func (m *Memory) RecordOutbound(jid, consumer, messageID string, at time.Time) e
 	return nil
 }
 
+func (m *Memory) LastInboundAt() (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var last time.Time
+	for _, evts := range m.events {
+		for _, e := range evts {
+			if !e.outbound && e.at.After(last) {
+				last = e.at
+			}
+		}
+	}
+	return last, nil
+}
+
 func (m *Memory) HasInboundFrom(jid string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

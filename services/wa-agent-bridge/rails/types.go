@@ -114,6 +114,12 @@ type Store interface {
 	RecordOutbound(jid, consumer, messageID string, at time.Time) error
 	RecordInbound(jid string, at time.Time) error
 
+	// LastInboundAt is the timestamp of the most recent inbound message from
+	// anyone, zero when none has ever arrived. The health endpoint reports its
+	// age: a bridge whose socket has quietly died still answers HTTP, and an
+	// inbound age that keeps climbing is the only externally visible symptom.
+	LastInboundAt() (time.Time, error)
+
 	// LookupIdempotency is the cheap read-path check for a replay. It is NOT the
 	// gate — see ReserveIdempotency. A found row with an empty messageID is a
 	// reservation whose send has not completed yet.

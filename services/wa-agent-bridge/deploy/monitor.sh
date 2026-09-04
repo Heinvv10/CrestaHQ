@@ -8,10 +8,18 @@
 # Polls GET /v1/health (unauthenticated). As of the current bridge, that
 # endpoint answers:
 #   - 200 {"ok":true,  "killed":false, "degraded":false, "dailyCap":N,
-#          "outboundLast24h":N, "recordFailures":N}
+#          "outboundLast24h":N, "recordFailures":N, "connected":true,
+#          "lastInboundAgeSeconds":N|null}
 #   - 503 {"ok":false, "killed":..., "degraded":true, "problems":[...],
-#          "recordFailures":N}  when a store read (kill state or outbound
-#          counters) fails — every volume cap is then blind.
+#          "dailyCap":N, "recordFailures":N, "connected":bool,
+#          "lastInboundAgeSeconds":N|null}  when the WhatsApp socket is down,
+#          or a store read (kill state, last inbound, or outbound counters)
+#          fails — every volume cap is then blind.
+# dailyCap is present on BOTH: handleHealth always sets it.
+# connected is the field that catches the historical worst case — a bridge
+# that is alive, answering HTTP and reporting counters, whose WhatsApp socket
+# has quietly died. lastInboundAgeSeconds is null when nobody has ever
+# messaged the number, so a threshold on it must treat null as "unknown".
 # A 503 is a DEGRADED response, not an unreachable one: curl still gets a
 # valid HTTP response with a JSON body. This script must not conflate the
 # two, or an incident gets reported as "endpoint down" when the bridge is up
@@ -117,6 +125,7 @@ fi
 
 # From here the endpoint IS reachable — 200 or 503 both prove that. Everything
 # below inspects the body to decide what, if anything, is wrong.
+connected=$(json_field "$body" connected)
 killed=$(json_field "$body" killed)
 degraded=$(json_field "$body" degraded)
 problems=$(json_field "$body" problems)
@@ -126,6 +135,13 @@ alerted=0
 
 if [ "$http_status" = "503" ] || [ "$degraded" = "True" ]; then
   alert "wa-agent-bridge is degraded (http=$http_status): ${problems:-no problems detail in body} — body: $body"
+  alerted=1
+fi
+
+# Reported separately from the generic degraded alert: "the socket is down" is
+# the one problem whose runbook step is different (re-pair, not restart).
+if [ "$connected" = "False" ]; then
+  alert "wa-agent-bridge is NOT CONNECTED to WhatsApp — it is alive and answering HTTP but can neither send nor receive; check for a LoggedOut in the journal and re-pair if so"
   alerted=1
 fi
 

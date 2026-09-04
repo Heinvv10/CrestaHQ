@@ -11,7 +11,20 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
 )
 
-var ErrSendTimeout = errors.New("send timed out")
+// ErrSendTimeout means the provider was given its full per-send budget and did
+// not answer. ErrSendCancelled means WE stopped waiting early because the
+// caller's context was cancelled — a shutdown, or a client hanging up.
+//
+// They are distinct because they say different things about the bridge, but
+// they are equally AMBIGUOUS about delivery: in both cases the message may
+// already have reached the contact. Callers must treat both the same way —
+// never release the idempotency key, never retry blind. Reporting a shutdown
+// as a timeout hid a real distinction; reporting it as a plain failure would
+// be far worse, because a plain failure releases the key.
+var (
+	ErrSendTimeout   = errors.New("send timed out")
+	ErrSendCancelled = errors.New("send cancelled before it returned")
+)
 
 // drainGrace bounds how long Send waits for a timed-out transport call to
 // actually return after its context is cancelled, before giving up on it
@@ -101,6 +114,13 @@ func (q *Queue) Send(ctx context.Context, jid, text string) (string, error) {
 			// longer guarantee serialisation for the next send, but blocking
 			// this queue forever is worse — log loudly (no body) and move on.
 			log.Printf("wa: queue: send to %s did not drain within %s of cancellation; transport may still be in flight", redact.JID(jid), drainGrace)
+		}
+		// Distinguish "the provider never answered" from "we were told to stop".
+		// Both are ambiguous about delivery; only one of them is a provider
+		// problem, and an operator reading a shutdown log should not be hunting
+		// a timeout that never happened.
+		if ctx.Err() != nil {
+			return "", ErrSendCancelled
 		}
 		return "", ErrSendTimeout
 	}
