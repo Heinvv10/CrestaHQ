@@ -107,6 +107,46 @@ export function NodeConfigDialog({
             </Field>
           )}
 
+          {step.type === "send_whatsapp" && (
+            <>
+              <Field
+                label="Message"
+                hint="Sent as free-form text whenever that is allowed — which is free. Supports merge tags like {{contact.firstName}}."
+              >
+                <Textarea
+                  rows={4}
+                  value={str("body")}
+                  onChange={(e) => set({ body: e.target.value })}
+                />
+              </Field>
+              <Field
+                label="If the 24-hour window has closed"
+                hint={
+                  whatsappTemplates.length === 0
+                    ? "No approved templates yet. Without one this step is skipped when the window is shut — which is correct for a step that only ever replies to a contact who just messaged."
+                    : "Meta only allows free-form text within 24 hours of the contact's last message. Pick a template to re-open a closed window, or leave this empty to skip the step instead of paying template rates."
+                }
+              >
+                <select
+                  value={str("templateId")}
+                  onChange={(e) =>
+                    set({ templateId: e.target.value, manualValues: {} })
+                  }
+                  className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
+                >
+                  <option value="">
+                    Skip the step (no template fallback)
+                  </option>
+                  {whatsappTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.displayName}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </>
+          )}
+
           {step.type === "whatsapp_template" &&
             (() => {
               const tplId = str("templateId");
