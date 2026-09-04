@@ -1,0 +1,31 @@
+[Unit]
+Description=WhatsApp agent bridge (rails-guarded)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wabridge
+WorkingDirectory=/opt/wa-agent-bridge
+EnvironmentFile=/opt/wa-agent-bridge/.env
+ExecStart=/opt/wa-agent-bridge/wa-agent-bridge
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/opt/wa-agent-bridge/bridge.log
+StandardError=append:/opt/wa-agent-bridge/bridge.log
+
+# SIGTERM is the clean path: the process stops accepting sends, closes the
+# WhatsApp socket, then drains in-flight webhook deliveries. Give it room.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# The bridge holds a WhatsApp session and a token file; nothing else on the box
+# needs to read them.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wa-agent-bridge
+
+[Install]
+WantedBy=multi-user.target
