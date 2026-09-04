@@ -15,7 +15,7 @@ import {
 import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import {
   buildRegistrationUpdate,
-  templateRegistration,
+  classifyPollTick,
 } from "@/lib/comms/whatsapp/template-registrations";
 import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
 import {
@@ -109,8 +109,23 @@ export async function POST(
   // settled. Compared against the ACTIVE rail's registration, not the flat
   // contentSid, which on a cloud workspace is a UI mirror rather than the id
   // this poll is tracking.
-  const activeReg = templateRegistration(tpl, provider);
-  if (tpl.status !== "pending" || activeReg?.externalId !== payload.contentSid) {
+  // `pending` is a state the UI cannot escape (submit takes only
+  // draft/rejected/failed; delete refuses pending), so a tick that simply
+  // gives up would strand the template permanently. See classifyPollTick.
+  const tick = classifyPollTick(tpl, provider, payload.contentSid);
+  if (tick === "rail-switched") {
+    // The workspace changed providers mid-approval. Park it as `failed`, which
+    // IS re-submittable, and say why. The other rail's registration is left
+    // intact — that approval is still real, it just is not the rail this
+    // workspace sends on any more.
+    await ref.update({
+      status: "failed",
+      rejectionReason: `This workspace switched its WhatsApp provider to ${provider} while the template was awaiting approval. Re-submit it to get approval on the ${provider} rail.`,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return NextResponse.json({ ok: true, settled: "rail-switched" });
+  }
+  if (tick === "stale") {
     return NextResponse.json({ ok: true, ignored: "stale-tick" });
   }
 
@@ -205,6 +220,10 @@ export async function POST(
         rejectionReason:
           result.status === "rejected" ? result.rejectionReason : null,
         pollAttempts: attempts,
+        // Stamped per rail as well as flat. The flat field is a single global
+        // value, so a later approval on the other rail overwrites it — the
+        // per-rail copy is the one that stays true.
+        ...(result.status === "approved" ? { approvedAt: new Date() } : {}),
       }),
       pollAttempts: attempts,
       lastSyncedAt: FieldValue.serverTimestamp(),
