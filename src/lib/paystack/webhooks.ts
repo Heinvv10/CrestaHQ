@@ -40,8 +40,20 @@ export async function handlePaystackEvent(event: PaystackEvent): Promise<void> {
       await handleRenewalFailed(event.data);
       return;
     case "subscription.disable":
-    case "subscription.not_renew":
       await handleSubscriptionEnded(event.data);
+      return;
+    case "subscription.not_renew":
+      // Auto-renew was turned OFF. The subscription is "active, non-renewing":
+      // the cycle the client already paid for runs to its end date, and only
+      // the NEXT charge is cancelled. Paystack fires `subscription.disable`
+      // when the period actually expires — that is the terminating event.
+      //
+      // Cancelling here would paywall someone for the weeks they have paid
+      // for, and Stripe's equivalent (`cancel_at_period_end`) correctly
+      // reports nothing until the period ends.
+      console.log(
+        "[paystack] subscription.not_renew — access runs to the period end",
+      );
       return;
     default:
       // Paystack sends far more than Client Billing cares about (transfers,
@@ -92,20 +104,31 @@ async function handleChargeSuccess(data: PaystackEventData): Promise<void> {
     return;
   }
 
-  // No metadata of ours: a renewal on an existing subscription. Clearing the
-  // grace window here is the whole point — a client who pays after a failed
-  // charge must come off the dunning banner.
+  // No metadata of ours. This MIGHT be a subscription renewal — but
+  // `charge.success` fires for every successful charge on the agency's
+  // Paystack account, including ones that have nothing to do with Client
+  // Billing. Two pieces of evidence are required before it can unlock a
+  // workspace:
   //
-  // The event carries a PLAN code, never a subscription code, so the
-  // subscription id is left unknown rather than filled with the plan's — the
-  // two are different objects and storing one as the other would repoint the
-  // workspace at something that cannot be cancelled.
-  if (!customerId) return;
+  //   1. a plan code, which an ordinary one-off payment does not carry, and
+  //   2. that plan being the one this workspace is actually subscribed to.
+  //
+  // Without both, a lapsed client paying the agency for something else — or a
+  // test charge from the Paystack dashboard under the same customer — would
+  // clear their dunning window and unlock a plan they have not paid.
+  const planCode = data.plan?.plan_code;
+  if (!customerId || !planCode) return;
+
+  // The event names a PLAN, never a subscription. The subscription id is left
+  // unknown rather than filled with the plan's: they are different objects,
+  // and storing one as the other would repoint the workspace at something that
+  // cannot be cancelled.
   await applySubAccountSubscriptionStatus({
     subscriptionId: null,
     status: "active",
     deleted: false,
     customerIdHint: customerId,
+    matchPriceId: planCode,
     providerStatus: "charge.success",
   });
 }

@@ -214,3 +214,48 @@ describe("status transitions", () => {
     expect(patch()["billing.status"]).toBe("active");
   });
 });
+
+describe("evidence that the event is about this workspace's plan", () => {
+  it("ignores a payment on a plan the workspace is not subscribed to", async () => {
+    subDoc = {
+      agencyId: "ag_1",
+      billing: {
+        status: "past_due",
+        graceUntil: { ms: 1 },
+        stripePriceId: "PLN_growth",
+        stripeCustomerId: "CUS_1",
+      },
+    };
+    await applySubAccountSubscriptionStatus({
+      subscriptionId: null,
+      status: "active",
+      deleted: false,
+      customerIdHint: "CUS_1",
+      matchPriceId: "PLN_something_else",
+    });
+    // Matching on customer alone would let any other payment by the same
+    // person clear their dunning window and unlock an unpaid plan.
+    expect(updates).toHaveLength(0);
+  });
+
+  it("accepts a payment on the plan the workspace IS subscribed to", async () => {
+    subDoc = {
+      agencyId: "ag_1",
+      billing: {
+        status: "past_due",
+        graceUntil: { ms: 1 },
+        stripePriceId: "PLN_growth",
+        stripeCustomerId: "CUS_1",
+      },
+    };
+    await applySubAccountSubscriptionStatus({
+      subscriptionId: null,
+      status: "active",
+      deleted: false,
+      customerIdHint: "CUS_1",
+      matchPriceId: "PLN_growth",
+    });
+    expect(patch()["billing.status"]).toBe("active");
+    expect(patch()["billing.graceUntil"]).toBeNull();
+  });
+});

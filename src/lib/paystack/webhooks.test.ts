@@ -110,6 +110,9 @@ describe("charge.success — a renewal", () => {
 
   it("clears dunning by the customer, without inventing a subscription id", async () => {
     await handlePaystackEvent(renewal);
+    expect(applySubAccountSubscriptionStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ matchPriceId: "PLN_m" }),
+    );
     // Storing the plan code as the subscription id would repoint the workspace
     // at an object that cannot be cancelled.
     expect(applySubAccountSubscriptionStatus).toHaveBeenCalledWith({
@@ -117,8 +120,20 @@ describe("charge.success — a renewal", () => {
       status: "active",
       deleted: false,
       customerIdHint: "CUS_1",
+      matchPriceId: "PLN_m",
       providerStatus: "charge.success",
     });
+  });
+
+  it("ignores a charge carrying no plan — it is not a subscription renewal", async () => {
+    // charge.success fires for EVERY charge on the agency's Paystack account.
+    // A lapsed client paying the agency for something else must not unlock the
+    // plan they have not paid for.
+    await handlePaystackEvent({
+      ...renewal,
+      data: { ...renewal.data, plan: null },
+    });
+    expect(applySubAccountSubscriptionStatus).not.toHaveBeenCalled();
   });
 
   it("does nothing when there is no customer to identify", async () => {
@@ -182,14 +197,16 @@ describe("failed and ended subscriptions", () => {
     );
   });
 
-  it("treats not_renew as the end of the subscription too", async () => {
+  it("does NOT cancel on not_renew — the paid period still has to run", async () => {
     await handlePaystackEvent({
       event: "subscription.not_renew",
       data: { subscription_code: "SUB_1", customer: CUSTOMER },
     });
-    expect(applySubAccountSubscriptionStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "canceled" }),
-    );
+    // not_renew means auto-renew was switched off, leaving the subscription
+    // "active, non-renewing". Cancelling here paywalls someone for the weeks
+    // they have already paid for. `subscription.disable` arrives when the
+    // period actually expires; that is the terminating event.
+    expect(applySubAccountSubscriptionStatus).not.toHaveBeenCalled();
   });
 });
 

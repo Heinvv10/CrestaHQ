@@ -989,6 +989,17 @@ export async function applySubAccountSubscriptionStatus(input: {
   subAccountIdHint?: string | null;
   /** Fallback identity when the provider names only the customer. */
   customerIdHint?: string | null;
+  /**
+   * Evidence that this event is about the subscription we are tracking, not
+   * merely about the same customer. When set, it must equal the workspace's
+   * stored price id or nothing is written.
+   *
+   * A provider's payment feed carries EVERY charge on the account. Matching a
+   * workspace by customer alone would let an unrelated payment by the same
+   * person — a different product, a dashboard test charge — clear their
+   * dunning window and unlock a workspace whose plan is still unpaid.
+   */
+  matchPriceId?: string | null;
   /** For the audit row: what the provider actually called this status. */
   providerStatus?: string;
 }): Promise<void> {
@@ -1026,6 +1037,9 @@ export async function applySubAccountSubscriptionStatus(input: {
   const agencyId = String(data.agencyId ?? "");
   const billing = readBilling(data);
   if (!billing || billing.status === "comped") return;
+  if (input.matchPriceId && billing.stripePriceId !== input.matchPriceId) {
+    return;
+  }
   // Ignore events from a superseded subscription (e.g. the old sub's
   // cancellation arriving after a re-checkout already created a new one).
   // Only checkable when the event named a subscription. An unnamed event was

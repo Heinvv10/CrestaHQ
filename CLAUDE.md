@@ -1102,6 +1102,18 @@ by the absence of a `kind` and resolved by customer. A renewal names a PLAN code
 subscription code; the router deliberately leaves the subscription id unknown rather than storing
 one as the other.
 
+**A renewal must prove it is one.** `charge.success` fires for EVERY successful charge on the
+agency's Paystack account, so a metadata-less charge is only treated as a renewal when it carries
+a plan code AND that plan is the one the workspace is subscribed to (`matchPriceId` on the shared
+handler). Otherwise a lapsed client paying the agency for something else — or a dashboard test
+charge under the same customer — would clear their dunning window and unlock an unpaid plan.
+
+**`subscription.not_renew` does NOT cancel.** It means auto-renew was switched off; the
+subscription is "active, non-renewing" and the paid period runs to its end date.
+`subscription.disable` is the terminating event. Cancelling on `not_renew` would paywall someone
+for weeks they had paid for — and Stripe's `cancel_at_period_end` correctly reports nothing until
+the period ends.
+
 ### Required for email (disables cleanly if missing)
 | Var | Source |
 |---|---|
