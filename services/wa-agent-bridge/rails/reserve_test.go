@@ -1,7 +1,9 @@
 package rails
 
 import (
+	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -158,4 +160,53 @@ type errReserve struct{ *store.Memory }
 
 func (errReserve) ReserveIdempotency(_, jid string, _ time.Time) (string, string, bool, error) {
 	return "", jid, false, errBoom
+}
+
+// TestEvaluateAndReserveIsOneCriticalSection is the DETERMINISTIC half of the
+// cap-concurrency guard, and it exists because the behavioural half is not
+// enough on its own.
+//
+// TestVolumeCapsBindAcrossConcurrentRequests (api package) reproduces the
+// reviewer's probe exactly and fails 40-of-40 against the architecture that
+// consumed cap budget after the send. But once budget is consumed at
+// reservation, the remaining window — between checkCaps reading and
+// ReserveOutboundSlot writing — is a few hundred nanoseconds with no yield in
+// it, so simply deleting the lock is caught only sometimes. Measured: with the
+// lock removed the behavioural test still passed 3 runs out of 3.
+//
+// A window that narrow is still a window, and the lock is what closes it. This
+// test fails immediately and every time if it is removed or split, at any
+// GOMAXPROCS. Same shape, and same reasoning, as
+// TestMemoryReservationIsOneCriticalSection in the store package.
+func TestEvaluateAndReserveIsOneCriticalSection(t *testing.T) {
+	src, err := os.ReadFile("engine.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "func (e *Engine) EvaluateAndReserve("
+	i := strings.Index(string(src), marker)
+	if i < 0 {
+		t.Fatalf("could not find %s; update this test rather than deleting it", marker)
+	}
+	body := string(src)[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+
+	if n := strings.Count(body, "e.send.Lock()"); n != 1 {
+		t.Fatalf("EvaluateAndReserve must take its lock exactly once, found %d; "+
+			"reading the volume counts and writing the row that answers them "+
+			"must be one indivisible step or the caps stop binding", n)
+	}
+	if !strings.Contains(body, "e.send.Lock()\n\tdefer e.send.Unlock()") {
+		t.Fatal("EvaluateAndReserve must hold its lock for the whole function " +
+			"(e.send.Lock() immediately followed by defer e.send.Unlock()); " +
+			"releasing it before the outbound slot is written reopens the window " +
+			"in which every concurrent caller reads the same pre-send counts")
+	}
+	if !strings.Contains(body, "ReserveOutboundSlot") {
+		t.Fatal("EvaluateAndReserve must reserve the outbound slot while it " +
+			"still holds the lock; budget consumed after the send does not bind " +
+			"across concurrent requests carrying different idempotency keys")
+	}
 }

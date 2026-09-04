@@ -63,12 +63,19 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 	// the key".
 	decision, err := s.deps.Engine.EvaluateAndReserve(req)
 	if err != nil {
+		// Nothing was sent, so this one is failed closed at the request level
+		// rather than degraded: the caller may retry. But a store that cannot
+		// record an outbound is a store the volume caps cannot read either, so
+		// consecutive failures still trip the kill switch.
+		s.noteRecordOutbound(err)
 		log.Printf("send aborted consumer=%s to=%s len=%s err=%v",
 			consumer.Name, redact.JID(body.To), redact.Body(body.Text), err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"ok": false, "error": "idempotency reservation failed", "outcome": "not_sent"})
+			"ok": false, "error": "reservation failed", "outcome": "not_sent"})
 		return
 	}
+	// The reservation succeeded, so the store is writable.
+	s.noteRecordOutbound(nil)
 
 	// A replayed key is a success with no send: the caller gets the original
 	// message id back so retries converge instead of duplicating. Checked
@@ -90,12 +97,13 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		return
 	}
 
-	// The message is delivered, so the caller is told so regardless — but an
-	// unrecorded send is one no cap will ever count, and enough of them in a
-	// row means the caps are blind. noteRecordOutbound trips the kill switch at
-	// that point rather than letting the volume rails erode toward unlimited
-	// behind a wall of 200s.
-	s.noteRecordOutbound(s.deps.Store.RecordOutbound(body.To, consumer.Name, msgID, req.Now))
+	// The outbound row was already written — and already counted — when the
+	// reservation was won. All that is left is stamping the real message id on
+	// it, which moves no counter, so a failure here cannot blind a cap.
+	if err := s.deps.Store.ConfirmOutboundSlot(storageKey, msgID); err != nil {
+		log.Printf("WARNING message id not stamped on a counted outbound row consumer=%s err=%v",
+			consumer.Name, err)
+	}
 	s.saveIdempotency(storageKey, msgID, consumer)
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messageId": msgID})
@@ -132,7 +140,8 @@ func (s *server) writeRefusal(w http.ResponseWriter, consumer config.Consumer, b
 // contact. Releasing the key there is the one path that genuinely double-
 // messages a real person, so the reservation is deliberately left alone to
 // expire under store.ReservationLease. Silence for 90 seconds is cheap; a
-// duplicate message to a customer is not.
+// duplicate message to a customer is not. The cap budget follows the same
+// split for the same reason: a possibly-delivered message keeps its slot.
 func (s *server) handleSendError(w http.ResponseWriter, consumer config.Consumer, body sendBody, storageKey string, sendErr error) {
 	// ErrSendCancelled joins ErrSendTimeout on the ambiguous side: a send we
 	// stopped waiting for may already have been delivered, so its reservation
@@ -141,8 +150,17 @@ func (s *server) handleSendError(w http.ResponseWriter, consumer config.Consumer
 	outcome := "failed"
 	if errors.Is(sendErr, wa.ErrSendTimeout) || errors.Is(sendErr, wa.ErrSendCancelled) {
 		outcome = "ambiguous"
-	} else if err := s.deps.Store.ReleaseIdempotency(storageKey); err != nil {
-		log.Printf("WARNING reservation not released consumer=%s err=%v", consumer.Name, err)
+	} else {
+		if err := s.deps.Store.ReleaseIdempotency(storageKey); err != nil {
+			log.Printf("WARNING reservation not released consumer=%s err=%v", consumer.Name, err)
+		}
+		// And its cap budget: a message that provably never left must not
+		// occupy a contact's daily allowance. Released ONLY here, on the
+		// definitive branch — a timed-out send may have been delivered, so its
+		// budget stays spent for exactly the reason its key does.
+		if err := s.deps.Store.ReleaseOutboundSlot(storageKey); err != nil {
+			log.Printf("WARNING outbound slot not released consumer=%s err=%v", consumer.Name, err)
+		}
 	}
 
 	// Never retried here: see above.

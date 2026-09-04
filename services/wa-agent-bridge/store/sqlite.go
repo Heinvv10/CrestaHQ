@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS messages (
   outbound  INTEGER NOT NULL,
   consumer  TEXT    NOT NULL DEFAULT '',
   msg_id    TEXT    NOT NULL DEFAULT '',
+  -- slot_key ties a row reserved at rail time back to the idempotency key
+  -- that reserved it, so exactly that row can be released or confirmed.
+  -- Empty on inbound rows and on rows written directly by RecordOutbound.
+  slot_key  TEXT    NOT NULL DEFAULT '',
   at_unix   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_at ON messages(jid, at_unix);
@@ -31,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_at     ON messages(at_unix);
 -- which the budget rail runs twice on every single send.
 CREATE INDEX IF NOT EXISTS idx_messages_outbound_consumer_at
   ON messages(outbound, consumer, at_unix);
+CREATE INDEX IF NOT EXISTS idx_messages_slot ON messages(slot_key);
 
 CREATE TABLE IF NOT EXISTS allowlist (
   jid TEXT PRIMARY KEY
@@ -76,11 +81,12 @@ func OpenSQLite(path string) (*SQLite, error) {
 	// NOT EXISTS will not add it. Nothing is deployed yet, so this is only
 	// courtesy for local files — but a store that fails to open on a stale
 	// schema is a store nobody can debug against.
-	for _, col := range []struct{ name, ddl string }{
-		{"reserved_at", `ALTER TABLE idempotency ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0`},
-		{"jid", `ALTER TABLE idempotency ADD COLUMN jid TEXT NOT NULL DEFAULT ''`},
+	for _, col := range []struct{ table, name, ddl string }{
+		{"idempotency", "reserved_at", `ALTER TABLE idempotency ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0`},
+		{"idempotency", "jid", `ALTER TABLE idempotency ADD COLUMN jid TEXT NOT NULL DEFAULT ''`},
+		{"messages", "slot_key", `ALTER TABLE messages ADD COLUMN slot_key TEXT NOT NULL DEFAULT ''`},
 	} {
-		if err := addIdempotencyColumn(db, col.name, col.ddl); err != nil {
+		if err := addColumn(db, col.table, col.name, col.ddl); err != nil {
 			db.Close()
 			return nil, err
 		}
@@ -88,8 +94,8 @@ func OpenSQLite(path string) (*SQLite, error) {
 	return &SQLite{db: db}, nil
 }
 
-// addIdempotencyColumn is an idempotent migration: it runs ddl when the
-// idempotency table lacks the named column.
+// addColumn is an idempotent migration: it runs ddl when the table lacks the
+// named column.
 //
 // reserved_at rows predating the column default to 0, i.e. immediately past
 // the lease — correct, because any reservation that survived the upgrade with
@@ -97,8 +103,10 @@ func OpenSQLite(path string) (*SQLite, error) {
 // default to "", which matches no real JID, so a legacy key can never be
 // reclaimed for a contact it was not bound to. That is the fail-closed
 // direction: the caller gets a loud refusal rather than a silent takeover.
-func addIdempotencyColumn(db *sql.DB, column, ddl string) error {
-	rows, err := db.Query(`PRAGMA table_info(idempotency)`)
+// messages.slot_key rows predating the column default to "", so a legacy row
+// is never mistaken for somebody's open reservation.
+func addColumn(db *sql.DB, table, column, ddl string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
 	}

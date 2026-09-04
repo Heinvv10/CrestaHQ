@@ -122,9 +122,9 @@ Responses:
 | 401 | `{error}` | missing bearer token, or a token no registered consumer holds — the FIRST status a mis-registered consumer sees | fix `CONSUMERS`/the token; retrying unchanged never helps |
 | 400 | `{error}` | malformed request (missing `to`/`text`/`idempotencyKey`, or invalid JSON) | fix the request; do not retry unchanged |
 | 413 | `{error}` | body over 64 KiB | fix the request |
-| 500 | `{ok:false, error, outcome:"not_sent"}` | idempotency reservation itself failed (store problem) — nothing was attempted | may retry with the SAME key once the store is healthy |
-| 502 | `{ok:false, error, outcome:"failed"}` | the provider definitively rejected the send; nothing reached WhatsApp | safe to retry (the reservation was released) |
-| 502 | `{ok:false, error, outcome:"ambiguous"}` | timed out — it may or may not have been delivered | **do not retry** — reuse the same key if you must; the reservation is deliberately left in place to expire, not released |
+| 500 | `{ok:false, error, outcome:"not_sent"}` | the reservation itself failed — the idempotency key or the outbound row could not be written (store problem). Nothing was attempted and no cap budget was spent | may retry with the SAME key once the store is healthy |
+| 502 | `{ok:false, error, outcome:"failed"}` | the provider definitively rejected the send; nothing reached WhatsApp | safe to retry (the reservation and its cap budget were both released) |
+| 502 | `{ok:false, error, outcome:"ambiguous"}` | timed out — it may or may not have been delivered | **do not retry** — reuse the same key if you must; the reservation is deliberately left in place to expire, not released, and its cap budget stays spent for the same reason |
 
 `idempotencyKey` is mandatory. Derive it from the logical message
 (e.g. `turn-<conversationId>-<turnIndex>`), never from a timestamp, or a retry

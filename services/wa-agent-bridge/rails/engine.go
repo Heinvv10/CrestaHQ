@@ -1,5 +1,7 @@
 package rails
 
+import "sync"
+
 // Engine runs the rails in a fixed order and returns the first refusal.
 //
 // The order is part of the contract, not an implementation detail:
@@ -18,6 +20,24 @@ package rails
 type Engine struct {
 	store Store
 	cfg   Config
+
+	// send serialises the whole check-then-consume sequence in
+	// EvaluateAndReserve. Nothing is cached under it — every counter is still
+	// read from the Store on every call, so a crash-loop cannot become a
+	// send-loop. What it buys is that the cap counts a caller reads and the
+	// row that caller writes cannot be interleaved with another caller's.
+	//
+	// The idempotency reservation only ever serialised requests sharing ONE
+	// key. Rails 3 and 5-7 are volume limits ACROSS keys, and nothing held
+	// them together: every concurrent request read the same pre-send counts
+	// and every one of them passed.
+	//
+	// A process-local mutex is sufficient because the bridge is one process
+	// over one local SQLite file — deliberately, so it depends on no shared
+	// database. It would NOT serialise two bridge processes pointed at the
+	// same file; that deployment is not supported and this is the second
+	// reason why.
+	send sync.Mutex
 }
 
 func NewEngine(s Store, cfg Config) *Engine {
@@ -74,13 +94,26 @@ func (e *Engine) Evaluate(req SendRequest) Decision {
 // Duplicate(id) when the winner already finished, or RefusedInFlight while it
 // is still sending. Fail closed, as everywhere else here.
 //
+// A returned Allow ALSO means the send's cap budget has already been spent: an
+// outbound row is on disk before this function returns, so the next caller's
+// volume counts include it. That is what makes rails 3 and 5-7 bind across
+// concurrent requests carrying different idempotency keys.
+//
 // On success the caller owns the key and MUST, after the send returns, either
-// Store.SaveIdempotency the resulting message id, or — on a definitive
-// provider rejection only, never on a timeout — Store.ReleaseIdempotency it.
+// Store.SaveIdempotency + Store.ConfirmOutboundSlot the resulting message id,
+// or — on a definitive provider rejection only, never on a timeout —
+// Store.ReleaseIdempotency + Store.ReleaseOutboundSlot it.
 //
 // err is non-nil only when the Store failed. The Decision is safe to act on
 // regardless: it is a refusal in that case.
 func (e *Engine) EvaluateAndReserve(req SendRequest) (Decision, error) {
+	// Held across the rails AND the two reservations below. See Engine.send:
+	// reading the volume counts and writing the row that answers them must be
+	// one indivisible step, or every concurrent caller reads the same
+	// pre-send total and the caps stop binding.
+	e.send.Lock()
+	defer e.send.Unlock()
+
 	if d := e.Evaluate(req); !d.Allow {
 		return d, nil
 	}
@@ -106,6 +139,17 @@ func (e *Engine) EvaluateAndReserve(req SendRequest) (Decision, error) {
 		}
 		return Refuse(RefusedInFlight,
 			"another request won this idempotency key and is still sending"), nil
+	}
+
+	// Budget is consumed HERE, not after the send returns. Still inside the
+	// lock, so the next caller's cap read already counts this message. A
+	// failure rolls the idempotency reservation back so the key is usable
+	// again immediately — nothing was sent, so nothing should be spent.
+	if err := e.store.ReserveOutboundSlot(key, req.To, req.Consumer, req.Now); err != nil {
+		// Best effort: if this fails too the key stays held and expires under
+		// the lease. Refusing is the only safe answer either way.
+		_ = e.store.ReleaseIdempotency(key)
+		return Refuse(RefusedInternalError, "outbound slot reservation failed"), err
 	}
 	return Allow(), nil
 }

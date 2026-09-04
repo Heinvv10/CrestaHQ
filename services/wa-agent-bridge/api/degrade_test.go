@@ -9,12 +9,20 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/store"
 )
 
-// Every volume rail counts rows written by RecordOutbound. If those writes keep
-// failing, the caps drift toward unlimited while the API keeps answering 200 —
-// the caps are silently gone and nothing says so. Failing the request is wrong
-// (the message is already delivered; a retry double-messages), so the
-// degradation is made loud and bounded instead: past a small number of
-// CONSECUTIVE failures the service fails closed via its own kill switch.
+// Every volume rail counts the outbound row, and that row is now written when
+// the reservation is won — BEFORE anything reaches the transport. So a store
+// that cannot record outbound is caught while the message can still be
+// refused: each such send fails closed at 500 with nothing delivered, and the
+// caller may retry.
+//
+// That is a change from the earlier contract, where the row was written after
+// a delivered send and the only available response was 200-and-degrade. It
+// only got better: there is no longer a window in which a message is on the
+// wire and no cap can see it.
+//
+// The bounded-degradation half still stands, because a store this broken is
+// also one the caps cannot READ: past a small number of CONSECUTIVE failures
+// the service fails closed via its own kill switch.
 func TestRepeatedOutboundRecordFailuresTripTheKillSwitch(t *testing.T) {
 	mem := store.NewMemory()
 	st := &faultyStore{Memory: mem, failRecordOutbound: true}
@@ -26,14 +34,19 @@ func TestRepeatedOutboundRecordFailuresTripTheKillSwitch(t *testing.T) {
 		if on, _ := mem.KillState(); on {
 			t.Fatalf("tripped early, after %d failures", i)
 		}
+		before := sender.Calls()
 		rec := post(h, "/v1/send", "tok-hermes", sendBodyJSON(knownJID, "hi", key(i)))
-		// The message WAS delivered, so the caller is told the truth about it.
-		if rec.Code != http.StatusOK {
-			t.Fatalf("failure %d: the send succeeded, so it must report 200, got %d body=%s", i, rec.Code, rec.Body.String())
+		// Nothing was delivered, so the caller is told exactly that.
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("failure %d: nothing was sent, so it must fail closed with 500, got %d body=%s",
+				i, rec.Code, rec.Body.String())
+		}
+		if sender.Calls() != before {
+			t.Fatalf("failure %d: a message reached the transport despite an unrecordable send", i)
 		}
 	}
 	if on, _ := mem.KillState(); !on {
-		t.Fatalf("after %d consecutive unrecorded sends the caps are blind; the service must fail closed", recordFailureLimit)
+		t.Fatalf("after %d consecutive unrecordable sends the caps cannot be read; the service must fail closed", recordFailureLimit)
 	}
 
 	// And it is actually enforced from here on.
@@ -45,8 +58,8 @@ func TestRepeatedOutboundRecordFailuresTripTheKillSwitch(t *testing.T) {
 }
 
 // The counter measures CONSECUTIVE failures: a single blip amid healthy writes
-// is not a blind cap, and tripping on it would turn a transient error into an
-// outage.
+// is not a broken store, and tripping on it would turn a transient error into
+// an outage.
 func TestOneSuccessfulRecordResetsTheFailureCount(t *testing.T) {
 	mem := store.NewMemory()
 	st := &faultyStore{Memory: mem}

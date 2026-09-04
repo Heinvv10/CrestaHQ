@@ -260,7 +260,7 @@ func TestSaveRequiresAnOwnedReservation(t *testing.T) {
 // SQLite needs no equivalent: its reservation is a single statement, so the
 // atomicity is the database's and cannot be split by accident.
 func TestMemoryReservationIsOneCriticalSection(t *testing.T) {
-	src, err := os.ReadFile("memory.go")
+	src, err := os.ReadFile("memory_idempotency.go")
 	if err != nil {
 		t.Fatal(err)
 	}

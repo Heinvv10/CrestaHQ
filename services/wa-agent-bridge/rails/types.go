@@ -133,6 +133,41 @@ type Store interface {
 	RecordOutbound(jid, consumer, messageID string, at time.Time) error
 	RecordInbound(jid string, at time.Time) error
 
+	// ReserveOutboundSlot writes the outbound row that CONSUMES cap budget,
+	// at reservation time rather than after the send returns.
+	//
+	// This is what makes the volume caps bind under concurrency. When budget
+	// was only consumed by RecordOutbound after a delivered send, every
+	// request carrying a DIFFERENT idempotency key read the same pre-send
+	// counts: the idempotency reservation serialises same-key requests and
+	// nothing serialised the rest. Measured, 40 concurrent sends to one
+	// contact under a cap of 10 delivered 40. Writing the row while the caps
+	// are still being held (see Engine.EvaluateAndReserve) means the next
+	// caller's count already includes this one.
+	//
+	// The row is written with an empty message id and stamped with storageKey
+	// so exactly one of the three outcomes below can find it again. It counts
+	// toward every volume rail from the moment it lands — which is the point.
+	ReserveOutboundSlot(storageKey, jid, consumer string, at time.Time) error
+
+	// ReleaseOutboundSlot removes the reserved row, returning its budget.
+	//
+	// Call it ONLY alongside ReleaseIdempotency, on a DEFINITIVE provider
+	// rejection where the message provably never left. A message that was
+	// never sent must not permanently occupy a contact's daily allowance.
+	//
+	// NEVER on a timeout. A timed-out send may already have been delivered,
+	// so its budget stays spent — the same asymmetry ReleaseIdempotency
+	// documents, for the same reason. A slot stranded by a crash likewise
+	// stays spent: over-counting refuses a send that could have gone, which
+	// is the direction every rail here errs in.
+	ReleaseOutboundSlot(storageKey string) error
+
+	// ConfirmOutboundSlot stamps the real message id on a reserved row once
+	// the send has returned. It changes no count — the row was already
+	// counted — so a failure here is cosmetic, not a blind cap.
+	ConfirmOutboundSlot(storageKey, messageID string) error
+
 	// LastInboundAt is the timestamp of the most recent inbound message from
 	// anyone, zero when none has ever arrived. The health endpoint reports its
 	// age: a bridge whose socket has quietly died still answers HTTP, and an

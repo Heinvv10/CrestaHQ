@@ -17,6 +17,34 @@ number, on the same library, had run a reply-only path for months without
 incident. The ban signal is behavioural. Every rail in `rails/` encodes one
 lesson from that.
 
+### When cap budget is spent
+
+The volume rails (per-contact, consecutive, account-wide daily, and the
+per-consumer budget) spend their budget when a send is **reserved**, not when
+it completes. The outbound row is written while the rails still hold their
+lock, so the next caller's count already includes a send that is still in
+flight. Before this, budget was only consumed after a delivered send, and
+concurrent requests carrying different idempotency keys all read the same
+pre-send counts: 40 concurrent sends to one contact under a per-contact cap of
+10 delivered 40 of 40. Phase 2 is multiple concurrent consumers, so that had to
+close.
+
+Two consequences a caller can observe:
+
+* A **definitive** provider rejection (`502 outcome:"failed"`) gives the budget
+  back — nothing left, so nothing is spent.
+* A **timed-out** send (`502 outcome:"ambiguous"`) keeps it. The message may
+  have been delivered, so it counts against the contact's day exactly as a
+  delivered one does. Same asymmetry as the idempotency key, same reason.
+
+A slot stranded by a crash also stays spent. Over-counting refuses a send that
+could have gone; under-counting is how a number gets banned.
+
+The serialisation is a process-local lock, which is sufficient because the
+bridge is one process over one local SQLite file — deliberately, so it depends
+on no shared database. Two bridge processes pointed at the same file would not
+be serialised by it; that deployment is not supported.
+
 ## Building
 
 cgo is **required** — `go-sqlite3` is a cgo package, and with `CGO_ENABLED=0`
@@ -176,9 +204,12 @@ Because the flag is on disk, a systemd restart does **not** silently resume.
    ```
 6. Confirm: `curl -sS localhost:33020/v1/health` shows `"killed": false`.
 
-The kill switch is also set automatically after 3 consecutive `RecordOutbound`
-failures — every volume cap counts rows those writes create, so while they fail
-the caps are blind. Same admin-token release.
+The kill switch is also set automatically after 3 consecutive failures to
+record an outbound. Those sends are individually refused with `500` and nothing
+reaches WhatsApp — the row is written before the transport is touched, so a
+store that cannot write is caught while the message can still be stopped. The
+switch exists because a store that cannot be written is one the caps cannot be
+read from either. Same admin-token release.
 
 ## Number swap
 
@@ -213,7 +244,7 @@ answers every counter. `lastInboundAgeSeconds` is `null` when nobody has ever
 messaged the number — treat null as unknown, not as zero. On a `503` the same
 fields are present alongside `problems`. Alert on:
 
-1. HTTP `503`, or `degraded: true` — the caps are blind, or the socket is down.
+1. HTTP `503`, or `degraded: true` — the store is unreadable, or the socket is down.
 2. `connected: false` — alive but unable to send or receive. Check the journal
    for `LoggedOut` and re-pair if so.
 3. `killed: true` unexpectedly (a `LoggedOut` or repeated record failures set it).

@@ -1,6 +1,7 @@
-// Idempotency is split into its own file: it is the only part of the SQLite
-// store where correctness depends on the exact shape of a statement rather
-// than on plain CRUD, and it is the part a reviewer needs to read whole.
+// Idempotency and the outbound reservation slots are split into their own
+// file: they are the only parts of the SQLite store where correctness depends
+// on the exact shape of a statement rather than on plain CRUD, and they are
+// the part a reviewer needs to read whole.
 package store
 
 import (
@@ -106,4 +107,41 @@ func (s *SQLite) SaveIdempotency(key, messageID string) error {
 		return ErrNoReservation
 	}
 	return nil
+}
+
+// ReserveOutboundSlot writes the counted outbound row at reservation time.
+// It is an ordinary outbound row, so every volume query below counts it from
+// the moment it lands — which is the whole point: budget spent at reservation
+// binds across concurrent callers, budget spent after the send does not.
+func (s *SQLite) ReserveOutboundSlot(storageKey, jid, consumer string, at time.Time) error {
+	_, err := s.db.Exec(
+		`INSERT INTO messages (jid, outbound, consumer, msg_id, slot_key, at_unix)
+		 VALUES (?, 1, ?, '', ?, ?)`,
+		jid, consumer, storageKey, at.Unix())
+	return err
+}
+
+// ReleaseOutboundSlot returns the budget of a send that provably never left.
+//
+// It deletes the NEWEST unconfirmed row for the key, never every match. A slot
+// stranded by an earlier timeout belongs to a message that may well have been
+// delivered, and its budget must stay spent — the same asymmetry
+// ReleaseIdempotency documents.
+func (s *SQLite) ReleaseOutboundSlot(storageKey string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM messages WHERE id = (
+		   SELECT id FROM messages WHERE slot_key = ? AND msg_id = ''
+		   ORDER BY id DESC LIMIT 1)`, storageKey)
+	return err
+}
+
+// ConfirmOutboundSlot stamps the real message id on a reserved row and clears
+// its slot key. No count moves: the row was already counted at reservation, so
+// a failure here is cosmetic rather than a blind cap.
+func (s *SQLite) ConfirmOutboundSlot(storageKey, messageID string) error {
+	_, err := s.db.Exec(
+		`UPDATE messages SET msg_id = ?, slot_key = '' WHERE id = (
+		   SELECT id FROM messages WHERE slot_key = ? AND msg_id = ''
+		   ORDER BY id DESC LIMIT 1)`, messageID, storageKey)
+	return err
 }

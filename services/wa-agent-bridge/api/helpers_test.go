@@ -73,6 +73,17 @@ func (f *faultyStore) RecordOutbound(jid, consumer, messageID string, at time.Ti
 	return f.Memory.RecordOutbound(jid, consumer, messageID, at)
 }
 
+// ReserveOutboundSlot is the write the send path actually depends on now: the
+// outbound row is written when the reservation is won, not after the send
+// returns. failRecordOutbound breaks both so a test can describe "the store
+// cannot record outbound" with one flag.
+func (f *faultyStore) ReserveOutboundSlot(storageKey, jid, consumer string, at time.Time) error {
+	if f.failRecordOutbound {
+		return errors.New("disk is gone")
+	}
+	return f.Memory.ReserveOutboundSlot(storageKey, jid, consumer, at)
+}
+
 func (f *faultyStore) OutboundCountTotal(since time.Time) (int, error) {
 	if f.failCountTotal {
 		return 0, errors.New("disk is gone")

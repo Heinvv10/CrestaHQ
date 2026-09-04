@@ -13,6 +13,11 @@ type event struct {
 	at       time.Time
 	outbound bool
 	consumer string
+	msgID    string
+	// slotKey ties a reserved outbound row back to the idempotency key that
+	// reserved it, so exactly that row can be released or confirmed later.
+	// Empty on inbound rows and on rows written directly by RecordOutbound.
+	slotKey string
 }
 
 // ReservationLease is how long an idempotency reservation may sit with no
@@ -79,8 +84,61 @@ func (m *Memory) RecordInbound(jid string, at time.Time) error {
 func (m *Memory) RecordOutbound(jid, consumer, messageID string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.append(jid, event{at: at, outbound: true, consumer: consumer})
+	m.append(jid, event{at: at, outbound: true, consumer: consumer, msgID: messageID})
 	return nil
+}
+
+// ReserveOutboundSlot writes the counted outbound row at reservation time.
+// It is an ordinary outbound event, so every volume rail sees it immediately —
+// which is the entire point: budget spent at reservation binds across callers,
+// budget spent after the send does not.
+func (m *Memory) ReserveOutboundSlot(storageKey, jid, consumer string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.append(jid, event{at: at, outbound: true, consumer: consumer, slotKey: storageKey})
+	return nil
+}
+
+// ReleaseOutboundSlot returns the budget of a send that provably never left.
+// It removes the MOST RECENT unconfirmed row for the key: a slot stranded by
+// an earlier timeout belongs to a message that may have been delivered, and
+// must keep its budget.
+func (m *Memory) ReleaseOutboundSlot(storageKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	jid, i, ok := m.findSlot(storageKey)
+	if !ok {
+		return nil
+	}
+	m.events[jid] = append(m.events[jid][:i], m.events[jid][i+1:]...)
+	return nil
+}
+
+// ConfirmOutboundSlot stamps the message id on a reserved row. No count moves:
+// the row was already counted at reservation.
+func (m *Memory) ConfirmOutboundSlot(storageKey, messageID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	jid, i, ok := m.findSlot(storageKey)
+	if !ok {
+		return nil
+	}
+	m.events[jid][i].slotKey = ""
+	m.events[jid][i].msgID = messageID
+	return nil
+}
+
+// findSlot locates the newest still-unconfirmed slot row for a key. Callers
+// must hold m.mu.
+func (m *Memory) findSlot(storageKey string) (string, int, bool) {
+	for jid, evts := range m.events {
+		for i := len(evts) - 1; i >= 0; i-- {
+			if evts[i].slotKey == storageKey {
+				return jid, i, true
+			}
+		}
+	}
+	return "", 0, false
 }
 
 func (m *Memory) LastInboundAt() (time.Time, error) {
@@ -191,82 +249,6 @@ func (m *Memory) OutboundCountForConsumer(consumer string, since time.Time) (int
 		}
 	}
 	return n, nil
-}
-
-func (m *Memory) LookupIdempotency(key string) (string, string, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.idem[key]
-	return r.msgID, r.jid, ok, nil
-}
-
-// ReserveIdempotency claims a key if it is unclaimed, or reclaims one whose
-// reservation has outlived ReservationLease without completing. The read and
-// the write happen in ONE critical section: splitting them would reintroduce
-// the very race the reservation exists to close.
-//
-// A key bound to a DIFFERENT recipient is never reclaimable either — see the
-// jid guard below.
-//
-// A COMPLETED send (non-empty msgID) is never reclaimable at any age. That
-// guard is the whole safety of the lease: expiry may only ever free a key
-// whose message provably never got an id recorded, never a key whose message
-// was actually sent.
-func (m *Memory) ReserveIdempotency(storageKey, jid string, now time.Time) (string, string, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.idem[storageKey]
-	if ok {
-		// A key bound to another recipient is never reclaimable, at any age.
-		// Reclaiming it would hand this caller a row that belongs to a
-		// different contact; refusing turns a caller bug into a loud error
-		// instead of a message that is never sent.
-		if r.jid != jid {
-			return r.msgID, r.jid, false, nil
-		}
-		if !(r.msgID == "" && r.reservedAt.Before(now.Add(-ReservationLease))) {
-			return r.msgID, r.jid, false, nil
-		}
-	}
-	m.idem[storageKey] = reservation{jid: jid, reservedAt: now}
-	return "", jid, true, nil
-}
-
-// ReleaseIdempotency drops a reservation whose send will never complete.
-//
-// Call this ONLY when the provider definitively rejected the request and the
-// message never left — a validation error, an authentication failure, a
-// refusal returned before anything went on the wire.
-//
-// NEVER call it on a timeout. A timed-out send may well have been delivered;
-// releasing the key there is the one path that genuinely double-sends a real
-// customer. Leave a timed-out reservation alone and let ReservationLease
-// expire it, which is exactly why the lease exists.
-//
-// A completed reservation (one carrying a message id) is never released.
-func (m *Memory) ReleaseIdempotency(storageKey string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if r, ok := m.idem[storageKey]; ok && r.msgID == "" {
-		delete(m.idem, storageKey)
-	}
-	return nil
-}
-
-// SaveIdempotency upgrades a reservation this caller owns into a replayable
-// result. It refuses to write against a key holding no open reservation:
-// otherwise a stray save could fabricate a completed send for a key nobody
-// ever reserved.
-func (m *Memory) SaveIdempotency(key, messageID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.idem[key]
-	if !ok || r.msgID != "" {
-		return ErrNoReservation
-	}
-	r.msgID = messageID
-	m.idem[key] = r
-	return nil
 }
 
 func (m *Memory) KillState() (bool, error) {
