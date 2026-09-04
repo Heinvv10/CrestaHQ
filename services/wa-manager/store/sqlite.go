@@ -158,9 +158,24 @@ func (s *Store) SetTenantState(id string, st State, phone string) error {
 	return nil
 }
 
+// DeleteTenant removes the tenant and its event history together. A dead
+// tenant's history is not worth keeping — the opaque id can be re-provisioned
+// for a different customer later, and that customer must not inherit the
+// previous incarnation's events (design §3.2: teardown leaves nothing behind).
 func (s *Store) DeleteTenant(id string) error {
-	_, err := s.db.Exec(`DELETE FROM tenants WHERE id = ?`, id)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM events WHERE tenant_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM tenants WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) AppendEvent(tenantID, kind, detail string) error {

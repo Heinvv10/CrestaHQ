@@ -39,6 +39,21 @@ func (s *Store) AllocatePort(tenantID string, base, count int) (int, error) {
 			return p, nil
 		}
 	}
+
+	// Every candidate in the range was ignored. That's ambiguous: either the
+	// range is genuinely full, or a concurrent caller for THIS SAME tenant id
+	// won its own row somewhere in the range after our idempotency check above
+	// missed it (a double-clicked provision, or a retry racing a slow first
+	// attempt). Re-check before reporting exhaustion — only a genuinely full
+	// range should produce that error; a same-tenant race must return the
+	// winner's port instead of a lying "no free port".
+	err = s.db.QueryRow(`SELECT port FROM tenants WHERE id = ?`, tenantID).Scan(&existing)
+	if err == nil {
+		return existing, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, err
+	}
 	return 0, fmt.Errorf("store: no free port in [%d,%d)", base, base+count)
 }
 

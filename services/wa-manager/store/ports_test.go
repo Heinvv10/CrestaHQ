@@ -1,7 +1,6 @@
 package store
 
 import (
-	"runtime"
 	"sync"
 	"testing"
 )
@@ -50,8 +49,6 @@ func TestAllocatePortExhaustionIsAnError(t *testing.T) {
 // under the exact bugs they targeted for that reason — so this uses a ready
 // barrier and many rounds, and is worth running at GOMAXPROCS=1 too.
 func TestAllocatePortIsAtomicUnderConcurrency(t *testing.T) {
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
-
 	const rounds, workers = 30, 16
 	for r := 0; r < rounds; r++ {
 		s := openTemp(t)
@@ -83,6 +80,47 @@ func TestAllocatePortIsAtomicUnderConcurrency(t *testing.T) {
 				t.Fatalf("round %d: port %d given to workers %d and %d", r, p, prev, i)
 			}
 			seen[p] = i
+		}
+	}
+}
+
+// A double-clicked provision or a retry racing a slow first attempt both miss
+// the idempotency SELECT before any winner exists. Every AllocatePort call for
+// the SAME tenant id, run concurrently, must return one port to every caller
+// and must never report exhaustion — that would be a lying error, since the
+// range was never actually full.
+func TestAllocatePortConcurrentSameTenantNeverErrors(t *testing.T) {
+	const rounds, workers = 40, 8
+	for r := 0; r < rounds; r++ {
+		s := openTemp(t)
+		var ready, done sync.WaitGroup
+		start := make(chan struct{})
+		ready.Add(workers)
+		done.Add(workers)
+
+		got := make([]int, workers)
+		errs := make([]error, workers)
+		for i := 0; i < workers; i++ {
+			go func(i int) {
+				defer done.Done()
+				ready.Done()
+				<-start
+				got[i], errs[i] = s.AllocatePort("same-tenant", 33100, 10)
+			}(i)
+		}
+		ready.Wait()
+		close(start)
+		done.Wait()
+
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d worker %d: same-tenant retry errored: %v", r, i, err)
+			}
+		}
+		for i := 1; i < workers; i++ {
+			if got[i] != got[0] {
+				t.Fatalf("round %d: same tenant got two different ports: %d and %d", r, got[0], got[i])
+			}
 		}
 	}
 }

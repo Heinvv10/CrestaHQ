@@ -78,3 +78,26 @@ func TestEventsAreAppendOnlyAndOrdered(t *testing.T) {
 		t.Fatalf("want newest first, got %q", evts[0].Kind)
 	}
 }
+
+// Teardown must leave nothing of the tenant behind (design §3.2). Without this,
+// re-provisioning the same opaque id later would interleave the previous
+// incarnation's events into ListEvents — ghosts from a cancelled customer
+// showing up for whoever inherits the id next.
+func TestDeleteTenantRemovesEvents(t *testing.T) {
+	s := openTemp(t)
+	s.CreateTenant(Tenant{ID: "t1", Instance: "a", Port: 1, State: StateProvisioned})
+	s.AppendEvent("t1", "provisioned", "port 1")
+	s.AppendEvent("t1", "logged_out", "banned or unlinked")
+
+	if err := s.DeleteTenant("t1"); err != nil {
+		t.Fatal(err)
+	}
+
+	evts, err := s.ListEvents("t1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evts) != 0 {
+		t.Fatalf("want events gone with the tenant, got %d: %+v", len(evts), evts)
+	}
+}
