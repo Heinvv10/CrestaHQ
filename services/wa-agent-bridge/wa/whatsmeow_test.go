@@ -14,9 +14,12 @@ import (
 
 // After a reconnect whatsmeow replays recent history. The sibling bridge sent
 // duplicate acks for hours because of exactly this. Recording replayed inbound
-// is correct; acting on it is not, so the first few minutes after connect are
-// receive-only.
-func TestReplayWindowSuppressesOutbound(t *testing.T) {
+// is correct; acting on it is not.
+//
+// Named for what it asserts — that the window opens and expires — and NOT for
+// suppression, because nothing in this package suppresses outbound. That is
+// the caller's job; this only reports the window.
+func TestReplayWindowOpensAndExpires(t *testing.T) {
 	c := &Client{connectedAt: time.Now()}
 	if !c.InReplayWindow() {
 		t.Fatal("must be in the replay window immediately after connect")

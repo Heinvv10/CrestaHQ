@@ -69,6 +69,15 @@ func NewClient(
 		return nil, fmt.Errorf("wa: create session dir: %w", err)
 	}
 
+	// INFO, and deliberately not configurable via env.
+	//
+	// whatsmeow logs decrypted message payloads at Debugf. This service's
+	// no-bodies-in-logs guarantee (see internal/redact) therefore holds only
+	// because this logger is constructed below DEBUG. Raising this level —
+	// or making it an env var somebody sets to DEBUG while chasing a bug —
+	// puts customer message bodies in a plaintext log on a VPS whose logs are
+	// not access-controlled, which is the exact POPIA exposure redact exists
+	// to prevent. Debug whatsmeow by other means.
 	logger := waLog.Stdout("wa", "INFO", true)
 	// sqlite3 is go-sqlite3, the same cgo driver store/sqlite.go already
 	// registers. Adding a second sqlite driver would either collide on the
@@ -139,7 +148,11 @@ func (c *Client) handleEvent(evt any) {
 		c.connectedAt = time.Now()
 		c.loggedOut = false
 		c.mu.Unlock()
-		log.Printf("wa: connected; suppressing outbound for %s while history replays", ReplayWindow)
+		// Deliberately does NOT claim outbound is suppressed — nothing here
+		// suppresses it. This client only reports the window; acting on it is
+		// the caller's job, and a log line asserting a safety behaviour the
+		// service does not have would be read as evidence during an incident.
+		log.Printf("wa: connected; replay window open for %s", ReplayWindow)
 
 	case *events.Disconnected:
 		// Transient. whatsmeow reconnects on its own; clearing connectedAt
@@ -194,9 +207,14 @@ func (c *Client) handleLoggedOut() {
 	log.Printf("wa: ALERT LoggedOut — outbound stopped, human re-pair required")
 
 	if wac != nil {
-		// Belt and braces over whatsmeow's own teardown, and off this
-		// goroutine because Disconnect must not run inside an event handler.
-		wac.EnableAutoReconnect = false
+		// Off this goroutine because Disconnect must not run inside an event
+		// handler. Note we do NOT also set wac.EnableAutoReconnect = false:
+		// that field is a plain bool read unsynchronised by whatsmeow's
+		// keepalive goroutine, so writing it here is a data race, and it buys
+		// nothing. whatsmeow already guarantees no reconnect after a logout
+		// twice over — both LoggedOut dispatch sites call expectDisconnect()
+		// first, and autoReconnect returns on that; and Store.Delete() nils
+		// Store.ID, which autoReconnect also bails on.
 		go wac.Disconnect()
 	}
 	if cb != nil {
