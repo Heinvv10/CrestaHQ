@@ -60,6 +60,10 @@ func TestIdempotencyRoundTrip(t *testing.T) {
 	if _, found, _ := s.LookupIdempotency("k1"); found {
 		t.Fatal("unknown key must not be found")
 	}
+	// Reserve first: a save may only complete a reservation the caller owns.
+	if _, reserved, err := s.ReserveIdempotency("k1", time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)); err != nil || !reserved {
+		t.Fatalf("reserve failed: reserved=%v err=%v", reserved, err)
+	}
 	if err := s.SaveIdempotency("k1", "msg-9"); err != nil {
 		t.Fatal(err)
 	}

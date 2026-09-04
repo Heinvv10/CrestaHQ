@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -25,8 +26,10 @@ func TestSQLiteSurvivesReopen(t *testing.T) {
 	}
 	s.Close()
 
-	// The restart. This is the assertion that matters: counters written before
-	// the process died must still bind after it comes back.
+	// Reopen the same file. This proves counters live on disk rather than in
+	// process memory — the bug a crash would otherwise turn into a send-loop.
+	// It is a clean Close, so it does NOT prove crash durability; WAL recovery
+	// after an abrupt kill is a separate property this test does not cover.
 	s2, err := OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
@@ -43,13 +46,25 @@ func TestSQLiteSurvivesReopen(t *testing.T) {
 }
 
 func TestSQLiteIdempotencyAndKillPersist(t *testing.T) {
+	base := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "bridge.db")
-	s, _ := OpenSQLite(path)
-	s.SaveIdempotency("k1", "msg-1")
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reserved, err := s.ReserveIdempotency("k1", base); err != nil || !reserved {
+		t.Fatalf("reserve failed: reserved=%v err=%v", reserved, err)
+	}
+	if err := s.SaveIdempotency("k1", "msg-1"); err != nil {
+		t.Fatal(err)
+	}
 	s.SetKill(true)
 	s.Close()
 
-	s2, _ := OpenSQLite(path)
+	s2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer s2.Close()
 	id, found, _ := s2.LookupIdempotency("k1")
 	if !found || id != "msg-1" {
@@ -63,7 +78,10 @@ func TestSQLiteIdempotencyAndKillPersist(t *testing.T) {
 
 func TestSQLiteConsecutiveResetsOnInbound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bridge.db")
-	s, _ := OpenSQLite(path)
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer s.Close()
 	jid := "27821234567@s.whatsapp.net"
 	base := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
@@ -78,5 +96,49 @@ func TestSQLiteConsecutiveResetsOnInbound(t *testing.T) {
 	n, _ = s.ConsecutiveOutbound(jid)
 	if n != 0 {
 		t.Fatalf("inbound must reset the streak, got %d", n)
+	}
+}
+
+// TestOpenSQLiteMigratesPreReservedAtSchema: developers hold local db files
+// created before reserved_at existed, and CREATE TABLE IF NOT EXISTS will not
+// add a column to them. Opening such a file must migrate it rather than fail
+// every reservation with "no such column".
+func TestOpenSQLiteMigratesPreReservedAtSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	old, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(
+		`CREATE TABLE idempotency (key TEXT PRIMARY KEY, msg_id TEXT NOT NULL);
+		 INSERT INTO idempotency (key, msg_id) VALUES ('done', 'msg-old'), ('stranded', '')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	s, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("a pre-reserved_at file must still open: %v", err)
+	}
+	defer s.Close()
+
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+
+	// The completed row keeps its id and stays un-reclaimable despite its
+	// migrated reserved_at of 0.
+	id, reserved, err := s.ReserveIdempotency("done", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved || id != "msg-old" {
+		t.Fatalf("a completed pre-migration row must never be reclaimed: reserved=%v id=%q", reserved, id)
+	}
+
+	// The stranded row migrates to reserved_at 0, i.e. already past the lease,
+	// which is exactly the recovery the column exists to provide.
+	if _, reserved, err := s.ReserveIdempotency("stranded", now); err != nil || !reserved {
+		t.Fatalf("a stranded pre-migration row must be reclaimable: reserved=%v err=%v", reserved, err)
 	}
 }

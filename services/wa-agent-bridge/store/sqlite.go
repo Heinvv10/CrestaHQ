@@ -27,14 +27,19 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_jid_at ON messages(jid, at_unix);
 CREATE INDEX IF NOT EXISTS idx_messages_at     ON messages(at_unix);
+-- Supports OutboundCountForConsumer's (outbound, consumer, at_unix) filter,
+-- which the budget rail runs twice on every single send.
+CREATE INDEX IF NOT EXISTS idx_messages_outbound_consumer_at
+  ON messages(outbound, consumer, at_unix);
 
 CREATE TABLE IF NOT EXISTS allowlist (
   jid TEXT PRIMARY KEY
 );
 
 CREATE TABLE IF NOT EXISTS idempotency (
-  key    TEXT PRIMARY KEY,
-  msg_id TEXT NOT NULL
+  key         TEXT    PRIMARY KEY,
+  msg_id      TEXT    NOT NULL,
+  reserved_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS flags (
@@ -42,6 +47,10 @@ CREATE TABLE IF NOT EXISTS flags (
   value INTEGER NOT NULL
 );
 `
+
+// NOTE: neither `messages` nor `idempotency` is ever pruned, so both grow
+// without bound. At the bridge's capped volume that is years away, but a
+// retention sweep will eventually be needed.
 
 func OpenSQLite(path string) (*SQLite, error) {
 	db, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_journal_mode=WAL")
@@ -52,7 +61,46 @@ func OpenSQLite(path string) (*SQLite, error) {
 		db.Close()
 		return nil, err
 	}
+	// A developer's existing db file predates reserved_at, and CREATE TABLE IF
+	// NOT EXISTS will not add it. Nothing is deployed yet, so this is only
+	// courtesy for local files — but a store that fails to open on a stale
+	// schema is a store nobody can debug against.
+	if err := addReservedAtColumn(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &SQLite{db: db}, nil
+}
+
+// addReservedAtColumn is an idempotent migration: it adds idempotency.
+// reserved_at when an older file lacks it. Rows predating the column default
+// to 0, i.e. immediately past the lease — correct, because any reservation
+// that survived the upgrade with no message id is by definition stranded.
+func addReservedAtColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(idempotency)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "reserved_at" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(
+		`ALTER TABLE idempotency ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
@@ -142,56 +190,6 @@ func (s *SQLite) ConsecutiveOutbound(jid string) (int, error) {
 		`SELECT COUNT(1) FROM messages WHERE jid = ? AND outbound = 1 AND at_unix >= ?`,
 		jid, since).Scan(&n)
 	return n, err
-}
-
-func (s *SQLite) LookupIdempotency(key string) (string, bool, error) {
-	var id string
-	err := s.db.QueryRow(`SELECT msg_id FROM idempotency WHERE key = ?`, key).Scan(&id)
-	if err == sql.ErrNoRows {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return id, true, nil
-}
-
-// ReserveIdempotency claims a key if it is unclaimed, atomically. The INSERT
-// itself decides the winner — SQLite serialises the write, so exactly one
-// concurrent caller sees RowsAffected == 1. Written this way rather than as
-// SELECT-then-INSERT because that shape only pushes the time-of-check/
-// time-of-use race down a layer instead of closing it.
-func (s *SQLite) ReserveIdempotency(storageKey string) (string, bool, error) {
-	res, err := s.db.Exec(
-		`INSERT INTO idempotency (key, msg_id) VALUES (?, '') ON CONFLICT(key) DO NOTHING`,
-		storageKey)
-	if err != nil {
-		return "", false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return "", false, err
-	}
-	if n == 1 {
-		return "", true, nil
-	}
-	var id string
-	if err := s.db.QueryRow(
-		`SELECT msg_id FROM idempotency WHERE key = ?`, storageKey).Scan(&id); err != nil {
-		if err == sql.ErrNoRows {
-			// The row vanished between the no-op insert and this read. Fail closed:
-			// report "already reserved" so no send happens on an unclear state.
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	return id, false, nil
-}
-
-func (s *SQLite) SaveIdempotency(key, messageID string) error {
-	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO idempotency (key, msg_id) VALUES (?, ?)`, key, messageID)
-	return err
 }
 
 func (s *SQLite) KillState() (bool, error) {

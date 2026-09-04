@@ -42,7 +42,14 @@ func TestIdempotentSendReturnsOriginal(t *testing.T) {
 	s := store.NewMemory()
 	s.RecordInbound(known, now.Add(-time.Minute))
 	// Seeded under the composed storage key: keys are namespaced per consumer.
-	s.SaveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), "msg-original")
+	// Reserve then save, because that is the only sequence the Store accepts —
+	// a save with no reservation it owns would fabricate a completed send.
+	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), now); err != nil || !reserved {
+		t.Fatalf("seed reservation failed: reserved=%v err=%v", reserved, err)
+	}
+	if err := s.SaveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), "msg-original"); err != nil {
+		t.Fatal(err)
+	}
 	e := NewEngine(s, engineConfig())
 
 	d := e.Evaluate(SendRequest{To: known, Consumer: "hermes", Now: now, IdempotencyKey: "k-dup"})

@@ -13,14 +13,14 @@ import (
 func TestIdempotencyKeysAreNamespacedPerConsumer(t *testing.T) {
 	s := store.NewMemory()
 
-	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1")); err != nil || !reserved {
+	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), now); err != nil || !reserved {
 		t.Fatalf("hermes must win its own key: reserved=%v err=%v", reserved, err)
 	}
-	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("leadstack", "k1")); err != nil || !reserved {
+	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("leadstack", "k1"), now); err != nil || !reserved {
 		t.Fatalf("leadstack must be free to use the same raw key: reserved=%v err=%v", reserved, err)
 	}
 	// And the namespace still catches a genuine replay within one consumer.
-	if _, reserved, _ := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1")); reserved {
+	if _, reserved, _ := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), now); reserved {
 		t.Fatal("hermes replaying its own key must not win a second reservation")
 	}
 
@@ -66,7 +66,7 @@ func TestEmptyConsumerIsRefused(t *testing.T) {
 // indistinguishable from a plain refusal, and callers branch on it.
 func TestInFlightReservationIsNotReportedAsDuplicate(t *testing.T) {
 	s := store.NewMemory()
-	s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"))
+	s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), now)
 	d := checkIdempotency(SendRequest{To: known, IdempotencyKey: "k1", Consumer: "hermes"}, s)
 	if d.Allow {
 		t.Fatalf("an in-flight send must not be allowed through, got %+v", d)
@@ -74,7 +74,9 @@ func TestInFlightReservationIsNotReportedAsDuplicate(t *testing.T) {
 	if d.DuplicateOf != "" {
 		t.Fatalf("no message id exists yet; DuplicateOf must stay empty, got %q", d.DuplicateOf)
 	}
-	if d.RefusedBy != RefusedInternalError {
-		t.Fatalf("want %q, got %q", RefusedInternalError, d.RefusedBy)
+	// in_flight, not internal_error: a concurrent retry is a normal outcome,
+	// not a broken Store, and a consumer must be able to tell them apart.
+	if d.RefusedBy != RefusedInFlight {
+		t.Fatalf("want %q, got %q", RefusedInFlight, d.RefusedBy)
 	}
 }

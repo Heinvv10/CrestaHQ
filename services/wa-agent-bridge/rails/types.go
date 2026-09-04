@@ -35,9 +35,16 @@ const (
 	RefusedDailyCap       RefusalCode = "daily_cap"
 	RefusedQuietHours     RefusalCode = "quiet_hours"
 	RefusedInternalError  RefusalCode = "internal_error"
+	// RefusedInFlight means another request holds this idempotency key and is
+	// still sending. It is a normal outcome of a concurrent retry, not a
+	// broken Store, and the caller may safely retry shortly — which is exactly
+	// why it must not share a code with RefusedInternalError. Added before any
+	// consumer exists, because RefusalCode values are stable API surface and
+	// splitting one later would be a breaking change.
+	RefusedInFlight RefusalCode = "in_flight"
 )
 
-// Decision is the chain's verdict. DuplicateOf is set when rail 9 recognised
+// Decision is the chain's verdict. DuplicateOf is set when rail 2 (idempotency) recognised
 // the idempotency key: the caller must return the original result rather than
 // send again.
 type Decision struct {
@@ -105,24 +112,42 @@ type Store interface {
 	// reservation whose send has not completed yet.
 	LookupIdempotency(key string) (messageID string, found bool, err error)
 
-	// ReserveIdempotency atomically inserts a reservation for storageKey if none
-	// exists. reserved == true means this caller won the race and owns the send;
-	// reserved == false means a reservation already existed and existingMessageID
-	// carries whatever id was recorded for it (empty while the winner is still
-	// sending).
+	// ReserveIdempotency atomically claims storageKey. reserved == true means
+	// this caller won the race and owns the send; reserved == false means a
+	// live reservation already existed and existingMessageID carries whatever
+	// id was recorded for it (empty while the winner is still sending).
 	//
 	// THIS is the gate, not LookupIdempotency. A read-only check is a
 	// time-of-check/time-of-use hole: two concurrent requests carrying the same
 	// key both read "not found", both proceed, and the contact receives two
 	// messages — precisely what this rail exists to prevent. A caller MUST
-	// reserve, and win, BEFORE sending.
+	// reserve, and win, BEFORE sending. Use Engine.EvaluateAndReserve rather
+	// than calling this directly; it is the one path that cannot skip the gate.
+	//
+	// now is injected for the same reason every other clock here is: an
+	// implementation reclaims a reservation left stranded for longer than
+	// store.ReservationLease, and a test must be able to drive that boundary
+	// without sleeping. A reservation carrying a message id is a COMPLETED
+	// send and is never reclaimable at any age.
 	//
 	// Keys passed here are storage keys from IdempotencyStorageKey, never raw
 	// caller keys.
-	ReserveIdempotency(storageKey string) (existingMessageID string, reserved bool, err error)
+	ReserveIdempotency(storageKey string, now time.Time) (existingMessageID string, reserved bool, err error)
+
+	// ReleaseIdempotency drops a reservation whose send will never complete,
+	// so the key is usable again immediately rather than after the lease.
+	//
+	// Call it ONLY on a definitive rejection: the provider returned an error
+	// and the request never left. NEVER on a timeout — a timed-out send may
+	// have been delivered, and releasing the key there is the one path that
+	// genuinely double-sends a real customer. A timed-out reservation must be
+	// left to expire under store.ReservationLease instead.
+	ReleaseIdempotency(storageKey string) error
 
 	// SaveIdempotency records the real message id against a key once the send has
-	// returned, upgrading a reservation into a replayable result.
+	// returned, upgrading a reservation into a replayable result. It writes only
+	// against an open reservation the caller owns, so a stray save cannot
+	// fabricate a completed send for a key nobody reserved.
 	SaveIdempotency(key, messageID string) error
 
 	KillState() (bool, error)

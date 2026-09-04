@@ -55,7 +55,10 @@ func checkIdempotency(req SendRequest, s Store) Decision {
 			// request holds this key and is still sending. We cannot return
 			// Duplicate("") — an empty DuplicateOf is indistinguishable from a plain
 			// refusal — and we must not send. Refuse loudly; the caller may retry.
-			return Refuse(RefusedInternalError,
+			// RefusedInFlight, not RefusedInternalError: nothing is broken. A
+			// concurrent retry landing here is the gate working as designed,
+			// and the caller may retry shortly.
+			return Refuse(RefusedInFlight,
 				"a send for this idempotency key is already in flight")
 		}
 		return Duplicate(id)

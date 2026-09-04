@@ -3,6 +3,7 @@
 package store
 
 import (
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -14,6 +15,33 @@ type event struct {
 	consumer string
 }
 
+// ReservationLease is how long an idempotency reservation may sit with no
+// message id recorded against it before another caller may reclaim the key.
+//
+// It is three times the 30s per-send ceiling the bridge allows a provider
+// call. A send that has not returned within three of its own timeouts is not
+// slow, it is gone: the process was killed, the container was rescheduled, or
+// the goroutine panicked. Without a lease that key is dead forever and the
+// only recovery is hand-editing SQLite on a production box.
+//
+// It must stay comfortably ABOVE the send ceiling. Set it below and a merely
+// slow send gets its key stolen by a retry while it is still in flight, which
+// is a double-send — the exact failure this whole rail exists to prevent.
+const ReservationLease = 90 * time.Second
+
+// ErrNoReservation is returned by SaveIdempotency when the key holds no
+// reservation the caller owns. A save without a won reservation would
+// fabricate a completed send out of nothing, so it fails loudly instead.
+var ErrNoReservation = errors.New("store: no owned reservation for this idempotency key")
+
+// reservation is one idempotency row. An empty msgID means the send is still
+// in flight; reservedAt is when it was claimed, which is what makes a stranded
+// reservation reclaimable rather than permanent.
+type reservation struct {
+	msgID      string
+	reservedAt time.Time
+}
+
 // Memory is a test double. It is NOT suitable for production: everything it
 // knows dies with the process, which is exactly the bug the SQLite store
 // exists to avoid.
@@ -21,7 +49,7 @@ type Memory struct {
 	mu        sync.Mutex
 	events    map[string][]event
 	allowlist map[string]bool
-	idem      map[string]string
+	idem      map[string]reservation
 	kill      bool
 }
 
@@ -29,7 +57,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		events:    map[string][]event{},
 		allowlist: map[string]bool{},
-		idem:      map[string]string{},
+		idem:      map[string]reservation{},
 	}
 }
 
@@ -142,27 +170,64 @@ func (m *Memory) OutboundCountForConsumer(consumer string, since time.Time) (int
 func (m *Memory) LookupIdempotency(key string) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	id, ok := m.idem[key]
-	return id, ok, nil
+	r, ok := m.idem[key]
+	return r.msgID, ok, nil
 }
 
-// ReserveIdempotency claims a key if it is unclaimed. The read and the write
-// happen in ONE critical section: splitting them would reintroduce the very
-// race the reservation exists to close.
-func (m *Memory) ReserveIdempotency(storageKey string) (string, bool, error) {
+// ReserveIdempotency claims a key if it is unclaimed, or reclaims one whose
+// reservation has outlived ReservationLease without completing. The read and
+// the write happen in ONE critical section: splitting them would reintroduce
+// the very race the reservation exists to close.
+//
+// A COMPLETED send (non-empty msgID) is never reclaimable at any age. That
+// guard is the whole safety of the lease: expiry may only ever free a key
+// whose message provably never got an id recorded, never a key whose message
+// was actually sent.
+func (m *Memory) ReserveIdempotency(storageKey string, now time.Time) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if id, ok := m.idem[storageKey]; ok {
-		return id, false, nil
+	r, ok := m.idem[storageKey]
+	if ok && !(r.msgID == "" && r.reservedAt.Before(now.Add(-ReservationLease))) {
+		return r.msgID, false, nil
 	}
-	m.idem[storageKey] = ""
+	m.idem[storageKey] = reservation{reservedAt: now}
 	return "", true, nil
 }
 
+// ReleaseIdempotency drops a reservation whose send will never complete.
+//
+// Call this ONLY when the provider definitively rejected the request and the
+// message never left — a validation error, an authentication failure, a
+// refusal returned before anything went on the wire.
+//
+// NEVER call it on a timeout. A timed-out send may well have been delivered;
+// releasing the key there is the one path that genuinely double-sends a real
+// customer. Leave a timed-out reservation alone and let ReservationLease
+// expire it, which is exactly why the lease exists.
+//
+// A completed reservation (one carrying a message id) is never released.
+func (m *Memory) ReleaseIdempotency(storageKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.idem[storageKey]; ok && r.msgID == "" {
+		delete(m.idem, storageKey)
+	}
+	return nil
+}
+
+// SaveIdempotency upgrades a reservation this caller owns into a replayable
+// result. It refuses to write against a key holding no open reservation:
+// otherwise a stray save could fabricate a completed send for a key nobody
+// ever reserved.
 func (m *Memory) SaveIdempotency(key, messageID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.idem[key] = messageID
+	r, ok := m.idem[key]
+	if !ok || r.msgID != "" {
+		return ErrNoReservation
+	}
+	r.msgID = messageID
+	m.idem[key] = r
 	return nil
 }
 
