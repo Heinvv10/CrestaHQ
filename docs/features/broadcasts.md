@@ -1,0 +1,13 @@
+# Bulk email broadcasts (v1)
+
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [docs/features](../features/README.md).*
+
+The contacts page exposes a **Send bulk email** action that fans out a chosen email template to a filtered audience (all contacts / a specific tag / a pipeline stage). Implementation reuses the automations infrastructure — same template engine, same merge tags, same QStash for fan-out, same `{{unsubscribeLink}}` opt-out path.
+
+- **UI**: [src/components/contacts/bulk-email-dialog.tsx](../../src/components/contacts/bulk-email-dialog.tsx) lets the operator pick template + audience filter and shows a live recipients/skipped preview computed from the loaded contact list. Confirm posts to `/api/broadcasts/email/send` and routes to the broadcast detail page.
+- **Send route**: [src/app/api/broadcasts/email/send/route.ts](../../src/app/api/broadcasts/email/send/route.ts) validates the template (must be type `email`, must contain `{{unsubscribeLink}}`), resolves the audience via [src/lib/broadcasts/audience.ts](../../src/lib/broadcasts/audience.ts) (pre-skips opted-out + missing-email contacts), creates the `broadcasts/{id}` parent doc + `sends/{contactId}` rows in 500-doc batches, and fans out to QStash with one staggered message per recipient at 5/sec (well under Resend's free-tier 10 req/sec cap). Hard-capped at 25,000 recipients per broadcast.
+- **Step executor**: [src/app/api/broadcasts/email/step/route.ts](../../src/app/api/broadcasts/email/step/route.ts) is the QStash callback. Verifies signature, idempotency-checks the send row (status !== queued → ignore), re-checks `contact.emailOptedOut` live (operator could have flipped it mid-batch), renders merge tags, calls Resend, writes the row's status + atomically increments parent totals. Failed sends are recorded as `status: "failed"` and return 200 — one bounce never retry-storms the batch. The route is in `PUBLIC_PATHS`; security is the QStash signature.
+- **List + detail pages**: `/sa/[id]/broadcasts` and `/sa/[id]/broadcasts/[broadcastId]` — onSnapshot-driven, so totals and per-recipient status update live as the fan-out drains.
+- **Compliance**: every bulk email goes through the same `validateEmailBody` check that requires `{{unsubscribeLink}}` (CAN-SPAM). Per-recipient unsubscribe links resolve at `/u/[token]`, HMAC-signed with `AUTOMATIONS_TOKEN_SECRET`, flip `contact.emailOptedOut` on click. Pre-flight + live opt-out checks ensure opted-out contacts are never sent.
+- **No SMS broadcasts in v1** — bulk SMS needs A2P 10DLC throughput awareness, consent-source audit fields, and TCPA-grade safeguards that are explicitly deferred to Phase 2.
+
