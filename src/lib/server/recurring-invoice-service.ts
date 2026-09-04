@@ -6,10 +6,12 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { computeNextRunAt } from "@/lib/recurring/cadence";
 import {
   generateInvoice,
+  isAlreadyFinished,
+  isFinalCycle,
   schedulesCollection,
-  toDate,
   sendGeneratedInvoice,
   settleAfterCycle,
+  toDate,
 } from "@/lib/server/recurring-invoice-cycle";
 import type {
   RecurringCycleOutcome,
@@ -99,7 +101,7 @@ export async function runOneSchedule(
     if (!schedule.reviewFirst) {
       sent = await sendGeneratedInvoice(schedule, invoiceId);
     }
-    await settleAfterCycle(schedule, invoiceId, sent, now);
+    await settleAfterCycle(schedule, invoiceId);
     return { kind: "generated", invoiceId, sent };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -147,27 +149,42 @@ async function claimCycle(
       return { ok: false as const, reason: "not_due" };
     }
 
+    // The schedule is already over — its last cycle ran but never got marked,
+    // because settling threw after the claim had advanced `nextRunAt`. Close
+    // it here rather than billing a customer past the end of their agreement.
+    if (isAlreadyFinished(schedule, dueAt)) {
+      tx.update(ref, {
+        status: "completed",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { ok: false as const, reason: "already_finished" };
+    }
+
     const nextRunAt = computeNextRunAt({
       previous: dueAt,
       cadence: schedule.cadence,
       anchorDay: schedule.anchorDay,
       timezone: schedule.timezone,
     });
+    const cyclesGenerated = (schedule.cyclesGenerated ?? 0) + 1;
+
+    // Completion is decided HERE, from the cycle actually being claimed, and
+    // written in the same transaction that advances the schedule. Deciding it
+    // later — from `now`, or on the success path only — gets it wrong twice
+    // over: a sweep catching up in a later month would compute a different
+    // next run and complete the schedule one cycle early, and anything that
+    // threw after the claim would leave it active to bill once too many.
+    const finished = isFinalCycle(schedule, cyclesGenerated, nextRunAt);
+
     tx.update(ref, {
       nextRunAt: Timestamp.fromDate(nextRunAt),
-      cyclesGenerated: FieldValue.increment(1),
+      cyclesGenerated,
       lastRunAt: Timestamp.fromDate(now),
       lastError: null,
+      ...(finished ? { status: "completed" } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
     return { ok: true as const, schedule };
   });
 }
-
-
-
-
-
-
-
 

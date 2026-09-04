@@ -1,10 +1,9 @@
 import "server-only";
 
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { issueQuoteNumber } from "@/lib/quotes/number";
-import { computeNextRunAt } from "@/lib/recurring/cadence";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { sendQuoteServerSide } from "@/lib/server/quote-send-service";
 import { DEFAULT_QUOTE } from "@/types/quotes";
@@ -105,12 +104,16 @@ export async function sendGeneratedInvoice(
   return true;
 }
 
-/** Arrears recount, escalation, and end-of-schedule completion. */
+/**
+ * Arrears: recount, escalate past the threshold, and record the invoice.
+ *
+ * Completion is NOT decided here — the claim transaction owns it, so that
+ * anything throwing in this function cannot leave a finished schedule active
+ * to bill one more time.
+ */
 export async function settleAfterCycle(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
-  sent: boolean,
-  now: Date,
 ): Promise<void> {
   const unpaid = await countUnpaidInvoices(schedule.id);
   const updates: Record<string, unknown> = {
@@ -120,22 +123,14 @@ export async function settleAfterCycle(
   };
 
   const threshold = schedule.unpaidEscalationThreshold;
-  const shouldEscalate = threshold > 0 && unpaid >= threshold;
-  if (shouldEscalate) {
+  if (threshold > 0 && unpaid >= threshold) {
     await escalateArrears(schedule, unpaid).catch((err) =>
       console.error("[recurring] arrears escalation failed", err),
     );
-    updates.lastEscalatedAt = Timestamp.fromDate(now);
-  }
-
-  // `cyclesGenerated` was incremented by the claim, so this cycle counts.
-  const cycles = (schedule.cyclesGenerated ?? 0) + 1;
-  if (isFinished(schedule, cycles, now)) {
-    updates.status = "completed";
+    updates.lastEscalatedAt = FieldValue.serverTimestamp();
   }
 
   await schedulesCollection().doc(schedule.id).update(updates);
-  void sent;
 }
 
 /**
@@ -178,11 +173,18 @@ export async function escalateArrears(
   });
 }
 
-/** Whether this cycle was the schedule's last. */
-export function isFinished(
+/**
+ * Whether the cycle just claimed is the schedule's last.
+ *
+ * Takes the next run the CLAIM computed rather than deriving its own from the
+ * clock. A sweep catching up days late is in a different month from the cycle
+ * it is raising, and recomputing here would complete the schedule a cycle
+ * early — under-billing the customer for work they owe.
+ */
+export function isFinalCycle(
   schedule: RecurringInvoiceDoc,
   cyclesGenerated: number,
-  now: Date,
+  nextRunAt: Date,
 ): boolean {
   if (schedule.endMode === "after_count") {
     return cyclesGenerated >= (schedule.maxCycles ?? 0);
@@ -190,16 +192,29 @@ export function isFinished(
   if (schedule.endMode === "on_date") {
     const endAt = toDate(schedule.endAt);
     if (!endAt) return false;
-    // Compared against the NEXT run: the schedule ends once its following
-    // cycle would fall past the end date, so the last cycle on or before that
-    // date is still raised.
-    const nextRunAt = computeNextRunAt({
-      previous: now,
-      cadence: schedule.cadence,
-      anchorDay: schedule.anchorDay,
-      timezone: schedule.timezone,
-    });
+    // The end date bounds the schedule; it does not cancel a cycle already
+    // due. So the schedule ends once the FOLLOWING cycle would fall past it.
     return nextRunAt.getTime() > endAt.getTime();
+  }
+  return false;
+}
+
+/**
+ * Whether the schedule was already over before this cycle — the state a
+ * settle failure leaves behind, since the claim advances `nextRunAt` before
+ * any work happens. Checked at claim time so a customer is never billed past
+ * the end of their agreement because of a transient error days earlier.
+ */
+export function isAlreadyFinished(
+  schedule: RecurringInvoiceDoc,
+  dueAt: Date,
+): boolean {
+  if (schedule.endMode === "after_count") {
+    return (schedule.cyclesGenerated ?? 0) >= (schedule.maxCycles ?? 0);
+  }
+  if (schedule.endMode === "on_date") {
+    const endAt = toDate(schedule.endAt);
+    return !!endAt && dueAt.getTime() > endAt.getTime();
   }
   return false;
 }

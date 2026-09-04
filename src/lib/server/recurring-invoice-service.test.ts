@@ -16,6 +16,8 @@ const createTaskServerSide = vi.fn();
 const issueQuoteNumber = vi.fn();
 
 let schedule: Record<string, unknown> | null;
+/** txUpdates.length at the moment the invoice number was issued. */
+let claimedBeforeGenerate = -1;
 /** Unpaid invoices the arrears recount will find. */
 let unpaidCount = 0;
 
@@ -61,6 +63,10 @@ vi.mock("@/lib/firebase/admin", () => ({
         }),
         update: (_ref: unknown, patch: Record<string, unknown>) => {
           txUpdates.push(patch);
+          // Applied to the stored schedule, not just recorded. Without this
+          // the mock cannot show a SECOND run seeing the advanced state, so
+          // no test could prove the redelivery guarantee.
+          if (schedule) Object.assign(schedule, patch);
         },
       }),
   }),
@@ -141,8 +147,14 @@ beforeEach(() => {
   updates.length = 0;
   txUpdates.length = 0;
   written.length = 0;
+  claimedBeforeGenerate = -1;
   unpaidCount = 1;
-  issueQuoteNumber.mockResolvedValue("INV-2026-0004");
+  // Records how far the claim had got when the invoice was minted, so
+  // ordering can be asserted rather than assumed.
+  issueQuoteNumber.mockImplementation(async () => {
+    claimedBeforeGenerate = txUpdates.length;
+    return "INV-2026-0004";
+  });
   sendQuoteServerSide.mockResolvedValue({
     ok: true,
     sentTo: "billing@customer.test",
@@ -218,13 +230,29 @@ describe("generating a cycle", () => {
 });
 
 describe("claiming — one invoice per cycle", () => {
-  it("advances nextRunAt BEFORE doing any work", async () => {
+  it("advances nextRunAt BEFORE the invoice is minted", async () => {
     await runOneSchedule("sch_1", NOW);
-    // A retried cron callback re-entering this schedule must find it already
-    // advanced. Advancing after the send would invoice the customer twice.
     expect(txUpdates).toHaveLength(1);
     expect(claim().nextRunAt).toBeTruthy();
-    expect(claim().cyclesGenerated).toEqual({ increment: 1 });
+    expect(claim().cyclesGenerated).toBe(4);
+    // Ordering, observed rather than assumed: move the claim after the
+    // generate and this is 0. Asserting only that a claim happened would let
+    // the two be reordered silently — and a claim after the send is what
+    // invoices a customer twice.
+    expect(claimedBeforeGenerate).toBe(1);
+  });
+
+  it("generates exactly ONE invoice when the same callback is re-delivered", async () => {
+    const first = await runOneSchedule("sch_1", NOW);
+    const second = await runOneSchedule("sch_1", NOW);
+
+    // QStash retries. The second delivery must find the schedule already
+    // advanced and do nothing — this is the guarantee the whole claim-first
+    // design exists for.
+    expect(first.kind).toBe("generated");
+    expect(second).toEqual({ kind: "skipped", reason: "not_due" });
+    expect(written).toHaveLength(1);
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
   });
 
   it("does nothing on a schedule that is not yet due", async () => {
@@ -315,7 +343,7 @@ describe("ending a schedule", () => {
       cyclesGenerated: 3,
     });
     await runOneSchedule("sch_1", NOW);
-    expect(settle().status).toBe("completed");
+    expect(claim().status).toBe("completed");
   });
 
   it("keeps running while cycles remain", async () => {
@@ -325,7 +353,7 @@ describe("ending a schedule", () => {
       cyclesGenerated: 3,
     });
     await runOneSchedule("sch_1", NOW);
-    expect(settle().status).toBeUndefined();
+    expect(claim().status).toBeUndefined();
   });
 
   it("completes when the next cycle would fall past the end date", async () => {
@@ -337,7 +365,61 @@ describe("ending a schedule", () => {
     // Today's invoice is still raised — the end date bounds the schedule, it
     // does not cancel a cycle already due.
     expect(written).toHaveLength(1);
-    expect(settle().status).toBe("completed");
+    expect(claim().status).toBe("completed");
+  });
+
+  it("does not complete early when the sweep is catching up days late", async () => {
+    // The cycle due 31 Jan is raised on 3 Feb, after an outage. Completion
+    // must be judged from the cycle CLAIMED (next run 28 Feb, still inside
+    // the agreement) — not from today, which would compute 31 Mar, decide the
+    // schedule is over, and never raise the February invoice the customer
+    // owes.
+    schedule = makeSchedule({
+      timezone: "UTC",
+      anchorDay: 31,
+      nextRunAt: { toDate: () => new Date("2026-01-31T00:00:00.000Z") },
+      endMode: "on_date",
+      endAt: { toDate: () => new Date("2026-03-10T00:00:00.000Z") },
+    });
+
+    await runOneSchedule("sch_1", new Date("2026-02-03T05:00:00.000Z"));
+
+    expect(written).toHaveLength(1);
+    expect(claim().status).toBeUndefined();
+  });
+
+  it("refuses to bill past the end after a settle failure left it active", async () => {
+    // A transient throw between the claim and the settle leaves the schedule
+    // active with nextRunAt already advanced. The next sweep must close it
+    // rather than raise and EMAIL an invoice past the end of the agreement.
+    schedule = makeSchedule({
+      timezone: "UTC",
+      anchorDay: 1,
+      endMode: "on_date",
+      endAt: { toDate: () => new Date("2026-03-15T00:00:00.000Z") },
+      nextRunAt: { toDate: () => new Date("2026-04-01T00:00:00.000Z") },
+    });
+
+    const outcome = await runOneSchedule(
+      "sch_1",
+      new Date("2026-04-01T05:00:00.000Z"),
+    );
+
+    expect(outcome).toEqual({ kind: "skipped", reason: "already_finished" });
+    expect(written).toHaveLength(0);
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(claim().status).toBe("completed");
+  });
+
+  it("refuses an after_count schedule that already ran its last cycle", async () => {
+    schedule = makeSchedule({
+      endMode: "after_count",
+      maxCycles: 4,
+      cyclesGenerated: 4,
+    });
+    const outcome = await runOneSchedule("sch_1", NOW);
+    expect(outcome).toEqual({ kind: "skipped", reason: "already_finished" });
+    expect(written).toHaveLength(0);
   });
 
   it("keeps running when the end date is still ahead", async () => {
@@ -346,6 +428,6 @@ describe("ending a schedule", () => {
       endAt: { toDate: () => new Date("2027-01-01T00:00:00.000Z") },
     });
     await runOneSchedule("sch_1", NOW);
-    expect(settle().status).toBeUndefined();
+    expect(claim().status).toBeUndefined();
   });
 });

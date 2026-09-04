@@ -153,7 +153,10 @@ describe("timezones", () => {
       new Intl.DateTimeFormat("en-US", {
         timeZone: NY,
         hour: "2-digit",
-        hour12: false,
+        // `hourCycle` is not optional here: `hour12: false` alone renders
+        // midnight as "24" on some ICU builds and "00" on others, so the
+        // assertion would pass on one machine and fail on another.
+        hourCycle: "h23",
       }).format(d),
     ).toBe("00");
   });
