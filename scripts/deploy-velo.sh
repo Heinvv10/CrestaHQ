@@ -29,7 +29,12 @@ DEPLOY_DIR="${DEPLOY_DIR:-/home/velo/crestahq}"
 SERVICE="${SERVICE:-crestahq}"
 PORT="${PORT:-4300}"
 BRANCH="${BRANCH:-main}"
-NODE_BIN="${NODE_BIN:-/home/velo/.nvm/versions/node/v22.21.1/bin}"
+# Resolve the Node version from .nvmrc rather than hardcoding it. A pinned
+# path here drifted to v22.21.1 while .nvmrc (and therefore CI and every
+# developer shell) had moved to 22.23.1 — so the one environment that actually
+# serves users was running a runtime nothing else tested against.
+NODE_VERSION="$(cat "$(dirname "$0")/../.nvmrc" 2>/dev/null | tr -d '[:space:]')"
+NODE_BIN="${NODE_BIN:-/home/velo/.nvm/versions/node/v${NODE_VERSION}/bin}"
 # systemd scope. velo has no passwordless sudo but does have Linger=yes, so the
 # app runs as a USER service (same as jarvis-bff / ollama-proxy on this box).
 SYSTEMCTL="${SYSTEMCTL:-systemctl --user}"
@@ -100,7 +105,7 @@ say "Lint + tenancy check"
 pnpm lint || die "lint"
 
 say "Typecheck"
-npx tsc --noEmit || die "typecheck"
+pnpm exec tsc --noEmit || die "typecheck"
 
 if [ "$SKIP_TESTS" -eq 1 ]; then
   echo "WARNING: test gate skipped by --skip-tests."

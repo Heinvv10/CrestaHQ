@@ -34,8 +34,6 @@ import { sweepOldWatchdogRuns } from "@/lib/server/agents-watchdog-service";
 
 const BATCH_LIMIT = 500;
 const CONTINUATION_DELAY_SEC = 60;
-/** Days to keep the IP/user-agent on a review-feedback row before scrubbing. */
-const REVIEW_PII_RETENTION_DAYS = 30;
 
 interface SweepResult {
   collection: string;

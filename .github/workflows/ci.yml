@@ -1,0 +1,130 @@
+name: CI
+
+# Runs on every PR, and on push to main as a backstop for anything that
+# reaches main another way.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A superseded PR run is worthless — cancel it. Main runs are never cancelled:
+# they are the record of what actually landed.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ONE job, deliberately.
+  #
+  # The whole gate runs in ~52s locally (lint 9s, typecheck 4s, tests 1s,
+  # build 38s), so there is nothing to gain by splitting it across jobs and
+  # nothing to gain by making any step advisory to keep the pipeline quick.
+  # Every step below BLOCKS. Nothing here is `continue-on-error`.
+  #
+  # That last point is load-bearing. In FibreFlow the unit-test step was
+  # `continue-on-error: true` and a deadlocked suite reported green for
+  # months — "it had never once produced a real result." A gate believed to
+  # run and not running is worse than no gate, because it buys false
+  # confidence. If a step here is too slow or too flaky to block, delete it
+  # rather than softening it.
+  ci:
+    name: Lint, typecheck, test, build
+    runs-on: [self-hosted, linux, velo, crestahq]
+    timeout-minutes: 20
+    # Skips a fork's PR. Be clear about what this does and does not buy:
+    # `pull_request` evaluates the workflow file from the PR's OWN head, so a
+    # PR can rewrite or delete this line, and the rewritten version is what
+    # runs. It stops accidental fork execution; it is not a defence against a
+    # deliberately crafted PR.
+    #
+    # The real control is that this repo is private and single-author, so
+    # opening a PR at all requires access this machine's owner controls.
+    # Residual risk accepted on that basis. If a collaborator is ever added,
+    # this needs revisiting — self-hosted runners execute PR code on a
+    # workstation that also hosts four other repos' runners.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
+      # self-hosted runner an action runs with this machine's filesystem in
+      # reach — the same reasoning that made the gitleaks download not worth
+      # it applies to anything else fetched at run time, first-party or not.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned to .nvmrc so CI and a developer's shell cannot disagree about
+      # the runtime. The box's system node is v20; this project needs 22.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm lint` is the tenancy check (scripts/check-capability-tenancy.mjs)
+      # followed by ESLint. The warning cap lives in package.json, NOT here —
+      # one number, one place. FibreFlow ended up with the same baseline in
+      # five files, drifted apart, and the CI copy was so loose the gate could
+      # not fail; they now run a gate whose only job is guarding that gate.
+      # The way to not need that is to never write the number twice.
+      - name: Lint + tenancy check
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Tests
+        run: pnpm test
+
+      # A real build. Typecheck alone misses build-time-only failures —
+      # route-type validation, server/client boundary violations, bad imports
+      # in a page that tsc is happy with.
+      - name: Build
+        run: pnpm build
+
+  secrets:
+    name: Secret scan
+    runs-on: [self-hosted, linux, velo, crestahq]
+    timeout-minutes: 10
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
+      # self-hosted runner an action runs with this machine's filesystem in
+      # reach — the same reasoning that made the gitleaks download not worth
+      # it applies to anything else fetched at run time, first-party or not.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history: a secret committed earlier and reverted is still in
+          # the objects, and still needs rotating.
+          fetch-depth: 0
+
+      # Uses the gitleaks binary installed on the runner host, NOT
+      # gitleaks/gitleaks-action.
+      #
+      # The action downloads a release tarball through /tmp/gitleaks.tmp. On
+      # this box several repos' runners share /tmp under the sticky bit, so
+      # that path is owned by whichever runner user got there first — and no
+      # other runner user can delete it. ApexGEO hit this and cleans the file
+      # up in a pre-step, which works only because it owns it. From here the
+      # cleanup silently no-ops and the download then fails with
+      # "Destination file path already exists", which reads like a scan
+      # failure but is a collision with an unrelated repo's CI.
+      #
+      # Invoking the installed binary removes the download, the shared path
+      # and the cross-repo coupling in one go, and is faster.
+      #
+      # This repo holds Firebase admin keys, Stripe secrets, Twilio auth
+      # tokens, a Meta app secret and WhatsApp WABA tokens. FibreFlow carried
+      # a documented-but-false claim that its scanner ran in CI, and found out
+      # via a real credential leak (issue #1830) plus a 26-credential audit.
+      # Cheap gate, expensive absence.
+      - name: gitleaks
+        run: |
+          command -v gitleaks >/dev/null || {
+            echo "::error::gitleaks is not installed on this runner host."
+            echo "Install it once: curl -sSL <release>.tar.gz | sudo tar -C /usr/local/bin -xz gitleaks"
+            exit 1
+          }
+          gitleaks version
+          gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 .
