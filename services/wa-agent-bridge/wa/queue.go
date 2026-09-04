@@ -3,12 +3,20 @@ package wa
 import (
 	"context"
 	"errors"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
 )
 
 var ErrSendTimeout = errors.New("send timed out")
+
+// drainGrace bounds how long Send waits for a timed-out transport call to
+// actually return after its context is cancelled, before giving up on it
+// (see the comment on the timeout branch of Send for why this wait exists).
+const drainGrace = 5 * time.Second
 
 // QueueOpts controls pacing. The delay is length-proportional plus jitter so
 // the traffic pattern resembles a person typing rather than a loop emitting.
@@ -73,9 +81,27 @@ func (q *Queue) Send(ctx context.Context, jid, text string) (string, error) {
 		return r.id, r.err
 	case <-sendCtx.Done():
 		q.lastSent = time.Now()
-		// Deliberately NOT retried here. A timed-out send may or may not have
-		// been delivered; retrying risks messaging the contact twice. The
-		// caller reports this as ambiguous.
+
+		// Cancelling sendCtx only SIGNALS the goroutine; it does not prove
+		// q.t.Send has returned. A transport that ignores or is slow to
+		// notice cancellation can still be on the socket when we return, and
+		// this queue's entire job is that only one send is ever on the
+		// socket at a time. So we hold the lock (deferred Unlock hasn't run
+		// yet) and wait, bounded, for the goroutine to actually drain before
+		// releasing it to the next queued send — otherwise a timeout would
+		// be exactly the moment serialisation quietly breaks.
+		select {
+		case <-done:
+			// Drained within grace. Discard the result: deliberately NOT
+			// retried here either way. A timed-out send may or may not have
+			// been delivered; retrying risks messaging the contact twice.
+			// The caller reports this as ambiguous.
+		case <-time.After(drainGrace):
+			// The transport is genuinely stuck past cancellation. We can no
+			// longer guarantee serialisation for the next send, but blocking
+			// this queue forever is worse — log loudly (no body) and move on.
+			log.Printf("wa: queue: send to %s did not drain within %s of cancellation; transport may still be in flight", redact.JID(jid), drainGrace)
+		}
 		return "", ErrSendTimeout
 	}
 }
