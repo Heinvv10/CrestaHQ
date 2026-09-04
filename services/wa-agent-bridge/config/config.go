@@ -21,6 +21,16 @@ type Consumer struct {
 	WebhookURL string
 	PerHour    int
 	PerDay     int
+	// Admin marks an operator credential. It is required for the two actions
+	// that can only make things WORSE — adding to the allowlist, and lifting
+	// the kill switch — while every consumer keeps the fail-safe directions
+	// (removing from the allowlist, setting the kill switch), so anyone can
+	// slam the brakes during an incident and only an operator releases them.
+	//
+	// Attribution is not authorisation: logging which consumer allowlisted a
+	// stranger does not undo the cold DMs that follow, and an allowlisted JID
+	// has nothing left but the global daily cap standing in front of it.
+	Admin bool
 }
 
 type Config struct {
@@ -43,7 +53,7 @@ func envInt(key string, def int) int {
 
 // Load reads configuration from the environment.
 //
-// CONSUMERS format: "name|token|webhookURL|perHour|perDay", comma-separated.
+// CONSUMERS format: "name|token|webhookURL|perHour|perDay|admin", comma-separated.
 // Pipe-separated rather than colon-separated because a webhook URL carries a
 // scheme and a port, and splitting a URL on ":" mangles it into fragments.
 //
@@ -84,35 +94,77 @@ func Load() (Config, error) {
 	if cfg.SessionDir == "" {
 		cfg.SessionDir = "./session"
 	}
+	if err := checkBindAddr(cfg.ListenAddr); err != nil {
+		return Config{}, err
+	}
 
 	raw := os.Getenv("CONSUMERS")
 	if strings.TrimSpace(raw) == "" {
 		return Config{}, fmt.Errorf("CONSUMERS is required")
 	}
+	seenName, seenToken := map[string]bool{}, map[string]bool{}
 	for _, entry := range strings.Split(raw, ",") {
-		parts := strings.Split(strings.TrimSpace(entry), "|")
-		if len(parts) < 2 {
+		c, err := parseConsumer(entry)
+		if err != nil {
+			return Config{}, err
+		}
+		// A duplicate NAME is the dangerous one: two consumers then share an
+		// idempotency namespace, and one's genuine reply is silently swallowed
+		// as the other's duplicate. A duplicate TOKEN destroys attribution and
+		// hands over the first entry's budget and privileges.
+		if seenName[c.Name] {
 			return Config{}, fmt.Errorf(
-				"bad CONSUMERS entry %q (want name|token|webhook|perHour|perDay)", entry)
+				"duplicate consumer name %q: two consumers sharing a name share an idempotency namespace, and one's genuine replies would be silently dropped as duplicates", c.Name)
 		}
-		c := Consumer{Name: parts[0], Token: parts[1], PerHour: 100, PerDay: 500}
-		if len(parts) >= 3 {
-			c.WebhookURL = parts[2]
+		if seenToken[c.Token] {
+			return Config{}, fmt.Errorf("consumer %q reuses another consumer's token", c.Name)
 		}
-		if len(parts) >= 4 {
-			c.PerHour, _ = strconv.Atoi(parts[3])
-		}
-		if len(parts) >= 5 {
-			c.PerDay, _ = strconv.Atoi(parts[4])
-		}
-		if c.Name == "" {
-			return Config{}, fmt.Errorf("a consumer entry has an empty name; the name namespaces its idempotency keys")
-		}
-		if c.Token == "" {
-			return Config{}, fmt.Errorf("consumer %q has an empty token", c.Name)
-		}
+		seenName[c.Name], seenToken[c.Token] = true, true
 		cfg.Consumers = append(cfg.Consumers, c)
 		cfg.Rails.Budgets[c.Name] = rails.ConsumerBudget{PerHour: c.PerHour, PerDay: c.PerDay}
 	}
 	return cfg, nil
+}
+
+// parseConsumer reads one "name|token|webhook|perHour|perDay|admin" entry.
+//
+// Every field error is returned rather than defaulted. A typo'd budget parses
+// to zero, which fails closed and then silently mutes a consumer nobody will
+// think to look at; a typo'd privilege silently downgrades an operator, who
+// discovers it mid-incident when they cannot lift the kill switch.
+func parseConsumer(entry string) (Consumer, error) {
+	parts := strings.Split(strings.TrimSpace(entry), "|")
+	if len(parts) < 2 {
+		return Consumer{}, fmt.Errorf(
+			"bad CONSUMERS entry %q (want name|token|webhook|perHour|perDay|admin)", entry)
+	}
+	c := Consumer{Name: parts[0], Token: parts[1], PerHour: 100, PerDay: 500}
+	if c.Name == "" {
+		return Consumer{}, fmt.Errorf("a consumer entry has an empty name; the name namespaces its idempotency keys")
+	}
+	if c.Token == "" {
+		return Consumer{}, fmt.Errorf("consumer %q has an empty token", c.Name)
+	}
+	if len(parts) >= 3 {
+		c.WebhookURL = parts[2]
+	}
+	var err error
+	if len(parts) >= 4 && parts[3] != "" {
+		if c.PerHour, err = strconv.Atoi(parts[3]); err != nil {
+			return Consumer{}, fmt.Errorf("consumer %q has an unparseable perHour %q: %w", c.Name, parts[3], err)
+		}
+	}
+	if len(parts) >= 5 && parts[4] != "" {
+		if c.PerDay, err = strconv.Atoi(parts[4]); err != nil {
+			return Consumer{}, fmt.Errorf("consumer %q has an unparseable perDay %q: %w", c.Name, parts[4], err)
+		}
+	}
+	if len(parts) >= 6 && parts[5] != "" {
+		if parts[5] != "admin" {
+			return Consumer{}, fmt.Errorf(
+				"consumer %q has an unknown privilege %q (the only accepted value is \"admin\")", c.Name, parts[5])
+		}
+		c.Admin = true
+	}
+	return c, nil
 }

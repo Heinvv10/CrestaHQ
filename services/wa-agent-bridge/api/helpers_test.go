@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,17 +56,47 @@ func (s *stubSender) Calls() int {
 	return s.calls
 }
 
+// faultyStore injects Store failures the Memory store cannot produce on its
+// own. The endpoints that DEGRADE rather than fail — health, and the outbound
+// bookkeeping after a delivered message — can only be tested against a store
+// that breaks on demand.
+type faultyStore struct {
+	*store.Memory
+	failRecordOutbound bool
+	failCountTotal     bool
+}
+
+func (f *faultyStore) RecordOutbound(jid, consumer, messageID string, at time.Time) error {
+	if f.failRecordOutbound {
+		return errors.New("disk is gone")
+	}
+	return f.Memory.RecordOutbound(jid, consumer, messageID, at)
+}
+
+func (f *faultyStore) OutboundCountTotal(since time.Time) (int, error) {
+	if f.failCountTotal {
+		return 0, errors.New("disk is gone")
+	}
+	return f.Memory.OutboundCountTotal(since)
+}
+
 func testHandler(t *testing.T) (http.Handler, *store.Memory, *stubSender) {
 	t.Helper()
 	st := store.NewMemory()
 	sender := &stubSender{}
-	h := New(Deps{
+	return newHandler(t, st, sender), st, sender
+}
+
+func newHandler(t *testing.T, st rails.Store, sender Sender) http.Handler {
+	t.Helper()
+	return New(Deps{
 		Engine: rails.NewEngine(st, rails.Config{
 			PerContactPerDay: 10, ConsecutiveMax: 3, GlobalDailyCap: 150,
 			Location: time.UTC,
 			Budgets: map[string]rails.ConsumerBudget{
 				"hermes":    {PerHour: 100, PerDay: 500},
 				"leadstack": {PerHour: 100, PerDay: 500},
+				"operator":  {PerHour: 100, PerDay: 500},
 			},
 		}),
 		Store:  st,
@@ -73,10 +104,10 @@ func testHandler(t *testing.T) (http.Handler, *store.Memory, *stubSender) {
 		Consumers: []config.Consumer{
 			{Name: "hermes", Token: "tok-hermes"},
 			{Name: "leadstack", Token: "tok-leadstack"},
+			{Name: "operator", Token: "tok-operator", Admin: true},
 		},
 		Now: func() time.Time { return fixedNow },
 	})
-	return h, st, sender
 }
 
 func post(h http.Handler, path, token, body string) *httptest.ResponseRecorder {

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
@@ -30,8 +31,74 @@ type Deps struct {
 	Now       func() time.Time
 }
 
+// recordFailureLimit is how many CONSECUTIVE RecordOutbound failures are
+// tolerated before the service stops itself.
+//
+// Every volume rail counts rows RecordOutbound writes, so while those writes
+// are failing the caps drift toward unlimited — the safety layer is gone and
+// the API is still answering 200. Failing the request instead is not available:
+// the message is already delivered by then, and a caller retry would
+// double-message a real person. So the degradation is made loud and bounded.
+// Three is small enough that a genuinely broken store trips within seconds,
+// and large enough that one transient write error is not an outage.
+const recordFailureLimit = 3
+
+// maxSendBodyBytes bounds the request body. A WhatsApp text message is far
+// smaller; an unbounded read is a free memory-exhaustion lever for anything
+// holding a token.
+const maxSendBodyBytes = 64 << 10
+
 type server struct {
 	deps Deps
+
+	mu             sync.Mutex
+	recordFailures int // consecutive RecordOutbound failures
+}
+
+// noteRecordOutbound tracks consecutive bookkeeping failures and fails the
+// whole service closed once they pass the limit — the same direction every
+// rail takes when it cannot verify its own precondition.
+func (s *server) noteRecordOutbound(err error) {
+	s.mu.Lock()
+	if err == nil {
+		s.recordFailures = 0
+		s.mu.Unlock()
+		return
+	}
+	s.recordFailures++
+	n := s.recordFailures
+	s.mu.Unlock()
+
+	log.Printf("WARNING outbound not recorded (%d consecutive) err=%v", n, err)
+	if n < recordFailureLimit {
+		return
+	}
+	// The caps count rows that are not being written. Rather than keep sending
+	// against counters that can no longer see anything, stop.
+	log.Printf("KILL SWITCH set automatically: %d consecutive RecordOutbound failures, every volume cap is now blind", n)
+	if err := s.deps.Store.SetKill(true); err != nil {
+		log.Printf("BUG could not set the kill switch after repeated record failures err=%v", err)
+	}
+}
+
+func (s *server) recordFailureCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recordFailures
+}
+
+// requireAdmin gates the actions that can only make things worse. It returns
+// false having already written the response when the caller is not privileged.
+func requireAdmin(w http.ResponseWriter, c config.Consumer, action string) bool {
+	if c.Admin {
+		return true
+	}
+	log.Printf("privilege refused consumer=%s action=%s", c.Name, action)
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"ok":    false,
+		"error": action + " requires an operator token",
+	})
+	return false
 }
 
 func New(deps Deps) http.Handler {

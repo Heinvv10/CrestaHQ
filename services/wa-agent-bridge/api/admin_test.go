@@ -33,7 +33,7 @@ func TestKilledSendLeavesTheKeyUsable(t *testing.T) {
 	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
 	post(h, "/v1/kill", "tok-hermes", `{"on":true}`)
 	post(h, "/v1/send", "tok-hermes", sendBodyJSON(knownJID, "hi", "k2"))
-	post(h, "/v1/kill", "tok-hermes", `{"on":false}`)
+	post(h, "/v1/kill", "tok-operator", `{"on":false}`)
 
 	rec := post(h, "/v1/send", "tok-hermes", sendBodyJSON(knownJID, "hi", "k2"))
 	if rec.Code != http.StatusOK {
@@ -46,13 +46,13 @@ func TestKilledSendLeavesTheKeyUsable(t *testing.T) {
 
 func TestAllowlistAddAndRemove(t *testing.T) {
 	h, st, _ := testHandler(t)
-	if rec := post(h, "/v1/allowlist", "tok-hermes", `{"jid":"`+strangerJID+`"}`); rec.Code != http.StatusOK {
+	if rec := post(h, "/v1/allowlist", "tok-operator", `{"jid":"`+strangerJID+`"}`); rec.Code != http.StatusOK {
 		t.Fatalf("add failed: %d %s", rec.Code, rec.Body.String())
 	}
 	if ok, _ := st.IsAllowlisted(strangerJID); !ok {
 		t.Fatal("jid was not allowlisted")
 	}
-	if rec := post(h, "/v1/allowlist", "tok-hermes", `{"jid":"`+strangerJID+`","remove":true}`); rec.Code != http.StatusOK {
+	if rec := post(h, "/v1/allowlist", "tok-operator", `{"jid":"`+strangerJID+`","remove":true}`); rec.Code != http.StatusOK {
 		t.Fatalf("remove failed: %d", rec.Code)
 	}
 	if ok, _ := st.IsAllowlisted(strangerJID); ok {
@@ -62,7 +62,7 @@ func TestAllowlistAddAndRemove(t *testing.T) {
 
 func TestAllowlistRequiresAJID(t *testing.T) {
 	h, _, _ := testHandler(t)
-	if rec := post(h, "/v1/allowlist", "tok-hermes", `{}`); rec.Code != http.StatusBadRequest {
+	if rec := post(h, "/v1/allowlist", "tok-operator", `{}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("want 400 for a missing jid, got %d", rec.Code)
 	}
 }
@@ -74,7 +74,7 @@ func TestAllowlistedStrangerCanBeMessaged(t *testing.T) {
 	if rec := post(h, "/v1/send", "tok-hermes", sendBodyJSON(strangerJID, "hi", "a1")); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("a stranger must be refused before allowlisting, got %d", rec.Code)
 	}
-	post(h, "/v1/allowlist", "tok-hermes", `{"jid":"`+strangerJID+`"}`)
+	post(h, "/v1/allowlist", "tok-operator", `{"jid":"`+strangerJID+`"}`)
 	if rec := post(h, "/v1/send", "tok-hermes", sendBodyJSON(strangerJID, "hi", "a2")); rec.Code != http.StatusOK {
 		t.Fatalf("an allowlisted jid must be sendable, got %d %s", rec.Code, rec.Body.String())
 	}

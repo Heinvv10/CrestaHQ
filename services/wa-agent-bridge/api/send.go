@@ -21,7 +21,13 @@ type sendBody struct {
 
 func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer config.Consumer) {
 	var body sendBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSendBodyBytes)).Decode(&body); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+				"error": "request body exceeds the limit"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
@@ -84,11 +90,12 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		return
 	}
 
-	if err := s.deps.Store.RecordOutbound(body.To, consumer.Name, msgID, req.Now); err != nil {
-		// Loud, because the caps rails count these rows: an unrecorded send is
-		// a send that no cap will ever see.
-		log.Printf("WARNING outbound not recorded to=%s err=%v", redact.JID(body.To), err)
-	}
+	// The message is delivered, so the caller is told so regardless — but an
+	// unrecorded send is one no cap will ever count, and enough of them in a
+	// row means the caps are blind. noteRecordOutbound trips the kill switch at
+	// that point rather than letting the volume rails erode toward unlimited
+	// behind a wall of 200s.
+	s.noteRecordOutbound(s.deps.Store.RecordOutbound(body.To, consumer.Name, msgID, req.Now))
 	if err := s.deps.Store.SaveIdempotency(storageKey, msgID); err != nil {
 		level := "WARNING"
 		if errors.Is(err, store.ErrNoReservation) {
