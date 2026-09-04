@@ -27,6 +27,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.0'
+      # README.md calls gofmt a gate, so it has to actually be one. A gate
+      # believed to run and not running is worse than no gate.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
       - run: go vet ./...
       # CGO_ENABLED=0 must FAIL to build. Without the guard in
       # store/requires_cgo.go it exits 0 and produces a binary that dies only at

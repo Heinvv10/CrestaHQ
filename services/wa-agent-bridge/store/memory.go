@@ -128,6 +128,17 @@ func (m *Memory) RemoveAllowlist(jid string) error {
 	return nil
 }
 
+func (m *Memory) ListAllowlist() ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.allowlist))
+	for jid := range m.allowlist {
+		out = append(out, jid)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func (m *Memory) OutboundCountForContact(jid string, since time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

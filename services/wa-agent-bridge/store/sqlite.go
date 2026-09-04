@@ -181,6 +181,23 @@ func (s *SQLite) RemoveAllowlist(jid string) error {
 	return err
 }
 
+func (s *SQLite) ListAllowlist() ([]string, error) {
+	rows, err := s.db.Query(`SELECT jid FROM allowlist ORDER BY jid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var jid string
+		if err := rows.Scan(&jid); err != nil {
+			return nil, err
+		}
+		out = append(out, jid)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLite) OutboundCountForContact(jid string, since time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(

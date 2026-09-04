@@ -96,17 +96,7 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 	// that point rather than letting the volume rails erode toward unlimited
 	// behind a wall of 200s.
 	s.noteRecordOutbound(s.deps.Store.RecordOutbound(body.To, consumer.Name, msgID, req.Now))
-	if err := s.deps.Store.SaveIdempotency(storageKey, msgID); err != nil {
-		level := "WARNING"
-		if errors.Is(err, store.ErrNoReservation) {
-			// We reserved this key moments ago and nothing else may take it, so
-			// reaching here means the reserve/save pair drifted apart in code —
-			// a bug in this handler, not a caller error. A retry would now send
-			// the same message again.
-			level = "BUG"
-		}
-		log.Printf("%s idempotency not saved consumer=%s err=%v", level, consumer.Name, err)
-	}
+	s.saveIdempotency(storageKey, msgID, consumer)
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messageId": msgID})
 }
@@ -161,4 +151,45 @@ func (s *server) handleSendError(w http.ResponseWriter, consumer config.Consumer
 	writeJSON(w, http.StatusBadGateway, map[string]any{
 		"ok": false, "error": sendErr.Error(), "outcome": outcome,
 	})
+}
+
+// saveIdempotency upgrades this caller's reservation into a replayable result.
+//
+// It runs AFTER a message has been delivered, so there is no failure response
+// available: the contact already has the message. What is at stake is the
+// reservation. A failure here leaves the key OPEN, and an open key is reclaimed
+// once store.ReservationLease (90s) passes — so a caller retrying more than 90
+// seconds later would win the key again and re-send a message that was
+// delivered. That is the one window this whole rail exists to close, and it
+// cannot be closed from here: the send is already done.
+//
+// The cheap safety that IS available is one retry. Every plausible cause of a
+// transient failure — SQLite busy under a concurrent write, a momentary I/O
+// error — clears on a second attempt, and a second attempt costs one statement.
+// It does not make the window impossible, it makes it rare, and the remaining
+// case is logged loudly enough to be found.
+//
+// Not retried in a loop, and never on ErrNoReservation: that error means the
+// reserve/save pair drifted apart in code, and repeating a save that cannot
+// succeed only delays the delivered response.
+func (s *server) saveIdempotency(storageKey, msgID string, consumer config.Consumer) {
+	err := s.deps.Store.SaveIdempotency(storageKey, msgID)
+	if err != nil && !errors.Is(err, store.ErrNoReservation) {
+		log.Printf("WARNING idempotency save failed, retrying once consumer=%s err=%v", consumer.Name, err)
+		err = s.deps.Store.SaveIdempotency(storageKey, msgID)
+	}
+	if err == nil {
+		return
+	}
+	level := "ALERT"
+	if errors.Is(err, store.ErrNoReservation) {
+		// We reserved this key moments ago and nothing else may take it, so
+		// reaching here means the reserve/save pair drifted apart in code — a
+		// bug in this handler, not a caller error.
+		level = "BUG"
+	}
+	log.Printf("%s idempotency NOT saved after a DELIVERED send consumer=%s err=%v"+
+		" — the reservation stays open and is reclaimable in %s, so a caller retry"+
+		" after that would re-send a message the contact already has",
+		level, consumer.Name, err, store.ReservationLease)
 }

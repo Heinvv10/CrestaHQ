@@ -35,15 +35,24 @@ func NewEngine(s Store, cfg Config) *Engine {
 // This exists for callers that genuinely only want to ask — a dry-run endpoint,
 // a preflight check in an operator tool, a test.
 func (e *Engine) Evaluate(req SendRequest) Decision {
-	for _, d := range []Decision{
-		checkKill(e.store),
-		checkIdempotency(req, e.store),
-		checkBudget(req, e.store, e.cfg),
-		checkQuietHours(req, e.cfg),
-		checkReplyOnly(req, e.store),
-		checkCaps(req, e.store, e.cfg),
+	// A slice of FUNCS, not a slice of Decisions. The literal form evaluated
+	// every rail before the loop looked at any of them, so a kill-switch
+	// refusal still ran five more rails and four more Store reads — which
+	// contradicts the ordering rationale above, where the whole point of
+	// putting the volume caps last is that an earlier refusal never pays for
+	// them. Short-circuiting was chosen over correcting the comment because
+	// the comment describes the behaviour that is actually wanted: no rail has
+	// side effects, so running them all changes no verdict, but it does spend
+	// reads on an answer already decided.
+	for _, rail := range []func() Decision{
+		func() Decision { return checkKill(e.store) },
+		func() Decision { return checkIdempotency(req, e.store) },
+		func() Decision { return checkBudget(req, e.store, e.cfg) },
+		func() Decision { return checkQuietHours(req, e.cfg) },
+		func() Decision { return checkReplyOnly(req, e.store) },
+		func() Decision { return checkCaps(req, e.store, e.cfg) },
 	} {
-		if !d.Allow {
+		if d := rail(); !d.Allow {
 			return d
 		}
 	}

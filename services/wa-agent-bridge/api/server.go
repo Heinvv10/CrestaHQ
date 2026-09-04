@@ -59,10 +59,16 @@ type Deps struct {
 // and large enough that one transient write error is not an outage.
 const recordFailureLimit = 3
 
-// maxSendBodyBytes bounds the request body. A WhatsApp text message is far
-// smaller; an unbounded read is a free memory-exhaustion lever for anything
+// maxSendBodyBytes bounds the /v1/send request body. A WhatsApp text message is
+// far smaller; an unbounded read is a free memory-exhaustion lever for anything
 // holding a token.
 const maxSendBodyBytes = 64 << 10
+
+// maxAdminBodyBytes bounds the admin bodies, which are a JID or a boolean. The
+// lever is the same one and the token holders are the same people, so leaving
+// these unbounded while /v1/send is capped protected nothing. Smaller than the
+// send cap because nothing legitimate here approaches even this.
+const maxAdminBodyBytes = 4 << 10
 
 type server struct {
 	deps Deps
@@ -129,6 +135,10 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/send", s.authed(s.handleSend))
 	mux.HandleFunc("POST /v1/allowlist", s.authed(s.handleAllowlist))
+	// Reading the allowlist is admin-gated like adding to it: the list names
+	// every contact that has escaped reply-only, which is exactly the set an
+	// attacker holding a consumer token would want.
+	mux.HandleFunc("GET /v1/allowlist", s.authed(s.handleListAllowlist))
 	mux.HandleFunc("POST /v1/kill", s.authed(s.handleKill))
 	return mux
 }

@@ -96,3 +96,51 @@ func TestRailOrderIsPinned(t *testing.T) {
 		t.Fatalf("a clean request must be allowed, got %+v", d)
 	}
 }
+
+// countingStore records how many volume reads a single Evaluate performs, so
+// the short-circuit is a tested property rather than a comment. The rail order
+// exists precisely so an early refusal never pays for the expensive reads; a
+// chain that evaluates every rail first still returns the right verdict, which
+// is why this went unnoticed.
+type countingStore struct {
+	*store.Memory
+	reads int
+}
+
+func (c *countingStore) OutboundCountForConsumer(consumer string, since time.Time) (int, error) {
+	c.reads++
+	return c.Memory.OutboundCountForConsumer(consumer, since)
+}
+
+func (c *countingStore) OutboundCountForContact(jid string, since time.Time) (int, error) {
+	c.reads++
+	return c.Memory.OutboundCountForContact(jid, since)
+}
+
+func (c *countingStore) OutboundCountTotal(since time.Time) (int, error) {
+	c.reads++
+	return c.Memory.OutboundCountTotal(since)
+}
+
+func (c *countingStore) ConsecutiveOutbound(jid string) (int, error) {
+	c.reads++
+	return c.Memory.ConsecutiveOutbound(jid)
+}
+
+func TestRefusedChainStopsAtTheFirstRail(t *testing.T) {
+	s := &countingStore{Memory: store.NewMemory()}
+	s.SetKill(true)
+	e := NewEngine(s, Config{
+		PerContactPerDay: 10, ConsecutiveMax: 3, GlobalDailyCap: 150,
+		Location: time.UTC,
+		Budgets:  map[string]ConsumerBudget{"hermes": {PerHour: 100, PerDay: 500}},
+	})
+
+	d := e.Evaluate(SendRequest{To: stranger, Consumer: "hermes", Now: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC), IdempotencyKey: "k1"})
+	if d.RefusedBy != RefusedKillSwitch {
+		t.Fatalf("want the kill switch to win, got %q", d.RefusedBy)
+	}
+	if s.reads != 0 {
+		t.Fatalf("the kill switch refused, so no volume rail should have run; %d counter reads happened", s.reads)
+	}
+}

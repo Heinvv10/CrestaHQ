@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,5 +183,43 @@ func TestHealthFailsClosedWithoutConnectionState(t *testing.T) {
 	rec := get(h, "/v1/health")
 	if rec.Code != http.StatusServiceUnavailable || decode(t, rec)["connected"] != false {
 		t.Fatalf("an unwired connection must degrade, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestListAllowlistIsAdminGated: the list names every contact that has escaped
+// reply-only, which is exactly the set a leaked consumer token would want. It
+// is gated like ADDING, not like removing.
+func TestListAllowlistIsAdminGated(t *testing.T) {
+	h, st, _ := testHandler(t)
+	st.AddAllowlist(strangerJID)
+
+	if rec := getAuthed(h, "/v1/allowlist", "tok-hermes"); rec.Code != http.StatusForbidden {
+		t.Fatalf("a non-admin consumer must not read the allowlist, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := getAuthed(h, "/v1/allowlist", "tok-operator")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("an operator must be able to read it, got %d %s", rec.Code, rec.Body.String())
+	}
+	out := decode(t, rec)
+	jids, ok := out["jids"].([]any)
+	if !ok || len(jids) != 1 || jids[0] != strangerJID {
+		t.Fatalf("want the one allowlisted jid back, got %v", out)
+	}
+}
+
+// TestAdminBodiesAreBounded: /v1/send caps its body at 64 KiB because an
+// unbounded read is a free memory-exhaustion lever for anything holding a
+// token. The admin routes are reachable by the same token holders, so leaving
+// them unbounded protected nothing.
+func TestAdminBodiesAreBounded(t *testing.T) {
+	h, _, _ := testHandler(t)
+	huge := `{"jid":"` + strings.Repeat("x", maxAdminBodyBytes+1) + `"}`
+
+	for _, path := range []string{"/v1/allowlist", "/v1/kill"} {
+		rec := post(h, path, "tok-operator", huge)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("%s accepted a %d-byte body; admin bodies must be bounded", path, len(huge))
+		}
 	}
 }

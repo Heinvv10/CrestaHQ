@@ -17,7 +17,8 @@ type allowlistBody struct {
 
 func (s *server) handleAllowlist(w http.ResponseWriter, r *http.Request, consumer config.Consumer) {
 	var body allowlistBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.JID == "" {
+	if err := json.NewDecoder(
+		http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)).Decode(&body); err != nil || body.JID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "jid is required"})
 		return
 	}
@@ -44,13 +45,30 @@ func (s *server) handleAllowlist(w http.ResponseWriter, r *http.Request, consume
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleListAllowlist answers "who has escaped reply-only right now". Until
+// this existed the only way to ask was grepping the log for past AddAllowlist
+// lines, which misses everything added before the current log file — and an
+// allowlisted JID has nothing but the global daily cap in front of it.
+func (s *server) handleListAllowlist(w http.ResponseWriter, _ *http.Request, consumer config.Consumer) {
+	if !requireAdmin(w, consumer, "reading the allowlist") {
+		return
+	}
+	jids, err := s.deps.Store.ListAllowlist()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jids": jids, "count": len(jids)})
+}
+
 type killBody struct {
 	On bool `json:"on"`
 }
 
 func (s *server) handleKill(w http.ResponseWriter, r *http.Request, consumer config.Consumer) {
 	var body killBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(
+		http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}

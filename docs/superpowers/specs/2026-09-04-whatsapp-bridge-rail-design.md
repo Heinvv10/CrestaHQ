@@ -195,14 +195,30 @@ Evaluated in order. First refusal wins and returns a machine-readable
 | # | Rail | Rule | Rationale |
 |---|---|---|---|
 | 1 | Kill switch | Refuse all outbound; stay connected to receive | Incident response without going blind |
-| 2 | Consumer budget | Per-token daily + hourly ceiling | Throttle one consumer to zero without affecting the other |
-| 3 | **Reply-only** | Outbound to a JID that has never messaged this number is refused | The core protection. Cold DMs killed +063; the reply-only group path survived months |
-| 4 | Allowlist | The only override for #3. One JID at a time, explicit call. Never bulk, never by import | Escape hatch that is deliberately painful at volume |
-| 5 | Per-contact cap | Max 10 outbound/contact/day; max 3 consecutive outbound with no inbound between | Stops a looping agent machine-gunning one person — the likeliest bug on a rail with no window |
-| 6 | Global daily cap | Default 150 outbound/day | Sits below ~120/day, a volume already proven fatal |
-| 7 | Pacing | Serialised queue; length-proportional delay + jitter; minimum inter-send gap | Humans do not emit three messages in 400 ms |
-| 8 | Quiet hours | Refuse outside configured local hours, per consumer | Ban signal and customer-relations problem alike |
-| 9 | Idempotency | `idempotencyKey` deduped against a persisted table; repeat returns the original result | Retries must never double-message |
+| 2 | Idempotency | `idempotencyKey` deduped against a persisted table; repeat returns the original result. A key is bound to ONE recipient — reuse across recipients is refused (`idempotency_key_reused`), never answered as a duplicate | Retries must never double-message; and answering a reused key with another contact's result is a silent NON-delivery, which is worse |
+| 3 | Consumer budget | Per-token daily + hourly ceiling | Throttle one consumer to zero without affecting the other |
+| 4 | Quiet hours | Refuse outside configured local hours, per consumer (each consumer may override the deployment window; unset inherits it) | Ban signal and customer-relations problem alike |
+| 5 | **Reply-only** | Outbound to a JID that has never messaged this number is refused | The core protection. Cold DMs killed +063; the reply-only group path survived months |
+| 6 | Allowlist | The only override for #5. One JID at a time, explicit call. Never bulk, never by import | Escape hatch that is deliberately painful at volume |
+| 7 | Per-contact cap | Max 10 outbound/contact/day; max 3 consecutive outbound with no inbound between | Stops a looping agent machine-gunning one person — the likeliest bug on a rail with no window |
+| 8 | Global daily cap | Default 150 outbound/day | Sits below ~120/day, a volume already proven fatal |
+| 9 | Pacing | Serialised queue; length-proportional delay + jitter; minimum inter-send gap | Humans do not emit three messages in 400 ms |
+
+**Amended 2026-09-04, after implementation.** This table originally ran
+kill → budget → reply-only → allowlist → caps → pacing → quiet → idempotency.
+The built order is the one above, and the SPEC was corrected to match the code
+rather than the other way round: no rail has side effects and the first refusal
+wins, so the two orders return the same verdict for every request and differ
+only in the reported `refusedBy` — but the built order puts the cheap gates
+first and the expensive Store reads last, so a refused send never pays for
+counters nobody will read. Two specific improvements: idempotency now answers a
+replay before any counter is consulted, so a retry cannot consume budget; and
+quiet hours, which needs no Store read at all, is settled before reply-only and
+the caps. `rails/engine.go` documents the same order and
+`rails/order_test.go` pins it.
+
+Pacing is listed last because it is not a refusal at all — it is `wa.Queue`
+delaying a send the rails have already allowed, one layer below this chain.
 
 ### Invariants
 

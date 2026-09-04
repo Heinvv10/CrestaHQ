@@ -41,7 +41,7 @@ Everything comes from the environment (systemd reads
 | `ALLOW_PUBLIC_BIND` | unset | `1` disables that refusal. Only for an operator fronting this with a proxy that does its own auth. |
 | `DB_PATH` | `./wa-agent-bridge.db` | Rail state (messages, allowlist, idempotency, flags) |
 | `SESSION_DIR` | `./session` | whatsmeow session store (`session.db` lives here) |
-| `OWNER_JID` | — | Restricts forwarding to this one sender (matched on the user part, device-suffix-agnostic; a bare user with no `@server` matches any server). Non-owner inbound is still recorded (reply-only history stays accurate) but never posted to a consumer webhook. Unset accepts every sender — the phase-1 default. |
+| `OWNER_JID` | — | Restricts forwarding to this one sender (matched on the user part, device-suffix-agnostic; a bare user with no `@server` matches any server). Non-owner inbound is still recorded (reply-only history stays accurate) but never posted to a consumer webhook. Unset accepts every sender — the **phase-2** shape, and the only safe default (unset meaning "accept none" would brick a deployment that omits the variable, silently and with no error to read). **Phase 1 should SET it:** the design has the bridge verify the sender against the owner JID and drop anything else, because the number is unpublished and the only intended sender is the owner. This row previously called unset "the phase-1 default", contradicting `api/webhook.go`; that was the stale half. |
 | `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin\|quietStartHour\|quietEndHour`, comma-separated. See below. |
 | `CAP_PER_CONTACT_PER_DAY` | `10` | Rail 5 |
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |
@@ -96,6 +96,7 @@ restart.**
 | `GET` | `/v1/health` | none | For an off-box monitor. Connection state + counters only — never a token, JID or body. `503` when degraded or disconnected. |
 | `POST` | `/v1/send` | bearer | `{"to","text","idempotencyKey"}`. `idempotencyKey` is **required**. |
 | `POST` | `/v1/allowlist` | bearer (**admin to add**) | `{"jid","remove":bool}` |
+| `GET` | `/v1/allowlist` | bearer (**admin**) | `{"jids":[...],"count":N}` — who has escaped reply-only right now |
 | `POST` | `/v1/kill` | bearer (**admin to lift**) | `{"on":bool}` |
 
 ## First pairing

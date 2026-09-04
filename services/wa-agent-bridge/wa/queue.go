@@ -67,6 +67,12 @@ func (q *Queue) Send(ctx context.Context, jid, text string) (string, error) {
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
+			// ctx.Err(), NOT one of the ambiguous errors: nothing has been
+			// dispatched yet, so this send provably never reached the socket.
+			// The distinction is load-bearing one layer up — api.handleSendError
+			// RELEASES the idempotency reservation for a definitive failure and
+			// deliberately leaves it to expire for an ambiguous one, and
+			// releasing it here is correct precisely because no message exists.
 			return "", ctx.Err()
 		}
 	}

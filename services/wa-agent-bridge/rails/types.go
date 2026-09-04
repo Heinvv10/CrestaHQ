@@ -115,6 +115,11 @@ type Store interface {
 	IsAllowlisted(jid string) (bool, error)
 	AddAllowlist(jid string) error
 	RemoveAllowlist(jid string) error
+	// ListAllowlist returns every allowlisted JID, sorted. "Who has escaped
+	// reply-only right now" is the question an operator asks first during an
+	// incident, and answering it by grepping logs for past AddAllowlist calls
+	// misses every entry added before the current log file.
+	ListAllowlist() ([]string, error)
 
 	OutboundCountForContact(jid string, since time.Time) (int, error)
 	// ConsecutiveOutbound returns the number of outbound messages sent to this
