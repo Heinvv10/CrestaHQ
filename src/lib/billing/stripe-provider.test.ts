@@ -128,6 +128,7 @@ describe("createPrice / deactivatePrice / updateProduct", () => {
 
     const result = await provider.createPrice({
       productId: "prod_1",
+      productName: "Growth",
       unitAmountCents: 4900,
       currency: "aud",
       interval: "year",
@@ -229,6 +230,7 @@ describe("ensureCustomer", () => {
 describe("createSubscriptionCheckout", () => {
   const input = {
     customerId: "cus_1",
+    payerEmail: null,
     priceId: "price_m",
     successUrl: "https://app.test/ok",
     cancelUrl: "https://app.test/no",
@@ -301,6 +303,7 @@ describe("createOneTimeCheckout", () => {
     const result = await provider.createOneTimeCheckout({
       ...base,
       customerId: "cus_1",
+      payerEmail: null,
     });
 
     expect(stripeMock.checkout.sessions.create).toHaveBeenCalledWith({
@@ -332,7 +335,11 @@ describe("createOneTimeCheckout", () => {
       id: "cs_2",
       url: "https://checkout.test/cs_2",
     });
-    await provider.createOneTimeCheckout({ ...base, customerId: null });
+    await provider.createOneTimeCheckout({
+      ...base,
+      customerId: null,
+      payerEmail: null,
+    });
     expect(
       stripeMock.checkout.sessions.create.mock.calls[0][0]
     ).not.toHaveProperty("customer");

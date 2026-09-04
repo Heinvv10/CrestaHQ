@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { BillingInterval } from "@/types/billing";
+import { PaystackBillingProvider } from "./paystack-provider";
 import { StripeBillingProvider } from "./stripe-provider";
 
 /**
@@ -24,7 +25,7 @@ import { StripeBillingProvider } from "./stripe-provider";
  */
 export interface BillingProvider {
   /** Stable identifier for logs/diagnostics. */
-  readonly id: "stripe";
+  readonly id: "stripe" | "paystack";
 
   /** True when this deployment has credentials for the provider. */
   isConfigured(): boolean;
@@ -123,6 +124,12 @@ export interface CreatePlanResult {
 
 export interface CreatePriceInput {
   productId: string;
+  /**
+   * The plan's display name. Stripe ignores it (a Price has no name), but a
+   * Paystack Plan carries the name the payer sees on checkout and on their
+   * receipt, and there is no product to inherit it from.
+   */
+  productName: string;
   unitAmountCents: number;
   currency: string;
   interval: BillingInterval;
@@ -155,6 +162,13 @@ export interface SubscriptionCheckoutInput {
 export interface OneTimeCheckoutInput {
   /** Attach to an existing customer when one exists; null = guest checkout. */
   customerId: string | null;
+  /**
+   * Who to bill when there is no customer yet. Stripe can open a guest
+   * checkout and collect it on the page; Paystack cannot open one at all
+   * without an email, so a provider that needs it fails loudly rather than
+   * charging the wrong person.
+   */
+  payerEmail: string | null;
   currency: string;
   amountCents: number;
   /** What the payer sees on the checkout line item. */
@@ -186,10 +200,32 @@ let cached: BillingProvider | null = null;
 /**
  * The Client Billing provider for this deployment.
  *
- * Always Stripe today. Environment-driven selection lands with the second
- * provider — adding it here is the only change the call sites need.
+ * Selection is by which secret is present, not by a separate switch: a
+ * deployment holding only one provider's key cannot be misconfigured into
+ * calling the other. `BILLING_PROVIDER` breaks the tie when both are set,
+ * which is only the case while a deployment is moving between them.
+ *
+ * Defaulting to Stripe when neither key is set keeps `isConfigured()` false
+ * and every route's "billing isn't configured" path intact.
  */
 export function getBillingProvider(): BillingProvider {
-  if (!cached) cached = new StripeBillingProvider();
+  if (!cached) cached = new (selectProviderClass())();
   return cached;
+}
+
+function selectProviderClass():
+  | typeof StripeBillingProvider
+  | typeof PaystackBillingProvider {
+  const forced = process.env.BILLING_PROVIDER?.trim().toLowerCase();
+  if (forced === "paystack") return PaystackBillingProvider;
+  if (forced === "stripe") return StripeBillingProvider;
+  const hasPaystack = !!process.env.PAYSTACK_SECRET_KEY?.trim();
+  const hasStripe = !!process.env.STRIPE_SECRET_KEY?.trim();
+  if (hasPaystack && !hasStripe) return PaystackBillingProvider;
+  return StripeBillingProvider;
+}
+
+/** Test-only: drop the memoized provider so env changes take effect. */
+export function resetBillingProviderForTests(): void {
+  cached = null;
 }
