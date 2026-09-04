@@ -1,0 +1,176 @@
+// Package health polls every tenant's bridge for its own view of its health,
+// and reconciles what that poll observed back into the store.
+//
+// It never handles message content — it only reads counters and booleans off
+// the bridge's admin API.
+package health
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sync"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
+)
+
+// Report is one tenant's health as observed by a single poll.
+type Report struct {
+	Reachable             bool
+	Connected             bool
+	Killed                bool
+	Degraded              bool
+	OutboundLast24h       int
+	DailyCap              int
+	LastInboundAgeSeconds *int
+	Problems              []string
+	Err                   string
+}
+
+// bridgeHealthBody mirrors wa-agent-bridge's /v1/health response shape.
+type bridgeHealthBody struct {
+	Connected             bool     `json:"connected"`
+	Killed                bool     `json:"killed"`
+	Degraded              bool     `json:"degraded"`
+	OutboundLast24h       int      `json:"outboundLast24h"`
+	DailyCap              int      `json:"dailyCap"`
+	LastInboundAgeSeconds *int     `json:"lastInboundAgeSeconds"`
+	Problems              []string `json:"problems"`
+}
+
+// Poller polls every tenant's bridge concurrently, bounded by Concurrency.
+type Poller struct {
+	client *http.Client
+	token  func(store.Tenant) string
+
+	// BaseURL derives a bridge's admin base URL from its tenant row. A field
+	// rather than a hardcoded scheme so tests can point it at an httptest
+	// server; production leaves it at the default 127.0.0.1:<port> — the
+	// bridge only ever listens on loopback.
+	BaseURL func(store.Tenant) string
+
+	// Concurrency bounds how many bridges are polled at once. Zero means
+	// unbounded (fine for the tenant counts this manager expects).
+	Concurrency int
+}
+
+// New builds a Poller. token derives the per-tenant bearer token the bridge
+// expects; it is never logged.
+func New(client *http.Client, token func(store.Tenant) string) *Poller {
+	return &Poller{
+		client: client,
+		token:  token,
+		BaseURL: func(t store.Tenant) string {
+			return fmt.Sprintf("http://127.0.0.1:%d", t.Port)
+		},
+	}
+}
+
+// Snapshot polls every tenant and returns one Report per tenant id.
+func (p *Poller) Snapshot(ctx context.Context, tenants []store.Tenant) map[string]Report {
+	out := make(map[string]Report, len(tenants))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	sem := make(chan struct{}, p.concurrency())
+	for _, t := range tenants {
+		wg.Add(1)
+		go func(t store.Tenant) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			r := p.poll(ctx, t)
+			mu.Lock()
+			out[t.ID] = r
+			mu.Unlock()
+		}(t)
+	}
+	wg.Wait()
+	return out
+}
+
+func (p *Poller) concurrency() int {
+	if p.Concurrency > 0 {
+		return p.Concurrency
+	}
+	return 1 << 20 // effectively unbounded
+}
+
+// poll fetches one tenant's health. A response that arrived at all — any
+// status code — is Reachable; only a transport-level failure (connection
+// refused, timeout, DNS) is not. Conflating a degraded-but-answering bridge
+// with a genuinely unreachable one would report the wrong cause during an
+// incident, which is exactly the failure this endpoint exists to catch.
+func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
+	url := p.BaseURL(t) + "/v1/health"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Report{Reachable: false, Err: "building request: " + err.Error()}
+	}
+	req.Header.Set("Authorization", "Bearer "+p.token(t))
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		// A URL can carry a token in the query string on a misconfigured
+		// BaseURL; err from net/http already includes the URL, so redact
+		// rather than pass it straight into the report.
+		return Report{Reachable: false, Err: "unreachable: request failed"}
+	}
+	defer resp.Body.Close()
+
+	var body bridgeHealthBody
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return Report{Reachable: true, Err: fmt.Sprintf("decoding response (status %d): %s", resp.StatusCode, err.Error())}
+	}
+
+	return Report{
+		Reachable:             true,
+		Connected:             body.Connected,
+		Killed:                body.Killed,
+		Degraded:              body.Degraded,
+		OutboundLast24h:       body.OutboundLast24h,
+		DailyCap:              body.DailyCap,
+		LastInboundAgeSeconds: body.LastInboundAgeSeconds,
+		Problems:              body.Problems,
+	}
+}
+
+// Reconcile writes what the poll observed back into tenant state, and records
+// the transition once. A bridge whose kill switch is set and whose socket is
+// down has been logged out — banned, or unlinked from the phone — and that is
+// the moment an operator needs dated, not inferred later from a red card.
+//
+// Transitions are recorded only on CHANGE. Polling runs continuously; an event
+// per poll would bury the one line that matters under thousands of duplicates.
+func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Report) error {
+	for _, t := range tenants {
+		r, ok := reports[t.ID]
+		if !ok || !r.Reachable {
+			// A manager that cannot reach a bridge knows only that it cannot
+			// see it, not that the number is dead. Writing state here would
+			// mark every tenant logged-out during a manager restart or a
+			// brief network blip — a worse failure than the one detected.
+			continue
+		}
+
+		switch {
+		case r.Connected:
+			if err := st.SetTenantState(t.ID, store.StateRunning, ""); err != nil {
+				return err
+			}
+		case r.Killed && !r.Connected:
+			if t.State == store.StateLoggedOut {
+				continue
+			}
+			if err := st.SetTenantState(t.ID, store.StateLoggedOut, ""); err != nil {
+				return err
+			}
+			if err := st.AppendEvent(t.ID, "logged_out", "bridge reports killed and disconnected"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
