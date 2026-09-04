@@ -98,7 +98,7 @@ own outright post-migration.
 | # | Task | Effort | Notes |
 |---|---|---|---|
 | 1.1 | **Paystack rail** replacing Stripe in Client Billing | **5–8 d** (revised) | **NOT a one-line seam — that was an error.** See 1.1 detail |
-| 1.2 | **Meta Cloud API port** from `ndzinga-lms` | 2–3 d | Not a build. See table below |
+| 1.2 | ~~Meta Cloud API port~~ **BUILT 2026-09-04** — unproven against a live WABA | 1 d | **It was a build, not a port.** See 1.2 detail |
 | 1.3 | **Recurring / automated invoicing** | 3–4 d | Genuinely absent here too — only Stripe subscriptions in `billing-service.ts`. Do not assume we inherit it |
 | 1.4 | ~~Test suite on billing + comms~~ **DONE 2026-09-03** (`cf3a445`, `35852ff`) | — | **3 tests → 233.** Guards, not happy paths; 61 verified by deleting the guard and confirming a test fails. See 1.4 detail |
 
@@ -159,7 +159,33 @@ coverage by test count.
 **Still over the 300-line cap** (pre-existing, not blocking): `stripe-provider.test.ts` (427) and
 `api/reviews/feedback/route.test.ts` (357). Both have clean `describe` seams to split along.
 
-### 1.2 — what already exists in `ndzinga-lms`
+### 1.2 detail — CORRECTED 2026-09-04
+
+**The estimate said "not a build". It was a build.** `ndzinga-lms` is
+Prisma/Postgres and tenant-scoped; CrestaHQ is Firestore and sub-account-scoped.
+Only `send-mode.ts` (~30 lines of pure logic) and the Graph template calls
+ported. The sender, the inbound webhook, credential storage and template
+registration were all rewritten. It still came in under the estimate.
+
+**Shipped** (PRs #4, #8 + 9 pre-workflow commits): a three-arm `WhatsAppProvider`
+seam — `twilio` (default, unchanged) / `cloud` / `bridge` (stub) — selected by
+one field per sub-account, so a cutover is reversible in seconds. That shape was
+chosen deliberately: moving a number between BSPs resets its WABA quality tier
+and throttles it for weeks, and an all-or-nothing switch would be untestable.
+Full design + acceptance criteria: [WHATSAPP_PROVIDER_PLAN.md](WHATSAPP_PROVIDER_PLAN.md).
+
+**The saving is now structural.** `send-mode.ts` makes free-form win whenever
+it is legal and a template the fallback for a closed window only — the ~$87/mo
+in 0.3 no longer depends on a workflow convention someone can undo.
+
+⚠️ **UNPROVEN.** Nothing has touched a real WABA. Every check is a mock, and
+the deployment has no Meta credentials set. Until the acceptance criteria run
+live, treat 1.2 as built, not working.
+
+**Still open:** the `bridge` arm (1.2b), and the WABA cutover itself — which
+remains gated on the quality-tier reset warning below.
+
+### What `ndzinga-lms` provided
 
 | Piece | File |
 |---|---|
