@@ -12,12 +12,12 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "node scripts/check-capability-tenancy.mjs && eslint --max-warnings 51",
+    "lint": "node scripts/check-capability-tenancy.mjs && eslint --max-warnings 0",
     "check:tenancy": "node scripts/check-capability-tenancy.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ci:check": "pnpm lint && npx tsc --noEmit && pnpm test && pnpm build"
+    "ci:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm build"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

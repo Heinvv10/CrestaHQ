@@ -934,8 +934,10 @@ Execution goes through [src/lib/server/websites-service.ts](src/lib/server/websi
 | gitleaks secret scan | CI | yes |
 | Blind `/review` | you, before merge | yes |
 
-`pnpm ci:check` runs the first four locally — the same commands CI runs, so a
-green local run means a green pipeline.
+`pnpm ci:check` runs the first four locally — byte-for-byte the same commands
+CI runs, so a green local run means a green pipeline. Keep them identical; a
+`npx` here and a `pnpm exec` there is the first millimetre of the same drift
+that let FibreFlow's baselines diverge across five files.
 
 **Nothing in CI is `continue-on-error`, and nothing should become so.** The
 entire gate takes ~52s, so there is no speed argument for softening a step. If
@@ -944,9 +946,14 @@ run and not running is worse than no gate, because it buys false confidence.
 (FibreFlow's unit tests were `continue-on-error` while a deadlocked suite
 reported green for months.)
 
-**The ESLint warning cap lives in exactly one place** — the `lint` script in
-`package.json`. Never copy that number into a workflow, a deploy script or a
-doc. FibreFlow ended up with the same baseline in five files, drifted apart,
+**There is no warning cap to drift.** `pnpm lint` runs at `--max-warnings 0`,
+and `eslint.config.mjs` honours the `_`-prefix convention the code already
+uses, so "deliberately unused" is expressed in the code rather than absorbed
+into a budget. A cap is a one-way ratchet: fix one warning and it silently
+grows slack for the next. Zero has no slack.
+
+If a cap ever becomes unavoidable, it lives in exactly ONE place — the `lint`
+script — and is never copied into a workflow, a deploy script or a doc. FibreFlow ended up with the same baseline in five files, drifted apart,
 with the CI copy so loose the gate could not fail; they now run a second gate
 whose only job is guarding the first. The way to never need that is to never
 write the number twice.

@@ -31,15 +31,28 @@ jobs:
     name: Lint, typecheck, test, build
     runs-on: [self-hosted, linux, velo, crestahq]
     timeout-minutes: 20
-    # Never run CI for a fork's PR on a self-hosted runner: the job would
-    # execute untrusted code on this machine.
+    # Skips a fork's PR. Be clear about what this does and does not buy:
+    # `pull_request` evaluates the workflow file from the PR's OWN head, so a
+    # PR can rewrite or delete this line, and the rewritten version is what
+    # runs. It stops accidental fork execution; it is not a defence against a
+    # deliberately crafted PR.
+    #
+    # The real control is that this repo is private and single-author, so
+    # opening a PR at all requires access this machine's owner controls.
+    # Residual risk accepted on that basis. If a collaborator is ever added,
+    # this needs revisiting — self-hosted runners execute PR code on a
+    # workstation that also hosts four other repos' runners.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
+      # self-hosted runner an action runs with this machine's filesystem in
+      # reach — the same reasoning that made the gitleaks download not worth
+      # it applies to anything else fetched at run time, first-party or not.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Pinned to .nvmrc so CI and a developer's shell cannot disagree about
       # the runtime. The box's system node is v20; this project needs 22.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
 
@@ -76,7 +89,11 @@ jobs:
     timeout-minutes: 10
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
+      # self-hosted runner an action runs with this machine's filesystem in
+      # reach — the same reasoning that made the gitleaks download not worth
+      # it applies to anything else fetched at run time, first-party or not.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history: a secret committed earlier and reverted is still in
           # the objects, and still needs rotating.

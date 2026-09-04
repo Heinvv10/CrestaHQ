@@ -20,6 +20,27 @@ const eslintConfig = [
       "next-env.d.ts",
     ],
   },
+  {
+    rules: {
+      // Honour the underscore convention the codebase already uses. A leading
+      // underscore is how this code says "deliberately unused" — a required
+      // positional parameter, a destructured field kept for documentation, a
+      // caught error we intentionally ignore. Without this, ESLint flags all
+      // of them and the noise is indistinguishable from real dead code.
+      //
+      // Names WITHOUT the underscore are still reported, so genuinely
+      // forgotten variables are still caught.
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ];
 
 export default eslintConfig;
