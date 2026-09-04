@@ -918,6 +918,84 @@ Execution goes through [src/lib/server/websites-service.ts](src/lib/server/websi
 - `pnpm format` — Prettier
 - `firebase deploy --only firestore:rules,firestore:indexes` — redeploy rules after any collection change
 
+## Development workflow — branch, review, merge, deploy
+
+**Never commit to `main`.** First action of any code task is a branch
+(`feat/…`, `fix/…`, `ci/…`, `docs/…`). Everything lands through a PR.
+
+### The gates
+
+| Gate | Where | Blocks? |
+|---|---|---|
+| `pnpm lint` (tenancy check + ESLint) | CI + `deploy-velo.sh` | yes |
+| `pnpm exec tsc --noEmit` | CI + deploy | yes |
+| `pnpm test` | CI + deploy | yes |
+| `pnpm build` | CI + deploy | yes |
+| gitleaks secret scan | CI | yes |
+| Blind `/review` | you, before merge | yes |
+
+`pnpm ci:check` runs the first four locally — the same commands CI runs, so a
+green local run means a green pipeline.
+
+**Nothing in CI is `continue-on-error`, and nothing should become so.** The
+entire gate takes ~52s, so there is no speed argument for softening a step. If
+a step is too slow or flaky to block, delete it instead — a gate believed to
+run and not running is worse than no gate, because it buys false confidence.
+(FibreFlow's unit tests were `continue-on-error` while a deadlocked suite
+reported green for months.)
+
+**The ESLint warning cap lives in exactly one place** — the `lint` script in
+`package.json`. Never copy that number into a workflow, a deploy script or a
+doc. FibreFlow ended up with the same baseline in five files, drifted apart,
+with the CI copy so loose the gate could not fail; they now run a second gate
+whose only job is guarding the first. The way to never need that is to never
+write the number twice.
+
+### Review — never review your own code
+
+Always dispatch a blind `/review`: a fresh agent that gets the diff and the
+CLAUDE.md rules, and none of the implementing session's reasoning. Use
+`review-team` for 500+ line diffs. Report findings verbatim; verify each one
+against the actual file before accepting or disputing it.
+
+This is not ceremony. On 2026-09-03 the WhatsApp provider seam passed lint,
+typecheck, 355 tests and a real build — and blind review still found two HIGHs:
+a Twilio-only readiness gate that made the new Cloud rail unreachable, and four
+of five send paths bypassing the seam entirely. CI cannot catch "correctly
+built, wired to the wrong thing." Review can.
+
+### Merging — the Level-3 boundary
+
+With **green CI + an APPROVED blind review**, work may merge without Hein
+reading the diff, provided all of: greenfield or additive, not customer-facing,
+touches no live client data, and objectively verified by tests that fail when
+the code is wrong.
+
+Outside that boundary a human gate stands regardless of how green CI is:
+outbound customer communication, live client data, production deploys, spending
+money, irreversible external actions.
+
+Merge with `gh pr merge <N> --merge --delete-branch` — a real merge commit, so
+the PR's individual commits stay readable in history.
+
+### CI runner
+
+CI runs on a **self-hosted runner** (`velo-crestahq-u`, labels
+`self-hosted, linux, velo, crestahq`) because GitHub-hosted runner billing is
+paused on this account. It runs as its own unix user (`gha-crestahq`) under
+`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, matching the four
+sibling runners on the same box. If PRs sit queued forever, check that service
+first — a stopped runner looks exactly like a slow CI.
+
+### Deploy
+
+`bash scripts/deploy-velo.sh` — run ON velo-server, from the deploy checkout.
+Gates run before the service is touched, so a failed build can never leave a
+half-served app returning 500s. Production deploys are refused inside business
+hours (08:00–17:00 SAST, Mon–Fri); `--force` overrides **the time window only**,
+never the gates. The deploy dir is a target, not a workspace — the script
+refuses to run against a dirty checkout.
+
 ## Environment Variables
 
 Every single credential is user-provided. Nothing ships embedded. Store in `.env.local` (local) or Vercel env vars (production). See `.env.example` for the template.

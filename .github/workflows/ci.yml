@@ -1,0 +1,99 @@
+name: CI
+
+# Runs on every PR, and on push to main as a backstop for anything that
+# reaches main another way.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A superseded PR run is worthless — cancel it. Main runs are never cancelled:
+# they are the record of what actually landed.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ONE job, deliberately.
+  #
+  # The whole gate runs in ~52s locally (lint 9s, typecheck 4s, tests 1s,
+  # build 38s), so there is nothing to gain by splitting it across jobs and
+  # nothing to gain by making any step advisory to keep the pipeline quick.
+  # Every step below BLOCKS. Nothing here is `continue-on-error`.
+  #
+  # That last point is load-bearing. In FibreFlow the unit-test step was
+  # `continue-on-error: true` and a deadlocked suite reported green for
+  # months — "it had never once produced a real result." A gate believed to
+  # run and not running is worse than no gate, because it buys false
+  # confidence. If a step here is too slow or too flaky to block, delete it
+  # rather than softening it.
+  ci:
+    name: Lint, typecheck, test, build
+    runs-on: [self-hosted, linux, velo, crestahq]
+    timeout-minutes: 20
+    # Never run CI for a fork's PR on a self-hosted runner: the job would
+    # execute untrusted code on this machine.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to .nvmrc so CI and a developer's shell cannot disagree about
+      # the runtime. The box's system node is v20; this project needs 22.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm lint` is the tenancy check (scripts/check-capability-tenancy.mjs)
+      # followed by ESLint. The warning cap lives in package.json, NOT here —
+      # one number, one place. FibreFlow ended up with the same baseline in
+      # five files, drifted apart, and the CI copy was so loose the gate could
+      # not fail; they now run a gate whose only job is guarding that gate.
+      # The way to not need that is to never write the number twice.
+      - name: Lint + tenancy check
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Tests
+        run: pnpm test
+
+      # A real build. Typecheck alone misses build-time-only failures —
+      # route-type validation, server/client boundary violations, bad imports
+      # in a page that tsc is happy with.
+      - name: Build
+        run: pnpm build
+
+  secrets:
+    name: Secret scan
+    runs-on: [self-hosted, linux, velo, crestahq]
+    timeout-minutes: 10
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a secret committed earlier and reverted is still in
+          # the objects, and still needs rotating.
+          fetch-depth: 0
+
+      # Self-hosted runners share /tmp between jobs. A gitleaks download that
+      # died mid-extract leaves residue behind and the next run fails with
+      # "Destination file path already exists" — a failure that looks like a
+      # secret finding but isn't. Learned in ApexGEO.
+      - name: Clear gitleaks tmp residue
+        run: rm -rf /tmp/gitleaks.tmp /tmp/gitleaks || true
+
+      # This repo holds Firebase admin keys, Stripe secrets, Twilio auth
+      # tokens, a Meta app secret and WhatsApp WABA tokens. FibreFlow carried
+      # a documented-but-false claim that its scanner ran in CI, and found out
+      # via a real credential leak (issue #1830) followed by a 26-credential
+      # audit. Cheap gate, expensive absence.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,7 +12,7 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "node scripts/check-capability-tenancy.mjs && eslint",
+    "lint": "node scripts/check-capability-tenancy.mjs && eslint --max-warnings 51",
     "check:tenancy": "node scripts/check-capability-tenancy.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest run",
