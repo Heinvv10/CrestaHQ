@@ -114,6 +114,13 @@ func main() {
 		log.Fatalf("connect: %v", err)
 	}
 
+	// shutdownBudget bounds the HTTP graceful drain on SIGTERM (see below). It
+	// must exceed QueueOpts.Timeout: an in-flight send holds the queue open
+	// until it times out, and letting srv.Shutdown give up first would have
+	// client.Disconnect() close the WhatsApp socket out from under that send
+	// instead of it finishing or timing out cleanly.
+	const shutdownBudget = 35 * time.Second
+
 	// The one send path. Everything outbound goes through this queue so that
 	// exactly one message is on the socket at a time and the pacing rails
 	// cannot be bypassed.
@@ -121,7 +128,7 @@ func main() {
 		MinGap:       2 * time.Second,
 		PerRuneDelay: 20 * time.Millisecond,
 		Jitter:       1500 * time.Millisecond,
-		Timeout:      30 * time.Second,
+		Timeout:      30 * time.Second, // shutdownBudget above must stay > this
 	})
 
 	handler := api.New(api.Deps{
@@ -151,7 +158,12 @@ func main() {
 
 	// Order matters: stop accepting sends, then close the socket so no further
 	// inbound arrives, then wait for the webhook deliveries already in flight.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// shutdownBudget (35s) outlasts the 30s send-queue timeout so an in-flight
+	// send gets to finish or time out on its own terms before Disconnect pulls
+	// the socket out from under it. TimeoutStopSec=60 in the systemd unit
+	// funds this 35s drain plus fanout.Wait()'s own worst case (bounded by the
+	// webhook http.Client's 10s timeout), with headroom before SIGKILL.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("WARNING http shutdown: %v", err)

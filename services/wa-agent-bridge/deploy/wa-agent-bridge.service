@@ -33,8 +33,11 @@ StandardError=append:/opt/wa-agent-bridge/bridge.log
 
 # SIGTERM is the clean path: the process stops accepting sends, closes the
 # WhatsApp socket, then drains in-flight webhook deliveries. Give it room.
-# Shutdown drains an in-flight send, which QueueOpts.Timeout bounds at 30s, so
-# the process budgets 35s. Anything shorter here SIGKILLs it mid-drain.
+# main.go's shutdownBudget const bounds the first step (HTTP graceful drain,
+# which covers an in-flight send) at 35s — chosen to outlast QueueOpts.Timeout
+# (30s). The second step, fanout.Wait(), is bounded by the webhook http.Client's
+# own 10s timeout. Worst case end to end: 35s + 10s = 45s, so TimeoutStopSec
+# must stay above that; 60s leaves 15s of headroom before SIGKILL.
 KillSignal=SIGTERM
 TimeoutStopSec=60
 
