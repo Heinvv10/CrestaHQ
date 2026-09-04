@@ -7,8 +7,12 @@ import (
 	"time"
 )
 
-// Fake is the test transport. MaxConcurrent is the assertion that matters:
-// it proves the queue actually serialises.
+// Fake is the test transport, and it lives in a _test.go file so it does not
+// compile into the shipped binary. Only same-package tests use it; if another
+// package ever needs it, export a real fixture rather than moving this back.
+//
+// MaxConcurrent is the assertion that matters: it proves the queue actually
+// serialises.
 type Fake struct {
 	mu            sync.Mutex
 	sent          []string

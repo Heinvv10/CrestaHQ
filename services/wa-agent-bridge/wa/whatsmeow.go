@@ -49,7 +49,7 @@ type Client struct {
 	connectedAt time.Time
 	loggedOut   bool
 
-	onInbound   func(jid, text string, at time.Time)
+	onInbound   func(jid, text, msgID string, at time.Time)
 	onLoggedOut func()
 }
 
@@ -62,7 +62,7 @@ var _ Transport = (*Client)(nil)
 // against.
 func NewClient(
 	sessionDir string,
-	onInbound func(jid, text string, at time.Time),
+	onInbound func(jid, text, msgID string, at time.Time),
 	onLoggedOut func(),
 ) (*Client, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -186,7 +186,11 @@ func (c *Client) handleMessage(v *events.Message) {
 		return // non-text events are out of scope
 	}
 	if c.onInbound != nil {
-		c.onInbound(v.Info.Sender.String(), text, v.Info.Timestamp)
+		// v.Info.ID is WhatsApp's own message id. Forwarding it lets a
+		// consumer dedupe a redelivery on the id rather than on the body.
+		// quotedMessageId (which of OUR messages this is a reply to) is a
+		// different lookup into ContextInfo and stays phase-2 work.
+		c.onInbound(v.Info.Sender.String(), text, v.Info.ID, v.Info.Timestamp)
 	}
 }
 

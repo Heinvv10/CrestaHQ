@@ -39,7 +39,16 @@ try:
 except Exception:
     sys.exit(0)
 val = doc.get(sys.argv[2])
-if val is not None:
+if val is None:
+    sys.exit(0)
+# `problems` is a LIST. print(val) would render it as a Python repr —
+# ["socket is not connected"] lands in the alert text as
+# ['socket is not connected'], quotes, brackets and all, in front of whoever
+# is reading the page at 3am. Join it into prose instead. Scalars are
+# unchanged, so True/False keep the capitalisation every caller compares to.
+if isinstance(val, list):
+    print(", ".join(str(v) for v in val))
+else:
     print(val)
 ' "$1" "$2" 2>/dev/null || true
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -35,7 +36,7 @@ func TestFanoutRecordsInboundAndPostsToConsumers(t *testing.T) {
 	)
 
 	jid := "27821234567@s.whatsapp.net"
-	f.Deliver(jid, "hello", time.Now())
+	f.Deliver(jid, "hello", "wamid.TEST", time.Now())
 	f.Wait()
 
 	ok, _ := st.HasInboundFrom(jid)
@@ -74,7 +75,7 @@ func TestFanoutRecordsButDoesNotNotifyDuringReplay(t *testing.T) {
 	)
 
 	jid := "27821234567@s.whatsapp.net"
-	f.Deliver(jid, "hello", time.Now())
+	f.Deliver(jid, "hello", "wamid.TEST", time.Now())
 	f.Wait()
 
 	ok, _ := st.HasInboundFrom(jid)
@@ -145,7 +146,7 @@ func TestFanoutSkipsConsumersWithNoWebhook(t *testing.T) {
 		func() bool { return false },
 	)
 	f.client.Transport = rt // same package: unexported field access is deliberate here
-	f.Deliver("27821234567@s.whatsapp.net", "hi", time.Now())
+	f.Deliver("27821234567@s.whatsapp.net", "hi", "wamid.TEST", time.Now())
 	f.Wait()
 
 	rt.mu.Lock()
@@ -173,7 +174,7 @@ func TestFanoutDropsNonOwnerButStillRecordsIt(t *testing.T) {
 	f.client.Transport = rt
 
 	stranger := "27829999999@s.whatsapp.net"
-	f.Deliver(stranger, "hello", time.Now())
+	f.Deliver(stranger, "hello", "wamid.TEST", time.Now())
 	f.Wait()
 
 	if ok, _ := st.HasInboundFrom(stranger); !ok {
@@ -204,7 +205,7 @@ func TestFanoutForwardsOwnerIncludingDeviceSuffix(t *testing.T) {
 		)
 		f.client.Transport = rt
 
-		f.Deliver(sender, "hello", time.Now())
+		f.Deliver(sender, "hello", "wamid.TEST", time.Now())
 		f.Wait()
 
 		rt.mu.Lock()
@@ -229,12 +230,53 @@ func TestFanoutWithNoOwnerConfiguredAcceptsEverySender(t *testing.T) {
 	)
 	f.client.Transport = rt
 
-	f.Deliver("27829999999@s.whatsapp.net", "hello", time.Now())
+	f.Deliver("27829999999@s.whatsapp.net", "hello", "wamid.TEST", time.Now())
 	f.Wait()
 
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if len(rt.calls) != 1 {
 		t.Fatalf("with no owner configured every sender is accepted; got %d deliveries", len(rt.calls))
+	}
+}
+
+// The inbound payload carries WhatsApp's own message id, so a consumer can
+// dedupe a redelivery on the id rather than on the body. The shape is pinned
+// here because docs/hermes-consumer.md publishes it as the complete payload,
+// and a doc describing a field the bridge does not send is worse than no doc.
+func TestInboundPayloadCarriesTheMessageID(t *testing.T) {
+	body := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body <- b
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL}},
+		"", store.NewMemory(), func() bool { return false })
+	f.Deliver(knownJID, "hello", "wamid.ABC123", time.Now())
+	f.Wait()
+
+	var payload map[string]any
+	select {
+	case b := <-body:
+		if err := json.Unmarshal(b, &payload); err != nil {
+			t.Fatalf("payload is not JSON: %q", b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no webhook delivery")
+	}
+	if payload["messageId"] != "wamid.ABC123" {
+		t.Fatalf("inbound payload must forward the WhatsApp message id, got %v", payload)
+	}
+	// The published shape is exactly these four keys.
+	for _, k := range []string{"from", "text", "messageId", "at"} {
+		if _, ok := payload[k]; !ok {
+			t.Fatalf("published payload key %q is missing: %v", k, payload)
+		}
+	}
+	if len(payload) != 4 {
+		t.Fatalf("payload gained a key the consumer contract does not publish: %v", payload)
 	}
 }

@@ -141,7 +141,7 @@ func TestInboundDispatchFilters(t *testing.T) {
 		at        time.Time
 	}
 	var seen []got
-	c := &Client{onInbound: func(jid, text string, at time.Time) {
+	c := &Client{onInbound: func(jid, text, _ string, at time.Time) {
 		seen = append(seen, got{jid, text, at})
 	}}
 
@@ -170,7 +170,7 @@ func TestExtendedTextMessageIsDispatched(t *testing.T) {
 	// ExtendedTextMessage with an empty Conversation field. Missing this
 	// makes the bridge deaf to every quoted reply.
 	var seen string
-	c := &Client{onInbound: func(_, text string, _ time.Time) { seen = text }}
+	c := &Client{onInbound: func(_, text, _ string, _ time.Time) { seen = text }}
 
 	e := msgEvent("27831234567", "", false, false)
 	e.Message = &waE2E.Message{

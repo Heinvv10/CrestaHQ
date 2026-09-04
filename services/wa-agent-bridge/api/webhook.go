@@ -58,7 +58,11 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 
 // Deliver records one inbound message and, outside the replay window, POSTs
 // it to every consumer that registered a webhook.
-func (f *Fanout) Deliver(jid, text string, at time.Time) {
+//
+// msgID is WhatsApp's own message id, forwarded so a consumer can dedupe a
+// redelivery on the id rather than on the body. It is empty when the transport
+// did not supply one; consumers must treat empty as "unknown".
+func (f *Fanout) Deliver(jid, text, msgID string, at time.Time) {
 	if err := f.store.RecordInbound(jid, at); err != nil {
 		log.Printf("WARNING inbound not recorded jid=%s err=%v", redact.JID(jid), err)
 	}
@@ -82,9 +86,10 @@ func (f *Fanout) Deliver(jid, text string, at time.Time) {
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"from": jid,
-		"text": text,
-		"at":   at.UTC().Format(time.RFC3339),
+		"from":      jid,
+		"text":      text,
+		"messageId": msgID,
+		"at":        at.UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		log.Printf("WARNING inbound payload marshal failed jid=%s err=%v", redact.JID(jid), err)

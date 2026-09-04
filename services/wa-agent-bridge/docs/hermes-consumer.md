@@ -59,12 +59,18 @@ admin slot left empty but present: `hermes|<token>|<url>|100|500||0|0`.
 The bridge POSTs, with `Authorization: Bearer <token>`:
 
 ```json
-{ "from": "27821234567@s.whatsapp.net", "text": "check the velo inbox", "at": "2026-09-04T12:00:00Z" }
+{ "from": "27821234567@s.whatsapp.net", "text": "check the velo inbox",
+  "messageId": "3EB0...", "at": "2026-09-04T12:00:00Z" }
 ```
 
-That is the complete payload shape today — **`from`, `text`, `at`, nothing
-else.** In particular there is no `quotedMessageId` (see "Not yet built"
-below).
+That is the complete payload shape today — **`from`, `text`, `messageId`,
+`at`, nothing else.** In particular there is no `quotedMessageId` (see "Not
+yet built" below).
+
+`messageId` is WhatsApp's own id for the INBOUND message. Use it to dedupe a
+redelivery on the id rather than on the body. It can be an empty string when
+the transport supplied none — treat empty as unknown, never as a value to key
+on.
 
 The consumer MUST verify the bearer token before acting.
 
@@ -148,11 +154,13 @@ duplicates the work.
 **Length budget.** Terminal output pasted into WhatsApp is unreadable. Cap
 replies at ~1200 characters, truncate, and offer `reply MORE`.
 
-**Quoted-reply correlation — not yet built.** Every outbound carries a
-`messageId` in its `/v1/send` response, but the phase-1 bridge does **not**
-forward a `quotedMessageId` on inbound — the inbound payload carries only
-`from`, `text`, `at` (confirmed above). A consumer cannot yet attach a reply
-to a *specific* prior message versus "whatever was most recently sent."
+**Quoted-reply correlation — not yet built.** Inbound now carries its own
+`messageId` (added after review), and every outbound carries one in its
+`/v1/send` response — but the phase-1 bridge still does **not** forward a
+`quotedMessageId`, i.e. which of OUR messages an inbound is replying to. That
+is a different lookup, into whatsmeow's `ContextInfo`. So a consumer can
+dedupe an inbound, but cannot yet attach a reply to a *specific* prior message
+versus "whatever was most recently sent."
 **Adding inbound `quotedMessageId` forwarding is the first task of the
 phase-2 plan**, alongside the LeadStack provider. Phase 1 proves the
 ergonomics with unquoted replies only; do not build phase-2's approval-gate
