@@ -23,6 +23,10 @@ interface SnapshotSummary {
     messageTemplates: number;
     products: number;
     workflows: number;
+    /** Absent on snapshots captured before these were carried. */
+    customFields?: number;
+    /** 1 when the snapshot carries an AI persona, 0 otherwise. */
+    aiProfile?: number;
   };
 }
 
@@ -31,7 +35,8 @@ const selectClass =
 
 /**
  * Agency-owner panel: capture a sub-account's reusable config (forms, message
- * templates, products, workflows) into a snapshot. Captured snapshots are
+ * templates, products, workflows, custom-field definitions and the AI agent
+ * persona) into a snapshot. Captured snapshots are
  * applied at sub-account CREATION time via the "Start from a snapshot" picker
  * on the new sub-account form — this panel is the capture + library surface.
  * Mirrors GoHighLevel's "snapshot" — build a proven setup once, deploy it to
@@ -100,7 +105,7 @@ export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
       const c = data.counts;
       toast.success(
         c
-          ? `Captured ${c.forms} forms, ${c.workflows} workflows, ${c.messageTemplates} templates, ${c.products} products.`
+          ? `Captured ${c.forms} forms, ${c.workflows} workflows, ${c.messageTemplates} templates, ${c.products} products, ${c.customFields ?? 0} custom fields${c.aiProfile ? ", AI persona" : ""}.`
           : "Snapshot captured.",
       );
       setName("");
@@ -126,8 +131,9 @@ export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
             </span>
           </div>
           <p className="text-xs text-muted-foreground">
-            Capture a sub-account&apos;s forms, workflows, message templates, and
-            products into a reusable template, then apply it to another
+            Capture a sub-account&apos;s forms, workflows, message templates,
+            products, custom fields and AI persona into a reusable template,
+            then apply it to another
             sub-account. Customer data and credentials are never copied.
           </p>
         </div>
@@ -196,7 +202,9 @@ export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
               <p className="text-xs text-muted-foreground">
                 {snap.counts.forms} forms · {snap.counts.workflows} workflows ·{" "}
                 {snap.counts.messageTemplates} templates ·{" "}
-                {snap.counts.products} products · from{" "}
+                {snap.counts.products} products ·{" "}
+                {snap.counts.customFields ?? 0} custom fields
+                {snap.counts.aiProfile ? " · AI persona" : ""} · from{" "}
                 {subLabel(snap.sourceSubAccountId)}
               </p>
             </div>
