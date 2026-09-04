@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
 
@@ -200,6 +203,10 @@ func allRoutes() []route {
 		{http.MethodDelete, "/api/tenants/blitz?confirm=blitz", ""},
 		{http.MethodGet, "/api/tenants/blitz/pair", ""},
 		{http.MethodPost, "/api/tenants/blitz/restart", ""},
+		// The UI is not more public than the API it fronts.
+		{http.MethodGet, "/", ""},
+		{http.MethodGet, "/tenants/blitz", ""},
+		{http.MethodGet, "/tenants/blitz/qr.png", ""},
 	}
 }
 
@@ -226,6 +233,23 @@ func TestEveryRouteRefusesWithoutTheOperatorToken(t *testing.T) {
 			if len(h.bridge.headers()) != 0 {
 				t.Fatalf("%s %s: unauthenticated request reached the bridge", rt.method, rt.path)
 			}
+		}
+	}
+}
+
+// A malformed or empty Authorization header is refused, not parsed leniently.
+// The table above passes "" as "send no header at all"; these are headers that
+// are PRESENT and unusable, which is a different code path.
+func TestMalformedAuthorizationHeadersAreRefused(t *testing.T) {
+	for _, raw := range []string{"Bearer ", "Bearer", "Bearer  ", "bearer ", "Basic " + operatorTok, operatorTok, ""} {
+		h := newHarness(t)
+		h.seed(t, "blitz", "blitz", 8412)
+		req := httptest.NewRequest(http.MethodGet, "/api/tenants", nil)
+		req.Header.Set("Authorization", raw)
+		rec := httptest.NewRecorder()
+		h.h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("Authorization %q: want 401, got %d body=%s", raw, rec.Code, rec.Body.String())
 		}
 	}
 }
@@ -417,10 +441,14 @@ func TestListReturnsTenantsWithHealth(t *testing.T) {
 		got.Tenants[blitz].Health.OutboundLast24h != 7 {
 		t.Fatalf("blitz health not reported: %+v", got.Tenants[blitz].Health)
 	}
-	// velo has no report: the poller saw nothing, and the API must say so
-	// rather than invent a healthy-looking zero value.
-	if got.Tenants[velo].Health != nil && got.Tenants[velo].Health.Reachable {
-		t.Fatalf("velo reported reachable with no poll result: %+v", got.Tenants[velo].Health)
+	// velo has no report. The API must say so with a null, not invent a
+	// health block at all: a ZERO-VALUED block is the shape a careless
+	// `reports[t.ID]` without the comma-ok would produce, and it reads as a
+	// bridge answering "not connected, nothing sent" — a live incident —
+	// when the truth is that nothing was asked. Asserting only that it is
+	// not `reachable` would let exactly that mutation through.
+	if got.Tenants[velo].Health != nil {
+		t.Fatalf("velo has no poll result but got a health block: %+v", got.Tenants[velo].Health)
 	}
 }
 
@@ -526,6 +554,82 @@ func TestTraversalPathIsNotDispatched(t *testing.T) {
 		}
 		if len(h.units.seen()) != 0 {
 			t.Fatalf("%s reached systemd", p)
+		}
+	}
+}
+
+// An incidental provisioning failure — a failed mkdir, a read-only disk — is
+// NOT a conflict and must not be relayed.
+//
+// Two things go wrong when it is. The install layout reaches any token holder,
+// and, worse, a permission error arrives as 409 Conflict: the operator is told
+// "already exists" and goes looking for a duplicate tenant that is not there.
+func TestIncidentalProvisionFailureIsNeitherDisclosedNor409(t *testing.T) {
+	h := newHarness(t)
+	h.prov.err = &os.PathError{
+		Op:   "mkdir",
+		Path: "/opt/wa-bridge/instances/acme/session",
+		Err:  syscall.EACCES,
+	}
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 for a failed mkdir, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertNoInternals(t, rec.Body.String())
+}
+
+// A refusal the provisioner authored IS a conflict, and its sentence is the
+// useful part — it names the tenant and the instance and no path.
+func TestAuthoredConflictKeepsItsStatusAndSentence(t *testing.T) {
+	h := newHarness(t)
+	h.prov.err = &provision.ConflictError{Msg: `tenant "acme" already exists; destroy it before re-provisioning`}
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409 for an authored conflict, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already exists") {
+		t.Fatalf("the conflict sentence was lost: %s", rec.Body.String())
+	}
+}
+
+func TestDestroyFailureIsNotDisclosed(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+	h.prov.err = &os.PathError{
+		Op:   "unlinkat",
+		Path: "/opt/wa-bridge/instances/blitz/session",
+		Err:  syscall.EACCES,
+	}
+
+	rec := h.do(http.MethodDelete, "/api/tenants/blitz?confirm=blitz", operatorTok, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rec.Code)
+	}
+	assertNoInternals(t, rec.Body.String())
+}
+
+// systemctl stderr names unit file paths on the host.
+func TestRestartFailureIsNotDisclosed(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz-inst", 8412)
+	h.units.err = fmt.Errorf("systemd: start wa-bridge@blitz-inst: Unit /etc/systemd/system/wa-bridge@.service not loaded")
+
+	rec := h.do(http.MethodPost, "/api/tenants/blitz/restart", operatorTok, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rec.Code)
+	}
+	assertNoInternals(t, rec.Body.String())
+}
+
+// assertNoInternals fails if a response body carries anything about the host:
+// a filesystem path, a unit file, or a raw syscall name.
+func assertNoInternals(t *testing.T, body string) {
+	t.Helper()
+	for _, leak := range []string{"/opt/", "/etc/", "mkdir", "unlinkat", "permission denied", ".service", "wa-bridge@"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("response disclosed %q: %s", leak, body)
 		}
 	}
 }

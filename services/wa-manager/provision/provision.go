@@ -39,6 +39,20 @@ type Provisioner struct {
 	opts Opts
 }
 
+// ConflictError is a refusal the provisioner ITSELF authored: this tenant, or
+// the instance name it would take, is already in use.
+//
+// It exists so a caller can tell an authored refusal from an incidental
+// failure. Create also surfaces os.MkdirAll / os.WriteFile PathErrors and raw
+// systemctl stderr, and those two kinds must not be treated alike: only an
+// authored refusal is safe to show verbatim (it names tenants and instances,
+// never a path), and only an authored refusal is a 409. Reporting a read-only
+// disk as "already exists" sends an operator hunting a duplicate tenant that
+// does not exist.
+type ConflictError struct{ Msg string }
+
+func (e *ConflictError) Error() string { return e.Msg }
+
 func New(st *store.Store, sc systemd.Controller, opts Opts) *Provisioner {
 	if opts.QuietTZ == "" {
 		opts.QuietTZ = "Africa/Johannesburg"
@@ -189,7 +203,7 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 // instead of a constraint violation, and that nothing is allocated to unwind.
 func (p *Provisioner) checkInstanceFree(tenantID, instance string) error {
 	if _, err := p.st.GetTenant(tenantID); err == nil {
-		return fmt.Errorf("provision: tenant %q already exists; destroy it before re-provisioning", tenantID)
+		return &ConflictError{Msg: fmt.Sprintf("tenant %q already exists; destroy it before re-provisioning", tenantID)}
 	}
 	existing, err := p.st.ListTenants()
 	if err != nil {
@@ -197,8 +211,8 @@ func (p *Provisioner) checkInstanceFree(tenantID, instance string) error {
 	}
 	for _, t := range existing {
 		if t.Instance == instance {
-			return fmt.Errorf("provision: tenant %q would take instance %q, already held by tenant %q",
-				tenantID, instance, t.ID)
+			return &ConflictError{Msg: fmt.Sprintf("tenant %q would take instance %q, already held by tenant %q",
+				tenantID, instance, t.ID)}
 		}
 	}
 	return nil

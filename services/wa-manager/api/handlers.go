@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
 
@@ -117,10 +119,22 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	t, err := s.deps.Provisioner.Create(req.TenantID, req.DisplayName)
 	if err != nil {
-		// The provisioner's own error is safe to show an operator: it names
-		// instances and ports, never tokens.
+		// Only a refusal the provisioner AUTHORED is relayed and called a
+		// conflict. Create also surfaces os.MkdirAll / os.WriteFile
+		// PathErrors and raw systemctl stderr, which would hand the install
+		// layout to any token holder — and, worse, would report a read-only
+		// disk as 409 "already exists", sending an operator to hunt a
+		// duplicate tenant that does not exist. The real error goes to the
+		// log, where an operator on the box can read it.
 		log.Printf("provisioning failed tenant=%s err=%v", req.TenantID, err)
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		var conflict *provision.ConflictError
+		if errors.As(err, &conflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": conflict.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not provision this tenant; check the manager log",
+		})
 		return
 	}
 	writeJSON(w, http.StatusCreated, viewOf(t, nil))
@@ -150,8 +164,14 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.Provisioner.Destroy(id); err != nil {
+		// Destroy's errors wrap RemoveAll and systemctl; neither is the
+		// caller's business. The tenant is left visibly half-destroyed and
+		// the operator can retry — see provision.Destroy on why that is the
+		// safe direction.
 		log.Printf("destroy failed tenant=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not fully tear this tenant down; check the manager log and retry",
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenantId": id, "destroyed": true})
@@ -176,12 +196,12 @@ func (s *server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.deps.Units.Stop(t.Instance); err != nil {
 		log.Printf("restart stop failed tenant=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not stop the unit: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not stop the unit; check the manager log"})
 		return
 	}
 	if err := s.deps.Units.Start(t.Instance); err != nil {
 		log.Printf("restart start failed tenant=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "stopped but could not start the unit: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the unit was stopped but did not start again; check the manager log"})
 		return
 	}
 	// A support record, not part of the operation: losing the line must not
