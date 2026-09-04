@@ -4,6 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGate } from "@/lib/auth/territory-filter";
 import { issueQuoteNumber } from "@/lib/quotes/number";
+import { sanitizeQuoteTemplate } from "@/lib/quotes/sanitize";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { DEFAULT_QUOTE } from "@/types/quotes";
 import type {
@@ -195,74 +196,16 @@ interface CreateQuotePayload {
 }
 
 /**
- * Clean + clamp the operator-supplied payload before writing. Trusts
- * the structure (TypeScript-ish typing on the client) but defends
- * against malformed values reaching Firestore.
+ * Clean + clamp the operator-supplied payload before writing. The money and
+ * document fields are shared with the recurring-invoice template and are
+ * cleaned by `sanitizeQuoteTemplate`; only the quote-only fields are handled
+ * here.
  */
 function sanitizePayload(body: CreateQuotePayload): Partial<Quote> {
-  const out: Partial<Quote> = {};
+  const out: Partial<Quote> = sanitizeQuoteTemplate(body);
 
-  if (Array.isArray(body.lineItems)) {
-    out.lineItems = body.lineItems
-      .map((item): QuoteLineItem | null => {
-        if (!item || typeof item !== "object") return null;
-        const description =
-          typeof item.description === "string" ? item.description.trim() : "";
-        const quantity = Math.max(0, Number(item.quantity) || 0);
-        const unitPrice = Math.max(0, Number(item.unitPrice) || 0);
-        const id =
-          typeof item.id === "string" && item.id ? item.id : crypto.randomUUID();
-        const productId =
-          typeof item.productId === "string" && item.productId
-            ? item.productId
-            : null;
-        return { id, description, quantity, unitPrice, productId };
-      })
-      .filter((x): x is QuoteLineItem => x !== null);
-  }
-
-  if (typeof body.currency === "string" && body.currency.trim()) {
-    out.currency = body.currency.trim().toUpperCase().slice(0, 3);
-  }
-
-  if (body.globalDiscount === null) {
-    out.globalDiscount = null;
-  } else if (
-    body.globalDiscount &&
-    typeof body.globalDiscount === "object" &&
-    (body.globalDiscount.type === "percent" || body.globalDiscount.type === "flat")
-  ) {
-    const value = Math.max(0, Number(body.globalDiscount.value) || 0);
-    out.globalDiscount = { type: body.globalDiscount.type, value };
-  }
-
-  if (body.globalTaxPercent === null) {
-    out.globalTaxPercent = null;
-  } else if (typeof body.globalTaxPercent === "number") {
-    const v = body.globalTaxPercent;
-    if (!Number.isNaN(v) && v >= 0 && v <= 100) {
-      out.globalTaxPercent = v;
-    }
-  }
-
-  if (typeof body.termsAndNotes === "string") {
-    // Cap to prevent runaway-size docs. ~10k chars is plenty for a quote.
-    out.termsAndNotes = body.termsAndNotes.trim().slice(0, 10_000);
-  }
-
-  if (body.billedToOrganization === null) {
-    out.billedToOrganization = null;
-  } else if (typeof body.billedToOrganization === "string") {
-    const trimmed = body.billedToOrganization.trim();
-    out.billedToOrganization = trimmed ? trimmed.slice(0, 200) : null;
-  }
-
-  if (body.billingAddress === null) {
-    out.billingAddress = null;
-  } else if (typeof body.billingAddress === "string") {
-    // Allow newlines for multi-line addresses; cap to keep doc size sane.
-    const trimmed = body.billingAddress.trim();
-    out.billingAddress = trimmed ? trimmed.slice(0, 1_000) : null;
+  if (typeof body.autoCreateDealOnAccept === "boolean") {
+    out.autoCreateDealOnAccept = body.autoCreateDealOnAccept;
   }
 
   if (body.validUntilDateString === null) {
@@ -280,21 +223,6 @@ function sanitizePayload(body: CreateQuotePayload): Partial<Quote> {
     if (!Number.isNaN(d.getTime())) {
       out.validUntil = Timestamp.fromDate(d) as unknown as Quote["validUntil"];
     }
-  }
-
-  if (typeof body.autoCreateDealOnAccept === "boolean") {
-    out.autoCreateDealOnAccept = body.autoCreateDealOnAccept;
-  }
-
-  if (body.paymentDueDays === null) {
-    out.paymentDueDays = null;
-  } else if (
-    typeof body.paymentDueDays === "number" &&
-    Number.isFinite(body.paymentDueDays) &&
-    body.paymentDueDays >= 0 &&
-    body.paymentDueDays <= 365
-  ) {
-    out.paymentDueDays = Math.round(body.paymentDueDays);
   }
 
   return out;

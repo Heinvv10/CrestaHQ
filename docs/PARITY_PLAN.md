@@ -99,7 +99,7 @@ own outright post-migration.
 |---|---|---|---|
 | 1.1 | ~~**Paystack rail** replacing Stripe in Client Billing~~ **BUILT 2026-09-04** (#11, #12) | — | Interface + Stripe adapter + Paystack adapter + **webhook receiver**. Unproven against a live account. See 1.1 detail |
 | 1.2 | ~~Meta Cloud API port~~ **BUILT 2026-09-04** — unproven against a live WABA | 1 d | **It was a build, not a port.** See 1.2 detail |
-| 1.3 | **Recurring / automated invoicing** — **ENGINE BUILT**, NOT yet usable | ~1 d | Schedule doc + cadence + daily cron. **No create/read API and no UI yet, so a schedule can only be made by hand-writing Firestore** — acceptance criterion 2 (a real cycle emailing a real invoice) cannot be exercised until that lands. Auto-charge is deliberately a later mode on the same schedule |
+| 1.3 | **Recurring / automated invoicing** — **USABLE**, never run live | ~1 d | Schedule doc + cadence + daily cron, plus the admin API and the operator surface at `/sa/[id]/quotes/recurring`. A schedule can now be created, edited, paused and cancelled from the UI, so acceptance criterion 2 (a real cycle emailing a real invoice) is exercisable — **it has not been exercised yet.** Auto-charge is deliberately a later mode on the same schedule |
 | 1.4 | ~~Test suite on billing + comms~~ **DONE 2026-09-03** (`cf3a445`, `35852ff`) | — | **3 tests → 233.** Guards, not happy paths; 61 verified by deleting the guard and confirming a test fails. See 1.4 detail |
 
 ### 1.1 detail — CORRECTED 2026-09-03
@@ -212,6 +212,24 @@ webhook already marks paid automatically.
 must be logged when it sends. The type already forces an author to write one, which helps at grep
 time; logging makes it useful at incident time, when someone is asking which sweep sent an
 unscoped money document. There is no system caller yet, so the field has no consumer until then.
+
+**The operator surface, added 2026-09-04.** `GET`/`POST /api/sub-accounts/[id]/recurring-invoices`
+and `GET`/`PATCH` on `/[recurringId]`, driven from `/sa/[id]/quotes/recurring`. Three decisions
+worth knowing before changing it:
+
+- **Admin-only, unlike one-off quotes.** A schedule demands money every cycle with nobody
+  watching, which is an owner-level act — and because admins are never territory-scoped, the
+  surface has no scoped-collaborator case to get wrong.
+- **No day-of-month control.** The billing day is the start date's day. Two fields that can
+  disagree would be one more thing to reconcile; the form previews the resulting date instead.
+- **`completed` is the engine's word, never the operator's,** and `cancelled` is terminal. A form
+  that could assert `completed` would let a schedule claim a history it does not have; restarting
+  billing after a cancellation is a new agreement, so it is a new schedule.
+
+A cadence or anchor edit recomputes `nextRunAt` from today — the stored value was computed from
+the old cadence, and leaving it would bill the next cycle on a day the operator just changed away
+from. The money template is the ordinary `QuoteBuilder`; a recurring invoice's template IS an
+invoice, and a second line-item editor would be a second place to fix every bug in the first.
 
 ### 1.4 detail — DONE
 
