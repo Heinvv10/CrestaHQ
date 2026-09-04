@@ -6,6 +6,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { parseScheduleUpdate } from "@/lib/recurring/schedule-input";
+import { toDate } from "@/lib/server/recurring-invoice-cycle";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
 
 export const dynamic = "force-dynamic";
@@ -72,6 +73,7 @@ export async function PATCH(
       anchorDay: schedule.anchorDay,
       timezone: schedule.timezone,
       status: schedule.status,
+      nextRunAt: toDate(schedule.nextRunAt),
     },
     new Date(),
   );

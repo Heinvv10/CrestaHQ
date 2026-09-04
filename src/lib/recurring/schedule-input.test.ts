@@ -149,6 +149,7 @@ const CURRENT = {
   anchorDay: 15,
   timezone: JHB,
   status: "active" as RecurringInvoiceStatus,
+  nextRunAt: new Date("2026-06-15T22:00:00Z"),
 };
 
 function updated(body: Record<string, unknown>, now = new Date("2026-06-10T12:00:00Z")) {
@@ -209,5 +210,64 @@ describe("parseScheduleUpdate", () => {
   it("refuses to empty the line items of a live schedule", () => {
     const result = parseScheduleUpdate({ lineItems: [] }, CURRENT, new Date());
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("blank templates and dead-on-arrival edits", () => {
+  it("refuses a template whose only line item bills for nothing", () => {
+    // The sanitiser turns `{}` into a valid zero item, so a length check alone
+    // would write a schedule that mails a nil invoice every cycle forever.
+    const result = parseScheduleCreate(createBody({ lineItems: [{}] }), "UTC");
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts a zero-priced line item that says what it is", () => {
+    // An included-in-the-retainer line is a real thing to print on an invoice.
+    const value = created({
+      lineItems: [{ id: "a", description: "Hosting (included)", quantity: 1, unitPrice: 0 }],
+    });
+    expect(value.lineItems).toHaveLength(1);
+  });
+
+  it("refuses an end date that falls before the next billing date", () => {
+    const result = parseScheduleUpdate(
+      { endMode: "on_date", endDateString: "2026-06-01" },
+      CURRENT,
+      new Date("2026-05-20T12:00:00Z"),
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("judges that end date against the cadence being set in the same edit", () => {
+    // Moving to yearly pushes the next cycle out to 2027; an end date in 2026
+    // that looked fine against the old monthly cycle no longer is.
+    const result = parseScheduleUpdate(
+      {
+        cadence: { unit: "year", interval: 1 },
+        endMode: "on_date",
+        endDateString: "2026-12-31",
+      },
+      CURRENT,
+      new Date("2026-06-20T12:00:00Z"),
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  // Note: this pins the weekly behaviour, NOT the `"anchorDay" in out` guard
+  // beside it in the source. That guard is unobservable today, because
+  // `computeFirstRunAt` ignores `anchorDay` for week cadences entirely — it is
+  // there so the next person to touch that function does not inherit a stale
+  // anchor. A test asserting it would pass either way, which is worse than none.
+  it("clears the day-of-month anchor when moving to a weekly cadence", () => {
+    const result = parseScheduleUpdate(
+      { cadence: { unit: "week", interval: 1 } },
+      CURRENT,
+      new Date("2026-06-10T12:00:00Z"),
+    );
+    expect(result.ok && result.value.anchorDay).toBeNull();
+    // Weekly starts from the edit date itself, not from the old 15th anchor.
+    expect(
+      result.ok && localDate(result.value.recomputeNextRunFrom!),
+    ).toBe("2026-06-10");
   });
 });

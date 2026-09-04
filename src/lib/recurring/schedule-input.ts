@@ -110,7 +110,7 @@ export function parseScheduleCreate(
   if (!ending.ok) return ending;
 
   const template = sanitizeQuoteTemplate(body);
-  if (!template.lineItems || template.lineItems.length === 0) {
+  if (!hasBillableLineItem(template.lineItems)) {
     return fail("Add at least one line item before saving the schedule.");
   }
 
@@ -183,6 +183,8 @@ export function parseScheduleUpdate(
     anchorDay: number | null;
     timezone: string;
     status: RecurringInvoiceStatus;
+    /** The cycle the schedule is currently pointed at. */
+    nextRunAt: Date | null;
   },
   now: Date,
 ): ParseResult<ScheduleUpdateFields> {
@@ -224,6 +226,20 @@ export function parseScheduleUpdate(
     out.anchorDay = anchorDay;
   }
 
+  if (cadenceMoved) {
+    out.recomputeNextRunFrom = computeFirstRunAt({
+      startAt: now,
+      cadence,
+      // `??` would let a week cadence's deliberate `null` fall through to the
+      // stale numeric anchor of the cadence being edited away from. No caller
+      // can observe the difference today — `computeFirstRunAt` ignores the
+      // anchor for week cadences — so this is guarding the next edit to that
+      // function, not a live bug.
+      anchorDay: "anchorDay" in out ? (out.anchorDay ?? null) : current.anchorDay,
+      timezone: current.timezone,
+    });
+  }
+
   if (
     body.endMode !== undefined ||
     body.endDateString !== undefined ||
@@ -231,6 +247,17 @@ export function parseScheduleUpdate(
   ) {
     const ending = parseEnding(body, current.timezone);
     if (!ending.ok) return ending;
+    // The engine would close such a schedule without billing, quietly and a
+    // day later. Refusing here means the operator finds out while they are
+    // still looking at the form.
+    const firstAfterEdit = out.recomputeNextRunFrom ?? current.nextRunAt;
+    if (
+      ending.value.endAt &&
+      firstAfterEdit &&
+      firstAfterEdit.getTime() > ending.value.endAt.getTime()
+    ) {
+      return fail("The end date falls before the next billing date.");
+    }
     out.endMode = ending.value.endMode;
     out.endAt = ending.value.endAt;
     out.maxCycles = ending.value.maxCycles;
@@ -244,19 +271,29 @@ export function parseScheduleUpdate(
   }
 
   const template = sanitizeQuoteTemplate(body);
-  if (template.lineItems && template.lineItems.length === 0) {
+  if (template.lineItems && !hasBillableLineItem(template.lineItems)) {
     return fail("A schedule must keep at least one line item.");
   }
   Object.assign(out, template);
 
-  if (cadenceMoved) {
-    out.recomputeNextRunFrom = computeFirstRunAt({
-      startAt: now,
-      cadence,
-      anchorDay: out.anchorDay ?? current.anchorDay,
-      timezone: current.timezone,
-    });
-  }
-
   return { ok: true, value: out };
+}
+
+/**
+ * Whether the template would actually invoice for something.
+ *
+ * A count of line items is not enough: the sanitiser turns `{}` into a valid
+ * empty item, so an all-blank template passes a length check and then mails
+ * the customer a nil invoice every cycle for as long as the schedule lives. A
+ * hand-made invoice at least gets looked at once before it goes out.
+ */
+function hasBillableLineItem(
+  items: ScheduleCreateFields["lineItems"] | undefined,
+): items is NonNullable<ScheduleCreateFields["lineItems"]> {
+  return (
+    !!items &&
+    items.some(
+      (item) => item.description.trim() !== "" || item.quantity * item.unitPrice > 0,
+    )
+  );
 }
