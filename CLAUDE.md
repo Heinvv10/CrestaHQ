@@ -1052,6 +1052,36 @@ Every single credential is user-provided. Nothing ships embedded. Store in `.env
 | `STRIPE_WEBHOOK_SECRET` | `stripe listen --forward-to localhost:3000/api/webhooks/stripe` prints this |
 | `STRIPE_PRO_PRICE_ID` | Stripe Dashboard → Product catalog → create your recurring "Pro" price, copy the `price_...` ID |
 
+### Optional — Paystack (the Client Billing rail for South African agencies)
+| Var | Source |
+|---|---|
+| `PAYSTACK_SECRET_KEY` | [dashboard.paystack.com](https://dashboard.paystack.com) → Settings → API Keys & Webhooks → Secret Key. |
+| `BILLING_PROVIDER` | Optional, `stripe` \| `paystack`. Only needed while a deployment holds BOTH secrets at once. |
+
+Stripe will not onboard a South African entity for SaaS-mode rebilling, so **Client Billing**
+(agency → sub-account) can run on Paystack instead — `PaystackBillingProvider`, the second
+implementation of the `BillingProvider` interface. This is Client Billing ONLY; **Payments v1**
+(a sub-account charging its own customers with its own restricted key) is a separate integration
+and still Stripe.
+
+**Selection is by which secret is present**, not a separate switch, so a deployment holding one
+key cannot be misconfigured into calling the other. With both set it stays on Stripe unless
+`BILLING_PROVIDER=paystack` says otherwise — silently moving live subscribers to a second account
+is the worse default. With neither, `billingStripeIsConfigured()` is false and every route's
+"billing isn't configured" path is unchanged.
+
+**Three behaviours differ from Stripe, by necessity:** plan switches apply at the **renewal date**
+(Paystack cannot prorate, so a mid-cycle switch is refused rather than silently mispriced); plans
+must be priced in a currency Paystack settles (**ZAR** here — a USD plan is refused at create
+time); and there is **no billing portal** — "Update card" opens Paystack's per-subscription manage
+page. A Paystack Plan *is* the price, so a plan rename reaches Paystack only when a price is next
+minted, and retiring a price is a no-op (a plan code can only reach checkout by being stored on
+the plan doc, which the caller has just overwritten).
+
+**NOT yet built: the Paystack webhook receiver.** `lib/stripe/webhooks.ts` is what flips a
+sub-account to `active` on payment. Until the Paystack equivalent exists, a payment would arrive
+and the workspace would stay walled — so **do not bill on Paystack in production yet**.
+
 ### Required for email (disables cleanly if missing)
 | Var | Source |
 |---|---|

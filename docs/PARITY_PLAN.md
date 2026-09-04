@@ -97,7 +97,7 @@ own outright post-migration.
 
 | # | Task | Effort | Notes |
 |---|---|---|---|
-| 1.1 | **Paystack rail** replacing Stripe in Client Billing | **5–8 d** (revised) | **NOT a one-line seam — that was an error.** See 1.1 detail |
+| 1.1 | **Paystack rail** replacing Stripe in Client Billing | **~1 d left** | Interface + Stripe adapter + **`PaystackBillingProvider` BUILT**. Only the **webhook receiver** remains — without it a payment never activates a sub-account. See 1.1 detail |
 | 1.2 | ~~Meta Cloud API port~~ **BUILT 2026-09-04** — unproven against a live WABA | 1 d | **It was a build, not a port.** See 1.2 detail |
 | 1.3 | **Recurring / automated invoicing** | 3–4 d | Genuinely absent here too — only Stripe subscriptions in `billing-service.ts`. Do not assume we inherit it |
 | 1.4 | ~~Test suite on billing + comms~~ **DONE 2026-09-03** (`cf3a445`, `35852ff`) | — | **3 tests → 233.** Guards, not happy paths; 61 verified by deleting the guard and confirming a test fails. See 1.4 detail |
@@ -138,6 +138,23 @@ adapter lands first as a pure refactor with no behaviour change — that is inde
 
 **Prerequisite:** a live Paystack account for Brightsphere Technologies. The interface and the
 Stripe adapter can be built without it; the Paystack adapter cannot be verified without it.
+
+**STATUS 2026-09-04.** The account is live and verified, and `PaystackBillingProvider` is built
+(PR #11) — with both semantic gaps above resolved as decided: `immediate_prorated` is refused
+outright, and `createManagementLink` returns Paystack's per-subscription manage page. Two fields
+joined the interface for it: `CreatePriceInput.productName` (a Paystack Plan carries the name the
+payer sees; Stripe reads it off the product) and `OneTimeCheckoutInput.payerEmail` (Paystack
+cannot open a guest checkout at all). Provider selection is by which secret is present, defaulting
+to Stripe when both are.
+
+**What is still missing is the webhook receiver**, and it is the difference between a rail and
+half of one: `lib/stripe/webhooks.ts` is what flips a sub-account to `active` on payment, stamps
+`graceUntil` on a failure, and marks a one-time charge paid. Paystack posts its own events
+(`charge.success`, `subscription.create`, `invoice.payment_failed`, `subscription.disable`) to its
+own endpoint with an HMAC-SHA512 `x-paystack-signature`. Until that exists, **nothing may be
+billed on Paystack in production** — the money would arrive and the workspace would stay walled.
+
+Also unverified: every Paystack call is pinned by its request shape, not by a live round-trip.
 
 ### 1.4 detail — DONE
 
