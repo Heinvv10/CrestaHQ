@@ -211,6 +211,29 @@ store that cannot write is caught while the message can still be stopped. The
 switch exists because a store that cannot be written is one the caps cannot be
 read from either. Same admin-token release.
 
+## Running N instances
+
+One bridge process per WhatsApp number. `deploy/wa-agent-bridge@.service` is a
+templated unit — `systemctl --user start wa-agent-bridge@<instance>` starts
+one instance, reading its config from `/opt/wa-agent-bridge/<instance>/.env`.
+
+Each instance gets its own directory:
+
+- `/opt/wa-agent-bridge/<instance>/.env` — that instance's config, including
+  its own `LISTEN_ADDR` (they must differ) and `DB_PATH`.
+- `/opt/wa-agent-bridge/<instance>/session/` — that instance's whatsmeow
+  session store.
+- `/opt/wa-agent-bridge/<instance>/*.db` — that instance's rails SQLite file.
+
+The binary itself is shared at `/opt/wa-agent-bridge/bin/wa-agent-bridge` —
+every instance runs the same build; only the config under its own directory
+differs.
+
+**Two instances must never share a `DB_PATH`.** The cap serialization (per
+contact, per hour, global) is a process-local lock inside one bridge; pointing
+two processes at the same database file silently unserializes it — the caps
+would stop being enforced rather than fail loudly.
+
 ## Number swap
 
 No external system stores the phone number as an identity key, so a swap is:
