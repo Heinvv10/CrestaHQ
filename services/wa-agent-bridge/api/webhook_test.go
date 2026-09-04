@@ -29,6 +29,7 @@ func TestFanoutRecordsInboundAndPostsToConsumers(t *testing.T) {
 	st := store.NewMemory()
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: srv.URL}},
+		"", // no owner filter
 		st,
 		func() bool { return false },
 	)
@@ -67,6 +68,7 @@ func TestFanoutRecordsButDoesNotNotifyDuringReplay(t *testing.T) {
 	st := store.NewMemory()
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: srv.URL}},
+		"", // no owner filter
 		st,
 		func() bool { return true }, // in replay window
 	)
@@ -97,7 +99,7 @@ func TestNewFanoutPanicsOnNilInReplayWindow(t *testing.T) {
 			t.Fatal("expected panic on nil inReplayWindow")
 		}
 	}()
-	NewFanout(nil, nil, nil)
+	NewFanout(nil, "", nil, nil)
 }
 
 // countingRoundTripper counts every HTTP request attempted, including one
@@ -138,6 +140,7 @@ func TestFanoutSkipsConsumersWithNoWebhook(t *testing.T) {
 			{Name: "leadstack", Token: "no-webhook-token"}, // no WebhookURL — must be skipped
 			{Name: "hermes", Token: "hermes-token", WebhookURL: "http://example.invalid/hook"},
 		},
+		"", // no owner filter
 		st,
 		func() bool { return false },
 	)
@@ -152,5 +155,86 @@ func TestFanoutSkipsConsumersWithNoWebhook(t *testing.T) {
 	}
 	if rt.calls[0] != "Bearer hermes-token" {
 		t.Fatalf("delivery attempt went to the wrong consumer: %v", rt.calls)
+	}
+}
+
+// Phase 1 runs on an unpublished number: the owner is the only sender whose
+// messages should reach a consumer. The drop must happen AFTER the record, or
+// reply-only later treats a real contact as a stranger.
+func TestFanoutDropsNonOwnerButStillRecordsIt(t *testing.T) {
+	rt := &countingRoundTripper{}
+	st := store.NewMemory()
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: "http://example.invalid/hook"}},
+		"27820000001@s.whatsapp.net",
+		st,
+		func() bool { return false },
+	)
+	f.client.Transport = rt
+
+	stranger := "27829999999@s.whatsapp.net"
+	f.Deliver(stranger, "hello", time.Now())
+	f.Wait()
+
+	if ok, _ := st.HasInboundFrom(stranger); !ok {
+		t.Fatal("a dropped non-owner inbound must still be recorded; reply-only reads that history")
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.calls) != 0 {
+		t.Fatalf("non-owner inbound must not reach a consumer, got %d deliveries", len(rt.calls))
+	}
+}
+
+// The other direction: with the filter on, the owner still gets through —
+// including from a multi-device sender JID carrying a ":12" device suffix,
+// which is what whatsmeow actually reports. An exact string match would drop
+// it and the bridge would look dead.
+func TestFanoutForwardsOwnerIncludingDeviceSuffix(t *testing.T) {
+	for _, sender := range []string{
+		"27820000001@s.whatsapp.net",
+		"27820000001:12@s.whatsapp.net",
+	} {
+		rt := &countingRoundTripper{}
+		f := NewFanout(
+			[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: "http://example.invalid/hook"}},
+			"27820000001@s.whatsapp.net",
+			store.NewMemory(),
+			func() bool { return false },
+		)
+		f.client.Transport = rt
+
+		f.Deliver(sender, "hello", time.Now())
+		f.Wait()
+
+		rt.mu.Lock()
+		n := len(rt.calls)
+		rt.mu.Unlock()
+		if n != 1 {
+			t.Fatalf("owner sender %q: want 1 delivery, got %d", sender, n)
+		}
+	}
+}
+
+// An unset OWNER_JID must accept everyone. The opposite default would brick
+// every deployment that omits the variable, with nothing in the log to explain
+// why consumers went quiet.
+func TestFanoutWithNoOwnerConfiguredAcceptsEverySender(t *testing.T) {
+	rt := &countingRoundTripper{}
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: "http://example.invalid/hook"}},
+		"",
+		store.NewMemory(),
+		func() bool { return false },
+	)
+	f.client.Transport = rt
+
+	f.Deliver("27829999999@s.whatsapp.net", "hello", time.Now())
+	f.Wait()
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.calls) != 1 {
+		t.Fatalf("with no owner configured every sender is accepted; got %d deliveries", len(rt.calls))
 	}
 }

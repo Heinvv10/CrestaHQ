@@ -41,7 +41,7 @@ Everything comes from the environment (systemd reads
 | `ALLOW_PUBLIC_BIND` | unset | `1` disables that refusal. Only for an operator fronting this with a proxy that does its own auth. |
 | `DB_PATH` | `./wa-agent-bridge.db` | Rail state (messages, allowlist, idempotency, flags) |
 | `SESSION_DIR` | `./session` | whatsmeow session store (`session.db` lives here) |
-| `OWNER_JID` | — | Read into config but **not consumed by anything in phase 1**. Setting it changes no behaviour today. |
+| `OWNER_JID` | — | Restricts forwarding to this one sender (matched on the user part, device-suffix-agnostic; a bare user with no `@server` matches any server). Non-owner inbound is still recorded (reply-only history stays accurate) but never posted to a consumer webhook. Unset accepts every sender — the phase-1 default. |
 | `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin`, comma-separated. See below. |
 | `CAP_PER_CONTACT_PER_DAY` | `10` | Rail 5 |
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |

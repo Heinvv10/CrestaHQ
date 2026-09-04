@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 // bridge, not a hypothetical.
 type Fanout struct {
 	consumers      []config.Consumer
+	ownerJID       string
 	store          rails.Store
 	inReplayWindow func() bool
 	client         *http.Client
@@ -37,12 +39,17 @@ type Fanout struct {
 // silently, so a nil func panics here instead: this is caught at process
 // startup, by whoever wires *wa.Client.InReplayWindow into this
 // constructor, not at 2am against a live inbound.
-func NewFanout(consumers []config.Consumer, st rails.Store, inReplayWindow func() bool) *Fanout {
+// ownerJID, when non-empty, restricts forwarding to that one sender (see
+// Deliver). Empty accepts every sender — the phase-2 shape, and the only safe
+// default: empty meaning "accept none" would brick any deployment that omits
+// the variable, silently and with no error to read.
+func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inReplayWindow func() bool) *Fanout {
 	if inReplayWindow == nil {
 		panic("api: NewFanout requires a non-nil inReplayWindow func")
 	}
 	return &Fanout{
 		consumers:      consumers,
+		ownerJID:       ownerJID,
 		store:          st,
 		inReplayWindow: inReplayWindow,
 		client:         &http.Client{Timeout: 10 * time.Second},
@@ -58,6 +65,18 @@ func (f *Fanout) Deliver(jid, text string, at time.Time) {
 
 	if f.inReplayWindow() {
 		log.Printf("inbound during replay window jid=%s len=%s — recorded, not forwarded",
+			redact.JID(jid), redact.Body(text))
+		return
+	}
+
+	// Phase 1 runs on an unpublished number that only the owner is supposed to
+	// message. Anything else is recorded and dropped. The check sits AFTER
+	// RecordInbound for the same reason the replay gate does: reply-only
+	// decides whether a JID may be messaged at all, and it decides on recorded
+	// history — dropping the record here would leave a contact who really did
+	// message us looking like a stranger.
+	if !f.fromOwner(jid) {
+		log.Printf("inbound from non-owner jid=%s len=%s — recorded, not forwarded",
 			redact.JID(jid), redact.Body(text))
 		return
 	}
@@ -82,6 +101,43 @@ func (f *Fanout) Deliver(jid, text string, at time.Time) {
 			f.post(c, payload)
 		}(c)
 	}
+}
+
+// fromOwner reports whether jid is the configured owner. An empty ownerJID
+// means the filter is off and every sender is accepted.
+//
+// Comparison is normalised because whatsmeow's Info.Sender carries a device
+// suffix on a multi-device account ("2782...:12@s.whatsapp.net"), and an exact
+// string match against a configured "2782...@s.whatsapp.net" would then drop
+// the owner's own messages — a failure that looks exactly like a dead bridge.
+// An OWNER_JID written without a server ("2782...") is matched on the user
+// part alone, since that is the form an operator is most likely to type.
+func (f *Fanout) fromOwner(jid string) bool {
+	if f.ownerJID == "" {
+		return true
+	}
+	wantUser, wantServer := splitJID(f.ownerJID)
+	gotUser, gotServer := splitJID(jid)
+	if wantUser != gotUser {
+		return false
+	}
+	// A configured JID with no server matches any server.
+	return wantServer == "" || wantServer == gotServer
+}
+
+// splitJID returns the lowercased user part (device suffix stripped) and
+// server part of a WhatsApp JID.
+func splitJID(jid string) (user, server string) {
+	jid = strings.ToLower(strings.TrimSpace(jid))
+	if at := strings.IndexByte(jid, '@'); at >= 0 {
+		user, server = jid[:at], jid[at+1:]
+	} else {
+		user = jid
+	}
+	if colon := strings.IndexByte(user, ':'); colon >= 0 {
+		user = user[:colon]
+	}
+	return user, server
 }
 
 // post delivers one payload to one consumer's webhook. Failures are logged,

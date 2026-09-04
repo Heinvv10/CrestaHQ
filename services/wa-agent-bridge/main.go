@@ -84,7 +84,7 @@ func main() {
 	engine := rails.NewEngine(st, cfg.Rails)
 
 	gate := &replayGate{}
-	fanout := api.NewFanout(cfg.Consumers, st, gate.inReplayWindow)
+	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow)
 
 	client, err := wa.NewClient(
 		cfg.SessionDir,

@@ -3,6 +3,23 @@ Description=WhatsApp agent bridge (rails-guarded)
 After=network-online.target
 Wants=network-online.target
 
+# Bound the restart loop. A failing initial WhatsApp connect exits the process,
+# and Restart=on-failure with RestartSec=15 would otherwise retry forever at
+# ~4 attempts/minute — "retrying in a loop turns a soft flag into a harder
+# block", the exact behaviour the Go code refuses and this file would hand
+# back. RestartSec=15 never trips systemd's default 5-in-10s limit, so the
+# window has to be widened explicitly: 5 attempts in 10 minutes, then the unit
+# enters `failed` and waits for a human.
+#
+# These keys belong in [Unit], not [Service], on systemd >= 229.
+#
+# Do NOT "fix" this by deleting Restart= — that loses genuine crash recovery.
+# A LoggedOut does not exit the process (it sets the kill switch and keeps
+# serving), so it is unaffected by any of this; only the transient-connect
+# path is.
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
 [Service]
 Type=simple
 User=wabridge
@@ -16,8 +33,10 @@ StandardError=append:/opt/wa-agent-bridge/bridge.log
 
 # SIGTERM is the clean path: the process stops accepting sends, closes the
 # WhatsApp socket, then drains in-flight webhook deliveries. Give it room.
+# Shutdown drains an in-flight send, which QueueOpts.Timeout bounds at 30s, so
+# the process budgets 35s. Anything shorter here SIGKILLs it mid-drain.
 KillSignal=SIGTERM
-TimeoutStopSec=30
+TimeoutStopSec=60
 
 # The bridge holds a WhatsApp session and a token file; nothing else on the box
 # needs to read them.
