@@ -5,6 +5,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
+import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
+import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import {
   sendSmsForSubAccount,
   sendWhatsappTemplateForSubAccount,
@@ -322,8 +324,12 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     .doc(`subAccounts/${ctx.subAccountId}/whatsappTemplates/${cfg.templateId}`)
     .get();
   const tpl = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
-  if (!tpl || tpl.status !== "approved" || !tpl.contentSid) {
-    // Template was deleted, never approved, or lost approval (paused/disabled).
+  // Approval is per rail — a template cleared on Twilio has never been seen by
+  // our own WABA. Checking the flat fields would pass a template approved on
+  // the rail this workspace no longer uses.
+  const { provider: waProvider } = resolveProviderForSubAccount(ctx.subAccount);
+  if (!tpl || !isTemplateApprovedFor(tpl, waProvider)) {
+    // Deleted, never approved on this rail, or approval lost (paused/disabled).
     return { result: { kind: "next" }, log: "error:template_not_approved" };
   }
 

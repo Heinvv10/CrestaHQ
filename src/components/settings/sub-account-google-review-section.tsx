@@ -5,6 +5,8 @@ import { collection, onSnapshot, query } from "firebase/firestore";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
+import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
+import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
@@ -64,6 +66,11 @@ export function SubAccountGoogleReviewSection() {
     cfg?.triggerOnDealCompleted,
   ]);
 
+  // Which rail this workspace sends on. Resolved outside the effect so it can
+  // be a dependency — otherwise switching provider would leave the picker
+  // showing templates approved on the rail we just left.
+  const waProvider = resolveWhatsAppProviderId(subAccount?.whatsappProvider);
+
   // Approved WhatsApp templates power the channel gate + the picker.
   useEffect(() => {
     if (!subAccountId) return;
@@ -76,14 +83,17 @@ export function SubAccountGoogleReviewSection() {
         setApproved(
           snap.docs
             .map((d) => ({ ...(d.data() as WhatsappTemplateDoc), id: d.id }))
-            .filter((t) => t.status === "approved" && t.contentSid)
+            // Per-rail approval: the flat status mirrors whichever rail was
+            // last polled, so filtering on it would offer the operator a
+            // template approved on a rail this workspace does not send on.
+            .filter((t) => isTemplateApprovedFor(t, waProvider))
             .map((t) => ({ id: t.id, displayName: t.displayName })),
         );
       },
       () => setApproved([]),
     );
     return () => unsub();
-  }, [subAccountId]);
+  }, [subAccountId, waProvider]);
 
   if (!isAdmin) return null;
 

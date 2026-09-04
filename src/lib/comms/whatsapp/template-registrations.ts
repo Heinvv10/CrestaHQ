@@ -129,3 +129,40 @@ export function buildRegistrationUpdate(
 
   return update;
 }
+
+
+/**
+ * What an approval-poll tick should do, given the template's current state and
+ * the rail the workspace is on NOW (which may differ from the rail the tick
+ * was scheduled for).
+ *
+ *   "proceed"      — this tick still owns the approval; go ask the provider.
+ *   "rail-switched" — the id belongs to a rail the workspace has since left.
+ *   "stale"        — superseded by a newer submission, or already settled.
+ *
+ * The distinction matters because `pending` is a trap: the submit route
+ * accepts only draft/rejected/failed and the delete route refuses pending, so
+ * a template left pending with no live poll chain cannot be recovered from the
+ * UI at all. Treating a rail switch as an ordinary stale tick strands it there
+ * permanently.
+ */
+export function classifyPollTick(
+  tpl: RegistrationBearingTemplate | null | undefined,
+  provider: WhatsAppProviderId,
+  externalId: string,
+): "proceed" | "rail-switched" | "stale" {
+  if (!tpl || tpl.status !== "pending") return "stale";
+  if (templateRegistration(tpl, provider)?.externalId === externalId) {
+    return "proceed";
+  }
+  // The `p !== provider` term is belt-and-braces: the active rail was already
+  // matched above, so it can never match here. Kept so the intent survives a
+  // future edit to the check above.
+  const heldByAnotherRail = (
+    ["twilio", "cloud", "bridge"] as const
+  ).some(
+    (p) =>
+      p !== provider && templateRegistration(tpl, p)?.externalId === externalId,
+  );
+  return heldByAnotherRail ? "rail-switched" : "stale";
+}

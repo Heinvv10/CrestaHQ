@@ -204,3 +204,60 @@ describe("buildRegistrationUpdate", () => {
     expect(templateRegistration(merged, "cloud")?.externalId).toBe("meta-1");
   });
 });
+
+import { classifyPollTick } from "./template-registrations";
+
+describe("classifyPollTick", () => {
+  const pendingOnCloud = {
+    contentSid: null,
+    status: "pending" as const,
+    registrations: {
+      cloud: { externalId: "meta-1", status: "pending" as const, rejectionReason: null },
+    },
+  };
+
+  it("proceeds while the tick still owns the current rail's approval", () => {
+    expect(classifyPollTick(pendingOnCloud, "cloud", "meta-1")).toBe("proceed");
+  });
+
+  it("reports a rail switch when another rail holds the id being chased", () => {
+    // THE TRAP. Switching provider mid-approval used to drop the tick with no
+    // reschedule, leaving the template `pending` — a state the UI cannot
+    // escape, since submit takes only draft/rejected/failed and delete refuses
+    // pending. Only a manual Firestore edit recovered it.
+    expect(classifyPollTick(pendingOnCloud, "twilio", "meta-1")).toBe(
+      "rail-switched",
+    );
+  });
+
+  it("detects the switch in the other direction too, via the legacy flat fields", () => {
+    const pendingOnTwilio = { contentSid: "HX1", status: "pending" as const };
+    expect(classifyPollTick(pendingOnTwilio, "cloud", "HX1")).toBe(
+      "rail-switched",
+    );
+  });
+
+  it("is plain stale when the id belongs to no rail at all", () => {
+    // Re-submitted under a new id — the newer poll chain owns it.
+    expect(classifyPollTick(pendingOnCloud, "cloud", "meta-OLD")).toBe("stale");
+  });
+
+  it.each(["approved", "rejected", "failed", "draft", "paused"] as const)(
+    "is stale once the template has settled as %s",
+    (status) => {
+      expect(
+        classifyPollTick({ ...pendingOnCloud, status }, "cloud", "meta-1"),
+      ).toBe("stale");
+    },
+  );
+
+  it("is stale for a template that no longer exists", () => {
+    expect(classifyPollTick(null, "cloud", "meta-1")).toBe("stale");
+  });
+
+  it("never reports a rail switch when the SAME rail simply moved on", () => {
+    // Same rail, newer id: that is a re-submission, not a switch, and must not
+    // flip a live template to failed.
+    expect(classifyPollTick(pendingOnCloud, "cloud", "meta-old")).toBe("stale");
+  });
+});
