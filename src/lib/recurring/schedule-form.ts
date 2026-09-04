@@ -101,3 +101,16 @@ export function schedulePayload(schedule: ScheduleFormValues) {
     unpaidEscalationThreshold: schedule.unpaidEscalationThreshold,
   };
 }
+
+/**
+ * Seconds out of a Firestore timestamp that has crossed a JSON boundary.
+ *
+ * The admin SDK serialises to `_seconds`; the client SDK to `seconds`. One
+ * place knows that, so a third shape appearing later is one fix rather than a
+ * hunt through every surface that renders a date.
+ */
+export function timestampSeconds(value: unknown): number | null {
+  const raw = value as { _seconds?: number; seconds?: number } | null;
+  const seconds = raw?._seconds ?? raw?.seconds;
+  return typeof seconds === "number" ? seconds : null;
+}

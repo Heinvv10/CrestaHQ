@@ -71,6 +71,18 @@ export async function POST(
   }
 
   const db = getAdminDb();
+  // The workspace's own zone is the default billing zone, so this read has to
+  // happen before the payload can be judged. The contact read waits until the
+  // payload is known good — a malformed cadence should not cost a lookup.
+  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
+  const sub = subSnap.data() as SubAccountDoc | undefined;
+
+  const parsed = parseScheduleCreate(body, sub?.timezone ?? "UTC");
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+  const fields = parsed.value;
+
   const contactSnap = await db.doc(`contacts/${contactId}`).get();
   const contact = contactSnap.data();
   if (!contactSnap.exists || contact?.subAccountId !== subAccountId) {
@@ -84,15 +96,6 @@ export async function POST(
       { status: 400 },
     );
   }
-
-  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  const sub = subSnap.data() as SubAccountDoc | undefined;
-
-  const parsed = parseScheduleCreate(body, sub?.timezone ?? "UTC");
-  if (!parsed.ok) {
-    return NextResponse.json({ error: parsed.error }, { status: 400 });
-  }
-  const fields = parsed.value;
 
   const ref = db.collection("recurringInvoices").doc();
   const doc: Omit<RecurringInvoiceDoc, "id"> = {

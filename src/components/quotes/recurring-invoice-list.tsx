@@ -7,6 +7,7 @@ import { AlertTriangle, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
+import { timestampSeconds } from "@/lib/recurring/schedule-form";
 import { formatCurrency } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
@@ -230,14 +231,13 @@ function cadenceLabel(schedule: RecurringInvoiceDoc): string {
 }
 
 /**
- * A Firestore timestamp that has crossed a JSON boundary, rendered in the
- * schedule's own timezone — the day it bills on is the day the business is
- * in, so showing the reader's day would sometimes be a day out.
+ * A schedule's date rendered in the schedule's own timezone — the day it bills
+ * on is the day the business is in, so showing the reader's day would
+ * sometimes be a day out.
  */
 function formatDay(value: unknown, timezone: string): string {
-  const raw = value as { _seconds?: number; seconds?: number } | null;
-  const seconds = raw?._seconds ?? raw?.seconds;
-  if (typeof seconds !== "number") return "—";
+  const seconds = timestampSeconds(value);
+  if (seconds === null) return "—";
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: timezone,
     day: "numeric",

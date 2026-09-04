@@ -7,12 +7,15 @@ import { QuoteBuilder, type QuoteFormValues } from "@/components/quotes/quote-bu
 import { RecurringScheduleFields } from "@/components/quotes/recurring-schedule-fields";
 import {
   schedulePayload,
+  timestampSeconds,
   type ScheduleFormValues,
 } from "@/lib/recurring/schedule-form";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
+import { subscribeToContacts } from "@/lib/firestore/contacts";
 import { subscribeToProducts } from "@/lib/firestore/products";
+import type { Contact } from "@/types/contacts";
 import type { Product } from "@/types/products";
 import type { Quote } from "@/types/quotes";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
@@ -35,6 +38,7 @@ export default function EditRecurringInvoicePage() {
   const [schedule, setSchedule] = useState<RecurringInvoiceDoc | null>(null);
   const [form, setForm] = useState<ScheduleFormValues | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -62,11 +66,24 @@ export default function EditRecurringInvoicePage() {
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
-    const unsub = subscribeToProducts({ agencyId, subAccountId }, (all) =>
+    const unsubP = subscribeToProducts({ agencyId, subAccountId }, (all) =>
       setProducts(all.filter((p) => p.active)),
     );
-    return () => unsub();
+    const unsubC = subscribeToContacts({ agencyId, subAccountId }, setContacts);
+    return () => {
+      unsubP();
+      unsubC();
+    };
   }, [user, agencyId, subAccountId, authLoading]);
+
+  // Who is being billed. The contact is fixed for the life of the schedule, so
+  // there is no picker here — but an operator editing what a customer is
+  // charged has to be able to see which customer that is.
+  const contactName = useMemo(() => {
+    const contact = contacts.find((c) => c.id === schedule?.contactId);
+    if (!contact) return "";
+    return contact.name || contact.email || contact.phone || "(unnamed contact)";
+  }, [contacts, schedule]);
 
   const initial = useMemo(
     () => (schedule ? (schedule as unknown as Quote) : undefined),
@@ -150,7 +167,7 @@ export default function EditRecurringInvoicePage() {
           <QuoteBuilder
             kind="invoice"
             initial={initial}
-            contactName=""
+            contactName={contactName}
             products={products}
             onSave={handleSave}
             onCancel={() => router.push(saPath("/quotes/recurring"))}
@@ -186,11 +203,10 @@ function toFormValues(schedule: RecurringInvoiceDoc): ScheduleFormValues {
   };
 }
 
-/** A JSON-serialized Firestore timestamp as yyyy-mm-dd in its own zone. */
+/** A stored schedule date as yyyy-mm-dd in its own zone, for a date input. */
 function dayString(value: unknown, timezone: string): string {
-  const raw = value as { _seconds?: number; seconds?: number } | null;
-  const seconds = raw?._seconds ?? raw?.seconds;
-  if (typeof seconds !== "number") return "";
+  const seconds = timestampSeconds(value);
+  if (seconds === null) return "";
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
