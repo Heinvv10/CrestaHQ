@@ -36,15 +36,63 @@ if val is not None:
 ' "$1" "$2" 2>/dev/null || true
 }
 
+# The DSN is NOT an ingest endpoint. Sentry/Bugsink ingest lives at
+#   POST <scheme>://<host>/api/<projectId>/store/
+# with the public key carried in an X-Sentry-Auth header. POSTing the bare DSN
+# gets a 404 or a 401 — and curl exits 0 on both, so an `|| echo WARNING`
+# guard never fires and a rejected alert is indistinguishable from a delivered
+# one. That is the failure this monitor exists to make impossible, so delivery
+# is checked on the STATUS CODE and a non-2xx exits the script loudly.
+dsn_part() {
+  # $1: which part ("url" or "key"). Prints empty on an unparseable DSN.
+  python3 -c '
+import sys
+from urllib.parse import urlparse
+try:
+    u = urlparse(sys.argv[1])
+    key = u.username or ""
+    project = u.path.strip("/").split("/")[-1]
+    host = u.hostname or ""
+    if not (u.scheme and host and key and project):
+        sys.exit(0)
+    port = f":{u.port}" if u.port else ""
+    if sys.argv[2] == "key":
+        print(key)
+    else:
+        print(f"{u.scheme}://{host}{port}/api/{project}/store/")
+except Exception:
+    sys.exit(0)
+' "$BUGSINK_DSN" "$1" 2>/dev/null || true
+}
+
+INGEST_URL=$(dsn_part url)
+SENTRY_KEY=$(dsn_part key)
+if [ -z "$INGEST_URL" ] || [ -z "$SENTRY_KEY" ]; then
+  echo "FATAL: BUGSINK_DSN is not a parseable Sentry DSN (want https://<key>@<host>/<projectId>); alerts would go nowhere" >&2
+  exit 2
+fi
+
 alert() {
   local msg="$1"
   echo "ALERT: $msg" >&2
-  # Bugsink is Sentry-API-compatible; the DSN carries the project + key, so
-  # nothing beyond the message is secret here and nothing is echoed.
-  curl -sS -m 10 -X POST "$BUGSINK_DSN" \
+  # Nothing secret is echoed: the DSN's public key is exactly that, public.
+  local payload status
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"message": sys.argv[1], "level": "error", "logger": "wa-agent-bridge-monitor", "platform": "other"}))' "$msg")
+  status=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "$INGEST_URL" \
     -H 'content-type: application/json' \
-    -d "$(python3 -c 'import json,sys; print(json.dumps({"message": sys.argv[1], "level": "error", "logger": "wa-agent-bridge-monitor"}))' "$msg")" \
-    >/dev/null || echo "WARNING: could not reach Bugsink" >&2
+    -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_client=wa-agent-bridge-monitor/1.0, sentry_key=$SENTRY_KEY" \
+    -d "$payload" 2>/dev/null) || true
+  status=${status:-000}
+
+  case "$status" in
+    2*) ;;
+    *)
+      # LOUD, not a warning line nobody reads: a monitor that cannot deliver
+      # its own alert is itself the incident.
+      echo "FATAL: Bugsink REJECTED the alert (http=$status) at $INGEST_URL — this alert was NOT delivered: $msg" >&2
+      exit 3
+      ;;
+  esac
 }
 
 # curl -f would make a 503 look identical to a network failure (both non-zero
