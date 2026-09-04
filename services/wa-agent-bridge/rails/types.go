@@ -42,6 +42,13 @@ const (
 	// consumer exists, because RefusalCode values are stable API surface and
 	// splitting one later would be a breaking change.
 	RefusedInFlight RefusalCode = "in_flight"
+	// RefusedIdempotencyKeyReused means this idempotency key is already bound
+	// to a DIFFERENT recipient. It is a caller bug, not a rail refusing a
+	// message on its merits, and it must not be answered with a duplicate:
+	// returning the other contact's message id would tell the caller its
+	// original stands while this message is never sent to anyone. Silent
+	// non-delivery is worse than a loud failure, so this is loud.
+	RefusedIdempotencyKeyReused RefusalCode = "idempotency_key_reused"
 )
 
 // Decision is the chain's verdict. DuplicateOf is set when rail 2 (idempotency) recognised
@@ -110,7 +117,10 @@ type Store interface {
 	// LookupIdempotency is the cheap read-path check for a replay. It is NOT the
 	// gate — see ReserveIdempotency. A found row with an empty messageID is a
 	// reservation whose send has not completed yet.
-	LookupIdempotency(key string) (messageID string, found bool, err error)
+	// It also returns the JID the key is bound to, so a caller reusing one
+	// key for two different recipients is caught rather than answered with
+	// the other contact's message id.
+	LookupIdempotency(key string) (messageID, jid string, found bool, err error)
 
 	// ReserveIdempotency atomically claims storageKey. reserved == true means
 	// this caller won the race and owns the send; reserved == false means a
@@ -132,7 +142,11 @@ type Store interface {
 	//
 	// Keys passed here are storage keys from IdempotencyStorageKey, never raw
 	// caller keys.
-	ReserveIdempotency(storageKey string, now time.Time) (existingMessageID string, reserved bool, err error)
+	// jid binds the reservation to ONE recipient. An existing row for another
+	// recipient is never reclaimable at any age, and comes back with
+	// reserved == false and existingJID naming the other contact so the
+	// caller can be refused loudly instead of silently not sending.
+	ReserveIdempotency(storageKey, jid string, now time.Time) (existingMessageID, existingJID string, reserved bool, err error)
 
 	// ReleaseIdempotency drops a reservation whose send will never complete,
 	// so the key is usable again immediately rather than after the lease.

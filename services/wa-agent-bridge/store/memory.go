@@ -39,6 +39,7 @@ var ErrNoReservation = errors.New("store: no owned reservation for this idempote
 // reservation reclaimable rather than permanent.
 type reservation struct {
 	msgID      string
+	jid        string // the ONE recipient this key is bound to
 	reservedAt time.Time
 }
 
@@ -167,11 +168,11 @@ func (m *Memory) OutboundCountForConsumer(consumer string, since time.Time) (int
 	return n, nil
 }
 
-func (m *Memory) LookupIdempotency(key string) (string, bool, error) {
+func (m *Memory) LookupIdempotency(key string) (string, string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.idem[key]
-	return r.msgID, ok, nil
+	return r.msgID, r.jid, ok, nil
 }
 
 // ReserveIdempotency claims a key if it is unclaimed, or reclaims one whose
@@ -179,19 +180,31 @@ func (m *Memory) LookupIdempotency(key string) (string, bool, error) {
 // the write happen in ONE critical section: splitting them would reintroduce
 // the very race the reservation exists to close.
 //
+// A key bound to a DIFFERENT recipient is never reclaimable either — see the
+// jid guard below.
+//
 // A COMPLETED send (non-empty msgID) is never reclaimable at any age. That
 // guard is the whole safety of the lease: expiry may only ever free a key
 // whose message provably never got an id recorded, never a key whose message
 // was actually sent.
-func (m *Memory) ReserveIdempotency(storageKey string, now time.Time) (string, bool, error) {
+func (m *Memory) ReserveIdempotency(storageKey, jid string, now time.Time) (string, string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.idem[storageKey]
-	if ok && !(r.msgID == "" && r.reservedAt.Before(now.Add(-ReservationLease))) {
-		return r.msgID, false, nil
+	if ok {
+		// A key bound to another recipient is never reclaimable, at any age.
+		// Reclaiming it would hand this caller a row that belongs to a
+		// different contact; refusing turns a caller bug into a loud error
+		// instead of a message that is never sent.
+		if r.jid != jid {
+			return r.msgID, r.jid, false, nil
+		}
+		if !(r.msgID == "" && r.reservedAt.Before(now.Add(-ReservationLease))) {
+			return r.msgID, r.jid, false, nil
+		}
 	}
-	m.idem[storageKey] = reservation{reservedAt: now}
-	return "", true, nil
+	m.idem[storageKey] = reservation{jid: jid, reservedAt: now}
+	return "", jid, true, nil
 }
 
 // ReleaseIdempotency drops a reservation whose send will never complete.

@@ -52,7 +52,7 @@ func TestSendHappyPathRecordsOutbound(t *testing.T) {
 	}
 	// The completed send must be recorded under the SAME namespaced key the
 	// reservation used, or a retry finds nothing and duplicates the message.
-	id, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "k1"))
+	id, _, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "k1"))
 	if !found || id != "sent-1" {
 		t.Fatalf("idempotency not saved under the namespaced key (found=%v id=%q); a retry would duplicate", found, id)
 	}

@@ -8,16 +8,17 @@ import (
 	"time"
 )
 
-func (s *SQLite) LookupIdempotency(key string) (string, bool, error) {
-	var id string
-	err := s.db.QueryRow(`SELECT msg_id FROM idempotency WHERE key = ?`, key).Scan(&id)
+func (s *SQLite) LookupIdempotency(key string) (string, string, bool, error) {
+	var id, jid string
+	err := s.db.QueryRow(
+		`SELECT msg_id, jid FROM idempotency WHERE key = ?`, key).Scan(&id, &jid)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	return id, true, nil
+	return id, jid, true, nil
 }
 
 // ReserveIdempotency claims a key if it is unclaimed, or reclaims one whose
@@ -29,33 +30,43 @@ func (s *SQLite) LookupIdempotency(key string) (string, bool, error) {
 // The `msg_id = ”` guard in the WHERE clause is the crux. A completed send
 // carries a message id and is therefore NEVER reclaimable, at any age — the
 // lease may only ever free a key whose send provably never recorded a result.
-func (s *SQLite) ReserveIdempotency(storageKey string, now time.Time) (string, bool, error) {
+//
+// The `jid = excluded.jid` guard is the second crux and it is about a
+// DIFFERENT failure. A key is only meaningful for one recipient: reusing
+// "turn-1" for a second contact must not reclaim the first contact's row,
+// because the reclaim would let the caller believe its key is fresh while the
+// row it took over belonged to somebody else. Refusing here (the caller sees
+// existingJID != its own) turns a caller bug into a loud 422 instead of a
+// silent non-delivery.
+func (s *SQLite) ReserveIdempotency(storageKey, jid string, now time.Time) (string, string, bool, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO idempotency (key, msg_id, reserved_at) VALUES (?, '', ?)
+		`INSERT INTO idempotency (key, msg_id, jid, reserved_at) VALUES (?, '', ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET reserved_at = excluded.reserved_at
-		 WHERE idempotency.msg_id = '' AND idempotency.reserved_at < ?`,
-		storageKey, now.Unix(), now.Add(-ReservationLease).Unix())
+		 WHERE idempotency.msg_id = '' AND idempotency.jid = excluded.jid
+		   AND idempotency.reserved_at < ?`,
+		storageKey, jid, now.Unix(), now.Add(-ReservationLease).Unix())
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	if n == 1 {
-		return "", true, nil
+		return "", jid, true, nil
 	}
-	var id string
+	var id, existingJID string
 	if err := s.db.QueryRow(
-		`SELECT msg_id FROM idempotency WHERE key = ?`, storageKey).Scan(&id); err != nil {
+		`SELECT msg_id, jid FROM idempotency WHERE key = ?`, storageKey,
+	).Scan(&id, &existingJID); err != nil {
 		if err == sql.ErrNoRows {
 			// The row vanished between the no-op insert and this read. Fail closed:
 			// report "already reserved" so no send happens on an unclear state.
-			return "", false, nil
+			return "", "", false, nil
 		}
-		return "", false, err
+		return "", "", false, err
 	}
-	return id, false, nil
+	return id, existingJID, false, nil
 }
 
 // ReleaseIdempotency drops a reservation whose send will never complete.

@@ -15,11 +15,15 @@ import (
 // share every body below. Running these against Memory alone would leave the
 // branch that actually runs in production — SQLite's — uncovered.
 type idemStore interface {
-	ReserveIdempotency(storageKey string, now time.Time) (string, bool, error)
+	ReserveIdempotency(storageKey, jid string, now time.Time) (string, string, bool, error)
 	ReleaseIdempotency(storageKey string) error
 	SaveIdempotency(key, messageID string) error
-	LookupIdempotency(key string) (string, bool, error)
+	LookupIdempotency(key string) (string, string, bool, error)
 }
+
+// testJID is the recipient every shared body below binds its keys to. A second
+// JID appears only in the tests that are ABOUT the binding.
+const testJID = "27821234567@s.whatsapp.net"
 
 var reserveNow = time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 
@@ -77,7 +81,7 @@ func TestReserveIdempotencyIsAtomic(t *testing.T) {
 					defer done.Done()
 					ready.Done()
 					<-start // released together, so they actually contend
-					_, reserved, err := s.ReserveIdempotency(key, reserveNow)
+					_, _, reserved, err := s.ReserveIdempotency(key, testJID, reserveNow)
 					mu.Lock()
 					defer mu.Unlock()
 					if err != nil {
@@ -110,13 +114,13 @@ func TestReserveIdempotencyIsAtomic(t *testing.T) {
 // carries Duplicate(id) in production.
 func TestReserveThenSaveIsReplayable(t *testing.T) {
 	bothStores(t, func(t *testing.T, s idemStore) {
-		if _, reserved, err := s.ReserveIdempotency("k", reserveNow); err != nil || !reserved {
+		if _, _, reserved, err := s.ReserveIdempotency("k", testJID, reserveNow); err != nil || !reserved {
 			t.Fatalf("first caller must win: reserved=%v err=%v", reserved, err)
 		}
 		if err := s.SaveIdempotency("k", "msg-1"); err != nil {
 			t.Fatal(err)
 		}
-		id, reserved, err := s.ReserveIdempotency("k", reserveNow)
+		id, _, reserved, err := s.ReserveIdempotency("k", testJID, reserveNow)
 		if err != nil || reserved {
 			t.Fatalf("second caller must lose: reserved=%v err=%v", reserved, err)
 		}
@@ -131,19 +135,19 @@ func TestReserveThenSaveIsReplayable(t *testing.T) {
 // and recovery means hand-editing SQLite on a production box.
 func TestStrandedReservationIsReclaimedAfterLease(t *testing.T) {
 	bothStores(t, func(t *testing.T, s idemStore) {
-		if _, reserved, _ := s.ReserveIdempotency("k", reserveNow); !reserved {
+		if _, _, reserved, _ := s.ReserveIdempotency("k", testJID, reserveNow); !reserved {
 			t.Fatal("first caller must win")
 		}
 		// The send then dies. Nothing is ever saved.
 
 		justInside := reserveNow.Add(ReservationLease)
-		if _, reserved, err := s.ReserveIdempotency("k", justInside); err != nil || reserved {
+		if _, _, reserved, err := s.ReserveIdempotency("k", testJID, justInside); err != nil || reserved {
 			t.Fatalf("a reservation still inside its lease must NOT be reclaimable: reserved=%v err=%v",
 				reserved, err)
 		}
 
 		expired := reserveNow.Add(ReservationLease + time.Second)
-		if _, reserved, err := s.ReserveIdempotency("k", expired); err != nil || !reserved {
+		if _, _, reserved, err := s.ReserveIdempotency("k", testJID, expired); err != nil || !reserved {
 			t.Fatalf("a stranded reservation past its lease must be reclaimable: reserved=%v err=%v",
 				reserved, err)
 		}
@@ -155,14 +159,14 @@ func TestStrandedReservationIsReclaimedAfterLease(t *testing.T) {
 // age would turn a correct replay into a second real message to a customer.
 func TestCompletedReservationIsNeverReclaimed(t *testing.T) {
 	bothStores(t, func(t *testing.T, s idemStore) {
-		if _, reserved, _ := s.ReserveIdempotency("k", reserveNow); !reserved {
+		if _, _, reserved, _ := s.ReserveIdempotency("k", testJID, reserveNow); !reserved {
 			t.Fatal("first caller must win")
 		}
 		if err := s.SaveIdempotency("k", "msg-1"); err != nil {
 			t.Fatal(err)
 		}
 		ancient := reserveNow.Add(1000 * ReservationLease)
-		id, reserved, err := s.ReserveIdempotency("k", ancient)
+		id, _, reserved, err := s.ReserveIdempotency("k", testJID, ancient)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,16 +184,16 @@ func TestCompletedReservationIsNeverReclaimed(t *testing.T) {
 // the lease.
 func TestReleaseFreesTheKeyImmediately(t *testing.T) {
 	bothStores(t, func(t *testing.T, s idemStore) {
-		if _, reserved, _ := s.ReserveIdempotency("k", reserveNow); !reserved {
+		if _, _, reserved, _ := s.ReserveIdempotency("k", testJID, reserveNow); !reserved {
 			t.Fatal("first caller must win")
 		}
 		if err := s.ReleaseIdempotency("k"); err != nil {
 			t.Fatal(err)
 		}
-		if _, found, err := s.LookupIdempotency("k"); err != nil || found {
+		if _, _, found, err := s.LookupIdempotency("k"); err != nil || found {
 			t.Fatalf("release must remove the reservation: found=%v err=%v", found, err)
 		}
-		if _, reserved, err := s.ReserveIdempotency("k", reserveNow); err != nil || !reserved {
+		if _, _, reserved, err := s.ReserveIdempotency("k", testJID, reserveNow); err != nil || !reserved {
 			t.Fatalf("released key must be immediately reservable: reserved=%v err=%v", reserved, err)
 		}
 	})
@@ -200,14 +204,14 @@ func TestReleaseFreesTheKeyImmediately(t *testing.T) {
 // delivered message would turn into a second delivery.
 func TestReleaseNeverDiscardsACompletedSend(t *testing.T) {
 	bothStores(t, func(t *testing.T, s idemStore) {
-		s.ReserveIdempotency("k", reserveNow)
+		s.ReserveIdempotency("k", testJID, reserveNow)
 		if err := s.SaveIdempotency("k", "msg-1"); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.ReleaseIdempotency("k"); err != nil {
 			t.Fatal(err)
 		}
-		id, found, err := s.LookupIdempotency("k")
+		id, _, found, err := s.LookupIdempotency("k")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,18 +229,18 @@ func TestSaveRequiresAnOwnedReservation(t *testing.T) {
 		if err := s.SaveIdempotency("never-reserved", "msg-x"); err != ErrNoReservation {
 			t.Fatalf("save with no reservation must fail, got %v", err)
 		}
-		if _, found, _ := s.LookupIdempotency("never-reserved"); found {
+		if _, _, found, _ := s.LookupIdempotency("never-reserved"); found {
 			t.Fatal("a refused save must not have written a row")
 		}
 
-		s.ReserveIdempotency("k", reserveNow)
+		s.ReserveIdempotency("k", testJID, reserveNow)
 		if err := s.SaveIdempotency("k", "msg-1"); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.SaveIdempotency("k", "msg-2"); err != ErrNoReservation {
 			t.Fatalf("second save must not overwrite a completed result, got %v", err)
 		}
-		if id, _, _ := s.LookupIdempotency("k"); id != "msg-1" {
+		if id, _, _, _ := s.LookupIdempotency("k"); id != "msg-1" {
 			t.Fatalf("completed result was overwritten: %q", id)
 		}
 	})
@@ -279,4 +283,96 @@ func TestMemoryReservationIsOneCriticalSection(t *testing.T) {
 			"(m.mu.Lock() immediately followed by defer m.mu.Unlock()); " +
 			"unlocking early reopens the double-send race")
 	}
+}
+
+// otherJID is a second recipient, used only by the binding tests below.
+const otherJID = "27839999999@s.whatsapp.net"
+
+// TestKeyIsBoundToOneRecipient: both stores must agree that a key belongs to
+// exactly one recipient.
+//
+// Reclaiming a key for a different contact is not a duplicate — it is a send
+// that never happens while the caller is told its original stands. So the
+// second recipient must LOSE the reservation and must be able to tell that it
+// lost to somebody else (existingJID names the other contact), rather than
+// being handed the first contact's message id.
+func TestKeyIsBoundToOneRecipient(t *testing.T) {
+	bothStores(t, func(t *testing.T, s idemStore) {
+		if _, _, reserved, err := s.ReserveIdempotency("turn-1", testJID, reserveNow); err != nil || !reserved {
+			t.Fatalf("first recipient must win the key: reserved=%v err=%v", reserved, err)
+		}
+		if err := s.SaveIdempotency("turn-1", "msg-1"); err != nil {
+			t.Fatal(err)
+		}
+
+		// Same key, different recipient: must NOT be treated as a replay.
+		id, jid, reserved, err := s.ReserveIdempotency("turn-1", otherJID, reserveNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reserved {
+			t.Fatal("a key bound to another recipient must never be reclaimed")
+		}
+		if jid != testJID {
+			t.Fatalf("the loser must learn which recipient holds the key, got %q want %q", jid, testJID)
+		}
+		_ = id // the caller must refuse on the jid mismatch BEFORE looking at this
+
+		// And the binding must survive the lease: age is irrelevant to whose
+		// key this is.
+		past := reserveNow.Add(ReservationLease + time.Hour)
+		if _, jid, reserved, err := s.ReserveIdempotency("turn-1", otherJID, past); err != nil || reserved || jid != testJID {
+			t.Fatalf("an expired lease must not transfer a key to another recipient: reserved=%v jid=%q err=%v",
+				reserved, jid, err)
+		}
+	})
+}
+
+// TestOpenReservationIsAlsoBound: the mismatch must be caught while the first
+// send is still IN FLIGHT too, not only after it completed. This is the state
+// a real collision is most likely to hit, since consumers retry fast.
+func TestOpenReservationIsAlsoBound(t *testing.T) {
+	bothStores(t, func(t *testing.T, s idemStore) {
+		if _, _, reserved, _ := s.ReserveIdempotency("turn-1", testJID, reserveNow); !reserved {
+			t.Fatal("first recipient must win the key")
+		}
+		// No SaveIdempotency: the first send has not returned yet.
+		_, jid, reserved, err := s.ReserveIdempotency("turn-1", otherJID, reserveNow)
+		if err != nil || reserved || jid != testJID {
+			t.Fatalf("an open reservation is bound too: reserved=%v jid=%q err=%v", reserved, jid, err)
+		}
+
+		// The case where the binding is the ONLY thing refusing: a STRANDED
+		// reservation (open, past its lease) is reclaimable by design — the
+		// msg_id guard has nothing to say about it, so removing the jid guard
+		// hands this key straight to the wrong contact. Everything above still
+		// passes without the binding; this is the assertion that bites.
+		past := reserveNow.Add(ReservationLease + time.Second)
+		if _, jid, reserved, err := s.ReserveIdempotency("turn-1", otherJID, past); err != nil || reserved || jid != testJID {
+			t.Fatalf("a stranded reservation must NOT be reclaimed by a different recipient: reserved=%v jid=%q err=%v",
+				reserved, jid, err)
+		}
+		// ...while the recipient it actually belongs to still recovers it.
+		if _, _, reserved, err := s.ReserveIdempotency("turn-1", testJID, past); err != nil || !reserved {
+			t.Fatalf("the bound recipient must still reclaim its own stranded key: reserved=%v err=%v", reserved, err)
+		}
+	})
+}
+
+// TestLookupReportsTheBoundRecipient: the read path must carry the binding, or
+// the rails' cheap early check cannot see a mismatch and every collision has
+// to wait for the reservation write to catch it.
+func TestLookupReportsTheBoundRecipient(t *testing.T) {
+	bothStores(t, func(t *testing.T, s idemStore) {
+		if _, _, reserved, _ := s.ReserveIdempotency("turn-1", testJID, reserveNow); !reserved {
+			t.Fatal("first recipient must win the key")
+		}
+		_, jid, found, err := s.LookupIdempotency("turn-1")
+		if err != nil || !found {
+			t.Fatalf("the key must be found: found=%v err=%v", found, err)
+		}
+		if jid != testJID {
+			t.Fatalf("lookup must report the bound recipient, got %q want %q", jid, testJID)
+		}
+	})
 }

@@ -148,12 +148,14 @@ func TestReservationStoreErrorFailsClosed(t *testing.T) {
 
 type lostReservation struct{ *store.Memory }
 
-func (lostReservation) ReserveIdempotency(string, time.Time) (string, bool, error) {
-	return "", false, nil
+// Returns the caller's own jid: the point of this stub is losing the RACE,
+// not the recipient-mismatch refusal, which is a different test.
+func (lostReservation) ReserveIdempotency(_, jid string, _ time.Time) (string, string, bool, error) {
+	return "", jid, false, nil
 }
 
 type errReserve struct{ *store.Memory }
 
-func (errReserve) ReserveIdempotency(string, time.Time) (string, bool, error) {
-	return "", false, errBoom
+func (errReserve) ReserveIdempotency(_, jid string, _ time.Time) (string, string, bool, error) {
+	return "", jid, false, errBoom
 }

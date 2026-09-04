@@ -77,11 +77,19 @@ func (e *Engine) EvaluateAndReserve(req SendRequest) (Decision, error) {
 	}
 
 	key := IdempotencyStorageKey(req.Consumer, req.IdempotencyKey)
-	existing, reserved, err := e.store.ReserveIdempotency(key, req.Now)
+	existing, existingJID, reserved, err := e.store.ReserveIdempotency(key, req.To, req.Now)
 	if err != nil {
 		return Refuse(RefusedInternalError, "idempotency reservation failed"), err
 	}
 	if !reserved {
+		// Checked FIRST: a key bound to another recipient must never come back
+		// as a duplicate, or this message is silently never sent. Evaluate's
+		// read catches the common case; this catches the race where the other
+		// recipient's reservation landed in between.
+		if existingJID != req.To {
+			return Refuse(RefusedIdempotencyKeyReused,
+				"this idempotencyKey is already bound to a different recipient; keys must be unique per recipient"), nil
+		}
 		// Another request won the key between Evaluate's read and this write —
 		// exactly the race Evaluate cannot see.
 		if existing != "" {

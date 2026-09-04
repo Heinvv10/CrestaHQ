@@ -39,7 +39,10 @@ func TestRailOrderIsPinned(t *testing.T) {
 		s.RecordOutbound(stranger, "hermes", "m", awake.Add(-time.Duration(i)*time.Minute))
 	}
 	// Idempotency: a reservation is open on this key, so the rail refuses.
-	s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), awake)
+	// Bound to `stranger`, the recipient this test's request names: this step is
+	// about rail ORDER, and a recipient mismatch would refuse with a different
+	// code before in_flight ever ran.
+	s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), stranger, awake)
 	// Kill switch: on.
 	s.SetKill(true)
 

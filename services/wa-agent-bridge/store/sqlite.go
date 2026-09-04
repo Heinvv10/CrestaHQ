@@ -36,9 +36,13 @@ CREATE TABLE IF NOT EXISTS allowlist (
   jid TEXT PRIMARY KEY
 );
 
+-- jid binds a key to ONE recipient. Without it a consumer reusing "turn-1"
+-- for a second contact gets the FIRST contact's message id back as a
+-- duplicate and its second message is never sent — silent non-delivery.
 CREATE TABLE IF NOT EXISTS idempotency (
   key         TEXT    PRIMARY KEY,
   msg_id      TEXT    NOT NULL,
+  jid         TEXT    NOT NULL DEFAULT '',
   reserved_at INTEGER NOT NULL DEFAULT 0
 );
 
@@ -53,7 +57,14 @@ CREATE TABLE IF NOT EXISTS flags (
 // retention sweep will eventually be needed.
 
 func OpenSQLite(path string) (*SQLite, error) {
-	db, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_journal_mode=WAL")
+	// synchronous=FULL, not WAL's default NORMAL. Under NORMAL a power loss can
+	// lose the last committed transactions, and the transactions this store
+	// commits last are idempotency rows: losing one re-opens a key whose message
+	// was already delivered, so the caller's next retry double-messages a real
+	// person. The cost is an fsync per commit at a volume capped at 150 sends a
+	// day, which is nothing.
+	db, err := sql.Open("sqlite3",
+		path+"?_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL")
 	if err != nil {
 		return nil, err
 	}
@@ -65,18 +76,28 @@ func OpenSQLite(path string) (*SQLite, error) {
 	// NOT EXISTS will not add it. Nothing is deployed yet, so this is only
 	// courtesy for local files — but a store that fails to open on a stale
 	// schema is a store nobody can debug against.
-	if err := addReservedAtColumn(db); err != nil {
-		db.Close()
-		return nil, err
+	for _, col := range []struct{ name, ddl string }{
+		{"reserved_at", `ALTER TABLE idempotency ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0`},
+		{"jid", `ALTER TABLE idempotency ADD COLUMN jid TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := addIdempotencyColumn(db, col.name, col.ddl); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return &SQLite{db: db}, nil
 }
 
-// addReservedAtColumn is an idempotent migration: it adds idempotency.
-// reserved_at when an older file lacks it. Rows predating the column default
-// to 0, i.e. immediately past the lease — correct, because any reservation
-// that survived the upgrade with no message id is by definition stranded.
-func addReservedAtColumn(db *sql.DB) error {
+// addIdempotencyColumn is an idempotent migration: it runs ddl when the
+// idempotency table lacks the named column.
+//
+// reserved_at rows predating the column default to 0, i.e. immediately past
+// the lease — correct, because any reservation that survived the upgrade with
+// no message id is by definition stranded. jid rows predating the column
+// default to "", which matches no real JID, so a legacy key can never be
+// reclaimed for a contact it was not bound to. That is the fail-closed
+// direction: the caller gets a loud refusal rather than a silent takeover.
+func addIdempotencyColumn(db *sql.DB, column, ddl string) error {
 	rows, err := db.Query(`PRAGMA table_info(idempotency)`)
 	if err != nil {
 		return err
@@ -91,15 +112,14 @@ func addReservedAtColumn(db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			return err
 		}
-		if name == "reserved_at" {
+		if name == column {
 			return rows.Err()
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = db.Exec(
-		`ALTER TABLE idempotency ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0`)
+	_, err = db.Exec(ddl)
 	return err
 }
 

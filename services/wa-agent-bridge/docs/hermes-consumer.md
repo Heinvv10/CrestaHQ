@@ -104,7 +104,9 @@ Responses:
 | 200 | `{ok:true, messageId}` | sent | done |
 | 200 | `{ok:true, messageId, duplicate:true}` | replay of a key already used — `messageId` is the ORIGINAL send's id | done, do not resend |
 | 409 | `{ok:false, refusedBy:"in_flight", reason}` | another request already holds this idempotency key and is still sending (normal concurrent-retry outcome) | safe to retry shortly |
+| 422 | `{ok:false, refusedBy:"idempotency_key_reused", reason}` | this key is already bound to a DIFFERENT recipient — a bug in your key derivation, not a rail refusal | fix the key (include the recipient); **never** retry unchanged, and do not read it as a duplicate |
 | 422 | `{ok:false, refusedBy, reason}` | a rail refused for any other reason (`kill_switch`, `consumer_budget`, `reply_only`, `per_contact_cap`, `consecutive_cap`, `daily_cap`, `quiet_hours`, `internal_error`) | surface `reason`; never retry |
+| 401 | `{error}` | missing bearer token, or a token no registered consumer holds — the FIRST status a mis-registered consumer sees | fix `CONSUMERS`/the token; retrying unchanged never helps |
 | 400 | `{error}` | malformed request (missing `to`/`text`/`idempotencyKey`, or invalid JSON) | fix the request; do not retry unchanged |
 | 413 | `{error}` | body over 64 KiB | fix the request |
 | 500 | `{ok:false, error, outcome:"not_sent"}` | idempotency reservation itself failed (store problem) — nothing was attempted | may retry with the SAME key once the store is healthy |
@@ -116,6 +118,13 @@ Responses:
 produces a new key and duplicates the message. The key is namespaced by
 consumer server-side, so two different consumers may reuse the same literal
 key string without colliding.
+
+A key is bound to **one recipient**. The same literal key sent to a second
+contact is refused with `idempotency_key_reused` rather than answered as a
+duplicate — because answering it as a duplicate would hand back the first
+contact's `messageId` while the second message was never sent to anyone, and a
+silent non-delivery is worse than a loud failure. Derive keys that include the
+recipient (or a conversation id that already implies one).
 
 ## Required consumer behaviour
 

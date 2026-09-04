@@ -13,6 +13,11 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/wa"
 )
 
+// testJID names the recipient an idempotency key is bound to. Same value as
+// knownJID; the alias exists so the binding tests read as being about the
+// RECIPIENT rather than about which contact happens to have replied.
+const testJID = knownJID
+
 var errSendFailed = errors.New("provider rejected the request")
 
 func redactedLen(s string) string { return "<" + itoaTest(len([]rune(s))) + " chars>" }
@@ -115,7 +120,7 @@ func TestInFlightKeyReturns409(t *testing.T) {
 	h, st, sender := testHandler(t)
 	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
 	// Simulate a peer that has claimed the key and not yet finished sending.
-	if _, ok, err := st.ReserveIdempotency(rails.IdempotencyStorageKey("hermes", "held"), fixedNow); !ok || err != nil {
+	if _, _, ok, err := st.ReserveIdempotency(rails.IdempotencyStorageKey("hermes", "held"), testJID, fixedNow); !ok || err != nil {
 		t.Fatalf("setup reservation failed ok=%v err=%v", ok, err)
 	}
 
@@ -170,7 +175,7 @@ func TestDefinitiveSendFailureReleasesTheKey(t *testing.T) {
 	if decode(t, rec)["outcome"] != "failed" {
 		t.Fatalf("a definitive rejection must be reported as failed, got %v", decode(t, rec))
 	}
-	if _, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "k1")); found {
+	if _, _, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "k1")); found {
 		t.Fatal("the reservation was not released; the caller's retry is blocked for the whole lease")
 	}
 
@@ -200,7 +205,7 @@ func TestTimedOutSendDoesNotReleaseTheKey(t *testing.T) {
 	if decode(t, rec)["outcome"] != "ambiguous" {
 		t.Fatalf("a timeout must be reported as ambiguous, got %v", decode(t, rec))
 	}
-	if _, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "k1")); !found {
+	if _, _, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "k1")); !found {
 		t.Fatal("a timed-out reservation was released; an immediate retry would double-message the contact")
 	}
 
@@ -211,5 +216,74 @@ func TestTimedOutSendDoesNotReleaseTheKey(t *testing.T) {
 	}
 	if sender.Calls() != 1 {
 		t.Fatalf("the ambiguous message was sent again: %d attempts", sender.Calls())
+	}
+}
+
+// TestSameKeyDifferentRecipientIsRefusedAndNotSent is the regression guard for
+// a silent NON-delivery, which is the worse half of the idempotency contract.
+//
+// The storage key already namespaces by consumer, so two consumers cannot
+// collide on "turn-1". But one consumer reusing "turn-1" for a second contact
+// used to hit the same row: the second request came back 200
+// {duplicate:true} carrying the FIRST contact's message id, and the second
+// message was never sent to anyone while the caller was told its original
+// stood. That is precisely the failure IdempotencyStorageKey's own comment
+// calls worse than a loud failure — closed one layer down and left open here.
+//
+// The refusal is 422 with its own refusedBy: it is a caller bug, not a rail
+// rejecting the message on its merits, and the caller must be able to tell
+// those apart to fix its key derivation.
+func TestSameKeyDifferentRecipientIsRefusedAndNotSent(t *testing.T) {
+	h, st, sender := testHandler(t)
+	// Both contacts have replied, so reply-only allows either of them and the
+	// only thing that can refuse the second send is the key binding.
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+	st.RecordInbound(strangerJID, fixedNow.Add(-time.Hour))
+
+	first := post(h, "/v1/send", "tok-hermes", sendBodyJSON(knownJID, "hi", "turn-1"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first send failed: %d %s", first.Code, first.Body.String())
+	}
+
+	second := post(h, "/v1/send", "tok-hermes", sendBodyJSON(strangerJID, "hi", "turn-1"))
+	if second.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("reusing a key for another recipient must be refused with 422, got %d %s",
+			second.Code, second.Body.String())
+	}
+	out := decode(t, second)
+	if out["refusedBy"] != string(rails.RefusedIdempotencyKeyReused) {
+		t.Fatalf("want refusedBy=%q so the caller can fix its key derivation, got %v",
+			rails.RefusedIdempotencyKeyReused, out)
+	}
+	// The distinction that matters: this must NOT look like a successful replay.
+	if out["duplicate"] == true || out["messageId"] != nil {
+		t.Fatalf("a reused key must never answer as a duplicate carrying the other contact's id: %v", out)
+	}
+	if sender.Calls() != 1 {
+		t.Fatalf("want exactly the first send on the wire, got %d transport calls", sender.Calls())
+	}
+}
+
+// TestSameKeySameRecipientStillReplays is the other half: the binding must not
+// break the replay it protects. Without this, a fix for the test above could
+// pass by refusing every repeat.
+func TestSameKeySameRecipientStillReplays(t *testing.T) {
+	h, st, sender := testHandler(t)
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+	body := sendBodyJSON(knownJID, "hi", "turn-1")
+
+	if first := post(h, "/v1/send", "tok-hermes", body); first.Code != http.StatusOK {
+		t.Fatalf("first send failed: %d %s", first.Code, first.Body.String())
+	}
+	second := post(h, "/v1/send", "tok-hermes", body)
+	if second.Code != http.StatusOK {
+		t.Fatalf("a same-recipient replay must still succeed, got %d %s", second.Code, second.Body.String())
+	}
+	out := decode(t, second)
+	if out["duplicate"] != true || out["messageId"] != "sent-1" {
+		t.Fatalf("want the original message id replayed, got %v", out)
+	}
+	if sender.Calls() != 1 {
+		t.Fatalf("replay sent again: %d transport calls", sender.Calls())
 	}
 }

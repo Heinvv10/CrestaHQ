@@ -45,11 +45,20 @@ func checkIdempotency(req SendRequest, s Store) Decision {
 		return Refuse(RefusedInternalError,
 			"consumer is required; an unnamespaced idempotency key collides across consumers")
 	}
-	id, found, err := s.LookupIdempotency(IdempotencyStorageKey(req.Consumer, req.IdempotencyKey))
+	id, jid, found, err := s.LookupIdempotency(IdempotencyStorageKey(req.Consumer, req.IdempotencyKey))
 	if err != nil {
 		return Refuse(RefusedInternalError, "idempotency lookup failed")
 	}
 	if found {
+		if jid != req.To {
+			// The key is bound to somebody else. Answering Duplicate(id) here
+			// would hand back the FIRST recipient's message id and this
+			// message would never be sent to anyone, while the caller is told
+			// its original stands. That is the silent non-delivery this whole
+			// storage key exists to prevent, one layer up.
+			return Refuse(RefusedIdempotencyKeyReused,
+				"this idempotencyKey is already bound to a different recipient; keys must be unique per recipient")
+		}
 		if id == "" {
 			// A reservation exists but no message id has been recorded yet: another
 			// request holds this key and is still sending. We cannot return

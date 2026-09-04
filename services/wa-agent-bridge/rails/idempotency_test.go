@@ -6,6 +6,9 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/store"
 )
 
+// testJID is the recipient the shared bodies bind their idempotency keys to.
+const testJID = "27821234567@s.whatsapp.net"
+
 // TestIdempotencyKeysAreNamespacedPerConsumer is the regression guard for the
 // silent non-delivery: hermes and leadstack both derive keys like
 // "turn-<conversationId>-<turnIndex>", so a shared key space makes leadstack's
@@ -13,14 +16,14 @@ import (
 func TestIdempotencyKeysAreNamespacedPerConsumer(t *testing.T) {
 	s := store.NewMemory()
 
-	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), now); err != nil || !reserved {
+	if _, _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), testJID, now); err != nil || !reserved {
 		t.Fatalf("hermes must win its own key: reserved=%v err=%v", reserved, err)
 	}
-	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("leadstack", "k1"), now); err != nil || !reserved {
+	if _, _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("leadstack", "k1"), testJID, now); err != nil || !reserved {
 		t.Fatalf("leadstack must be free to use the same raw key: reserved=%v err=%v", reserved, err)
 	}
 	// And the namespace still catches a genuine replay within one consumer.
-	if _, reserved, _ := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), now); reserved {
+	if _, _, reserved, _ := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), testJID, now); reserved {
 		t.Fatal("hermes replaying its own key must not win a second reservation")
 	}
 
@@ -66,7 +69,7 @@ func TestEmptyConsumerIsRefused(t *testing.T) {
 // indistinguishable from a plain refusal, and callers branch on it.
 func TestInFlightReservationIsNotReportedAsDuplicate(t *testing.T) {
 	s := store.NewMemory()
-	s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), now)
+	s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k1"), testJID, now)
 	d := checkIdempotency(SendRequest{To: known, IdempotencyKey: "k1", Consumer: "hermes"}, s)
 	if d.Allow {
 		t.Fatalf("an in-flight send must not be allowed through, got %+v", d)

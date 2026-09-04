@@ -44,7 +44,7 @@ func TestIdempotentSendReturnsOriginal(t *testing.T) {
 	// Seeded under the composed storage key: keys are namespaced per consumer.
 	// Reserve then save, because that is the only sequence the Store accepts —
 	// a save with no reservation it owns would fabricate a completed send.
-	if _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), now); err != nil || !reserved {
+	if _, _, reserved, err := s.ReserveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), testJID, now); err != nil || !reserved {
 		t.Fatalf("seed reservation failed: reserved=%v err=%v", reserved, err)
 	}
 	if err := s.SaveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), "msg-original"); err != nil {
