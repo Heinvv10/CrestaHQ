@@ -38,6 +38,9 @@ const PUBLIC_PATHS = [
   // buyer doesn't need to click into the Firebase console — QStash is
   // already part of their onboarding. Signature-verified inside the route.
   "/api/cron/api-cleanup",
+  // Daily recurring-invoice sweep. Public like the other cron routes — the
+  // QStash signature is the authentication.
+  "/api/cron/recurring-invoices",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",

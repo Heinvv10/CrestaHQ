@@ -133,6 +133,10 @@ export interface Quote {
    *  view. v1 doesn't auto-flip status to "overdue"; it's a recipient-
    *  facing label only. */
   paymentDueDays: number | null;
+  /** Set when this invoice was raised by a `recurringInvoices/{id}` schedule.
+   *  A back-reference only — the schedule is never looked up FROM here at
+   *  generation time, and nothing reads an invoice to decide what to send. */
+  recurringInvoiceId: string | null;
 
   // ── Behaviour flags ──────────────────────────────────────────────
   /** When true, accepting the quote auto-creates a Deal at the "Won"
@@ -234,6 +238,7 @@ export const DEFAULT_QUOTE: Omit<
   paymentLinkUrl: null,
   paymentLinkId: null,
   paymentLinkMintedAt: null,
+  recurringInvoiceId: null,
 };
 
 /** Shape of the JSON payload the public quote page POSTs when the
