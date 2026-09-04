@@ -41,7 +41,8 @@ func TestKillSwitchWinsOverReplyOnly(t *testing.T) {
 func TestIdempotentSendReturnsOriginal(t *testing.T) {
 	s := store.NewMemory()
 	s.RecordInbound(known, now.Add(-time.Minute))
-	s.SaveIdempotency("k-dup", "msg-original")
+	// Seeded under the composed storage key: keys are namespaced per consumer.
+	s.SaveIdempotency(IdempotencyStorageKey("hermes", "k-dup"), "msg-original")
 	e := NewEngine(s, engineConfig())
 
 	d := e.Evaluate(SendRequest{To: known, Consumer: "hermes", Now: now, IdempotencyKey: "k-dup"})

@@ -146,6 +146,19 @@ func (m *Memory) LookupIdempotency(key string) (string, bool, error) {
 	return id, ok, nil
 }
 
+// ReserveIdempotency claims a key if it is unclaimed. The read and the write
+// happen in ONE critical section: splitting them would reintroduce the very
+// race the reservation exists to close.
+func (m *Memory) ReserveIdempotency(storageKey string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id, ok := m.idem[storageKey]; ok {
+		return id, false, nil
+	}
+	m.idem[storageKey] = ""
+	return "", true, nil
+}
+
 func (m *Memory) SaveIdempotency(key, messageID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

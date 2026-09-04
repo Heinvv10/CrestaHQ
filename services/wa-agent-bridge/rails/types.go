@@ -100,7 +100,29 @@ type Store interface {
 	RecordOutbound(jid, consumer, messageID string, at time.Time) error
 	RecordInbound(jid string, at time.Time) error
 
+	// LookupIdempotency is the cheap read-path check for a replay. It is NOT the
+	// gate — see ReserveIdempotency. A found row with an empty messageID is a
+	// reservation whose send has not completed yet.
 	LookupIdempotency(key string) (messageID string, found bool, err error)
+
+	// ReserveIdempotency atomically inserts a reservation for storageKey if none
+	// exists. reserved == true means this caller won the race and owns the send;
+	// reserved == false means a reservation already existed and existingMessageID
+	// carries whatever id was recorded for it (empty while the winner is still
+	// sending).
+	//
+	// THIS is the gate, not LookupIdempotency. A read-only check is a
+	// time-of-check/time-of-use hole: two concurrent requests carrying the same
+	// key both read "not found", both proceed, and the contact receives two
+	// messages — precisely what this rail exists to prevent. A caller MUST
+	// reserve, and win, BEFORE sending.
+	//
+	// Keys passed here are storage keys from IdempotencyStorageKey, never raw
+	// caller keys.
+	ReserveIdempotency(storageKey string) (existingMessageID string, reserved bool, err error)
+
+	// SaveIdempotency records the real message id against a key once the send has
+	// returned, upgrading a reservation into a replayable result.
 	SaveIdempotency(key, messageID string) error
 
 	KillState() (bool, error)

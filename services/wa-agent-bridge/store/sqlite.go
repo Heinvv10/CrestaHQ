@@ -156,6 +156,38 @@ func (s *SQLite) LookupIdempotency(key string) (string, bool, error) {
 	return id, true, nil
 }
 
+// ReserveIdempotency claims a key if it is unclaimed, atomically. The INSERT
+// itself decides the winner — SQLite serialises the write, so exactly one
+// concurrent caller sees RowsAffected == 1. Written this way rather than as
+// SELECT-then-INSERT because that shape only pushes the time-of-check/
+// time-of-use race down a layer instead of closing it.
+func (s *SQLite) ReserveIdempotency(storageKey string) (string, bool, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO idempotency (key, msg_id) VALUES (?, '') ON CONFLICT(key) DO NOTHING`,
+		storageKey)
+	if err != nil {
+		return "", false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", false, err
+	}
+	if n == 1 {
+		return "", true, nil
+	}
+	var id string
+	if err := s.db.QueryRow(
+		`SELECT msg_id FROM idempotency WHERE key = ?`, storageKey).Scan(&id); err != nil {
+		if err == sql.ErrNoRows {
+			// The row vanished between the no-op insert and this read. Fail closed:
+			// report "already reserved" so no send happens on an unclear state.
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return id, false, nil
+}
+
 func (s *SQLite) SaveIdempotency(key, messageID string) error {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO idempotency (key, msg_id) VALUES (?, ?)`, key, messageID)
