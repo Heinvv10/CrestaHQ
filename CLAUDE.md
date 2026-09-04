@@ -1085,9 +1085,36 @@ page. A Paystack Plan *is* the price, so a plan rename reaches Paystack only whe
 minted, and retiring a price is a no-op (a plan code can only reach checkout by being stored on
 the plan doc, which the caller has just overwritten).
 
-**NOT yet built: the Paystack webhook receiver.** `lib/stripe/webhooks.ts` is what flips a
-sub-account to `active` on payment. Until the Paystack equivalent exists, a payment would arrive
-and the workspace would stay walled — so **do not bill on Paystack in production yet**.
+**The webhook receiver is `/api/webhooks/paystack`** (public path — Paystack signs every event
+with HMAC-SHA512 of the raw body keyed on the **account secret key**, so there is no separate
+webhook secret). Register the URL at dashboard.paystack.com → Settings → API Keys & Webhooks.
+
+Both rails share ONE lifecycle, in [src/lib/server/billing-lifecycle.ts](src/lib/server/billing-lifecycle.ts):
+`activateSubAccountPlan`, `applySubAccountSubscriptionStatus`, `recordSubAccountSubscriptionId`
+and `markSubAccountChargePaid` are provider-neutral, and each provider's handlers are thin
+adapters onto them. `billing-service.ts` keeps the operator-driven half (creating plans, assigning
+them, minting checkout links) and re-exports the lifecycle for existing callers. Activation, the gate bundle, the dunning grace window, the audit row
+and the outbound webhook therefore cannot drift between Stripe and Paystack.
+
+**Two Paystack shapes drive the router:** a payment and its subscription arrive as *separate*
+events in no guaranteed order (`charge.success` carries our metadata but no subscription code;
+`subscription.create` carries the code but none of our metadata), joined on the customer code
+stored before checkout opened — and **renewals carry no metadata at all**, so they are recognised
+by the absence of a `kind` and resolved by customer. A renewal names a PLAN code, never a
+subscription code; the router deliberately leaves the subscription id unknown rather than storing
+one as the other.
+
+**A renewal must prove it is one.** `charge.success` fires for EVERY successful charge on the
+agency's Paystack account, so a metadata-less charge is only treated as a renewal when it carries
+a plan code AND that plan is the one the workspace is subscribed to (`matchPriceId` on the shared
+handler). Otherwise a lapsed client paying the agency for something else — or a dashboard test
+charge under the same customer — would clear their dunning window and unlock an unpaid plan.
+
+**`subscription.not_renew` does NOT cancel.** It means auto-renew was switched off; the
+subscription is "active, non-renewing" and the paid period runs to its end date.
+`subscription.disable` is the terminating event. Cancelling on `not_renew` would paywall someone
+for weeks they had paid for — and Stripe's `cancel_at_period_end` correctly reports nothing until
+the period ends.
 
 ### Required for email (disables cleanly if missing)
 | Var | Source |

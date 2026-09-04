@@ -97,7 +97,7 @@ own outright post-migration.
 
 | # | Task | Effort | Notes |
 |---|---|---|---|
-| 1.1 | **Paystack rail** replacing Stripe in Client Billing | **~1 d left** | Interface + Stripe adapter + **`PaystackBillingProvider` BUILT**. Only the **webhook receiver** remains — without it a payment never activates a sub-account. See 1.1 detail |
+| 1.1 | ~~**Paystack rail** replacing Stripe in Client Billing~~ **BUILT 2026-09-04** (#11, #12) | — | Interface + Stripe adapter + Paystack adapter + **webhook receiver**. Unproven against a live account. See 1.1 detail |
 | 1.2 | ~~Meta Cloud API port~~ **BUILT 2026-09-04** — unproven against a live WABA | 1 d | **It was a build, not a port.** See 1.2 detail |
 | 1.3 | **Recurring / automated invoicing** | 3–4 d | Genuinely absent here too — only Stripe subscriptions in `billing-service.ts`. Do not assume we inherit it |
 | 1.4 | ~~Test suite on billing + comms~~ **DONE 2026-09-03** (`cf3a445`, `35852ff`) | — | **3 tests → 233.** Guards, not happy paths; 61 verified by deleting the guard and confirming a test fails. See 1.4 detail |
@@ -147,12 +147,33 @@ payer sees; Stripe reads it off the product) and `OneTimeCheckoutInput.payerEmai
 cannot open a guest checkout at all). Provider selection is by which secret is present, defaulting
 to Stripe when both are.
 
-**What is still missing is the webhook receiver**, and it is the difference between a rail and
-half of one: `lib/stripe/webhooks.ts` is what flips a sub-account to `active` on payment, stamps
-`graceUntil` on a failure, and marks a one-time charge paid. Paystack posts its own events
-(`charge.success`, `subscription.create`, `invoice.payment_failed`, `subscription.disable`) to its
-own endpoint with an HMAC-SHA512 `x-paystack-signature`. Until that exists, **nothing may be
-billed on Paystack in production** — the money would arrive and the workspace would stay walled.
+**The webhook receiver landed in #12**, at `/api/webhooks/paystack`. Rather than a second
+lifecycle beside Stripe's, the three state changes were extracted provider-neutral
+(`activateSubAccountPlan`, `applySubAccountSubscriptionStatus`, `markSubAccountChargePaid`) and
+Stripe's handlers became adapters onto them — so a fix to dunning or gate application lands on
+both rails at once.
+
+**The rail is now end-to-end but UNPROVEN.** What remains is verification against the live
+account, not construction:
+
+1. One test-mode `curl` on `/transaction/initialize` — Paystack's docs contradict themselves on
+   whether `amount` is required alongside `plan`. The code is correct under both readings; only a
+   real call settles which.
+2. A test-mode payment end to end: does `charge.success` carry back our `metadata` intact, and
+   does `subscription.create` really arrive separately? The router is built on both being true.
+3. Whether `metadata.custom_fields` renders on the charge page as intended.
+
+**Two known limits of Paystack's webhook scheme**, both accepted rather than fixed:
+
+- **Replay is unbounded.** Paystack signs the body only — no timestamp, no nonce — so a captured
+  `(body, signature)` pair stays valid forever, unlike this repo's own outbound webhooks, which
+  carry `Webhook-Timestamp`. A replayed activation can no longer re-apply a stale plan's gates
+  (the plan-match guard), and a replayed renewal must still match the workspace's current plan, so
+  the harmful outcomes are closed individually. A dedupe store keyed on `data.id` would close the
+  class; it was not built because nothing observed needs it yet. Paystack also publishes a
+  webhook source-IP allowlist, not applied here.
+- **Nothing dedupes two live checkout links for one sub-account** (carried over from #11 — Stripe
+  has the same exposure). The completion handler this work adds is where that guard belongs.
 
 **Two things blind review flagged that are NOT fixed, deliberately:**
 

@@ -1,6 +1,5 @@
 import "server-only";
 
-import type Stripe from "stripe";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getBillingProvider } from "@/lib/billing/provider";
@@ -13,7 +12,6 @@ import {
 } from "@/lib/billing/token";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
-  BILLING_GRACE_DAYS,
   PLAN_GATE_KEYS,
   type BillingChargeDoc,
   type BillingChargeResponse,
@@ -22,10 +20,14 @@ import {
   type BillingPlanDoc,
   type BillingPlanResponse,
   type PlanGates,
-  type SubAccountBilling,
   type SubAccountBillingStatus,
 } from "@/types/billing";
 import { BillingError } from "@/lib/billing/errors";
+import {
+  chargesCollection,
+  readBilling,
+  recordBillingEvent,
+} from "@/lib/server/billing-lifecycle";
 import {
   SUB_ACCOUNT_CHARGE_KIND,
   SUB_ACCOUNT_PLAN_KIND,
@@ -72,36 +74,6 @@ function plansCollection(agencyId: string) {
   return getAdminDb().collection(`agencies/${agencyId}/plans`);
 }
 
-/**
- * Append-only billing audit trail (top-level `billingEvents`, mirroring the
- * aiSuiteActions pattern): one row per assignment, comp, activation, and
- * dunning transition, so "who put this client on what, when" is answerable
- * without spelunking Stripe. Best-effort — never blocks the primary write.
- */
-function recordBillingEvent(entry: {
-  agencyId: string;
-  subAccountId: string;
-  event:
-    | "plan.assigned"
-    | "plan.switched"
-    | "comped"
-    | "activated"
-    | "status.changed"
-    | "charge.created"
-    | "charge.paid"
-    | "charge.canceled";
-  detail: Record<string, unknown>;
-}): void {
-  getAdminDb()
-    .collection("billingEvents")
-    .add({
-      ...entry,
-      createdAt: FieldValue.serverTimestamp(),
-    })
-    .catch((err) =>
-      console.warn("[billing] failed to record billing event", err),
-    );
-}
 
 function tsToIso(value: unknown): string | null {
   if (value instanceof Timestamp) return value.toDate().toISOString();
@@ -134,15 +106,6 @@ function serializePlan(
   };
 }
 
-/** Normalize an untrusted gates payload into a full PlanGates record. */
-export function normalizePlanGates(input: unknown): PlanGates {
-  const source = (input ?? {}) as Record<string, unknown>;
-  const gates = {} as PlanGates;
-  for (const key of PLAN_GATE_KEYS) {
-    gates[key] = source[key] === true;
-  }
-  return gates;
-}
 
 export function validatePlanPricing(
   priceMonthlyCents: unknown,
@@ -461,11 +424,6 @@ async function getSubInAgencyOrThrow(agencyId: string, subAccountId: string) {
   return { ref, data: snap.data() as Record<string, unknown> };
 }
 
-function readBilling(
-  data: Record<string, unknown>,
-): SubAccountBilling | null {
-  return (data.billing as SubAccountBilling | null | undefined) ?? null;
-}
 
 /**
  * Resolve the Stripe Price a checkout/subscription should use: the plan's
@@ -853,245 +811,17 @@ export async function createSubAccountCheckoutSession(input: {
 // ---------------------------------------------------------------------------
 
 /** checkout.session.completed with metadata.kind === "subAccountPlan". */
-export async function handleSubAccountPlanCheckoutCompleted(
-  session: Stripe.Checkout.Session,
-): Promise<void> {
-  const subAccountId = session.metadata?.subAccountId;
-  const planId = session.metadata?.planId;
-  if (!subAccountId || !planId) {
-    console.error(
-      "[billing] subAccountPlan checkout completed without subAccountId/planId metadata",
-    );
-    return;
-  }
 
-  const db = getAdminDb();
-  const ref = db.doc(`subAccounts/${subAccountId}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    console.error(`[billing] checkout completed for missing sub-account ${subAccountId}`);
-    return;
-  }
-  const data = snap.data() as Record<string, unknown>;
-  const agencyId = String(data.agencyId ?? "");
-  const billing = readBilling(data);
 
-  await ref.update({
-    "billing.status": "active" satisfies SubAccountBillingStatus,
-    "billing.stripeCustomerId":
-      (session.customer as string | null) ?? billing?.stripeCustomerId ?? null,
-    "billing.stripeSubscriptionId":
-      (session.subscription as string | null) ??
-      billing?.stripeSubscriptionId ??
-      null,
-    "billing.checkoutTokenHash": null,
-    "billing.graceUntil": null,
-    "billing.activatedAt": FieldValue.serverTimestamp(),
-    "billing.updatedAt": FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
 
-  // Apply the plan's gate bundle now that payment landed. Look the plan up
-  // fresh so a gate edit between assignment and payment still applies.
-  try {
-    const planSnap = await db
-      .doc(`agencies/${agencyId}/plans/${planId}`)
-      .get();
-    const gates = planSnap.exists
-      ? normalizePlanGates(planSnap.data()?.gates)
-      : null;
-    if (gates) {
-      const { skippedMetaGates } = await applyFeatureGates(subAccountId, gates);
-      if (skippedMetaGates.length > 0) {
-        console.warn(
-          `[billing] plan ${planId} wants Meta gates but the deployment lacks META_APP_ID/SECRET — left off for ${subAccountId}`,
-        );
-      }
-    }
-  } catch (err) {
-    // Activation must not fail because a gate write blipped — the agency
-    // can re-apply from the Manage dialog.
-    console.error("[billing] gate application on activation failed", err);
-  }
 
-  recordBillingEvent({
-    agencyId,
-    subAccountId,
-    event: "activated",
-    detail: {
-      planId,
-      planName: billing?.planName ?? null,
-      priceCents: billing?.priceCents ?? null,
-      stripeSubscriptionId: (session.subscription as string | null) ?? null,
-    },
-  });
-  void emitWebhookEvent({
-    subAccountId,
-    agencyId,
-    mode: "live",
-    type: "billing.activated",
-    payload: {
-      subAccountId,
-      planId,
-      planName: billing?.planName ?? null,
-      priceCents: billing?.priceCents ?? null,
-      currency: billing?.currency ?? null,
-    },
-  });
-}
 
-/**
- * customer.subscription.updated / .deleted with metadata.kind ===
- * "subAccountPlan". Maps Stripe's status to ours and stamps/clears the
- * dunning grace window.
- */
-export async function handleSubAccountSubscriptionEvent(
-  subscription: Stripe.Subscription,
-  opts: { deleted: boolean },
-): Promise<void> {
-  const db = getAdminDb();
-
-  // Fast path: metadata carries the sub-account id. Fallback: look the
-  // subscription id up (covers subscriptions whose metadata was stripped
-  // in the Stripe dashboard).
-  let subAccountId: string | null =
-    subscription.metadata?.subAccountId ?? null;
-  if (!subAccountId) {
-    const match = await db
-      .collection("subAccounts")
-      .where("billing.stripeSubscriptionId", "==", subscription.id)
-      .limit(1)
-      .get();
-    subAccountId = match.empty ? null : match.docs[0].id;
-  }
-  if (!subAccountId) {
-    console.error(
-      `[billing] no sub-account found for subscription ${subscription.id}`,
-    );
-    return;
-  }
-
-  const ref = db.doc(`subAccounts/${subAccountId}`);
-  const snap = await ref.get();
-  if (!snap.exists) return;
-  const data = snap.data() as Record<string, unknown>;
-  const agencyId = String(data.agencyId ?? "");
-  const billing = readBilling(data);
-  if (!billing || billing.status === "comped") return;
-  // Ignore events from a superseded subscription (e.g. the old sub's
-  // cancellation arriving after a re-checkout already created a new one).
-  if (
-    billing.stripeSubscriptionId &&
-    billing.stripeSubscriptionId !== subscription.id
-  ) {
-    return;
-  }
-
-  // While pending (client hasn't completed checkout), only a transition to
-  // "active" is meaningful — half-finished checkout sessions emit
-  // incomplete/incomplete_expired subscription noise that must not flip a
-  // never-paid workspace into dunning or cancellation.
-  if (
-    billing.status === "pending" &&
-    subscription.status !== "active" &&
-    subscription.status !== "trialing"
-  ) {
-    return;
-  }
-
-  let nextStatus: SubAccountBillingStatus;
-  if (opts.deleted) {
-    nextStatus = "canceled";
-  } else {
-    switch (subscription.status) {
-      case "active":
-      case "trialing":
-        nextStatus = "active";
-        break;
-      case "past_due":
-      case "unpaid":
-      case "incomplete":
-        nextStatus = "past_due";
-        break;
-      case "canceled":
-      case "incomplete_expired":
-        nextStatus = "canceled";
-        break;
-      default:
-        nextStatus = billing.status;
-    }
-  }
-
-  const updates: Record<string, unknown> = {
-    "billing.stripeSubscriptionId": opts.deleted ? null : subscription.id,
-    "billing.updatedAt": FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
-  if (nextStatus !== billing.status) {
-    updates["billing.status"] = nextStatus;
-  }
-  if (nextStatus === "past_due") {
-    // Stamp the grace window ONCE per dunning episode — repeat past_due
-    // events (Stripe retries) must not keep pushing the paywall out.
-    const alreadyStamped = billing.status === "past_due" && billing.graceUntil;
-    if (!alreadyStamped) {
-      updates["billing.graceUntil"] = Timestamp.fromMillis(
-        Date.now() + BILLING_GRACE_DAYS * 24 * 60 * 60 * 1000,
-      );
-    }
-  }
-  if (nextStatus === "active") {
-    updates["billing.graceUntil"] = null;
-  }
-
-  await ref.update(updates);
-
-  if (nextStatus !== billing.status) {
-    recordBillingEvent({
-      agencyId,
-      subAccountId,
-      event: "status.changed",
-      detail: {
-        previousStatus: billing.status,
-        status: nextStatus,
-        stripeStatus: subscription.status,
-        deleted: opts.deleted,
-      },
-    });
-    const eventType =
-      nextStatus === "past_due"
-        ? "billing.past_due"
-        : nextStatus === "canceled"
-          ? "billing.canceled"
-          : nextStatus === "active"
-            ? "billing.activated"
-            : null;
-    if (eventType) {
-      void emitWebhookEvent({
-        subAccountId,
-        agencyId,
-        mode: "live",
-        type: eventType,
-        payload: {
-          subAccountId,
-          planId: billing.planId,
-          planName: billing.planName,
-          previousStatus: billing.status,
-          status: nextStatus,
-        },
-      });
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // One-time charges (agency → sub-account client, e.g. "Web design — $500")
 // ---------------------------------------------------------------------------
 
-function chargesCollection() {
-  return getAdminDb().collection("billingCharges");
-}
+
 
 function serializeCharge(
   id: string,
@@ -1346,57 +1076,19 @@ export async function createChargeCheckoutSession(input: {
 }
 
 /** checkout.session.completed with metadata.kind === "subAccountCharge". */
-export async function handleSubAccountChargeCheckoutCompleted(
-  session: Stripe.Checkout.Session,
-): Promise<void> {
-  const chargeId = session.metadata?.chargeId;
-  if (!chargeId) {
-    console.error(
-      "[billing] subAccountCharge checkout completed without chargeId metadata",
-    );
-    return;
-  }
-  const ref = chargesCollection().doc(chargeId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    console.error(`[billing] checkout completed for missing charge ${chargeId}`);
-    return;
-  }
-  const charge = snap.data() as BillingChargeDoc;
-  if (charge.status === "paid") return; // webhook retry — idempotent
 
-  await ref.update({
-    status: "paid" satisfies BillingChargeStatus,
-    tokenHash: null,
-    stripeCheckoutSessionId: session.id,
-    stripePaymentIntentId:
-      typeof session.payment_intent === "string" ? session.payment_intent : null,
-    paidAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
-  recordBillingEvent({
-    agencyId: charge.agencyId,
-    subAccountId: charge.subAccountId,
-    event: "charge.paid",
-    detail: {
-      chargeId,
-      description: charge.description,
-      amountCents: charge.amountCents,
-      currency: charge.currency,
-    },
-  });
-  void emitWebhookEvent({
-    subAccountId: charge.subAccountId,
-    agencyId: charge.agencyId,
-    mode: "live",
-    type: "billing.charge.paid",
-    payload: {
-      chargeId,
-      subAccountId: charge.subAccountId,
-      description: charge.description,
-      amountCents: charge.amountCents,
-      currency: charge.currency,
-    },
-  });
-}
+/**
+ * The lifecycle half, re-exported so callers that have always imported these
+ * from `billing-service` keep working. New code should import them from
+ * `billing-lifecycle` directly.
+ */
+export {
+  activateSubAccountPlan,
+  applySubAccountSubscriptionStatus,
+  handleSubAccountChargeCheckoutCompleted,
+  handleSubAccountPlanCheckoutCompleted,
+  handleSubAccountSubscriptionEvent,
+  markSubAccountChargePaid,
+  normalizePlanGates,
+  recordSubAccountSubscriptionId,
+} from "@/lib/server/billing-lifecycle";
