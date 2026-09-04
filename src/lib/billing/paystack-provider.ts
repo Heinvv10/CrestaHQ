@@ -187,6 +187,7 @@ export class PaystackBillingProvider implements BillingProvider {
       currency: input.currency,
       callbackUrl: input.successUrl,
       metadata: { ...input.metadata, productName: input.productName },
+      displayName: input.productName,
     });
     return { url, sessionId: reference };
   }

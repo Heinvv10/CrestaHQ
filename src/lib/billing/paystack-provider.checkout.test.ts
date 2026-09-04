@@ -122,6 +122,42 @@ describe("createOneTimeCheckout", () => {
     });
   });
 
+  it("tells the payer what they are paying for, not just an amount", async () => {
+    paystackRequest.mockResolvedValueOnce({
+      authorization_url: "https://paystack.test/pay/x",
+      reference: "ref_4",
+    });
+    await provider.createOneTimeCheckout({
+      ...base,
+      customerId: null,
+      payerEmail: "owner@acme.test",
+    });
+    // Paystack's page has no line item; it renders metadata.custom_fields.
+    // Without this the client sees a bare R500 and no reason for it.
+    expect(call(0).body).toMatchObject({
+      metadata: expect.objectContaining({
+        custom_fields: [
+          expect.objectContaining({ value: "Web design" }),
+        ],
+      }),
+    });
+  });
+
+  it("uppercases the currency Paystack is given", async () => {
+    paystackRequest.mockResolvedValueOnce({
+      authorization_url: "https://paystack.test/pay/x",
+      reference: "ref_5",
+    });
+    // Plan docs store it lowercase, a Stripe convention. Paystack refuses it.
+    await provider.createOneTimeCheckout({
+      ...base,
+      currency: "zar",
+      customerId: null,
+      payerEmail: "owner@acme.test",
+    });
+    expect(call(0).body).toMatchObject({ currency: "ZAR" });
+  });
+
   it("prefers the stored customer's email over the payer email", async () => {
     paystackRequest
       .mockResolvedValueOnce({ email: "billing@acme.test" })

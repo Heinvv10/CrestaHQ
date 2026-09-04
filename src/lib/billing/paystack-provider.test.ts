@@ -141,7 +141,7 @@ describe("createPrice", () => {
 });
 
 describe("deactivatePrice / updateProduct", () => {
-  it("touch Paystack at all, which would rewrite live subscribers' receipts", async () => {
+  it("never touch Paystack, which would rewrite live subscribers' receipts", async () => {
     await provider.deactivatePrice("PLN_old");
     await provider.updateProduct("psk_plan_plan_1", { name: "Renamed" });
     expect(paystackRequest).not.toHaveBeenCalled();

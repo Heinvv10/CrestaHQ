@@ -223,6 +223,12 @@ export async function initializePaystackTransaction(input: {
   plan?: string;
   callbackUrl: string;
   metadata: Record<string, string>;
+  /**
+   * What the payer is buying. Paystack's page has no line item — it renders
+   * `metadata.custom_fields` — so without this a one-time charge shows the
+   * payer a bare amount and nothing saying what it is for.
+   */
+  displayName?: string;
 }): Promise<{ url: string; reference: string }> {
   const data = await paystackRequest<{
     authorization_url: string;
@@ -238,7 +244,20 @@ export async function initializePaystackTransaction(input: {
     // abandoned payment simply never leaves the Paystack page, so a caller's
     // cancelUrl has nothing to bind to.
     callback_url: input.callbackUrl,
-    metadata: input.metadata,
+    metadata: {
+      ...input.metadata,
+      ...(input.displayName
+        ? {
+            custom_fields: [
+              {
+                display_name: "Paying for",
+                variable_name: "paying_for",
+                value: input.displayName,
+              },
+            ],
+          }
+        : {}),
+    },
   });
   if (!data.authorization_url) {
     throw new BillingError("Paystack didn't return a checkout URL.", 502);
@@ -278,7 +297,7 @@ export function assertSupportedCurrency(currency: string): string {
   const code = currency.trim().toUpperCase();
   if (!SUPPORTED_CURRENCIES.has(code)) {
     throw new BillingError(
-      `Paystack can't bill in ${code}. Price this plan in ZAR.`,
+      `Paystack can't settle ${code}. Use a currency it supports — ZAR here.`,
     );
   }
   return code;

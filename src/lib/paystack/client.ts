@@ -38,7 +38,7 @@ function secretKey(): string {
  * than anything this layer could invent.
  */
 export async function paystackRequest<T>(
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
 ): Promise<T> {
@@ -60,13 +60,20 @@ export async function paystackRequest<T>(
     );
   }
 
-  let payload: PaystackEnvelope<T> | null = null;
-  try {
-    payload = (await response.json()) as PaystackEnvelope<T>;
-  } catch {
-    // Fall through to the status-code error below — a body we can't parse
-    // tells us nothing, and inventing a reason would be worse than saying so.
-  }
+  // A body we can't parse tells us nothing, so the status-code branch below
+  // decides. Recorded rather than swallowed: an unparseable 200 is Paystack
+  // behaving unexpectedly, and the next person debugging one needs to know it
+  // happened.
+  const payload = await response
+    .json()
+    .then((body) => body as PaystackEnvelope<T>)
+    .catch((err: unknown) => {
+      console.warn(
+        `[paystack] unreadable ${response.status} body from ${path}`,
+        err,
+      );
+      return null;
+    });
 
   if (!response.ok || !payload?.status) {
     throw new BillingError(

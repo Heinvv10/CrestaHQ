@@ -230,7 +230,6 @@ describe("ensureCustomer", () => {
 describe("createSubscriptionCheckout", () => {
   const input = {
     customerId: "cus_1",
-    payerEmail: null,
     priceId: "price_m",
     successUrl: "https://app.test/ok",
     cancelUrl: "https://app.test/no",
