@@ -644,8 +644,14 @@ A reusable product catalog plus an Invoice document type that shares the Quotes 
 > Connect. Connect would make every buyer a Stripe *platform* (each deployment
 > has its own `STRIPE_SECRET_KEY`), requiring a Connect platform profile + Stripe
 > review per buyer and KYC per client. Tier 1 avoids all of that; Connect stays
-> available later behind one branch in `getSubAccountStripe()`. Phase A (the
-> connection) is built; checkout + order bumps are not. The paragraph below still
+> available later behind one branch in `getSubAccountStripe()`. **Payments v1 is
+> further along than this note used to say** (corrected 2026-09-04): the
+> connection, hosted checkout pages, order bumps, the `orders` collection, the
+> per-sub-account webhook at `/api/webhooks/stripe/sa/[subAccountId]` and the
+> `order-reconciler` are all built, and an invoice paid by card is marked paid
+> automatically through the same `markQuotePaidServerSide` the manual button
+> uses — there is no second paid-path. PayPal.me remains the only manual rail,
+> because paypal.me has no payment callback. The paragraph below still
 > describes the shipped PayPal path, which is untouched. Each sub-account pastes a PayPal.me username under `/sa/[id]/dashboard/settings` → **Payments — PayPal**; no API keys, no encryption layer, no platform credentials. On invoice send, `/api/sub-accounts/[id]/quotes/[quoteId]/send` generates `https://paypal.me/{username}/{amount}{currency}` from the invoice total and caches it on the doc as `paymentLinkUrl`. The recipient sees a **Pay** button on the public invoice page that opens the PayPal-hosted page with the amount pre-filled. paypal.me URLs are stateless — every send regenerates the URL (no API call, no "old link" to deactivate). Operator marks invoices paid manually after the payment lands in their PayPal account. The card upgrade is **Payments v1** above (own-Stripe restricted key, webhook-driven auto-mark-paid) — the Settings page's **Payments — Stripe** card is now that real connect flow, gated on `paymentsEnabledByAgency`.
 
 ### Key files

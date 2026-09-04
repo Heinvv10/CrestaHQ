@@ -136,8 +136,13 @@ adapter lands first as a pure refactor with no behaviour change — that is inde
    deployment. Client Billing has never been used, so ZAR needs **no migration path** and no
    immutable-Price reconciliation on live subscribers. Decide ZAR and move.
 
-**Prerequisite:** a live Paystack account for Brightsphere Technologies. The interface and the
-Stripe adapter can be built without it; the Paystack adapter cannot be verified without it.
+~~**Prerequisite:** a live Paystack account for Brightsphere Technologies.~~ **MET 2026-09-04** —
+the account is live and verified, so 1.1 is no longer blocked and the Paystack adapter can be
+proven against a real account instead of mocks.
+
+**Also further along than this section says:** the `BillingProvider` interface and the
+`StripeBillingProvider` adapter have both landed, and `billing-service.ts` routes every call
+through `getBillingProvider()`. The remaining work in 1.1 is `PaystackBillingProvider` alone.
 
 **STATUS 2026-09-04.** The account is live and verified, and `PaystackBillingProvider` is built
 (PR #11) — with both semantic gaps above resolved as decided: `immediate_prorated` is refused
@@ -231,7 +236,13 @@ it is legal and a template the fallback for a closed window only — the ~$87/mo
 in 0.3 no longer depends on a workflow convention someone can undo.
 
 ⚠️ **UNPROVEN.** Nothing has touched a real WABA. Every check is a mock, and
-the deployment has no Meta credentials set. Until the acceptance criteria run
+no sub-account holds WhatsApp Cloud credentials. Note the distinction, because it
+has already caused confusion: `META_APP_ID` / `META_APP_SECRET` are set locally,
+but those belong to the Facebook Login app behind the inbox and Social Planner.
+The Cloud rail needs a phone number id, a WhatsApp Business Account id and a
+system-user token, stored per sub-account in Firestore by
+`cloud-credentials.ts` — not environment variables. Setting the Meta app vars
+does nothing for it. Until the acceptance criteria run
 live, treat 1.2 as built, not working.
 
 **Still open:** the `bridge` arm (1.2b), and the WABA cutover itself — which
