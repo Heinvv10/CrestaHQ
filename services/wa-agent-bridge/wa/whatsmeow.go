@@ -127,21 +127,29 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	go func() {
 		for evt := range qrChan {
-			switch evt.Event {
-			case "code":
-				c.setPairingCode(evt.Code, time.Now().Add(evt.Timeout))
-				log.Printf("wa: scan this QR to pair (expires in %s)", evt.Timeout)
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, log.Writer())
-			case "success":
-				c.clearPairingCode()
-				log.Printf("wa: paired successfully")
-			default:
-				c.clearPairingCode()
-				log.Printf("wa: pairing ended: %s", evt.Event)
-			}
+			c.handleQREvent(evt)
 		}
 	}()
 	return nil
+}
+
+// handleQREvent applies one item off the QR channel. Split out from the
+// Connect goroutine so it can be driven directly by a test — whatsmeow's
+// QRChannelItem is a plain exported struct with no interface indirection, so
+// a test can construct one and call this without a live or fake connection.
+func (c *Client) handleQREvent(evt whatsmeow.QRChannelItem) {
+	switch evt.Event {
+	case "code":
+		c.setPairingCode(evt.Code, time.Now().Add(evt.Timeout))
+		log.Printf("wa: scan this QR to pair (expires in %s)", evt.Timeout)
+		qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, log.Writer())
+	case "success":
+		c.clearPairingCode()
+		log.Printf("wa: paired successfully")
+	default:
+		c.clearPairingCode()
+		log.Printf("wa: pairing ended: %s", evt.Event)
+	}
 }
 
 func (c *Client) setPairingCode(code string, expiresAt time.Time) {
