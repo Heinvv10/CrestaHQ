@@ -51,6 +51,13 @@ type Client struct {
 
 	onInbound   func(jid, text, msgID string, at time.Time)
 	onLoggedOut func()
+
+	// pairCode is the live QR payload while a pairing is in flight. It is a
+	// CREDENTIAL — anyone who scans it links a device to this number — so it is
+	// never logged, is dropped the moment pairing succeeds, and is not served
+	// once it expires (a stale QR scans into nothing and looks like our bug).
+	pairCode   string
+	pairExpiry time.Time
 }
 
 var _ Transport = (*Client)(nil)
@@ -122,16 +129,41 @@ func (c *Client) Connect(ctx context.Context) error {
 		for evt := range qrChan {
 			switch evt.Event {
 			case "code":
+				c.setPairingCode(evt.Code, time.Now().Add(evt.Timeout))
 				log.Printf("wa: scan this QR to pair (expires in %s)", evt.Timeout)
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, log.Writer())
 			case "success":
+				c.clearPairingCode()
 				log.Printf("wa: paired successfully")
 			default:
+				c.clearPairingCode()
 				log.Printf("wa: pairing ended: %s", evt.Event)
 			}
 		}
 	}()
 	return nil
+}
+
+func (c *Client) setPairingCode(code string, expiresAt time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pairCode, c.pairExpiry = code, expiresAt
+}
+
+func (c *Client) clearPairingCode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pairCode, c.pairExpiry = "", time.Time{}
+}
+
+// PairingCode returns the live QR payload, if one is in flight and unexpired.
+func (c *Client) PairingCode() (string, time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pairCode == "" || time.Now().After(c.pairExpiry) {
+		return "", time.Time{}, false
+	}
+	return c.pairCode, c.pairExpiry, true
 }
 
 // Disconnect closes the socket. Safe to call more than once.
