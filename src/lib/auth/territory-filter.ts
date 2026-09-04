@@ -65,10 +65,25 @@ export async function loadEffectiveTerritoryScope(
   return { enforce: true, ids };
 }
 
+/** The 403 body every territory refusal serves, as a plain object. */
+export interface TerritoryDenial {
+  readonly status: number;
+  readonly error: string;
+}
+
+const DENIAL_STATUS = 403;
+const DENIAL_MESSAGE = "This record isn't in one of your assigned territories.";
+
+/** A FRESH denial per call — a shared singleton would let one caller mutating
+ *  the object it was handed poison every later denial for the process. */
+function denial(): TerritoryDenial {
+  return { status: DENIAL_STATUS, error: DENIAL_MESSAGE };
+}
+
 function denied(): NextResponse {
   return NextResponse.json(
-    { error: "This record isn't in one of your assigned territories." },
-    { status: 403 },
+    { error: DENIAL_MESSAGE },
+    { status: DENIAL_STATUS },
   );
 }
 
@@ -94,6 +109,28 @@ export async function territoryGate(
 }
 
 /**
+ * Transport-free form of {@link territoryGateForContact}: resolves to a
+ * plain `{status, error}` when the caller may not act on this contact,
+ * otherwise `null`. Use from server SERVICES (cron jobs, the recurring
+ * invoice sweep) which have no `NextResponse` to return.
+ */
+export async function territoryDenialForContact(
+  access: SubAccountAccessLike,
+  contactId: string | null | undefined,
+): Promise<TerritoryDenial | null> {
+  const scope = await loadEffectiveTerritoryScope(access);
+  if (!scope.enforce) return null;
+  if (!contactId) return denial();
+  const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
+  const territoryId =
+    (snap.data()?.territoryId as string | null | undefined) ?? null;
+  if (!territoryId || !(scope.ids ?? []).includes(territoryId)) {
+    return denial();
+  }
+  return null;
+}
+
+/**
  * Like {@link territoryGate} but loads the contact to read its
  * `territoryId`. Use when you only hold a `contactId` (e.g. quote
  * routes that act on a quote's linked contact). Mirrors the
@@ -103,14 +140,6 @@ export async function territoryGateForContact(
   access: SubAccountAccessLike,
   contactId: string | null | undefined,
 ): Promise<NextResponse | null> {
-  const scope = await loadEffectiveTerritoryScope(access);
-  if (!scope.enforce) return null;
-  if (!contactId) return denied();
-  const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
-  const territoryId =
-    (snap.data()?.territoryId as string | null | undefined) ?? null;
-  if (!territoryId || !(scope.ids ?? []).includes(territoryId)) {
-    return denied();
-  }
-  return null;
+  const denial = await territoryDenialForContact(access, contactId);
+  return denial ? NextResponse.json({ error: denial.error }, { status: denial.status }) : null;
 }
