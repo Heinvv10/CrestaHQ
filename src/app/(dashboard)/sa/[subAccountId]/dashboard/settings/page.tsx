@@ -22,6 +22,7 @@ import { SubAccountPipelineSection } from "@/components/settings/sub-account-pip
 import { GhlImportWizard } from "@/components/import/ghl-import-wizard";
 import { SubAccountSmsSection } from "@/components/settings/sub-account-sms-section";
 import { SubAccountMetaSection } from "@/components/settings/sub-account-meta-section";
+import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
 import { SubAccountPlanBillingSection } from "@/components/settings/sub-account-plan-billing-section";
@@ -286,6 +287,12 @@ export default function SettingsPage() {
         <TabsContent value="messaging" className="mt-6 space-y-6">
           {/* SMS — opt-in dedicated Twilio number (also hosts the WhatsApp sender). */}
           <SubAccountSmsSection />
+
+          {/* WhatsApp over Meta Cloud API — self-gates on admin + the agency's
+              WhatsApp gate. Sits directly under the SMS card because that card
+              hosts the Twilio WhatsApp sender this one is the alternative to;
+              an operator comparing the two rails should see them together. */}
+          <SubAccountWhatsappCloudSection />
 
           {/* Facebook + Instagram inbox (beta) — self-gates: renders only when
               the agency flipped metaInboxEnabledByAgency on for this sub-account. */}
