@@ -155,6 +155,11 @@ export function SubAccountWhatsappCloudSection() {
               {meta?.displayPhoneNumber ?? "Number unavailable"}
               {meta?.phoneNumberId ? ` · ID ${meta.phoneNumberId}` : ""}
             </p>
+            {/* Unreachable today: connect sets both the credentials and the
+                provider, disconnect clears both, so the two cannot disagree.
+                Kept for the `bridge` rail (1.2b), which will be selectable
+                without clearing a stored Cloud connection. Labelled rather
+                than deleted so nobody later reads it as a live state. */}
             {provider !== "cloud" && (
               <p className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-400">
                 Credentials are stored, but this workspace is currently sending
