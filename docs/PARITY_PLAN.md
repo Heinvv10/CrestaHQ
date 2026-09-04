@@ -136,21 +136,20 @@ adapter lands first as a pure refactor with no behaviour change — that is inde
    deployment. Client Billing has never been used, so ZAR needs **no migration path** and no
    immutable-Price reconciliation on live subscribers. Decide ZAR and move.
 
-~~**Prerequisite:** a live Paystack account for Brightsphere Technologies.~~ **MET 2026-09-04** —
-the account is live and verified, so 1.1 is no longer blocked and the Paystack adapter can be
-proven against a real account instead of mocks.
-
-**Also further along than this section says:** the `BillingProvider` interface and the
-`StripeBillingProvider` adapter have both landed, and `billing-service.ts` routes every call
-through `getBillingProvider()`. The remaining work in 1.1 is `PaystackBillingProvider` alone.
+~~**Prerequisite:** a live Paystack account for Brightsphere Technologies.~~ **MET 2026-09-04.**
 
 **STATUS 2026-09-04.** The account is live and verified, and `PaystackBillingProvider` is built
 (PR #11) — with both semantic gaps above resolved as decided: `immediate_prorated` is refused
 outright, and `createManagementLink` returns Paystack's per-subscription manage page. Two fields
 joined the interface for it: `CreatePriceInput.productName` (a Paystack Plan carries the name the
 payer sees; Stripe reads it off the product) and `OneTimeCheckoutInput.payerEmail` (Paystack
-cannot open a guest checkout at all). Provider selection is by which secret is present, defaulting
-to Stripe when both are.
+cannot open a guest checkout at all).
+
+**Selecting Paystack takes an explicit `BILLING_PROVIDER=paystack`.** An earlier draft of this
+inferred the rail from key presence; blind review called that a CRITICAL trap, because pasting a
+key — to try it, or while setting something else up — would have moved live billing onto a rail
+whose webhook did not exist yet, where a client's payment lands and their workspace stays walled.
+A key on its own now does nothing.
 
 **The webhook receiver landed in #12**, at `/api/webhooks/paystack`. Rather than a second
 lifecycle beside Stripe's, the three state changes were extracted provider-neutral
