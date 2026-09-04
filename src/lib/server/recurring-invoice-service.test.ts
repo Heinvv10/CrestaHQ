@@ -18,8 +18,8 @@ const issueQuoteNumber = vi.fn();
 let schedule: Record<string, unknown> | null;
 /** txUpdates.length at the moment the invoice number was issued. */
 let claimedBeforeGenerate = -1;
-/** Unpaid invoices the arrears recount will find. */
-let unpaidCount = 0;
+/** Invoice ids the arrears query will return as unpaid ("sent"/"viewed"). */
+let unpaidInvoiceIds: string[] = [];
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
@@ -36,7 +36,10 @@ vi.mock("@/lib/firebase/admin", () => ({
       }),
       where: () => ({
         where: () => ({
-          get: async () => ({ size: unpaidCount }),
+          get: async () => ({
+            size: unpaidInvoiceIds.length,
+            docs: unpaidInvoiceIds.map((id) => ({ id })),
+          }),
           orderBy: () => ({
             limit: () => ({
               get: async () => ({
@@ -79,6 +82,7 @@ vi.mock("@/lib/server/quote-send-service", () => ({
 }));
 vi.mock("@/lib/server/tasks-service", () => ({
   createTaskServerSide: (...a: unknown[]) => createTaskServerSide(...a),
+  territoryForContact: async () => "terr_1",
 }));
 vi.mock("firebase-admin/firestore", () => ({
   FieldValue: {
@@ -103,7 +107,7 @@ function nextRun(): Date {
   return (claim().nextRunAt as { __date: Date }).__date;
 }
 function settle() {
-  const s = updates.find((u) => "consecutiveUnpaid" in u);
+  const s = updates.find((u) => "outstandingInvoices" in u);
   if (!s) throw new Error("the schedule was never settled");
   return s;
 }
@@ -137,7 +141,8 @@ function makeSchedule(over: Record<string, unknown> = {}) {
     reviewFirst: false,
     unpaidEscalationThreshold: 2,
     cyclesGenerated: 3,
-    consecutiveUnpaid: 0,
+    outstandingInvoices: 0,
+    lastEscalatedCount: null,
     ...over,
   };
 }
@@ -148,7 +153,8 @@ beforeEach(() => {
   txUpdates.length = 0;
   written.length = 0;
   claimedBeforeGenerate = -1;
-  unpaidCount = 1;
+  // The just-raised invoice is in the query result, as it would be once sent.
+  unpaidInvoiceIds = ["inv_new"];
   // Records how far the claim had got when the invoice was minted, so
   // ordering can be asserted rather than assumed.
   issueQuoteNumber.mockImplementation(async () => {
@@ -190,6 +196,13 @@ describe("generating a cycle", () => {
     // Editing the template later must never change an invoice already raised
     // — it is a historical record of what was billed.
     expect(written[0].lineItems).toEqual(schedule!.lineItems);
+  });
+
+  it("stamps the contact's territory so the rep who owns the account can see it", async () => {
+    await runOneSchedule("sch_1", NOW);
+    // Without it the rules read a null territory and deny the invoice to
+    // everyone but admins — including the rep whose account it is.
+    expect(written[0].territoryId).toBe("terr_1");
   });
 
   it("sends as the system, naming the schedule as its reason", async () => {
@@ -292,16 +305,25 @@ describe("claiming — one invoice per cycle", () => {
 });
 
 describe("arrears", () => {
-  it("recounts unpaid invoices from the invoices themselves", async () => {
-    unpaidCount = 3;
+  it("does not count the invoice it just raised", async () => {
+    unpaidInvoiceIds = ["inv_new", "inv_old"];
+    await runOneSchedule("sch_1", NOW);
+    // An invoice cannot be overdue on the day it is sent. Counting it made a
+    // threshold of 2 fire when exactly one prior invoice was outstanding.
+    expect(settle().outstandingInvoices).toBe(1);
+    expect(createTaskServerSide).not.toHaveBeenCalled();
+  });
+
+  it("counts outstanding invoices from the invoices themselves", async () => {
+    unpaidInvoiceIds = ["inv_new", "a", "b", "c"];
     await runOneSchedule("sch_1", NOW);
     // Counted, not incremented, so an operator marking one paid by hand is
     // picked up without a second write path and a miscount cannot accumulate.
-    expect(settle().consecutiveUnpaid).toBe(3);
+    expect(settle().outstandingInvoices).toBe(3);
   });
 
   it("raises a Task once the threshold is reached", async () => {
-    unpaidCount = 2;
+    unpaidInvoiceIds = ["inv_new", "a", "b"];
     await runOneSchedule("sch_1", NOW);
     expect(createTaskServerSide).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -310,28 +332,76 @@ describe("arrears", () => {
         title: expect.stringContaining("unpaid"),
       }),
     );
+    expect(settle().lastEscalatedCount).toBe(2);
   });
 
   it("stays quiet below the threshold", async () => {
-    unpaidCount = 1;
+    unpaidInvoiceIds = ["inv_new", "a"];
     await runOneSchedule("sch_1", NOW);
     expect(createTaskServerSide).not.toHaveBeenCalled();
   });
 
+  it("does not re-raise a Task while the situation is unchanged", async () => {
+    schedule = makeSchedule({ lastEscalatedCount: 3 });
+    unpaidInvoiceIds = ["inv_new", "a", "b", "c"];
+    await runOneSchedule("sch_1", NOW);
+    // A fresh Task every night — each firing task.created webhooks — is how an
+    // operator learns to ignore them.
+    expect(createTaskServerSide).not.toHaveBeenCalled();
+  });
+
+  it("raises another Task when it gets worse", async () => {
+    schedule = makeSchedule({ lastEscalatedCount: 3 });
+    unpaidInvoiceIds = ["inv_new", "a", "b", "c", "d"];
+    await runOneSchedule("sch_1", NOW);
+    expect(createTaskServerSide).toHaveBeenCalledTimes(1);
+    expect(settle().lastEscalatedCount).toBe(4);
+  });
+
   it("never escalates when the threshold is 0", async () => {
-    unpaidCount = 9;
+    unpaidInvoiceIds = ["inv_new", "a", "b", "c", "d", "e"];
     schedule = makeSchedule({ unpaidEscalationThreshold: 0 });
     await runOneSchedule("sch_1", NOW);
     expect(createTaskServerSide).not.toHaveBeenCalled();
   });
 
   it("still raises the invoice when the customer is in arrears", async () => {
-    unpaidCount = 5;
+    unpaidInvoiceIds = ["inv_new", "a", "b", "c", "d"];
     const outcome = await runOneSchedule("sch_1", NOW);
     // The debt is real. Silently ceasing to bill a slow payer is worse than
     // billing them again.
     expect(outcome.kind).toBe("generated");
     expect(sendQuoteServerSide).toHaveBeenCalled();
+  });
+});
+
+describe("a schedule that is far behind", () => {
+  it("fast-forwards instead of emailing a year of invoices one a night", async () => {
+    schedule = makeSchedule({
+      timezone: "UTC",
+      anchorDay: 1,
+      nextRunAt: { toDate: () => new Date("2025-04-01T00:00:00.000Z") },
+    });
+
+    const outcome = await runOneSchedule("sch_1", NOW);
+
+    // The claim advances ONE cycle, so without this a backdated schedule
+    // raises and sends a real invoice every night until it catches up.
+    expect(outcome).toEqual({ kind: "skipped", reason: "too_stale" });
+    expect(written).toHaveLength(0);
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(claim().nextRunAt).toBeTruthy();
+    expect(String(claim().lastError)).toContain("Raise it by hand");
+  });
+
+  it("still bills a cycle only a few days late", async () => {
+    schedule = makeSchedule({
+      timezone: "UTC",
+      anchorDay: 1,
+      nextRunAt: { toDate: () => new Date("2026-02-25T00:00:00.000Z") },
+    });
+    const outcome = await runOneSchedule("sch_1", NOW);
+    expect(outcome.kind).toBe("generated");
   });
 });
 
@@ -344,6 +414,20 @@ describe("ending a schedule", () => {
     });
     await runOneSchedule("sch_1", NOW);
     expect(claim().status).toBe("completed");
+  });
+
+  it("keeps billing when after_count has no maxCycles, rather than stopping at one", async () => {
+    // `>= (maxCycles ?? 0)` completes on the first cycle. Failing safe
+    // silently is still failing: the customer stops being billed and nobody
+    // is told why.
+    schedule = makeSchedule({
+      endMode: "after_count",
+      maxCycles: null,
+      cyclesGenerated: 0,
+    });
+    await runOneSchedule("sch_1", NOW);
+    expect(written).toHaveLength(1);
+    expect(claim().status).toBeUndefined();
   });
 
   it("keeps running while cycles remain", async () => {

@@ -18,8 +18,12 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
 
 type Mode = "live" | "test";
 
-/** Territory follows the linked contact; standalone tasks fall back to Global. */
-async function territoryForContact(contactId: string | null): Promise<string> {
+/** Territory follows the linked contact; standalone tasks fall back to Global.
+ *  Exported so every server-side document creator stamps the same value the
+ *  hand-made routes do. */
+export async function territoryForContact(
+  contactId: string | null,
+): Promise<string> {
   if (!contactId) return GLOBAL_TERRITORY_ID;
   try {
     const snap = await getAdminDb().doc(`contacts/${contactId}`).get();

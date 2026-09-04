@@ -4,7 +4,10 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { issueQuoteNumber } from "@/lib/quotes/number";
-import { createTaskServerSide } from "@/lib/server/tasks-service";
+import {
+  createTaskServerSide,
+  territoryForContact,
+} from "@/lib/server/tasks-service";
 import { sendQuoteServerSide } from "@/lib/server/quote-send-service";
 import { DEFAULT_QUOTE } from "@/types/quotes";
 import {
@@ -30,6 +33,10 @@ export async function generateInvoice(
   schedule: RecurringInvoiceDoc,
   now: Date,
 ): Promise<string> {
+  // Same stamp the hand-made path applies. Without it the rules read a null
+  // territory and deny it to everyone but admins — so the rep who actually
+  // owns the account cannot see the invoices raised for it.
+  const territoryId = await territoryForContact(schedule.contactId);
   const quoteNumber = await issueQuoteNumber(
     schedule.subAccountId,
     "invoice",
@@ -56,7 +63,11 @@ export async function generateInvoice(
     billingAddress: schedule.billingAddress,
     paymentDueDays: schedule.paymentDueDays,
     recurringInvoiceId: schedule.id,
-    publicTokenHash: null,
+    territoryId,
+    // "" is what the hand-made path writes, and what `Quote.publicTokenHash`
+    // is declared as. `set()` on an untyped collection ref would not catch a
+    // null here.
+    publicTokenHash: "",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -105,7 +116,8 @@ export async function sendGeneratedInvoice(
 }
 
 /**
- * Arrears: recount, escalate past the threshold, and record the invoice.
+ * Arrears: recount, escalate when the situation worsens, and record the
+ * invoice.
  *
  * Completion is NOT decided here — the claim transaction owns it, so that
  * anything throwing in this function cannot leave a finished schedule active
@@ -115,38 +127,51 @@ export async function settleAfterCycle(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
 ): Promise<void> {
-  const unpaid = await countUnpaidInvoices(schedule.id);
+  // The invoice just raised is excluded: it cannot be overdue on the day it
+  // was sent, and counting it made a threshold of 2 fire when exactly one
+  // prior invoice was genuinely outstanding.
+  const outstanding = await countOutstandingInvoices(schedule.id, invoiceId);
   const updates: Record<string, unknown> = {
     lastInvoiceId: invoiceId,
-    consecutiveUnpaid: unpaid,
+    outstandingInvoices: outstanding,
     updatedAt: FieldValue.serverTimestamp(),
   };
 
   const threshold = schedule.unpaidEscalationThreshold;
-  if (threshold > 0 && unpaid >= threshold) {
-    await escalateArrears(schedule, unpaid).catch((err) =>
+  // Only when it got WORSE than the last Task. Escalating on every cycle that
+  // merely stays above the threshold buries the operator in duplicate Tasks —
+  // each one firing its own `task.created` webhooks — until they stop reading
+  // them, which is the opposite of what escalation is for.
+  const worsened = outstanding > (schedule.lastEscalatedCount ?? 0);
+  if (threshold > 0 && outstanding >= threshold && worsened) {
+    await escalateArrears(schedule, outstanding).catch((err) =>
       console.error("[recurring] arrears escalation failed", err),
     );
     updates.lastEscalatedAt = FieldValue.serverTimestamp();
+    updates.lastEscalatedCount = outstanding;
   }
 
   await schedulesCollection().doc(schedule.id).update(updates);
 }
 
 /**
- * Unpaid invoices this schedule has raised.
+ * Invoices this schedule has SENT that remain unpaid, excluding the one just
+ * raised.
  *
  * Counted from the invoices themselves rather than incremented, so an operator
  * marking one paid by hand is picked up without any second write path — and a
  * miscount cannot accumulate.
  */
-export async function countUnpaidInvoices(scheduleId: string): Promise<number> {
+async function countOutstandingInvoices(
+  scheduleId: string,
+  excludeInvoiceId: string,
+): Promise<number> {
   const snap = await getAdminDb()
     .collection("quotes")
     .where("recurringInvoiceId", "==", scheduleId)
     .where("status", "in", [...UNPAID_INVOICE_STATUSES])
     .get();
-  return snap.size;
+  return snap.docs.filter((d) => d.id !== excludeInvoiceId).length;
 }
 
 /** A Task the operator will actually see, rather than a log nobody reads. */
@@ -187,7 +212,16 @@ export function isFinalCycle(
   nextRunAt: Date,
 ): boolean {
   if (schedule.endMode === "after_count") {
-    return cyclesGenerated >= (schedule.maxCycles ?? 0);
+    const max = schedule.maxCycles;
+    if (typeof max !== "number" || max < 1) {
+      // `>= 0` would complete the schedule after its first cycle. Failing
+      // safe silently is still failing: keep billing and say so.
+      console.warn(
+        `[recurring] schedule ${schedule.id} ends after_count with no maxCycles — treating as open-ended`,
+      );
+      return false;
+    }
+    return cyclesGenerated >= max;
   }
   if (schedule.endMode === "on_date") {
     const endAt = toDate(schedule.endAt);
@@ -210,7 +244,9 @@ export function isAlreadyFinished(
   dueAt: Date,
 ): boolean {
   if (schedule.endMode === "after_count") {
-    return (schedule.cyclesGenerated ?? 0) >= (schedule.maxCycles ?? 0);
+    const max = schedule.maxCycles;
+    if (typeof max !== "number" || max < 1) return false;
+    return (schedule.cyclesGenerated ?? 0) >= max;
   }
   if (schedule.endMode === "on_date") {
     const endAt = toDate(schedule.endAt);

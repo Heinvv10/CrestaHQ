@@ -99,7 +99,7 @@ own outright post-migration.
 |---|---|---|---|
 | 1.1 | ~~**Paystack rail** replacing Stripe in Client Billing~~ **BUILT 2026-09-04** (#11, #12) | — | Interface + Stripe adapter + Paystack adapter + **webhook receiver**. Unproven against a live account. See 1.1 detail |
 | 1.2 | ~~Meta Cloud API port~~ **BUILT 2026-09-04** — unproven against a live WABA | 1 d | **It was a build, not a port.** See 1.2 detail |
-| 1.3 | **Recurring / automated invoicing** — **ENGINE BUILT**, operator UI next | ~1 d | Schedule doc + cadence + daily cron. Auto-charge is deliberately a later mode on the same schedule; see the plan |
+| 1.3 | **Recurring / automated invoicing** — **ENGINE BUILT**, NOT yet usable | ~1 d | Schedule doc + cadence + daily cron. **No create/read API and no UI yet, so a schedule can only be made by hand-writing Firestore** — acceptance criterion 2 (a real cycle emailing a real invoice) cannot be exercised until that lands. Auto-charge is deliberately a later mode on the same schedule |
 | 1.4 | ~~Test suite on billing + comms~~ **DONE 2026-09-03** (`cf3a445`, `35852ff`) | — | **3 tests → 233.** Guards, not happy paths; 61 verified by deleting the guard and confirming a test fails. See 1.4 detail |
 
 ### 1.1 detail — CORRECTED 2026-09-03

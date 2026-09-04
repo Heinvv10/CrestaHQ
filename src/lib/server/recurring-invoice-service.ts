@@ -32,6 +32,17 @@ import type {
  * without fixing that write first.
  */
 
+/**
+ * How stale a due date may be and still be billed.
+ *
+ * The claim advances exactly one cycle, so a schedule backdated a year would
+ * raise AND SEND one real invoice per nightly sweep for a year. Anything older
+ * than this is history an operator should raise deliberately, not something a
+ * cron mails out — so the schedule fast-forwards to its next future cycle and
+ * says it did.
+ */
+export const MAX_CATCHUP_DAYS = 31;
+
 /** How many schedules one cron invocation will process before continuing. */
 export const RECURRING_BATCH_SIZE = 25;
 
@@ -166,6 +177,20 @@ async function claimCycle(
       anchorDay: schedule.anchorDay,
       timezone: schedule.timezone,
     });
+
+    // Too far behind to bill: step forward without raising anything.
+    const staleDays = (now.getTime() - dueAt.getTime()) / 86_400_000;
+    if (staleDays > MAX_CATCHUP_DAYS) {
+      tx.update(ref, {
+        nextRunAt: Timestamp.fromDate(nextRunAt),
+        lastError:
+          `Skipped a cycle due ${dueAt.toISOString().slice(0, 10)} — more than ` +
+          `${MAX_CATCHUP_DAYS} days old. Raise it by hand if it is still owed.`,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { ok: false as const, reason: "too_stale" };
+    }
+
     const cyclesGenerated = (schedule.cyclesGenerated ?? 0) + 1;
 
     // Completion is decided HERE, from the cycle actually being claimed, and
@@ -187,4 +212,3 @@ async function claimCycle(
     return { ok: true as const, schedule };
   });
 }
-

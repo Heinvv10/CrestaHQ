@@ -86,9 +86,24 @@ export interface RecurringInvoiceDoc {
   cyclesGenerated: number;
   lastRunAt: Timestamp | FieldValue | null;
   lastInvoiceId: string | null;
-  /** Recounted each run from the schedule's own generated invoices. */
-  consecutiveUnpaid: number;
+  /**
+   * How many invoices this schedule has SENT that remain unpaid, recounted
+   * from the invoices themselves each run.
+   *
+   * Named for what it is. An earlier draft called it `consecutiveUnpaid`,
+   * which it never was — cycles 1, 5 and 9 unpaid with everything else
+   * settled is three outstanding invoices and no two consecutive misses. The
+   * count is the right signal either way; the name was the lie.
+   */
+  outstandingInvoices: number;
   lastEscalatedAt: Timestamp | FieldValue | null;
+  /**
+   * The outstanding count the last Task was raised at. Escalation only fires
+   * when the situation gets WORSE than this, so a customer stuck at three
+   * unpaid invoices produces one Task, not a fresh one every night with its
+   * own `task.created` webhooks.
+   */
+  lastEscalatedCount: number | null;
   /** Why a run could not send, surfaced on the operator's list. */
   lastError: string | null;
 
@@ -116,12 +131,14 @@ export const RECURRING_INVOICE_DEFAULTS = {
   reviewFirst: false,
   unpaidEscalationThreshold: 2,
   cyclesGenerated: 0,
-  consecutiveUnpaid: 0,
+  outstandingInvoices: 0,
 } as const;
 
-/** Invoice statuses that mean the money has NOT arrived. */
-export const UNPAID_INVOICE_STATUSES = [
-  "draft",
-  "sent",
-  "viewed",
-] as const;
+/**
+ * Statuses meaning the customer was asked for money and it has not arrived.
+ *
+ * `draft` is deliberately absent: a review-first schedule parks every invoice
+ * at `draft` by design, so counting those would have it escalating on its
+ * second cycle over money nobody has been asked for.
+ */
+export const UNPAID_INVOICE_STATUSES = ["sent", "viewed"] as const;
