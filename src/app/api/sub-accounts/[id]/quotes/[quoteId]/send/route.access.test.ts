@@ -1,0 +1,114 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * Behaviour-pinning tests for the quote/invoice SEND route — the guards that
+ * refuse before anything is sent: Resend configuration, the quote's existence
+ * and tenancy, territory scoping, and the recipient's email.
+ *
+ * Written BEFORE the send logic was extracted into `sendQuoteServerSide()`,
+ * precisely so the extraction could be proven to change nothing observable.
+ * Every status code and every error STRING is asserted verbatim.
+ *
+ * Shared fakes live in ./send-test-harness. Siblings:
+ *   route.payment-rails.test.ts — invoice rails + the PayPal link
+ *   route.send.test.ts          — token, send, lifecycle write, side-effects
+ */
+
+vi.mock("firebase-admin/firestore", async () =>
+  (await import("./send-test-harness")).firestoreMock(),
+);
+vi.mock("@/lib/firebase/admin", async () =>
+  (await import("./send-test-harness")).adminMock(),
+);
+vi.mock("@/lib/auth/require-tenancy", async () =>
+  (await import("./send-test-harness")).tenancyMock(),
+);
+vi.mock("@/lib/auth/territory-filter", async () =>
+  (await import("./send-test-harness")).territoryMock(),
+);
+vi.mock("@/lib/comms/resend", async () =>
+  (await import("./send-test-harness")).resendMock(),
+);
+vi.mock("@/lib/quotes/token", async () =>
+  (await import("./send-test-harness")).tokenMock(),
+);
+vi.mock("@/lib/quotes/email", async () =>
+  (await import("./send-test-harness")).emailMock(),
+);
+vi.mock("@/lib/quotes/lifecycle", async () =>
+  (await import("./send-test-harness")).lifecycleMock(),
+);
+
+import {
+  DENIAL_MESSAGE,
+  baseQuote,
+  callJson,
+  resetHarness,
+  sendEmail,
+  state,
+} from "./send-test-harness";
+import { POST } from "./route";
+
+const call = () => callJson(POST);
+
+beforeEach(resetHarness);
+
+describe("pre-flight guards", () => {
+  it("503s when Resend isn't configured, before touching Firestore", async () => {
+    state.emailConfigured = false;
+    const { status, body } = await call();
+    expect(status).toBe(503);
+    expect(body.error).toBe(
+      "Email isn't configured on this deployment — set RESEND_API_KEY + EMAIL_FROM to send quotes.",
+    );
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(state.quoteUpdates).toHaveLength(0);
+  });
+
+  it("404s an unknown quote", async () => {
+    state.quoteDoc = null;
+    const { status, body } = await call();
+    expect(status).toBe(404);
+    expect(body.error).toBe("Quote not found");
+  });
+
+  it("403s a quote belonging to another sub-account", async () => {
+    state.quoteDoc = baseQuote({ subAccountId: "other-sub" });
+    const { status, body } = await call();
+    expect(status).toBe(403);
+    expect(body.error).toBe("Quote belongs to a different sub-account");
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("403s when the territory gate denies, without sending", async () => {
+    state.territoryDenies = true;
+    const { status, body } = await call();
+    expect(status).toBe(403);
+    expect(body.error).toBe(DENIAL_MESSAGE);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(state.quoteUpdates).toHaveLength(0);
+  });
+
+  it("404s when the recipient contact is gone", async () => {
+    state.contactDoc = null;
+    const { status, body } = await call();
+    expect(status).toBe(404);
+    expect(body.error).toBe("Recipient contact no longer exists");
+  });
+
+  it("400s when the contact has no email", async () => {
+    state.contactDoc = { name: "Jane Doe" };
+    const { status, body } = await call();
+    expect(status).toBe(400);
+    expect(body.error).toBe(
+      "Contact has no email address — add one to their profile, then re-send.",
+    );
+  });
+
+  it("treats a whitespace-only email as missing", async () => {
+    state.contactDoc = { email: "   ", name: "Jane Doe" };
+    const { status } = await call();
+    expect(status).toBe(400);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
