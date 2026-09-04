@@ -82,18 +82,32 @@ jobs:
           # the objects, and still needs rotating.
           fetch-depth: 0
 
-      # Self-hosted runners share /tmp between jobs. A gitleaks download that
-      # died mid-extract leaves residue behind and the next run fails with
-      # "Destination file path already exists" — a failure that looks like a
-      # secret finding but isn't. Learned in ApexGEO.
-      - name: Clear gitleaks tmp residue
-        run: rm -rf /tmp/gitleaks.tmp /tmp/gitleaks || true
-
+      # Uses the gitleaks binary installed on the runner host, NOT
+      # gitleaks/gitleaks-action.
+      #
+      # The action downloads a release tarball through /tmp/gitleaks.tmp. On
+      # this box several repos' runners share /tmp under the sticky bit, so
+      # that path is owned by whichever runner user got there first — and no
+      # other runner user can delete it. ApexGEO hit this and cleans the file
+      # up in a pre-step, which works only because it owns it. From here the
+      # cleanup silently no-ops and the download then fails with
+      # "Destination file path already exists", which reads like a scan
+      # failure but is a collision with an unrelated repo's CI.
+      #
+      # Invoking the installed binary removes the download, the shared path
+      # and the cross-repo coupling in one go, and is faster.
+      #
       # This repo holds Firebase admin keys, Stripe secrets, Twilio auth
       # tokens, a Meta app secret and WhatsApp WABA tokens. FibreFlow carried
       # a documented-but-false claim that its scanner ran in CI, and found out
-      # via a real credential leak (issue #1830) followed by a 26-credential
-      # audit. Cheap gate, expensive absence.
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # via a real credential leak (issue #1830) plus a 26-credential audit.
+      # Cheap gate, expensive absence.
+      - name: gitleaks
+        run: |
+          command -v gitleaks >/dev/null || {
+            echo "::error::gitleaks is not installed on this runner host."
+            echo "Install it once: curl -sSL <release>.tar.gz | sudo tar -C /usr/local/bin -xz gitleaks"
+            exit 1
+          }
+          gitleaks version
+          gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 .

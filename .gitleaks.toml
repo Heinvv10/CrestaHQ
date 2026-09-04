@@ -1,0 +1,25 @@
+# gitleaks config. Extends the default ruleset rather than replacing it.
+[extend]
+useDefault = true
+
+# Allowlist DOCUMENTATION PLACEHOLDERS only.
+#
+# These match the literal placeholder text, so a real credential on the same
+# line, in the same file, under the same rule is still caught. Deliberately not
+# a `paths` exclusion and not a rule-id exclusion — silencing a whole file or a
+# whole rule is how a scanner quietly stops scanning while still reporting
+# green.
+#
+# Verified in both directions when added: with these entries the repo scans
+# clean, and a planted `sk_live_...` Stripe key is still detected.
+[allowlist]
+description = "Documentation placeholders, not credentials"
+# Anchored to the EXACT placeholder values gitleaks captures as the secret
+# (allowlist regexes match the captured secret, not the surrounding line), so
+# these cannot widen to match a real token that merely sits nearby.
+regexes = [
+  # Setup instructions in the QStash cron route's header comment.
+  '''^YOUR_QSTASH_TOKEN$''',
+  # Public API docs page showing buyers the Bearer format.
+  '''^lsk_live_\.\.\.$''',
+]
