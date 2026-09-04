@@ -1,0 +1,260 @@
+package ui
+
+import (
+	"html"
+	"strings"
+	"testing"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
+)
+
+// secrets that must never reach a rendered page. The QR payload is the one
+// that matters most: it is a device-linking credential, and HTML lands in
+// browser history, proxies, screenshots and bug reports far more readily than
+// an image does. The tokens are here because the same page is rendered by a
+// process holding all of them.
+var secrets = []string{
+	"2@QR-PAYLOAD-LINKS-A-DEVICE",
+	"op-token-hermes",
+	"app-token-that-must-never-appear",
+	"manager-token-for-tenant",
+}
+
+func ptr(n int) *int { return &n }
+
+func pairedTenant() store.Tenant {
+	return store.Tenant{
+		ID: "blitz", DisplayName: "Blitz Fibre", Instance: "blitz", Port: 9101,
+		State: store.StateRunning, Phone: "+27 82 123 4567",
+	}
+}
+
+func healthyReport() health.Report {
+	return health.Report{
+		Reachable: true, Connected: true,
+		OutboundLast24h: 18, DailyCap: 150,
+		LastInboundAgeSeconds: ptr(360),
+	}
+}
+
+func renderPage(t *testing.T, p Page) string {
+	t.Helper()
+	var sb strings.Builder
+	if err := Render(&sb, p); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	out := sb.String()
+	for _, s := range secrets {
+		if strings.Contains(out, s) {
+			t.Fatalf("rendered page leaked a secret %q", s)
+		}
+	}
+	return out
+}
+
+func renderOne(t *testing.T, tn store.Tenant, r *health.Report) string {
+	t.Helper()
+	return renderPage(t, Page{Cards: []Card{BuildCard(tn, r)}})
+}
+
+// mustContain asserts on what an operator READS. html/template escapes "+" to
+// "&#43;", so a raw substring check would miss a phone number that renders
+// perfectly in a browser; unescaping first keeps the assertions about the
+// screen rather than about the escaper.
+func mustContain(t *testing.T, out string, want ...string) {
+	t.Helper()
+	out = html.UnescapeString(out)
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("rendered page missing %q\n---\n%s", w, out)
+		}
+	}
+}
+
+func mustNotContain(t *testing.T, out string, unwanted ...string) {
+	t.Helper()
+	out = html.UnescapeString(out)
+	for _, w := range unwanted {
+		if strings.Contains(out, w) {
+			t.Errorf("rendered page unexpectedly contains %q\n---\n%s", w, out)
+		}
+	}
+}
+
+// A healthy card shows the real number, every safety field, and ONE status.
+func TestConnectedCardShowsNumberAndSafetyFields(t *testing.T) {
+	r := healthyReport()
+	out := renderOne(t, pairedTenant(), &r)
+
+	mustContain(t, out,
+		"+27 82 123 4567", // the real number, not the label
+		"Connected",
+		"18 / 150", // volume against the cap
+		"6 min ago",
+		"armed",
+	)
+	// The label is not the identity of a paired number.
+	mustNotContain(t, out, "not paired")
+
+	if n := strings.Count(out, statusMarker); n != 1 {
+		t.Errorf("want exactly one status line, got %d", n)
+	}
+}
+
+// Before pairing there is no number to show, so the label plus an explicit
+// "not paired" is the honest identity.
+func TestUnpairedCardShowsLabelAndNotPaired(t *testing.T) {
+	tn := pairedTenant()
+	tn.Phone, tn.State = "", store.StateProvisioned
+	r := health.Report{Reachable: true, Connected: false, DailyCap: 150}
+	out := renderOne(t, tn, &r)
+
+	mustContain(t, out, "Blitz Fibre", "not paired")
+	if n := strings.Count(out, statusMarker); n != 1 {
+		t.Errorf("want exactly one status line, got %d", n)
+	}
+}
+
+// A tenant provisioned without a label must still be identifiable — a blank
+// card is useless in the incident this screen exists for.
+func TestUnlabelledTenantFallsBackToItsID(t *testing.T) {
+	tn := pairedTenant()
+	tn.Phone, tn.DisplayName = "", ""
+	r := health.Report{Reachable: true}
+
+	// Asserted on the card, not on the page: the tenant id also appears in
+	// the card's own link, so a substring check on the HTML would pass even
+	// with an empty title.
+	if got := BuildCard(tn, &r).Title; got != tn.ID {
+		t.Errorf("title = %q, want the tenant id %q", got, tn.ID)
+	}
+	mustContain(t, renderOne(t, tn, &r), "not paired")
+}
+
+// nil lastInboundAgeSeconds means nobody has ever messaged this number. A
+// fresh bridge is not one that last heard from someone at the epoch.
+func TestNilLastInboundRendersNever(t *testing.T) {
+	r := healthyReport()
+	r.LastInboundAgeSeconds = nil
+	out := renderOne(t, pairedTenant(), &r)
+
+	mustContain(t, out, "never")
+	mustNotContain(t, out, "0 sec ago", "just now", "56 years")
+}
+
+// Killed and disconnected is a number that has been logged out — the one
+// state the operator must act on, so it is the state the single line reports.
+func TestLoggedOutCardSaysSoAndShowsKillTripped(t *testing.T) {
+	r := healthyReport()
+	r.Connected, r.Killed = false, true
+	out := renderOne(t, pairedTenant(), &r)
+
+	mustContain(t, out, "Logged out", "tripped")
+	mustNotContain(t, out, ">armed<", "Connected<")
+	if n := strings.Count(out, statusMarker); n != 1 {
+		t.Errorf("want exactly one status line, got %d", n)
+	}
+}
+
+// A bridge the manager cannot see must not be rendered as a healthy one, and
+// must not invent counters it never observed.
+func TestUnreachableCardReportsUnknownRatherThanZero(t *testing.T) {
+	out := renderOne(t, pairedTenant(), nil)
+
+	mustContain(t, out, "Unreachable", "unknown")
+	mustNotContain(t, out, "0 / 0", "armed", "just now")
+}
+
+// A report the poller marked unreachable is NOT the same as a nil one — the
+// poller produces it whenever a bridge failed at the transport level — and it
+// must render as unknown rather than as an idle, healthy number.
+func TestUnreachableReportRendersUnknownNotIdle(t *testing.T) {
+	r := health.Report{Reachable: false, Err: "unreachable: request failed"}
+	out := renderOne(t, pairedTenant(), &r)
+
+	mustContain(t, out, "Unreachable", "unknown")
+	mustNotContain(t, out, "armed", "just now", "Connected<")
+}
+
+// A bridge that answered but reported no cap must not divide by zero or claim
+// a cap of nothing.
+func TestUnknownCapRendersDashNotZero(t *testing.T) {
+	r := healthyReport()
+	r.DailyCap = 0
+	out := renderOne(t, pairedTenant(), &r)
+
+	mustContain(t, out, "18 / —")
+	mustNotContain(t, out, "18 / 0")
+}
+
+// The kill switch is the last rail between a mistake and a dead number; its
+// two states must never read alike.
+func TestKillStatesAreDistinct(t *testing.T) {
+	armed := healthyReport()
+	live := healthyReport()
+	live.Killed = true
+
+	if BuildCard(pairedTenant(), &armed).KillSwitch == BuildCard(pairedTenant(), &live).KillSwitch {
+		t.Fatal("armed and tripped kill switches render identically")
+	}
+}
+
+// A display name is operator-supplied text and reaches the page as data.
+func TestDisplayNameIsEscaped(t *testing.T) {
+	tn := pairedTenant()
+	tn.Phone = ""
+	tn.DisplayName = `<script>alert(1)</script>`
+	r := health.Report{Reachable: true}
+	out := renderOne(t, tn, &r)
+
+	// Deliberately a RAW check: the point is that the markup on the wire is
+	// inert, which unescaping the page first would hide.
+	if strings.Contains(out, "<script>alert(1)</script>") {
+		t.Error("display name reached the page as markup, not as data")
+	}
+	if !strings.Contains(out, "&lt;script&gt;") {
+		t.Errorf("display name was not escaped\n---\n%s", out)
+	}
+}
+
+// The volume bar is a safety signal, so it must saturate rather than overflow
+// when a number has already run past its cap.
+func TestVolumeBarClampsOverCap(t *testing.T) {
+	r := healthyReport()
+	r.OutboundLast24h, r.DailyCap = 900, 150
+	c := BuildCard(pairedTenant(), &r)
+
+	if got := len([]rune(c.Bar)); got != barWidth {
+		t.Fatalf("bar width = %d, want %d", got, barWidth)
+	}
+	if strings.ContainsRune(c.Bar, barEmpty) {
+		t.Errorf("a number past its cap must render a full bar, got %q", c.Bar)
+	}
+
+	// And a negative count from a broken bridge must not render a negative bar.
+	// -5/150 truncates to 0; only a magnitude past the cap actually goes negative.
+	r.OutboundLast24h = -900
+	if got := len([]rune(BuildCard(pairedTenant(), &r).Bar)); got != barWidth {
+		t.Fatalf("bar width on a negative count = %d, want %d", got, barWidth)
+	}
+}
+
+// A number that needs pairing offers the code inline — as an IMAGE from a
+// separate route. The payload itself never reaches this package, which is the
+// structural reason it cannot reach the page.
+func TestPairingPageLinksTheQRImageRatherThanEmbeddingAPayload(t *testing.T) {
+	tn := pairedTenant()
+	tn.Phone, tn.State = "", store.StateProvisioned
+	r := health.Report{Reachable: true, Connected: false}
+	card := BuildCard(tn, &r)
+	if !card.NeedsPairing {
+		t.Fatal("an unpaired, disconnected number must offer pairing")
+	}
+	out := renderPage(t, Page{Tenant: &card})
+
+	mustContain(t, out, `src="/tenants/blitz/qr.png"`)
+	if strings.Contains(out, "<script") {
+		t.Error("the page must render without shipping script to the browser")
+	}
+}

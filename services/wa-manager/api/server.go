@@ -97,6 +97,15 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/tenants/{id}", s.authed(s.handleDelete))
 	mux.HandleFunc("GET /api/tenants/{id}/pair", s.authed(s.handlePair))
 	mux.HandleFunc("POST /api/tenants/{id}/restart", s.authed(s.handleRestart))
+
+	// The operator UI. Authenticated exactly like everything else here — it
+	// is a view onto the same privileged surface, and an unauthenticated
+	// manager is remote code execution — but via authedUI, which additionally
+	// accepts the token as HTTP Basic because a browser cannot attach a
+	// bearer header to a navigation or to an <img src>.
+	mux.HandleFunc("GET /{$}", s.authedUI(s.handleUIIndex))
+	mux.HandleFunc("GET /tenants/{id}", s.authedUI(s.handleUITenant))
+	mux.HandleFunc("GET /tenants/{id}/qr.png", s.authedUI(s.handleQRPNG))
 	return mux
 }
 
@@ -115,23 +124,12 @@ func New(deps Deps) http.Handler {
 // admitted, not how long the comparison took.
 func (s *server) authed(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		header := r.Header.Get("Authorization")
-		if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		token, ok := bearerToken(r)
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing bearer token"})
 			return
 		}
-		token := header[len(prefix):]
-		// A misconfigured deployment with no token must admit nobody.
-		// Deliberately unobservable today: ConstantTimeCompare already
-		// returns 0 on a length mismatch, so the only token that could match
-		// an empty one is "", which the prefix check above has already
-		// refused. Breaking this line does NOT turn a test red, and no test
-		// below pretends it does — it is here so that a future relaxation of
-		// the header parsing cannot quietly turn a missing config into an
-		// open door.
-		if s.deps.OperatorToken == "" ||
-			subtle.ConstantTimeCompare([]byte(s.deps.OperatorToken), []byte(token)) != 1 {
+		if !s.tokenOK(token) {
 			// The presented token is never logged: a rejected token is often a
 			// mistyped real one, and a log file is not the place for it.
 			log.Printf("auth rejected path=%s", r.URL.Path)
@@ -140,6 +138,35 @@ func (s *server) authed(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// bearerToken pulls the token out of an Authorization header, or reports that
+// there was not one to pull.
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	return header[len(prefix):], true
+}
+
+// tokenOK is the single admission decision, shared by the API and the UI so
+// the two cannot drift into disagreeing about who gets in.
+//
+// A misconfigured deployment with no token must admit nobody. That guard is
+// deliberately unobservable today: ConstantTimeCompare already returns 0 on a
+// length mismatch, so the only token that could match an empty one is "",
+// which both carriers already refuse (the bearer prefix check needs a
+// non-empty remainder, and Basic with an empty password is refused here).
+// Breaking that line does NOT turn a test red, and no test pretends it does —
+// it is here so that a future relaxation of the header parsing cannot quietly
+// turn a missing config into an open door.
+func (s *server) tokenOK(token string) bool {
+	if s.deps.OperatorToken == "" || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(s.deps.OperatorToken), []byte(token)) == 1
 }
 
 // tenantIDFromPath validates a caller-supplied id before it can address
