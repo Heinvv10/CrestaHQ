@@ -177,6 +177,32 @@ Per due schedule:
 
 Batch-capped with self-continuation, copying `api-cleanup`.
 
+## The operator surface
+
+`/sa/[id]/quotes/recurring` — list, create, edit, pause, resume, cancel — over
+`GET`/`POST /api/sub-accounts/[id]/recurring-invoices` and `GET`/`PATCH` on
+`/[recurringId]`.
+
+**Admin-only**, unlike one-off quotes: a schedule demands money every cycle with
+nobody watching. It also means territory scoping never applies here, because
+admins are never scoped.
+
+The money template is the ordinary `QuoteBuilder` — a recurring invoice's
+template *is* an invoice, and a second line-item editor would be a second place
+to fix every bug in the first. Only the cadence is new UI, and it has no
+day-of-month control: the billing day is the start date's day, previewed as a
+real date so nothing is inferred.
+
+Contact and start date are fixed after creation; both are what the invoices
+already raised were raised against. Changing the cadence or the anchor
+recomputes `nextRunAt` **from today**, never earlier — the stored value came
+from the old cadence. `completed` is the engine's word and cannot be set by an
+operator; `cancelled` is terminal, because resuming billing after a cancellation
+is a new agreement.
+
+There is no `DELETE`. A schedule that has billed somebody is the record of why
+those invoices exist.
+
 ## Acceptance criteria
 
 1. A monthly schedule anchored to the 31st generates on 31 Jan, 28 Feb, 31 Mar —

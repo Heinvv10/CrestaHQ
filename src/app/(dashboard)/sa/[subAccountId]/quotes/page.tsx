@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { FileText, Receipt } from "lucide-react";
+import { FileText, Receipt, Repeat } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { QuoteList } from "@/components/quotes/quote-list";
@@ -48,6 +48,13 @@ export default function QuotesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            render={<Link href={saPath("/quotes/recurring")} />}
+          >
+            <Repeat className="h-4 w-4" />
+            Recurring
+          </Button>
           <Button
             variant="outline"
             render={<Link href={saPath("/quotes/new")} />}
