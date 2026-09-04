@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const activateSubAccountPlan = vi.fn();
+const recordSubAccountSubscriptionId = vi.fn();
 const applySubAccountSubscriptionStatus = vi.fn();
 const markSubAccountChargePaid = vi.fn();
 
@@ -15,6 +16,8 @@ vi.mock("@/lib/server/billing-service", () => ({
   applySubAccountSubscriptionStatus: (...a: unknown[]) =>
     applySubAccountSubscriptionStatus(...a),
   markSubAccountChargePaid: (...a: unknown[]) => markSubAccountChargePaid(...a),
+  recordSubAccountSubscriptionId: (...a: unknown[]) =>
+    recordSubAccountSubscriptionId(...a),
 }));
 
 const { handlePaystackEvent } = await import("./webhooks");
@@ -151,21 +154,38 @@ describe("subscription.create", () => {
       event: "subscription.create",
       data: { subscription_code: "SUB_1", customer: CUSTOMER },
     });
-    expect(applySubAccountSubscriptionStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        subscriptionId: "SUB_1",
-        status: "active",
-        customerIdHint: "CUS_1",
-      }),
-    );
+    expect(recordSubAccountSubscriptionId).toHaveBeenCalledWith({
+      customerId: "CUS_1",
+      subscriptionId: "SUB_1",
+    });
   });
 
-  it("ignores an event that names neither subscription nor customer", async () => {
+  it("does NOT activate — a subscription object is not proof money moved", async () => {
+    await handlePaystackEvent({
+      event: "subscription.create",
+      data: { subscription_code: "SUB_1", customer: CUSTOMER },
+    });
+    // This event can arrive BEFORE the payment. Activating here would unlock
+    // the workspace at whatever gates it held while pending, fire a second
+    // billing.activated, and leave its checkout link live.
+    expect(applySubAccountSubscriptionStatus).not.toHaveBeenCalled();
+    expect(activateSubAccountPlan).not.toHaveBeenCalled();
+  });
+
+  it("ignores an event with no subscription code to record", async () => {
     await handlePaystackEvent({
       event: "subscription.create",
       data: { customer: CUSTOMER },
     });
-    expect(applySubAccountSubscriptionStatus).not.toHaveBeenCalled();
+    expect(recordSubAccountSubscriptionId).not.toHaveBeenCalled();
+  });
+
+  it("ignores an event with no customer to attach it to", async () => {
+    await handlePaystackEvent({
+      event: "subscription.create",
+      data: { subscription_code: "SUB_1", customer: null },
+    });
+    expect(recordSubAccountSubscriptionId).not.toHaveBeenCalled();
   });
 });
 
@@ -220,5 +240,6 @@ describe("events Client Billing does not map", () => {
     expect(activateSubAccountPlan).not.toHaveBeenCalled();
     expect(applySubAccountSubscriptionStatus).not.toHaveBeenCalled();
     expect(markSubAccountChargePaid).not.toHaveBeenCalled();
+    expect(recordSubAccountSubscriptionId).not.toHaveBeenCalled();
   });
 });

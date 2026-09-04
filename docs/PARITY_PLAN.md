@@ -163,6 +163,18 @@ account, not construction:
    does `subscription.create` really arrive separately? The router is built on both being true.
 3. Whether `metadata.custom_fields` renders on the charge page as intended.
 
+**Two known limits of Paystack's webhook scheme**, both accepted rather than fixed:
+
+- **Replay is unbounded.** Paystack signs the body only — no timestamp, no nonce — so a captured
+  `(body, signature)` pair stays valid forever, unlike this repo's own outbound webhooks, which
+  carry `Webhook-Timestamp`. A replayed activation can no longer re-apply a stale plan's gates
+  (the plan-match guard), and a replayed renewal must still match the workspace's current plan, so
+  the harmful outcomes are closed individually. A dedupe store keyed on `data.id` would close the
+  class; it was not built because nothing observed needs it yet. Paystack also publishes a
+  webhook source-IP allowlist, not applied here.
+- **Nothing dedupes two live checkout links for one sub-account** (carried over from #11 — Stripe
+  has the same exposure). The completion handler this work adds is where that guard belongs.
+
 **Two things blind review flagged that are NOT fixed, deliberately:**
 
 - **Nothing dedupes two live checkout links for the same sub-account.** The agency can press

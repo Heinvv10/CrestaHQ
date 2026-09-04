@@ -8,6 +8,7 @@ import {
   activateSubAccountPlan,
   applySubAccountSubscriptionStatus,
   markSubAccountChargePaid,
+  recordSubAccountSubscriptionId,
 } from "@/lib/server/billing-service";
 
 /**
@@ -137,6 +138,10 @@ async function handleChargeSuccess(data: PaystackEventData): Promise<void> {
  * The subscription now exists. This is the only event carrying its code, so it
  * is where the code gets stored — and it may arrive before OR after the
  * payment that created it.
+ *
+ * It records the code and NOTHING else. Activating here would unlock a
+ * workspace that has not been confirmed paid: the event says a subscription
+ * object exists, not that money moved. Activation has one source, the payment.
  */
 async function handleSubscriptionCreate(
   data: PaystackEventData,
@@ -149,12 +154,9 @@ async function handleSubscriptionCreate(
     );
     return;
   }
-  await applySubAccountSubscriptionStatus({
+  await recordSubAccountSubscriptionId({
+    customerId,
     subscriptionId: subscriptionCode,
-    status: "active",
-    deleted: false,
-    customerIdHint: customerId,
-    providerStatus: "subscription.create",
   });
 }
 

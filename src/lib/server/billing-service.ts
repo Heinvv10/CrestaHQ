@@ -881,6 +881,22 @@ export async function activateSubAccountPlan(input: {
   const agencyId = String(data.agencyId ?? "");
   const billing = readBilling(data);
 
+  // A provider can redeliver a payment event days later — and this endpoint
+  // deliberately 500s on failure to force retries, so redelivery is routine.
+  // If the workspace is already active on a DIFFERENT plan, this event is
+  // stale: re-applying its gate bundle would silently restore the old plan's
+  // features onto the plan the client actually has now.
+  if (
+    billing?.status === "active" &&
+    billing.planId &&
+    billing.planId !== planId
+  ) {
+    console.warn(
+      `[billing] ignoring a stale activation for plan ${planId}; ${subAccountId} is active on ${billing.planId}`,
+    );
+    return;
+  }
+
   await ref.update({
     "billing.status": "active" satisfies SubAccountBillingStatus,
     "billing.stripeCustomerId":
@@ -1130,6 +1146,45 @@ export async function applySubAccountSubscriptionStatus(input: {
       });
     }
   }
+}
+
+/**
+ * Record which subscription a workspace is on, and nothing else.
+ *
+ * Deliberately NOT a status change: the provider may tell us the subscription
+ * exists before it tells us the payment succeeded, and activating on that
+ * would unlock the workspace at whatever gates it held while pending, fire a
+ * duplicate `billing.activated`, and leave its checkout link live. Activation
+ * has exactly one source — the payment event, via `activateSubAccountPlan`.
+ */
+export async function recordSubAccountSubscriptionId(input: {
+  customerId: string;
+  subscriptionId: string;
+}): Promise<void> {
+  const subAccountId = await findSubAccountByBillingField(
+    "billing.stripeCustomerId",
+    input.customerId,
+  );
+  if (!subAccountId) {
+    console.error(
+      `[billing] no sub-account for customer ${input.customerId} on subscription ${input.subscriptionId}`,
+    );
+    return;
+  }
+  const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const billing = readBilling(snap.data() as Record<string, unknown>);
+  // A comped workspace is not billed at all, and one already pointing at this
+  // subscription needs no write.
+  if (!billing || billing.status === "comped") return;
+  if (billing.stripeSubscriptionId === input.subscriptionId) return;
+
+  await ref.update({
+    "billing.stripeSubscriptionId": input.subscriptionId,
+    "billing.updatedAt": FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
 }
 
 /** Single-field equality query — no composite index, no collection group. */
@@ -1482,6 +1537,17 @@ export async function markSubAccountChargePaid(input: {
   const charge = snap.data() as BillingChargeDoc;
   if (charge.status === "paid") return; // webhook retry — idempotent
 
+  // The agency cancelled this charge, but the payer completed an already-open
+  // payment page. The money is real, so it is recorded rather than dropped —
+  // loudly, because the agency believes this charge is void and needs to know
+  // to refund it.
+  const wasCanceled = charge.status === "canceled";
+  if (wasCanceled) {
+    console.warn(
+      `[billing] charge ${chargeId} was canceled but has been paid — refund it or reinstate it`,
+    );
+  }
+
   await ref.update({
     status: "paid" satisfies BillingChargeStatus,
     tokenHash: null,
@@ -1500,6 +1566,7 @@ export async function markSubAccountChargePaid(input: {
       description: charge.description,
       amountCents: charge.amountCents,
       currency: charge.currency,
+      ...(wasCanceled ? { paidAfterCancel: true } : {}),
     },
   });
   void emitWebhookEvent({
