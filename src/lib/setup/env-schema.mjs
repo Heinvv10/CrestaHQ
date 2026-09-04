@@ -179,6 +179,29 @@ export const GROUPS = [
     },
   },
   {
+    title: "Client Billing on Paystack (South Africa)",
+    tier: "feature",
+    off: "agency→client billing stays on Stripe",
+    vars: [
+      ["PAYSTACK_SECRET_KEY", "opt", startsWith("sk_")],
+      ["BILLING_PROVIDER", "opt", (v) =>
+        ["stripe", "paystack"].includes(v.trim().toLowerCase())
+          ? null
+          : 'must be "stripe" or "paystack"'],
+    ],
+    deep(add, env) {
+      const onPaystack =
+        env.has("BILLING_PROVIDER") &&
+        env.val("BILLING_PROVIDER").trim().toLowerCase() === "paystack";
+      if (onPaystack && !env.has("PAYSTACK_SECRET_KEY"))
+        add("error", "BILLING_PROVIDER=paystack but PAYSTACK_SECRET_KEY is unset — Client Billing cannot charge anyone");
+      if (env.has("PAYSTACK_SECRET_KEY") && !onPaystack)
+        add("warn", "PAYSTACK_SECRET_KEY is set but Client Billing still runs on Stripe — set BILLING_PROVIDER=paystack to switch (the key alone does nothing, deliberately)");
+      if (onPaystack)
+        add("warn", "Paystack has NO webhook receiver yet — a client's payment will not activate their workspace. Do not bill on this rail in production");
+    },
+  },
+  {
     title: "Email (Resend)",
     tier: "feature",
     off: "outbound email + email automations disabled",

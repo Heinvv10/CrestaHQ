@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { BillingInterval } from "@/types/billing";
+import { PaystackBillingProvider } from "./paystack-provider";
 import { StripeBillingProvider } from "./stripe-provider";
 
 /**
@@ -24,10 +25,19 @@ import { StripeBillingProvider } from "./stripe-provider";
  */
 export interface BillingProvider {
   /** Stable identifier for logs/diagnostics. */
-  readonly id: "stripe";
+  readonly id: "stripe" | "paystack";
 
   /** True when this deployment has credentials for the provider. */
   isConfigured(): boolean;
+
+  /**
+   * The only timing this provider can honour for a mid-cycle plan switch.
+   *
+   * Declared rather than assumed: Stripe prorates, Paystack cannot, and a
+   * caller that hard-codes one of them silently misprices on the other. The
+   * call site reads this instead of choosing.
+   */
+  readonly planSwitchTiming: PlanSwitchTiming;
 
   // --- Catalog ------------------------------------------------------------
 
@@ -84,8 +94,17 @@ export interface BillingProvider {
    * `timing` is explicit because providers differ: Stripe can prorate the
    * switch mid-cycle, while a provider without proration can only apply the
    * new price from the next renewal.
+   *
+   * Returns the subscription id that is live AFTER the switch, and the caller
+   * MUST persist it. Stripe mutates in place and hands back the same id;
+   * Paystack cannot, so it cancels one subscription and opens another with a
+   * new id. Dropping it would leave the stored id pointing at the dead
+   * subscription — a later cancel would then succeed while the real one kept
+   * charging the client.
    */
-  switchSubscriptionPlan(input: SwitchSubscriptionInput): Promise<void>;
+  switchSubscriptionPlan(
+    input: SwitchSubscriptionInput
+  ): Promise<{ subscriptionId: string }>;
 
   /** Cancel a subscription immediately. */
   cancelSubscription(subscriptionId: string): Promise<void>;
@@ -123,6 +142,12 @@ export interface CreatePlanResult {
 
 export interface CreatePriceInput {
   productId: string;
+  /**
+   * The plan's display name. Stripe ignores it (a Price has no name), but a
+   * Paystack Plan carries the name the payer sees on checkout and on their
+   * receipt, and there is no product to inherit it from.
+   */
+  productName: string;
   unitAmountCents: number;
   currency: string;
   interval: BillingInterval;
@@ -155,6 +180,13 @@ export interface SubscriptionCheckoutInput {
 export interface OneTimeCheckoutInput {
   /** Attach to an existing customer when one exists; null = guest checkout. */
   customerId: string | null;
+  /**
+   * Who to bill when there is no customer yet. Stripe can open a guest
+   * checkout and collect it on the page; Paystack cannot open one at all
+   * without an email, so a provider that needs it fails loudly rather than
+   * charging the wrong person.
+   */
+  payerEmail: string | null;
   currency: string;
   amountCents: number;
   /** What the payer sees on the checkout line item. */
@@ -186,10 +218,30 @@ let cached: BillingProvider | null = null;
 /**
  * The Client Billing provider for this deployment.
  *
- * Always Stripe today. Environment-driven selection lands with the second
- * provider — adding it here is the only change the call sites need.
+ * Paystack requires an explicit `BILLING_PROVIDER=paystack`; holding a
+ * `PAYSTACK_SECRET_KEY` is deliberately NOT enough to select it. Inferring the
+ * rail from key presence would mean that pasting a key — to try it, or as part
+ * of setting up something else — silently moves live billing onto a rail whose
+ * webhook receiver does not exist yet, where a client's payment lands and
+ * their workspace stays walled. A deployment that sets only the key keeps
+ * Stripe's "billing isn't configured" path, which is loud and harmless.
+ *
+ * Stripe stays the default so no existing deployment changes behaviour.
  */
 export function getBillingProvider(): BillingProvider {
-  if (!cached) cached = new StripeBillingProvider();
+  if (!cached) cached = new (selectProviderClass())();
   return cached;
+}
+
+function selectProviderClass():
+  | typeof StripeBillingProvider
+  | typeof PaystackBillingProvider {
+  return process.env.BILLING_PROVIDER?.trim().toLowerCase() === "paystack"
+    ? PaystackBillingProvider
+    : StripeBillingProvider;
+}
+
+/** Test-only: drop the memoized provider so env changes take effect. */
+export function resetBillingProviderForTests(): void {
+  cached = null;
 }

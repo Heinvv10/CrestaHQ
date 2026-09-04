@@ -30,6 +30,9 @@ import type {
 export class StripeBillingProvider implements BillingProvider {
   readonly id = "stripe" as const;
 
+  /** Stripe swaps the price on the live subscription and settles the difference. */
+  readonly planSwitchTiming = "immediate_prorated" as const;
+
   isConfigured(): boolean {
     return !!process.env.STRIPE_SECRET_KEY?.trim();
   }
@@ -158,7 +161,9 @@ export class StripeBillingProvider implements BillingProvider {
     return this.checkoutResult(session);
   }
 
-  async switchSubscriptionPlan(input: SwitchSubscriptionInput): Promise<void> {
+  async switchSubscriptionPlan(
+    input: SwitchSubscriptionInput,
+  ): Promise<{ subscriptionId: string }> {
     const sub = await this.stripe.subscriptions.retrieve(input.subscriptionId);
     const item = sub.items.data[0];
     if (!item) {
@@ -172,6 +177,8 @@ export class StripeBillingProvider implements BillingProvider {
       proration_behavior: prorationBehavior(input.timing),
       metadata: input.metadata,
     });
+    // Stripe mutates in place: the id the caller already stored is still live.
+    return { subscriptionId: sub.id };
   }
 
   async cancelSubscription(subscriptionId: string): Promise<void> {

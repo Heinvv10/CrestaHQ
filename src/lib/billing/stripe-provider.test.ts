@@ -128,6 +128,7 @@ describe("createPrice / deactivatePrice / updateProduct", () => {
 
     const result = await provider.createPrice({
       productId: "prod_1",
+      productName: "Growth",
       unitAmountCents: 4900,
       currency: "aud",
       interval: "year",
@@ -301,6 +302,7 @@ describe("createOneTimeCheckout", () => {
     const result = await provider.createOneTimeCheckout({
       ...base,
       customerId: "cus_1",
+      payerEmail: null,
     });
 
     expect(stripeMock.checkout.sessions.create).toHaveBeenCalledWith({
@@ -332,7 +334,11 @@ describe("createOneTimeCheckout", () => {
       id: "cs_2",
       url: "https://checkout.test/cs_2",
     });
-    await provider.createOneTimeCheckout({ ...base, customerId: null });
+    await provider.createOneTimeCheckout({
+      ...base,
+      customerId: null,
+      payerEmail: null,
+    });
     expect(
       stripeMock.checkout.sessions.create.mock.calls[0][0]
     ).not.toHaveProperty("customer");
@@ -358,11 +364,14 @@ describe("switchSubscriptionPlan", () => {
     });
     stripeMock.subscriptions.update.mockResolvedValue({ id: "sub_1" });
 
-    await provider.switchSubscriptionPlan({
+    const result = await provider.switchSubscriptionPlan({
       ...input,
       timing: "immediate_prorated",
     });
 
+    // Stripe mutates in place, so the caller's stored id is still the live
+    // one. Returning anything else would repoint it at nothing.
+    expect(result).toEqual({ subscriptionId: "sub_1" });
     expect(stripeMock.subscriptions.retrieve).toHaveBeenCalledWith("sub_1");
     expect(stripeMock.subscriptions.update).toHaveBeenCalledWith("sub_1", {
       items: [{ id: "si_1", price: "price_new" }],
