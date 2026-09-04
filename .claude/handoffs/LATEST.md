@@ -1,117 +1,99 @@
-# Handoff — 2026-09-03 21:29 SAST
+# Handoff — 2026-09-04 06:15 SAST
 
 **Project:** CrestaHQ (`Heinvv10/CrestaHQ`, private) — fork of the LeadStack Agency CRM template
-**Branch:** `main` — clean tree, **8 commits unpushed**
-**Session goal:** Read `docs/`, work out how to reach GoHighLevel parity, pressure-test the plan, then start executing it.
+**Branch:** `main` — clean, synced with origin
+**Session goal:** Continue from the 2026-09-03 handoff: build Phase 1.2 (Meta WhatsApp Cloud API), then establish a real PR/review/merge/deploy workflow for this repo.
 
-Supersedes `.claude/handoffs/2026-09-03-1213.md` (same day, earlier session — the setup + initial GHL-vs-self-hosted comparison). Not a parallel session; this one continues and *corrects* it.
+Supersedes `.claude/handoffs/2026-09-03-2129.md`. That handoff's facts still hold; this one adds the WhatsApp provider seam and the workflow.
 
 ## Status
 
-The decision document this session started from was **materially wrong on its central claim**, and that was found by measuring rather than re-reading. GHL actually costs **R8,880/mo, not R17,780**, and there is **no usage markup to recapture** — August was 98.8% WhatsApp billed at approximately Meta passthrough rates. The migration case no longer rests on cost savings; it rests on control (Paystack, invoicing automation, template-send policy, not being repriced underneath us).
+Two things landed. **The WhatsApp provider seam is complete end to end** — connect, send, receive, template submit, approval poll, all rail-aware across Twilio / Meta Cloud / a stubbed bridge. And **this repo now has a workflow**: CI, PRs, blind review, a self-hosted runner. It had none of that 12 hours ago; every commit went straight to `main`.
 
-`docs/GHL_VS_LEADSTACK.md` now carries a corrections block, `docs/PARITY_PLAN.md` is the resequenced plan, and phase 1.4 (test coverage) is complete: **3 tests → 233**, with 61 guards verified by deleting them from production source and confirming a test fails.
+Test suite 233 → 395. Three PRs merged (#2, #4, #7), each with green CI and a blind review that found real defects.
 
-Nothing is deployed. Nothing is pushed. No production behaviour changed.
+**Nothing is deployed. Nothing has touched a real WABA.** Every green check in the WhatsApp work is against mocks.
 
 ## What got done this session
 
-**Docs corrected (`b207294`, `b9a6a75`, `925ab84`, `d4fa926`, `7382dd9`)**
-- `docs/GHL_VS_LEADSTACK.md` — corrections block at the top, wrong claims struck through in place
-- `docs/PARITY_PLAN.md` — new; phased plan, kill criteria, open questions
-- `docs/REVIEW_GATING_FIX.md` (`223b8fa`) — gained a **Part B**: paste-ready fix for the in-window review ask
+### Phase 1.2 — WhatsApp provider seam (PRs #4, plus 9 pre-workflow commits on main)
 
-**Code (`cf3a445`, `35852ff`)**
-- `src/lib/billing/` — new `BillingProvider` interface + `StripeBillingProvider`, a behaviour-preserving extraction of ~17 direct Stripe calls out of Client Billing. Two blind reviewers APPROVED after checking it call-by-call against `git show HEAD:`.
-- 8 new test files across comms + billing. 3 tests → 233.
+Grilled four decisions before writing code (see `docs/WHATSAPP_PROVIDER_PLAN.md`), because 1.2 turned out NOT to be the port the parity plan implied: `ndzinga-lms` is Prisma/Postgres and tenant-scoped, CrestaHQ is Firestore and sub-account-scoped, so the send path and webhook are rewrites. Only `send-mode.ts` and the Graph template calls ported.
 
-**Findings that are worth money or risk regardless of the migration**
-1. **~$63/mo, available on GHL today, no code.** Velocity sends its post-button review ask as a Marketing template ($0.0398) in the same minute the customer taps a button — but that tap opens a 24h service window where free-form messages cost $0.00. Blitz already does this correctly (ledger: Blitz 615 marketing / 1,378 service; Velocity 1,586 / 414). Fix is in `REVIEW_GATING_FIX.md` Part B.
-2. **A guard nobody had tested** in `capture.ts::backfillContactFromCapture` — removing `!data.email?.trim()` lets an AI-hallucinated address silently overwrite a customer's verified email. Now covered.
+- `src/lib/comms/whatsapp/send-mode.ts` — the pure free-form-vs-template rule. **This is the piece worth ~$87/mo** (PARITY_PLAN 0.3): free-form wins whenever legal; a template is only ever the fallback for a closed window.
+- `provider.ts` — 3-arm contract; providers declare `supportsTemplates` / `enforcesWindow` so adding the bridge later cannot silently drop the out-of-window guard.
+- `cloud-client.ts`, `cloud-credentials.ts`, `cloud-payload.ts`, `cloud-templates.ts`, `send-dispatch.ts`, `template-dispatch.ts`, `template-registrations.ts`, `readiness.ts`, `resolve-provider.ts`
+- `POST/GET /api/webhooks/whatsapp-cloud` (in middleware PUBLIC_PATHS)
+- `POST/DELETE /api/sub-accounts/[id]/whatsapp-cloud-connection`
+- Submit + approval-poll routes made rail-aware.
+
+### The workflow (PRs #2, #7)
+
+- `.github/workflows/ci.yml` — 2 jobs, everything blocking, ~2 min. `.github/pull_request_template.md`.
+- **Self-hosted runner registered**: `velo-crestahq-u`, unix user `gha-crestahq`, unit `actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`. 5th runner on this box.
+- `gitleaks` 8.24.3 installed to `/usr/local/bin` + `.gitleaks.toml`.
+- Lint at `--max-warnings 0`; `eslint.config.mjs` now honours the `_` prefix.
+- `scripts/deploy-velo.sh` now derives Node from `.nvmrc` (was pinned to a version nothing else tested against).
+- `CLAUDE.md` gained "Development workflow" + "Working in a shared checkout".
 
 ## What's next
 
-**Hein's, in order — none of these are blocked on me:**
-1. `docs/REVIEW_GATING_FIX.md` **Part A + Part B in one builder pass.** Part A (4 gating branches) is compliance; Part B is the ~$63/mo. GHL builder gotcha: the Save button does nothing — click the canvas then **Ctrl+S**, then hard-reload to confirm.
-2. **Submit the Google Business Profile API v4 quota request** (`docs/GBP_API_QUOTA_REQUEST.md`) — **only after Part A.** The application asserts we do not gate reviews; four live branches currently do. Submitting first risks a slow-to-appeal rejection that blocks all of Phase 3.
-3. **Agency Pro trial decision** — billing page read "trial ends in 7 days" on 2026-09-03, so roughly **2026-09-10**.
-4. **Open a Paystack account for Brightsphere Technologies** — slow external clock, nothing blocked today.
+1. **Live WABA test — the single highest-value next action.** Everything in the seam is mock-verified. Acceptance criteria are in `docs/WHATSAPP_PROVIDER_PLAN.md`: inbound round-trip to AI reply, in-window free-form, out-of-window template fallback, then flip `whatsappProvider` back to `twilio` and confirm nothing changed. Needs `META_APP_ID`/`META_APP_SECRET`/`META_WEBHOOK_VERIFY_TOKEN` and a test WABA.
+2. **No settings UI for the Cloud connection.** `/api/sub-accounts/[id]/whatsapp-cloud-connection` exists but nothing calls it — creds must be POSTed by hand. Mirror `sub-account-stripe-section.tsx`.
+3. Phase 1.1 `PaystackBillingProvider` — still blocked on the Paystack account. Same mock-green trap as above, with real money on the other side.
+4. Phase 1.3 recurring invoicing — grill before starting.
 
-**Mine, when asked:**
-5. **Phase 1.2 — port Meta Cloud API from `ndzinga-lms`** (2–3 d). The comms tests written this session exist to make this safe.
-6. Phase 1.3 — recurring invoicing (absent here too; grill before starting).
-7. Phase 1.1 remainder — `PaystackBillingProvider`. **Genuinely blocked** on the account: writing it blind against docs produces something that compiles, passes mocked tests, and gets its first real exercise with client money.
+Hein's, unchanged from the last handoff: `docs/REVIEW_GATING_FIX.md` Parts A+B (~$63/mo, on GHL, no code), then the GBP API v4 quota request (only after Part A), Agency Pro trial decision (~2026-09-10), Paystack account.
 
 ## Open questions / blockers
 
-- **Paystack account** for Brightsphere Technologies — gates 1.1.
-- **Google BPA v4 approval** — gates all of Phase 3. Neither CrestaHQ nor ApexGEO has ever obtained it.
-- **Firestore has 4 sub-accounts; GHL has 5.** Missing locally: *Appliances Repairs JHB* ($0.03/mo). Close before Phase 2's import.
-- **Unverified:** Meta's published ZA rate card was never checked against the measured $0.039795 marketing / $0.007979 utility. The "no markup" conclusion rests on the *structure* being passthrough-shaped (service messages billed at exactly $0.00, mirroring Meta's own free-service policy) plus recalled rates. Five minutes to confirm; worth doing before quoting it.
-- **Node version** — `pnpm` needs 22.23.1 (`.nvmrc`) but the default shell has v20.20.1. Fix properly, or prefix: `export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"`.
+- **Live WABA** gates any real verification of Phase 1.2.
+- **Paystack account** gates 1.1. **Google BPA v4** gates all of Phase 3.
+- Firestore has 4 sub-accounts, GHL has 5 (missing: Appliances Repairs JHB). Close before Phase 2.
+- Meta's published ZA rate card still unverified against the measured $0.039795 / $0.007979.
 
 ## Context the next session needs
 
-**Decisions locked this session (also in memory `project_paystack_decisions.md`):**
-- Plan switches happen **at period end**, not mid-cycle. Paystack has no proration. **Gates apply immediately; the price follows at renewal.**
-- Plans priced in **ZAR** (Paystack settles ZAR/NGN/GHS/KES).
-- No hosted billing portal — the dunning banner's "Update card" becomes a Paystack email-token `manage_link`.
-- **Clean slate confirmed:** 0 plan docs, 0 `billingEvents`, all 4 sub-accounts comped, `STRIPE_SECRET_KEY` not even set. Client Billing has never run here, so ZAR needs no migration.
+**Blind review earned its keep three times — CI caught none of these:**
+1. A Twilio-only readiness gate made the Cloud rail unreachable (503 before reaching the dispatcher).
+2. Four of five WhatsApp send paths bypassed the seam entirely; switching to Cloud would have silently broken AI auto-reply, review requests and workflow template steps — silently, because the AI orchestrator swallows send errors.
+3. Switching `whatsappProvider` mid-approval stranded a template in `pending` forever — submit accepts only draft/rejected/failed and delete refuses pending, so only a manual Firestore edit recovered it.
 
-**Things already built that look like work — do not rebuild:**
-- **GHL import is complete** (`src/lib/import/ghl/`) — contacts, opportunities→deals, notes, custom fields, pipeline stage mapping, chunked resumable jobs, wizard UI. Shipped in the initial template commit. Only *bulk SMS* is outstanding from that plan line.
-- **Missed Call Text Back** exists (`src/lib/comms/missed-call.ts`).
-- **`ApexGEO/src/lib/business-profile/`** is a near-complete GBP module: `google-gateway.ts` has `listReviews` (v4, paginated), `updateReply` (v4 PUT), localPosts, plus `repository.ts` (18KB), `service.ts` (13KB), token refresh, retention, **5 test files**. Flagged off behind `APEX_GOOGLE_BUSINESS_PROFILE_ENABLED`, awaiting the same Google approval.
-- **`ndzinga-lms`** has a complete Meta Cloud API implementation: `lib/whatsapp-cloud.ts` (direct Graph send, 24h-window logic forcing template mode, APPROVED-only enforcement), `lib/whatsapp/graph-templates.ts` (`createWabaTemplate` — submits templates direct to Meta, removing the Twilio Content API dependency), `app/api/webhooks/whatsapp-cloud/route.ts` (verify_token + `X-Hub-Signature-256` via `verifyWaba`), `parseWabaStatuses`/`applyWabaStatuses`, multi-tenant `runWithTenant`, 197 lines of tests.
+**The near-miss no gate caught.** A `git add -A` swept a concurrent session's 490-line snapshot change into PR #3. CI was green, the blind review was genuine — but aimed at WhatsApp templates, so it never examined the snapshot work. Visible only in `git log`, read by chance. PR #3 was closed, my commits cherry-picked into a clean worktree as PR #4, and the other session (`crestahq-c9`) opened #5 and #6 for their own work. Rules now in CLAUDE.md.
 
-**A mistake made once this session — do not repeat.** There are **two independent Stripe integrations** and they are easy to confuse:
+**Non-obvious facts:**
+- `gh pr create` and `gh pr merge` FAIL here with a GraphQL permissions error. Use REST: `env -u GITHUB_TOKEN -u GH_TOKEN gh api -X POST repos/Heinvv10/CrestaHQ/pulls --input f.json`. Prefix all `gh` calls with `env -u GITHUB_TOKEN -u GH_TOKEN`.
+- Hosted-runner billing is paused account-wide; every repo here uses a self-hosted runner. One runner = jobs serialise (~2.5 min wall clock, not 1m53s).
+- Node: `.nvmrc` is 22.23.1; system node is v20. Use `export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"`.
+- Firestore `FieldValue.serverTimestamp()` IS valid inside a nested map under a dotted update path — verified against `@google-cloud/firestore@7.11.6` source. Only array elements are rejected.
+- Template approval belongs to a **WABA**. Flat `contentSid`/`status` are simultaneously Twilio's registration AND what the UI renders, so a cloud write freezes the legacy values into `registrations.twilio` before mirroring. Do not "simplify" this away.
+- `template-registrations.ts` and `provider.ts` deliberately carry NO `server-only` import — a client component imports them.
 
-| Surface | Client | Whose money |
-|---|---|---|
-| **Payments v1** — sub-account charges its own customers | `src/lib/stripe/sub-account-client.ts` (sub-account's own restricted key) | the client's |
-| **Client Billing** — agency charges sub-account | `getStripeServer()` | ours |
-
-Paystack replaces the **second**. The comment at `sub-account-client.ts:148` calling itself "a one-line change" belongs to the *first* and is irrelevant to the Paystack work. `PARITY_PLAN.md` §1.1 originally cited it and had to be corrected.
-
-**Environment / tooling gotchas discovered:**
-- The **GHL workflow builder renders blank to headless Chrome** (same failure the earlier audit hit on the SaaS Configurator and Add-Ons pages). The launchpad, billing and settings pages render fine. Don't burn time retrying browser automation on the builder.
-- **GHL keeps no JWT in `localStorage`** — httpOnly cookies only, so the `fileUrl` route to workflow step definitions can't be reached by injecting a token from page context.
-- The MCP browser servers (`chrome-devtools`, `boss-ghost`) **share** `~/.cache/chrome-devtools-mcp/chrome-profile` and refuse to attach when one is running. An orphan headless Chrome from 2026-08-31 was holding the lock and was killed (PID 232968) to free it.
-- White-label domain is **`app.crestahq.com`** (not `app.gohighlevel.com`, and no longer `app.brighttech.co.za`). Agency login is `Hein@h10.co.za` with SMS 2FA — a human must complete the sign-in.
-
-**Method note worth keeping.** Mutation testing (delete the guard, confirm a test fails) proved the 61 guards that *had* tests were real — but it could not reveal that `capture.ts`'s entire Firestore half had no tests at all, because a guard nobody tested cannot be mutated into failing. A blind reviewer found that. Keep both; don't let a satisfying mutation table stand in for a fresh reader.
+**Method that keeps working:** mutation testing. ~25 guards this session were each broken in the source and confirmed to fail a test. It does not reveal untested code, though — only a fresh reader does.
 
 ### DO NOT RESURRECT
 
-- **"~70% of review monitoring via the Places API"** — tested live 2026-09-03 against both Blitz place IDs. Places caps at **5 reviews**, no pagination, **no reply field at all**, and `pageSize` is rejected. It yields a rating/volume trend chart and nothing else. Reputation is 100% gated on Google BPA v4.
-- **Reclassifying the review-ask templates as UTILITY** — Velocity's categories are already correct (`experience_check_v2` Utility; review asks Marketing). Meta assigns the final category and will reject a promotional review ask as Utility. The saving is in *when* the message is sent, not its category.
-- **Twilio as the self-hosted WhatsApp rail** — costs roughly **$50/mo MORE** than GHL (Meta rate + Twilio per-message fee) on ~10,174 msgs/mo. Only **Meta Cloud API direct** wins.
-- **`archiveProduct` on `BillingProvider`** — deliberately not built. Nothing in the codebase archives a Stripe product; plan archival only deactivates prices. Adding it would be dead code.
+- **`--max-warnings <N>` as a lint cap.** Reviewed and rejected: a cap is a one-way ratchet — fixing a warning silently grows slack for the next. 47 of the original 51 warnings were already `_`-prefixed and ESLint simply wasn't configured to honour them. The answer was zero, not a tighter number.
+- **`gitleaks/gitleaks-action`.** It downloads via `/tmp/gitleaks.tmp`, which on this box is owned by `gha-apexgeo` under a sticky `/tmp` and is actively used by their CI. Another runner user cannot delete it. Use the host-installed binary.
+- **`git add -A` / `git add .`** in this repo. See above.
+- **Twilio as the self-hosted WhatsApp rail** — ~$50/mo MORE than GHL. Only Meta Cloud direct wins.
+- **Places API for review monitoring** — caps at 5 reviews, no reply field.
 
 ## Git state
 
 - **Uncommitted:** clean
-- **Unpushed commits (8):** `7382dd9`, `35852ff`, `d4fa926`, `cf3a445`, `925ab84`, `223b8fa`, `b9a6a75`, `b207294`
+- **Unpushed:** none
 - **Stashes:** none
-- **Worktrees:** one (`/home/hein/Workspace/CrestaHQ`, main)
+- **Worktrees:** `/home/hein/Workspace/CrestaHQ` (main) and `/home/hein/Workspace/CrestaHQ-wt-snapshots` (another session's `feat/snapshot-custom-fields-persona`) — leave that one alone.
+- **Open PRs not mine:** #5 (`docs/ghl-workflow-reconstruction`), #6 (`feat/snapshot-custom-fields-persona`) — both `crestahq-c9`'s.
 
-## Session teardown — background processes (reported, NOT killed)
+## Session teardown
 
-Belonging to **this** project:
-- `next dev --turbopack -p 3777` — PID 3103929, running ~9h from `/home/hein/Workspace/CrestaHQ`
-- **9 headless Chrome processes** under `chrome-devtools-mcp/chrome-profile`, started by this session's browser automation
-
-Belonging to **other** projects (left alone):
-- `gh run watch` ×4 — FF_Next.js (PIDs 73567, 73573, 902558, 1670171/1670177)
-- `next build` — `/home/velo/fibreflow-production` (PIDs 1142925/1142926)
-- Docker `setup-test-db-1` — up 36h, healthy
+No background processes belonging to THIS project. Still running, other projects, left alone: a `gh run watch` for FF_Next.js, two `next build` (FF_Next.js runner, IsaFlow worktree), one long-lived walkthrough `next build && next start`.
 
 ## Where to resume
 
-Read `docs/PARITY_PLAN.md` (the corrections block in `docs/GHL_VS_LEADSTACK.md` first if the cost figures matter).
+Read `docs/WHATSAPP_PROVIDER_PLAN.md` (acceptance criteria at the bottom), then either wire the Cloud connection settings UI, or run the live WABA test if credentials exist.
 
-Then either:
-- **Push the 8 commits:** `git push origin main`
-- **Continue with 1.2:** start from `/home/hein/Workspace/ndzinga-lms/lib/whatsapp-cloud.ts` and `lib/whatsapp/graph-templates.ts`
-
-Verify anything before trusting it: `export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH" && corepack pnpm lint && corepack pnpm vitest run && corepack pnpm build`
+Verify anything before trusting it:
+`export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH" && corepack pnpm ci:check`
