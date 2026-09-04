@@ -4,18 +4,19 @@ Phase 1's only consumer. Hermes receives the owner's WhatsApp messages and
 replies as the agent.
 
 > This document describes the bridge as it actually ships today, not the
-> original phase-1 brief. Two things changed under review: the `CONSUMERS`
-> format grew an `admin` field, and health/refusal responses settled into a
-> different shape than first drafted. Verify against `config/config.go`,
-> `api/send.go`, `api/admin.go` and `api/webhook.go` if this drifts again.
+> original phase-1 brief. Three things changed under review: the `CONSUMERS`
+> format grew an `admin` field and then a per-consumer quiet-hours pair, and
+> health/refusal responses settled into a different shape than first drafted.
+> Verify against `config/config.go`, `api/send.go`, `api/admin.go` and
+> `api/webhook.go` if this drifts again.
 
 ## Registration
 
-`CONSUMERS` is a comma-separated list of pipe-separated entries with **six**
+`CONSUMERS` is a comma-separated list of pipe-separated entries with **eight**
 fields:
 
 ```
-name|token|webhookURL|perHour|perDay|admin
+name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour
 ```
 
 ```
@@ -26,12 +27,12 @@ Pipes, not colons — a webhook URL carries a scheme and a port, and splitting
 on `:` mangles it.
 
 Only `name` and `token` are required; `perHour`/`perDay` default to 100/500
-if omitted, and the trailing `admin` field defaults to false (an ordinary
-consumer) when omitted or left empty. The **only** accepted value in that slot
-is the literal string `admin` — anything else fails config load at startup
-with an "unknown privilege" error, so a typo here is loud, not silent.
+if omitted, and the `admin` field defaults to false (an ordinary consumer)
+when omitted or left empty. The **only** accepted value in that slot is the
+literal string `admin` — anything else fails config load at startup with an
+"unknown privilege" error, so a typo here is loud, not silent.
 
-Putting an unintended value in the sixth slot doesn't just misconfigure —
+Putting an unintended value in the admin slot doesn't just misconfigure —
 it either silently downgrades an operator credential (if `admin` was meant
 but a field shifted) or refuses to boot (if garbage lands there). Count your
 pipes before deploying. A normal, non-admin Hermes registration has five
@@ -40,6 +41,18 @@ fields and a trailing empty slot; write it as either
 `hermes|<token>|<url>|100|500|` (six fields, sixth left blank) — both parse
 identically. Only add `|admin` on the end for a credential that should be
 allowed to add allowlist entries and lift the kill switch.
+
+The last two fields are `quietStartHour`/`quietEndHour`, and they only exist
+as a pair: give both or neither. Left off entirely (Hermes's registration
+above does this), the consumer inherits the deployment-wide
+`QUIET_START_HOUR`/`QUIET_END_HOUR` window — inheriting the restriction,
+never escaping it. `hermes|<token>|<url>|100|500||0|0` would disable quiet
+hours for Hermes specifically (start == end); half a pair
+(`…|admin|21` with no end hour) is refused at startup rather than guessed,
+because guessing either direction hands a consumer a window nobody wrote
+down. Hours outside `0-23` are refused too. Since every field is
+positional, disabling quiet hours without also granting admin needs the
+admin slot left empty but present: `hermes|<token>|<url>|100|500||0|0`.
 
 ## Inbound contract
 

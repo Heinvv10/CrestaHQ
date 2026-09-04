@@ -111,6 +111,38 @@ restart.**
 Session state persists under `SESSION_DIR`, so an ordinary restart re-uses the
 pairing and does not ask for a QR.
 
+## The first-restart soak
+
+Session persistence across a restart is untested by construction — no socket
+is reachable in CI, so everything the rails do is covered by fakes and none
+of it says how a real whatsmeow reconnect behaves after a process restart
+from a persisted session. Do not trust a green test suite for this path; run
+it for real, once, before enabling any outbound at all.
+
+There are two ways this can fail, and they are not equally bad. If a restart
+never emits `*events.Connected`, `connectedAt` stays zero, `Connected()`
+never returns true, `/v1/health` 503s permanently, and every send fails
+closed. That is loud, and loud is survivable — nobody mistakes it for
+working. The one to actually watch for is quieter: the replay window (see
+below) opens on `*events.Connected`, and a restart that replays old inbound
+history after that window has already lapsed would forward months of stale
+messages to consumers as if they were new. That is exactly the sibling
+bridge's duplicate-ack outage, and nothing in this branch proves the window
+covers the size of a real replay burst.
+
+So the first restart after pairing gets exercised by hand, kill switch **on**
+for the whole cycle, before outbound is turned on for real:
+
+1. Pair the number as above.
+2. Send the paired number one inbound message.
+3. Kill the process.
+4. Restart it from the persisted session — do not re-pair.
+5. Watch for three things, not two: `wa: connected` in the log, `/v1/health`
+   flipping back to `"connected": true`, **and** the consumer webhook
+   receiving zero deliveries for the message sent in step 2. The third check
+   is the one that matters — a tester who only confirms the first two would
+   call a bridge that just replayed a month of history healthy.
+
 ## The replay window
 
 For **5 minutes** after every connect (`wa.ReplayWindow`), whatsmeow re-delivers
