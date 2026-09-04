@@ -1,0 +1,54 @@
+name: wa-agent-bridge
+
+on:
+  push:
+    paths:
+      - 'services/wa-agent-bridge/**'
+      - '.github/workflows/wa-agent-bridge.yml'
+  pull_request:
+    paths:
+      - 'services/wa-agent-bridge/**'
+      - '.github/workflows/wa-agent-bridge.yml'
+
+jobs:
+  go:
+    runs-on: [self-hosted, linux, velo, crestahq]
+    defaults:
+      run:
+        working-directory: services/wa-agent-bridge
+    env:
+      # go-sqlite3 is a cgo package. Set explicitly rather than relying on the
+      # default, because the default is 1 only when a C toolchain is present —
+      # and because `-race` forces cgo on, which is how a cgo-less build stayed
+      # broken here without CI noticing.
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+      # README.md calls gofmt a gate, so it has to actually be one. A gate
+      # believed to run and not running is worse than no gate.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      # CGO_ENABLED=0 must FAIL to build. Without the guard in
+      # store/requires_cgo.go it exits 0 and produces a binary that dies only at
+      # runtime, on first store open, with go-sqlite3's "This is a stub" — and
+      # CGO_ENABLED=0 is the default for cross-compiles and scratch/distroless
+      # images. This step is what makes that guard a gate rather than a comment.
+      - name: cgo guard - a cgo-less build must be rejected loudly
+        run: |
+          if CGO_ENABLED=0 go build ./... 2>/dev/null; then
+            echo "::error::CGO_ENABLED=0 built cleanly. The cgo guard in store/requires_cgo.go has regressed; the resulting binary cannot open its SQLite store."
+            exit 1
+          fi
+          echo "cgo guard holds: CGO_ENABLED=0 fails the build."
+      - run: go test ./... -race
+      - run: go build ./...
