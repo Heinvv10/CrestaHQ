@@ -154,7 +154,21 @@ half of one: `lib/stripe/webhooks.ts` is what flips a sub-account to `active` on
 own endpoint with an HMAC-SHA512 `x-paystack-signature`. Until that exists, **nothing may be
 billed on Paystack in production** — the money would arrive and the workspace would stay walled.
 
-Also unverified: every Paystack call is pinned by its request shape, not by a live round-trip.
+**Two things blind review flagged that are NOT fixed, deliberately:**
+
+- **Nothing dedupes two live checkout links for the same sub-account.** The agency can press
+  "send link" twice; Paystack creates a subscription per successful payment, so a client who pays
+  both ends up with two recurring subscriptions on one plan. Stripe carries the same structural
+  exposure — the difference is that Stripe has a completion handler where a guard could live and
+  Paystack does not yet. **This belongs with the webhook receiver**, and the guard should cover
+  both rails.
+- **`/transaction/initialize` is the one call unverified against a live account.** Paystack
+  documents `amount` as required AND documents `plan` as invalidating it. Rather than bet on a
+  reading, the checkout reads the plan's own amount and sends that — correct either way, and it
+  cannot disagree with what the client is billed. A single test-mode `curl` would still settle it,
+  and should be the first thing done with the live key.
+
+Everything else here is pinned by its request shape, not by a live round-trip.
 
 ### 1.4 detail — DONE
 

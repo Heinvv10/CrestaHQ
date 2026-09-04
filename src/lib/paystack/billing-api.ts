@@ -1,7 +1,6 @@
 import "server-only";
 
 import { BillingError } from "@/lib/billing/errors";
-import { SUB_ACCOUNT_PLAN_KIND } from "@/lib/billing/kinds";
 import type { BillingInterval } from "@/types/billing";
 import { paystackRequest } from "./client";
 
@@ -33,7 +32,6 @@ export async function createPaystackPlan(input: {
   amountCents: number;
   currency: string;
   interval: BillingInterval;
-  metadata?: Record<string, string>;
 }): Promise<string> {
   const plan = await paystackRequest<{ plan_code: string }>("POST", "/plan", {
     name: input.name,
@@ -43,9 +41,38 @@ export async function createPaystackPlan(input: {
     interval: input.interval === "year" ? "annually" : "monthly",
     currency: assertSupportedCurrency(input.currency),
     ...(input.description ? { description: input.description } : {}),
-    metadata: { kind: SUB_ACCOUNT_PLAN_KIND, ...(input.metadata ?? {}) },
+    // No metadata: `metadata` is not a documented parameter of Paystack's
+    // create-plan endpoint, and a field the provider silently drops reads like
+    // durable linkage that isn't there. The plan code → plan doc mapping lives
+    // in Firestore, which is the only place anything reads it from.
   });
   return plan.plan_code;
+}
+
+/**
+ * A plan's own amount, in the currency subunit.
+ *
+ * Read before a subscription checkout so the initialize call can carry an
+ * amount. Paystack documents `amount` as required AND documents `plan` as
+ * invalidating it; sending the plan's own figure is the one value that is
+ * correct under either reading, and it cannot disagree with what the client is
+ * actually billed. It also fails a bad plan code here — before the client is
+ * handed a link — rather than on the payment page.
+ */
+export async function readPaystackPlanAmount(
+  planCode: string,
+): Promise<number> {
+  const plan = await paystackRequest<{ amount: number }>(
+    "GET",
+    `/plan/${encodeURIComponent(planCode)}`,
+  );
+  if (typeof plan.amount !== "number") {
+    throw new BillingError(
+      "Paystack returned a plan with no amount — recreate this plan's price.",
+      502,
+    );
+  }
+  return plan.amount;
 }
 
 export async function createPaystackCustomer(input: {
@@ -112,6 +139,11 @@ export async function createPaystackSubscription(input: {
   authorizationCode: string;
   startDate: string;
 }): Promise<string> {
+  // A past-due subscription's renewal date is already behind us. Paystack
+  // rejects a start_date in the past, and since the old subscription has
+  // already been disabled by then, that rejection would leave the client with
+  // no subscription at all. They owe the renewal now, so start now.
+  const startDate = notBeforeNow(input.startDate);
   const sub = await paystackRequest<{ subscription_code: string }>(
     "POST",
     "/subscription",
@@ -119,7 +151,7 @@ export async function createPaystackSubscription(input: {
       customer: input.customerCode,
       plan: input.planCode,
       authorization: input.authorizationCode,
-      start_date: input.startDate,
+      start_date: startDate,
     },
   );
   if (!sub.subscription_code) {
@@ -143,18 +175,32 @@ export async function findLivePaystackSubscription(
     "GET",
     `/customer/${encodeURIComponent(customerCode)}`,
   );
-  const subs = await paystackRequest<
-    { subscription_code: string; status: string }[]
-  >("GET", `/subscription?customer=${customer.id}`);
-  const live = subs.find((s) => s.status === "active") ?? subs[0];
-  if (!live) {
-    throw new BillingError(
-      "There's no Paystack subscription to manage for this workspace yet.",
-      404,
+  // Paystack pages this list, so a client with a long billing history can have
+  // their live subscription fall off the first page. Walk until it is found or
+  // the history runs out.
+  const perPage = 100;
+  for (let page = 1; page <= MAX_SUBSCRIPTION_PAGES; page += 1) {
+    const subs = await paystackRequest<
+      { subscription_code: string; status: string }[]
+    >(
+      "GET",
+      `/subscription?customer=${customer.id}&perPage=${perPage}&page=${page}`,
     );
+    const live = subs.find((s) => s.status === "active");
+    // Deliberately no "else take the first one": handing back a cancelled
+    // subscription gives the client a manage page where they update a card
+    // that bills nothing, and a success screen that means nothing.
+    if (live) return live.subscription_code;
+    if (subs.length < perPage) break;
   }
-  return live.subscription_code;
+  throw new BillingError(
+    "There's no active Paystack subscription to manage for this workspace.",
+    404,
+  );
 }
+
+/** 500 subscriptions is far past any real client; a bound beats an open loop. */
+const MAX_SUBSCRIPTION_PAGES = 5;
 
 export async function readPaystackManageLink(
   subscriptionCode: string,
@@ -167,11 +213,8 @@ export async function readPaystackManageLink(
 }
 
 /**
- * Open a hosted payment page.
- *
- * With `plan` set Paystack bills the plan's own amount and creates the
- * subscription on success, so `amountCents` is omitted in that case — sending a
- * second figure that disagrees is an error, not an override.
+ * Open a hosted payment page. With `plan` set, Paystack creates the
+ * subscription on a successful payment.
  */
 export async function initializePaystackTransaction(input: {
   email: string;
@@ -201,6 +244,17 @@ export async function initializePaystackTransaction(input: {
     throw new BillingError("Paystack didn't return a checkout URL.", 502);
   }
   return { url: data.authorization_url, reference: data.reference };
+}
+
+/**
+ * Clamp a renewal date forward to now. An unparseable date is treated as past
+ * rather than passed through — the switch still happens, one cycle early at
+ * worst, instead of failing outright and stranding the client.
+ */
+export function notBeforeNow(date: string, now: Date = new Date()): string {
+  const parsed = Date.parse(date);
+  if (Number.isNaN(parsed) || parsed <= now.getTime()) return now.toISOString();
+  return date;
 }
 
 /** Currencies Paystack can actually settle. ZAR is this deployment's. */

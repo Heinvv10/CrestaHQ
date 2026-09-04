@@ -96,6 +96,14 @@ describe("createPlan", () => {
     expect(result.annualPriceId).toBe("PLN_y");
   });
 
+  it("sends no metadata, which Paystack's create-plan endpoint would drop", async () => {
+    paystackRequest.mockResolvedValueOnce({ plan_code: "PLN_m" });
+    await provider.createPlan(input);
+    // A field the provider silently discards reads like durable linkage that
+    // isn't there. The plan code -> plan doc mapping lives in Firestore.
+    expect(call(0).body).not.toHaveProperty("metadata");
+  });
+
   it("refuses a currency Paystack cannot settle", async () => {
     await expect(
       provider.createPlan({ ...input, currency: "gbp" }),

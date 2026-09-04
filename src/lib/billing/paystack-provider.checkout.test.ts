@@ -42,26 +42,36 @@ describe("createSubscriptionCheckout", () => {
   };
 
   beforeEach(() => {
-    paystackRequest
-      .mockResolvedValueOnce({ email: "ops@acme.test" })
-      .mockResolvedValueOnce({
+    // Customer + plan are read in parallel, so match on path, not call order.
+    paystackRequest.mockImplementation(async (_m: string, path: string) => {
+      if (path.startsWith("/customer/")) return { email: "ops@acme.test" };
+      if (path.startsWith("/plan/")) return { amount: 99000 };
+      return {
         authorization_url: "https://paystack.test/pay/abc",
         reference: "ref_1",
-      });
+      };
+    });
   });
 
-  it("bills the plan's own amount, never a second figure of ours", async () => {
+  function initBody() {
+    const found = paystackRequest.mock.calls.find(
+      (c) => c[1] === "/transaction/initialize",
+    );
+    if (!found) throw new Error("no transaction was initialized");
+    return found[2] as Record<string, unknown>;
+  }
+
+  it("sends the plan's OWN amount alongside the plan code", async () => {
     await provider.createSubscriptionCheckout(input);
-    // Paystack errors on an amount that disagrees with the plan, and an
-    // amount that agrees today silently diverges after the next price edit.
-    expect(call(1).body).not.toHaveProperty("amount");
-    expect(call(1).body).toMatchObject({ plan: "PLN_m" });
+    // Paystack documents `amount` as required and also documents `plan` as
+    // invalidating it. The plan's own figure is the only value that is right
+    // under either reading and cannot disagree with what the client pays.
+    expect(initBody()).toMatchObject({ plan: "PLN_m", amount: 99000 });
   });
 
   it("opens checkout against the customer's email, not the customer code", async () => {
     await provider.createSubscriptionCheckout(input);
-    expect(call(0)).toMatchObject({ method: "GET", path: "/customer/CUS_1" });
-    expect(call(1).body).toMatchObject({ email: "ops@acme.test" });
+    expect(initBody()).toMatchObject({ email: "ops@acme.test" });
   });
 
   it("returns the transaction reference as the session id", async () => {
@@ -293,5 +303,43 @@ describe("createManagementLink", () => {
         returnUrl: "https://app.test/settings",
       }),
     ).rejects.toBeInstanceOf(BillingError);
+  });
+
+  it("refuses when every subscription is dead, instead of handing back a cancelled one", async () => {
+    paystackRequest
+      .mockResolvedValueOnce({ id: 42 })
+      .mockResolvedValueOnce([
+        { subscription_code: "SUB_dead", status: "cancelled" },
+      ]);
+    // A manage page for a cancelled subscription lets the client update a card
+    // that bills nothing and shows them a success screen for it.
+    await expect(
+      provider.createManagementLink({
+        customerId: "CUS_1",
+        returnUrl: "https://app.test/settings",
+      }),
+    ).rejects.toBeInstanceOf(BillingError);
+  });
+
+  it("looks past the first page for the active subscription", async () => {
+    const filler = Array.from({ length: 100 }, (_, i) => ({
+      subscription_code: `SUB_old_${i}`,
+      status: "cancelled",
+    }));
+    paystackRequest
+      .mockResolvedValueOnce({ id: 42 })
+      .mockResolvedValueOnce(filler)
+      .mockResolvedValueOnce([
+        { subscription_code: "SUB_live", status: "active" },
+      ])
+      .mockResolvedValueOnce({ link: "https://paystack.test/manage/live" });
+
+    const result = await provider.createManagementLink({
+      customerId: "CUS_1",
+      returnUrl: "https://app.test/settings",
+    });
+
+    expect(call(2).path).toContain("page=2");
+    expect(result.url).toBe("https://paystack.test/manage/live");
   });
 });

@@ -9,6 +9,7 @@ import {
   initializePaystackTransaction,
   readPaystackCustomerEmail,
   readPaystackManageLink,
+  readPaystackPlanAmount,
   readPaystackSubscription,
 } from "@/lib/paystack/billing-api";
 import { paystackIsConfigured } from "@/lib/paystack/client";
@@ -66,7 +67,6 @@ export class PaystackBillingProvider implements BillingProvider {
       amountCents: input.priceMonthlyCents,
       currency: input.currency,
       interval: "month",
-      metadata: { agencyId: input.agencyId, planId: input.planId },
     });
 
     const annualPriceId =
@@ -78,7 +78,6 @@ export class PaystackBillingProvider implements BillingProvider {
             amountCents: input.priceAnnualCents,
             currency: input.currency,
             interval: "year",
-            metadata: { agencyId: input.agencyId, planId: input.planId },
           });
 
     return {
@@ -101,7 +100,6 @@ export class PaystackBillingProvider implements BillingProvider {
       amountCents: input.unitAmountCents,
       currency: input.currency,
       interval: input.interval,
-      metadata: input.metadata,
     });
     return { priceId };
   }
@@ -156,10 +154,15 @@ export class PaystackBillingProvider implements BillingProvider {
     input: SubscriptionCheckoutInput,
   ): Promise<CheckoutResult> {
     // Paystack initializes against an email, not a customer code, so the
-    // customer has to be read back before checkout can open.
-    const email = await readPaystackCustomerEmail(input.customerId);
+    // customer has to be read back before checkout can open. The plan's amount
+    // is read for the same reason — see `readPaystackPlanAmount`.
+    const [email, amountCents] = await Promise.all([
+      readPaystackCustomerEmail(input.customerId),
+      readPaystackPlanAmount(input.priceId),
+    ]);
     const { url, reference } = await initializePaystackTransaction({
       email,
+      amountCents,
       plan: input.priceId,
       callbackUrl: input.successUrl,
       metadata: input.metadata,
