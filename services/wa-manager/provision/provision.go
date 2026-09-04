@@ -46,14 +46,18 @@ func New(st *store.Store, sc systemd.Controller, opts Opts) *Provisioner {
 	return &Provisioner{st: st, sc: sc, opts: opts}
 }
 
-// instanceName derives a systemd-safe instance name from an opaque tenant id.
+// InstanceName derives a systemd-safe instance name from an opaque tenant id.
+//
+// It is exported because the HTTP API refuses an unusable id BEFORE dispatching
+// to the provisioner, and two copies of this coercion would be free to drift
+// apart — the looser copy deciding what reaches a unit name.
 //
 // systemd.Validate is the authority, not this function: everything below is a
 // best-effort coercion, and whatever survives it is still validated before it
 // reaches a path or a unit name. The instance is interpolated into both, so a
 // name that could traverse a directory is remote code execution, not a
 // cosmetic problem.
-func instanceName(tenantID string) (string, error) {
+func InstanceName(tenantID string) (string, error) {
 	var b strings.Builder
 	for _, r := range strings.ToLower(tenantID) {
 		switch {
@@ -110,7 +114,7 @@ func (p *Provisioner) instanceDir(instance string) string {
 // checked BEFORE a port is allocated or a directory is written, so the common
 // rejection costs nothing and needs no unwind.
 func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error) {
-	instance, err := instanceName(tenantID)
+	instance, err := InstanceName(tenantID)
 	if err != nil {
 		return store.Tenant{}, err
 	}
