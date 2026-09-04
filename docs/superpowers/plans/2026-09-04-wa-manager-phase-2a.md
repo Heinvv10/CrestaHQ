@@ -249,7 +249,7 @@ func TestPairServesTheLiveCode(t *testing.T) {
 	exp := time.Now().Add(30 * time.Second).UTC().Truncate(time.Second)
 	h, _, _ := testHandlerWithConnection(t, stubPairer{code: "2@abc", expiresAt: exp, pairing: true})
 
-	rec := get(h, "/v1/pair", "tok-hermes")
+	rec := get(h, "/v1/pair", "tok-operator")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
@@ -262,7 +262,7 @@ func TestPairServesTheLiveCode(t *testing.T) {
 
 func TestPairOmitsTheCodeWhenNotPairing(t *testing.T) {
 	h, _, _ := testHandlerWithConnection(t, stubPairer{connected: true})
-	rec := get(h, "/v1/pair", "tok-hermes")
+	rec := get(h, "/v1/pair", "tok-operator")
 
 	var out map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &out)
@@ -378,7 +378,9 @@ func (s *server) handlePair(w http.ResponseWriter, _ *http.Request, _ config.Con
 
 - [ ] **Step 5: Register the route**
 
-In `api/server.go`, beside the other routes (~line 135):
+In `api/server.go`, beside the other routes (~line 135). The handler must also
+call `requireAdmin` — `s.authed` alone only proves the caller holds *a* token,
+and the QR is a write-grade credential that a send token must not reach:
 
 ```go
 	mux.HandleFunc("GET /v1/pair", s.authed(s.handlePair))

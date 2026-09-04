@@ -183,8 +183,11 @@ Phase 1's bridge is otherwise untouched.
   it goes to the terminal via `qrterminal`. Capture it on the `Client` under the
   existing mutex and serve it.
 - The QR is a credential: anyone who scans it links a device to that number. It
-  is served only to an authenticated caller, never logged, and dropped from
-  memory once pairing succeeds.
+  is served only to an **operator** caller — `requireAdmin`, not merely
+  `s.authed` — never logged, and dropped from memory once pairing succeeds.
+  "Authenticated" is too weak here: a send token is authenticated, and a consumer
+  holding one (LeadStack, off-box) could otherwise poll a re-pair window and link
+  its own device, acquiring every permission the number has.
 
 ## 5. The UI
 

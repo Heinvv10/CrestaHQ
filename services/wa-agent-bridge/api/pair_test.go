@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -27,11 +28,28 @@ func TestPairRequiresAToken(t *testing.T) {
 	}
 }
 
+// A send-capable token is the one an off-box consumer holds — LeadStack, say.
+// If that token could read the QR, anyone holding it could link their own
+// device to the customer's number during a re-pair window, which is a strictly
+// larger privilege than the sending the token was issued for.
+func TestPairRefusesANonAdminConsumer(t *testing.T) {
+	exp := time.Now().Add(30 * time.Second)
+	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, stubPairer{code: "2@abc", expiresAt: exp, pairing: true})
+
+	rec := getAuthed(h, "/v1/pair", "tok-hermes")
+	if rec.Code != 403 {
+		t.Fatalf("a consumer token must not reach the QR: got %d", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "2@abc") {
+		t.Fatalf("the refusal leaked the code it refused: %s", body)
+	}
+}
+
 func TestPairServesTheLiveCode(t *testing.T) {
 	exp := time.Now().Add(30 * time.Second).UTC().Truncate(time.Second)
 	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, stubPairer{code: "2@abc", expiresAt: exp, pairing: true})
 
-	rec := getAuthed(h, "/v1/pair", "tok-hermes")
+	rec := getAuthed(h, "/v1/pair", "tok-operator")
 	if rec.Code != 200 {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
@@ -43,7 +61,7 @@ func TestPairServesTheLiveCode(t *testing.T) {
 
 func TestPairOmitsTheCodeWhenNotPairing(t *testing.T) {
 	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, stubPairer{connected: true})
-	rec := getAuthed(h, "/v1/pair", "tok-hermes")
+	rec := getAuthed(h, "/v1/pair", "tok-operator")
 
 	out := decode(t, rec)
 	if out["pairing"] != false {
