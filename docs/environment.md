@@ -151,7 +151,7 @@ Single-page scrape only (`/v1/scrape` endpoint). The bot's stored snapshot is ca
 |---|---|
 | `OUTSCRAPER_API_KEY` | [outscraper.com](https://outscraper.com) → Profile → API. Usage-based billing (~$3–5 per 1,000 businesses with enrichment; ~$0.10–0.20 per search at the 40-result cap). One agency-level key shared across all sub-accounts. |
 
-**The feature is currently PARKED** (see "Get Leads v1") — this key is deliberately absent from `.env.example` and the guided-setup/doctor catalog until it's un-parked. When active: without this key, the Get Leads page still renders (for gated-on sub-accounts) but searches return 503 with a friendly "not configured" message. The results **map tab** additionally needs `NEXT_PUBLIC_MAPBOX_TOKEN` (same token as the dashboard Leads map — the list tab degrades gracefully without it; "Use my location" works regardless). The feature is also **off by default per sub-account** — flip the Get Leads gate in `/agency/sub-accounts` → Manage.
+**The feature is currently PARKED** (see [Get Leads](features/get-leads.md)) — this key is deliberately absent from `.env.example` and the guided-setup/doctor catalog until it's un-parked. When active: without this key, the Get Leads page still renders (for gated-on sub-accounts) but searches return 503 with a friendly "not configured" message. The results **map tab** additionally needs `NEXT_PUBLIC_MAPBOX_TOKEN` (same token as the dashboard Leads map — the list tab degrades gracefully without it; "Use my location" works regardless). The feature is also **off by default per sub-account** — flip the Get Leads gate in `/agency/sub-accounts` → Manage.
 
 ## Optional — Vapi (powers the AI Voice Agent channel — inbound + Outbound Voice)
 | Var | Source |
@@ -176,7 +176,7 @@ One Meta app powers BOTH the FB Messenger / IG DM inbox AND the Social Planner (
 
 **Gray-out behavior:** when `META_APP_ID` + `META_APP_SECRET` are absent, `metaAppConfigured()` is false, so the **"Facebook + Instagram inbox"** and **"Social Planner"** toggles in the agency Manage dialog are **disabled/grayed out** (with a "set META_APP_ID / META_APP_SECRET" hint), and the feature-gates PATCH route refuses to enable either gate (400). The client reads this via `GET /api/agency/deployment-config` (returns `{ metaConfigured }` — non-sensitive booleans only). An already-enabled gate can still be turned OFF so a legacy state isn't trapped. Derives from the two secrets — there is no separate `NEXT_PUBLIC` flag to keep in sync.
 
-Beyond the env vars, posting also requires **Meta App Review** for `pages_manage_posts` + `instagram_content_publish` (on top of the messaging review). Until approved, only Meta app admins/testers can connect. See "Social Planner v1" + the Meta inbox section.
+Beyond the env vars, posting also requires **Meta App Review** for `pages_manage_posts` + `instagram_content_publish` (on top of the messaging review). Until approved, only Meta app admins/testers can connect. See [Social Planner](features/social-planner.md) + the Meta inbox section of [AI Agents](features/ai-agents.md).
 
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |

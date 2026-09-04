@@ -18,7 +18,8 @@ wherever it appears in user-facing copy.
 
 *Last reviewed: 2026-09-04.* When a rule below is corrected in a session, update this
 file in the same PR. Feature specs live under `docs/` — new subsystem detail belongs
-there, not here; this file stays under ~250 lines.
+there, not here. If this file passes ~300 lines, something has been added that should
+have been a link.
 
 ---
 
@@ -213,10 +214,12 @@ that are expensive to rediscover:
   `src/` tree.
 
 **Page width:** every dashboard page wraps *all* its top-level returns (including
-loading / locked / empty states) in a centered container — `/agency/*` uses
-`max-w-5xl`; `/sa/[id]/*` uses `max-w-5xl` for data surfaces and `max-w-3xl` for
-forms, settings, and chat. Pipeline is the only full-bleed page. Don't invent a
-third tier.
+loading / locked / empty / not-found states) in a centered container — `/agency/*`
+uses `max-w-5xl`; `/sa/[id]/*` uses `max-w-5xl` for data surfaces and `max-w-3xl` for
+forms, settings, and chat. Pipeline is the only full-bleed page. Don't invent a new
+width — the one carve-out (`max-w-6xl` for an agency page whose tables genuinely need
+the columns) and the full rule are in
+[docs/architecture/key-architecture.md](docs/architecture/key-architecture.md).
 
 ---
 
