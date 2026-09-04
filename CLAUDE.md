@@ -1089,9 +1089,11 @@ the plan doc, which the caller has just overwritten).
 with HMAC-SHA512 of the raw body keyed on the **account secret key**, so there is no separate
 webhook secret). Register the URL at dashboard.paystack.com → Settings → API Keys & Webhooks.
 
-Both rails share ONE lifecycle: `activateSubAccountPlan`, `applySubAccountSubscriptionStatus` and
-`markSubAccountChargePaid` in `billing-service.ts` are provider-neutral, and the Stripe handlers
-are thin adapters onto them. Activation, the gate bundle, the dunning grace window, the audit row
+Both rails share ONE lifecycle, in [src/lib/server/billing-lifecycle.ts](src/lib/server/billing-lifecycle.ts):
+`activateSubAccountPlan`, `applySubAccountSubscriptionStatus`, `recordSubAccountSubscriptionId`
+and `markSubAccountChargePaid` are provider-neutral, and each provider's handlers are thin
+adapters onto them. `billing-service.ts` keeps the operator-driven half (creating plans, assigning
+them, minting checkout links) and re-exports the lifecycle for existing callers. Activation, the gate bundle, the dunning grace window, the audit row
 and the outbound webhook therefore cannot drift between Stripe and Paystack.
 
 **Two Paystack shapes drive the router:** a payment and its subscription arrive as *separate*

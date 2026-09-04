@@ -52,7 +52,7 @@ export async function handlePaystackEvent(event: PaystackEvent): Promise<void> {
       // Cancelling here would paywall someone for the weeks they have paid
       // for, and Stripe's equivalent (`cancel_at_period_end`) correctly
       // reports nothing until the period ends.
-      console.log(
+      console.info(
         "[paystack] subscription.not_renew — access runs to the period end",
       );
       return;
@@ -60,7 +60,7 @@ export async function handlePaystackEvent(event: PaystackEvent): Promise<void> {
       // Paystack sends far more than Client Billing cares about (transfers,
       // refunds, DVA events). Logging the type keeps a new one discoverable
       // without acting on something we have not mapped.
-      console.log(`[paystack] unhandled event ${event.event}`);
+      console.info(`[paystack] unhandled event ${event.event}`);
   }
 }
 
