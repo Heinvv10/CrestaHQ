@@ -12,16 +12,32 @@ import {
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
 import { toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
+import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { buildRegistrationUpdate } from "@/lib/comms/whatsapp/template-registrations";
+import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
+import {
+  createCloudTemplate,
+  CloudTemplateError,
+} from "@/lib/comms/whatsapp/cloud-templates";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Submit a draft (or rejected/failed) WhatsApp template to Meta for approval
- * via Twilio's Content API. Creates the Content resource + the WhatsApp
- * approval request, stores the resulting contentSid, flips the template to
- * "pending", and schedules the first QStash approval poll.
+ * Submit a draft (or rejected/failed) WhatsApp template to Meta for approval,
+ * over whichever rail this sub-account sends on.
+ *
+ *   twilio — Twilio is the BSP: create a Content resource, then request
+ *            WhatsApp approval through it. Approval lands on Twilio's WABA.
+ *   cloud  — submit directly to our own WABA over the Graph API.
+ *
+ * Meta makes the decision either way; only the route to it differs. Approval
+ * therefore belongs to ONE rail, which is why the result is written as a
+ * per-provider registration rather than a single flat status — a template
+ * cleared through Twilio has never been seen by our own WABA.
+ *
+ * Flips the template to "pending" and schedules the first QStash approval poll.
  */
 
 const SUBMITTABLE: ReadonlyArray<string> = ["draft", "rejected", "failed"];
@@ -54,7 +70,19 @@ export async function POST(
       { status: 403 },
     );
   }
-  if (!subAccountWhatsappIsConfigured(sub?.twilioConfig) || !sub?.twilioConfig) {
+  // Readiness is per-rail: demanding Twilio credentials from a workspace that
+  // submits over the Graph API would refuse a correctly configured one.
+  const { provider } = resolveProviderForSubAccount(sub);
+  if (provider === "bridge") {
+    return NextResponse.json(
+      {
+        error:
+          "The WhatsApp bridge provider has no templates. Switch this workspace to Twilio or Cloud.",
+      },
+      { status: 400 },
+    );
+  }
+  if (provider === "twilio" && (!subAccountWhatsappIsConfigured(sub?.twilioConfig) || !sub?.twilioConfig)) {
     return NextResponse.json(
       {
         error:
@@ -84,31 +112,45 @@ export async function POST(
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  let contentSid: string;
+  let externalId: string;
   try {
-    const created = await createContentTemplate({
-      accountSid: sub.twilioConfig.accountSid,
-      authToken: sub.twilioConfig.authToken,
-      friendlyName: name,
-      language: tpl.language,
-      body: tpl.body,
-      variables: variablesSample,
-    });
-    contentSid = created.contentSid;
-    await submitForWhatsappApproval({
-      accountSid: sub.twilioConfig.accountSid,
-      authToken: sub.twilioConfig.authToken,
-      contentSid,
-      name,
-      category: tpl.category,
-    });
+    if (provider === "cloud") {
+      const creds = await getWabaCreds(subAccountId);
+      const created = await createCloudTemplate(creds, {
+        name,
+        language: tpl.language,
+        category: tpl.category,
+        body: tpl.body,
+        variables: tpl.variables,
+      });
+      externalId = created.id;
+    } else {
+      const created = await createContentTemplate({
+        accountSid: sub.twilioConfig!.accountSid,
+        authToken: sub.twilioConfig!.authToken,
+        friendlyName: name,
+        language: tpl.language,
+        body: tpl.body,
+        variables: variablesSample,
+      });
+      externalId = created.contentSid;
+      await submitForWhatsappApproval({
+        accountSid: sub.twilioConfig!.accountSid,
+        authToken: sub.twilioConfig!.authToken,
+        contentSid: externalId,
+        name,
+        category: tpl.category,
+      });
+    }
   } catch (err) {
     const detail =
       err instanceof WhatsappContentError
         ? `${err.message} (${err.status})${err.body ? `: ${err.body.slice(0, 300)}` : ""}`
-        : err instanceof Error
-          ? err.message
-          : "Unknown error";
+        : err instanceof CloudTemplateError
+          ? `${err.message} (${err.status})`
+          : err instanceof Error
+            ? err.message
+            : "Unknown error";
     await ref.update({
       status: "failed",
       rejectionReason: detail,
@@ -121,10 +163,13 @@ export async function POST(
   }
 
   await ref.update({
-    status: "pending",
-    contentSid,
-    rejectionReason: null,
-    pollAttempts: 0,
+    ...buildRegistrationUpdate(tpl, provider, {
+      externalId,
+      status: "pending",
+      rejectionReason: null,
+      pollAttempts: 0,
+    }),
+    name,
     lastSyncedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -134,7 +179,7 @@ export async function POST(
   if (qstashIsConfigured()) {
     await publishCallback({
       pathname: `/api/sub-accounts/${subAccountId}/whatsapp-templates/poll`,
-      body: { subAccountId, templateId, contentSid },
+      body: { subAccountId, templateId, contentSid: externalId },
       delaySeconds: 20,
       deduplicationId: `watpl_${subAccountId}_${templateId}_0`,
     });

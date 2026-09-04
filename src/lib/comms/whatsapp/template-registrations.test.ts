@@ -101,3 +101,163 @@ describe("isTemplateApprovedFor", () => {
     );
   });
 });
+
+import {
+  buildRegistrationUpdate,
+  type WhatsappTemplateRegistration,
+} from "./template-registrations";
+
+describe("buildRegistrationUpdate", () => {
+  const reg = {
+    externalId: "meta-1",
+    status: "pending" as const,
+    rejectionReason: null,
+    pollAttempts: 0,
+  };
+
+  it("writes the registration under its own provider key", () => {
+    const u = buildRegistrationUpdate({ contentSid: null }, "cloud", reg);
+    expect(u["registrations.cloud"]).toEqual(reg);
+  });
+
+  it("mirrors status to the flat field so existing UI keeps working", () => {
+    // The templates manager renders tpl.status. Without the mirror, a template
+    // submitted on the cloud rail would render as "draft" forever.
+    const u = buildRegistrationUpdate({ contentSid: null }, "cloud", reg);
+    expect(u.status).toBe("pending");
+  });
+
+  it("FREEZES the legacy Twilio approval into its own key before the mirror overwrites it", () => {
+    // The heart of it. Flat contentSid/status ARE the twilio registration for
+    // every pre-seam template. Once the flat status starts mirroring the cloud
+    // rail, reading flat as twilio would report cloud's approval as Twilio's.
+    // So the legacy values are copied into registrations.twilio first, where
+    // the reader prefers them.
+    const u = buildRegistrationUpdate(
+      { contentSid: "HX1", status: "approved", rejectionReason: null },
+      "cloud",
+      reg,
+    );
+    expect(u["registrations.twilio"]).toMatchObject({
+      externalId: "HX1",
+      status: "approved",
+    });
+  });
+
+  it("does not clobber an explicit twilio registration that already exists", () => {
+    const u = buildRegistrationUpdate(
+      {
+        contentSid: "HX_stale",
+        status: "approved",
+        registrations: {
+          twilio: {
+            externalId: "HX_real",
+            status: "rejected",
+            rejectionReason: "policy",
+          },
+        },
+      },
+      "cloud",
+      reg,
+    );
+    expect(u["registrations.twilio"]).toBeUndefined();
+  });
+
+  it("does not invent a twilio registration when there was never a Content SID", () => {
+    // A template drafted after the seam has no Twilio history to preserve.
+    const u = buildRegistrationUpdate(
+      { contentSid: null, status: "draft" },
+      "cloud",
+      reg,
+    );
+    expect(u["registrations.twilio"]).toBeUndefined();
+  });
+
+  it("keeps writing the flat fields when the provider IS twilio", () => {
+    // Twilio's shipped routes still read contentSid; nothing about them
+    // changes.
+    const u = buildRegistrationUpdate({ contentSid: null }, "twilio", {
+      ...reg,
+      externalId: "HX2",
+    });
+    expect(u.contentSid).toBe("HX2");
+    expect(u["registrations.twilio"]).toMatchObject({ externalId: "HX2" });
+  });
+
+  it("round-trips through the reader so each rail sees only its own state", () => {
+    const u = buildRegistrationUpdate(
+      { contentSid: "HX1", status: "approved", rejectionReason: null },
+      "cloud",
+      { ...reg, status: "approved", externalId: "meta-1" },
+    );
+    const merged = {
+      contentSid: "HX1",
+      status: u.status as "approved",
+      registrations: {
+        twilio: u["registrations.twilio"] as WhatsappTemplateRegistration,
+        cloud: u["registrations.cloud"] as WhatsappTemplateRegistration,
+      },
+    };
+    expect(isTemplateApprovedFor(merged, "twilio")).toBe(true);
+    expect(isTemplateApprovedFor(merged, "cloud")).toBe(true);
+    expect(templateRegistration(merged, "twilio")?.externalId).toBe("HX1");
+    expect(templateRegistration(merged, "cloud")?.externalId).toBe("meta-1");
+  });
+});
+
+import { classifyPollTick } from "./template-registrations";
+
+describe("classifyPollTick", () => {
+  const pendingOnCloud = {
+    contentSid: null,
+    status: "pending" as const,
+    registrations: {
+      cloud: { externalId: "meta-1", status: "pending" as const, rejectionReason: null },
+    },
+  };
+
+  it("proceeds while the tick still owns the current rail's approval", () => {
+    expect(classifyPollTick(pendingOnCloud, "cloud", "meta-1")).toBe("proceed");
+  });
+
+  it("reports a rail switch when another rail holds the id being chased", () => {
+    // THE TRAP. Switching provider mid-approval used to drop the tick with no
+    // reschedule, leaving the template `pending` — a state the UI cannot
+    // escape, since submit takes only draft/rejected/failed and delete refuses
+    // pending. Only a manual Firestore edit recovered it.
+    expect(classifyPollTick(pendingOnCloud, "twilio", "meta-1")).toBe(
+      "rail-switched",
+    );
+  });
+
+  it("detects the switch in the other direction too, via the legacy flat fields", () => {
+    const pendingOnTwilio = { contentSid: "HX1", status: "pending" as const };
+    expect(classifyPollTick(pendingOnTwilio, "cloud", "HX1")).toBe(
+      "rail-switched",
+    );
+  });
+
+  it("is plain stale when the id belongs to no rail at all", () => {
+    // Re-submitted under a new id — the newer poll chain owns it.
+    expect(classifyPollTick(pendingOnCloud, "cloud", "meta-OLD")).toBe("stale");
+  });
+
+  it.each(["approved", "rejected", "failed", "draft", "paused"] as const)(
+    "is stale once the template has settled as %s",
+    (status) => {
+      expect(
+        classifyPollTick({ ...pendingOnCloud, status }, "cloud", "meta-1"),
+      ).toBe("stale");
+    },
+  );
+
+  it("is stale for a template that no longer exists", () => {
+    expect(classifyPollTick(null, "cloud", "meta-1")).toBe("stale");
+  });
+
+  it("never reports a rail switch when the SAME rail simply moved on", () => {
+    // Same rail, newer id: that is a re-submission, not a switch, and must not
+    // flip a live template to failed.
+    expect(classifyPollTick(pendingOnCloud, "cloud", "meta-old")).toBe("stale");
+  });
+});

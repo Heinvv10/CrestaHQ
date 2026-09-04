@@ -81,3 +81,88 @@ export function isTemplateApprovedFor(
   const reg = templateRegistration(tpl, provider);
   return reg?.status === "approved" && !!reg.externalId?.trim();
 }
+
+
+/**
+ * Firestore field map for recording a submission/approval result on ONE rail.
+ *
+ * The awkward part is the flat fields. `contentSid`/`status`/`rejectionReason`
+ * are simultaneously (a) the Twilio registration for every template predating
+ * the provider seam and (b) what the shipped templates-manager UI renders. The
+ * moment a cloud submission mirrors its status into `status` so the UI shows
+ * something sensible, reading the flat fields as Twilio's registration would
+ * report the CLOUD rail's approval as Twilio's.
+ *
+ * So a cloud write first FREEZES the legacy values into `registrations.twilio`
+ * — where the reader prefers them over the flat fallback — and only then
+ * mirrors. After that migration the flat fields are presentation only. It
+ * happens once per template, lazily, on the first cloud submission, and never
+ * overwrites an explicit registration that already exists.
+ */
+export function buildRegistrationUpdate(
+  tpl: RegistrationBearingTemplate | null | undefined,
+  provider: WhatsAppProviderId,
+  reg: WhatsappTemplateRegistration,
+): Record<string, unknown> {
+  const update: Record<string, unknown> = {
+    [`registrations.${provider}`]: reg,
+    // Mirror for the existing UI, which renders the flat status.
+    status: reg.status,
+    rejectionReason: reg.rejectionReason,
+  };
+
+  if (provider === "twilio") {
+    // Twilio's own routes still read contentSid — keep them authoritative.
+    update.contentSid = reg.externalId;
+    return update;
+  }
+
+  const legacySid = tpl?.contentSid?.trim();
+  if (legacySid && !tpl?.registrations?.twilio) {
+    update["registrations.twilio"] = {
+      externalId: legacySid,
+      status: tpl?.status ?? "draft",
+      rejectionReason: tpl?.rejectionReason ?? null,
+      approvedAt: tpl?.approvedAt ?? null,
+    } satisfies WhatsappTemplateRegistration;
+  }
+
+  return update;
+}
+
+
+/**
+ * What an approval-poll tick should do, given the template's current state and
+ * the rail the workspace is on NOW (which may differ from the rail the tick
+ * was scheduled for).
+ *
+ *   "proceed"      — this tick still owns the approval; go ask the provider.
+ *   "rail-switched" — the id belongs to a rail the workspace has since left.
+ *   "stale"        — superseded by a newer submission, or already settled.
+ *
+ * The distinction matters because `pending` is a trap: the submit route
+ * accepts only draft/rejected/failed and the delete route refuses pending, so
+ * a template left pending with no live poll chain cannot be recovered from the
+ * UI at all. Treating a rail switch as an ordinary stale tick strands it there
+ * permanently.
+ */
+export function classifyPollTick(
+  tpl: RegistrationBearingTemplate | null | undefined,
+  provider: WhatsAppProviderId,
+  externalId: string,
+): "proceed" | "rail-switched" | "stale" {
+  if (!tpl || tpl.status !== "pending") return "stale";
+  if (templateRegistration(tpl, provider)?.externalId === externalId) {
+    return "proceed";
+  }
+  // The `p !== provider` term is belt-and-braces: the active rail was already
+  // matched above, so it can never match here. Kept so the intent survives a
+  // future edit to the check above.
+  const heldByAnotherRail = (
+    ["twilio", "cloud", "bridge"] as const
+  ).some(
+    (p) =>
+      p !== provider && templateRegistration(tpl, p)?.externalId === externalId,
+  );
+  return heldByAnotherRail ? "rail-switched" : "stale";
+}

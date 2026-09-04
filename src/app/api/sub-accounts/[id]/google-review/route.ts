@@ -10,6 +10,8 @@ import {
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
+import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
+import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import type { SubAccountDoc } from "@/types";
 import type { GoogleReviewConfig } from "@/types/tenancy";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -120,9 +122,16 @@ export async function POST(
         .doc(`subAccounts/${subAccountId}/whatsappTemplates/${whatsappTemplateId}`)
         .get();
       const tpl = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
-      if (!tpl || tpl.status !== "approved" || !tpl.contentSid) {
+      // Per-rail: after a cloud submission the flat contentSid can still hold a
+      // stale Twilio id while the flat status mirrors the cloud approval, so
+      // the old check would accept a template approved on a rail this
+      // workspace does not send on.
+      const { provider: waProvider } = resolveProviderForSubAccount(sub);
+      if (!isTemplateApprovedFor(tpl, waProvider)) {
         return NextResponse.json(
-          { error: "That WhatsApp template isn't approved yet — only approved templates can be used." },
+          {
+            error: `That WhatsApp template isn't approved on this workspace's ${waProvider} WhatsApp rail — only a template approved there can be used.`,
+          },
           { status: 400 },
         );
       }
