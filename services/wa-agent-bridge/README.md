@@ -42,17 +42,17 @@ Everything comes from the environment (systemd reads
 | `DB_PATH` | `./wa-agent-bridge.db` | Rail state (messages, allowlist, idempotency, flags) |
 | `SESSION_DIR` | `./session` | whatsmeow session store (`session.db` lives here) |
 | `OWNER_JID` | — | Restricts forwarding to this one sender (matched on the user part, device-suffix-agnostic; a bare user with no `@server` matches any server). Non-owner inbound is still recorded (reply-only history stays accurate) but never posted to a consumer webhook. Unset accepts every sender — the phase-1 default. |
-| `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin`, comma-separated. See below. |
+| `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin\|quietStartHour\|quietEndHour`, comma-separated. See below. |
 | `CAP_PER_CONTACT_PER_DAY` | `10` | Rail 5 |
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |
 | `CAP_GLOBAL_DAILY` | `150` | Rail 6 |
-| `QUIET_START_HOUR` / `QUIET_END_HOUR` | `21` / `7` | Rail 8; equal values disable |
+| `QUIET_START_HOUR` / `QUIET_END_HOUR` | `21` / `7` | Rail 8, the DEPLOYMENT-WIDE window; equal values disable. A consumer may override it in `CONSUMERS`. |
 | `QUIET_TZ` | `Africa/Johannesburg` | Local time for quiet hours |
 
 ### CONSUMERS
 
 ```
-CONSUMERS=hermes|tok-abc|http://127.0.0.1:8787/wa-inbound|100|500,ops|tok-ops||||admin
+CONSUMERS=hermes|tok-abc|http://127.0.0.1:8787/wa-inbound|100|500,ops|tok-ops||||admin|0|0
 ```
 
 Pipe-separated because a webhook URL carries a scheme and a port. Fields after
@@ -60,9 +60,22 @@ Pipe-separated because a webhook URL carries a scheme and a port. Fields after
 exactly one value, `admin`.
 
 Positions are fixed, so an omitted field still needs its pipe — the `ops` entry
-above has **four** pipes before `admin`. `ops|tok-ops|||admin` puts `admin` in
-the `perDay` slot and startup refuses it with
-`unparseable perDay "admin"`.
+above has **five** pipes before `admin` (`webhookURL`, `perHour` and `perDay`
+are all empty). `ops|tok-ops|||admin` puts `admin` in the `perDay` slot and
+startup refuses it with `unparseable perDay "admin"`.
+
+**Per-consumer quiet hours** are the last two fields, and they are optional.
+Given, they replace `QUIET_START_HOUR`/`QUIET_END_HOUR` for that consumer;
+omitted, the consumer inherits the deployment window — inheriting the
+restriction, never escaping it. `0|0` (start == end) disables quiet hours for
+that consumer, which is what the `ops` entry above does: an internal consumer
+paging a human at 03:00 and a customer-facing one messaging strangers at 03:00
+are not the same act, and one deployment runs both.
+
+Both halves are required together. `…|admin|21` (start with no end) and
+`…|admin||7` (end with no start) are both refused at startup rather than
+guessed — half a window is ambiguous, and either guess hands a consumer a
+window nobody wrote down. Hours outside `0-23` are refused too.
 
 Startup **refuses** a duplicate name (two consumers would share an idempotency
 namespace and one's genuine reply would be dropped as the other's duplicate), a

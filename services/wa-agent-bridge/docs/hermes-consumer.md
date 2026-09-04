@@ -105,7 +105,7 @@ Responses:
 | 200 | `{ok:true, messageId, duplicate:true}` | replay of a key already used — `messageId` is the ORIGINAL send's id | done, do not resend |
 | 409 | `{ok:false, refusedBy:"in_flight", reason}` | another request already holds this idempotency key and is still sending (normal concurrent-retry outcome) | safe to retry shortly |
 | 422 | `{ok:false, refusedBy:"idempotency_key_reused", reason}` | this key is already bound to a DIFFERENT recipient — a bug in your key derivation, not a rail refusal | fix the key (include the recipient); **never** retry unchanged, and do not read it as a duplicate |
-| 422 | `{ok:false, refusedBy, reason}` | a rail refused for any other reason (`kill_switch`, `consumer_budget`, `reply_only`, `per_contact_cap`, `consecutive_cap`, `daily_cap`, `quiet_hours`, `internal_error`) | surface `reason`; never retry |
+| 422 | `{ok:false, refusedBy, reason}` | a rail refused for any other reason (`kill_switch`, `consumer_budget`, `reply_only`, `per_contact_cap`, `consecutive_cap`, `daily_cap`, `quiet_hours` (which may be configured per consumer — yours can differ from another consumer's), `internal_error`) | surface `reason`; never retry |
 | 401 | `{error}` | missing bearer token, or a token no registered consumer holds — the FIRST status a mis-registered consumer sees | fix `CONSUMERS`/the token; retrying unchanged never helps |
 | 400 | `{error}` | malformed request (missing `to`/`text`/`idempotencyKey`, or invalid JSON) | fix the request; do not retry unchanged |
 | 413 | `{error}` | body over 64 KiB | fix the request |

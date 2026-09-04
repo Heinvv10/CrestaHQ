@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
+)
 
 // A webhook URL carries a scheme and a port, so it contains colons. Splitting a
 // consumer entry on ":" mangles it into unusable fragments; the format is
@@ -159,5 +164,90 @@ func TestLoadRejectsAnUnknownPrivilegeWord(t *testing.T) {
 	t.Setenv("CONSUMERS", "hermes|tok|http://x|10|20|admn")
 	if _, err := Load(); err == nil {
 		t.Fatal("a misspelled privilege must fail at load, not mid-incident")
+	}
+}
+
+// TestConsumerQuietHoursAreOptionalAndAdditive: the CONSUMERS format is only
+// ever appended to. Every entry shape that parsed before quiet hours existed
+// must parse identically now, and must inherit the deployment window rather
+// than acquiring one of its own.
+func TestConsumerQuietHoursAreOptionalAndAdditive(t *testing.T) {
+	t.Setenv("CONSUMERS", strings.Join([]string{
+		"two|tok-two",
+		"five|tok-five|http://h/x|10|20",
+		"six|tok-six|http://h/x|10|20|admin",
+		"eight|tok-eight|http://h/x|10|20|admin|0|0",
+	}, ","))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("the pre-quiet-hours forms must still parse: %v", err)
+	}
+
+	byName := map[string]Consumer{}
+	for _, c := range cfg.Consumers {
+		byName[c.Name] = c
+	}
+	for _, name := range []string{"two", "five", "six"} {
+		if byName[name].QuietSet {
+			t.Fatalf("%q declared no quiet window and must not have acquired one", name)
+		}
+		if _, ok := cfg.Rails.QuietHours[name]; ok {
+			t.Fatalf("%q must not appear in QuietHours; it inherits the deployment window", name)
+		}
+	}
+	if !byName["six"].Admin {
+		t.Fatal("the six-field admin form must still set Admin")
+	}
+	if byName["five"].PerHour != 10 || byName["five"].PerDay != 20 {
+		t.Fatalf("budgets drifted: %+v", byName["five"])
+	}
+
+	got, ok := cfg.Rails.QuietHours["eight"]
+	if !ok || got != (rails.QuietWindow{StartHour: 0, EndHour: 0}) {
+		t.Fatalf("the eight-field form must carry its own window, got %+v ok=%v", got, ok)
+	}
+}
+
+// TestConsumerQuietHoursMustBeAPair: one half alone is ambiguous, and guessing
+// either way hands a consumer a window nobody wrote down.
+//
+// BOTH halves are tested, and the START-only case is the weaker one: with the
+// pair guard removed it still fails, but only because parsing "" as an hour
+// errors downstream. The END-only case is the one that goes silent — the empty
+// start short-circuits the whole block, the declared end hour is dropped on
+// the floor, and startup accepts an entry whose author believed they had set a
+// window. The error message is asserted too, so the guard being tested is the
+// guard that fires.
+func TestConsumerQuietHoursMustBeAPair(t *testing.T) {
+	for _, tc := range []struct{ name, entry string }{
+		{"start only", "hermes|tok|http://h/x|10|20||21"},
+		{"end only", "hermes|tok|http://h/x|10|20|||7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CONSUMERS", tc.entry)
+			cfg, err := Load()
+			if err == nil {
+				t.Fatalf("half a quiet window must be refused at startup, not guessed; got %+v",
+					cfg.Rails.QuietHours)
+			}
+			if !strings.Contains(err.Error(), "only one half of its quiet window") {
+				t.Fatalf("the error must name the real problem so the operator can fix it, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestConsumerQuietHoursRejectNonHours: a typo'd hour that silently becomes 0
+// gives a consumer a quiet window it never asked for.
+func TestConsumerQuietHoursRejectNonHours(t *testing.T) {
+	for _, entry := range []string{
+		"hermes|tok|http://h/x|10|20||24|7",
+		"hermes|tok|http://h/x|10|20||-1|7",
+		"hermes|tok|http://h/x|10|20||21|later",
+	} {
+		t.Setenv("CONSUMERS", entry)
+		if _, err := Load(); err == nil {
+			t.Fatalf("%q must be refused at startup", entry)
+		}
 	}
 }

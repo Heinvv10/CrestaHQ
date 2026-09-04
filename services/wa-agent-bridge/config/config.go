@@ -31,6 +31,14 @@ type Consumer struct {
 	// stranger does not undo the cold DMs that follow, and an allowlisted JID
 	// has nothing left but the global daily cap standing in front of it.
 	Admin bool
+	// QuietStartHour/QuietEndHour override the deployment-wide quiet window
+	// for this consumer, and are only read when QuietSet is true. An internal
+	// ops consumer legitimately pages a human at 03:00; a customer-facing one
+	// must not. Unset (the default, and every pre-existing entry) inherits the
+	// deployment window — inheriting the restriction, never escaping it.
+	QuietSet       bool
+	QuietStartHour int
+	QuietEndHour   int
 }
 
 type Config struct {
@@ -53,7 +61,11 @@ func envInt(key string, def int) int {
 
 // Load reads configuration from the environment.
 //
-// CONSUMERS format: "name|token|webhookURL|perHour|perDay|admin", comma-separated.
+// CONSUMERS format:
+// "name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour",
+// comma-separated. Every field after `token` is optional and the list is only
+// ever appended to, so the 5- and 6-field forms that predate quiet hours parse
+// exactly as they did.
 // Pipe-separated rather than colon-separated because a webhook URL carries a
 // scheme and a port, and splitting a URL on ":" mangles it into fragments.
 //
@@ -81,6 +93,7 @@ func Load() (Config, error) {
 			QuietEndHour:     envInt("QUIET_END_HOUR", 7),
 			Location:         loc,
 			Budgets:          map[string]rails.ConsumerBudget{},
+			QuietHours:       map[string]rails.QuietWindow{},
 		},
 	}
 	if cfg.ListenAddr == "" {
@@ -122,11 +135,18 @@ func Load() (Config, error) {
 		seenName[c.Name], seenToken[c.Token] = true, true
 		cfg.Consumers = append(cfg.Consumers, c)
 		cfg.Rails.Budgets[c.Name] = rails.ConsumerBudget{PerHour: c.PerHour, PerDay: c.PerDay}
+		// Only consumers that declared a window get an entry; the rest fall
+		// back to the deployment-wide QUIET_START_HOUR/QUIET_END_HOUR.
+		if c.QuietSet {
+			cfg.Rails.QuietHours[c.Name] = rails.QuietWindow{
+				StartHour: c.QuietStartHour, EndHour: c.QuietEndHour}
+		}
 	}
 	return cfg, nil
 }
 
-// parseConsumer reads one "name|token|webhook|perHour|perDay|admin" entry.
+// parseConsumer reads one
+// "name|token|webhook|perHour|perDay|admin|quietStart|quietEnd" entry.
 //
 // Every field error is returned rather than defaulted. A typo'd budget parses
 // to zero, which fails closed and then silently mutes a consumer nobody will
@@ -166,5 +186,45 @@ func parseConsumer(entry string) (Consumer, error) {
 		}
 		c.Admin = true
 	}
+	// Quiet hours are declared as a PAIR or not at all. One half alone is
+	// ambiguous — is the missing half the deployment default or midnight? —
+	// and guessing either way silently gives the consumer a window nobody
+	// wrote down.
+	startRaw, endRaw := fieldAt(parts, 6), fieldAt(parts, 7)
+	if (startRaw == "") != (endRaw == "") {
+		return Consumer{}, fmt.Errorf(
+			"consumer %q sets only one half of its quiet window; give both quietStartHour and quietEndHour, or neither", c.Name)
+	}
+	if startRaw != "" {
+		if c.QuietStartHour, err = parseHour(c.Name, "quietStartHour", startRaw); err != nil {
+			return Consumer{}, err
+		}
+		if c.QuietEndHour, err = parseHour(c.Name, "quietEndHour", endRaw); err != nil {
+			return Consumer{}, err
+		}
+		c.QuietSet = true
+	}
 	return c, nil
+}
+
+func fieldAt(parts []string, i int) string {
+	if i >= len(parts) {
+		return ""
+	}
+	return parts[i]
+}
+
+// parseHour refuses anything outside 0-23 rather than defaulting. A typo'd
+// hour that silently becomes 0 hands a consumer a quiet window it never asked
+// for, and nobody looks at a rail that is quietly wrong in the safe direction
+// until it is quietly wrong in the other one.
+func parseHour(consumer, field, raw string) (int, error) {
+	h, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("consumer %q has an unparseable %s %q: %w", consumer, field, raw, err)
+	}
+	if h < 0 || h > 23 {
+		return 0, fmt.Errorf("consumer %q has %s %d, which is not an hour of the day (0-23)", consumer, field, h)
+	}
+	return h, nil
 }

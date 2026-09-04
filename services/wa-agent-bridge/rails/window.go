@@ -49,15 +49,32 @@ func checkBudget(req SendRequest, s Store, cfg Config) Decision {
 	return Allow()
 }
 
+// quietWindowFor resolves the window that applies to one consumer: its own if
+// it declared one, otherwise the deployment-wide default. Falling back rather
+// than defaulting to "no quiet hours" matters — a consumer that forgot to
+// declare a window must inherit the restriction, not escape it.
+func quietWindowFor(consumer string, cfg Config) QuietWindow {
+	if w, ok := cfg.QuietHours[consumer]; ok {
+		return w
+	}
+	return QuietWindow{StartHour: cfg.QuietStartHour, EndHour: cfg.QuietEndHour}
+}
+
 // checkQuietHours refuses sends outside the configured local window. A 03:00
 // message is both a bot signal to Meta and a customer-relations problem.
+//
+// The window is PER CONSUMER, with the deployment-wide setting as the
+// fallback: an internal ops consumer paging a human at 03:00 and a
+// customer-facing one messaging strangers at 03:00 are not the same act, and
+// one deployment runs both.
 //
 // The window may wrap midnight (21 -> 7), which is the normal configuration,
 // so the comparison is written for both the wrapping and non-wrapping cases.
 // start == end disables the rail rather than refusing every hour of the day —
 // the alternative silently bricks the service on a zero-valued config.
 func checkQuietHours(req SendRequest, cfg Config) Decision {
-	if cfg.QuietStartHour == cfg.QuietEndHour {
+	w := quietWindowFor(req.Consumer, cfg)
+	if w.StartHour == w.EndHour {
 		return Allow()
 	}
 	loc := cfg.Location
@@ -67,15 +84,15 @@ func checkQuietHours(req SendRequest, cfg Config) Decision {
 	h := req.Now.In(loc).Hour()
 
 	quiet := false
-	if cfg.QuietStartHour < cfg.QuietEndHour {
-		quiet = h >= cfg.QuietStartHour && h < cfg.QuietEndHour
+	if w.StartHour < w.EndHour {
+		quiet = h >= w.StartHour && h < w.EndHour
 	} else {
-		quiet = h >= cfg.QuietStartHour || h < cfg.QuietEndHour
+		quiet = h >= w.StartHour || h < w.EndHour
 	}
 	if quiet {
 		return Refuse(RefusedQuietHours,
-			fmt.Sprintf("local time %02d:00 is inside quiet hours %02d:00-%02d:00",
-				h, cfg.QuietStartHour, cfg.QuietEndHour))
+			fmt.Sprintf("local time %02d:00 is inside quiet hours %02d:00-%02d:00 for consumer %q",
+				h, w.StartHour, w.EndHour, req.Consumer))
 	}
 	return Allow()
 }

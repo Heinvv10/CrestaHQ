@@ -83,6 +83,13 @@ type ConsumerBudget struct {
 	PerDay  int
 }
 
+// QuietWindow is one consumer's quiet hours, in the deployment's local time.
+// Start == End disables the rail for that consumer.
+type QuietWindow struct {
+	StartHour int // inclusive, e.g. 21
+	EndHour   int // exclusive, e.g. 7
+}
+
 type Config struct {
 	PerContactPerDay int // default 10
 	ConsecutiveMax   int // default 3
@@ -91,6 +98,13 @@ type Config struct {
 	QuietEndHour     int // exclusive, local time, e.g. 7
 	Location         *time.Location
 	Budgets          map[string]ConsumerBudget
+	// QuietHours overrides the deployment-wide window for named consumers.
+	// The design has always specified quiet hours "per consumer": an internal
+	// ops consumer legitimately needs to page a human at 03:00, while a
+	// customer-facing one must not. A consumer with no entry here falls back
+	// to QuietStartHour/QuietEndHour, so every existing deployment keeps
+	// exactly the behaviour it has.
+	QuietHours map[string]QuietWindow
 }
 
 // Store is the persisted state the rails consult. Every counter lives on disk:

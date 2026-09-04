@@ -82,3 +82,60 @@ func TestQuietHoursDisabledWhenEqual(t *testing.T) {
 		t.Fatal("start == end must disable the rail, not refuse all day")
 	}
 }
+
+// TestQuietHoursArePerConsumer: one deployment runs an internal ops consumer
+// that must be able to page a human at 03:00 and a customer-facing consumer
+// that must not message strangers at 03:00. A single deployment-global window
+// cannot express that, and the design has always said "per consumer".
+func TestQuietHoursArePerConsumer(t *testing.T) {
+	cfg := Config{
+		QuietStartHour: 21, QuietEndHour: 7, // the deployment default
+		Location: time.UTC,
+		QuietHours: map[string]QuietWindow{
+			"ops": {StartHour: 0, EndHour: 0}, // start == end: never quiet
+		},
+	}
+	threeAM := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+
+	if d := checkQuietHours(SendRequest{Consumer: "ops", Now: threeAM}, cfg); !d.Allow {
+		t.Fatalf("ops declared no quiet hours and must be allowed to page at 03:00, got %+v", d)
+	}
+	d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: threeAM}, cfg)
+	if d.Allow || d.RefusedBy != RefusedQuietHours {
+		t.Fatalf("a consumer with no window of its own must inherit the deployment's, got %+v", d)
+	}
+}
+
+// TestConsumerQuietWindowIsUsedNotJustPresent: a per-consumer window must
+// actually be evaluated, not merely accepted. Uses a window that DIFFERS from
+// the deployment's in both directions, so a fallback to the global one is
+// wrong at both hours tested.
+func TestConsumerQuietWindowIsUsedNotJustPresent(t *testing.T) {
+	cfg := Config{
+		QuietStartHour: 21, QuietEndHour: 7,
+		Location:   time.UTC,
+		QuietHours: map[string]QuietWindow{"leadstack": {StartHour: 12, EndHour: 14}},
+	}
+	at := func(h int) time.Time { return time.Date(2026, 9, 4, h, 0, 0, 0, time.UTC) }
+
+	// 13:00 is quiet for leadstack and wide awake under the deployment window.
+	if d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: at(13)}, cfg); d.Allow {
+		t.Fatal("13:00 is inside leadstack's own 12-14 window and must refuse")
+	}
+	// 03:00 is quiet under the deployment window and awake under leadstack's.
+	if d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: at(3)}, cfg); !d.Allow {
+		t.Fatalf("03:00 is outside leadstack's own 12-14 window and must allow, got %+v", d)
+	}
+}
+
+// TestUnknownConsumerInheritsTheDeploymentWindow: falling back must never
+// become "no quiet hours". A consumer that forgot to declare a window inherits
+// the restriction; it does not escape it.
+func TestUnknownConsumerInheritsTheDeploymentWindow(t *testing.T) {
+	cfg := Config{QuietStartHour: 21, QuietEndHour: 7, Location: time.UTC}
+	d := checkQuietHours(
+		SendRequest{Consumer: "never-configured", Now: time.Date(2026, 9, 4, 23, 0, 0, 0, time.UTC)}, cfg)
+	if d.Allow {
+		t.Fatal("an unconfigured consumer must inherit the deployment quiet window, not skip it")
+	}
+}
