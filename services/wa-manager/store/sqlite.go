@@ -208,3 +208,32 @@ func (s *Store) ListEvents(tenantID string, limit int) ([]Event, error) {
 	}
 	return out, rows.Err()
 }
+
+// SetTenantIdentity records the display name and the systemd instance name for
+// a tenant that AllocatePort has already created.
+//
+// AllocatePort has to insert the row to make the allocation atomic, and at that
+// moment it knows only the opaque id — so it seeds `instance` with the id and
+// leaves the display name empty. The provisioner is the component that derives
+// the real, systemd-safe instance name, so it writes it here.
+//
+// The UNIQUE constraint on `instance` is doing real work: two different tenant
+// ids can sanitise to the same instance name, and two tenants sharing one
+// instance would share one WhatsApp session. The loser of that race fails here
+// rather than silently taking over its neighbour's directory.
+func (s *Store) SetTenantIdentity(id, displayName, instance string) error {
+	res, err := s.db.Exec(
+		`UPDATE tenants SET display_name = ?, instance = ?, updated_unix = ? WHERE id = ?`,
+		displayName, instance, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("store: no tenant %q", id)
+	}
+	return nil
+}
