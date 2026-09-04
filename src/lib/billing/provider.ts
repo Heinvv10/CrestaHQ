@@ -30,6 +30,15 @@ export interface BillingProvider {
   /** True when this deployment has credentials for the provider. */
   isConfigured(): boolean;
 
+  /**
+   * The only timing this provider can honour for a mid-cycle plan switch.
+   *
+   * Declared rather than assumed: Stripe prorates, Paystack cannot, and a
+   * caller that hard-codes one of them silently misprices on the other. The
+   * call site reads this instead of choosing.
+   */
+  readonly planSwitchTiming: PlanSwitchTiming;
+
   // --- Catalog ------------------------------------------------------------
 
   /**
@@ -85,8 +94,17 @@ export interface BillingProvider {
    * `timing` is explicit because providers differ: Stripe can prorate the
    * switch mid-cycle, while a provider without proration can only apply the
    * new price from the next renewal.
+   *
+   * Returns the subscription id that is live AFTER the switch, and the caller
+   * MUST persist it. Stripe mutates in place and hands back the same id;
+   * Paystack cannot, so it cancels one subscription and opens another with a
+   * new id. Dropping it would leave the stored id pointing at the dead
+   * subscription — a later cancel would then succeed while the real one kept
+   * charging the client.
    */
-  switchSubscriptionPlan(input: SwitchSubscriptionInput): Promise<void>;
+  switchSubscriptionPlan(
+    input: SwitchSubscriptionInput
+  ): Promise<{ subscriptionId: string }>;
 
   /** Cancel a subscription immediately. */
   cancelSubscription(subscriptionId: string): Promise<void>;
@@ -200,13 +218,15 @@ let cached: BillingProvider | null = null;
 /**
  * The Client Billing provider for this deployment.
  *
- * Selection is by which secret is present, not by a separate switch: a
- * deployment holding only one provider's key cannot be misconfigured into
- * calling the other. `BILLING_PROVIDER` breaks the tie when both are set,
- * which is only the case while a deployment is moving between them.
+ * Paystack requires an explicit `BILLING_PROVIDER=paystack`; holding a
+ * `PAYSTACK_SECRET_KEY` is deliberately NOT enough to select it. Inferring the
+ * rail from key presence would mean that pasting a key — to try it, or as part
+ * of setting up something else — silently moves live billing onto a rail whose
+ * webhook receiver does not exist yet, where a client's payment lands and
+ * their workspace stays walled. A deployment that sets only the key keeps
+ * Stripe's "billing isn't configured" path, which is loud and harmless.
  *
- * Defaulting to Stripe when neither key is set keeps `isConfigured()` false
- * and every route's "billing isn't configured" path intact.
+ * Stripe stays the default so no existing deployment changes behaviour.
  */
 export function getBillingProvider(): BillingProvider {
   if (!cached) cached = new (selectProviderClass())();
@@ -216,13 +236,9 @@ export function getBillingProvider(): BillingProvider {
 function selectProviderClass():
   | typeof StripeBillingProvider
   | typeof PaystackBillingProvider {
-  const forced = process.env.BILLING_PROVIDER?.trim().toLowerCase();
-  if (forced === "paystack") return PaystackBillingProvider;
-  if (forced === "stripe") return StripeBillingProvider;
-  const hasPaystack = !!process.env.PAYSTACK_SECRET_KEY?.trim();
-  const hasStripe = !!process.env.STRIPE_SECRET_KEY?.trim();
-  if (hasPaystack && !hasStripe) return PaystackBillingProvider;
-  return StripeBillingProvider;
+  return process.env.BILLING_PROVIDER?.trim().toLowerCase() === "paystack"
+    ? PaystackBillingProvider
+    : StripeBillingProvider;
 }
 
 /** Test-only: drop the memoized provider so env changes take effect. */

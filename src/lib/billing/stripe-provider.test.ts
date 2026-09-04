@@ -365,11 +365,14 @@ describe("switchSubscriptionPlan", () => {
     });
     stripeMock.subscriptions.update.mockResolvedValue({ id: "sub_1" });
 
-    await provider.switchSubscriptionPlan({
+    const result = await provider.switchSubscriptionPlan({
       ...input,
       timing: "immediate_prorated",
     });
 
+    // Stripe mutates in place, so the caller's stored id is still the live
+    // one. Returning anything else would repoint it at nothing.
+    expect(result).toEqual({ subscriptionId: "sub_1" });
     expect(stripeMock.subscriptions.retrieve).toHaveBeenCalledWith("sub_1");
     expect(stripeMock.subscriptions.update).toHaveBeenCalledWith("sub_1", {
       items: [{ id: "si_1", price: "price_new" }],

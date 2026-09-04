@@ -153,14 +153,18 @@ describe("switchSubscriptionPlan", () => {
     paystackRequest
       .mockResolvedValueOnce(live)
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({});
+      .mockResolvedValueOnce({ subscription_code: "SUB_2" });
 
-    await provider.switchSubscriptionPlan({
+    const result = await provider.switchSubscriptionPlan({
       subscriptionId: "SUB_1",
       priceId: "PLN_new",
       timing: "period_end",
       metadata: {},
     });
+
+    // The caller stores this. Hand back the old code and a later cancel
+    // disables a dead subscription while SUB_2 keeps debiting the client.
+    expect(result).toEqual({ subscriptionId: "SUB_2" });
 
     // Order is the guard: creating first would bill both plans over the
     // overlap.
@@ -195,6 +199,49 @@ describe("switchSubscriptionPlan", () => {
     // Nothing was disabled: a failed switch must not strand a paying client
     // with no subscription at all.
     expect(paystackRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("switchSubscriptionPlan — a half-finished switch", () => {
+  const live = {
+    subscription_code: "SUB_1",
+    email_token: "tok_1",
+    next_payment_date: "2026-10-01T00:00:00.000Z",
+    authorization: { authorization_code: "AUTH_1" },
+    customer: { customer_code: "CUS_1" },
+  };
+
+  it("says the workspace is now unsubscribed when the new plan fails to start", async () => {
+    paystackRequest
+      .mockResolvedValueOnce(live)
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("Paystack: plan not found"));
+
+    // The old subscription is already gone by then. A generic failure here
+    // reads as "nothing happened", which is the opposite of the truth.
+    await expect(
+      provider.switchSubscriptionPlan({
+        subscriptionId: "SUB_1",
+        priceId: "PLN_new",
+        timing: "period_end",
+        metadata: {},
+      }),
+    ).rejects.toThrow(/no live subscription/i);
+  });
+
+  it("refuses a subscription Paystack created without returning a code", async () => {
+    paystackRequest
+      .mockResolvedValueOnce(live)
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({});
+    await expect(
+      provider.switchSubscriptionPlan({
+        subscriptionId: "SUB_1",
+        priceId: "PLN_new",
+        timing: "period_end",
+        metadata: {},
+      }),
+    ).rejects.toBeInstanceOf(BillingError);
   });
 });
 

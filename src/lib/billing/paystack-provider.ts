@@ -50,6 +50,9 @@ import type {
 export class PaystackBillingProvider implements BillingProvider {
   readonly id = "paystack" as const;
 
+  /** Paystack has no proration, so a switch can only land at the renewal. */
+  readonly planSwitchTiming = "period_end" as const;
+
   isConfigured(): boolean {
     return paystackIsConfigured();
   }
@@ -193,9 +196,14 @@ export class PaystackBillingProvider implements BillingProvider {
    * have renewed — the client is never double-charged and never gets a free
    * period.
    *
+   * The returned id is a NEW subscription code and the caller must store it —
+   * the one it passed in is dead by the time this returns.
+   *
    * `metadata` is unused: Paystack's subscription-create endpoint takes none.
    */
-  async switchSubscriptionPlan(input: SwitchSubscriptionInput): Promise<void> {
+  async switchSubscriptionPlan(
+    input: SwitchSubscriptionInput,
+  ): Promise<{ subscriptionId: string }> {
     if (input.timing === "immediate_prorated") {
       throw new BillingError(
         "Paystack can't prorate a mid-cycle switch — apply it at the renewal date instead.",
@@ -213,16 +221,30 @@ export class PaystackBillingProvider implements BillingProvider {
     }
 
     // The old subscription goes first: creating the replacement first would
-    // bill both over the overlap. If the create then fails, the client is left
-    // unsubscribed rather than double-charged, and re-assigning the plan
-    // recovers it.
+    // bill both over the overlap, and a double charge is worse than a gap.
     await disablePaystackSubscription(sub);
-    await createPaystackSubscription({
-      customerCode,
-      planCode: input.priceId,
-      authorizationCode,
-      startDate: sub.next_payment_date,
-    });
+    try {
+      const subscriptionId = await createPaystackSubscription({
+        customerCode,
+        planCode: input.priceId,
+        authorizationCode,
+        startDate: sub.next_payment_date,
+      });
+      return { subscriptionId };
+    } catch (err) {
+      // There is no transaction across a third party, so the window between
+      // the two calls cannot be closed — only made impossible to miss. The
+      // client now has NO live subscription; say exactly that, and name the
+      // dead code so the state can be reconstructed from the log alone.
+      console.error(
+        `[billing] Paystack plan switch left sub-account unsubscribed: ${sub.subscription_code} was disabled, plan ${input.priceId} was not started`,
+        err,
+      );
+      throw new BillingError(
+        `The old subscription was cancelled but the new one didn't start, so this workspace has no live subscription. Re-assign the plan to restore it. (${err instanceof Error ? err.message : String(err)})`,
+        502,
+      );
+    }
   }
 
   async cancelSubscription(subscriptionId: string): Promise<void> {

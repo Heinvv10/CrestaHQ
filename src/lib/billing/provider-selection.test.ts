@@ -47,26 +47,22 @@ afterEach(() => {
 });
 
 describe("getBillingProvider", () => {
-  it("uses Paystack when only Paystack is configured", () => {
+  it("stays on Stripe when only a Paystack key is pasted in", () => {
+    // The trap this closes: Paystack has no webhook receiver yet, so a
+    // deployment silently switched onto it would take a client's payment and
+    // leave their workspace walled. A key alone must never select the rail.
     setEnv({ paystack: "sk_live_p" });
-    expect(getBillingProvider().id).toBe("paystack");
+    expect(getBillingProvider().id).toBe("stripe");
   });
 
-  it("uses Stripe when only Stripe is configured", () => {
-    setEnv({ stripe: "sk_live_s" });
-    expect(getBillingProvider().id).toBe("stripe");
+  it("selects Paystack only on an explicit BILLING_PROVIDER", () => {
+    setEnv({ paystack: "sk_live_p", forced: "paystack" });
+    expect(getBillingProvider().id).toBe("paystack");
   });
 
   it("keeps billing on Stripe when both keys are present", () => {
-    // A deployment mid-migration still holds its Stripe key. Silently moving
-    // its live subscribers to a second account would be the worse default.
     setEnv({ stripe: "sk_live_s", paystack: "sk_live_p" });
     expect(getBillingProvider().id).toBe("stripe");
-  });
-
-  it("lets BILLING_PROVIDER settle the tie explicitly", () => {
-    setEnv({ stripe: "sk_live_s", paystack: "sk_live_p", forced: "paystack" });
-    expect(getBillingProvider().id).toBe("paystack");
   });
 
   it("falls back to Stripe when nothing is configured, so isConfigured stays false", () => {
@@ -76,8 +72,16 @@ describe("getBillingProvider", () => {
     expect(provider.isConfigured()).toBe(false);
   });
 
+  it("declares a switch timing each provider can actually honour", () => {
+    // Read by `assignPlanToSubAccount`; a wrong value here misprices a switch.
+    setEnv({ stripe: "sk_live_s" });
+    expect(getBillingProvider().planSwitchTiming).toBe("immediate_prorated");
+    setEnv({ forced: "paystack" });
+    expect(getBillingProvider().planSwitchTiming).toBe("period_end");
+  });
+
   it("memoizes so every call site shares one provider", () => {
-    setEnv({ paystack: "sk_live_p" });
+    setEnv({ forced: "paystack" });
     expect(getBillingProvider()).toBe(getBillingProvider());
   });
 });

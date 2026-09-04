@@ -585,12 +585,15 @@ export async function assignPlanToSubAccount(input: {
     (billing.status === "active" || billing.status === "past_due");
 
   if (hasLiveSubscription) {
-    // Plan switch on a live subscription: move the single item to the new
-    // price with standard prorations.
-    await getBillingProvider().switchSubscriptionPlan({
+    // Plan switch on a live subscription. The timing comes from the provider,
+    // not from here: Stripe prorates the difference, Paystack cannot prorate
+    // at all and applies the new price at renewal. Choosing on the caller's
+    // behalf would misprice on whichever provider it guessed wrong.
+    const provider = getBillingProvider();
+    const { subscriptionId } = await provider.switchSubscriptionPlan({
       subscriptionId: billing.stripeSubscriptionId as string,
       priceId: stripePriceId,
-      timing: "immediate_prorated",
+      timing: provider.planSwitchTiming,
       metadata: {
         kind: SUB_ACCOUNT_PLAN_KIND,
         agencyId: input.agencyId,
@@ -607,6 +610,11 @@ export async function assignPlanToSubAccount(input: {
       "billing.currency": plan.currency,
       "billing.specialPriceCents": input.specialPriceCents,
       "billing.stripePriceId": stripePriceId,
+      // Unchanged on Stripe; a NEW code on Paystack, which cancels one
+      // subscription and opens another. Storing the stale one would make a
+      // later cancel silently disable a dead subscription while the live one
+      // kept charging the client.
+      "billing.stripeSubscriptionId": subscriptionId,
       "billing.updatedAt": FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });

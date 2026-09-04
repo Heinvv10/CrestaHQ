@@ -1064,11 +1064,18 @@ implementation of the `BillingProvider` interface. This is Client Billing ONLY; 
 (a sub-account charging its own customers with its own restricted key) is a separate integration
 and still Stripe.
 
-**Selection is by which secret is present**, not a separate switch, so a deployment holding one
-key cannot be misconfigured into calling the other. With both set it stays on Stripe unless
-`BILLING_PROVIDER=paystack` says otherwise — silently moving live subscribers to a second account
-is the worse default. With neither, `billingStripeIsConfigured()` is false and every route's
-"billing isn't configured" path is unchanged.
+**Selecting Paystack takes an explicit `BILLING_PROVIDER=paystack`** — holding a
+`PAYSTACK_SECRET_KEY` is deliberately not enough. Inferring the rail from key presence would mean
+pasting a key silently moves live billing onto a rail whose webhook receiver does not exist, where
+a client's payment lands and their workspace stays walled. A deployment that sets only the key
+keeps Stripe's "billing isn't configured" path, which is loud and harmless.
+
+**A plan switch reads its timing from the provider** (`BillingProvider.planSwitchTiming`) rather
+than the call site choosing, and `switchSubscriptionPlan` returns the subscription id that is live
+AFTER the switch, which the caller persists. Stripe mutates in place and returns the same id;
+Paystack cannot, so it cancels one subscription and opens another with a new code. Storing the
+stale id would make a later cancel disable a dead subscription while the live one kept charging
+the client.
 
 **Three behaviours differ from Stripe, by necessity:** plan switches apply at the **renewal date**
 (Paystack cannot prorate, so a mid-cycle switch is refused rather than silently mispriced); plans

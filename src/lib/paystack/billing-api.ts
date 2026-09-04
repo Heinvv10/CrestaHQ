@@ -111,13 +111,24 @@ export async function createPaystackSubscription(input: {
   planCode: string;
   authorizationCode: string;
   startDate: string;
-}): Promise<void> {
-  await paystackRequest("POST", "/subscription", {
-    customer: input.customerCode,
-    plan: input.planCode,
-    authorization: input.authorizationCode,
-    start_date: input.startDate,
-  });
+}): Promise<string> {
+  const sub = await paystackRequest<{ subscription_code: string }>(
+    "POST",
+    "/subscription",
+    {
+      customer: input.customerCode,
+      plan: input.planCode,
+      authorization: input.authorizationCode,
+      start_date: input.startDate,
+    },
+  );
+  if (!sub.subscription_code) {
+    throw new BillingError(
+      "Paystack created a subscription without returning its code — check the Paystack dashboard before charging this client again.",
+      502,
+    );
+  }
+  return sub.subscription_code;
 }
 
 /**
