@@ -54,7 +54,10 @@ func Refuse(code RefusalCode, reason string) Decision {
 }
 
 // Duplicate short-circuits the chain when an idempotency key has already been
-// used. It is an allow-shaped answer with no send attached.
+// used. It is a success with no send attached, not a refusal. Callers MUST test
+// DuplicateOf != "" BEFORE checking !Allow, because a replay and a genuine refusal
+// both set Allow to false. The distinction matters: a replay means the original
+// message stands; a refusal means the send was rejected and should not be retried.
 func Duplicate(messageID string) Decision {
 	return Decision{Allow: false, RefusedBy: "", DuplicateOf: messageID}
 }
@@ -86,6 +89,10 @@ type Store interface {
 	RemoveAllowlist(jid string) error
 
 	OutboundCountForContact(jid string, since time.Time) (int, error)
+	// ConsecutiveOutbound returns the number of outbound messages sent to this
+	// JID since that contact's most recent inbound message. An inbound resets the
+	// count to zero. A contact with no inbound at all counts every outbound ever
+	// sent. This measures how long we have been talking at someone without an answer.
 	ConsecutiveOutbound(jid string) (int, error)
 	OutboundCountTotal(since time.Time) (int, error)
 	OutboundCountForConsumer(consumer string, since time.Time) (int, error)
