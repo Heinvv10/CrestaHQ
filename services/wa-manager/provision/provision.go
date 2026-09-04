@@ -134,11 +134,17 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	}
 
 	// From here on the tenant owns a port, so every exit unwinds.
-	enabled := false
+	enabled, dirCreated := false, false
 	fail := func(err error) (store.Tenant, error) {
-		return store.Tenant{}, errors.Join(err, p.unwind(tenantID, instance, enabled))
+		return store.Tenant{}, errors.Join(err, p.unwind(tenantID, instance, enabled, dirCreated))
 	}
 
+	// SetTenantIdentity is the mutual-exclusion point, not checkInstanceFree.
+	// Two ids that sanitise to one name can both clear that pre-check
+	// concurrently — AllocatePort seeds `instance` with the OPAQUE id, so no
+	// UNIQUE collision exists yet — and only this UPDATE decides which of them
+	// owns the name. Everything after it is exclusive; everything before it is
+	// not, which is why the directory flag is only set below.
 	if err := p.st.SetTenantIdentity(tenantID, displayName, instance); err != nil {
 		return fail(err)
 	}
@@ -146,6 +152,7 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	if err := os.MkdirAll(filepath.Join(dir, "session"), 0o700); err != nil {
 		return fail(err)
 	}
+	dirCreated = true
 	// 0600: this file holds two bearer tokens, either of which can send as this
 	// WhatsApp number.
 	env := p.renderEnv(tenantID, instance, port, appTok, mgrTok)
@@ -195,7 +202,13 @@ func (p *Provisioner) checkInstanceFree(tenantID, instance string) error {
 
 // unwind returns the tenant to not existing. The port is released LAST, for the
 // same reason Destroy releases it last.
-func (p *Provisioner) unwind(tenantID, instance string, enabled bool) error {
+// unwind must never touch a path this call did not make. A caller that lost the
+// race for an instance name shares that name with the WINNER, so removing the
+// directory would delete a live bridge's .env and session/ — leaving a running
+// process with no WhatsApp credentials and a Create that returned success, so
+// nothing anywhere reports a problem. dirCreated is only true once this call
+// has passed SetTenantIdentity and therefore owns the name.
+func (p *Provisioner) unwind(tenantID, instance string, enabled, dirCreated bool) error {
 	var errs []error
 	if enabled {
 		if err := p.sc.Stop(instance); err != nil {
@@ -205,8 +218,10 @@ func (p *Provisioner) unwind(tenantID, instance string, enabled bool) error {
 			errs = append(errs, err)
 		}
 	}
-	if err := os.RemoveAll(p.instanceDir(instance)); err != nil {
-		errs = append(errs, err)
+	if dirCreated {
+		if err := os.RemoveAll(p.instanceDir(instance)); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := p.st.ReleasePort(tenantID); err != nil {
 		errs = append(errs, err)
@@ -238,5 +253,8 @@ func (p *Provisioner) Destroy(tenantID string) error {
 	if err := os.RemoveAll(p.instanceDir(ten.Instance)); err != nil {
 		return fmt.Errorf("provision: destroy %q: %w", tenantID, err)
 	}
-	return p.st.ReleasePort(tenantID)
+	if err := p.st.ReleasePort(tenantID); err != nil {
+		return fmt.Errorf("provision: destroy %q: %w", tenantID, err)
+	}
+	return nil
 }

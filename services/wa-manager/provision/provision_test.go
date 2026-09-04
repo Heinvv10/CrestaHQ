@@ -19,7 +19,7 @@ import (
 type fakeCtl struct {
 	mu                                  sync.Mutex
 	enabled, started, stopped, disabled map[string]bool
-	FailStart                           bool
+	FailStart, FailStop                 bool
 }
 
 func newFakeCtl() *fakeCtl {
@@ -35,8 +35,16 @@ func (f *fakeCtl) mark(m map[string]bool, i string) error {
 	m[i] = true
 	return nil
 }
-func (f *fakeCtl) Enable(i string) error  { return f.mark(f.enabled, i) }
-func (f *fakeCtl) Stop(i string) error    { return f.mark(f.stopped, i) }
+func (f *fakeCtl) Enable(i string) error { return f.mark(f.enabled, i) }
+func (f *fakeCtl) Stop(i string) error {
+	f.mu.Lock()
+	fail := f.FailStop
+	f.mu.Unlock()
+	if fail {
+		return errors.New("fake: stop refused")
+	}
+	return f.mark(f.stopped, i)
+}
 func (f *fakeCtl) Disable(i string) error { return f.mark(f.disabled, i) }
 func (f *fakeCtl) Start(i string) error {
 	f.mu.Lock()
@@ -336,5 +344,71 @@ func TestReprovisioningALiveTenantIsRefused(t *testing.T) {
 	}
 	if _, err := st.GetTenant("t1"); err != nil {
 		t.Fatalf("a refused Create destroyed the live tenant row: %v", err)
+	}
+}
+
+// Two ids that sanitise to one instance name can both clear checkInstanceFree
+// concurrently: AllocatePort seeds `instance` with the OPAQUE id, so no UNIQUE
+// collision exists yet. The loser only discovers it at SetTenantIdentity — by
+// which point the winner may already own the directory of that name.
+//
+// The loser must not clean up the winner's instance. Deleting a live bridge's
+// .env and session/ leaves a running process whose WhatsApp credentials are
+// gone, and its Create returned success, so nothing anywhere reports a problem.
+func TestALosingCreateDoesNotDeleteTheWinnersInstance(t *testing.T) {
+	for round := 0; round < 40; round++ {
+		p, _, _, root := newTestProvisioner(t)
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		ids := [2]string{"a.b", "a-b"}
+		var got [2]store.Tenant
+		var errs [2]error
+
+		for i := range ids {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				got[i], errs[i] = p.Create(ids[i], "concurrent")
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		for i := range ids {
+			if errs[i] != nil {
+				continue
+			}
+			env := filepath.Join(root, got[i].Instance, ".env")
+			if _, err := os.Stat(env); err != nil {
+				t.Fatalf("round %d: winner %q survived Create but its .env was destroyed by the loser's unwind: %v",
+					round, ids[i], err)
+			}
+		}
+	}
+}
+
+// Destroy is Stop -> Disable -> RemoveAll -> ReleasePort, and the port going
+// LAST is the load-bearing part: a port freed while its process still holds it
+// is handed to the next tenant, whose bridge then cannot bind. Asserting only
+// the end state cannot see the order, so this asserts what a FAILED stop
+// leaves behind — the port still allocated, and the session still on disk.
+func TestDestroyKeepsThePortWhenTheUnitWillNotStop(t *testing.T) {
+	p, st, sc, root := newTestProvisioner(t)
+	ten, err := p.Create("t1", "Blitz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.FailStop = true
+
+	if err := p.Destroy("t1"); err == nil {
+		t.Fatal("Destroy must fail when the unit will not stop")
+	}
+	if _, err := st.GetTenant("t1"); err != nil {
+		t.Fatalf("the port was freed while the bridge was still running: the next tenant would fail to bind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ten.Instance, ".env")); err != nil {
+		t.Fatalf("a running bridge's .env was deleted under it: %v", err)
 	}
 }
