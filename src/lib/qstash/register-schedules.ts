@@ -55,6 +55,15 @@ const SCHEDULES: ScheduleSpec[] = [
       "Daily sweep of expired apiRequestLogs / apiIdempotency / webhookEvents.",
   },
   {
+    scheduleId: "leadstack-recurring-invoices",
+    path: "/api/cron/recurring-invoices",
+    // 05:00 UTC — after api-cleanup, and early enough that a schedule due
+    // today is raised on its own local day across most of the world.
+    cron: "0 5 * * *",
+    description:
+      "Daily sweep raising every recurring invoice that has come due.",
+  },
+  {
     scheduleId: "leadstack-agents-watchdog",
     path: "/api/agents/watchdog/step",
     cron: "0 * * * *",
