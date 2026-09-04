@@ -158,6 +158,15 @@ Per due schedule:
    retry re-entering the same schedule finds `nextRunAt` already advanced and
    does nothing. This is the same claim-to-make-idempotent shape the social
    publish callback uses.
+
+   **Idempotency lives on the schedule, never on invoice status.** This is a
+   constraint, not an implementation detail. The send path swallows a failed
+   lifecycle write while the email still goes out, so an invoice can sit at
+   `draft` with no `sentAt` after the customer already received it. Any sweep
+   that decides what to send by reading invoice status would re-send that
+   invoice on the next tick — to a paying customer, every night, until someone
+   noticed. Nobody may add a "re-send unsent invoices" pass on top of this
+   engine without fixing that write first.
 2. **Generate** — `issueQuoteNumber(subAccountId, "invoice")`, write the invoice.
 3. **Send**, unless `reviewFirst`. The existing route sets `Reply-To` to the
    caller's email; a cron has no caller, so it uses the sub-account's account

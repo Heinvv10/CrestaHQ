@@ -12,6 +12,7 @@ import {
 } from "@/lib/quotes/lifecycle";
 import { buildQuoteUrl, issueQuoteToken } from "@/lib/quotes/token";
 import { buildPaypalInvoiceUrl } from "@/lib/paypal/payment-link";
+import type { TerritoryDenial } from "@/lib/auth/territory-filter";
 import type { Quote } from "@/types/quotes";
 import type { SubAccountDoc } from "@/types";
 
@@ -27,9 +28,15 @@ import type { SubAccountDoc } from "@/types";
  * between the two callers — exactly the drift `markQuotePaidServerSide` exists
  * to prevent on the paid path.
  *
- * Auth stays in the caller: the route checks membership and passes a territory
- * `authorize` hook; a cron's authority is the verified QStash signature. This
- * module must never import `next/server`.
+ * Auth stays in the caller: the route checks membership and passes a `user`
+ * actor carrying the territory check; a cron's authority is the verified QStash
+ * signature. This module must never import `next/server`.
+ *
+ * The actor is a DISCRIMINATED UNION rather than an optional callback so that
+ * skipping the territory check is a typed, deliberate act that has to name its
+ * reason, and cannot happen by a caller simply forgetting an argument. Same
+ * reasoning as the WhatsApp provider seam declaring `supportsTemplates` /
+ * `enforcesWindow`: a later arm must not be able to silently drop a guard.
  *
  * The steps:
  *   1. Resend configured?
@@ -49,6 +56,24 @@ import type { SubAccountDoc } from "@/types";
  */
 
 export type SendQuoteFailure = { code: string; status: number; error: string };
+
+/**
+ * Who is sending, and what permission check that implies.
+ *
+ *  - `user`   — a human acting through a route. MUST supply the territory
+ *               check; it runs once the quote is loaded, since it needs the
+ *               quote's `contactId`.
+ *  - `system` — a machine-initiated send (the recurring-invoice cron). No
+ *               territory scoping applies because there is no member to scope,
+ *               so it must state a `reason` — every unscoped send is then
+ *               greppable and self-documenting.
+ */
+export type SendQuoteActor =
+  | {
+      kind: "user";
+      authorize: (quote: Quote) => Promise<TerritoryDenial | null>;
+    }
+  | { kind: "system"; reason: string };
 
 export type SendQuoteResult =
   | {
@@ -72,12 +97,8 @@ export async function sendQuoteServerSide(input: {
   quoteId: string;
   /** Address recipient replies go to. Omit for machine-initiated sends. */
   replyTo?: string | null;
-  /**
-   * Caller-supplied permission check, run at the same point the route's
-   * territory gate used to run: after the quote is loaded and its tenancy is
-   * verified, before the contact is read.
-   */
-  authorize?: (quote: Quote) => Promise<{ status: number; error: string } | null>;
+  /** Who is sending. See {@link SendQuoteActor}. */
+  actor: SendQuoteActor;
 }): Promise<SendQuoteResult> {
   const { subAccountId, quoteId } = input;
 
@@ -106,9 +127,10 @@ export async function sendQuoteServerSide(input: {
     );
   }
 
-  // 3. Caller's permission hook (territory scoping for human callers).
-  if (input.authorize) {
-    const denial = await input.authorize(quote);
+  // 3. The actor's authorization. A `system` actor skips territory scoping by
+  //     construction — there is no member to scope — and named its reason.
+  if (input.actor.kind === "user") {
+    const denial = await input.actor.authorize(quote);
     if (denial) return fail("not_authorized", denial.status, denial.error);
   }
 

@@ -43,6 +43,10 @@ vi.mock("@/lib/quotes/lifecycle", async () =>
 import {
   baseQuote,
   callJson,
+  emitQuoteWebhook,
+  fireQuoteTrigger,
+  recordQuoteActivity,
+  renderQuoteEmail,
   resetHarness,
   sendEmail,
   state,
@@ -103,6 +107,42 @@ describe("invoice payment rails", () => {
       paymentLinkId: null,
       paymentLinkMintedAt: "__SERVER_TS__",
     });
+  });
+
+  it("hands the FRESH link to the email and every side-effect consumer", async () => {
+    // The persisted document and the in-memory object are updated separately.
+    // If the in-memory reset is lost, Firestore still reads correctly while the
+    // customer is emailed a link for the PREVIOUS amount and webhook
+    // subscribers receive a dead payment-link id — a divergence no assertion on
+    // the stored document can see.
+    state.quoteDoc = baseQuote({
+      kind: "invoice",
+      status: "sent",
+      paymentLinkUrl: "https://paypal.me/acme/999USD",
+      paymentLinkId: "stale_link_id",
+    });
+    state.subDoc = { name: "Acme Plumbing", paypalConfig: { username: "acme" } };
+
+    await call();
+
+    const fresh = {
+      paymentLinkUrl: "https://paypal.me/acme/100USD",
+      paymentLinkId: null,
+    };
+    expect(renderQuoteEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ quote: expect.objectContaining(fresh) }),
+    );
+    for (const consumer of [
+      recordQuoteActivity,
+      fireQuoteTrigger,
+      emitQuoteWebhook,
+    ]) {
+      expect(consumer).toHaveBeenCalledWith(
+        expect.objectContaining(fresh),
+        "quote_sent",
+        ...(consumer === recordQuoteActivity ? [{ extra: "re-sent" }] : []),
+      );
+    }
   });
 
   it("sends on a card-only connection and mints NO payment link", async () => {

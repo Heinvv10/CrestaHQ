@@ -67,17 +67,24 @@ export async function loadEffectiveTerritoryScope(
 
 /** The 403 body every territory refusal serves, as a plain object. */
 export interface TerritoryDenial {
-  status: number;
-  error: string;
+  readonly status: number;
+  readonly error: string;
 }
 
-const DENIAL: TerritoryDenial = {
-  status: 403,
-  error: "This record isn't in one of your assigned territories.",
-};
+const DENIAL_STATUS = 403;
+const DENIAL_MESSAGE = "This record isn't in one of your assigned territories.";
+
+/** A FRESH denial per call — a shared singleton would let one caller mutating
+ *  the object it was handed poison every later denial for the process. */
+function denial(): TerritoryDenial {
+  return { status: DENIAL_STATUS, error: DENIAL_MESSAGE };
+}
 
 function denied(): NextResponse {
-  return NextResponse.json({ error: DENIAL.error }, { status: DENIAL.status });
+  return NextResponse.json(
+    { error: DENIAL_MESSAGE },
+    { status: DENIAL_STATUS },
+  );
 }
 
 /**
@@ -113,12 +120,12 @@ export async function territoryDenialForContact(
 ): Promise<TerritoryDenial | null> {
   const scope = await loadEffectiveTerritoryScope(access);
   if (!scope.enforce) return null;
-  if (!contactId) return DENIAL;
+  if (!contactId) return denial();
   const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
   const territoryId =
     (snap.data()?.territoryId as string | null | undefined) ?? null;
   if (!territoryId || !(scope.ids ?? []).includes(territoryId)) {
-    return DENIAL;
+    return denial();
   }
   return null;
 }

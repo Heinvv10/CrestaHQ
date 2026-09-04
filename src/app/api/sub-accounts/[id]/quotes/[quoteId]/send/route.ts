@@ -18,8 +18,8 @@ export const dynamic = "force-dynamic";
  *
  * Auth here is two-layered: sub-account membership, plus a territory check so
  * a scoped collaborator can only send quotes whose contact is in one of their
- * assigned territories. The territory check runs inside the service's
- * `authorize` hook, at the point it needs the loaded quote's `contactId`.
+ * assigned territories. The territory check travels as the service's `user`
+ * actor, and runs at the point it needs the loaded quote's `contactId`.
  */
 export async function POST(
   request: Request,
@@ -34,7 +34,10 @@ export async function POST(
     subAccountId,
     quoteId,
     replyTo: access.email,
-    authorize: (quote) => territoryDenialForContact(access, quote.contactId),
+    actor: {
+      kind: "user",
+      authorize: (quote) => territoryDenialForContact(access, quote.contactId),
+    },
   });
 
   if (!result.ok) {

@@ -33,6 +33,9 @@ export const state = {
   contactDoc: null as Record<string, unknown> | null,
   subDoc: null as Record<string, unknown> | null,
   quoteUpdates: [] as Record<string, unknown>[],
+  /** Every path read through the fake, so "touched Firestore not at all" is
+   *  assertable rather than inferred from downstream silence. */
+  docReads: [] as string[],
   quoteUpdateThrows: null as Error | null,
   accessResult: null as unknown,
   territoryDenies: false,
@@ -50,12 +53,20 @@ export const renderQuoteEmail = vi.fn((_input: Record<string, unknown>) => ({
   text: "text-body",
   html: "<p>html-body</p>",
 }));
+/** Spied so the ARGUMENTS the route hands the territory check are assertable,
+ *  not merely that some check ran. Passing the wrong id would otherwise scope a
+ *  collaborator against a record that does not exist. */
+export const territoryDenialForContact = vi.fn(
+  async (_access: unknown, _contactId: string | null | undefined) =>
+    state.territoryDenies ? { status: 403, error: DENIAL_MESSAGE } : null,
+);
 export const recordQuoteActivity = vi.fn(async () => undefined);
 export const fireQuoteTrigger = vi.fn(async () => undefined);
 export const emitQuoteWebhook = vi.fn(async () => undefined);
 
 // ── Fake Firestore ────────────────────────────────────────────────────────
 function snapshotFor(path: string) {
+  state.docReads.push(path);
   const doc = path.startsWith("quotes/")
     ? state.quoteDoc
     : path.startsWith("contacts/")
@@ -106,12 +117,12 @@ export const tenancyMock = () => ({
  * caller sees the same 403 body.
  */
 export const territoryMock = () => ({
-  territoryGateForContact: async () =>
-    state.territoryDenies
+  territoryGateForContact: async (access: unknown, contactId?: string | null) =>
+    (await territoryDenialForContact(access, contactId))
       ? NextResponse.json({ error: DENIAL_MESSAGE }, { status: 403 })
       : null,
-  territoryDenialForContact: async () =>
-    state.territoryDenies ? { status: 403, error: DENIAL_MESSAGE } : null,
+  territoryDenialForContact: (access: unknown, contactId?: string | null) =>
+    territoryDenialForContact(access, contactId),
 });
 
 export const resendMock = () => ({
@@ -196,6 +207,7 @@ export function resetHarness(): void {
     logoUrl: "https://cdn.example.com/logo.png",
   };
   state.quoteUpdates = [];
+  state.docReads = [];
   state.quoteUpdateThrows = null;
   state.accessResult = CALLER;
   state.territoryDenies = false;
@@ -203,6 +215,10 @@ export function resetHarness(): void {
   state.tokenThrows = null;
   state.publicUrl = "https://app.example.com/q/tok_abc";
   sendEmail.mockResolvedValue(undefined);
+  // clearAllMocks() wipes the recorded implementation too, so restore it.
+  territoryDenialForContact.mockImplementation(async () =>
+    state.territoryDenies ? { status: 403, error: DENIAL_MESSAGE } : null,
+  );
   // Silence the deliberate console.error paths.
   vi.spyOn(console, "error").mockImplementation(() => {});
 }

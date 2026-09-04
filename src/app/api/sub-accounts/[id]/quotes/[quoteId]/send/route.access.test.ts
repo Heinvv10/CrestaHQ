@@ -40,18 +40,41 @@ vi.mock("@/lib/quotes/lifecycle", async () =>
 );
 
 import {
+  CONTACT_ID,
+  SUB_ID,
   DENIAL_MESSAGE,
   baseQuote,
   callJson,
   resetHarness,
   sendEmail,
   state,
+  territoryDenialForContact,
 } from "./send-test-harness";
 import { POST } from "./route";
 
 const call = () => callJson(POST);
 
 beforeEach(resetHarness);
+
+describe("membership", () => {
+  it("returns the auth refusal verbatim and never reaches Firestore", async () => {
+    // The route's only job before delegating is membership. If that check is
+    // ever removed, any signed-in user could send another workspace's quotes
+    // that happen to pass the service's own tenancy check.
+    const { NextResponse } = await import("next/server");
+    state.accessResult = NextResponse.json(
+      { error: "Unauthorized" },
+      { status: 401 },
+    );
+
+    const { status, body } = await call();
+    expect(status).toBe(401);
+    expect(body.error).toBe("Unauthorized");
+    expect(state.docReads).toEqual([]);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(state.quoteUpdates).toHaveLength(0);
+  });
+});
 
 describe("pre-flight guards", () => {
   it("503s when Resend isn't configured, before touching Firestore", async () => {
@@ -87,6 +110,18 @@ describe("pre-flight guards", () => {
     expect(body.error).toBe(DENIAL_MESSAGE);
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.quoteUpdates).toHaveLength(0);
+  });
+
+  it("scopes the territory check against the quote's CONTACT id", async () => {
+    // Handing the check the wrong id (the quote's own id, say) would look
+    // identical from the outside on the allow path while silently scoping a
+    // collaborator against a record that does not exist.
+    await call();
+    expect(territoryDenialForContact).toHaveBeenCalledTimes(1);
+    expect(territoryDenialForContact).toHaveBeenCalledWith(
+      expect.objectContaining({ uid: "uid1", subAccountId: SUB_ID }),
+      CONTACT_ID,
+    );
   });
 
   it("404s when the recipient contact is gone", async () => {
