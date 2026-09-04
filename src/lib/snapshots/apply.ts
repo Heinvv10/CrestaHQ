@@ -58,6 +58,44 @@ function sanitizeNodes(
 }
 
 /**
+ * Write the snapshot's persona to the target, but ONLY if the target still has
+ * none at commit time. Returns whether the write landed.
+ *
+ * The five re-blanked fields belong to the SOURCE client and must never reach
+ * another tenant: `businessName` is their trading name, `escalationNotifyEmail`
+ * is their team's inbox, and the website KB is a scrape of their homepage that
+ * the agent would otherwise state as fact about the wrong business. Capture
+ * already excludes all five, so blanking again here is belt-and-braces — it
+ * means a hand-built or legacy payload cannot smuggle them in either.
+ */
+async function writePersonaIfAbsent(
+  db: Firestore,
+  targetSubAccountId: string,
+  profile: NonNullable<SnapshotPayload["aiProfile"]>,
+  tenancyStamps: Record<string, unknown>,
+): Promise<boolean> {
+  const ref = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existingPrompt = snap.data()?.systemPrompt;
+    if (typeof existingPrompt === "string" && existingPrompt.trim()) {
+      return false;
+    }
+    tx.set(ref, {
+      ...DEFAULT_AI_AGENT_PROFILE,
+      ...profile,
+      businessName: "",
+      escalationNotifyEmail: null,
+      websiteUrl: null,
+      websiteKb: null,
+      websiteKbFetchedAt: null,
+      ...tenancyStamps,
+    });
+    return true;
+  });
+}
+
+/**
  * Apply a snapshot's config into a target sub-account. CREATE-ONLY: every doc
  * is written with a fresh id and never overwrites/updates/deletes anything
  * already in the target, so this is safe to run against a live sub-account.
@@ -76,7 +114,9 @@ function sanitizeNodes(
  *     `contact.customFields` slot.
  *   - The AI persona lives at the fixed path `aiAgent/profile`. It is written
  *     only when the target has none, so applying a snapshot can never silently
- *     replace a persona an operator already tuned.
+ *     replace a persona an operator already tuned. That check runs inside a
+ *     transaction (see {@link writePersonaIfAbsent}) rather than as a pre-read,
+ *     so it holds even if an operator saves a persona mid-apply.
  */
 export async function applySnapshot(
   db: Firestore,
@@ -96,11 +136,12 @@ export async function applySnapshot(
 
   const writes: PendingWrite[] = [];
 
-  // Pre-reads for the two create-only-by-content entities (see above).
-  const [existingFieldsSnap, existingProfileSnap] = await Promise.all([
-    db.collection(`subAccounts/${targetSubAccountId}/customFields`).get(),
-    db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`).get(),
-  ]);
+  // Pre-read for the custom-field dedupe (see above). The persona is NOT
+  // pre-read here — its read and write happen inside one transaction below, so
+  // the create-only guarantee holds under concurrency rather than by luck.
+  const existingFieldsSnap = await db
+    .collection(`subAccounts/${targetSubAccountId}/customFields`)
+    .get();
   const takenFieldKeys = new Set(
     existingFieldsSnap.docs.map((d) => `${d.data().entity}:${d.data().key}`),
   );
@@ -174,31 +215,17 @@ export async function applySnapshot(
     customFieldsCreated += 1;
   }
 
-  // 5) AI persona — only when the snapshot carries one and the target has none.
-  const existingPrompt = existingProfileSnap.data()?.systemPrompt;
-  const targetHasPersona =
-    typeof existingPrompt === "string" && existingPrompt.trim().length > 0;
-  const aiProfileApplied = Boolean(payload.aiProfile) && !targetHasPersona;
-  if (aiProfileApplied && payload.aiProfile) {
-    writes.push([
-      db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`),
-      {
-        ...DEFAULT_AI_AGENT_PROFILE,
-        ...payload.aiProfile,
-        // Re-blanked per SnapshotAiProfile: these belong to the source client
-        // and must be filled in for the target before the agent goes live.
-        businessName: "",
-        escalationNotifyEmail: null,
-        websiteUrl: null,
-        websiteKb: null,
-        websiteKbFetchedAt: null,
-        createdAt: stamp(),
-        updatedAt: stamp(),
-      },
-    ]);
-  }
-
   await commitInChunks(db, writes);
+
+  // 5) AI persona — transactional, because it is the one write that targets a
+  // FIXED path rather than a fresh id. Reading existence up front and writing
+  // in a later batch leaves a window in which an operator saves a persona for
+  // the target and this call silently overwrites it. Re-reading inside the
+  // transaction closes it: the write only lands if the target still has no
+  // persona at commit time.
+  const aiProfileApplied = payload.aiProfile
+    ? await writePersonaIfAbsent(db, targetSubAccountId, payload.aiProfile, tenancy())
+    : false;
 
   return {
     formsCreated: payload.forms.length,

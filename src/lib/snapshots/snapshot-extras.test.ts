@@ -46,6 +46,19 @@ function fakeDb(seed: {
       },
       commit: async () => {},
     }),
+    // The persona write runs in a transaction that RE-READS the profile, so the
+    // fake must serve the read from `seed.docs` the same way `db.doc().get()`
+    // does — otherwise the test would prove nothing about the re-read.
+    runTransaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+      fn({
+        get: async (ref: { path: string }) => {
+          const data = seed.docs?.[ref.path];
+          return { exists: data !== undefined, data: () => data };
+        },
+        set: (ref: { path: string }, data: Record<string, unknown>) => {
+          written.push({ path: ref.path, data });
+        },
+      }),
   } as unknown as Firestore;
 
   return { db, written };
