@@ -1,6 +1,7 @@
 package rails
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -107,7 +108,10 @@ func TestCapOrderingIsPinned(t *testing.T) {
 		s := store.NewMemory()
 		// Exceed the global cap using messages to other contacts.
 		for i := 0; i < 150; i++ {
-			jid := "27820000" + string(rune('0'+i%10)) + "0" + string(rune('0'+(i/10)%10)) + "@s.whatsapp.net"
+			// strconv.Itoa, not hand-rolled digits: the previous scheme mapped
+			// i and i+100 to the same JID, so the 150 "distinct" contacts were
+			// really 100 and the global-cap setup was quietly wrong.
+			jid := "2782000" + strconv.Itoa(i) + "@s.whatsapp.net"
 			s.RecordOutbound(jid, "hermes", "m", now.Add(-time.Duration(i)*time.Second))
 		}
 		// Exceed the per-contact cap for `known` too.
@@ -128,7 +132,7 @@ func TestCapOrderingIsPinned(t *testing.T) {
 		s := store.NewMemory()
 		// Exceed the global cap using messages to other contacts.
 		for i := 0; i < 150; i++ {
-			jid := "27821000" + string(rune('0'+i%10)) + "0" + string(rune('0'+(i/10)%10)) + "@s.whatsapp.net"
+			jid := "2782100" + strconv.Itoa(i) + "@s.whatsapp.net"
 			s.RecordOutbound(jid, "hermes", "m", now.Add(-time.Duration(i)*time.Second))
 		}
 		// `known` stays well under its per-contact cap (3 < 10) but its
