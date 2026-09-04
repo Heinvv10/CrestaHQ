@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 import { vi } from "vitest";
 
 /**
@@ -45,6 +45,18 @@ export const state = {
 };
 
 // ── Spies ─────────────────────────────────────────────────────────────────
+/**
+ * Vitest records call arguments BY REFERENCE. The send path mutates the quote
+ * (the freshly minted payment link) before handing it to these consumers, so a
+ * reference is accurate today — but if a later change mutated that object AFTER
+ * the consumers fire, every assertion on it would still pass while pinning
+ * nothing. Snapshotting at call time makes the assertion mean what it reads as.
+ */
+function atCallTime<T>(value: T): T {
+  return value !== null && typeof value === "object"
+    ? (structuredClone(value) as T)
+    : value;
+}
 export const sendEmail = vi.fn(
   async (_input: Record<string, unknown>) => undefined,
 );
@@ -110,17 +122,12 @@ export const tenancyMock = () => ({
 });
 
 /**
- * Both territory shapes are mocked so the suite reads identically before and
- * after the send logic was extracted into `sendQuoteServerSide()`: the route
- * used to return the `NextResponse` form directly, and now passes the plain
- * `{status, error}` form through the service's `authorize` hook. Either way the
- * caller sees the same 403 body.
+ * Only the denial form is mocked. The route consumes that; the service imports
+ * `TerritoryDenial` as a type, which is erased. `territoryGateForContact` is
+ * deliberately absent — mocking an export nothing under test imports would be
+ * dead weight that outlives the thing it was written for.
  */
 export const territoryMock = () => ({
-  territoryGateForContact: async (access: unknown, contactId?: string | null) =>
-    (await territoryDenialForContact(access, contactId))
-      ? NextResponse.json({ error: DENIAL_MESSAGE }, { status: 403 })
-      : null,
   territoryDenialForContact: (access: unknown, contactId?: string | null) =>
     territoryDenialForContact(access, contactId),
 });
@@ -143,13 +150,17 @@ export const tokenMock = () => ({
 });
 
 export const emailMock = () => ({
-  renderQuoteEmail: (input: Record<string, unknown>) => renderQuoteEmail(input),
+  renderQuoteEmail: (input: Record<string, unknown>) =>
+    renderQuoteEmail(atCallTime(input)),
 });
 
 export const lifecycleMock = () => ({
-  recordQuoteActivity: (...a: unknown[]) => recordQuoteActivity(...(a as [])),
-  fireQuoteTrigger: (...a: unknown[]) => fireQuoteTrigger(...(a as [])),
-  emitQuoteWebhook: (...a: unknown[]) => emitQuoteWebhook(...(a as [])),
+  recordQuoteActivity: (...a: unknown[]) =>
+    recordQuoteActivity(...(a.map(atCallTime) as [])),
+  fireQuoteTrigger: (...a: unknown[]) =>
+    fireQuoteTrigger(...(a.map(atCallTime) as [])),
+  emitQuoteWebhook: (...a: unknown[]) =>
+    emitQuoteWebhook(...(a.map(atCallTime) as [])),
 });
 
 // ── Fixtures + invocation ─────────────────────────────────────────────────

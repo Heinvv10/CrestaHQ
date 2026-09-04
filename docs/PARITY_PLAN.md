@@ -191,6 +191,24 @@ account, not construction:
 
 Everything else here is pinned by its request shape, not by a live round-trip.
 
+### 1.3 detail — IN PROGRESS 2026-09-04
+
+Grilled and locked in [RECURRING_INVOICING_PLAN.md](RECURRING_INVOICING_PLAN.md). The finding
+that shaped it: **all three recurrence arms converge on Paystack.** Stripe does not onboard SA
+entities and every client sub-account is one, so the client-facing card rail is unusable by every
+real client — and it is hard-coded to `mode: "payment"` with no subscription surface at all. The
+engine and the rail are therefore separate builds, and only the rail is blocked.
+
+Shipping first: the send path extracted out of its API route into `quote-send-service.ts`, so a
+cron can send exactly what the Send button sends. Pure refactor, no behaviour change, carrying
+**the first tests this repo has ever had over quotes, invoices or orders** — a path a Stripe
+webhook already marks paid automatically.
+
+**Carried requirement for the cron PR:** a system caller must name a `reason`, and that reason
+must be logged when it sends. The type already forces an author to write one, which helps at grep
+time; logging makes it useful at incident time, when someone is asking which sweep sent an
+unscoped money document. There is no system caller yet, so the field has no consumer until then.
+
 ### 1.4 detail — DONE
 
 3 test files → 12; 3 tests → 233. Deliberately targets **guards**, not happy paths: the agency AI
