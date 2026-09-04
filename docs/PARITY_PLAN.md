@@ -136,16 +136,20 @@ adapter lands first as a pure refactor with no behaviour change — that is inde
    deployment. Client Billing has never been used, so ZAR needs **no migration path** and no
    immutable-Price reconciliation on live subscribers. Decide ZAR and move.
 
-**Prerequisite:** a live Paystack account for Brightsphere Technologies. The interface and the
-Stripe adapter can be built without it; the Paystack adapter cannot be verified without it.
+~~**Prerequisite:** a live Paystack account for Brightsphere Technologies.~~ **MET 2026-09-04.**
 
 **STATUS 2026-09-04.** The account is live and verified, and `PaystackBillingProvider` is built
 (PR #11) — with both semantic gaps above resolved as decided: `immediate_prorated` is refused
 outright, and `createManagementLink` returns Paystack's per-subscription manage page. Two fields
 joined the interface for it: `CreatePriceInput.productName` (a Paystack Plan carries the name the
 payer sees; Stripe reads it off the product) and `OneTimeCheckoutInput.payerEmail` (Paystack
-cannot open a guest checkout at all). Provider selection is by which secret is present, defaulting
-to Stripe when both are.
+cannot open a guest checkout at all).
+
+**Selecting Paystack takes an explicit `BILLING_PROVIDER=paystack`.** An earlier draft of this
+inferred the rail from key presence; blind review called that a CRITICAL trap, because pasting a
+key — to try it, or while setting something else up — would have moved live billing onto a rail
+whose webhook did not exist yet, where a client's payment lands and their workspace stays walled.
+A key on its own now does nothing.
 
 **The webhook receiver landed in #12**, at `/api/webhooks/paystack`. Rather than a second
 lifecycle beside Stripe's, the three state changes were extracted provider-neutral
@@ -231,7 +235,13 @@ it is legal and a template the fallback for a closed window only — the ~$87/mo
 in 0.3 no longer depends on a workflow convention someone can undo.
 
 ⚠️ **UNPROVEN.** Nothing has touched a real WABA. Every check is a mock, and
-the deployment has no Meta credentials set. Until the acceptance criteria run
+no sub-account holds WhatsApp Cloud credentials. Note the distinction, because it
+has already caused confusion: `META_APP_ID` / `META_APP_SECRET` are set locally,
+but those belong to the Facebook Login app behind the inbox and Social Planner.
+The Cloud rail needs a phone number id, a WhatsApp Business Account id and a
+system-user token, stored per sub-account in Firestore by
+`cloud-credentials.ts` — not environment variables. Setting the Meta app vars
+does nothing for it. Until the acceptance criteria run
 live, treat 1.2 as built, not working.
 
 **Still open:** the `bridge` arm (1.2b), and the WABA cutover itself — which
