@@ -958,6 +958,26 @@ with the CI copy so loose the gate could not fail; they now run a second gate
 whose only job is guarding the first. The way to never need that is to never
 write the number twice.
 
+### Working in a shared checkout
+
+**Several Claude sessions may share `/home/hein/Workspace/CrestaHQ` at once.**
+Assume another session's uncommitted work is sitting in the tree beside yours.
+
+- **Never `git add -A` or `git add .`** — stage explicit paths. On 2026-09-04
+  an `add -A` swept a concurrent session's 490-line snapshot change into a PR
+  about WhatsApp templates. CI was green and the blind review was genuine, but
+  the review had been aimed at templates and never examined the snapshot work
+  — merging would have taken unreviewed code to `main` under a review that did
+  not cover it. Caught only by reading `git log` before the merge.
+- **Check `git log --oneline origin/main..HEAD` before opening a PR.** Every
+  commit on the branch should be one you wrote. A commit you do not recognise
+  belongs to another session.
+- **Use a worktree when you need to switch branches**
+  (`git worktree add ../CrestaHQ-wt-<name> -b <branch> origin/main`). Switching
+  branches in the shared checkout moves it under whoever else is working there.
+- **Never rewrite or force-push a branch carrying someone else's commits.**
+  Cherry-pick your own onto a clean branch and leave theirs alone.
+
 ### Review — never review your own code
 
 Always dispatch a blind `/review`: a fresh agent that gets the diff and the

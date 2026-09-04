@@ -223,7 +223,12 @@ export async function POST(
         // Stamped per rail as well as flat. The flat field is a single global
         // value, so a later approval on the other rail overwrites it — the
         // per-rail copy is the one that stays true.
-        ...(result.status === "approved" ? { approvedAt: new Date() } : {}),
+        // serverTimestamp(), matching the flat field written below — two
+        // mechanisms for what is meant to be the same instant would drift by
+        // however long the request took.
+        ...(result.status === "approved"
+          ? { approvedAt: FieldValue.serverTimestamp() }
+          : {}),
       }),
       pollAttempts: attempts,
       lastSyncedAt: FieldValue.serverTimestamp(),
