@@ -853,17 +853,22 @@ export async function createSubAccountCheckoutSession(input: {
 // ---------------------------------------------------------------------------
 
 /** checkout.session.completed with metadata.kind === "subAccountPlan". */
-export async function handleSubAccountPlanCheckoutCompleted(
-  session: Stripe.Checkout.Session,
-): Promise<void> {
-  const subAccountId = session.metadata?.subAccountId;
-  const planId = session.metadata?.planId;
-  if (!subAccountId || !planId) {
-    console.error(
-      "[billing] subAccountPlan checkout completed without subAccountId/planId metadata",
-    );
-    return;
-  }
+/**
+ * A client's plan payment landed. Provider-neutral: Stripe and Paystack both
+ * arrive here, so activation, the gate bundle, the audit row and the outbound
+ * webhook cannot drift between the two rails.
+ *
+ * `subscriptionId` is null when the provider has not told us the subscription
+ * yet — Paystack sends the payment and the subscription as separate events, in
+ * no guaranteed order, so it is filled in by whichever arrives second.
+ */
+export async function activateSubAccountPlan(input: {
+  subAccountId: string;
+  planId: string;
+  customerId: string | null;
+  subscriptionId: string | null;
+}): Promise<void> {
+  const { subAccountId, planId } = input;
 
   const db = getAdminDb();
   const ref = db.doc(`subAccounts/${subAccountId}`);
@@ -879,11 +884,9 @@ export async function handleSubAccountPlanCheckoutCompleted(
   await ref.update({
     "billing.status": "active" satisfies SubAccountBillingStatus,
     "billing.stripeCustomerId":
-      (session.customer as string | null) ?? billing?.stripeCustomerId ?? null,
+      input.customerId ?? billing?.stripeCustomerId ?? null,
     "billing.stripeSubscriptionId":
-      (session.subscription as string | null) ??
-      billing?.stripeSubscriptionId ??
-      null,
+      input.subscriptionId ?? billing?.stripeSubscriptionId ?? null,
     "billing.checkoutTokenHash": null,
     "billing.graceUntil": null,
     "billing.activatedAt": FieldValue.serverTimestamp(),
@@ -922,7 +925,7 @@ export async function handleSubAccountPlanCheckoutCompleted(
       planId,
       planName: billing?.planName ?? null,
       priceCents: billing?.priceCents ?? null,
-      stripeSubscriptionId: (session.subscription as string | null) ?? null,
+      stripeSubscriptionId: input.subscriptionId,
     },
   });
   void emitWebhookEvent({
@@ -940,33 +943,78 @@ export async function handleSubAccountPlanCheckoutCompleted(
   });
 }
 
-/**
- * customer.subscription.updated / .deleted with metadata.kind ===
- * "subAccountPlan". Maps Stripe's status to ours and stamps/clears the
- * dunning grace window.
- */
-export async function handleSubAccountSubscriptionEvent(
-  subscription: Stripe.Subscription,
-  opts: { deleted: boolean },
+/** Stripe's `checkout.session.completed` for a sub-account plan. */
+export async function handleSubAccountPlanCheckoutCompleted(
+  session: Stripe.Checkout.Session,
 ): Promise<void> {
-  const db = getAdminDb();
+  const subAccountId = session.metadata?.subAccountId;
+  const planId = session.metadata?.planId;
+  if (!subAccountId || !planId) {
+    console.error(
+      "[billing] subAccountPlan checkout completed without subAccountId/planId metadata",
+    );
+    return;
+  }
+  await activateSubAccountPlan({
+    subAccountId,
+    planId,
+    customerId: (session.customer as string | null) ?? null,
+    subscriptionId: (session.subscription as string | null) ?? null,
+  });
+}
 
-  // Fast path: metadata carries the sub-account id. Fallback: look the
-  // subscription id up (covers subscriptions whose metadata was stripped
-  // in the Stripe dashboard).
-  let subAccountId: string | null =
-    subscription.metadata?.subAccountId ?? null;
-  if (!subAccountId) {
-    const match = await db
-      .collection("subAccounts")
-      .where("billing.stripeSubscriptionId", "==", subscription.id)
-      .limit(1)
-      .get();
-    subAccountId = match.empty ? null : match.docs[0].id;
+/**
+ * A subscription's status changed at the provider. Provider-neutral: the
+ * caller maps its own status vocabulary onto ours, and everything that follows
+ * — the superseded-subscription guard, the pending guard, the once-per-episode
+ * grace stamp, the audit row and the outbound event — is shared.
+ */
+export async function applySubAccountSubscriptionStatus(input: {
+  /**
+   * The provider's subscription id, or null when the event does not name one
+   * — a Paystack renewal names only the customer. Null means "leave the stored
+   * id alone": writing anything else there would repoint the workspace at a
+   * subscription that is not its own.
+   */
+  subscriptionId: string | null;
+  /**
+   * The provider's own status, already mapped onto ours. `null` means the
+   * provider said something we do not map — leave the client's status alone
+   * rather than guessing, which is what an unmapped status must never change.
+   */
+  status: SubAccountBillingStatus | null;
+  /** The subscription is gone; clear the stored id. */
+  deleted: boolean;
+  /** Known from the event's metadata, when the provider carries any. */
+  subAccountIdHint?: string | null;
+  /** Fallback identity when the provider names only the customer. */
+  customerIdHint?: string | null;
+  /** For the audit row: what the provider actually called this status. */
+  providerStatus?: string;
+}): Promise<void> {
+  const db = getAdminDb();
+  const subscriptionId = input.subscriptionId;
+
+  // Fast path: the event named the sub-account. Otherwise look it up by the
+  // subscription, then by the customer — Paystack's renewal events name only
+  // the customer, and Stripe subscriptions can have their metadata stripped in
+  // the dashboard.
+  let subAccountId: string | null = input.subAccountIdHint ?? null;
+  if (!subAccountId && subscriptionId) {
+    subAccountId = await findSubAccountByBillingField(
+      "billing.stripeSubscriptionId",
+      subscriptionId,
+    );
+  }
+  if (!subAccountId && input.customerIdHint) {
+    subAccountId = await findSubAccountByBillingField(
+      "billing.stripeCustomerId",
+      input.customerIdHint,
+    );
   }
   if (!subAccountId) {
     console.error(
-      `[billing] no sub-account found for subscription ${subscription.id}`,
+      `[billing] no sub-account found for subscription ${subscriptionId ?? "(unnamed)"}`,
     );
     return;
   }
@@ -980,9 +1028,13 @@ export async function handleSubAccountSubscriptionEvent(
   if (!billing || billing.status === "comped") return;
   // Ignore events from a superseded subscription (e.g. the old sub's
   // cancellation arriving after a re-checkout already created a new one).
+  // Only checkable when the event named a subscription. An unnamed event was
+  // matched by customer, and the workspace has exactly one billing record, so
+  // there is no second subscription for it to be confused with.
   if (
+    subscriptionId &&
     billing.stripeSubscriptionId &&
-    billing.stripeSubscriptionId !== subscription.id
+    billing.stripeSubscriptionId !== subscriptionId
   ) {
     return;
   }
@@ -991,42 +1043,23 @@ export async function handleSubAccountSubscriptionEvent(
   // "active" is meaningful — half-finished checkout sessions emit
   // incomplete/incomplete_expired subscription noise that must not flip a
   // never-paid workspace into dunning or cancellation.
-  if (
-    billing.status === "pending" &&
-    subscription.status !== "active" &&
-    subscription.status !== "trialing"
-  ) {
+  if (billing.status === "pending" && input.status !== "active") {
     return;
   }
 
-  let nextStatus: SubAccountBillingStatus;
-  if (opts.deleted) {
-    nextStatus = "canceled";
-  } else {
-    switch (subscription.status) {
-      case "active":
-      case "trialing":
-        nextStatus = "active";
-        break;
-      case "past_due":
-      case "unpaid":
-      case "incomplete":
-        nextStatus = "past_due";
-        break;
-      case "canceled":
-      case "incomplete_expired":
-        nextStatus = "canceled";
-        break;
-      default:
-        nextStatus = billing.status;
-    }
-  }
+  const nextStatus: SubAccountBillingStatus = input.deleted
+    ? "canceled"
+    : (input.status ?? billing.status);
 
   const updates: Record<string, unknown> = {
-    "billing.stripeSubscriptionId": opts.deleted ? null : subscription.id,
     "billing.updatedAt": FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
+  if (input.deleted) {
+    updates["billing.stripeSubscriptionId"] = null;
+  } else if (subscriptionId) {
+    updates["billing.stripeSubscriptionId"] = subscriptionId;
+  }
 
   if (nextStatus !== billing.status) {
     updates["billing.status"] = nextStatus;
@@ -1055,8 +1088,8 @@ export async function handleSubAccountSubscriptionEvent(
       detail: {
         previousStatus: billing.status,
         status: nextStatus,
-        stripeStatus: subscription.status,
-        deleted: opts.deleted,
+        stripeStatus: input.providerStatus ?? nextStatus,
+        deleted: input.deleted,
       },
     });
     const eventType =
@@ -1085,9 +1118,77 @@ export async function handleSubAccountSubscriptionEvent(
   }
 }
 
+/** Single-field equality query — no composite index, no collection group. */
+async function findSubAccountByBillingField(
+  field: string,
+  value: string,
+): Promise<string | null> {
+  const match = await getAdminDb()
+    .collection("subAccounts")
+    .where(field, "==", value)
+    .limit(1)
+    .get();
+  return match.empty ? null : match.docs[0].id;
+}
+
+/**
+ * Stripe's `customer.subscription.updated` / `.deleted`. Maps Stripe's status
+ * vocabulary onto ours, then hands off to the shared handler.
+ */
+export async function handleSubAccountSubscriptionEvent(
+  subscription: Stripe.Subscription,
+  opts: { deleted: boolean },
+): Promise<void> {
+  let status: SubAccountBillingStatus | null;
+  switch (subscription.status) {
+    case "active":
+    case "trialing":
+      status = "active";
+      break;
+    case "past_due":
+    case "unpaid":
+    case "incomplete":
+      status = "past_due";
+      break;
+    case "canceled":
+    case "incomplete_expired":
+      status = "canceled";
+      break;
+    default:
+      // Anything Stripe adds later must not silently move a client's status.
+      status = null;
+  }
+  await applySubAccountSubscriptionStatus({
+    subscriptionId: subscription.id,
+    status,
+    deleted: opts.deleted,
+    subAccountIdHint: subscription.metadata?.subAccountId ?? null,
+    providerStatus: subscription.status,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // One-time charges (agency → sub-account client, e.g. "Web design — $500")
 // ---------------------------------------------------------------------------
+
+/** Stripe's `checkout.session.completed` for a one-time charge. */
+export async function handleSubAccountChargeCheckoutCompleted(
+  session: Stripe.Checkout.Session,
+): Promise<void> {
+  const chargeId = session.metadata?.chargeId;
+  if (!chargeId) {
+    console.error(
+      "[billing] subAccountCharge checkout completed without chargeId metadata",
+    );
+    return;
+  }
+  await markSubAccountChargePaid({
+    chargeId,
+    checkoutSessionId: session.id,
+    paymentId:
+      typeof session.payment_intent === "string" ? session.payment_intent : null,
+  });
+}
 
 function chargesCollection() {
   return getAdminDb().collection("billingCharges");
@@ -1346,16 +1447,18 @@ export async function createChargeCheckoutSession(input: {
 }
 
 /** checkout.session.completed with metadata.kind === "subAccountCharge". */
-export async function handleSubAccountChargeCheckoutCompleted(
-  session: Stripe.Checkout.Session,
-): Promise<void> {
-  const chargeId = session.metadata?.chargeId;
-  if (!chargeId) {
-    console.error(
-      "[billing] subAccountCharge checkout completed without chargeId metadata",
-    );
-    return;
-  }
+/**
+ * A one-time charge was paid. Provider-neutral; idempotent on the charge's own
+ * status, so a provider retrying the same event marks nothing twice.
+ */
+export async function markSubAccountChargePaid(input: {
+  chargeId: string;
+  /** The provider's checkout/transaction reference. */
+  checkoutSessionId: string | null;
+  /** The provider's payment id, when it has one distinct from the session. */
+  paymentId: string | null;
+}): Promise<void> {
+  const { chargeId } = input;
   const ref = chargesCollection().doc(chargeId);
   const snap = await ref.get();
   if (!snap.exists) {
@@ -1368,9 +1471,8 @@ export async function handleSubAccountChargeCheckoutCompleted(
   await ref.update({
     status: "paid" satisfies BillingChargeStatus,
     tokenHash: null,
-    stripeCheckoutSessionId: session.id,
-    stripePaymentIntentId:
-      typeof session.payment_intent === "string" ? session.payment_intent : null,
+    stripeCheckoutSessionId: input.checkoutSessionId,
+    stripePaymentIntentId: input.paymentId,
     paidAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });

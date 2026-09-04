@@ -1085,9 +1085,22 @@ page. A Paystack Plan *is* the price, so a plan rename reaches Paystack only whe
 minted, and retiring a price is a no-op (a plan code can only reach checkout by being stored on
 the plan doc, which the caller has just overwritten).
 
-**NOT yet built: the Paystack webhook receiver.** `lib/stripe/webhooks.ts` is what flips a
-sub-account to `active` on payment. Until the Paystack equivalent exists, a payment would arrive
-and the workspace would stay walled — so **do not bill on Paystack in production yet**.
+**The webhook receiver is `/api/webhooks/paystack`** (public path — Paystack signs every event
+with HMAC-SHA512 of the raw body keyed on the **account secret key**, so there is no separate
+webhook secret). Register the URL at dashboard.paystack.com → Settings → API Keys & Webhooks.
+
+Both rails share ONE lifecycle: `activateSubAccountPlan`, `applySubAccountSubscriptionStatus` and
+`markSubAccountChargePaid` in `billing-service.ts` are provider-neutral, and the Stripe handlers
+are thin adapters onto them. Activation, the gate bundle, the dunning grace window, the audit row
+and the outbound webhook therefore cannot drift between Stripe and Paystack.
+
+**Two Paystack shapes drive the router:** a payment and its subscription arrive as *separate*
+events in no guaranteed order (`charge.success` carries our metadata but no subscription code;
+`subscription.create` carries the code but none of our metadata), joined on the customer code
+stored before checkout opened — and **renewals carry no metadata at all**, so they are recognised
+by the absence of a `kind` and resolved by customer. A renewal names a PLAN code, never a
+subscription code; the router deliberately leaves the subscription id unknown rather than storing
+one as the other.
 
 ### Required for email (disables cleanly if missing)
 | Var | Source |

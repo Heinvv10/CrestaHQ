@@ -50,6 +50,10 @@ const PUBLIC_PATHS = [
   "/api/landing/heartbeat",
   "/api/webhooks/twilio",
   "/api/webhooks/stripe",
+  // Client Billing on Paystack. Public like the Stripe endpoint — Paystack
+  // signs every event with the account secret key, and that signature is the
+  // authentication.
+  "/api/webhooks/paystack",
   // Meta (Facebook Messenger + Instagram DM) webhook — BETA. Public from the
   // Meta cloud: GET is the verify-token handshake, POST carries message events.
   // Security: X-Hub-Signature-256 (HMAC of the raw body with the app secret)
