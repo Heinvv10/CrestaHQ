@@ -105,6 +105,12 @@ func (c *stubConnection) Connected() bool {
 	return c.up
 }
 
+// PairingCode satisfies ConnectionState. The existing send/health/admin tests
+// describe an already-paired bridge, so this stub never has a live code.
+func (c *stubConnection) PairingCode() (string, time.Time, bool) {
+	return "", time.Time{}, false
+}
+
 func (c *stubConnection) set(up bool) {
 	c.mu.Lock()
 	c.up = up

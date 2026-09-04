@@ -32,6 +32,10 @@ type Sender interface {
 // variable would be a data race between main and the whatsmeow goroutine.
 type ConnectionState interface {
 	Connected() bool
+	// PairingCode returns the live QR payload while a pairing is in flight.
+	// It is a credential: the handler serves it only to an authenticated
+	// caller and never logs it.
+	PairingCode() (code string, expiresAt time.Time, pairing bool)
 }
 
 type Deps struct {
@@ -140,6 +144,7 @@ func New(deps Deps) http.Handler {
 	// attacker holding a consumer token would want.
 	mux.HandleFunc("GET /v1/allowlist", s.authed(s.handleListAllowlist))
 	mux.HandleFunc("POST /v1/kill", s.authed(s.handleKill))
+	mux.HandleFunc("GET /v1/pair", s.authed(s.handlePair))
 	return mux
 }
 
