@@ -12,6 +12,16 @@ import {
   fetchApprovalStatus,
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
+import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import {
+  buildRegistrationUpdate,
+  templateRegistration,
+} from "@/lib/comms/whatsapp/template-registrations";
+import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
+import {
+  fetchCloudTemplateStatus,
+  CloudTemplateError,
+} from "@/lib/comms/whatsapp/cloud-templates";
 import type { SubAccountDoc } from "@/types";
 import type {
   WhatsappTemplateDoc,
@@ -90,9 +100,17 @@ export async function POST(
   }
   const tpl = snap.data() as WhatsappTemplateDoc;
 
-  // Bail if we're no longer chasing this approval (re-submitted with a new
-  // contentSid, or already settled).
-  if (tpl.status !== "pending" || tpl.contentSid !== payload.contentSid) {
+  const subSnap0 = await db.doc(`subAccounts/${subAccountId}`).get();
+  const sub = subSnap0.exists ? (subSnap0.data() as SubAccountDoc) : null;
+  const { provider } = resolveProviderForSubAccount(sub);
+
+  // Bail if we're no longer chasing this approval — re-submitted with a new
+  // external id, switched rails since the tick was scheduled, or already
+  // settled. Compared against the ACTIVE rail's registration, not the flat
+  // contentSid, which on a cloud workspace is a UI mirror rather than the id
+  // this poll is tracking.
+  const activeReg = templateRegistration(tpl, provider);
+  if (tpl.status !== "pending" || activeReg?.externalId !== payload.contentSid) {
     return NextResponse.json({ ok: true, ignored: "stale-tick" });
   }
 
@@ -108,32 +126,55 @@ export async function POST(
     return NextResponse.json({ ok: true, settled: "timeout" });
   }
 
-  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  const cfg = (subSnap.data() as SubAccountDoc | undefined)?.twilioConfig ?? null;
-  if (!cfg?.accountSid || !cfg.authToken) {
-    // Creds disappeared — stop chasing.
-    await ref.update({
-      status: "failed",
-      rejectionReason: "Twilio credentials are no longer configured.",
-      pollAttempts: attempts,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    return NextResponse.json({ ok: true, settled: "no-creds" });
-  }
-
-  let result;
+  let result: { status: WhatsappTemplateStatus; rejectionReason: string | null };
   try {
-    result = await fetchApprovalStatus({
-      accountSid: cfg.accountSid,
-      authToken: cfg.authToken,
-      contentSid: payload.contentSid,
-    });
+    if (provider === "cloud") {
+      const creds = await getWabaCreds(subAccountId);
+      const cloud = await fetchCloudTemplateStatus(creds, tpl.name);
+      if (!cloud) {
+        // Meta does not list the name yet. A just-submitted template can be
+        // briefly absent, so keep waiting rather than declaring it failed.
+        await ref.update({
+          pollAttempts: attempts,
+          lastSyncedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        await reschedule(subAccountId, payload.templateId, payload.contentSid, attempts);
+        return NextResponse.json({ ok: true, deferred: "not-listed" });
+      }
+      result = { status: cloud.status, rejectionReason: cloud.reason };
+    } else {
+      const cfg = sub?.twilioConfig ?? null;
+      if (!cfg?.accountSid || !cfg.authToken) {
+        // Creds disappeared — stop chasing.
+        await ref.update({
+          status: "failed",
+          rejectionReason: "Twilio credentials are no longer configured.",
+          pollAttempts: attempts,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return NextResponse.json({ ok: true, settled: "no-creds" });
+      }
+      const twilio = await fetchApprovalStatus({
+        accountSid: cfg.accountSid,
+        authToken: cfg.authToken,
+        contentSid: payload.contentSid,
+      });
+      result = {
+        status: twilio.status as WhatsappTemplateStatus,
+        rejectionReason: twilio.rejectionReason,
+      };
+    }
   } catch (err) {
     // 4xx = terminal (content gone / bad request); 5xx + network = retry.
-    if (err instanceof WhatsappContentError && err.status >= 400 && err.status < 500) {
+    const clientError =
+      (err instanceof WhatsappContentError || err instanceof CloudTemplateError) &&
+      err.status >= 400 &&
+      err.status < 500;
+    if (clientError) {
       await ref.update({
         status: "failed",
-        rejectionReason: `Approval lookup failed: ${err.message}`,
+        rejectionReason: `Approval lookup failed: ${err instanceof Error ? err.message : "unknown"}`,
         pollAttempts: attempts,
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -148,24 +189,31 @@ export async function POST(
     return NextResponse.json({ ok: true, deferred: "transient" });
   }
 
-  // Terminal states.
-  const terminal: Partial<Record<typeof result.status, WhatsappTemplateStatus>> = {
-    approved: "approved",
-    rejected: "rejected",
-    paused: "paused",
-    disabled: "disabled",
-  };
-  const mapped = terminal[result.status];
-  if (mapped) {
+  // Terminal states. Recorded against the rail that was polled, so an approval
+  // on one rail never reads as approval on the other.
+  const TERMINAL: ReadonlyArray<WhatsappTemplateStatus> = [
+    "approved",
+    "rejected",
+    "paused",
+    "disabled",
+  ];
+  if (TERMINAL.includes(result.status)) {
     await ref.update({
-      status: mapped,
-      rejectionReason: mapped === "rejected" ? result.rejectionReason : null,
+      ...buildRegistrationUpdate(tpl, provider, {
+        externalId: payload.contentSid,
+        status: result.status,
+        rejectionReason:
+          result.status === "rejected" ? result.rejectionReason : null,
+        pollAttempts: attempts,
+      }),
       pollAttempts: attempts,
       lastSyncedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-      ...(mapped === "approved" ? { approvedAt: FieldValue.serverTimestamp() } : {}),
+      ...(result.status === "approved"
+        ? { approvedAt: FieldValue.serverTimestamp() }
+        : {}),
     });
-    return NextResponse.json({ ok: true, settled: mapped });
+    return NextResponse.json({ ok: true, settled: result.status });
   }
 
   // Still pending (or unknown — treat as pending). Bump + reschedule.

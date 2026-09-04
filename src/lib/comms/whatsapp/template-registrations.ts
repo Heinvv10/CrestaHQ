@@ -81,3 +81,51 @@ export function isTemplateApprovedFor(
   const reg = templateRegistration(tpl, provider);
   return reg?.status === "approved" && !!reg.externalId?.trim();
 }
+
+
+/**
+ * Firestore field map for recording a submission/approval result on ONE rail.
+ *
+ * The awkward part is the flat fields. `contentSid`/`status`/`rejectionReason`
+ * are simultaneously (a) the Twilio registration for every template predating
+ * the provider seam and (b) what the shipped templates-manager UI renders. The
+ * moment a cloud submission mirrors its status into `status` so the UI shows
+ * something sensible, reading the flat fields as Twilio's registration would
+ * report the CLOUD rail's approval as Twilio's.
+ *
+ * So a cloud write first FREEZES the legacy values into `registrations.twilio`
+ * — where the reader prefers them over the flat fallback — and only then
+ * mirrors. After that migration the flat fields are presentation only. It
+ * happens once per template, lazily, on the first cloud submission, and never
+ * overwrites an explicit registration that already exists.
+ */
+export function buildRegistrationUpdate(
+  tpl: RegistrationBearingTemplate | null | undefined,
+  provider: WhatsAppProviderId,
+  reg: WhatsappTemplateRegistration,
+): Record<string, unknown> {
+  const update: Record<string, unknown> = {
+    [`registrations.${provider}`]: reg,
+    // Mirror for the existing UI, which renders the flat status.
+    status: reg.status,
+    rejectionReason: reg.rejectionReason,
+  };
+
+  if (provider === "twilio") {
+    // Twilio's own routes still read contentSid — keep them authoritative.
+    update.contentSid = reg.externalId;
+    return update;
+  }
+
+  const legacySid = tpl?.contentSid?.trim();
+  if (legacySid && !tpl?.registrations?.twilio) {
+    update["registrations.twilio"] = {
+      externalId: legacySid,
+      status: tpl?.status ?? "draft",
+      rejectionReason: tpl?.rejectionReason ?? null,
+      approvedAt: tpl?.approvedAt ?? null,
+    } satisfies WhatsappTemplateRegistration;
+  }
+
+  return update;
+}
