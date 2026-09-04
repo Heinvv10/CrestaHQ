@@ -31,9 +31,12 @@ import (
 //
 // Verified by breaking it: reverting to budget-after-send fails on round 0 of
 // every case, reporting the reviewer's 40-of-40, at GOMAXPROCS=1 and 4.
-// Removing only the lock leaves a window too narrow for this test to catch
-// reliably — TestEvaluateAndReserveIsOneCriticalSection in the rails package
-// is the deterministic guard for that half.
+// Removing rails.Engine's send lock entirely also fails this test reliably
+// (measured 12 of 12 runs across both GOMAXPROCS settings) — this test is not
+// blind to that mutation. TestEvaluateAndReserveIsOneCriticalSection in the
+// rails package is a cheap, deterministic backstop that checks the lock's
+// shape in milliseconds rather than seconds; it is not known to catch
+// anything this test misses.
 func TestVolumeCapsBindAcrossConcurrentRequests(t *testing.T) {
 	// Real parallelism where the machine has it; the assertions do not depend
 	// on it. The setter returns the previous value.

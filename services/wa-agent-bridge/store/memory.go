@@ -81,6 +81,8 @@ func (m *Memory) RecordInbound(jid string, at time.Time) error {
 	return nil
 }
 
+// RecordOutbound is test-only seeding; see the Store interface doc in
+// rails/types.go. It must not be called on a send path.
 func (m *Memory) RecordOutbound(jid, consumer, messageID string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

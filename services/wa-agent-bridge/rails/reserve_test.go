@@ -162,21 +162,27 @@ func (errReserve) ReserveIdempotency(_, jid string, _ time.Time) (string, string
 	return "", jid, false, errBoom
 }
 
-// TestEvaluateAndReserveIsOneCriticalSection is the DETERMINISTIC half of the
-// cap-concurrency guard, and it exists because the behavioural half is not
-// enough on its own.
+// TestEvaluateAndReserveIsOneCriticalSection is a cheap, deterministic
+// backstop alongside TestVolumeCapsBindAcrossConcurrentRequests (api
+// package), NOT a substitute for it.
 //
-// TestVolumeCapsBindAcrossConcurrentRequests (api package) reproduces the
-// reviewer's probe exactly and fails 40-of-40 against the architecture that
-// consumed cap budget after the send. But once budget is consumed at
-// reservation, the remaining window — between checkCaps reading and
-// ReserveOutboundSlot writing — is a few hundred nanoseconds with no yield in
-// it, so simply deleting the lock is caught only sometimes. Measured: with the
-// lock removed the behavioural test still passed 3 runs out of 3.
+// Measured directly, contradicting an earlier version of this comment: the
+// behavioural test is the strong guard. Deleting e.send.Lock()/Unlock()
+// entirely failed it 12 of 12 runs (6 at GOMAXPROCS=1, 6 at GOMAXPROCS=4).
+// Reordering EvaluateAndReserve so e.Evaluate(req) runs BEFORE the lock is
+// acquired — keeping one Lock() immediately followed by defer Unlock() around
+// the two reservations, so this source-inspection test still PASSES — also
+// failed the behavioural test 12 of 12; reading the counts outside the lock
+// lets every concurrent caller pass Evaluate before any of them reserves,
+// which is a wider window than deleting the lock leaves, not a narrower one.
 //
-// A window that narrow is still a window, and the lock is what closes it. This
-// test fails immediately and every time if it is removed or split, at any
-// GOMAXPROCS. Same shape, and same reasoning, as
+// So this test's actual job is narrower than "catch the concurrency bug": it
+// is a fast, GOMAXPROCS-independent check of the lock's shape that fails in
+// milliseconds instead of seconds, useful for quick local iteration. It is
+// not known to catch anything the behavioural test misses — every mutation
+// tried here was caught by both. Keep both regardless: the behavioural test
+// is the one whose failure means something is actually wrong; this one is the
+// one that tells you where, fast. Same shape, and same reasoning, as
 // TestMemoryReservationIsOneCriticalSection in the store package.
 func TestEvaluateAndReserveIsOneCriticalSection(t *testing.T) {
 	src, err := os.ReadFile("engine.go")

@@ -148,6 +148,8 @@ func (s *SQLite) RecordInbound(jid string, at time.Time) error {
 	return s.record(jid, false, "", "", at)
 }
 
+// RecordOutbound is test-only seeding; see the Store interface doc in
+// rails/types.go. It must not be called on a send path.
 func (s *SQLite) RecordOutbound(jid, consumer, messageID string, at time.Time) error {
 	return s.record(jid, true, consumer, messageID, at)
 }

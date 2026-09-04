@@ -130,6 +130,12 @@ type Store interface {
 	OutboundCountTotal(since time.Time) (int, error)
 	OutboundCountForConsumer(consumer string, since time.Time) (int, error)
 
+	// RecordOutbound writes an outbound row directly, with no idempotency
+	// reservation and no cap check. It has no production caller: sends go
+	// through Engine.EvaluateAndReserve, which spends cap budget via
+	// ReserveOutboundSlot below at reservation time. RecordOutbound exists
+	// for tests that need to seed prior-send history directly. Calling it on
+	// a send path would write a row that no volume cap ever counted against.
 	RecordOutbound(jid, consumer, messageID string, at time.Time) error
 	RecordInbound(jid string, at time.Time) error
 
