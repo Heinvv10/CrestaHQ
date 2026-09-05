@@ -54,7 +54,26 @@ export function isGroupJid(jid: string): boolean {
  * is a message to a stranger.
  */
 export function isLidJid(jid: string): boolean {
-  return jid.trim().toLowerCase().endsWith("@lid");
+  const j = jid.trim().toLowerCase();
+  // "@hosted.lid" too: whatsmeow rewrites that server before we see it, but
+  // this seam is explicitly written not to trust the bridge.
+  return j.endsWith("@lid") || j.endsWith("@hosted.lid");
+}
+
+/**
+ * A 1:1 phone address — the ONLY shape this rail can file under a contact.
+ *
+ * Written as an allow-list on purpose. A deny-list of the shapes we happened to
+ * think of lets every other one through to `jidToE164`, which will cheerfully
+ * turn `120363042…@newsletter` or `867051314767696@bot` into a `+`-prefixed
+ * contact that was never a phone number. Those are exactly the same defect as
+ * the LID one, wearing a different server.
+ *
+ * A device suffix (`27821234567:12@s.whatsapp.net`) is a legitimate 1:1 sender
+ * and is admitted; `jidToE164` strips it.
+ */
+export function isPhoneJid(jid: string): boolean {
+  return jid.trim().toLowerCase().endsWith("@s.whatsapp.net");
 }
 
 /**
