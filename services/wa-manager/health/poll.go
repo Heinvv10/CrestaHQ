@@ -8,6 +8,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -166,7 +167,14 @@ func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
 //
 // Transitions are recorded only on CHANGE. Polling runs continuously; an event
 // per poll would bury the one line that matters under thousands of duplicates.
+//
+// One tenant's failure never ends the sweep. Returning on the first error meant
+// a single tenant destroyed mid-sweep — its row gone, so every write against it
+// fails — stopped reconciliation for every tenant AFTER it in the list, for as
+// long as it took someone to notice. Errors are collected and returned joined,
+// so the failure is still loud and the remaining tenants are still reconciled.
 func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Report) error {
+	var errs []error
 	for _, t := range tenants {
 		r, ok := reports[t.ID]
 		if !ok || !r.Reachable {
@@ -180,19 +188,23 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 		switch {
 		case r.Connected:
 			if err := st.SetTenantState(t.ID, store.StateRunning, ""); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
 			}
 		case r.Killed && !r.Connected:
 			if t.State == store.StateLoggedOut {
 				continue
 			}
 			if err := st.SetTenantState(t.ID, store.StateLoggedOut, ""); err != nil {
-				return err
+				// The event is the dated record a ban appeal needs, and it is
+				// only worth writing against a row that took the state. A
+				// tenant whose row is gone gets neither.
+				errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
+				continue
 			}
 			if err := st.AppendEvent(t.ID, "logged_out", "bridge reports killed and disconnected"); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

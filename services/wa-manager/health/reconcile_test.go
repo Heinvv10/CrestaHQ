@@ -2,6 +2,7 @@ package health
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
@@ -110,5 +111,69 @@ func TestReconcileLeavesStateAloneWhenUnreachable(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("events = %d, want 0", len(events))
+	}
+}
+
+// A tenant destroyed between the ListTenants that built the sweep and the
+// write that reconciles it takes every write with it: its row is gone, so
+// SetTenantState reports "no tenant". Returning on that first error abandoned
+// every tenant AFTER it in the list — one deleted number silently stopped
+// reconciling all the others, including the logged_out event that dates a ban.
+//
+// The failure must still be reported, and the rest of the sweep must still
+// happen.
+func TestReconcileContinuesPastOneTenantsFailure(t *testing.T) {
+	s := openStore(t)
+	tenants := []store.Tenant{
+		{ID: "before", Instance: "before", Port: 1, State: store.StatePairing},
+		{ID: "gone", Instance: "gone", Port: 2, State: store.StateRunning},
+		{ID: "after", Instance: "after", Port: 3, State: store.StateRunning},
+	}
+	for _, tenant := range tenants {
+		if err := s.CreateTenant(tenant); err != nil {
+			t.Fatalf("CreateTenant %q: %v", tenant.ID, err)
+		}
+	}
+	// Destroyed after the sweep listed it, exactly as a concurrent teardown
+	// does. The sweep still holds the stale row.
+	if err := s.DeleteTenant("gone"); err != nil {
+		t.Fatalf("DeleteTenant: %v", err)
+	}
+
+	reports := map[string]Report{
+		"before": {Reachable: true, Connected: true},
+		"gone":   {Reachable: true, Killed: true, Connected: false},
+		"after":  {Reachable: true, Killed: true, Connected: false},
+	}
+	err := Reconcile(s, tenants, reports)
+	if err == nil {
+		t.Fatal("a tenant whose row vanished mid-sweep must still be reported, not swallowed")
+	}
+	if !strings.Contains(err.Error(), "gone") {
+		t.Fatalf("the error must name the tenant that failed; got %v", err)
+	}
+
+	// The tenant BEFORE the failure was reconciled, and — the point of this
+	// test — so was the one after it.
+	got, gotErr := s.GetTenant("before")
+	if gotErr != nil {
+		t.Fatalf("GetTenant before: %v", gotErr)
+	}
+	if got.State != store.StateRunning {
+		t.Fatalf("tenant before the failure: state = %q, want running", got.State)
+	}
+	got, gotErr = s.GetTenant("after")
+	if gotErr != nil {
+		t.Fatalf("GetTenant after: %v", gotErr)
+	}
+	if got.State != store.StateLoggedOut {
+		t.Fatalf("tenant after the failure was abandoned: state = %q, want logged_out", got.State)
+	}
+	events, gotErr := s.ListEvents("after", 10)
+	if gotErr != nil {
+		t.Fatalf("ListEvents: %v", gotErr)
+	}
+	if len(events) != 1 {
+		t.Fatalf("the logged_out event after the failure = %d, want 1", len(events))
 	}
 }
