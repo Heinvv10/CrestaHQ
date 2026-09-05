@@ -41,6 +41,23 @@ export function isGroupJid(jid: string): boolean {
 }
 
 /**
+ * A LID ("hidden user") address — WhatsApp's privacy-preserving sender id.
+ *
+ * Its user part LOOKS like a long phone number and is not one. Treating it as
+ * a phone number mints a contact nobody dialled, and a reply then rebuilds
+ * `<lid>@s.whatsapp.net` — delivered to whoever genuinely owns that number, or
+ * to nobody. Observed in production on 2026-09-05, where a real inbound was
+ * filed under `+155228775178345`.
+ *
+ * The bridge is expected to send the phone address instead, but this seam does
+ * not get to assume the bridge is up to date: the consequence of being wrong
+ * is a message to a stranger.
+ */
+export function isLidJid(jid: string): boolean {
+  return jid.trim().toLowerCase().endsWith("@lid");
+}
+
+/**
  * The inverse of `toWhatsappJid`, for the inbound path.
  *
  * The device suffix is dropped: whatsmeow reports a multi-device sender as

@@ -291,6 +291,17 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites).toHaveLength(0);
   });
 
+  it("drops a LID sender rather than filing it as a phone number", async () => {
+    // A LID's user part looks exactly like a long MSISDN. Filed as one, it
+    // becomes a contact whose reply is addressed to <lid>@s.whatsapp.net —
+    // delivered to whoever really owns that number. This is the exact value
+    // seen in production on 2026-09-05.
+    const res = await post(inbound({ from: "155228775178345@lid" }));
+    expect(await res.json()).toMatchObject({ ignored: "lid" });
+    expect(messageWrites).toHaveLength(0);
+    expect(createContactServerSide).not.toHaveBeenCalled();
+  });
+
   it("matches the stored contact through a multi-device suffix", async () => {
     // An un-stripped ":12" would mint a duplicate contact on every inbound
     // from a multi-device account.

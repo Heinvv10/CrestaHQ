@@ -182,3 +182,49 @@ func TestExtendedTextMessageIsDispatched(t *testing.T) {
 		t.Fatalf("extended text not dispatched, got %q", seen)
 	}
 }
+
+// WhatsApp addresses many senders by LID now, and for those Info.Sender is
+// "<lid>@lid" while Info.SenderAlt carries the real "<msisdn>@s.whatsapp.net".
+//
+// Forwarding the LID is not a cosmetic wart. The consumer stores the JID's user
+// part as the contact's phone number and rebuilds "<user>@s.whatsapp.net" to
+// reply — so a LID becomes a phone number that was never dialled. The reply
+// then goes nowhere, or to whichever stranger genuinely owns that number.
+// Observed in production on 2026-09-05: a real inbound landed in the CRM as
+// contactPhone "+155228775178345".
+func TestLIDSenderIsForwardedAsThePhoneJID(t *testing.T) {
+	var seen string
+	c := &Client{onInbound: func(jid, _, _ string, _ time.Time) { seen = jid }}
+
+	e := msgEvent("27831234567", "hello from a lid-addressed sender", false, false)
+	e.Info.Sender = types.JID{User: "155228775178345", Server: types.HiddenUserServer}
+	e.Info.SenderAlt = types.JID{User: "27831234567", Server: types.DefaultUserServer}
+	e.Info.AddressingMode = types.AddressingModeLID
+	c.handleEvent(e)
+
+	if seen != "27831234567@s.whatsapp.net" {
+		t.Fatalf("forwarded %q; the consumer will treat that as a phone number and reply to a stranger", seen)
+	}
+}
+
+// The fallback must not invent an address. When no alternative is offered there
+// is nothing better than what WhatsApp gave us, and dropping the message would
+// silently lose a real customer.
+func TestSenderIsForwardedUnchangedWithoutAnAlternative(t *testing.T) {
+	var seen string
+	c := &Client{onInbound: func(jid, _, _ string, _ time.Time) { seen = jid }}
+
+	e := msgEvent("27831234567", "ordinary phone-addressed sender", false, false)
+	c.handleEvent(e)
+	if seen != "27831234567@s.whatsapp.net" {
+		t.Fatalf("jid = %q", seen)
+	}
+
+	seen = ""
+	e = msgEvent("27831234567", "lid with no alternative", false, false)
+	e.Info.Sender = types.JID{User: "155228775178345", Server: types.HiddenUserServer}
+	c.handleEvent(e) // SenderAlt is the zero JID
+	if seen != "155228775178345@lid" {
+		t.Fatalf("with no alternative the sender must pass through unchanged, got %q", seen)
+	}
+}
