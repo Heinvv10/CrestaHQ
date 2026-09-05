@@ -24,7 +24,8 @@ export const TRIGGER_LABELS: Record<WorkflowTriggerType, string> = {
 export const NODE_LABELS: Record<WorkflowNodeType, string> = {
   send_email: "Send email",
   send_sms: "Send SMS",
-  whatsapp_template: "Send WhatsApp",
+  whatsapp_template: "Send WhatsApp template",
+  send_whatsapp: "Send WhatsApp",
   wait: "Wait",
   wait_for_reply: "Wait for reply",
   if_else: "If / else",
@@ -51,12 +52,14 @@ export const NODE_REQUIREMENT: Partial<Record<WorkflowNodeType, NodeRequirement>
     notify: "email",
     send_sms: "sms",
     whatsapp_template: "whatsapp",
+    send_whatsapp: "whatsapp",
   };
 
 /** Step types offerable from the "add step" menu, in display order. */
 export const ADDABLE_TYPES: WorkflowNodeType[] = [
   "send_email",
   "send_sms",
+  "send_whatsapp",
   "whatsapp_template",
   "wait",
   "wait_for_reply",
@@ -90,6 +93,8 @@ export function defaultConfig(type: WorkflowNodeType): Record<string, unknown> {
       return { body: "" };
     case "whatsapp_template":
       return { templateId: "", manualValues: {} };
+    case "send_whatsapp":
+      return { body: "", templateId: "", manualValues: {} };
     case "wait":
       return { seconds: 86_400 };
     case "wait_for_reply":
@@ -124,6 +129,8 @@ export function nodeSummary(step: BuilderStep): string {
       return (c.body as string)?.slice(0, 60) || "No message yet";
     case "whatsapp_template":
       return (c.templateId as string) ? "WhatsApp template" : "Choose a template";
+    case "send_whatsapp":
+      return (c.body as string)?.slice(0, 60) || "No message yet";
     case "wait": {
       const s = Number(c.seconds ?? 0);
       if (s % 86_400 === 0) return `Wait ${s / 86_400} day(s)`;

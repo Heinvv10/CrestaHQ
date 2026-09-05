@@ -85,6 +85,7 @@ export type WorkflowNodeType =
   | "send_email"
   | "send_sms"
   | "whatsapp_template"
+  | "send_whatsapp"
   | "wait"
   | "wait_for_reply"
   | "if_else"
@@ -199,6 +200,32 @@ export interface WhatsappTemplateConfig {
    * (string keys for JSON). May contain merge tags; resolved at run time.
    * `merge_tag` variables auto-resolve from the contact and aren't stored here.
    */
+  manualValues?: Record<string, string>;
+}
+/**
+ * Free-form WhatsApp with a template fallback.
+ *
+ * Distinct from {@link WhatsappTemplateConfig}, which can ONLY send a template.
+ * That node bills every send at template rates even when the contact's service
+ * window is open and free-form text would cost nothing — the ~$87/mo shape
+ * `docs/PARITY_PLAN.md` identified. It is also unusable on the `bridge` rail,
+ * which has no template concept at all.
+ *
+ * This node carries the message itself and defers the send mode to
+ * `resolveWaSendMode()` at run time: free-form when that is legal (window open,
+ * or a rail with no window), the template only as the fallback that re-opens a
+ * closed one. `templateId` is therefore optional — a step that only ever fires
+ * inside an open window needs no template, and so needs no Meta approval.
+ */
+export interface SendWhatsappConfig {
+  /** Free-form message body. Merge tags resolved at run time. */
+  body: string;
+  /**
+   * Approved template used ONLY when the window is shut. Empty means the step
+   * is skipped in that case rather than sent at template rates.
+   */
+  templateId?: string;
+  /** Manual template variable values, as in {@link WhatsappTemplateConfig}. */
   manualValues?: Record<string, string>;
 }
 export interface WaitConfig {

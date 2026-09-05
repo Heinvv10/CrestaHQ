@@ -90,6 +90,7 @@ const ICONS: Record<WorkflowNodeType, typeof Mail> = {
   send_email: Mail,
   send_sms: MessageSquare,
   whatsapp_template: MessageCircle,
+  send_whatsapp: MessageCircle,
   wait: Clock,
   wait_for_reply: Reply,
   if_else: GitBranch,

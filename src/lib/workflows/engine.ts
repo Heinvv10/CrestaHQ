@@ -5,10 +5,13 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
+import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import {
   sendSmsForSubAccount,
+  sendWhatsappForSubAccount,
   sendWhatsappTemplateForSubAccount,
   smsIsConfigured,
   subAccountTwilioIsConfigured,
@@ -29,6 +32,7 @@ import { evalConditionGroup } from "./conditions";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
+import type { CloudTemplateRef } from "@/lib/comms/whatsapp/cloud-client";
 import type {
   CreateTaskConfig,
   IfElseConfig,
@@ -36,6 +40,7 @@ import type {
   NotifyConfig,
   SendEmailConfig,
   SendSmsConfig,
+  SendWhatsappConfig,
   TagConfig,
   WhatsappTemplateConfig,
   UpdateFieldConfig,
@@ -385,6 +390,133 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   }
 };
 
+/**
+ * Free-form WhatsApp, template only as the closed-window fallback.
+ *
+ * The difference from `execWhatsappTemplate` is where the send mode is decided.
+ * That node always sends a template, so it bills at template rates even when
+ * the contact's service window is open and text would be free — the recurring
+ * cost `docs/PARITY_PLAN.md` traced to the review-ask step. Here the decision
+ * belongs to `dispatchWhatsappSend`, which calls the one shared window rule,
+ * so a step that fires just after a customer replies costs nothing.
+ *
+ * It is also the node a `bridge` workspace will use once that rail ships: the
+ * rail has no templates, and `resolveWaSendMode` returns text mode for it by
+ * declared capability rather than by special case. Today `checkWhatsappReadiness`
+ * still refuses `bridge` outright, so this node is no more runnable there than
+ * any other — do not read this comment as "bridge works"; check readiness.ts.
+ *
+ * Readiness goes through `checkWhatsappReadiness` rather than the Twilio-shaped
+ * credential check, which would refuse a correctly configured Cloud or bridge
+ * workspace.
+ */
+/** Exported for tests only — the registry below is the production entry point.
+ *  Its template-variable resolution has no other seam to assert against. */
+export const execSendWhatsapp: NodeExecutor = async (ctx) => {
+  const cfg = ctx.node.config as unknown as SendWhatsappConfig;
+  const contact = ctx.contact;
+  if (contact.whatsappOptedOut)
+    return { result: { kind: "next" }, log: "skipped:opt_out" };
+  const to = contact.phone;
+  if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
+  if (ctx.subAccount?.whatsappEnabledByAgency !== true) {
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  }
+  const readiness = await checkWhatsappReadiness({
+    subAccountId: ctx.subAccountId,
+    subAccount: ctx.subAccount,
+  });
+  if (!readiness.ready) {
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  }
+
+  const subject = mergeSubject(ctx, "");
+  const body = resolveMergeTags(cfg.body ?? "", subject);
+  if (!body.trim())
+    return { result: { kind: "next" }, log: "skipped:empty_body" };
+
+  // The fallback template is optional. A step that only ever fires inside an
+  // open window needs none — and needs no Meta approval to ship.
+  let template: CloudTemplateRef | null = null;
+  let tplDoc: WhatsappTemplateDoc | null = null;
+  if (cfg.templateId) {
+    const tplSnap = await getAdminDb()
+      .doc(`subAccounts/${ctx.subAccountId}/whatsappTemplates/${cfg.templateId}`)
+      .get();
+    tplDoc = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
+    const { provider: waProvider } = resolveProviderForSubAccount(
+      ctx.subAccount,
+    );
+    // Approval is per rail, as in execWhatsappTemplate: a template cleared on
+    // Twilio has never been seen by our own WABA.
+    if (tplDoc && isTemplateApprovedFor(tplDoc, waProvider)) {
+      // The variables have to be resolved here, exactly as execWhatsappTemplate
+      // does. Meta fills a template's {{1}}, {{2}} from the `parameters` list;
+      // sending an empty `components` for a template that declares variables
+      // is a 400 from Graph, or worse, a message with visible placeholders
+      // reaching the customer. `merge_tag` variables resolve from the contact;
+      // MANUAL ones are operator-set strings that may themselves carry tags.
+      const manualValues: Record<number, string> = {};
+      for (const [pos, val] of Object.entries(cfg.manualValues ?? {})) {
+        manualValues[Number(pos)] = resolveMergeTags(val ?? "", subject);
+      }
+      const values = resolveTemplateVariables({
+        variables: tplDoc.variables,
+        subject,
+        manualValues,
+      });
+      template = {
+        name: tplDoc.name,
+        language: tplDoc.language ?? "en",
+        components: values.length
+          ? [
+              {
+                type: "body",
+                parameters: values.map((text) => ({ type: "text", text })),
+              },
+            ]
+          : [],
+        approved: true,
+      };
+    }
+  }
+
+  try {
+    const res = await dispatchWhatsappSend({
+      subAccountId: ctx.subAccountId,
+      subAccount: ctx.subAccount,
+      contactId: contact.id,
+      to,
+      body,
+      template,
+      sendViaTwilio: async () => {
+        const r = await sendWhatsappForSubAccount({
+          subAccountId: ctx.subAccountId,
+          subAccount: ctx.subAccount,
+          to,
+          body,
+        });
+        return { ok: true, messageId: r.sid };
+      },
+    });
+    if (!res.ok) {
+      return {
+        result: { kind: "next" },
+        log: `error:${res.error ?? "send_failed"}`,
+      };
+    }
+    return { result: { kind: "next" }, log: "ok" };
+  } catch (err) {
+    if (err instanceof UsageQuotaExceededError) {
+      return { result: { kind: "next" }, log: "skipped:quota" };
+    }
+    return {
+      result: { kind: "next" },
+      log: `error:${err instanceof Error ? err.message : "send_failed"}`,
+    };
+  }
+};
+
 const execWait: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as WaitConfig;
   const seconds = Math.max(0, Math.floor(cfg.seconds ?? 0));
@@ -598,6 +730,7 @@ const REGISTRY: Partial<Record<WorkflowNodeType, NodeExecutor>> = {
   send_email: execSendEmail,
   send_sms: execSendSms,
   whatsapp_template: execWhatsappTemplate,
+  send_whatsapp: execSendWhatsapp,
   wait: execWait,
   if_else: execIfElse,
   goal: execGoal,

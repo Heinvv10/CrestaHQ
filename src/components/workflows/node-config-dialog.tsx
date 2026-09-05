@@ -107,6 +107,99 @@ export function NodeConfigDialog({
             </Field>
           )}
 
+          {step.type === "send_whatsapp" && (
+            <>
+              <Field
+                label="Message"
+                hint="Sent as free-form text whenever that is allowed — which is free. Supports merge tags like {{contact.firstName}}."
+              >
+                <Textarea
+                  rows={4}
+                  value={str("body")}
+                  onChange={(e) => set({ body: e.target.value })}
+                />
+              </Field>
+              <Field
+                label="If the 24-hour window has closed"
+                hint={
+                  whatsappTemplates.length === 0
+                    ? "No approved templates yet. Without one this step is skipped when the window is shut — which is correct for a step that only ever replies to a contact who just messaged."
+                    : "Meta only allows free-form text within 24 hours of the contact's last message. Pick a template to re-open a closed window, or leave this empty to skip the step instead of paying template rates."
+                }
+              >
+                <select
+                  value={str("templateId")}
+                  onChange={(e) =>
+                    set({ templateId: e.target.value, manualValues: {} })
+                  }
+                  className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
+                >
+                  <option value="">
+                    Skip the step (no template fallback)
+                  </option>
+                  {whatsappTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.displayName}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {(() => {
+                // A fallback template's variables still have to be filled in.
+                // Without these inputs `manualValues` is unreachable from the
+                // UI, and Meta receives a template with empty parameters.
+                const tpl =
+                  whatsappTemplates.find((t) => t.id === str("templateId")) ??
+                  null;
+                if (!tpl) return null;
+                const manualValues =
+                  (cfg.manualValues as Record<string, string> | undefined) ?? {};
+                const mergeVars = tpl.variables.filter(
+                  (v) => v.source === "merge_tag",
+                );
+                const manualVars = tpl.variables.filter(
+                  (v) => v.source === "manual",
+                );
+                return (
+                  <>
+                    <div className="bg-muted/30 text-muted-foreground rounded-md border p-2 text-xs whitespace-pre-wrap">
+                      {tpl.body}
+                    </div>
+                    {mergeVars.length > 0 && (
+                      <p className="text-muted-foreground text-xs">
+                        Auto-filled from the contact:{" "}
+                        {mergeVars
+                          .map((v) => `{{${v.position}}} ${v.label}`)
+                          .join(", ")}
+                        .
+                      </p>
+                    )}
+                    {manualVars.map((v) => (
+                      <Field
+                        key={v.position}
+                        label={`Variable {{${v.position}}} — ${v.label}`}
+                        hint="Static text, or merge tags like {{contact.firstName}}."
+                      >
+                        <Input
+                          value={manualValues[String(v.position)] ?? ""}
+                          placeholder={v.sampleValue}
+                          onChange={(e) =>
+                            set({
+                              manualValues: {
+                                ...manualValues,
+                                [v.position]: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </Field>
+                    ))}
+                  </>
+                );
+              })()}
+            </>
+          )}
+
           {step.type === "whatsapp_template" &&
             (() => {
               const tplId = str("templateId");
