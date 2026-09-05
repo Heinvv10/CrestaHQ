@@ -14,8 +14,10 @@
 
 [Unit]
 Description=WhatsApp number manager (provisioner + operator view)
-After=network-online.target
-Wants=network-online.target
+# No network-online ordering. This is a USER unit (see the header and [Install]
+# below) and the user manager has no network-online.target, so the pair was a
+# silent no-op — exactly as it was on the bridge unit, where it was dropped for
+# the same reason. A boot-time race is absorbed by the bounded restart below.
 
 # Bound the restart loop. Every fatal exit here is a CONFIGURATION refusal — a
 # missing OPERATOR_TOKEN, a publicly routable LISTEN_ADDR, an unopenable store
