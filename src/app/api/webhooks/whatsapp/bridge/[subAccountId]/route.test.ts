@@ -311,6 +311,13 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
       "867051314767696@bot",
       "27821234567@c.us",
       "27821234567",
+      // The "@" anchor: a suffix test without it accepts this as a phone JID.
+      "27821234567@evil.s.whatsapp.net",
+      // A second "@": endsWith would file this as +27821234567.
+      "27821234567@lid@s.whatsapp.net",
+      "27821234567@msgr",
+      // The trailing anchor: without it the server can be a prefix of anything.
+      "27821234567@s.whatsapp.net.evil.example",
     ]) {
       messageWrites.length = 0;
       vi.mocked(createContactServerSide).mockClear();

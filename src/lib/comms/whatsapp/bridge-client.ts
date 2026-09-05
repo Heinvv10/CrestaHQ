@@ -71,6 +71,19 @@ export function isLidJid(jid: string): boolean {
  *
  * A device suffix (`27821234567:12@s.whatsapp.net`) is a legitimate 1:1 sender
  * and is admitted; `jidToE164` strips it.
+ *
+ * Matched as a whole address rather than by suffix. `endsWith("@s.whatsapp.net")`
+ * also accepts `27821234567@lid@s.whatsapp.net`, and a suffix test one edit away
+ * from losing its "@" accepts `…@evil.s.whatsapp.net`. Neither is exploitable —
+ * reaching this line needs a valid HMAC signature AND the bearer token, and a
+ * holder of both could simply send a well-formed address — but a shape test
+ * that only mostly describes the shape is not worth keeping over one regexp.
+ *
+ * KNOWN, DELIBERATE DROP: `@msgr` / `@interop` (Meta cross-app messaging) is a
+ * real human sender and is refused here, because there is no phone number to
+ * file it under. Previously it was MISfiled as a contact; now it is dropped and
+ * logged. If interop ever becomes real traffic this is the line to revisit, and
+ * the warn above is how you will find out.
  */
 /**
  * Mask a JID for logging, mirroring the bridge's own `redact.JID`.
@@ -89,8 +102,10 @@ export function redactJid(jid: string): string {
   return "*".repeat(user.length - 4) + user.slice(-4) + server;
 }
 
+const PHONE_JID = /^\d{5,20}(?::\d+)?@s\.whatsapp\.net$/;
+
 export function isPhoneJid(jid: string): boolean {
-  return jid.trim().toLowerCase().endsWith("@s.whatsapp.net");
+  return PHONE_JID.test(jid.trim().toLowerCase());
 }
 
 /**
