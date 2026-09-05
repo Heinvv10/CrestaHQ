@@ -53,6 +53,12 @@ export async function POST(
   const result = await applySnapshot(
     db,
     {
+      // Spread FIRST so every optional part of the payload (custom fields, the
+      // AI persona, and anything added later) reaches applySnapshot without
+      // this route needing an edit. Hand-listing the fields here silently
+      // dropped two entity types once already; the defaults below only fill
+      // the required arrays for a snapshot doc that predates them.
+      ...payload,
       forms: payload.forms ?? [],
       messageTemplates: payload.messageTemplates ?? [],
       products: payload.products ?? [],

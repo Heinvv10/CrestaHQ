@@ -228,6 +228,7 @@ the columns) and the full rule are in
 Full index with links: **[docs/features/README.md](docs/features/README.md)**.
 
 Specs: [AI Agents](docs/features/ai-agents.md) ·
+[Snapshots](docs/features/snapshots.md) ·
 [Workflows](docs/features/workflows.md) ·
 [Quotes](docs/features/quotes.md) ·
 [Products + Invoices](docs/features/products-invoices.md) ·
