@@ -12,11 +12,11 @@ replies as the agent.
 
 ## Registration
 
-`CONSUMERS` is a comma-separated list of pipe-separated entries with **eight**
+`CONSUMERS` is a comma-separated list of pipe-separated entries with **nine**
 fields:
 
 ```
-name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour
+name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour|webhookSecret
 ```
 
 ```
@@ -42,7 +42,7 @@ fields and a trailing empty slot; write it as either
 identically. Only add `|admin` on the end for a credential that should be
 allowed to add allowlist entries and lift the kill switch.
 
-The last two fields are `quietStartHour`/`quietEndHour`, and they only exist
+Fields seven and eight are `quietStartHour`/`quietEndHour`, and they only exist
 as a pair: give both or neither. Left off entirely (Hermes's registration
 above does this), the consumer inherits the deployment-wide
 `QUIET_START_HOUR`/`QUIET_END_HOUR` window — inheriting the restriction,
@@ -53,6 +53,11 @@ because guessing either direction hands a consumer a window nobody wrote
 down. Hours outside `0-23` are refused too. Since every field is
 positional, disabling quiet hours without also granting admin needs the
 admin slot left empty but present: `hermes|<token>|<url>|100|500||0|0`.
+
+The ninth field is a `webhookSecret`. Hermes does not set one, so its inbound
+POSTs are authenticated by the bearer token alone — the shape this document has
+always described. A consumer that DOES set one additionally receives a
+`LeadStack-Signature` header; see the CONSUMERS section of the service README.
 
 ## Inbound contract
 

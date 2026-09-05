@@ -21,16 +21,24 @@ import (
 
 // Opts configures a Provisioner.
 //
-// AppToken and ManagerToken are functions, not strings, because each tenant
-// gets its OWN pair: a token shared across tenants would let a compromised
-// consumer of one number send as every other.
+// AppToken, ManagerToken and WebhookSecret are functions, not strings, because
+// each tenant gets its OWN set: a secret shared across tenants would let a
+// compromised consumer of one number send as — or forge inbound for — every
+// other.
 type Opts struct {
 	Root                string // parent of every instance dir
 	PortBase, PortCount int
 	AppToken            func() string
 	ManagerToken        func() string
-	WebhookURL          func(tenantID string) string // where the bridge posts inbound; optional
-	QuietTZ             string                       // defaults to Africa/Johannesburg
+	// WebhookSecret mints the HMAC key the bridge signs inbound webhooks with.
+	// Optional: nil leaves the app consumer unsigned, which is the state of
+	// every tenant provisioned before signing existed. Whether an unsigned
+	// tenant is acceptable is the receiver's decision, made against its own
+	// stored secret — the provisioner does not get a vote, and must not
+	// invent a secret the receiver has never seen.
+	WebhookSecret func() string
+	WebhookURL    func(tenantID string) string // where the bridge posts inbound; optional
+	QuietTZ       string                       // defaults to Africa/Johannesburg
 }
 
 type Provisioner struct {
@@ -102,7 +110,19 @@ func InstanceName(tenantID string) (string, error) {
 // allowlist a stranger or release the brakes — the same rule phase 1 settled
 // on for the bridge, that anyone may stop sending and only an operator may
 // resume.
-func (p *Provisioner) renderEnv(tenantID, instance string, port int, appTok, mgrTok string) string {
+//
+// The app entry carries the webhook signing secret in field 9, which forces
+// the three empty fields before it: privilege, quietStartHour, quietEndHour.
+// They are written empty rather than filled in with the defaults they already
+// have, so this line keeps saying "the app consumer is not an admin and
+// inherits the deployment quiet window" instead of pinning those values here,
+// where a later change to the defaults would silently stop reaching every
+// tenant provisioned after today.
+//
+// Only the app consumer is signed. The manager's entry has no webhook URL at
+// all — it never receives inbound — so a secret there would be a key nothing
+// can use.
+func (p *Provisioner) renderEnv(tenantID, instance string, port int, appTok, mgrTok, hookSecret string) string {
 	dir := p.instanceDir(instance)
 	var hook string
 	if p.opts.WebhookURL != nil {
@@ -113,7 +133,8 @@ func (p *Provisioner) renderEnv(tenantID, instance string, port int, appTok, mgr
 		"DB_PATH=" + filepath.Join(dir, "bridge.db"),
 		"SESSION_DIR=" + filepath.Join(dir, "session"),
 		"QUIET_TZ=" + p.opts.QuietTZ,
-		fmt.Sprintf("CONSUMERS=app|%s|%s|100|500,manager|%s|||500|admin", appTok, hook, mgrTok),
+		fmt.Sprintf("CONSUMERS=app|%s|%s|100|500||||%s,manager|%s|||500|admin",
+			appTok, hook, hookSecret, mgrTok),
 		"",
 	}, "\n")
 }
@@ -141,6 +162,22 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	// admin privileges.
 	if appTok == mgrTok {
 		return store.Tenant{}, errors.New("provision: the app and manager tokens must differ; sharing one would give the app admin")
+	}
+	// A nil WebhookSecret is the pre-signing shape and stays legal. A non-nil
+	// one returning "" is not: something asked for a secret and got nothing,
+	// and provisioning a tenant whose inbound is silently unsigned — when the
+	// operator believes it is signed — is the failure this refusal exists for.
+	var hookSecret string
+	if p.opts.WebhookSecret != nil {
+		if hookSecret = p.opts.WebhookSecret(); hookSecret == "" {
+			return store.Tenant{}, errors.New("provision: the webhook secret generator returned an empty secret; inbound would be unsigned")
+		}
+		// Same reasoning as the app/manager token check above, one step
+		// further: a secret equal to either bearer token means the generator
+		// is not random, and one leak would compromise both directions.
+		if hookSecret == appTok || hookSecret == mgrTok {
+			return store.Tenant{}, errors.New("provision: the webhook secret matches a bearer token; the generator is not producing independent secrets")
+		}
 	}
 	if err := p.checkInstanceFree(tenantID, instance); err != nil {
 		return store.Tenant{}, err
@@ -199,7 +236,7 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	// CREATES the file; a leftover .env from a hand-rolled or half-removed
 	// install keeps whatever permissions it had, so the tokens land inside a
 	// world-readable file and nothing says so.
-	env := p.renderEnv(tenantID, instance, port, appTok, mgrTok)
+	env := p.renderEnv(tenantID, instance, port, appTok, mgrTok, hookSecret)
 	envPath := filepath.Join(dir, ".env")
 	if err := os.WriteFile(envPath, []byte(env), 0o600); err != nil {
 		return fail(err)

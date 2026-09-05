@@ -101,9 +101,10 @@ func newTestProvisioner(t *testing.T) (*Provisioner, *store.Store, *fakeCtl, str
 	}
 	p := New(st, sc, Opts{
 		Root: root, PortBase: 33100, PortCount: 20,
-		AppToken:     next("app-token"),
-		ManagerToken: next("mgr-token"),
-		WebhookURL:   func(id string) string { return "http://127.0.0.1:8787/wa/" + id },
+		AppToken:      next("app-token"),
+		ManagerToken:  next("mgr-token"),
+		WebhookSecret: next("hook-secret"),
+		WebhookURL:    func(id string) string { return "http://127.0.0.1:8787/wa/" + id },
 	})
 	return p, st, sc, root
 }
@@ -229,6 +230,98 @@ func TestAppConsumerIsNotAdminButTheManagerIs(t *testing.T) {
 	}
 	if !sawApp || !sawManager {
 		t.Fatalf("CONSUMERS must provision both app and manager: %s", line)
+	}
+}
+
+// The webhook secret is read by FIELD POSITION on the far side, by a different
+// Go module that this one cannot import, so the two can only agree by
+// convention. This test pins the convention: the app entry must be exactly the
+// nine fields the bridge's parseConsumer counts, with the three between the
+// budget and the secret left EMPTY.
+//
+// Filling any of them would be worse than a wrong secret, because it would be
+// silent: "admin" in field 6 hands the app the privileges the previous test
+// exists to deny, and a stray digit in field 7 or 8 is a quiet-hours window
+// nobody wrote down. An off-by-one here reads as a missing secret in the best
+// case and as a granted privilege in the worst.
+func TestTheAppConsumerCarriesTheWebhookSecretInTheFieldTheBridgeReads(t *testing.T) {
+	p, _, _, root := newTestProvisioner(t)
+	ten, err := p.Create("t1", "Blitz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, ten.Instance, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(l, "CONSUMERS=") {
+			line = strings.TrimPrefix(l, "CONSUMERS=")
+		}
+	}
+	if line == "" {
+		t.Fatalf("no CONSUMERS line:\n%s", raw)
+	}
+
+	var sawApp bool
+	for _, entry := range strings.Split(line, ",") {
+		parts := strings.Split(entry, "|")
+		switch parts[0] {
+		case "app":
+			sawApp = true
+			if len(parts) != 9 {
+				t.Fatalf("app entry has %d fields, want exactly 9 (name|token|hook|perHour|perDay|admin|quietStart|quietEnd|webhookSecret): %s",
+					len(parts), entry)
+			}
+			for i, name := range map[int]string{5: "admin", 6: "quietStartHour", 7: "quietEndHour"} {
+				if parts[i] != "" {
+					t.Fatalf("app entry field %d (%s) is %q, want empty; a value here is a privilege or a quiet window nobody asked for: %s",
+						i, name, parts[i], entry)
+				}
+			}
+			if parts[8] == "" {
+				t.Fatal("the app consumer has no webhook secret: inbound would arrive unsigned")
+			}
+			if parts[8] == parts[1] {
+				t.Fatal("the webhook secret is the app's own bearer token; one leak compromises both directions")
+			}
+		case "manager":
+			// The manager has no webhook URL, so a secret there would be a key
+			// nothing can ever use — and one more copy of a secret on disk.
+			if len(parts) >= 9 && parts[8] != "" {
+				t.Fatalf("the manager consumer carries a webhook secret it can never use: %s", entry)
+			}
+		}
+	}
+	if !sawApp {
+		t.Fatalf("no app consumer in %s", line)
+	}
+}
+
+// A nil WebhookSecret is the pre-signing shape and must keep working; a
+// generator that returns nothing must NOT, because the operator asked for a
+// signed tenant and would get an unsigned one without being told.
+func TestAnEmptyWebhookSecretIsRefusedButNoGeneratorIsFine(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		gen     func() string
+		wantErr bool
+	}{
+		{"no generator", nil, false},
+		{"empty secret", func() string { return "" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, _ := newTestProvisioner(t)
+			p.opts.WebhookSecret = tc.gen
+			_, err := p.Create("t1", "Blitz")
+			if tc.wantErr && err == nil {
+				t.Fatal("Create accepted an empty webhook secret; the tenant would take unsigned inbound while the operator believed it was signed")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Create refused a tenant with no signing configured at all: %v", err)
+			}
+		})
 	}
 }
 

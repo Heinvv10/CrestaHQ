@@ -219,6 +219,14 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // secret — not the session cookie, since the caller is the connected
   // webinar deployment.
   /^\/api\/webhooks\/webinar1\/sa\/[^/]+$/,
+  // Per-sub-account WhatsApp bridge inbound:
+  // /api/webhooks/whatsapp/bridge/{subAccountId}. The caller is the
+  // wa-agent-bridge process, which holds no session cookie. Security is two
+  // credentials checked inside the route against that ONE sub-account's stored
+  // secrets: the `LeadStack-Signature` HMAC over the raw body, and the bearer
+  // token. The id in the path is untrusted routing info — it only selects
+  // which stored secrets to verify against.
+  /^\/api\/webhooks\/whatsapp\/bridge\/[^/]+$/,
   // Public booking-deposit card payment: /api/events/{token}/pay
   // (Payments v1). A regex, NOT a `/api/events` PUBLIC_PATHS prefix — that
   // would also expose /api/events/by-id/{id}/mark-paid and friends. Security

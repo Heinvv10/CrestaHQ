@@ -1,10 +1,15 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -278,5 +283,107 @@ func TestInboundPayloadCarriesTheMessageID(t *testing.T) {
 	}
 	if len(payload) != 4 {
 		t.Fatalf("payload gained a key the consumer contract does not publish: %v", payload)
+	}
+}
+
+// A consumer configured with a WebhookSecret must receive a LeadStack-Signature
+// header whose HMAC recomputes correctly over the exact posted body and the
+// timestamp carried in the header itself — the same scheme the CRM receiver
+// implements in src/lib/api/webhooks/signing.ts.
+func TestFanoutSignsWebhookWhenConsumerHasASecret(t *testing.T) {
+	reqBody := make(chan []byte, 1)
+	sig := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		reqBody <- b
+		sig <- r.Header.Get("LeadStack-Signature")
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
+		"", store.NewMemory(), func() bool { return false })
+	fixed := time.Unix(1_700_000_000, 0)
+	f.now = func() time.Time { return fixed }
+
+	f.Deliver(knownJID, "hello", "wamid.SIG", time.Now())
+	f.Wait()
+
+	var body []byte
+	var header string
+	select {
+	case body = <-reqBody:
+		header = <-sig
+	case <-time.After(2 * time.Second):
+		t.Fatal("no webhook delivery")
+	}
+
+	wantTS := fixed.Unix()
+	mac := hmac.New(sha256.New, []byte("whsec_test"))
+	mac.Write([]byte(fmt.Sprintf("%d.", wantTS)))
+	mac.Write(body)
+	wantHeader := fmt.Sprintf("t=%d,v1=%s", wantTS, hex.EncodeToString(mac.Sum(nil)))
+
+	if header != wantHeader {
+		t.Fatalf("signature header mismatch:\n got %q\nwant %q", header, wantHeader)
+	}
+}
+
+// A consumer with no WebhookSecret is the default and the safe one: no
+// signature header at all, and the bearer token — the only credential such a
+// consumer ever had — still goes out unchanged.
+func TestFanoutOmitsSignatureWhenConsumerHasNoSecret(t *testing.T) {
+	sig := make(chan string, 1)
+	bearer := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		sig <- r.Header.Get("LeadStack-Signature")
+		bearer <- r.Header.Get("Authorization")
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL}},
+		"", store.NewMemory(), func() bool { return false })
+	f.Deliver(knownJID, "hello", "wamid.NOSIG", time.Now())
+	f.Wait()
+
+	select {
+	case got := <-sig:
+		if got != "" {
+			t.Fatalf("consumer with no secret must get no LeadStack-Signature header, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no webhook delivery")
+	}
+	if got := <-bearer; got != "Bearer tok" {
+		t.Fatalf("bearer header must still be present, got %q", got)
+	}
+}
+
+// TestFanoutSignsWithAFreshTimestampEachSend guards against threading a stale
+// "at" (the WhatsApp inbound time) into the signature instead of the real
+// send time: the receiver enforces a 5-minute tolerance against the
+// timestamp in the header, so signing history rather than "now" would reject
+// on arrival for a reason that has nothing to do with forgery.
+func TestFanoutSignsWithAFreshTimestampEachSend(t *testing.T) {
+	sig := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		sig <- r.Header.Get("LeadStack-Signature")
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
+		"", store.NewMemory(), func() bool { return false })
+	fixed := time.Unix(1_700_000_000, 0)
+	f.now = func() time.Time { return fixed }
+
+	old := time.Now().Add(-24 * time.Hour)
+	f.Deliver(knownJID, "hello", "wamid.OLD", old)
+	f.Wait()
+
+	header := <-sig
+	if !strings.HasPrefix(header, fmt.Sprintf("t=%d,", fixed.Unix())) {
+		t.Fatalf("signature must use the send-time clock, not the inbound message time: %q", header)
 	}
 }
