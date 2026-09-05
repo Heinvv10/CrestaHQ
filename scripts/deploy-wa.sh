@@ -298,7 +298,7 @@ for _ in $(seq 1 720); do
   sleep 5
   status=$(auth_curl --max-time 10 "http://$MANAGER_ADDR/api/rollout") || continue
   case "$status" in
-    *'"state":"done"'*)   echo "$status"; say "Deployed $SHA; every bridge rolled"; exit 0 ;;
+    *'"state":"done"'*)   echo "$status"; say "Deployed $SHA; every ELIGIBLE bridge rolled — numbers that are logged out or stopped keep the old build until they come back"; exit 0 ;;
     *'"state":"failed"'*) echo "$status"; die "the rollout HELD — some bridges are on $SHA and some are not. See the operator screen." ;;
   esac
 done

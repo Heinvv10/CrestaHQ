@@ -459,7 +459,7 @@ func TestARunningRolloutDoesNotBlockTheNextDeploy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := s.SetRolloutState(r.ID, "v2", store.RolloutRunning, ""); err != nil {
+	if _, err := s.SetRolloutState(r.ID, r.Generation, store.RolloutRunning, ""); err != nil {
 		t.Fatalf("SetRolloutState: %v", err)
 	}
 	if _, err := s.RequestRollout("v3", false); err != nil {
@@ -700,7 +700,7 @@ func TestRerequestingTheSameBuildDoesNotResetAnInFlightRollout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := s.SetRolloutState(r.ID, "v2", store.RolloutRunning, "held at a"); err != nil {
+	if _, err := s.SetRolloutState(r.ID, r.Generation, store.RolloutRunning, "held at a"); err != nil {
 		t.Fatalf("SetRolloutState: %v", err)
 	}
 	got, err := s.RequestRollout("v2", false)
@@ -732,7 +732,7 @@ func TestAVerdictCannotLandOnARolloutThatSupersededIt(t *testing.T) {
 		t.Fatalf("supersede: %v", err)
 	}
 
-	ok, err := s.SetRolloutState(r.ID, "v2", store.RolloutDone, "every eligible bridge runs this build")
+	ok, err := s.SetRolloutState(r.ID, r.Generation, store.RolloutDone, "every eligible bridge runs this build")
 	if err != nil {
 		t.Fatalf("SetRolloutState: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestAVerdictForTheCurrentBuildIsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequestRollout: %v", err)
 	}
-	ok, err := s.SetRolloutState(r.ID, "v2", store.RolloutDone, "done")
+	ok, err := s.SetRolloutState(r.ID, r.Generation, store.RolloutDone, "done")
 	if err != nil || !ok {
 		t.Fatalf("SetRolloutState ok=%v err=%v, want the verdict to land", ok, err)
 	}
@@ -910,5 +910,68 @@ func TestUrgencyIsNeverInherited(t *testing.T) {
 					got.Immediate, tc.wantImmed)
 			}
 		})
+	}
+}
+
+// A version is NOT a fencing token, because a version recurs: v1, v2, then v1
+// again is a rollback — which is what keeping the previous binaries is for.
+// Supersede reuses the row, so a worker holding the FIRST v1 must not be able
+// to land its verdict on the second. The generation only ever goes up.
+func TestAVersionThatRecursCannotLandAStaleVerdict(t *testing.T) {
+	s := openStore(t)
+	first, err := s.RequestRollout("v1", true)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if _, err := s.RequestRollout("v2", false); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	// The rollback: back to v1, same row, same version string as `first`.
+	if _, err := s.RequestRollout("v1", false); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	ok, err := s.SetRolloutState(first.ID, first.Generation, store.RolloutFailed, "held at a")
+	if err != nil {
+		t.Fatalf("SetRolloutState: %v", err)
+	}
+	if ok {
+		t.Fatal("a verdict from the first v1 landed on the rolled-back v1 — a rollout that was never tried is marked held")
+	}
+	if _, outstanding, _ := s.CurrentRollout(); !outstanding {
+		t.Fatal("the rollback rollout was killed by a stale worker's verdict")
+	}
+}
+
+// The row is re-read before the restart AND used. Driving systemd from the
+// snapshot would act on an instance name the poll — which can take minutes
+// across a couple of hundred tenants — watched change underneath it.
+func TestTheRestartUsesTheFreshlyReadRow(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "a")
+	p := &fakePoll{
+		versions:     map[string]string{"a": "v1"},
+		afterRestart: map[string]string{"a": "v2"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarking(u, p)
+	// The instance is renamed between the poll and the restart.
+	p.onSnapshot = func() {
+		_ = s.SetTenantIdentity("a", "", "a-renamed")
+	}
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	_ = w.Tick(context.Background())
+
+	for _, v := range u.seen() {
+		if v == "restart:a" {
+			t.Fatalf("systemd was driven from the stale snapshot: %v", u.seen())
+		}
+	}
+	if u.started("a-renamed") != 1 {
+		t.Fatalf("the freshly read instance was not the one restarted: %v", u.seen())
 	}
 }

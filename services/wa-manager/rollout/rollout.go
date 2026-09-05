@@ -175,7 +175,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return nil
 	}
 	if r.State != store.RolloutRunning {
-		ok, err := w.Store.SetRolloutState(r.ID, r.Version, store.RolloutRunning, "")
+		ok, err := w.Store.SetRolloutState(r.ID, r.Generation, store.RolloutRunning, "")
 		if err != nil {
 			return err
 		}
@@ -195,7 +195,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		// fleet was being polled must not have OUR verdict stamped on ITS
 		// target. Dropping the write leaves the new rollout pending, which is
 		// exactly right — the next tick evaluates it on its own terms.
-		if ok, err := w.Store.SetRolloutState(r.ID, r.Version, store.RolloutDone,
+		if ok, err := w.Store.SetRolloutState(r.ID, r.Generation, store.RolloutDone,
 			"every eligible bridge runs this build"); err != nil || !ok {
 			return err
 		}
@@ -209,10 +209,16 @@ func (w *Worker) Tick(ctx context.Context) error {
 	// because one customer was offboarded during the window, and a health
 	// probe against the freed port could be answered by whichever tenant was
 	// provisioned onto it next. A tenant that has gone is simply not our work.
-	if _, err := w.Store.GetTenant(t.ID); err != nil {
+	// Re-read AND USE the row. Discarding it and restarting from the snapshot
+	// would drive systemd with an Instance and probe a Port that the poll —
+	// which can take minutes across a couple of hundred tenants — may have
+	// watched change underneath it.
+	fresh, err := w.Store.GetTenant(t.ID)
+	if err != nil {
 		log.Printf("rollout %d: %s is gone, skipping it", r.ID, t.ID)
 		return nil
 	}
+	t = fresh
 	log.Printf("rollout %d: restarting %s onto %s (%d left)", r.ID, t.ID, r.Version, len(stale))
 	if err := w.restart(ctx, t, r.Version); err != nil {
 		// A cancelled context is this process shutting down, not a bridge
@@ -326,7 +332,7 @@ func (w *Worker) fail(r store.Rollout, detail string) error {
 	// against the build we were rolling says nothing about a build that
 	// superseded it mid-flight, and stamping it there would mark a rollout
 	// failed that has not been tried.
-	ok, err := w.Store.SetRolloutState(r.ID, r.Version, store.RolloutFailed, detail)
+	ok, err := w.Store.SetRolloutState(r.ID, r.Generation, store.RolloutFailed, detail)
 	if err != nil {
 		return err
 	}

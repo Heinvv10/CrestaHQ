@@ -92,7 +92,14 @@ CREATE TABLE IF NOT EXISTS rollouts (
   immediate     INTEGER NOT NULL,       -- 1 = --now, ignore the window
   detail        TEXT NOT NULL DEFAULT '',
   requested_unix INTEGER NOT NULL,
-  finished_unix  INTEGER NOT NULL DEFAULT 0
+  finished_unix  INTEGER NOT NULL DEFAULT 0,
+  -- Bumped on every request. This, not the version, is the fencing token a
+  -- worker writes its verdict against: supersede reuses the row id, and a
+  -- version can RECUR — v1, v2, then v1 again is a rollback, which is exactly
+  -- what keeping the previous binaries is for. A worker holding the first v1
+  -- could then land its verdict on the second one, marking a rollout that was
+  -- never tried as held. A counter only ever goes up.
+  generation     INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_rollouts_state ON rollouts(state, id);
 -- At most ONE outstanding rollout, enforced here rather than by the
@@ -283,13 +290,14 @@ const (
 
 // Rollout is one requested fleet upgrade.
 type Rollout struct {
-	ID        int64
-	Version   string
-	State     string
-	Immediate bool
-	Detail    string
-	Requested time.Time
-	Finished  time.Time
+	ID         int64
+	Generation int64
+	Version    string
+	State      string
+	Immediate  bool
+	Detail     string
+	Requested  time.Time
+	Finished   time.Time
 }
 
 // RequestRollout records the intent to bring every bridge to version.
@@ -331,10 +339,10 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 	var req, fin int64
 	var imm int
 	err = tx.QueryRow(
-		`SELECT id, version, state, immediate, detail, requested_unix, finished_unix
+		`SELECT id, generation, version, state, immediate, detail, requested_unix, finished_unix
 		   FROM rollouts WHERE state IN (?, ?) ORDER BY id LIMIT 1`,
 		RolloutPending, RolloutRunning).
-		Scan(&existing.ID, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
+		Scan(&existing.ID, &existing.Generation, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
 	switch {
 	case err == nil:
 		// Urgency is exactly what the LATEST request said, and nothing is
@@ -363,14 +371,15 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 			state, detail = RolloutPending, ""
 		}
 		if _, err := tx.Exec(
-			`UPDATE rollouts SET version = ?, state = ?, immediate = ?, detail = ?, requested_unix = ?
+			`UPDATE rollouts SET version = ?, state = ?, immediate = ?, detail = ?,
+			        requested_unix = ?, generation = generation + 1
 			   WHERE id = ?`,
 			version, state, imm, detail, time.Now().Unix(), existing.ID); err != nil {
 			return Rollout{}, err
 		}
 		return Rollout{
-			ID: existing.ID, Version: version, State: state, Detail: detail,
-			Immediate: imm == 1, Requested: time.Now(),
+			ID: existing.ID, Generation: existing.Generation + 1, Version: version,
+			State: state, Detail: detail, Immediate: imm == 1, Requested: time.Now(),
 		}, tx.Commit()
 	case !errors.Is(err, sql.ErrNoRows):
 		return Rollout{}, err
@@ -394,7 +403,7 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 	if err := tx.Commit(); err != nil {
 		return Rollout{}, err
 	}
-	return Rollout{ID: id, Version: version, State: RolloutPending, Immediate: immediate, Requested: now}, nil
+	return Rollout{ID: id, Generation: 1, Version: version, State: RolloutPending, Immediate: immediate, Requested: now}, nil
 }
 
 // CurrentRollout returns the outstanding rollout, or ok=false when there is
@@ -414,9 +423,9 @@ func (s *Store) rolloutWhere(clause string) (Rollout, bool, error) {
 	var req, fin int64
 	var imm int
 	err := s.db.QueryRow(
-		`SELECT id, version, state, immediate, detail, requested_unix, finished_unix
+		`SELECT id, generation, version, state, immediate, detail, requested_unix, finished_unix
 		   FROM rollouts WHERE `+clause).
-		Scan(&r.ID, &r.Version, &r.State, &imm, &r.Detail, &req, &fin)
+		Scan(&r.ID, &r.Generation, &r.Version, &r.State, &imm, &r.Detail, &req, &fin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Rollout{}, false, nil
 	}
@@ -435,7 +444,7 @@ func (s *Store) rolloutWhere(clause string) (Rollout, bool, error) {
 // state. detail is what the operator screen shows — for a failure, which
 // instance stopped it.
 //
-// It is a COMPARE-AND-SET on the version, and ok=false means the rollout was
+// It is a COMPARE-AND-SET on the GENERATION, and ok=false means the rollout was
 // superseded while the caller was working. That is not an error and the caller
 // must not treat it as one — but writing without the check was a lost update
 // with a false success at the end of it. The worker reads the rollout, spends
@@ -444,15 +453,15 @@ func (s *Store) rolloutWhere(clause string) (Rollout, bool, error) {
 // stamped the OLD rollout's verdict onto the NEW target. The observed result
 // was a row reading done/v2 while the only bridge was still running v1, and a
 // deploy script that read that and printed "every bridge rolled".
-func (s *Store) SetRolloutState(id int64, expectVersion, state, detail string) (bool, error) {
+func (s *Store) SetRolloutState(id, expectGeneration int64, state, detail string) (bool, error) {
 	finished := int64(0)
 	if state == RolloutDone || state == RolloutFailed {
 		finished = time.Now().Unix()
 	}
 	res, err := s.db.Exec(
 		`UPDATE rollouts SET state = ?, detail = ?, finished_unix = ?
-		   WHERE id = ? AND version = ?`,
-		state, detail, finished, id, expectVersion)
+		   WHERE id = ? AND generation = ?`,
+		state, detail, finished, id, expectGeneration)
 	if err != nil {
 		return false, err
 	}
