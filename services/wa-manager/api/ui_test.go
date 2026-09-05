@@ -35,6 +35,20 @@ func (h *harness) doBasicMethod(method, path, pass, origin string) *httptest.Res
 	return rec
 }
 
+// doBasicHeaders is doBasicMethod with arbitrary request headers, so a test
+// can reproduce what a browser actually puts on the wire — Origin and
+// Sec-Fetch-Site together, which is where the restart bug lived.
+func (h *harness) doBasicHeaders(method, path, pass string, headers map[string]string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, nil)
+	r.SetBasicAuth("operator", pass)
+	for k, v := range headers {
+		r.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.h.ServeHTTP(rec, r)
+	return rec
+}
+
 // loggedOut puts the seeded number in the state this whole fix is about: killed
 // and disconnected, which is what a WhatsApp ban looks like from the bridge.
 func (h *harness) loggedOut() {
@@ -280,7 +294,7 @@ func TestTheRestartFormBouncesTheUnitAndRedirectsBack(t *testing.T) {
 	if got := rec.Header().Get("Location"); got != "/tenants/blitz" {
 		t.Errorf("Location = %q, want the number's page", got)
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the form did not bounce the unit: %v", got)
 	}
 }
@@ -368,8 +382,67 @@ func TestTheRestartFormAdmitsAPresentSameOriginHeader(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a same-origin browser POST was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the same-origin form did not bounce the unit: %v", got)
+	}
+}
+
+// The bug a human found in twenty minutes with a browser, and 355 tests could
+// not see. Chrome derives a NAVIGATION's Origin from the referrer policy, and
+// every UI response sets Referrer-Policy: no-referrer — so the restart form,
+// submitted from the page itself, arrives with Origin: "null" and
+// Sec-Fetch-Site: same-origin. Confirmed on the wire with tcpdump against the
+// deployed service on 2026-09-05. Before the Sec-Fetch-Site check this was a
+// 403, which meant the self-service re-pair journey was unreachable from every
+// browser while curl and fetch both worked.
+func TestTheRestartFormAdmitsChromesNullOriginOnASameOriginNavigation(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Origin":         "null",
+		"Sec-Fetch-Site": "same-origin",
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a same-origin form navigation was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
+		t.Fatalf("the form did not bounce the unit: %v", got)
+	}
+}
+
+// Sec-Fetch-Site is trusted because the BROWSER sets it and a page cannot.
+// That trust has to cut both ways: a request the browser labels cross-site is
+// refused even when its Origin was made to look local, or the header would be
+// a way to widen the guard rather than to fix it.
+func TestTheRestartFormRefusesACrossSiteFetchEvenWithAMatchingOrigin(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Origin":         "http://example.com",
+		"Sec-Fetch-Site": "cross-site",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for a browser-declared cross-site POST, got %d", rec.Code)
+	}
+	if got := h.units.seen(); len(got) != 0 {
+		t.Fatalf("a cross-site form bounced the unit: %v", got)
+	}
+}
+
+// A browser too old to send Sec-Fetch-Site falls back to Origin, and there a
+// literal "null" is what a sandboxed frame or a data: document sends — the
+// case the guard exists for. It stays refused.
+func TestANullOriginWithoutSecFetchSiteIsStillRefused(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Origin": "null",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for a null Origin with no browser fetch metadata, got %d", rec.Code)
 	}
 }
 
@@ -386,7 +459,7 @@ func TestTheRestartFormAdmitsAConfiguredPublicOrigin(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a request matching the configured PUBLIC_ORIGIN was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the configured-origin form did not bounce the unit: %v", got)
 	}
 }
@@ -457,7 +530,7 @@ func TestBothRestartRoutesDoTheSameThing(t *testing.T) {
 	}
 
 	apiVerbs, uiVerbs := viaAPI.units.seen(), viaUI.units.seen()
-	if len(apiVerbs) != 2 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
+	if len(apiVerbs) != 3 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
 		t.Fatalf("the two restart routes drove the unit differently: api=%v ui=%v", apiVerbs, uiVerbs)
 	}
 
@@ -472,5 +545,41 @@ func TestBothRestartRoutesDoTheSameThing(t *testing.T) {
 	if len(apiEvents) != 1 || len(uiEvents) != len(apiEvents) ||
 		apiEvents[0].Kind != uiEvents[0].Kind || apiEvents[0].Detail != uiEvents[0].Detail {
 		t.Fatalf("the two restart routes left different support records: api=%+v ui=%+v", apiEvents, uiEvents)
+	}
+}
+
+// "none" means the browser had no initiator — a typed URL, a bookmark, the
+// browser's own UI. It is the branch that WIDENS admission, so it is the one
+// that most needs a test. It cannot be reached with a POST from a page (every
+// page-initiated request has an initiator and computes to at least
+// same-origin), but an operator's own tooling can produce it.
+func TestTheRestartFormAdmitsAnInitiatorlessRequest(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Sec-Fetch-Site": "none",
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("an initiator-less request was refused: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// "same-site" is a different origin under the same registrable domain — a
+// sibling subdomain. This service is single-origin, so that is somebody else,
+// and it is refused exactly like cross-site.
+func TestTheRestartFormRefusesASameSiteRequest(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Origin":         "http://other.example.com",
+		"Sec-Fetch-Site": "same-site",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for a same-site POST, got %d", rec.Code)
+	}
+	if got := h.units.seen(); len(got) != 0 {
+		t.Fatalf("a same-site form bounced the unit: %v", got)
 	}
 }

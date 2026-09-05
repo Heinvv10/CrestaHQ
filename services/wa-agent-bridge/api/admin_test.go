@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -221,5 +224,53 @@ func TestAdminBodiesAreBounded(t *testing.T) {
 		if rec.Code == http.StatusOK {
 			t.Fatalf("%s accepted a %d-byte body; admin bodies must be bounded", path, len(huge))
 		}
+	}
+}
+
+// TestHealthReportsTheNumberOnlyToAnAuthenticatedCaller.
+//
+// The manager's operator screen showed "not paired" beside a number that was
+// connected and taking messages, because nothing ever told it which number the
+// bridge holds. Health is where it now learns that — but health is the only
+// ungated surface this service has, so the number is reported to a caller
+// holding a consumer token and to nobody else. The same reasoning already puts
+// the allowlist COUNT in this body and keeps its entries out.
+func TestHealthReportsTheNumberOnlyToAnAuthenticatedCaller(t *testing.T) {
+	st := store.NewMemory()
+	conn := &stubConnection{up: true, number: "27821234567"}
+	h := newHandlerWithConnection(t, st, &stubSender{}, conn)
+
+	if got, present := decode(t, get(h, "/v1/health"))["number"]; present {
+		t.Fatalf("an unauthenticated caller must not learn the number, got %v", got)
+	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+	if got, present := decode(t, getAuthed(h, "/v1/health", "not-a-real-token"))["number"]; present {
+		t.Fatalf("an unknown token must not learn the number, got %v", got)
+	}
+	// And the refusal is LOGGED. Health needs no credential, so without this
+	// line it would answer "is this token valid?" — the number key appears or
+	// it does not — silently, while the same grind against any other route
+	// writes a line per attempt.
+	if !strings.Contains(logged.String(), "auth rejected path=/v1/health") {
+		t.Fatalf("a rejected token on the ungated endpoint was not logged, got %q", logged.String())
+	}
+	if strings.Contains(logged.String(), "not-a-real-token") {
+		t.Fatal("the rejected token was written to the log")
+	}
+	logged.Reset()
+	if got := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["number"]; got != "27821234567" {
+		t.Fatalf("an authenticated caller must be told the number, got %v", got)
+	}
+}
+
+// An unpaired bridge has no number, and the field is then absent rather than
+// empty: the manager writes what it is told, and "" written over a number
+// already known would erase it on the first sweep after a restart.
+func TestHealthOmitsTheNumberBeforePairing(t *testing.T) {
+	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, &stubConnection{up: true})
+	if got, present := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["number"]; present {
+		t.Fatalf("an unpaired bridge must not report a number, got %v", got)
 	}
 }

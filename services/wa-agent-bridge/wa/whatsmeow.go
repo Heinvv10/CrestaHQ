@@ -273,6 +273,24 @@ func (c *Client) Connected() bool {
 	return !c.connectedAt.IsZero()
 }
 
+// Number is the phone number this session is linked to, digits only, empty
+// until the device is paired. whatsmeow writes the JID into the session store
+// at pairing and it survives a restart, so this is also the answer after a
+// reconnect that needed no re-pair.
+//
+// It is the number's OWN identity, not a customer's: the manager renders it so
+// an operator can tell which of forty numbers a card is about. Everything that
+// carries it is authenticated (see api.handleHealth).
+func (c *Client) Number() string {
+	c.mu.Lock()
+	wac := c.wac
+	c.mu.Unlock()
+	if wac == nil || wac.Store == nil || wac.Store.ID == nil {
+		return ""
+	}
+	return wac.Store.ID.User
+}
+
 // InReplayWindow reports whether the socket is still inside the post-connect
 // period during which whatsmeow replays recent history. Callers record what
 // arrives during it but must not act on it.

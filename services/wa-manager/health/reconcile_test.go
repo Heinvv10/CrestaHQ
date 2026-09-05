@@ -231,3 +231,74 @@ func TestReconcileDoesNotRewriteAnAlreadyRunningTenant(t *testing.T) {
 		t.Fatal("a real transition left updated_unix untouched")
 	}
 }
+
+// The card said "not paired" about a number that was connected and taking
+// messages, because Tenant.Phone was never written by anything. Reconcile is
+// where the manager learns it: the bridge reports its own number to an
+// authenticated caller, and the poller is one.
+func TestReconcileRecordsTheNumberTheBridgeReports(t *testing.T) {
+	s := openStore(t)
+	tenant := store.Tenant{ID: "t1", Instance: "t1", Port: 1, State: store.StatePairing}
+	if err := s.CreateTenant(tenant); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true, Number: "27821234567"}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	got, err := s.GetTenant("t1")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got.Phone != "27821234567" {
+		t.Fatalf("phone = %q, want the number the bridge reported", got.Phone)
+	}
+}
+
+// The tenant this was actually found on: already running for hours, its number
+// never recorded. An "only on change of state" reconcile would leave that card
+// contradicting itself forever, so a known-running tenant with no phone must
+// still take the number.
+func TestReconcileBackfillsTheNumberOnAnAlreadyRunningTenant(t *testing.T) {
+	s := openStore(t)
+	tenant := store.Tenant{ID: "t1", Instance: "t1", Port: 1, State: store.StateRunning}
+	if err := s.CreateTenant(tenant); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true, Number: "27821234567"}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	got, err := s.GetTenant("t1")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got.Phone != "27821234567" {
+		t.Fatalf("phone = %q, want the number backfilled onto a running tenant", got.Phone)
+	}
+}
+
+// A bridge that reports no number — restarted and not yet paired, or an older
+// build — must not erase a number already known. The write path is deliberately
+// one-way for exactly this reason.
+func TestReconcileNeverErasesAKnownNumber(t *testing.T) {
+	s := openStore(t)
+	tenant := store.Tenant{ID: "t1", Instance: "t1", Port: 1, State: store.StateRunning, Phone: "27821234567"}
+	if err := s.CreateTenant(tenant); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	got, err := s.GetTenant("t1")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got.Phone != "27821234567" {
+		t.Fatalf("phone = %q, want the known number left alone", got.Phone)
+	}
+}

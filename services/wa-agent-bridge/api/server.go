@@ -36,6 +36,9 @@ type ConnectionState interface {
 	// It is a credential: the handler serves it only to an authenticated
 	// caller and never logs it.
 	PairingCode() (code string, expiresAt time.Time, pairing bool)
+	// Number is the phone number this session is linked to, digits only, and
+	// empty until it is paired.
+	Number() string
 }
 
 type Deps struct {
@@ -148,6 +151,36 @@ func New(deps Deps) http.Handler {
 	return mux
 }
 
+// bearerToken pulls the token out of an Authorization header. One function,
+// because handleHealth asks the same question `authed` does and two copies of
+// a credential parse are two things that have to stay in step.
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	return header[len(prefix):], true
+}
+
+// consumerIndex resolves a bearer token to a registered consumer, or -1.
+//
+// Every candidate is compared and the comparison is constant-time; the loop
+// deliberately does not break on a match. See authed, which is its caller for
+// every gated route — handleHealth is the one place that asks the question
+// without gating on the answer, because that endpoint stays reachable to an
+// unauthenticated monitor and only WIDENS what it reports for a caller that
+// holds a token.
+func (s *server) consumerIndex(token string) int {
+	matched := -1
+	for i, c := range s.deps.Consumers {
+		if subtle.ConstantTimeCompare([]byte(c.Token), []byte(token)) == 1 {
+			matched = i
+		}
+	}
+	return matched
+}
+
 type authedHandler func(w http.ResponseWriter, r *http.Request, consumer config.Consumer)
 
 // authed resolves the bearer token to a registered consumer.
@@ -159,20 +192,12 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, consumer config.
 // not break on a match for the same reason.
 func (s *server) authed(next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		header := r.Header.Get("Authorization")
-		if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		token, ok := bearerToken(r)
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing bearer token"})
 			return
 		}
-		token := header[len(prefix):]
-
-		matched := -1
-		for i, c := range s.deps.Consumers {
-			if subtle.ConstantTimeCompare([]byte(c.Token), []byte(token)) == 1 {
-				matched = i
-			}
-		}
+		matched := s.consumerIndex(token)
 		if matched < 0 {
 			// The token itself is never logged: a rejected token is often a
 			// mistyped real one, and a log file is not the place for it.

@@ -8,7 +8,7 @@ Description=WhatsApp agent bridge (rails-guarded) — instance %i
 # takes.
 
 # Bound the restart loop. A failing initial WhatsApp connect exits the process,
-# and Restart=on-failure with RestartSec=15 would otherwise retry forever at
+# and Restart=always with RestartSec=15 would otherwise retry forever at
 # ~4 attempts/minute — "retrying in a loop turns a soft flag into a harder
 # block", the exact behaviour the Go code refuses and this file would hand
 # back. RestartSec=15 never trips systemd's default 5-in-10s limit, so the
@@ -29,7 +29,19 @@ Type=simple
 WorkingDirectory=/opt/wa-agent-bridge/%i
 EnvironmentFile=/opt/wa-agent-bridge/%i/.env
 ExecStart=/opt/wa-agent-bridge/bin/wa-agent-bridge
-Restart=on-failure
+# always, not on-failure. The only exit-0 path in main.go is SIGINT/SIGTERM,
+# and on-failure declines to restart after it: a stray TERM — a session
+# teardown, someone's kill, a scripted pkill — left the process gone, systemd
+# reporting Result=success, and a customer's number silently offline until a
+# human noticed. The manager would eventually mark it logged_out, which is a
+# lie: the session is intact, the process is merely stopped.
+#
+# This does NOT override an operator. systemd never restarts a unit stopped
+# with `systemctl stop`, whatever Restart= says, so the deliberate stop still
+# stops. always only adds back the case nobody asked for. Crash recovery is
+# unchanged: log.Fatal exits nonzero and on-failure already covered it, still
+# bounded by the StartLimit above.
+Restart=always
 RestartSec=15
 StandardOutput=append:/opt/wa-agent-bridge/%i/bridge.log
 StandardError=append:/opt/wa-agent-bridge/%i/bridge.log

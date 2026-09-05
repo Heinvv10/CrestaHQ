@@ -108,6 +108,14 @@ type Card struct {
 	// comment.
 	QRLive bool
 
+	// Unreachable says the manager could not reach this bridge at all — the
+	// process is stopped, or the port is dead. It exists to offer the restart:
+	// NeedsPairing is false here (a bridge we cannot see has told us nothing
+	// about its pairing), so the only state where restarting IS the remedy was
+	// also the only state the screen offered no way to do it from, leaving an
+	// operator with a red card and no control on it.
+	Unreachable bool
+
 	Problems []string
 }
 
@@ -167,6 +175,7 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 	}
 	if r == nil || !r.Reachable {
 		c.Status, c.Tone = "Unreachable — the manager cannot see this bridge", ToneBad
+		c.Unreachable = true
 		c.SentToday, c.LastInbound, c.KillSwitch = "unknown", "unknown", "unknown"
 		// Not "on": a bridge we cannot see tells us nothing about its rails,
 		// and a safety claim about an unobserved number is worse than no claim.

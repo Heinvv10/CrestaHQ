@@ -82,6 +82,16 @@ func (g *clientHolder) PairingCode() (string, time.Time, bool) {
 	return c.PairingCode()
 }
 
+// Number satisfies api.ConnectionState. Before the client is set there is no
+// session and so no number — the same fail-closed direction as Connected.
+func (g *clientHolder) Number() string {
+	c := g.client.Load()
+	if c == nil {
+		return ""
+	}
+	return c.Number()
+}
+
 // listenValidated binds the address config.Load already validated.
 //
 // cfg.ListenAddr is the ONLY source. config.Load refuses anything that is not

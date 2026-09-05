@@ -15,6 +15,8 @@ var errExit = errors.New("systemctl exited non-zero")
 
 type Controller interface {
 	Enable(instance string) error
+	// ResetFailed clears a unit's failure and start-rate-limit state.
+	ResetFailed(instance string) error
 	Start(instance string) error
 	Stop(instance string) error
 	Disable(instance string) error
@@ -65,6 +67,17 @@ func (c *systemctl) Enable(i string) error  { return c.verb("enable", i) }
 func (c *systemctl) Start(i string) error   { return c.verb("start", i) }
 func (c *systemctl) Stop(i string) error    { return c.verb("stop", i) }
 func (c *systemctl) Disable(i string) error { return c.verb("disable", i) }
+
+// ResetFailed clears `failed` and, with it, the start rate limit.
+//
+// StartLimitBurst=5 in ten minutes counts every start — and under
+// Restart=always a clean exit is one of them. Once the limit trips, systemd
+// refuses a manual start until the window rolls or this runs, which would
+// make the operator screen's "Restart this bridge" answer "the unit was
+// stopped but did not start again" for up to ten minutes in exactly the
+// situation that button exists for. It is what an operator types by hand at
+// that point.
+func (c *systemctl) ResetFailed(i string) error { return c.verb("reset-failed", i) }
 
 // IsActive treats a non-zero exit as "not active" rather than an error:
 // `systemctl is-active` exits 3 for an inactive unit, which is an answer, not a

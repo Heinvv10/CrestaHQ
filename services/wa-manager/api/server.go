@@ -47,6 +47,9 @@ type Poller interface {
 type Units interface {
 	Stop(instance string) error
 	Start(instance string) error
+	// ResetFailed clears the unit's failure and start-rate-limit state, which
+	// is otherwise what stops a restart from taking. See restartUnit.
+	ResetFailed(instance string) error
 }
 
 type Deps struct {
