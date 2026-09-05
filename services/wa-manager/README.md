@@ -77,12 +77,14 @@ The manager drives its bridges with `systemctl --user`. That is a fact about
 - That user needs lingering (`loginctl enable-linger <user>`) so units survive
   logout and come up at boot.
 - The templated bridge unit shipped at
-  `../wa-agent-bridge/deploy/wa-agent-bridge@.service` is written as a **system**
-  unit. Installed as a user unit it needs `User=` removed (a user manager
-  cannot switch users) and `WantedBy=default.target` in place of
-  `multi-user.target`. A system-level install of that unit will not be visible
-  to this manager at all — different systemd instance, and every verb returns
-  "unit not found".
+  `../wa-agent-bridge/deploy/wa-agent-bridge@.service` is already a user unit —
+  copy it in as-is. Do not add `User=`: a user manager cannot switch users, and
+  the unit exits `217/USER` into an auto-restart loop if you try. Note the shape
+  of that failure — `is-active` reports `activating`, not `failed`, for the
+  first ten minutes, so the number simply reads as down with no stated cause.
+- Install it as a **user** unit, not a system one. A system-level install is
+  invisible to this manager — different systemd instance, and every verb
+  returns "unit not found".
 
 ```
 /opt/wa-manager/

@@ -1,7 +1,11 @@
 [Unit]
 Description=WhatsApp agent bridge (rails-guarded) — instance %i
-After=network-online.target
-Wants=network-online.target
+# This is a USER unit (see [Install] below) — the manager drives it with
+# `systemctl --user`, per the design spec §3.3 (velo has Linger=yes and no
+# passwordless sudo). The user manager has no network-online.target, so there
+# is nothing to order against here: a boot-time race is instead absorbed by the
+# bounded restart below, which is the same path a transient connect failure
+# takes.
 
 # Bound the restart loop. A failing initial WhatsApp connect exits the process,
 # and Restart=on-failure with RestartSec=15 would otherwise retry forever at
@@ -22,7 +26,6 @@ StartLimitIntervalSec=600
 
 [Service]
 Type=simple
-User=wabridge
 WorkingDirectory=/opt/wa-agent-bridge/%i
 EnvironmentFile=/opt/wa-agent-bridge/%i/.env
 ExecStart=/opt/wa-agent-bridge/bin/wa-agent-bridge
@@ -50,4 +53,4 @@ ProtectHome=true
 ReadWritePaths=/opt/wa-agent-bridge/%i
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
