@@ -15,11 +15,11 @@ Supersedes the *sequencing* in [PARITY_PLAN.md](PARITY_PLAN.md) (its findings an
 5. **GBP API v4 access applied for 2026-09-05** (case 4-6894000042302, ~7–10 business days). Reputation is built against a fixture adapter; the live v4 adapter slots in on approval.
 6. **Subprojects are numbered so each can be planned and executed in its own session, several in parallel.** Each session starts by reading this file and its own section, then runs `grill-me` on its own scope before building.
 
-**Proven assumptions**
+**Proven assumptions** — counts drawn from this repo are re-checkable; the GHL/business figures are asserted from live-account observation and cannot be verified from source.
 - Heavy GHL use is Contacts, Conversations, Automation, Reputation, Opportunities, email; 9 published review workflows carry the business (ApexSignal `ghl-review-workflow-parity.md`).
 - Contacts/custom fields/tags already migrated and verified (22,732 contacts).
 - Review-gating fixed in all 4 live GHL branches on 2026-09-05, so the Google application is truthful.
-- No E2E harness exists in the repo (40 Vitest files, zero Playwright).
+- No E2E harness exists in the repo (44 Vitest files, zero Playwright).
 
 **Remaining risks**
 - Google may reject or sit on v4 for >60 days → reputation stays fixture-only (kill criterion in PARITY_PLAN.md).
@@ -90,7 +90,7 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 
 ### SP6 — Workflows / automations engine + rebuild of the 25 published workflows
 **GHL surface:** ~50 triggers, ~100 actions, wait/if-else/goal/webhook/AI steps, enrolment history, execution logs, test mode, folders.
-**CrestaHQ today:** builder with 10 triggers and 14 nodes, QStash worker, wait-for-reply.
+**CrestaHQ today:** builder with 11 triggers and 15 node types, QStash worker, wait-for-reply.
 **Known gaps:** trigger/action breadth, goal events, if/else on custom values, execution log UI, folders, test mode. Then rebuild Blitz (10), Velocity (7), Vortex (7), Brightsphere (1) from `docs/WORKFLOW_RECONSTRUCTION.md` — as **drafts** on the CrestaHQ tenant until SP14.
 **Depends on:** SP0, SP1 (tags/pipelines), SP2 (send actions).
 
