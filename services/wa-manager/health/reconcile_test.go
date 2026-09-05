@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
@@ -175,5 +176,58 @@ func TestReconcileContinuesPastOneTenantsFailure(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("the logged_out event after the failure = %d, want 1", len(events))
+	}
+}
+
+// The Connected branch wrote on EVERY sweep. A healthy tenant is connected
+// every time, so under synchronous=FULL that is one fsync-backed UPDATE per
+// tenant per cycle — ~13 writes a second at 200 tenants — recording state that
+// is not changing. Only a CHANGE may write, exactly as the logged_out branch
+// already did.
+//
+// The write is observed through updated_unix, which SetTenantState stamps with
+// the current time. The row is seeded far enough in the past that a write is
+// unmistakable rather than a second-boundary coin flip.
+func TestReconcileDoesNotRewriteAnAlreadyRunningTenant(t *testing.T) {
+	s := openStore(t)
+	long := time.Now().Add(-100 * 24 * time.Hour).Truncate(time.Second)
+	running := store.Tenant{ID: "steady", Instance: "steady", Port: 1,
+		State: store.StateRunning, CreatedAt: long}
+	pairing := store.Tenant{ID: "fresh", Instance: "fresh", Port: 2,
+		State: store.StatePairing, CreatedAt: long}
+	for _, tenant := range []store.Tenant{running, pairing} {
+		if err := s.CreateTenant(tenant); err != nil {
+			t.Fatalf("CreateTenant %q: %v", tenant.ID, err)
+		}
+	}
+
+	reports := map[string]Report{
+		"steady": {Reachable: true, Connected: true},
+		"fresh":  {Reachable: true, Connected: true},
+	}
+	if err := Reconcile(s, []store.Tenant{running, pairing}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	got, err := s.GetTenant("steady")
+	if err != nil {
+		t.Fatalf("GetTenant steady: %v", err)
+	}
+	if !got.UpdatedAt.Equal(long) {
+		t.Fatalf("an already-running tenant was rewritten (updated_unix %v -> %v); "+
+			"only a state CHANGE may write", long, got.UpdatedAt)
+	}
+
+	// The other half: a tenant whose state IS changing must still be written,
+	// so the guard cannot be satisfied by never writing at all.
+	got, err = s.GetTenant("fresh")
+	if err != nil {
+		t.Fatalf("GetTenant fresh: %v", err)
+	}
+	if got.State != store.StateRunning {
+		t.Fatalf("a tenant that became connected was not written: state = %q", got.State)
+	}
+	if got.UpdatedAt.Equal(long) {
+		t.Fatal("a real transition left updated_unix untouched")
 	}
 }

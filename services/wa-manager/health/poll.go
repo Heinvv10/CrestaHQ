@@ -187,6 +187,14 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 
 		switch {
 		case r.Connected:
+			// Only on CHANGE, like the logged_out branch below. A healthy
+			// tenant is Connected on every single sweep, and an unconditional
+			// write is an fsync-backed UPDATE per tenant per cycle under
+			// synchronous=FULL — at 200 tenants on a 15s sweep, ~13 writes a
+			// second recording state that is not changing.
+			if t.State == store.StateRunning {
+				continue
+			}
 			if err := st.SetTenantState(t.ID, store.StateRunning, ""); err != nil {
 				errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
 			}
