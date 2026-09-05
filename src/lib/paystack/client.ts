@@ -41,13 +41,23 @@ export async function paystackRequest<T>(
   method: "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
+  /**
+   * Call as a DIFFERENT Paystack account than this deployment's.
+   *
+   * Client Billing omits it and gets `PAYSTACK_SECRET_KEY` — the agency's own
+   * account. The per-sub-account card rail passes the tenant's stored key, so
+   * a sub-account's customers pay the sub-account. Getting this wrong charges
+   * money into the wrong balance, which is why it is an explicit argument
+   * rather than ambient state.
+   */
+  keyOverride?: string,
 ): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${PAYSTACK_BASE_URL}${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${secretKey()}`,
+        Authorization: `Bearer ${keyOverride ?? secretKey()}`,
         "Content-Type": "application/json",
       },
       ...(body ? { body: JSON.stringify(body) } : {}),

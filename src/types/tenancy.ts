@@ -1,5 +1,6 @@
 import type { StripeConnectionMeta } from "@/types/payments";
 import type { GoogleConnectionMeta } from "@/types/google";
+import type { PaystackConnectionMeta } from "@/types/paystack-connection";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
 import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
@@ -404,6 +405,18 @@ export interface SubAccountDoc {
    * (`allow read, write: if false`). Never add a credential to this object.
    */
   stripeConnectionMeta?: StripeConnectionMeta | null;
+  /**
+   * Non-secret display metadata for the connected Paystack account (see
+   * {@link PaystackConnectionMeta}). The South African card rail — Stripe does
+   * not serve SA merchants for payouts — and gated by the same
+   * `paymentsEnabledByAgency` flag as the Stripe connection above.
+   *
+   * The secret key itself is deliberately NOT here, for the same
+   * document-level-rules reason: it lives at
+   * `subAccounts/{id}/private/paystackConnection`. Never add a credential to
+   * this object.
+   */
+  paystackConnectionMeta?: PaystackConnectionMeta | null;
   /**
    * Webinar1 (webinar platform) connection — display metadata only. The API
    * key + webhook signing secret live at
