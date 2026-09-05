@@ -43,6 +43,44 @@ export function assertFixtureScope(label: string, doc: unknown): void {
         `(${allowed.join(", ")}). Refusing to touch it.`,
     );
   }
+
+  // Independent of the subAccountId check above. Teardown selects documents
+  // with `where("subAccountId","==",<fixture id>)`, so re-checking that field
+  // can only ever restate the query's own predicate — it cannot fail, and a
+  // guard that cannot fail is decoration. agencyId is not part of that query,
+  // so this is the assertion that actually catches a fixture id pointing at
+  // someone else's tenant.
+  const agencyId = (doc as Record<string, unknown>).agencyId;
+  const expected = readEnv().E2E_AGENCY_ID;
+  if (agencyId !== expected) {
+    throw new Error(
+      `${label}: agencyId ${String(agencyId)} is not the E2E agency ` +
+        `(${expected}). Refusing to touch it.`,
+    );
+  }
+}
+
+/**
+ * Verify a fixture sub-account is what its name says it is. Called by BOTH
+ * global setup and global teardown — Playwright runs globalTeardown even when
+ * globalSetup throws, so the setup-time check alone does not fence the delete
+ * path. Verified against playwright 1.62.1: a throwing globalSetup still runs
+ * globalTeardown to completion.
+ */
+export async function assertFixtureSubAccount(
+  subAccountId: string,
+  expectedName: string,
+): Promise<void> {
+  await assertFixtureAgency(subAccountId);
+  const snap = await adminDb().doc(`subAccounts/${subAccountId}`).get();
+  const name = snap.data()?.name;
+  if (name !== expectedName) {
+    throw new Error(
+      `Sub-account ${subAccountId} is named "${String(name)}", expected ` +
+        `"${expectedName}". Refusing to touch it. ` +
+        `Re-check E2E_SUBACCOUNT_ID / E2E_SUBACCOUNT_ID_SECONDARY.`,
+    );
+  }
 }
 
 /** Throw unless the named sub-account belongs to the fixture agency. */

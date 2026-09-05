@@ -40,13 +40,38 @@ describe("assertFixtureScope", () => {
     );
   });
 
-  it("accepts both fixture sub-accounts", async () => {
+  /**
+   * The teardown query already selects on subAccountId, so re-checking that
+   * field can only restate the query's own predicate. agencyId is the field
+   * the query does NOT filter on — it is what catches a fixture id secret
+   * pointing at a real client tenant.
+   */
+  it("throws when the document belongs to another agency", async () => {
     const { assertFixtureScope } = await import("./guard");
     expect(() =>
+      assertFixtureScope("contacts/abc", {
+        subAccountId: "fixture-primary",
+        agencyId: "crestahq-live",
+      }),
+    ).toThrow(/not the E2E agency/);
+    expect(() =>
       assertFixtureScope("contacts/abc", { subAccountId: "fixture-primary" }),
+    ).toThrow(/not the E2E agency/);
+  });
+
+  it("accepts both fixture sub-accounts in the E2E agency", async () => {
+    const { assertFixtureScope } = await import("./guard");
+    expect(() =>
+      assertFixtureScope("contacts/abc", {
+        subAccountId: "fixture-primary",
+        agencyId: "agency-e2e",
+      }),
     ).not.toThrow();
     expect(() =>
-      assertFixtureScope("contacts/abc", { subAccountId: "fixture-secondary" }),
+      assertFixtureScope("contacts/abc", {
+        subAccountId: "fixture-secondary",
+        agencyId: "agency-e2e",
+      }),
     ).not.toThrow();
   });
 });

@@ -1,4 +1,12 @@
 import { expect, test } from "@playwright/test";
+
+/**
+ * Traces record request bodies, and this is the only spec that submits
+ * E2E_PASSWORD (to Firebase's signInWithPassword) — a repository secret that
+ * must not be re-emitted into an uploaded CI artifact. Every other spec starts
+ * from a saved session and never sees it, so they keep their traces.
+ */
+test.use({ trace: "off", screenshot: "off" });
 import { readEnv } from "../lib/env";
 
 /**

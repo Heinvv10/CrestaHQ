@@ -14,6 +14,10 @@ export default defineConfig({
   testDir: "./e2e/specs",
   // The fixture tenant is shared mutable state — two workers racing it would
   // produce flake that looks like product bugs.
+  // Each spec's own assertions allow up to 30s; without a larger per-test
+  // budget the default 30s would expire first and those numbers would be
+  // unreachable decoration.
+  timeout: 120_000,
   workers: 1,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

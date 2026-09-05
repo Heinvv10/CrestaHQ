@@ -1,5 +1,4 @@
 import { chromium } from "@playwright/test";
-import { adminDb } from "./lib/admin";
 import {
   FIXTURE_PRIMARY_NAME,
   FIXTURE_SECONDARY_NAME,
@@ -7,7 +6,7 @@ import {
   baseURL,
   readEnv,
 } from "./lib/env";
-import { assertFixtureAgency } from "./lib/guard";
+import { assertFixtureSubAccount } from "./lib/guard";
 import { ensureSeed } from "./lib/seed";
 
 /**
@@ -16,22 +15,6 @@ import { ensureSeed } from "./lib/seed";
  * an id typo that resolved to a real client sub-account would otherwise be
  * discovered by the teardown deleting its contacts.
  */
-
-async function assertFixtureSubAccount(
-  subAccountId: string,
-  expectedName: string,
-): Promise<void> {
-  await assertFixtureAgency(subAccountId);
-  const snap = await adminDb().doc(`subAccounts/${subAccountId}`).get();
-  const name = snap.data()?.name;
-  if (name !== expectedName) {
-    throw new Error(
-      `Sub-account ${subAccountId} is named "${String(name)}", expected ` +
-        `"${expectedName}". Refusing to run against it. ` +
-        `Re-check E2E_SUBACCOUNT_ID / E2E_SUBACCOUNT_ID_SECONDARY.`,
-    );
-  }
-}
 
 /**
  * Sign in through the real form rather than minting the `__session` cookie
@@ -50,8 +33,10 @@ async function saveAuthenticatedState(): Promise<void> {
   try {
     const page = await browser.newPage({ baseURL: baseURL() });
     await page.goto("/login");
-    await page.getByLabel("Email").fill(env.E2E_EMAIL);
-    await page.getByLabel("Password").fill(env.E2E_PASSWORD);
+    // Same locators as login.spec.ts, so that spec fails first when the
+    // form changes instead of every spec dying in setup.
+    await page.locator("#email").fill(env.E2E_EMAIL);
+    await page.locator("#password").fill(env.E2E_PASSWORD);
     await page.getByRole("button", { name: "Sign In" }).click();
     await page.waitForURL(/\/agency$/, { timeout: 60_000 });
     await page
