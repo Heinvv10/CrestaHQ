@@ -70,6 +70,8 @@ export async function GET(request: Request) {
         messageTemplates: payload.messageTemplates?.length ?? 0,
         products: payload.products?.length ?? 0,
         workflows: payload.workflows?.length ?? 0,
+        customFields: payload.customFields?.length ?? 0,
+        aiProfile: payload.aiProfile ? 1 : 0,
       },
     };
   });

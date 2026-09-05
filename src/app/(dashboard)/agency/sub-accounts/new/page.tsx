@@ -139,6 +139,9 @@ export default function NewSubAccountPage() {
               productsCreated: number;
               workflowsCreated: number;
               workflowsLinked: number;
+              customFieldsCreated: number;
+              customFieldsSkipped: number;
+              aiProfileApplied: boolean;
             };
             error?: string;
           };
@@ -147,7 +150,7 @@ export default function NewSubAccountPage() {
           }
           const r = applyData.result;
           snapshotNote = r
-            ? ` Loaded snapshot: ${r.formsCreated} forms, ${r.workflowsCreated} workflows (drafts), ${r.templatesCreated} templates, ${r.productsCreated} products.`
+            ? ` Loaded snapshot: ${r.formsCreated} forms, ${r.workflowsCreated} workflows (drafts), ${r.templatesCreated} templates, ${r.productsCreated} products, ${r.customFieldsCreated} custom fields${r.aiProfileApplied ? ", AI persona" : ""}.`
             : " Snapshot loaded.";
         } catch (applyErr) {
           toast.warning(
