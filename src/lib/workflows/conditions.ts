@@ -1,7 +1,10 @@
 import "server-only";
 
+import { REPLY_TEXT_FIELD } from "@/lib/workflows/catalog";
 import type { Condition, ConditionGroup } from "@/types/workflows";
 import type { Contact } from "@/types/contacts";
+
+export { REPLY_TEXT_FIELD };
 
 /**
  * Extra values a condition can read that do not live on the contact.
@@ -14,9 +17,6 @@ export interface ConditionContext {
   replyText?: string | null;
 }
 
-/** The one non-contact field path a condition may reference. */
-export const REPLY_TEXT_FIELD = "reply.text";
-
 /**
  * Evaluate a workflow ConditionGroup against a contact. `match: "all"` (the
  * default) requires every condition; `match: "any"` requires at least one.
@@ -24,8 +24,11 @@ export const REPLY_TEXT_FIELD = "reply.text";
  * is always true (no filter).
  *
  * Trigger filters pass no context, so a `reply.text` condition there reads
- * null and cannot pass — a trigger fires before any reply exists, so matching
- * one would be meaningless rather than merely unsupported.
+ * null — a trigger fires before any reply exists. The builder does not offer
+ * the field on a trigger, but nothing rejects it in stored JSON, so be aware
+ * of the shape it degrades to: `is_set`/`contains`/`equals` are always false
+ * and `not_set`/`not_equals` always TRUE. The second is the trap — such a
+ * filter would match every contact rather than none.
  */
 function getField(
   contact: Contact,

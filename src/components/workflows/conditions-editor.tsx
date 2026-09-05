@@ -3,7 +3,7 @@
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CONDITION_OPS } from "@/lib/workflows/catalog";
+import { CONDITION_OPS, REPLY_TEXT_FIELD } from "@/lib/workflows/catalog";
 import type { Condition, ConditionGroup, ConditionOp } from "@/types/workflows";
 
 const COMMON_FIELDS = [
@@ -17,11 +17,6 @@ const COMMON_FIELDS = [
 ];
 
 const NO_VALUE_OPS: ConditionOp[] = ["is_set", "not_set"];
-
-/** Only an if_else that sits after a `wait_for_reply` can read this. A trigger
- *  filter runs before any reply exists, so offering it there would be a field
- *  that silently never matches. */
-const REPLY_FIELD = "reply.text";
 
 export function ConditionsEditor({
   value,
@@ -103,7 +98,7 @@ export function ConditionsEditor({
         </div>
       ))}
       <datalist id={allowReplyField ? "wf-fields-reply" : "wf-fields"}>
-        {(allowReplyField ? [REPLY_FIELD, ...COMMON_FIELDS] : COMMON_FIELDS).map(
+        {(allowReplyField ? [REPLY_TEXT_FIELD, ...COMMON_FIELDS] : COMMON_FIELDS).map(
           (f) => (
             <option key={f} value={f} />
           ),

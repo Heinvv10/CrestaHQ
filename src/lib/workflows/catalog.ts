@@ -74,6 +74,18 @@ export const ADDABLE_TYPES: WorkflowNodeType[] = [
   "goal",
 ];
 
+/**
+ * The one condition field that does not live on the contact: the message body
+ * that resumed a `wait_for_reply`. Declared here rather than in conditions.ts
+ * because that module is `server-only` and the builder needs the same string —
+ * two copies drift the moment one side is renamed.
+ *
+ * Only meaningful on an `if_else`. A trigger filter is evaluated with no reply
+ * context, so a condition on this field there reads null and can never mean
+ * what its author intended.
+ */
+export const REPLY_TEXT_FIELD = "reply.text";
+
 export const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
   { value: "equals", label: "equals" },
   { value: "not_equals", label: "does not equal" },
