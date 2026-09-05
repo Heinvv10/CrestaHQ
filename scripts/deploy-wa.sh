@@ -42,7 +42,13 @@ BRIDGE_ROOT="${BRIDGE_ROOT:-/opt/wa-agent-bridge}"
 MANAGER_UNIT="${MANAGER_UNIT:-wa-manager}"
 BRIDGE_UNIT="${BRIDGE_UNIT:-wa-agent-bridge}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl --user}"
-LOCK="/tmp/wa-deploy.lock"
+# NOT /tmp. This box has five gha-* accounts that execute repository CI code,
+# and a predictable name in a world-writable directory is a deploy-denial
+# primitive: plant a file holding a live pid of your own and every deploy —
+# including an emergency one — refuses to start. A directory under the user's
+# own runtime dir is not writable by them, and mkdir is atomic and does not
+# follow symlinks.
+LOCK="${XDG_RUNTIME_DIR:-$HOME}/wa-deploy.lock.d"
 MANAGER_ADDR="${MANAGER_ADDR:-127.0.0.1:33000}"
 HEALTH_TRIES=30
 
@@ -62,16 +68,17 @@ say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ── Lock ────────────────────────────────────────────────────────────────────
-if [ -f "$LOCK" ]; then
-  pid=$(cat "$LOCK" 2>/dev/null || echo "")
+if ! mkdir "$LOCK" 2>/dev/null; then
+  pid=$(cat "$LOCK/pid" 2>/dev/null || echo "")
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     die "another wa deploy is running (pid $pid). Wait for it to finish."
   fi
   echo "clearing stale lock (pid ${pid:-none} is gone)"
-  rm -f "$LOCK"
+  rm -rf "$LOCK"
+  mkdir "$LOCK" || die "could not take the deploy lock at $LOCK"
 fi
-echo $$ > "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
 
 # ── Business-hours gate ─────────────────────────────────────────────────────
 dow=$(TZ=Africa/Johannesburg date +%u)   # 1=Mon .. 7=Sun
@@ -123,7 +130,7 @@ done
 
 # ── Build into a staging dir, never straight over a running binary ──────────
 STAGE=$(mktemp -d)
-trap 'rm -f "$LOCK"; rm -rf "$STAGE"' EXIT
+trap 'rm -rf "$LOCK" "$STAGE"' EXIT
 
 say "Building $SHA"
 # -trimpath and -buildvcs=false on every build. Go stamps the VCS revision into
@@ -149,18 +156,24 @@ GOFLAGS_REPRO=(-trimpath -buildvcs=false)
 # nothing stale, and the new binary would sit on disk while every bridge kept
 # running the old one. That is a security patch silently not deployed.
 #
-# So the version is derived from the ARTIFACT. Build unstamped, hash that, and
-# stamp the hash — prefixed with the last commit to touch the service so a
-# human can still trace it. Identical source and toolchain give an identical
-# unstamped binary (verified, with the reproducibility flags above), so the
-# version is stable across redeploys; anything that actually changes the binary
-# changes the version and therefore triggers a rollout.
-bridge_src_sha=$(git log -1 --format=%h -- services/wa-agent-bridge)
+# So the version is derived from the ARTIFACT and from NOTHING ELSE. Build
+# unstamped, hash that, stamp the hash.
+#
+# It is tempting to prefix the hash with a commit sha for traceability. Do not:
+# that puts the commit back inside the compared string, and then editing this
+# service's README — a commit that touches the directory and changes no
+# behaviour — restarts every customer's number. The commit that produced a
+# build belongs in the deploy LOG, which is what the line below prints, not in
+# the identity the fleet is compared against.
+#
+# Identical source and toolchain give an identical unstamped binary (verified,
+# with the reproducibility flags above), so the version is stable across
+# redeploys; anything that actually changes the binary changes the version and
+# therefore triggers a rollout.
 ( cd services/wa-agent-bridge && go build "${GOFLAGS_REPRO[@]}" -o "$STAGE/bridge.unstamped" . ) || die "build wa-agent-bridge"
-bridge_hash=$(sha256sum "$STAGE/bridge.unstamped" | cut -c1-8)
-BRIDGE_VERSION="${bridge_src_sha}-${bridge_hash}"
+BRIDGE_VERSION=$(sha256sum "$STAGE/bridge.unstamped" | cut -c1-12)
 ( cd services/wa-agent-bridge && go build "${GOFLAGS_REPRO[@]}" -ldflags "-X main.version=$BRIDGE_VERSION" -o "$STAGE/wa-agent-bridge" . ) || die "stamp wa-agent-bridge"
-echo "bridge version $BRIDGE_VERSION"
+echo "bridge artifact $BRIDGE_VERSION built from $SHA"
 
 # ── Decide what actually changed ────────────────────────────────────────────
 # A byte-identical bridge binary means no bridge is restarted at all. This is
@@ -212,10 +225,16 @@ $SYSTEMCTL restart "$MANAGER_UNIT" || die "restart $MANAGER_UNIT"
 say "Manager health"
 ok=0
 for i in $(seq 1 $HEALTH_TRIES); do
-  # 401 is the healthy answer from an unauthenticated probe: the manager is up
-  # and refusing us, which is exactly right. A connection failure gives 000.
+  # 401 is the ONLY healthy answer to an unauthenticated probe: the manager is
+  # up and refusing us, which is exactly right. A connection failure gives 000.
+  # 200 is deliberately NOT accepted — every route on this service is
+  # authenticated, so an unauthenticated 200 means authentication is broken,
+  # which is the one condition a health check must never report as success.
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$MANAGER_ADDR/" || echo 000)
-  if [ "$code" = "401" ] || [ "$code" = "200" ]; then ok=1; echo "healthy after ${i}s (HTTP $code)"; break; fi
+  if [ "$code" = "401" ]; then ok=1; echo "healthy after ${i}s (HTTP 401)"; break; fi
+  if [ "$code" = "200" ]; then
+    die "the manager answered 200 to an UNAUTHENTICATED probe — every route is supposed to require the operator token. Authentication is broken; not proceeding."
+  fi
   sleep 1
 done
 if [ "$ok" -ne 1 ]; then

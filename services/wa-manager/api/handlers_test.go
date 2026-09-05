@@ -676,3 +676,84 @@ func TestTenantViewCarriesTheAllowlistCount(t *testing.T) {
 		t.Fatal("an unreadable allowlist must stay null in JSON, never become 0")
 	}
 }
+
+// The rollout routes restart every WhatsApp number on this box. They must be
+// gated exactly like the other privileged routes — this is the test that
+// notices if the routing ever regresses to unauthenticated.
+func TestTheRolloutRoutesRefuseAnUnauthenticatedCaller(t *testing.T) {
+	h := newHarness(t)
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/rollout"},
+		{http.MethodGet, "/api/rollout"},
+	} {
+		if rec := h.do(tc.method, tc.path, "", `{"version":"v2"}`); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without a token = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+		if rec := h.do(tc.method, tc.path, "not-the-operator-token", `{"version":"v2"}`); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s with a wrong token = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+	}
+	// And nothing was queued by those attempts.
+	if _, ok, err := h.st.CurrentRollout(); err != nil || ok {
+		t.Fatalf("an unauthenticated caller queued a rollout (ok=%v err=%v)", ok, err)
+	}
+}
+
+// A rollout with no version would make every bridge look stale forever, since
+// a bridge's reported version can never equal "".
+func TestARolloutWithoutAVersionIsRefused(t *testing.T) {
+	h := newHarness(t)
+	for _, body := range []string{`{}`, `{"version":""}`, `{"version":"   "}`} {
+		rec := h.do(http.MethodPost, "/api/rollout", operatorTok, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST %s = %d, want 400", body, rec.Code)
+		}
+	}
+	if rec := h.do(http.MethodPost, "/api/rollout", operatorTok, `not json`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST of non-JSON = %d, want 400", rec.Code)
+	}
+	if _, ok, _ := h.st.CurrentRollout(); ok {
+		t.Fatal("a refused request still queued a rollout")
+	}
+}
+
+// The deploy script reads this body to decide whether it succeeded, and polls
+// the GET until the state leaves pending/running. Both shapes are a contract
+// with a bash script that cannot be typechecked, so they are pinned here.
+func TestTheRolloutRoutesReturnTheShapeTheDeployScriptReads(t *testing.T) {
+	h := newHarness(t)
+
+	if got := decodeBody(t, h.do(http.MethodGet, "/api/rollout", operatorTok, "")); got["rollout"] != nil {
+		t.Fatalf("with no rollout ever, want {\"rollout\":null}, got %v", got)
+	}
+
+	posted := decodeBody(t, h.do(http.MethodPost, "/api/rollout", operatorTok, `{"version":"v2","now":true}`))
+	for _, key := range []string{"id", "version", "state", "immediate", "requested"} {
+		if _, ok := posted[key]; !ok {
+			t.Fatalf("POST body is missing %q: %v", key, posted)
+		}
+	}
+	if posted["state"] != "pending" || posted["version"] != "v2" || posted["immediate"] != true {
+		t.Fatalf("POST body = %v", posted)
+	}
+	if _, present := posted["finished"]; present {
+		t.Fatalf("an unfinished rollout reported a finished time: %v", posted)
+	}
+
+	got := decodeBody(t, h.do(http.MethodGet, "/api/rollout", operatorTok, ""))
+	if got["state"] != "pending" || got["version"] != "v2" {
+		t.Fatalf("GET body = %v", got)
+	}
+}
+
+func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	return out
+}

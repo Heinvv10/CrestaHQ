@@ -17,6 +17,8 @@ type Controller interface {
 	Enable(instance string) error
 	// ResetFailed clears a unit's failure and start-rate-limit state.
 	ResetFailed(instance string) error
+	// Restart bounces a unit in one verb.
+	Restart(instance string) error
 	Start(instance string) error
 	Stop(instance string) error
 	Disable(instance string) error
@@ -67,6 +69,16 @@ func (c *systemctl) Enable(i string) error  { return c.verb("enable", i) }
 func (c *systemctl) Start(i string) error   { return c.verb("start", i) }
 func (c *systemctl) Stop(i string) error    { return c.verb("stop", i) }
 func (c *systemctl) Disable(i string) error { return c.verb("disable", i) }
+
+// Restart bounces a unit in ONE verb.
+//
+// Stop-then-Start has a gap this does not: when the start half fails, the
+// number is left stopped — down until a human notices, rather than briefly
+// deaf — and it is left stopped too if this process is signalled between the
+// two calls. systemd's restart has no such window, and a unit whose start
+// fails ends up `failed`, where the unit's own Restart=always brings it back
+// inside the start limit.
+func (c *systemctl) Restart(i string) error { return c.verb("restart", i) }
 
 // ResetFailed clears `failed` and, with it, the start rate limit.
 //

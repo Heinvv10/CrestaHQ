@@ -18,7 +18,7 @@ import (
 type fakeUnits struct {
 	mu    sync.Mutex
 	verbs []string
-	// failStart names an instance whose Start returns an error — a bridge
+	// failStart names an instance whose Restart returns an error — a bridge
 	// that will not come back.
 	failStart string
 	// onStart lets the fake poll learn that an instance has been restarted, so
@@ -32,12 +32,11 @@ func (f *fakeUnits) note(verb, i string) {
 	f.verbs = append(f.verbs, verb+":"+i)
 }
 
-func (f *fakeUnits) Stop(i string) error        { f.note("stop", i); return nil }
 func (f *fakeUnits) ResetFailed(i string) error { f.note("reset-failed", i); return nil }
-func (f *fakeUnits) Start(i string) error {
-	f.note("start", i)
+func (f *fakeUnits) Restart(i string) error {
+	f.note("restart", i)
 	if i == f.failStart {
-		return fmt.Errorf("unit refused to start")
+		return fmt.Errorf("unit refused to restart")
 	}
 	if f.onStart != nil {
 		f.onStart(i)
@@ -54,7 +53,7 @@ func (f *fakeUnits) seen() []string {
 func (f *fakeUnits) started(instance string) int {
 	n := 0
 	for _, v := range f.seen() {
-		if v == "start:"+instance {
+		if v == "restart:"+instance {
 			n++
 		}
 	}
@@ -113,9 +112,14 @@ func openStore(t *testing.T) *store.Store {
 
 func seed(t *testing.T, s *store.Store, ids ...string) []store.Tenant {
 	t.Helper()
+	return seedState(t, s, store.StateRunning, ids...)
+}
+
+func seedState(t *testing.T, s *store.Store, state store.State, ids ...string) []store.Tenant {
+	t.Helper()
 	var out []store.Tenant
 	for i, id := range ids {
-		tn := store.Tenant{ID: id, Instance: id, Port: 33100 + i, State: store.StateRunning}
+		tn := store.Tenant{ID: id, Instance: id, Port: 33100 + len(mustList(t, s)) + i, State: state}
 		if err := s.CreateTenant(tn); err != nil {
 			t.Fatalf("CreateTenant %s: %v", id, err)
 		}
@@ -126,6 +130,37 @@ func seed(t *testing.T, s *store.Store, ids ...string) []store.Tenant {
 
 // newWorker wires a worker whose clock and sleeps are instant, so a test of a
 // 90-second settle budget does not take 90 seconds.
+func mustList(t *testing.T, s *store.Store) []store.Tenant {
+	t.Helper()
+	got, err := s.ListTenants()
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	return got
+}
+
+// drain ticks until the rollout leaves pending/running, or the budget runs
+// out. One bridge is restarted per tick, so a test that wants a whole fleet
+// rolled has to tick for it — which is the behaviour, not an inconvenience.
+func drain(t *testing.T, w *Worker, s *store.Store, maxTicks int) error {
+	t.Helper()
+	for i := 0; i < maxTicks; i++ {
+		err := w.Tick(context.Background())
+		if err != nil {
+			return err
+		}
+		r, ok, lerr := s.CurrentRollout()
+		if lerr != nil {
+			t.Fatalf("CurrentRollout: %v", lerr)
+		}
+		if !ok || (r.State != store.RolloutPending && r.State != store.RolloutRunning) {
+			return nil
+		}
+	}
+	t.Fatalf("rollout did not settle within %d ticks", maxTicks)
+	return nil
+}
+
 func newWorker(t *testing.T, s *store.Store, u *fakeUnits, p *fakePoll) *Worker {
 	t.Helper()
 	now := time.Date(2026, 9, 5, 23, 0, 0, 0, time.UTC)
@@ -150,8 +185,8 @@ func TestNothingIsRestartedWhenEveryBridgeAlreadyRunsTheBuild(t *testing.T) {
 	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("RequestRollout: %v", err)
 	}
-	if err := w.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick: %v", err)
+	if err := drain(t, w, s, 5); err != nil {
+		t.Fatalf("drain: %v", err)
 	}
 
 	if got := u.seen(); len(got) != 0 {
@@ -182,13 +217,13 @@ func TestOnlyStaleBridgesAreRestartedAndOneAtATime(t *testing.T) {
 	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("RequestRollout: %v", err)
 	}
-	if err := w.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick: %v", err)
+	if err := drain(t, w, s, 10); err != nil {
+		t.Fatalf("drain: %v", err)
 	}
 
 	want := []string{
-		"stop:a", "reset-failed:a", "start:a",
-		"stop:c", "reset-failed:c", "start:c",
+		"reset-failed:a", "restart:a",
+		"reset-failed:c", "restart:c",
 	}
 	if got := strings.Join(u.seen(), ","); got != strings.Join(want, ",") {
 		t.Fatalf("verbs = %v, want %v", u.seen(), want)
@@ -217,9 +252,12 @@ func TestAFailedBridgeHoldsTheRolloutAndLeavesTheRestAlone(t *testing.T) {
 	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("RequestRollout: %v", err)
 	}
-	err := w.Tick(context.Background())
+	var err error
+	for i := 0; i < 5 && err == nil; i++ {
+		err = w.Tick(context.Background())
+	}
 	if err == nil {
-		t.Fatal("a rollout that could not start a bridge reported success")
+		t.Fatal("a rollout that could not restart a bridge reported success")
 	}
 
 	if u.started("c") != 0 {
@@ -289,8 +327,8 @@ func TestAnUnreachableBridgeIsIncludedInTheRollout(t *testing.T) {
 	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("RequestRollout: %v", err)
 	}
-	if err := w.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick: %v", err)
+	if err := drain(t, w, s, 5); err != nil {
+		t.Fatalf("drain: %v", err)
 	}
 	if u.started("a") != 1 {
 		t.Fatalf("an unreachable bridge was skipped: %v", u.seen())
@@ -350,25 +388,67 @@ func TestTheWindowWrapsMidnight(t *testing.T) {
 	}
 }
 
-// Equal hours mean "always", not "never". The other reading turns a plausible
-// misconfiguration into a rollout that never runs, which looks on the operator
-// screen exactly like a rollout nobody asked for.
-func TestAnEmptyWindowMeansAlways(t *testing.T) {
-	w := &Worker{Loc: time.UTC, StartHour: 0, EndHour: 0}
-	if !w.InWindow(time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)) {
-		t.Fatal("a zero window refused a rollout at midday")
+// Deploying twice in an evening is the normal case. The second request
+// SUPERSEDES the first — there is only ever one valid target, the binary on
+// disk — and it reuses the same row rather than queueing behind it.
+//
+// Refusing here used to leave the fleet aimed at a build that no longer
+// existed on disk: the second deploy installs its binary and restarts the
+// manager BEFORE it asks for a rollout, so a refusal meant the 22:00 worker
+// would bounce a real customer's number, watch it come back on the newer
+// build, refuse to accept it, and hold.
+func TestASecondDeploySupersedesTheFirst(t *testing.T) {
+	s := openStore(t)
+	first, err := s.RequestRollout("v2", false)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	second, err := s.RequestRollout("v3", false)
+	if err != nil {
+		t.Fatalf("a second deploy was refused: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("supersede created a second row: %d then %d", first.ID, second.ID)
+	}
+	cur, ok, err := s.CurrentRollout()
+	if err != nil || !ok {
+		t.Fatalf("CurrentRollout: %v ok=%v", err, ok)
+	}
+	if cur.Version != "v3" {
+		t.Fatalf("outstanding rollout targets %q, want the newer build v3", cur.Version)
 	}
 }
 
-// Two rollouts on different builds would fight over the same fleet, and each
-// restart costs a real customer five minutes of delivery. One at a time.
-func TestASecondRolloutOnADifferentBuildIsRefused(t *testing.T) {
+// An operator who has already said "now" is not overruled by a later deploy
+// that did not.
+func TestSupersedeKeepsAnImmediateFlag(t *testing.T) {
 	s := openStore(t)
-	if _, err := s.RequestRollout("v2", false); err != nil {
+	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := s.RequestRollout("v3", false); err == nil {
-		t.Fatal("a second rollout on a different build was accepted")
+	got, err := s.RequestRollout("v3", false)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !got.Immediate {
+		t.Fatal("a later deploy cleared the operator's immediate flag")
+	}
+}
+
+// A rollout left `running` by a manager killed mid-tick must not block the
+// next deploy. Superseding is what removes that wedge — the old code refused
+// every future request until someone edited the database by hand.
+func TestARunningRolloutDoesNotBlockTheNextDeploy(t *testing.T) {
+	s := openStore(t)
+	r, err := s.RequestRollout("v2", false)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if err := s.SetRolloutState(r.ID, store.RolloutRunning, ""); err != nil {
+		t.Fatalf("SetRolloutState: %v", err)
+	}
+	if _, err := s.RequestRollout("v3", false); err != nil {
+		t.Fatalf("a deploy was blocked by a stuck running rollout: %v", err)
 	}
 }
 
@@ -406,5 +486,134 @@ func wireRestartMarkingWith(u *fakeUnits, p *fakePoll, extra func()) {
 		if extra != nil {
 			extra()
 		}
+	}
+}
+
+// One banned number must not stop the fleet from ever being upgraded again.
+//
+// `logged_out` is a documented state a number sits in until a human re-pairs
+// it, so it can never satisfy the health gate. An earlier version rolled every
+// tenant regardless of state, so a single banned number timed out and HELD the
+// rollout — permanently, on every future deploy.
+func TestALoggedOutTenantDoesNotWedgeTheRollout(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "live")
+	seedState(t, s, store.StateLoggedOut, "banned")
+	p := &fakePoll{
+		versions:     map[string]string{"live": "v1"},
+		afterRestart: map[string]string{"live": "v2"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarking(u, p)
+
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	if err := drain(t, w, s, 10); err != nil {
+		t.Fatalf("a logged-out tenant wedged the rollout: %v", err)
+	}
+
+	if u.started("banned") != 0 {
+		t.Fatalf("a logged-out number was restarted: %v", u.seen())
+	}
+	if u.started("live") != 1 {
+		t.Fatalf("the live number was not rolled: %v", u.seen())
+	}
+	r, _, _ := s.LastRollout()
+	if r.State != store.RolloutDone {
+		t.Fatalf("state = %q detail=%q, want done", r.State, r.Detail)
+	}
+}
+
+// A bridge an operator deliberately stopped must not be started by a rollout.
+// Starting it would silently undo a decision somebody made on purpose.
+func TestAStoppedTenantIsLeftStopped(t *testing.T) {
+	s := openStore(t)
+	seedState(t, s, store.StateStopped, "parked")
+	p := &fakePoll{versions: map[string]string{}, afterRestart: map[string]string{}, restarted: map[string]bool{}}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	if err := drain(t, w, s, 5); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := u.seen(); len(got) != 0 {
+		t.Fatalf("a deliberately stopped number was touched: %v", got)
+	}
+}
+
+// The window is re-read on EVERY tick, not once at the start. An earlier
+// version checked it once and then ran the whole fleet, so a rollout that
+// became eligible at 04:59 kept restarting customers' numbers into the
+// morning. Here the clock crosses out of the window after the first bridge and
+// the second one waits for the next night.
+func TestTheWindowIsRecheckedBetweenBridges(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "a", "b")
+	p := &fakePoll{
+		versions:     map[string]string{"a": "v1", "b": "v1"},
+		afterRestart: map[string]string{"a": "v2", "b": "v2"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	now := time.Date(2026, 9, 5, 4, 59, 0, 0, time.UTC) // inside 22:00-05:00
+	w.now = func() time.Time { return now }
+	w.sleep = func(d time.Duration) { now = now.Add(d) }
+	wireRestartMarking(u, p)
+
+	if _, err := s.RequestRollout("v2", false); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	if err := w.Tick(context.Background()); err != nil { // rolls one bridge
+		t.Fatalf("first tick: %v", err)
+	}
+	now = time.Date(2026, 9, 5, 5, 30, 0, 0, time.UTC) // window has closed
+	if err := w.Tick(context.Background()); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+
+	if got := len(u.seen()); got != 2 { // reset-failed + restart, for ONE bridge
+		t.Fatalf("the rollout kept going past the window: %v", u.seen())
+	}
+	r, _, _ := s.LastRollout()
+	if r.State != store.RolloutRunning {
+		t.Fatalf("state = %q, want still running (it resumes tomorrow night)", r.State)
+	}
+}
+
+// At most one bridge per tick, whatever the fleet size. This is the promise
+// that keeps a deploy from being an outage.
+func TestOnlyOneBridgeIsRestartedPerTick(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "a", "b", "c", "d")
+	p := &fakePoll{
+		versions:     map[string]string{"a": "v1", "b": "v1", "c": "v1", "d": "v1"},
+		afterRestart: map[string]string{"a": "v2", "b": "v2", "c": "v2", "d": "v2"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarking(u, p)
+
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	if err := w.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	restarts := 0
+	for _, v := range u.seen() {
+		if strings.HasPrefix(v, "restart:") {
+			restarts++
+		}
+	}
+	if restarts != 1 {
+		t.Fatalf("one tick restarted %d bridges: %v", restarts, u.seen())
 	}
 }

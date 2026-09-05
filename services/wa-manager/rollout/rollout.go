@@ -1,4 +1,4 @@
-// Package rollout brings every bridge onto a new binary, one number at a time.
+// Package rollout brings every bridge onto a new binary, one number per tick.
 //
 // A restart is not free. The bridge records inbound for five minutes after it
 // connects and forwards none of it (wa.ReplayWindow), so every bounce is a
@@ -7,8 +7,8 @@
 //
 //   - Bridges already running the target build are never touched, so a deploy
 //     that changed only the manager restarts nothing at all.
-//   - One at a time, health-gated, never in parallel — forty numbers going
-//     deaf together is an outage, not a deploy.
+//   - One per tick, health-gated, never in parallel — forty numbers going deaf
+//     together is an outage, not a deploy.
 //   - Deferred to a configured overnight window unless the operator asks for
 //     it now, so the holes land where the fewest customers are messaging.
 //   - The first bridge that does not come back STOPS the rollout. Everything
@@ -17,11 +17,20 @@
 //     ones back would spend more five-minute holes to buy uniformity during
 //     an incident.
 //
-// A rollout is a standing intent — "every bridge should be running version X"
-// — rather than a list of steps. The worker asks each bridge what it is
-// actually running and acts on the answer, which makes it idempotent, safe to
-// resume after a manager restart, and self-correcting for a bridge that was
-// down while it ran.
+// ONE BRIDGE PER TICK is the load-bearing decision, and it is what makes the
+// rest simple. An earlier version ran the whole fleet inside a single call:
+// the window was then checked once at the start, so a rollout that became
+// eligible at 04:59 kept restarting numbers deep into the morning; a manager
+// killed mid-run left work in flight that nothing owned; and a tenant created
+// or destroyed while it ran was operating against a stale list. Doing one
+// bridge per tick and re-deriving everything each time deletes all three: the
+// clock is re-read every tick, there is never anything in flight to lose, and
+// the fleet is whatever the store says it is right now.
+//
+// A rollout is therefore a standing intent — "every bridge should be running
+// version X" — rather than a list of steps. The worker asks each bridge what
+// it is actually running and acts on the answer, which makes it idempotent,
+// safe to resume, and self-correcting for a bridge that was down while it ran.
 package rollout
 
 import (
@@ -34,11 +43,16 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
 
-// Units is the slice of systemd this package drives. Stop and Start rather
-// than a single restart verb, so a failure between them is attributable.
+// Units is the slice of systemd this package drives.
+//
+// Restart, not Stop-then-Start. The pair leaves a number STOPPED when the
+// start half fails — down until a human notices, rather than deaf for five
+// minutes — and leaves it stopped too if the manager is signalled between the
+// two calls. systemd's own restart has no such gap, and a unit whose start
+// fails is left `failed`, where the unit's Restart=always brings it back
+// within the start limit.
 type Units interface {
-	Stop(instance string) error
-	Start(instance string) error
+	Restart(instance string) error
 	ResetFailed(instance string) error
 }
 
@@ -56,29 +70,24 @@ type Worker struct {
 
 	// Loc is the timezone the window hours are expressed in.
 	Loc *time.Location
-	// StartHour, EndHour bound the window a deferred rollout may run in. The
-	// window wraps midnight when StartHour > EndHour, which is the normal case.
+	// StartHour, EndHour bound the window a deferred rollout may restart
+	// bridges in. The window wraps midnight when StartHour > EndHour, which is
+	// the normal case. Equal hours are refused by config.Load rather than
+	// given a meaning here; see InWindow.
 	StartHour, EndHour int
 
-	// Settle is how long a restarted bridge is given to report connected
+	// Settle is how long a restarted bridge is given to report the new build
 	// before it counts as failed. Generous on purpose: whatsmeow reconnects
 	// and then synchronises app state, and a bridge that took forty seconds is
 	// not a bridge that is broken.
 	Settle time.Duration
-	// Between is the pause after a bridge comes back before the next one is
-	// touched. It is not politeness — it keeps two consecutive five-minute
-	// delivery holes from overlapping any more than they must.
-	Between time.Duration
 
 	// now and sleep are seams for tests. Nil means the real clock.
 	now   func() time.Time
 	sleep func(time.Duration)
 }
 
-const (
-	defaultSettle  = 90 * time.Second
-	defaultBetween = 15 * time.Second
-)
+const defaultSettle = 90 * time.Second
 
 func (w *Worker) clock() time.Time {
 	if w.now != nil {
@@ -102,22 +111,16 @@ func (w *Worker) settle() time.Duration {
 	return defaultSettle
 }
 
-func (w *Worker) between() time.Duration {
-	if w.Between > 0 {
-		return w.Between
-	}
-	return defaultBetween
-}
-
 // InWindow reports whether local time is inside the rollout window.
 //
-// A window of equal hours means "always", not "never". The alternative reading
-// turns a plausible misconfiguration into a deferred rollout that never runs,
-// which on the operator screen is indistinguishable from one nobody requested.
+// Equal hours cannot reach here: config.Load refuses them at boot. Reading
+// them as "always" was fail-OPEN on the one control whose entire job is
+// keeping outages out of business hours — `ROLLOUT_START_HOUR=0
+// ROLLOUT_END_HOUR=0`, a plausible way to try to disable it, would instead
+// have restarted every customer's number at ten in the morning. Reading them
+// as "never" is fail-closed but silent, which is its own trap. Refusing the
+// configuration is the only reading that cannot surprise anyone.
 func (w *Worker) InWindow(t time.Time) bool {
-	if w.StartHour == w.EndHour {
-		return true
-	}
 	loc := w.Loc
 	if loc == nil {
 		loc = time.UTC
@@ -132,6 +135,7 @@ func (w *Worker) InWindow(t time.Time) bool {
 
 // Run drives the outstanding rollout on a timer until ctx is cancelled.
 //
+// The interval doubles as the spacing between bridges: one restart per tick.
 // It checks on every tick rather than sleeping until the window opens, so a
 // manager restarted at 23:00 picks up a rollout requested at 18:00 without
 // anybody re-requesting it.
@@ -150,8 +154,10 @@ func (w *Worker) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// Tick advances the outstanding rollout at most one step: it either does
-// nothing, or it runs the whole rollout to completion or to its first failure.
+// Tick restarts AT MOST ONE bridge, or finishes the rollout when none are
+// left. Everything it needs is re-derived from the store and from live health,
+// so a tenant added, destroyed or re-paired since the last tick is simply part
+// of the fleet this tick sees.
 func (w *Worker) Tick(ctx context.Context) error {
 	r, ok, err := w.Store.CurrentRollout()
 	if err != nil {
@@ -163,13 +169,10 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if !r.Immediate && !w.InWindow(w.clock()) {
 		return nil
 	}
-	return w.execute(ctx, r)
-}
-
-// execute restarts every stale bridge in turn, stopping at the first failure.
-func (w *Worker) execute(ctx context.Context, r store.Rollout) error {
-	if err := w.Store.SetRolloutState(r.ID, store.RolloutRunning, ""); err != nil {
-		return err
+	if r.State != store.RolloutRunning {
+		if err := w.Store.SetRolloutState(r.ID, store.RolloutRunning, ""); err != nil {
+			return err
+		}
 	}
 
 	tenants, err := w.Store.ListTenants()
@@ -178,46 +181,49 @@ func (w *Worker) execute(ctx context.Context, r store.Rollout) error {
 	}
 	stale := w.stale(ctx, tenants, r.Version)
 	if len(stale) == 0 {
-		log.Printf("rollout %d: every bridge already runs %s", r.ID, r.Version)
-		return w.Store.SetRolloutState(r.ID, store.RolloutDone, "every bridge already ran this build")
+		log.Printf("rollout %d: every eligible bridge runs %s", r.ID, r.Version)
+		return w.Store.SetRolloutState(r.ID, store.RolloutDone, "every eligible bridge runs this build")
 	}
-	log.Printf("rollout %d: %d of %d bridges to restart onto %s", r.ID, len(stale), len(tenants), r.Version)
 
-	done := 0
-	for _, t := range stale {
-		if ctx.Err() != nil {
-			// A manager shutting down mid-rollout leaves the row running; the
-			// next Tick after boot re-derives what is left from the fleet
-			// itself, so nothing is lost by stopping here.
-			return ctx.Err()
-		}
-		if err := w.restart(ctx, t, r.Version); err != nil {
-			log.Printf("rollout %d HELD at %s after %d restarted: %v", r.ID, t.ID, done, err)
-			return w.fail(r, fmt.Sprintf("held at %s after %d of %d restarted: %v",
-				t.ID, done, len(stale), err))
-		}
-		done++
-		_ = w.Store.AppendEvent(t.ID, "rolled", "restarted onto "+r.Version)
-		if done < len(stale) {
-			w.pause(w.between())
-		}
+	t := stale[0]
+	log.Printf("rollout %d: restarting %s onto %s (%d left)", r.ID, t.ID, r.Version, len(stale))
+	if err := w.restart(ctx, t, r.Version); err != nil {
+		log.Printf("rollout %d HELD at %s: %v", r.ID, t.ID, err)
+		return w.fail(r, fmt.Sprintf("held at %s: %v", t.ID, err))
 	}
-	log.Printf("rollout %d: %d bridges now run %s", r.ID, done, r.Version)
-	return w.Store.SetRolloutState(r.ID, store.RolloutDone,
-		fmt.Sprintf("%d bridges restarted onto this build", done))
+	if err := w.Store.AppendEvent(t.ID, "rolled", "restarted onto "+r.Version); err != nil {
+		log.Printf("WARNING rollout event not recorded tenant=%s err=%v", t.ID, err)
+	}
+	return nil
 }
 
-// stale is every tenant whose bridge is not already running version.
+// stale is every tenant that should be restarted, in list order.
 //
-// A bridge the manager cannot reach is INCLUDED. It is either down — in which
-// case starting it is the right move and it is not costing a delivery hole
-// anyway — or it is unreachable for a reason a restart is the standard remedy
-// for. Skipping it would leave the fleet permanently split on the one number
-// nobody can see.
+// ONLY tenants the store calls running are eligible. The others cannot satisfy
+// the health gate and would wedge every future deploy: `logged_out` is a
+// documented state a banned number sits in until a human re-pairs it,
+// `pairing` and `provisioned` have no session yet, and `stopped` is a bridge
+// an operator deliberately turned off — starting it would silently undo that
+// decision. One banned number must not be able to stop the fleet from ever
+// being upgraded again.
+//
+// Within that set, a bridge the manager cannot REACH is included. It is either
+// down — in which case restarting it is the right move and it is not costing a
+// delivery hole anyway — or it is unreachable for a reason a restart is the
+// standard remedy for.
 func (w *Worker) stale(ctx context.Context, tenants []store.Tenant, version string) []store.Tenant {
-	reports := w.Poll.Snapshot(ctx, tenants)
-	var out []store.Tenant
+	var eligible []store.Tenant
 	for _, t := range tenants {
+		if t.State == store.StateRunning {
+			eligible = append(eligible, t)
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+	reports := w.Poll.Snapshot(ctx, eligible)
+	var out []store.Tenant
+	for _, t := range eligible {
 		r, ok := reports[t.ID]
 		if ok && r.Reachable && r.Version == version {
 			continue
@@ -227,21 +233,18 @@ func (w *Worker) stale(ctx context.Context, tenants []store.Tenant, version stri
 	return out
 }
 
-// restart bounces one bridge and waits for it to report connected.
+// restart bounces one bridge and waits for it to report the new build.
 //
 // reset-failed first, for the same reason the operator screen's restart button
 // does it: under Restart=always a bridge that has exited five times in ten
 // minutes has tripped the unit's start limit, and systemd then refuses the
 // start with an error that says nothing about the rate limit.
 func (w *Worker) restart(ctx context.Context, t store.Tenant, version string) error {
-	if err := w.Units.Stop(t.Instance); err != nil {
-		return fmt.Errorf("stop: %w", err)
-	}
 	if err := w.Units.ResetFailed(t.Instance); err != nil {
 		log.Printf("rollout reset-failed did not take instance=%s err=%v", t.Instance, err)
 	}
-	if err := w.Units.Start(t.Instance); err != nil {
-		return fmt.Errorf("start: %w", err)
+	if err := w.Units.Restart(t.Instance); err != nil {
+		return fmt.Errorf("restart: %w", err)
 	}
 
 	deadline := w.clock().Add(w.settle())

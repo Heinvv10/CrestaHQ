@@ -54,7 +54,8 @@ type Deps struct {
 	Connection ConnectionState
 
 	// Version is the build this process is running, stamped by the deploy
-	// script with -ldflags. Empty in a dev build and in every test.
+	// script with -ldflags. A plain `go build` leaves it "dev"; it is empty
+	// only in tests that construct Deps directly.
 	//
 	// It exists so the manager can tell which bridges are still on the old
 	// binary after a deploy. That question has to be answered by the running

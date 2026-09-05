@@ -327,6 +327,14 @@ func Render(w io.Writer, p Page) error {
 	return tpl.ExecuteTemplate(w, "numbers.html", p)
 }
 
+// clip bounds a string for display, marking that it was cut.
+func clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
 // BuildRolloutLine words a rollout for the operator screen, or returns nil
 // when there is nothing worth saying.
 //
@@ -359,9 +367,14 @@ func BuildRolloutLine(state, version, detail string, immediate bool) *RolloutLin
 				"A number that looks briefly disconnected is being restarted, not lost.",
 		}
 	case "failed":
+		// detail carries a string the BRIDGE supplied (its reported version is
+		// interpolated into the failure), and nothing bounds what a bridge
+		// sends. html/template escapes it, so this is a legibility bound, not
+		// an injection one — but an unbounded line still pushes the sentence
+		// that tells the operator what to do off the screen.
 		return &RolloutLine{
 			Tone: ToneBad,
-			Text: "Rollout to " + short + " HELD: " + detail +
+			Text: "Rollout to " + short + " HELD: " + clip(detail, 200) +
 				". Numbers before it are on the new build, the rest are not — this needs a human.",
 		}
 	default:

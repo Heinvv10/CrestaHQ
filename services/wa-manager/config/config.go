@@ -181,6 +181,19 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%s must be an hour 0-23, got %d", h.name, h.val)
 		}
 	}
+	// Equal hours describe no window, and every reading of that is a trap.
+	// "Always" is fail-OPEN on the one control whose job is keeping outages
+	// out of business hours — ROLLOUT_START_HOUR=0 ROLLOUT_END_HOUR=0, a
+	// plausible attempt to disable rollouts, would instead restart every
+	// customer's number at ten in the morning. "Never" is fail-closed but
+	// silent: the rollout simply never runs and looks like one nobody asked
+	// for. Refusing the configuration is the only reading that cannot
+	// surprise the person who wrote it.
+	if cfg.RolloutStartHour == cfg.RolloutEndHour {
+		return Config{}, fmt.Errorf(
+			"ROLLOUT_START_HOUR and ROLLOUT_END_HOUR are both %d, which describes no window; set two different hours",
+			cfg.RolloutStartHour)
+	}
 	if cfg.PortCount, err = envInt("PORT_COUNT", defaultPortCount); err != nil {
 		return Config{}, err
 	}

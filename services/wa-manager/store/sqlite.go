@@ -280,14 +280,23 @@ type Rollout struct {
 
 // RequestRollout records the intent to bring every bridge to version.
 //
-// It refuses while another rollout is pending or running, and that refusal is
-// the whole concurrency design: two workers bouncing the same fleet on
-// different target versions would fight, and each restart costs a five-minute
-// hole in delivery for a real customer's number. One at a time, or none.
+// An outstanding rollout is SUPERSEDED rather than refused. There is only ever
+// one valid target — the binary currently installed on disk, which every
+// instance shares — so a newer request is not a competing intent, it is a
+// correction of the previous one.
 //
-// A repeat request for the SAME version while one is already outstanding is
-// not an error to the caller — the deploy script may legitimately run twice —
-// so the existing rollout is returned instead.
+// Refusing was worse than useless. Deploy at 18:00 queues a rollout to v1 for
+// the 22:00 window; fix a bug and deploy again at 19:00; the second deploy has
+// ALREADY installed the v2 binary and restarted the manager by the time it
+// asks for a rollout, so a refusal left the fleet aimed at a v1 that no longer
+// exists on disk. At 22:00 the worker would restart a number, watch it come
+// back as v2, refuse to accept it, and hold — having spent a real customer's
+// five minutes to achieve nothing, with v2 never rolling at all. Deploying
+// twice in an evening is the normal case, not a corner.
+//
+// Superseding also removes the only way this table could wedge a deployment:
+// a rollout left `running` by a manager that was killed mid-tick used to block
+// every future request until someone edited the database by hand.
 func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -304,13 +313,23 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 		RolloutPending, RolloutRunning).
 		Scan(&existing.ID, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
 	switch {
-	case err == nil && existing.Version == version:
-		existing.Immediate = imm == 1
-		existing.Requested = time.Unix(req, 0)
-		return existing, tx.Commit()
 	case err == nil:
-		return Rollout{}, fmt.Errorf("store: rollout %d to %q is already %s",
-			existing.ID, existing.Version, existing.State)
+		// Supersede in place: same row, new target. Immediate is sticky —
+		// an operator who has already said "now" is not overruled by a later
+		// deploy that did not.
+		if immediate {
+			imm = 1
+		}
+		if _, err := tx.Exec(
+			`UPDATE rollouts SET version = ?, state = ?, immediate = ?, detail = '', requested_unix = ?
+			   WHERE id = ?`,
+			version, RolloutPending, imm, time.Now().Unix(), existing.ID); err != nil {
+			return Rollout{}, err
+		}
+		return Rollout{
+			ID: existing.ID, Version: version, State: RolloutPending,
+			Immediate: imm == 1, Requested: time.Now(),
+		}, tx.Commit()
 	case !errors.Is(err, sql.ErrNoRows):
 		return Rollout{}, err
 	}

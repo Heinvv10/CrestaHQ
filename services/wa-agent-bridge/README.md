@@ -71,11 +71,22 @@ governs only what CI builds.
 Gates before any commit: `go vet ./...`, `gofmt -l .`, `go test ./... -race`,
 `govulncheck ./...`.
 
-Deploys go through `scripts/deploy-wa.sh`, which stamps the commit into the
-binary with `-ldflags "-X main.version=<sha>"` and reports it on `/v1/health`
-to an authenticated caller. A plain `go build` leaves it `"dev"`, which the
-manager reads as stale — so a hand-built bridge is restarted by the next
-rollout rather than mistaken for current.
+Deploys go through `scripts/deploy-wa.sh`, which builds this service twice: once
+unstamped to hash the artifact, then again with
+`-ldflags "-X main.version=<hash of that artifact>"`. The result is reported on
+`/v1/health` to an authenticated caller, and the manager compares it to decide
+which bridges a rollout still has to restart.
+
+The identity is the ARTIFACT, never a commit. A commit sha in that string means
+editing this README bounces every customer's number for a change that alters no
+behaviour; hashing the artifact means a toolchain or dependency bump that really
+does change the binary is rolled out, and a doc edit is not. Both builds pass
+`-trimpath -buildvcs=false`, without which Go stamps the VCS revision in and any
+commit anywhere changes the bytes.
+
+A plain `go build` leaves the version `"dev"`, which the manager reads as stale —
+so a hand-built bridge is restarted by the next rollout rather than mistaken for
+current.
 
 ## Configuration
 

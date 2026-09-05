@@ -61,7 +61,7 @@ without both:
 | `WEBHOOK_BASE_URL` | unset | Where a tenant's bridge posts inbound. The tenant id is appended, so each number is distinguishable. Unset means bridges receive and record but forward nowhere — correct for a number provisioned before its consumer exists. |
 | `QUIET_TZ` | `Africa/Johannesburg` | Written into every provisioned `.env`, and the timezone the rollout window below is read in. Validated here so one bad string fails at the manager's boot rather than separately inside every bridge it provisions. |
 | `ROLLOUT_START_HOUR` | `22` | Start of the window a deferred fleet rollout may restart bridges in, local to `QUIET_TZ`. The window wraps midnight when start > end. |
-| `ROLLOUT_END_HOUR` | `5` | End of that window. Equal start and end mean "any time" — the other reading turns a typo into a rollout that never runs, which looks exactly like one nobody requested. An hour outside 0–23 is refused at boot. |
+| `ROLLOUT_END_HOUR` | `5` | End of that window. An hour outside 0–23 is refused at boot, and so is a start equal to the end: that describes no window, and every reading of it is a trap — "always" would restart every customer's number at ten in the morning for anyone who set `0`/`0` trying to disable rollouts, and "never" would fail silently. |
 
 Two configuration errors are caught at boot rather than left to surface later:
 
@@ -202,22 +202,53 @@ So the manager rolls them:
 
 - **Only the stale ones.** Each bridge reports the build it is running on
   `/v1/health`; one already on the target build is not touched. A deploy that
-  changed only the manager restarts nothing.
-- **One at a time**, waiting for each to come back *and report the new build*
-  before starting the next. A bridge that comes back on the old binary is a
-  failure, not a success — that is what a half-written install looks like.
+  changed only the manager restarts nothing. The build id is the hash of the
+  bridge ARTIFACT and of nothing else — deliberately not a commit sha, because
+  a commit that edits this service's README changes no behaviour and must not
+  bounce forty customers' numbers.
+- **Only tenants the manager calls `running`.** A `logged_out` number is
+  waiting for a human to re-pair it and can never satisfy the health gate; a
+  `stopped` one was turned off on purpose. Rolling them would wedge the
+  rollout on every future deploy, and would silently undo a deliberate stop.
+  They stay on the old build until they come back, and the next rollout picks
+  them up.
+- **One per tick** — one restart a minute — waiting for each bridge to come
+  back *and report the new build*. A bridge that comes back on the old binary
+  is a failure, not a success: that is what a half-written install looks like.
 - **Overnight by default**, inside `ROLLOUT_START_HOUR`–`ROLLOUT_END_HOUR`
-  (22–05 local, in `QUIET_TZ`). `--now` overrides it for a fix that cannot
-  wait, at the cost of every number taking its five minutes during the day.
+  (22–05 local, in `QUIET_TZ`). The window is re-read every tick, so a rollout
+  that becomes eligible at 04:59 stops at 05:00 and resumes the next night
+  rather than running into the morning. `--now` overrides it for a fix that
+  cannot wait, at the cost of every number taking its five minutes during the
+  day.
 - **Held on the first failure.** Bridges already restarted stay on the new
   build, the rest stay as they were, and the screen says which number stopped
   it. A split fleet is inspectable; spending more delivery holes to undo a
   change mid-incident is not.
 
 A rollout is a standing intent — "every bridge should run build X" — not a list
-of steps, so it is safe to re-request, survives a manager restart, and picks up
-a bridge that was down while it ran. Watch it on the operator screen; the banner
-is silent for a rollout that finished cleanly and loud for one that is held.
+of steps. Everything is re-derived from the store and from live health on every
+tick, so it is safe to re-request, survives a manager restart with nothing in
+flight to lose, and a tenant created, destroyed or re-paired between ticks is
+simply part of whatever the next tick sees. Watch it on the operator screen; the
+banner is silent for a rollout that finished cleanly and loud for one that is
+held.
+
+**Deploying twice in an evening is normal, and the second deploy supersedes the
+first.** There is only ever one valid target — the binary on disk, shared by
+every instance — so a new request retargets the outstanding rollout rather than
+queueing behind it. That is also what stops a rollout left `running` by a
+manager that was killed from blocking the next deploy.
+
+**Two things this does not do.** A restart an operator triggers from the card
+is never blocked, so an operator restarting one number while a rollout is
+settling another can have two numbers briefly deaf at once — an operator during
+an incident should not be made to wait for a scheduler. And the new binary is
+installed *before* the rollout runs, so a bridge that crashes in between comes
+back on the new build via the unit's `Restart=always`, outside the health-gated
+path. Closing that needs per-instance binary paths; until then, a build that
+only fails on a real number can reach one number before the rollout would have
+caught it.
 
 The previous binaries are kept in `~/.wa-deploy-backups`, so a rollback is a
 copy and a restart rather than a rebuild.
