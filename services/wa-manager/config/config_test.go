@@ -5,12 +5,17 @@ import (
 	"testing"
 )
 
+// testOperatorToken is a token of realistic shape: 32 characters, the floor
+// Load enforces. Tests that are not ABOUT the token's strength use this so a
+// change to that floor does not read as a failure of something else.
+const testOperatorToken = "op-secret-0123456789abcdef012345"
+
 // baseEnv is the smallest environment that must load.
 func baseEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	for k, v := range map[string]string{
 		"LISTEN_ADDR": "", "DB_PATH": "", "INSTANCE_ROOT": "", "PORT_BASE": "",
-		"PORT_COUNT": "", "OPERATOR_TOKEN": "op-secret", "UNIT_NAME": "",
+		"PORT_COUNT": "", "OPERATOR_TOKEN": testOperatorToken, "UNIT_NAME": "",
 		"WEBHOOK_BASE_URL": "", "QUIET_TZ": "", "ALLOW_PUBLIC_BIND": "",
 	} {
 		t.Setenv(k, v)
@@ -52,13 +57,35 @@ func TestLoadRefusesAnEmptyOperatorToken(t *testing.T) {
 // The token must survive Load intact — a config that silently trimmed or
 // truncated it would lock the operator out of their own manager.
 func TestOperatorTokenIsCarriedVerbatim(t *testing.T) {
-	baseEnv(t, map[string]string{"OPERATOR_TOKEN": "  op-secret  "})
+	padded := "  " + testOperatorToken + "  "
+	baseEnv(t, map[string]string{"OPERATOR_TOKEN": padded})
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.OperatorToken != "  op-secret  " {
+	if cfg.OperatorToken != padded {
 		t.Fatalf("the token was rewritten: %q", cfg.OperatorToken)
+	}
+}
+
+// The other half of the same gate. A present-but-trivial token is not
+// meaningfully different from an absent one: OPERATOR_TOKEN=x booted a manager
+// that anything on the tailnet could reach, and that process writes .env files
+// and starts systemd units.
+func TestLoadRefusesAWeakOperatorToken(t *testing.T) {
+	for _, tok := range []string{"x", "secret", "op-secret", "hunter2hunter2hunter2hunter2hun"} {
+		baseEnv(t, map[string]string{"OPERATOR_TOKEN": tok})
+		if _, err := Load(); err == nil {
+			t.Fatalf("OPERATOR_TOKEN=%q (%d chars) must refuse to start; "+
+				"a guessable token on a tailnet-reachable .env writer is remote code execution", tok, len(tok))
+		}
+	}
+	// One character longer than the last rejection above, and it boots. The
+	// pair is what proves the floor is a boundary rather than a blanket refusal
+	// nothing could satisfy.
+	baseEnv(t, map[string]string{"OPERATOR_TOKEN": "hunter2hunter2hunter2hunter2hunt"})
+	if _, err := Load(); err != nil {
+		t.Fatalf("a %d-character token must boot: %v", minOperatorTokenLen, err)
 	}
 }
 

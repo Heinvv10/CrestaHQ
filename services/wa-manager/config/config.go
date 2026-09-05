@@ -57,6 +57,20 @@ const (
 	defaultQuietTZ      = "Africa/Johannesburg"
 )
 
+// minOperatorTokenLen is the shortest OPERATOR_TOKEN this process will boot
+// with.
+//
+// 32 characters, because that is the length of the shortest output any real
+// generator produces at the 128-bit floor a bearer secret needs —
+// `openssl rand -hex 16` is exactly 32 — and a UUID (36) clears it too. What it
+// rejects is the other kind of token: a word someone typed. `OPERATOR_TOKEN=x`
+// booted a manager that is reachable from anything on the tailnet, writes .env
+// files and starts systemd units; design spec §3.3 calls that remote code
+// execution, and a one-character token is not meaningfully different from none.
+//
+// Measured in bytes, not runes: bytes are what an attacker has to guess.
+const minOperatorTokenLen = 32
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -101,6 +115,14 @@ func Load() (Config, error) {
 	if strings.TrimSpace(cfg.OperatorToken) == "" {
 		return Config{}, fmt.Errorf(
 			"OPERATOR_TOKEN is required: every route on this service writes an .env holding bearer tokens or starts a systemd unit, so an unauthenticated manager is remote code execution")
+	}
+	// Length is checked on the RAW value for the same reason it is not trimmed:
+	// the token the operator will present is the one they set, whitespace and
+	// all, and that is what an attacker has to reproduce.
+	if len(cfg.OperatorToken) < minOperatorTokenLen {
+		return Config{}, fmt.Errorf(
+			"OPERATOR_TOKEN is too short: %d characters, minimum %d — this token alone stands between the tailnet and a process that writes .env files and starts systemd units; generate one with `openssl rand -hex 16`",
+			len(cfg.OperatorToken), minOperatorTokenLen)
 	}
 
 	if err := checkBindAddr(cfg.ListenAddr); err != nil {
