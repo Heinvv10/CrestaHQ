@@ -315,3 +315,39 @@ func TestTheRestartFormRefusesACrossSitePost(t *testing.T) {
 		t.Fatalf("a cross-site form bounced the unit: %v", got)
 	}
 }
+
+// The operator UI must refuse to be framed.
+//
+// It is Basic-authenticated, so a browser that has seen it once attaches the
+// credential to every later request — including one made from a frame on
+// someone else's page. The re-pair form is a single button that bounces a live
+// customer's WhatsApp number, which is exactly the kind of control a
+// transparent frame is built to steal a click for. sameOrigin cannot catch it:
+// a framed document is same-origin with itself.
+//
+// Every UI response, including the ones that refuse the caller — a framed 401
+// still renders the browser's own auth prompt inside the attacker's page.
+func TestEveryUIResponseRefusesToBeFramed(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	for _, tc := range []struct {
+		name string
+		rec  *httptest.ResponseRecorder
+	}{
+		{"list page", h.doBasic("/", operatorTok)},
+		{"tenant page", h.doBasic("/tenants/blitz", operatorTok)},
+		{"qr png", h.doBasic("/tenants/blitz/qr.png", operatorTok)},
+		{"unknown tenant", h.doBasic("/tenants/nope", operatorTok)},
+		{"rejected credential", h.doBasic("/", "wrong-token")},
+		{"restart form", h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "")},
+	} {
+		if got := tc.rec.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q, want DENY", tc.name, got)
+		}
+		csp := tc.rec.Header().Get("Content-Security-Policy")
+		if !strings.Contains(csp, "frame-ancestors 'none'") {
+			t.Errorf("%s: Content-Security-Policy = %q, want frame-ancestors 'none'", tc.name, csp)
+		}
+	}
+}

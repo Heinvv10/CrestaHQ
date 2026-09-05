@@ -40,6 +40,7 @@ const maxEventRows = 25
 // browser auth prompt has been handed a worse error than a 401 body.
 func (s *server) authedUI(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		noFraming(w)
 		token, ok := bearerToken(r)
 		if !ok {
 			if _, pass, basicOK := r.BasicAuth(); basicOK {
@@ -56,6 +57,28 @@ func (s *server) authedUI(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// noFraming refuses to be rendered inside anyone else's page.
+//
+// The UI is Basic-authenticated, so a browser that has seen it once attaches
+// the credential to every later request for it — including one made from a
+// frame on an attacker's page. The re-pair form is a one-click control that
+// bounces a live customer's WhatsApp number, and a transparent frame over a
+// "click here" button is enough to make an operator press it.
+//
+// sameOrigin cannot help: a framed document is same-origin with ITSELF, so the
+// Origin the browser sends on the framed POST is this host. Refusing the frame
+// is the only place this is stoppable.
+//
+// Both headers, set at the auth wrapper so EVERY ui response carries them —
+// the 401 and the 404 included. X-Frame-Options is the one older browsers
+// honour; CSP frame-ancestors is the one that is actually specified. Only
+// frame-ancestors is set, not a whole CSP: the page carries an inline <style>
+// and a full policy would silently strip it.
+func noFraming(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 }
 
 // noStore marks a response the browser must not keep. Every UI response is one:
