@@ -59,6 +59,17 @@ func TestPairServesTheLiveCode(t *testing.T) {
 	}
 }
 
+func TestPairResponseIsNotCached(t *testing.T) {
+	// The pairing code is a credential; a cached copy of this response would
+	// outlive the pairing window it was issued for.
+	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, stubPairer{code: "2@abc", expiresAt: time.Now().Add(30 * time.Second), pairing: true})
+	rec := getAuthed(h, "/v1/pair", "tok-operator")
+
+	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
 func TestPairOmitsTheCodeWhenNotPairing(t *testing.T) {
 	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, stubPairer{connected: true})
 	rec := getAuthed(h, "/v1/pair", "tok-operator")

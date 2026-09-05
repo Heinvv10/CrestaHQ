@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -142,7 +141,6 @@ func (c *Client) handleQREvent(evt whatsmeow.QRChannelItem) {
 	case "code":
 		c.setPairingCode(evt.Code, time.Now().Add(evt.Timeout))
 		log.Printf("wa: scan this QR to pair (expires in %s)", evt.Timeout)
-		qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, log.Writer())
 	case "success":
 		c.clearPairingCode()
 		log.Printf("wa: paired successfully")

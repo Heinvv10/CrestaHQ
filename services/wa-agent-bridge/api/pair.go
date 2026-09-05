@@ -23,6 +23,7 @@ func (s *server) handlePair(w http.ResponseWriter, _ *http.Request, consumer con
 	if !requireAdmin(w, consumer, "reading the pairing code") {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 
 	connected := false
 	if s.deps.Connection != nil {
