@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -246,7 +247,7 @@ func tenantIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return checkTenantID(w, r.PathValue("id"))
 }
 
-// checkTenantID admits only ids that are ALREADY their own instance name.
+// checkTenantID admits only ids that are canonical apart from letter case.
 //
 // provision.InstanceName is the shared authority on what is safe — one copy,
 // so the API and the provisioner cannot drift into disagreeing — but this
@@ -258,12 +259,41 @@ func tenantIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
 // reported as a conflict with a name nobody typed. Refusing anything
 // non-canonical costs an operator one retry and makes the id they see in the
 // API the id on the unit, the directory and the port row.
+//
+// Case is the ONE divergence allowed, and only because refusing it broke the
+// product. A LeadStack subAccountId is a mixed-case Firestore document id, and
+// the manager builds each bridge's inbound webhook as base + "/" + tenantID
+// (see webhookURL in wiring.go). Requiring the id to equal its own lowercase
+// instance name therefore meant no acceptable id could ever spell the CRM's
+// own webhook route — the rail could be provisioned and could never receive.
+//
+// Nothing else is relaxed. The id must still be ASCII alphanumerics and dashes
+// starting alphanumeric, so it cannot traverse a path, split a URL, carry a
+// query string, or be silently truncated; the only transformation between the
+// id and the unit name is case folding, which systemd's own naming forces and
+// which the operator can see. Two ids differing only in case are a real
+// collision — they lowercase onto one instance, one session, one database —
+// and are refused by the provisioner's instance-uniqueness check and by the
+// UNIQUE constraint on tenants.instance, exactly as "a.b" and "a-b" are.
+var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
+
 func checkTenantID(w http.ResponseWriter, id string) (string, bool) {
+	// Two gates, and the second is the one that survives editing.
+	//
+	// The pattern alone would make the no-silent-rename invariant depend on a
+	// hand-written alphabet kept in step with InstanceName's by memory. So the
+	// id is also compared against its OWN coercion: InstanceName differs from
+	// strings.ToLower(id) exactly when it renamed something ("a.b" and "a_b"
+	// both become "a-b"; "acmé" becomes "acm-"; anything over 63 characters is
+	// truncated). Widening the pattern later therefore cannot quietly admit a
+	// coerced id — this comparison refuses it without being told to, which is
+	// the property the old name != id check had and a regexp on its own does
+	// not.
 	name, err := provision.InstanceName(id)
-	if err != nil || name != id {
+	if !tenantIDPattern.MatchString(id) || err != nil || name != strings.ToLower(id) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": fmt.Sprintf("tenant id %q is not usable as an instance name; "+
-				"use lowercase letters, digits and dashes, starting with a letter or digit", id),
+				"use letters, digits and dashes, starting with a letter or digit", id),
 		})
 		return "", false
 	}

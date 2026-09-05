@@ -329,6 +329,20 @@ func (p *Provisioner) Destroy(tenantID string) error {
 	if err != nil {
 		return err
 	}
+	// A row whose instance is not a usable instance name never got past
+	// AllocatePort's INSERT, which seeds the column with the opaque id;
+	// the unit is enabled and the directory created only after
+	// SetTenantIdentity rewrites it. So there is nothing in systemd to stop
+	// and nothing on disk to remove — and every verb below would refuse the
+	// name, leaving the row untouchable and its port held forever. Dropping
+	// the row IS the teardown for that state.
+	//
+	// Reachable only if the manager dies abruptly inside the few statements
+	// between those two writes. A graceful shutdown or an ordinary failure
+	// unwinds and deletes the row already.
+	if err := systemd.Validate(ten.Instance); err != nil {
+		return p.st.ReleasePort(tenantID)
+	}
 	if err := p.sc.Stop(ten.Instance); err != nil {
 		return fmt.Errorf("provision: destroy %q: %w", tenantID, err)
 	}
