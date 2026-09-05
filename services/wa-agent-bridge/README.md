@@ -60,9 +60,9 @@ CGO_ENABLED=0 go build ./...                  # MUST fail; that guard is intenti
 do not lower it.** On 1.26.0 `govulncheck` reports eight standard-library
 advisories with call paths this service actually reaches — `net/http`,
 `crypto/tls`, `crypto/x509`, `net/textproto`, `net/url`, `encoding/asn1` — and
-this service serves HTTP on `/v1/*`. All eight are fixed in 1.26.6. There is no
-deploy script here — the binary is built by hand on whatever box it lands on —
-so the directive is the only thing standing between an old toolchain and a
+this service serves HTTP on `/v1/*`. All eight are fixed in 1.26.6. The deploy
+script (`scripts/deploy-wa.sh`) builds with whatever toolchain the box has, so
+the directive is the only thing standing between an old toolchain and a
 vulnerable binary: with the default `GOTOOLCHAIN=auto` an older Go fetches
 1.26.6 and builds with it, and under `GOTOOLCHAIN=local` it refuses to build at
 all. Both outcomes are correct; neither ships a vulnerable binary. The CI pin
@@ -70,6 +70,23 @@ governs only what CI builds.
 
 Gates before any commit: `go vet ./...`, `gofmt -l .`, `go test ./... -race`,
 `govulncheck ./...`.
+
+Deploys go through `scripts/deploy-wa.sh`, which builds this service twice: once
+unstamped to hash the artifact, then again with
+`-ldflags "-X main.version=<hash of that artifact>"`. The result is reported on
+`/v1/health` to an authenticated caller, and the manager compares it to decide
+which bridges a rollout still has to restart.
+
+The identity is the ARTIFACT, never a commit. A commit sha in that string means
+editing this README bounces every customer's number for a change that alters no
+behaviour; hashing the artifact means a toolchain or dependency bump that really
+does change the binary is rolled out, and a doc edit is not. Both builds pass
+`-trimpath -buildvcs=false`, without which Go stamps the VCS revision in and any
+commit anywhere changes the bytes.
+
+A plain `go build` leaves the version `"dev"`, which the manager reads as stale —
+so a hand-built bridge is restarted by the next rollout rather than mistaken for
+current.
 
 ## Configuration
 

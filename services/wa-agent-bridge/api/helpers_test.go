@@ -139,7 +139,19 @@ func newHandler(t *testing.T, st rails.Store, sender Sender) http.Handler {
 	return newHandlerWithConnection(t, st, sender, &stubConnection{up: true})
 }
 
+// newHandlerWithVersion builds a handler whose Deps carry a build version, for
+// the tests about what /v1/health discloses and to whom.
+func newHandlerWithVersion(t *testing.T, version string) http.Handler {
+	t.Helper()
+	return newHandlerWith(t, store.NewMemory(), &stubSender{}, &stubConnection{up: true}, version)
+}
+
 func newHandlerWithConnection(t *testing.T, st rails.Store, sender Sender, conn ConnectionState) http.Handler {
+	t.Helper()
+	return newHandlerWith(t, st, sender, conn, "")
+}
+
+func newHandlerWith(t *testing.T, st rails.Store, sender Sender, conn ConnectionState, version string) http.Handler {
 	t.Helper()
 	return New(Deps{
 		Engine: rails.NewEngine(st, rails.Config{
@@ -160,6 +172,7 @@ func newHandlerWithConnection(t *testing.T, st rails.Store, sender Sender, conn 
 		},
 		Now:        func() time.Time { return fixedNow },
 		Connection: conn,
+		Version:    version,
 	})
 }
 

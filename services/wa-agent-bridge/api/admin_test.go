@@ -274,3 +274,28 @@ func TestHealthOmitsTheNumberBeforePairing(t *testing.T) {
 		t.Fatalf("an unpaired bridge must not report a number, got %v", got)
 	}
 }
+
+// The manager decides which bridges a rollout still has to restart by asking
+// each one what it is running. Gated with the number, and for the same reason:
+// a version string on an ungated endpoint tells an unauthenticated caller
+// which advisories apply to this process.
+func TestHealthReportsTheBuildVersionOnlyToAnAuthenticatedCaller(t *testing.T) {
+	h := newHandlerWithVersion(t, "abc1234")
+
+	if got, present := decode(t, get(h, "/v1/health"))["version"]; present {
+		t.Fatalf("an unauthenticated caller must not learn the build, got %v", got)
+	}
+	if got := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["version"]; got != "abc1234" {
+		t.Fatalf("an authenticated caller must be told the build, got %v", got)
+	}
+}
+
+// An unstamped build reports nothing rather than a misleading version. The
+// rollout treats an absent version as stale, so this fails towards restarting
+// a bridge rather than towards skipping one.
+func TestHealthOmitsAnUnstampedBuild(t *testing.T) {
+	h := newHandlerWithVersion(t, "")
+	if got, present := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["version"]; present {
+		t.Fatalf("an unstamped build must not report a version, got %v", got)
+	}
+}

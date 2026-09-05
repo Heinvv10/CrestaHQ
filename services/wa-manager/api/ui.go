@@ -103,6 +103,7 @@ func (s *server) handleUIIndex(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		page.Notice = truncatedNotice
 	}
+	page.Rollout = s.rolloutLine()
 	for _, t := range tenants {
 		page.Cards = append(page.Cards, ui.BuildCard(t, reportFor(reports, t.ID)))
 	}
@@ -137,6 +138,7 @@ func (s *server) handleUITenant(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		page.Notice = truncatedNotice
 	}
+	page.Rollout = s.rolloutLine()
 	// History is context, not the operation: a failure to read it must not
 	// cost the operator the status they came for.
 	if events, err := s.deps.Store.ListEvents(id, maxEventRows); err != nil {
@@ -322,6 +324,23 @@ func sameOrigin(r *http.Request, publicOrigin string) bool {
 		return true
 	}
 	return u.Host == r.Host
+}
+
+// rolloutLine builds the rollout banner, or nil.
+//
+// A failure to read the rollout costs the banner, never the page: an operator
+// opening this screen during an incident needs the cards, and a store error
+// here must not be the thing that denies them.
+func (s *server) rolloutLine() *ui.RolloutLine {
+	r, ok, err := s.deps.Store.LastRollout()
+	if err != nil {
+		log.Printf("ui rollout read failed err=%v", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return ui.BuildRolloutLine(r.State, r.Version, r.Detail, r.Immediate)
 }
 
 func reportFor(reports map[string]health.Report, id string) *health.Report {

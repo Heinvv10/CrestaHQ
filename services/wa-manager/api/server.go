@@ -45,8 +45,11 @@ type Poller interface {
 // reaching for the controller directly is cheaper than widening the
 // provisioner's surface for one verb pair.
 type Units interface {
-	Stop(instance string) error
-	Start(instance string) error
+	// Restart bounces a unit in ONE verb. Stop-then-Start leaves the number
+	// STOPPED when the start half fails — and systemd never auto-restarts a
+	// unit that was stopped on purpose, whatever Restart= says, so that number
+	// stays down until a human notices rather than being briefly deaf.
+	Restart(instance string) error
 	// ResetFailed clears the unit's failure and start-rate-limit state, which
 	// is otherwise what stops a restart from taking. See restartUnit.
 	ResetFailed(instance string) error
@@ -153,6 +156,11 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/tenants/{id}", s.authed(s.handleDelete))
 	mux.HandleFunc("GET /api/tenants/{id}/pair", s.authed(s.handlePair))
 	mux.HandleFunc("POST /api/tenants/{id}/restart", s.authed(s.handleRestart))
+	// Fleet rollout. Requesting one only writes a row; the worker restarts
+	// bridges on its own loop, so a rollout outlives the request and the ssh
+	// session that made it. The deploy script polls the GET.
+	mux.HandleFunc("POST /api/rollout", s.authed(s.handleRollout))
+	mux.HandleFunc("GET /api/rollout", s.authed(s.handleRolloutStatus))
 
 	// The operator UI. Authenticated exactly like everything else here — it
 	// is a view onto the same privileged surface, and an unauthenticated

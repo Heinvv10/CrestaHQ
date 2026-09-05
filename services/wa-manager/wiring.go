@@ -9,10 +9,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/config"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/rollout"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
 
@@ -103,4 +105,34 @@ func webhookURL(base string) func(string) string {
 		return nil
 	}
 	return func(tenantID string) string { return base + "/" + tenantID }
+}
+
+// startRollout builds the rollout worker and starts its loop, fused for the
+// same reason startPoller is: a worker that exists without its loop running
+// leaves every requested rollout pending forever, and nothing in any suite
+// would go red.
+//
+// It shares the health poller rather than opening its own connections. The
+// poller is already the one component that knows how to reach a bridge and
+// authenticate to it, and a second implementation would be a second thing to
+// keep in step with the bridge's health contract.
+func startRollout(ctx context.Context, st *store.Store, units rollout.Units, poller *health.Poller, cfg config.Config) *rollout.Worker {
+	loc, err := time.LoadLocation(cfg.QuietTZ)
+	if err != nil {
+		// config.Load already validated this, so reaching here means the
+		// config was mutated after loading. UTC is the safe fallback: it makes
+		// the window wrong rather than making the worker absent.
+		log.Printf("WARNING rollout window falling back to UTC, bad QUIET_TZ %q: %v", cfg.QuietTZ, err)
+		loc = time.UTC
+	}
+	w := &rollout.Worker{
+		Store:     st,
+		Units:     units,
+		Poll:      poller,
+		Loc:       loc,
+		StartHour: cfg.RolloutStartHour,
+		EndHour:   cfg.RolloutEndHour,
+	}
+	go w.Run(ctx, rolloutEvery)
+	return w
 }

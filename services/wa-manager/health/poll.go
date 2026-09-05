@@ -38,6 +38,14 @@ type Report struct {
 	// only to an authenticated caller, which the poller is.
 	Number string
 
+	// Version is the build the bridge PROCESS is running, empty when it did
+	// not report one. It has to come from the process rather than from the
+	// binary on disk: one binary is shared by every instance and is replaced
+	// before any of them restart, so the file says "new" for forty bridges
+	// that are all still running the old code. A rollout treats empty as
+	// stale, which fails towards restarting rather than skipping.
+	Version string
+
 	// Incomplete says this tenant was never actually checked: the sweep's own
 	// deadline ran out first. It is NOT Reachable=false, and collapsing the
 	// two would be the worst kind of lie this screen can tell — "we ran out of
@@ -59,6 +67,7 @@ type bridgeHealthBody struct {
 	LastInboundAgeSeconds *int     `json:"lastInboundAgeSeconds"`
 	Allowlisted           *int     `json:"allowlisted"`
 	Number                string   `json:"number"`
+	Version               string   `json:"version"`
 	Problems              []string `json:"problems"`
 }
 
@@ -176,6 +185,7 @@ func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
 		LastInboundAgeSeconds: body.LastInboundAgeSeconds,
 		AllowlistCount:        body.Allowlisted,
 		Number:                body.Number,
+		Version:               body.Version,
 		Problems:              body.Problems,
 	}
 }

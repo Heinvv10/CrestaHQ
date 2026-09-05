@@ -8,7 +8,9 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -46,7 +48,13 @@ type Event struct {
 	At     time.Time
 }
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// rolloutMu serialises RequestRollout's read-then-write. See the comment
+	// there: a deferred SQLite transaction fails a lock upgrade outright
+	// rather than waiting.
+	rolloutMu sync.Mutex
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -68,6 +76,39 @@ CREATE TABLE IF NOT EXISTS events (
   at_unix   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id, id DESC);
+
+-- One row per requested rollout. A rollout is a standing intent — "every
+-- bridge should be running version X" — not a list of steps, so there is
+-- nothing here enumerating tenants: the worker asks each bridge what it is
+-- running and restarts the ones that disagree. That makes a rollout
+-- idempotent, resumable across a manager restart, and self-correcting for a
+-- bridge that was down while it ran.
+--
+-- At most one row is ever pending or running; see ClaimRollout.
+CREATE TABLE IF NOT EXISTS rollouts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  version       TEXT NOT NULL,          -- the build every bridge should reach
+  state         TEXT NOT NULL,          -- pending | running | done | failed
+  immediate     INTEGER NOT NULL,       -- 1 = --now, ignore the window
+  detail        TEXT NOT NULL DEFAULT '',
+  requested_unix INTEGER NOT NULL,
+  finished_unix  INTEGER NOT NULL DEFAULT 0,
+  -- Bumped on every request. This, not the version, is the fencing token a
+  -- worker writes its verdict against: supersede reuses the row id, and a
+  -- version can RECUR — v1, v2, then v1 again is a rollback, which is exactly
+  -- what keeping the previous binaries is for. A worker holding the first v1
+  -- could then land its verdict on the second one, marking a rollout that was
+  -- never tried as held. A counter only ever goes up.
+  generation     INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_rollouts_state ON rollouts(state, id);
+-- At most ONE outstanding rollout, enforced here rather than by the
+-- read-then-write in RequestRollout. Two deploys racing could each see no
+-- outstanding row and insert one, and two rollouts on different targets would
+-- take turns bouncing the same customer numbers back and forth. A partial
+-- unique index makes that impossible rather than unlikely.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rollouts_one_outstanding
+  ON rollouts((1)) WHERE state IN ('pending','running');
 `
 
 func Open(path string) (*Store, error) {
@@ -236,4 +277,197 @@ func (s *Store) SetTenantIdentity(id, displayName, instance string) error {
 		return fmt.Errorf("store: no tenant %q", id)
 	}
 	return nil
+}
+
+// Rollout states. A rollout is pending until the worker picks it up, running
+// while it is bouncing bridges, and then terminal — done or failed.
+const (
+	RolloutPending = "pending"
+	RolloutRunning = "running"
+	RolloutDone    = "done"
+	RolloutFailed  = "failed"
+)
+
+// Rollout is one requested fleet upgrade.
+type Rollout struct {
+	ID         int64
+	Generation int64
+	Version    string
+	State      string
+	Immediate  bool
+	Detail     string
+	Requested  time.Time
+	Finished   time.Time
+}
+
+// RequestRollout records the intent to bring every bridge to version.
+//
+// An outstanding rollout is SUPERSEDED rather than refused. There is only ever
+// one valid target — the binary currently installed on disk, which every
+// instance shares — so a newer request is not a competing intent, it is a
+// correction of the previous one.
+//
+// Refusing was worse than useless. Deploy at 18:00 queues a rollout to v1 for
+// the 22:00 window; fix a bug and deploy again at 19:00; the second deploy has
+// ALREADY installed the v2 binary and restarted the manager by the time it
+// asks for a rollout, so a refusal left the fleet aimed at a v1 that no longer
+// exists on disk. At 22:00 the worker would restart a number, watch it come
+// back as v2, refuse to accept it, and hold — having spent a real customer's
+// five minutes to achieve nothing, with v2 never rolling at all. Deploying
+// twice in an evening is the normal case, not a corner.
+//
+// Superseding also removes the only way this table could wedge a deployment:
+// a rollout left `running` by a manager that was killed mid-tick used to block
+// every future request until someone edited the database by hand.
+func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) {
+	// Serialised in-process. This reads a row and then writes it, and a
+	// deferred SQLite transaction refuses that lock UPGRADE immediately with
+	// SQLITE_BUSY rather than waiting out _busy_timeout — so two deploys
+	// landing together would fail one of them for a reason no human could act
+	// on. One mutex is the readable fix; the partial unique index on the table
+	// is what still holds if a second process ever exists.
+	s.rolloutMu.Lock()
+	defer s.rolloutMu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Rollout{}, err
+	}
+	defer tx.Rollback()
+
+	var existing Rollout
+	var req, fin int64
+	var imm int
+	err = tx.QueryRow(
+		`SELECT id, generation, version, state, immediate, detail, requested_unix, finished_unix
+		   FROM rollouts WHERE state IN (?, ?) ORDER BY id LIMIT 1`,
+		RolloutPending, RolloutRunning).
+		Scan(&existing.ID, &existing.Generation, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
+	switch {
+	case err == nil:
+		// Urgency is exactly what the LATEST request said, and nothing is
+		// inherited. Every attempt to be cleverer than this has restarted a
+		// customer's number in the middle of a working day: first by making
+		// the flag sticky in both directions, then by clearing it only on a
+		// retarget — which still let a same-build redeploy (the common case,
+		// since the version is the bridge artifact hash and a manager-only
+		// deploy does not change it) inherit last night's `--now`.
+		//
+		// Losing an operator's `--now` to a later routine deploy is the safe
+		// direction: it moves restarts OUT of business hours, and passing the
+		// flag again costs one word.
+		imm = 0
+		if immediate {
+			imm = 1
+		}
+		// A repeat request for the SAME build does not restart the state
+		// machine. The deploy script may legitimately ask twice, and resetting
+		// a rollout that is mid-flight back to pending throws away the
+		// progress detail the operator screen is currently showing. Only the
+		// target actually changing is a supersede.
+		state := existing.State
+		detail := existing.Detail
+		if existing.Version != version {
+			state, detail = RolloutPending, ""
+		}
+		if _, err := tx.Exec(
+			`UPDATE rollouts SET version = ?, state = ?, immediate = ?, detail = ?,
+			        requested_unix = ?, generation = generation + 1
+			   WHERE id = ?`,
+			version, state, imm, detail, time.Now().Unix(), existing.ID); err != nil {
+			return Rollout{}, err
+		}
+		return Rollout{
+			ID: existing.ID, Generation: existing.Generation + 1, Version: version,
+			State: state, Detail: detail, Immediate: imm == 1, Requested: time.Now(),
+		}, tx.Commit()
+	case !errors.Is(err, sql.ErrNoRows):
+		return Rollout{}, err
+	}
+
+	now := time.Now()
+	immInt := 0
+	if immediate {
+		immInt = 1
+	}
+	res, err := tx.Exec(
+		`INSERT INTO rollouts (version, state, immediate, requested_unix) VALUES (?, ?, ?, ?)`,
+		version, RolloutPending, immInt, now.Unix())
+	if err != nil {
+		return Rollout{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Rollout{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Rollout{}, err
+	}
+	return Rollout{ID: id, Generation: 1, Version: version, State: RolloutPending, Immediate: immediate, Requested: now}, nil
+}
+
+// CurrentRollout returns the outstanding rollout, or ok=false when there is
+// none. Only pending and running rollouts are outstanding; a finished one is
+// history and is read with LastRollout.
+func (s *Store) CurrentRollout() (Rollout, bool, error) {
+	return s.rolloutWhere(`state IN ('pending','running') ORDER BY id LIMIT 1`)
+}
+
+// LastRollout returns the most recent rollout in any state.
+func (s *Store) LastRollout() (Rollout, bool, error) {
+	return s.rolloutWhere(`1=1 ORDER BY id DESC LIMIT 1`)
+}
+
+func (s *Store) rolloutWhere(clause string) (Rollout, bool, error) {
+	var r Rollout
+	var req, fin int64
+	var imm int
+	err := s.db.QueryRow(
+		`SELECT id, generation, version, state, immediate, detail, requested_unix, finished_unix
+		   FROM rollouts WHERE `+clause).
+		Scan(&r.ID, &r.Generation, &r.Version, &r.State, &imm, &r.Detail, &req, &fin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Rollout{}, false, nil
+	}
+	if err != nil {
+		return Rollout{}, false, err
+	}
+	r.Immediate = imm == 1
+	r.Requested = time.Unix(req, 0)
+	if fin != 0 {
+		r.Finished = time.Unix(fin, 0)
+	}
+	return r, true, nil
+}
+
+// SetRolloutState moves a rollout on, stamping finished_unix for a terminal
+// state. detail is what the operator screen shows — for a failure, which
+// instance stopped it.
+//
+// It is a COMPARE-AND-SET on the GENERATION, and ok=false means the rollout was
+// superseded while the caller was working. That is not an error and the caller
+// must not treat it as one — but writing without the check was a lost update
+// with a false success at the end of it. The worker reads the rollout, spends
+// up to ninety seconds settling one bridge, then writes the outcome; a deploy
+// landing in that window supersedes the row in place, and a bare `WHERE id`
+// stamped the OLD rollout's verdict onto the NEW target. The observed result
+// was a row reading done/v2 while the only bridge was still running v1, and a
+// deploy script that read that and printed "every bridge rolled".
+func (s *Store) SetRolloutState(id, expectGeneration int64, state, detail string) (bool, error) {
+	finished := int64(0)
+	if state == RolloutDone || state == RolloutFailed {
+		finished = time.Now().Unix()
+	}
+	res, err := s.db.Exec(
+		`UPDATE rollouts SET state = ?, detail = ?, finished_unix = ?
+		   WHERE id = ? AND generation = ?`,
+		state, detail, finished, id, expectGeneration)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

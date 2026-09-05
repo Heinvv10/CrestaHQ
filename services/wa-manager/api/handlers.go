@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
@@ -223,26 +225,105 @@ func (s *server) restartUnit(id string, t store.Tenant) string {
 	if s.deps.Units == nil {
 		return "no unit controller configured"
 	}
-	if err := s.deps.Units.Stop(t.Instance); err != nil {
-		log.Printf("restart stop failed tenant=%s err=%v", id, err)
-		return "could not stop the unit; check the manager log"
-	}
-	// Clear the start rate limit before starting. StartLimitBurst=5 in ten
-	// minutes counts every start, clean exits included, and once it trips
-	// systemd refuses the start — so the button offered for a bridge that
-	// keeps dying would report "did not start again" for up to ten minutes,
-	// with nothing telling the operator that `reset-failed` is the remedy.
-	// A failure here is not fatal: the start below is still worth attempting,
-	// and its error is the one the operator needs to see.
+
+	// Clear the start rate limit first. StartLimitBurst=5 in ten minutes
+	// counts every start, clean exits included, and once it trips systemd
+	// refuses the restart — so the button offered for a bridge that keeps
+	// dying would fail for up to ten minutes with nothing telling the operator
+	// that `reset-failed` is the remedy. A failure here is not fatal: the
+	// restart below is still worth attempting, and its error is the one the
+	// operator needs to see.
 	if err := s.deps.Units.ResetFailed(t.Instance); err != nil {
 		log.Printf("restart reset-failed did not take tenant=%s err=%v", id, err)
 	}
-	if err := s.deps.Units.Start(t.Instance); err != nil {
-		log.Printf("restart start failed tenant=%s err=%v", id, err)
-		return "the unit was stopped but did not start again; check the manager log"
+	// One verb, not Stop-then-Start. The pair leaves the number stopped when
+	// the start half fails, and systemd will not bring back a unit that was
+	// stopped deliberately — so an operator pressing this button on a broken
+	// bridge could take the number from "briefly deaf" to "down until someone
+	// notices". The rollout worker was fixed first; this is the other caller.
+	if err := s.deps.Units.Restart(t.Instance); err != nil {
+		log.Printf("restart failed tenant=%s err=%v", id, err)
+		return "the unit did not come back; check the manager log"
 	}
 	// A support record, not part of the operation: losing the line must not
 	// turn a successful bounce into a failure.
 	_ = s.deps.Store.AppendEvent(id, "restarted", "operator requested a restart")
 	return ""
+}
+
+type rolloutRequest struct {
+	// Version is the build every bridge should end up running — the same
+	// string the deploy script stamps into the binary with -ldflags.
+	Version string `json:"version"`
+	// Now skips the overnight window. It exists for a fix that cannot wait
+	// until 22:00, and it is the caller's decision because only the caller
+	// knows whether the thing being shipped is worth a five-minute delivery
+	// hole on every number in working hours.
+	Now bool `json:"now"`
+}
+
+// handleRollout records the intent to bring every bridge onto a build. It does
+// NOT restart anything: the worker does that, on its own loop, so a rollout
+// survives the request that asked for it and the ssh session behind it.
+//
+// The deploy script calls this and then polls GET /api/rollout.
+func (s *server) handleRollout(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(body) > maxBodyBytes {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unreadable or oversized body"})
+		return
+	}
+	var req rolloutRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body must be JSON"})
+		return
+	}
+	if strings.TrimSpace(req.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "version is required"})
+		return
+	}
+
+	got, err := s.deps.Store.RequestRollout(req.Version, req.Now)
+	if err != nil {
+		// Not a 409. An outstanding rollout is superseded rather than refused,
+		// so a conflict is no longer a thing this can return — anything that
+		// arrives here is a store failure, and dressing it as a conflict told
+		// the deploy script a lie it treats as fatal.
+		log.Printf("rollout request failed err=%v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not record the rollout; check the manager log",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, rolloutBody(got))
+}
+
+// handleRolloutStatus is what the deploy script polls until the rollout leaves
+// pending/running.
+func (s *server) handleRolloutStatus(w http.ResponseWriter, _ *http.Request) {
+	got, ok, err := s.deps.Store.LastRollout()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not read rollout state"})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"rollout": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, rolloutBody(got))
+}
+
+func rolloutBody(r store.Rollout) map[string]any {
+	body := map[string]any{
+		"id":        r.ID,
+		"version":   r.Version,
+		"state":     r.State,
+		"immediate": r.Immediate,
+		"detail":    r.Detail,
+		"requested": r.Requested.UTC().Format(time.RFC3339),
+	}
+	if !r.Finished.IsZero() {
+		body["finished"] = r.Finished.UTC().Format(time.RFC3339)
+	}
+	return body
 }

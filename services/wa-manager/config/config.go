@@ -11,6 +11,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -45,6 +46,21 @@ type Config struct {
 	// than separately in every bridge it would go on to provision.
 	QuietTZ string
 
+	// RolloutStartHour, RolloutEndHour bound the local-time window in which a
+	// deferred rollout is allowed to restart bridges, in QuietTZ. The window
+	// wraps midnight when start > end, which is the normal case.
+	//
+	// A restart is not free: the bridge records inbound for five minutes after
+	// connecting and forwards none of it (wa.ReplayWindow), so every bounce is
+	// a five-minute hole in delivery for that number. The window exists to put
+	// those holes where the fewest customers are messaging.
+	//
+	// Deliberately separate from the bridge's own quiet hours even though the
+	// span is similar. Those mean "do not SEND to customers now"; this means
+	// "it is cheap to be briefly deaf now". Conflating them would mean one
+	// edit silently changing the other.
+	RolloutStartHour, RolloutEndHour int
+
 	// PublicOrigin is the origin (scheme://host[:port]) a browser actually
 	// sees, for deployments where a reverse proxy sits in front of this
 	// process. Empty means direct-bind: the UI's same-origin check compares
@@ -66,6 +82,10 @@ const (
 	defaultPortBase     = 33100
 	defaultPortCount    = 200
 	defaultQuietTZ      = "Africa/Johannesburg"
+	// 22:00-05:00 local. Wide enough that a rollout of forty bridges at one
+	// restart per minute finishes inside it.
+	defaultRolloutStart = 22
+	defaultRolloutEnd   = 5
 )
 
 // minOperatorTokenLen is the shortest OPERATOR_TOKEN this process will boot
@@ -108,6 +128,15 @@ func envInt(key string, def int) (int, error) {
 	return n, nil
 }
 
+// rolloutWindowHours is the width of the window, counting a wrap past
+// midnight.
+func rolloutWindowHours(start, end int) int {
+	if start < end {
+		return end - start
+	}
+	return 24 - start + end
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		ListenAddr:     envOr("LISTEN_ADDR", defaultListenAddr),
@@ -144,6 +173,47 @@ func Load() (Config, error) {
 	var err error
 	if cfg.PortBase, err = envInt("PORT_BASE", defaultPortBase); err != nil {
 		return Config{}, err
+	}
+	if cfg.RolloutStartHour, err = envInt("ROLLOUT_START_HOUR", defaultRolloutStart); err != nil {
+		return Config{}, err
+	}
+	if cfg.RolloutEndHour, err = envInt("ROLLOUT_END_HOUR", defaultRolloutEnd); err != nil {
+		return Config{}, err
+	}
+	// An hour outside 0-23 is a typo that would otherwise produce a window no
+	// clock ever enters, and a deferred rollout that never runs looks exactly
+	// like a rollout that was never requested.
+	for _, h := range []struct {
+		name string
+		val  int
+	}{{"ROLLOUT_START_HOUR", cfg.RolloutStartHour}, {"ROLLOUT_END_HOUR", cfg.RolloutEndHour}} {
+		if h.val < 0 || h.val > 23 {
+			return Config{}, fmt.Errorf("%s must be an hour 0-23, got %d", h.name, h.val)
+		}
+	}
+	// Equal hours describe no window, and every reading of that is a trap.
+	// "Always" is fail-OPEN on the one control whose job is keeping outages
+	// out of business hours — ROLLOUT_START_HOUR=0 ROLLOUT_END_HOUR=0, a
+	// plausible attempt to disable rollouts, would instead restart every
+	// customer's number at ten in the morning. "Never" is fail-closed but
+	// silent: the rollout simply never runs and looks like one nobody asked
+	// for. Refusing the configuration is the only reading that cannot
+	// surprise the person who wrote it.
+	if cfg.RolloutStartHour == cfg.RolloutEndHour {
+		return Config{}, fmt.Errorf(
+			"ROLLOUT_START_HOUR and ROLLOUT_END_HOUR are both %d, which describes no window; set two different hours",
+			cfg.RolloutStartHour)
+	}
+	// A window wider than half a day is almost certainly reversed hours. The
+	// equal-hours refusal above catches one keystroke; `23`-`22` is the next
+	// one along, and it means "every hour except 22:00" — the same fail-open,
+	// on the control whose job is keeping outages out of business hours. It is
+	// a legitimate thing to ask for, so this warns rather than refuses, but it
+	// says the width out loud where somebody will read it.
+	if rolloutWindowHours(cfg.RolloutStartHour, cfg.RolloutEndHour) > 12 {
+		log.Printf("WARNING the rollout window %02d:00-%02d:00 is %d hours wide — bridges may restart during the working day; are the hours the right way round?",
+			cfg.RolloutStartHour, cfg.RolloutEndHour,
+			rolloutWindowHours(cfg.RolloutStartHour, cfg.RolloutEndHour))
 	}
 	if cfg.PortCount, err = envInt("PORT_COUNT", defaultPortCount); err != nil {
 		return Config{}, err
