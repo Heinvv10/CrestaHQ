@@ -146,23 +146,44 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 		return store.Tenant{}, err
 	}
 
-	port, err := p.st.AllocatePort(tenantID, p.opts.PortBase, p.opts.PortCount)
+	// AllocatePort's INSERT is the mutual-exclusion point for THIS tenant id,
+	// not checkInstanceFree. That pre-check is a pure TOCTOU: two concurrent
+	// Creates for one id both find no row and both pass it. Only the INSERT
+	// discriminates, because id is the PRIMARY KEY — exactly one of them sees
+	// inserted=true.
+	port, inserted, err := p.st.AllocatePort(tenantID, p.opts.PortBase, p.opts.PortCount)
 	if err != nil {
 		return store.Tenant{}, err
 	}
+	if !inserted {
+		// Someone else owns this row: a concurrent Create for the same id, or
+		// a tenant that appeared between checkInstanceFree and here. Refuse,
+		// and return BEFORE the unwind closure exists — unwinding here would
+		// tear down the winner's instance directory, stop its unit and delete
+		// its row while its own Create reported success. That is the defect
+		// this branch exists for, and it is why nothing below may run.
+		return store.Tenant{}, &ConflictError{
+			Msg: fmt.Sprintf("tenant %q is already being provisioned or already exists; "+
+				"destroy it before re-provisioning", tenantID),
+		}
+	}
 
-	// From here on the tenant owns a port, so every exit unwinds.
+	// From here on the tenant owns a port AND owns its row, so every exit
+	// unwinds — every path below touches only what this call created.
 	enabled, dirCreated := false, false
 	fail := func(err error) (store.Tenant, error) {
 		return store.Tenant{}, errors.Join(err, p.unwind(tenantID, instance, enabled, dirCreated))
 	}
 
-	// SetTenantIdentity is the mutual-exclusion point, not checkInstanceFree.
-	// Two ids that sanitise to one name can both clear that pre-check
-	// concurrently — AllocatePort seeds `instance` with the OPAQUE id, so no
-	// UNIQUE collision exists yet — and only this UPDATE decides which of them
-	// owns the name. Everything after it is exclusive; everything before it is
-	// not, which is why the directory flag is only set below.
+	// SetTenantIdentity is the mutual-exclusion point for two DIFFERENT ids
+	// that sanitise to one instance name. Both clear checkInstanceFree, and
+	// both insert their own row — AllocatePort seeds `instance` with the OPAQUE
+	// id, so no UNIQUE collision exists yet — and only this UPDATE decides
+	// which of them owns the name. It excludes nothing for two callers sharing
+	// one id: for a single id this UPDATE succeeds every time, which is why
+	// the INSERT above, not this line, is what serialises them. Everything
+	// after this is exclusive on the NAME; the directory flag is only set
+	// below for that reason.
 	if err := p.st.SetTenantIdentity(tenantID, displayName, instance); err != nil {
 		return fail(err)
 	}

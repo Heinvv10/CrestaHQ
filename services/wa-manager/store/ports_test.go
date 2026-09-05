@@ -7,11 +7,11 @@ import (
 
 func TestAllocatePortIsUniquePerTenant(t *testing.T) {
 	s := openTemp(t)
-	a, err := s.AllocatePort("t1", 33100, 10)
+	a, _, err := s.AllocatePort("t1", 33100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.AllocatePort("t2", 33100, 10)
+	b, _, err := s.AllocatePort("t2", 33100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,24 +22,33 @@ func TestAllocatePortIsUniquePerTenant(t *testing.T) {
 
 func TestAllocatePortIsIdempotentForOneTenant(t *testing.T) {
 	s := openTemp(t)
-	a, _ := s.AllocatePort("t1", 33100, 10)
-	b, err := s.AllocatePort("t1", 33100, 10)
+	a, insertedFirst, _ := s.AllocatePort("t1", 33100, 10)
+	b, insertedAgain, err := s.AllocatePort("t1", 33100, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a != b {
 		t.Fatalf("re-allocating for one tenant moved its port %d -> %d", a, b)
 	}
+	// Which call CREATED the row is what the provisioner uses to refuse a
+	// duplicate Create without tearing down the caller that owns the tenant.
+	// Reported wrong, the second Create rewrites a live bridge's tokens.
+	if !insertedFirst {
+		t.Fatal("the first allocation created the row and must report inserted")
+	}
+	if insertedAgain {
+		t.Fatal("re-allocating for a tenant that already has a row must NOT report inserted")
+	}
 }
 
 func TestAllocatePortExhaustionIsAnError(t *testing.T) {
 	s := openTemp(t)
 	for i := 0; i < 3; i++ {
-		if _, err := s.AllocatePort(string(rune('a'+i)), 33100, 3); err != nil {
+		if _, _, err := s.AllocatePort(string(rune('a'+i)), 33100, 3); err != nil {
 			t.Fatalf("allocation %d failed early: %v", i, err)
 		}
 	}
-	if _, err := s.AllocatePort("overflow", 33100, 3); err == nil {
+	if _, _, err := s.AllocatePort("overflow", 33100, 3); err == nil {
 		t.Fatal("exhausting the range must be a loud error, not a silent reuse")
 	}
 }
@@ -64,7 +73,7 @@ func TestAllocatePortIsAtomicUnderConcurrency(t *testing.T) {
 				defer done.Done()
 				ready.Done()
 				<-start
-				got[i], errs[i] = s.AllocatePort(string(rune('a'+i)), 33100, workers)
+				got[i], _, errs[i] = s.AllocatePort(string(rune('a'+i)), 33100, workers)
 			}(i)
 		}
 		ready.Wait()
@@ -99,13 +108,14 @@ func TestAllocatePortConcurrentSameTenantNeverErrors(t *testing.T) {
 		done.Add(workers)
 
 		got := make([]int, workers)
+		inserted := make([]bool, workers)
 		errs := make([]error, workers)
 		for i := 0; i < workers; i++ {
 			go func(i int) {
 				defer done.Done()
 				ready.Done()
 				<-start
-				got[i], errs[i] = s.AllocatePort("same-tenant", 33100, 10)
+				got[i], inserted[i], errs[i] = s.AllocatePort("same-tenant", 33100, 10)
 			}(i)
 		}
 		ready.Wait()
@@ -121,6 +131,20 @@ func TestAllocatePortConcurrentSameTenantNeverErrors(t *testing.T) {
 			if got[i] != got[0] {
 				t.Fatalf("round %d: same tenant got two different ports: %d and %d", r, got[0], got[i])
 			}
+		}
+		// Exactly one caller created the row. This is the whole exclusion the
+		// provisioner relies on to refuse a duplicate Create: two callers both
+		// told they created the tenant is two callers both entitled to unwind
+		// it, and the loser's unwind destroys the winner's live instance.
+		created := 0
+		for _, ins := range inserted {
+			if ins {
+				created++
+			}
+		}
+		if created != 1 {
+			t.Fatalf("round %d: %d of %d concurrent same-tenant allocations reported inserted; exactly one may",
+				r, created, workers)
 		}
 	}
 }

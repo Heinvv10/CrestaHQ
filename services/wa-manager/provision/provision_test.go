@@ -412,3 +412,118 @@ func TestDestroyKeepsThePortWhenTheUnitWillNotStop(t *testing.T) {
 		t.Fatalf("a running bridge's .env was deleted under it: %v", err)
 	}
 }
+
+// Two concurrent Creates for the SAME tenant id must leave exactly one live
+// instance, and the loser must not touch it.
+//
+// Unserialised, both callers cleared checkInstanceFree (neither had a row yet),
+// both were handed the same port by AllocatePort's deliberate same-tenant
+// idempotency, and both went on to rewrite `.env` with their OWN fresh token
+// pair — so the running bridge held one pair while the file held another, and
+// the manager and the app were both permanently locked out of that number. If
+// the loser then failed anywhere after MkdirAll, its unwind removed the
+// winner's instance directory and deleted the winner's row while the winner's
+// Create had already returned success.
+//
+// A ready barrier and many rounds, because a single round does not reliably
+// contend — three phase-1 tests passed under the exact bugs they targeted for
+// that reason. Worth running at GOMAXPROCS=1 as well.
+func TestConcurrentCreatesForOneTenantLeaveOneLiveInstance(t *testing.T) {
+	const rounds, workers = 30, 8
+	for round := 0; round < rounds; round++ {
+		root := t.TempDir()
+		st, err := store.Open(filepath.Join(root, "mgr.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc := newFakeCtl()
+
+		// One provisioner per caller, sharing the store, the root and the
+		// controller — which is what two manager processes on one box are, and
+		// what makes each caller's token pair identifiable in the .env.
+		provs := make([]*Provisioner, workers)
+		for i := range provs {
+			app, mgr := fmt.Sprintf("app-tok-%d", i), fmt.Sprintf("mgr-tok-%d", i)
+			provs[i] = New(st, sc, Opts{
+				Root: root, PortBase: 33100, PortCount: 20,
+				AppToken:     func() string { return app },
+				ManagerToken: func() string { return mgr },
+			})
+		}
+
+		var ready, done sync.WaitGroup
+		start := make(chan struct{})
+		ready.Add(workers)
+		done.Add(workers)
+		got := make([]store.Tenant, workers)
+		errs := make([]error, workers)
+		for i := 0; i < workers; i++ {
+			go func(i int) {
+				defer done.Done()
+				ready.Done()
+				<-start
+				got[i], errs[i] = provs[i].Create("acme", "Acme")
+			}(i)
+		}
+		ready.Wait()
+		close(start)
+		done.Wait()
+
+		winner := -1
+		for i, err := range errs {
+			if err == nil {
+				if winner >= 0 {
+					t.Fatalf("round %d: callers %d and %d were both told they provisioned %q",
+						round, winner, i, "acme")
+				}
+				winner = i
+				continue
+			}
+			// A refusal a caller can act on, not a leaked PathError or a
+			// systemctl stderr: a duplicate is a 409, and only an authored
+			// refusal is safe to show verbatim.
+			var conflict *ConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("round %d: caller %d lost the race with a non-conflict error: %v", round, i, err)
+			}
+		}
+		if winner < 0 {
+			t.Fatalf("round %d: every concurrent Create failed; one must succeed", round)
+		}
+
+		inst := got[winner].Instance
+		dir := filepath.Join(root, inst)
+		env, err := os.ReadFile(filepath.Join(dir, ".env"))
+		if err != nil {
+			t.Fatalf("round %d: the winner's .env is gone — a loser unwound it: %v", round, err)
+		}
+		// The tokens in the file must be the winner's own. A loser that
+		// rewrote them leaves the running bridge on one pair and the file on
+		// another, and nothing reports a problem.
+		if !strings.Contains(string(env), fmt.Sprintf("app-tok-%d", winner)) ||
+			!strings.Contains(string(env), fmt.Sprintf("mgr-tok-%d", winner)) {
+			t.Fatalf("round %d: .env does not hold winner %d's tokens:\n%s", round, winner, env)
+		}
+		if info, err := os.Stat(filepath.Join(dir, "session")); err != nil || !info.IsDir() {
+			t.Fatalf("round %d: the winner's session dir is gone: %v", round, err)
+		}
+		row, err := st.GetTenant("acme")
+		if err != nil {
+			t.Fatalf("round %d: the winner's tenant row was deleted by a loser: %v", round, err)
+		}
+		if row.Port != got[winner].Port || row.Instance != inst {
+			t.Fatalf("round %d: the surviving row is not the winner's: %+v vs %+v", round, row, got[winner])
+		}
+		// The port stays allocated: a loser's ReleasePort deletes the row.
+		if _, _, err := st.AllocatePort("acme", 33100, 20); err != nil {
+			t.Fatalf("round %d: the winner's port was released: %v", round, err)
+		}
+		if !sc.Started(inst) {
+			t.Fatalf("round %d: the winner's unit was never started", round)
+		}
+		if sc.Stopped(inst) || sc.Disabled(inst) {
+			t.Fatalf("round %d: a loser stopped or disabled the winner's live unit", round)
+		}
+		st.Close()
+	}
+}
