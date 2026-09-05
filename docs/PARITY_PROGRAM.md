@@ -57,6 +57,21 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 **Depends on:** nothing. **Everything else depends on this.**
 **Tier:** coder-hard. **Size:** ~5 days.
 
+**Status (2026-09-05):** split into three PRs — see [docs/parity/sp0.md](parity/sp0.md).
+- **SP0-A — the harness — MERGED (PR #27).** Playwright runs on every PR and
+  blocks merge. Five specs green, each proven to fail under a scripted mutation
+  of production code. **Wave 1 (SP1, SP2, SP3, SP5-fixture, SP13) is unblocked
+  and may start now** — those subprojects depend on the harness, not on the
+  tenant being live.
+- **SP0-B — Google OAuth + per-tenant Paystack — not started.** Both subsystems
+  are absent from the codebase; Hein chose to build them inside SP0 rather than
+  defer them to SP5/SP9.
+- **SP0-C — CrestaHQ tenant live — BLOCKED.** `crm.crestahq.com` has no
+  `QSTASH_*`, so no workflow can run there at all: `scheduleNode` marks every
+  run failed immediately. Also missing `META_APP_ID`/`META_APP_SECRET` (the Meta
+  connect button 403s `not_configured`), `STRIPE_SECRET_KEY` and
+  `PAYSTACK_SECRET_KEY`. This is a deployment gap, not a build task.
+
 ### SP1 — Contacts, Smart Lists, Opportunities, Tasks
 **GHL surface:** Contacts (smart lists, bulk actions, custom fields UI, notes, tasks, company), Opportunities (multiple pipelines, stages, pipeline reporting), Tasks.
 **CrestaHQ today:** contacts list/search/profile, CSV import/export, single 6-stage pipeline, tasks, Cmd+K.
