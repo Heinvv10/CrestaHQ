@@ -62,6 +62,16 @@ export interface PaystackConnectionMeta {
    * actually arrived and verified. That is this field — null until
    * `/api/webhooks/paystack/sa/{id}` verifies its first signature. The card
    * shows the URL to paste and says plainly that nothing has arrived yet.
+   *
+   * NOT a `ready` flag, and do not use it as one when the charging path is
+   * built. Paystack authorises `POST /transaction/initialize` on the secret key
+   * alone, so the two questions have different answers:
+   *
+   *   can charge     = a key is stored
+   *   can reconcile  = webhookSeenAt !== null
+   *
+   * Gating "can take payment" on this field would block a perfectly working
+   * key; gating it on nothing would take money with no way to hear the outcome.
    */
   webhookSeenAt: Date | null;
   /** Which URL the operator was told to register, as of connect time. */
