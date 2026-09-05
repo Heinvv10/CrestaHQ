@@ -26,7 +26,9 @@ let contactRows: Array<{ id: string; data: Record<string, unknown> }> = [];
 let subAccountDoc: Record<string, unknown> | undefined;
 let messageWrites: MessageWrite[] = [];
 let conversationUpserts: Array<Record<string, unknown>> = [];
-/** Message ids the fake reports as already stored — a prior delivery. */
+/** Rows the fake reports as already stored, as `${contactId}/${messageId}`.
+ *  Keyed per contact because one phone number can match several contacts and
+ *  a partial write leaves the row on some of them and not others. */
 let existingMessageIds = new Set<string>();
 /** Set to make the conversation upsert throw, as a downstream outage would. */
 let upsertThrows = false;
@@ -47,7 +49,11 @@ function makeSnap(row: { id: string; data: Record<string, unknown> }) {
         id: docId ?? `generated-${name}-id`,
         get: async () => {
           messageReads.push(docId ?? "");
-          return { exists: existingMessageIds.has(docId ?? "") };
+          return {
+            exists:
+              existingMessageIds.has(`${row.id}/${docId ?? ""}`) ||
+              existingMessageIds.has(docId ?? ""),
+          };
         },
         set: async (data: Record<string, unknown>, opts: unknown) => {
           if (name === "whatsappMessages") {
@@ -395,6 +401,31 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     ]);
   });
 
+  it("treats a message as seen when ANY matched contact already holds it", async () => {
+    // One phone can match several contacts and the row fans out to all of
+    // them. Consulting only contactDocs[0] made the answer depend on
+    // Firestore's __name__ ordering: a contact created between deliveries with
+    // a smaller id becomes the new [0], has no row, and the message reads as
+    // fresh — re-running the auto-reply and sending a second real message.
+    aiOn = true;
+    contactRows = [
+      { id: "c_aaa", data: { name: "New", phone: "+27821234567" } },
+      { id: "c_zzz", data: { name: "Thabo", phone: "+27821234567" } },
+    ];
+    // Stored only on the SECOND contact, which is what a shifted [0] looks like.
+    existingMessageIds.add("c_zzz/3EB0SHARED");
+
+    await post(inbound({ messageId: "3EB0SHARED" }));
+    expect(maybeRespondWithAi).not.toHaveBeenCalled();
+    expect(conversationUpserts).toHaveLength(0);
+    // The row write still fans out to both, so the contact that missed it
+    // earlier is filled in rather than left permanently without it.
+    expect(messageWrites.map((w) => w.contactId).sort()).toEqual([
+      "c_aaa",
+      "c_zzz",
+    ]);
+  });
+
   it("auto-replies on a first delivery but never on a redelivery", async () => {
     // The auto-reply sends a real WhatsApp message to a real person and spends
     // an LLM call, so it is THE effect a replayed request must not repeat —
@@ -451,15 +482,31 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageReads).toEqual(["3EB0ABC"]);
   });
 
-  it("ignores an `at` outside a day either way and stamps the server clock", async () => {
-    // `at` is the bridge's clock, written into the collection readLastInboundAt
-    // scans to decide the 24-hour window for the OTHER two rails. A future
-    // value would hold that window open.
-    for (const at of ["2099-01-01T00:00:00Z", "1999-01-01T00:00:00Z"]) {
-      messageWrites = [];
-      await post(inbound({ at, messageId: `id-${at}` }));
-      expect(messageWrites[0].data.createdAt).toBe("SERVER_TS");
-    }
+  it("clamps an out-of-range `at` to the boundary rather than to now", async () => {
+    // `at` is the bridge's clock, written into the collection
+    // readLastInboundAt scans to decide the 24-hour window for the OTHER two
+    // rails. Stamping a three-day-old backfill with `now` would make a stale
+    // inbound look like it just arrived and hold open a window that is shut —
+    // failing open in the one direction that matters. The far edge of the
+    // range keeps it old, which is both honest and safe.
+    const before = Date.now();
+    await post(inbound({ at: "1999-01-01T00:00:00Z", messageId: "id-old" }));
+    const old = messageWrites[0].data.createdAt as Date;
+    expect(old).toBeInstanceOf(Date);
+    expect(old.getTime()).toBeGreaterThanOrEqual(before - 24 * 60 * 60 * 1000);
+    expect(old.getTime()).toBeLessThanOrEqual(Date.now() - 24 * 60 * 60 * 1000 + 5000);
+
+    messageWrites = [];
+    await post(inbound({ at: "2099-01-01T00:00:00Z", messageId: "id-future" }));
+    const future = messageWrites[0].data.createdAt as Date;
+    // Nothing legitimately arrives from the future; a skewed clock would
+    // otherwise pin the message to the top of the thread forever.
+    expect(future.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("still falls back to the server clock when `at` is missing or unparseable", async () => {
+    await post(inbound({ at: "not-a-date", messageId: "id-bad" }));
+    expect(messageWrites[0].data.createdAt).toBe("SERVER_TS");
   });
 
   it("keeps a recent `at` so a delayed delivery lands in its real place", async () => {

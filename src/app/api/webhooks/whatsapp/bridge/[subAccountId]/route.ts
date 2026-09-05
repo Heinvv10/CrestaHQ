@@ -246,13 +246,25 @@ export async function POST(
   // row now carries a deterministic id for exactly this reason).
   // Not idempotent, so gated: the conversation upsert re-bumps the thread, and
   // the AI auto-reply sends another real WhatsApp message to a real person.
+  // Asked of EVERY matched contact, not just the first.
+  //
+  // One phone number can match several contacts, and the row is written to all
+  // of them. Consulting only `contactDocs[0]` made the answer depend on
+  // Firestore's `__name__` ordering: a contact created between two deliveries
+  // with a lexicographically smaller id becomes the new `[0]`, has no row,
+  // and the message reads as fresh — re-running the AI auto-reply and sending
+  // the customer a second real message. `some` is the right quantifier
+  // because the question is "have we handled this message before", and one
+  // stored row answers yes; the row write below still fans out to all of them
+  // and merges, so a contact that missed it earlier is filled in regardless.
   let isRedelivery = false;
   if (providerMessageId && contactDocs.length > 0) {
-    const seen = await contactDocs[0].ref
-      .collection("whatsappMessages")
-      .doc(docId)
-      .get();
-    isRedelivery = seen.exists;
+    const seen = await Promise.all(
+      contactDocs.map((d) =>
+        d.ref.collection("whatsappMessages").doc(docId).get()
+      )
+    );
+    isRedelivery = seen.some((s) => s.exists);
   }
 
   // `at` is preferred over the server timestamp so a delayed delivery lands in
@@ -263,12 +275,28 @@ export async function POST(
   // would pin a message at the top or bottom of the thread permanently, and a
   // future-dated one would hold that window open. Outside a day either way we
   // keep the ordering hint we can actually trust.
+  // CLAMPED to the boundary, not replaced by `now`.
+  //
+  // Replacing an out-of-range value with the current time fails open in the
+  // one direction that matters. A genuine backfill — the bridge was offline
+  // for three days — carries an `at` older than the window, and stamping it
+  // `now` makes a stale inbound look like it arrived this second. That value
+  // is read by `readLastInboundAt` to decide the 24-hour service window for
+  // the Twilio and Cloud rails, so a message that should leave the window shut
+  // would hold it open instead. Pinning it to the far edge of the range keeps
+  // it old, which is the honest answer and the safe one.
   const at = payload.at ? new Date(payload.at) : null;
-  const withinADay =
-    at !== null &&
-    !Number.isNaN(at.getTime()) &&
-    Math.abs(Date.now() - at.getTime()) <= 24 * 60 * 60 * 1000;
-  const createdAt = withinADay ? at : FieldValue.serverTimestamp();
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  let createdAt: Date | FieldValue;
+  if (at === null || Number.isNaN(at.getTime())) {
+    createdAt = FieldValue.serverTimestamp();
+  } else {
+    // Future timestamps are pulled back to now — nothing legitimately arrives
+    // from the future, and a skewed bridge clock would otherwise pin the
+    // message to the top of the thread forever.
+    createdAt = new Date(Math.min(Math.max(at.getTime(), now - DAY_MS), now));
+  }
 
   const writes = contactDocs.map((d) =>
     d.ref

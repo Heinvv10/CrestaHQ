@@ -14,6 +14,7 @@ import {
   whatsappBridgeSecretPath,
   type WhatsappBridgeMeta,
 } from "@/types/whatsapp-bridge";
+import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -69,6 +70,7 @@ interface PostBody {
 function probeFailure(health: {
   reachable: boolean;
   connected: boolean;
+  killed: boolean;
   number: string | null;
 }): string | null {
   if (!health.reachable) {
@@ -79,6 +81,15 @@ function probeFailure(health: {
   }
   if (health.number === null) {
     return "The bridge rejected that token. Check you pasted this workspace's consumer token and not another one.";
+  }
+  if (health.killed) {
+    // Checked here as well as in readiness, because a connect that succeeds
+    // against a killed bridge hands the operator a workspace that looks
+    // connected and refuses every send — the same "reads as broken rather
+    // than as a brake somebody has to release" confusion that readiness was
+    // just fixed to avoid, reintroduced one layer up. Connect-time is also
+    // the cheaper place to say it: the operator is standing right there.
+    return "The bridge's kill switch is on, so it would accept this connection and then refuse every message. Lift the kill switch, then connect again.";
   }
   return null;
 }
@@ -186,13 +197,26 @@ export async function DELETE(
 
   const db = getAdminDb();
 
-  // Return the workspace to Twilio BEFORE deleting the credentials, so there is
-  // no interval in which it is pointed at a rail whose token is already gone.
-  // Disconnect stays ungated so a workspace can always be cleaned up even after
-  // the agency turns the feature off.
+  // Which rail to fall back to is a QUESTION, not the constant "twilio".
+  //
+  // A workspace that ran on Cloud, tried the bridge, and disconnected was
+  // being moved to Twilio with its Cloud credentials still sitting there —
+  // silently switching a working rail for one it may never have configured.
+  // Cloud is restored when its connection is still present; otherwise Twilio,
+  // which is the documented default for a workspace carrying no provider.
+  const saSnap = await db.doc(`subAccounts/${subAccountId}`).get();
+  const cloudStillConnected =
+    (saSnap.data() as SubAccountDoc | undefined)?.whatsappCloudMeta
+      ?.phoneNumberId != null;
+  const fallback: WhatsAppProviderId = cloudStillConnected ? "cloud" : "twilio";
+
+  // Repointed BEFORE the credentials are deleted, so there is no interval in
+  // which the workspace is aimed at a rail whose token is already gone.
+  // Disconnect stays ungated so a workspace can always be cleaned up even
+  // after the agency turns the feature off.
   await db.doc(`subAccounts/${subAccountId}`).set(
     {
-      whatsappProvider: "twilio",
+      whatsappProvider: fallback,
       whatsappBridgeMeta: null,
       updatedAt: FieldValue.serverTimestamp(),
     },
@@ -200,5 +224,5 @@ export async function DELETE(
   );
   await db.doc(whatsappBridgeSecretPath(subAccountId)).delete();
 
-  return NextResponse.json({ ok: true, provider: "twilio" });
+  return NextResponse.json({ ok: true, provider: fallback });
 }

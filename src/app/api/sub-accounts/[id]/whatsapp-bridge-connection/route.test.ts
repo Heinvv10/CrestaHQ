@@ -271,6 +271,18 @@ describe("probe", () => {
     expect(writes).toEqual([]);
   });
 
+  it("refuses a bridge whose kill switch is on", async () => {
+    // A connect that succeeded here would hand the operator a workspace that
+    // looks connected and refuses every send — the same confusion readiness
+    // was fixed to avoid, one layer up. Connect-time is the cheaper place to
+    // say it: the operator is standing right there.
+    healthFetch({ connected: true, killed: true, number: NUMBER });
+    const { status, body } = await json(await call(POST));
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/kill switch/i);
+    expect(writes).toEqual([]);
+  });
+
   it("sends the token as a bearer to /v1/health", async () => {
     const fetchSpy = healthFetch(healthyBody);
     await call(POST);
@@ -352,6 +364,23 @@ describe("connect", () => {
 });
 
 describe("disconnect", () => {
+  it("restores Cloud, not Twilio, when the workspace still has a Cloud connection", async () => {
+    // A workspace that ran on Cloud, tried the bridge, then disconnected was
+    // being moved onto Twilio — silently swapping a working rail for one it
+    // may never have configured — while its Cloud credentials sat untouched.
+    docs.set(`subAccounts/${SUB}`, {
+      ...docs.get(`subAccounts/${SUB}`),
+      whatsappCloudMeta: { phoneNumberId: "1234567890" },
+    });
+    const { status, body } = await json(await call(DELETE));
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true, provider: "cloud" });
+    expect(writes[0]).toMatchObject({
+      op: "set",
+      data: { whatsappProvider: "cloud", whatsappBridgeMeta: null },
+    });
+  });
+
   it("clears the meta, restores Twilio, and deletes the secret", async () => {
     const { status, body } = await json(await call(DELETE));
     expect(status).toBe(200);
