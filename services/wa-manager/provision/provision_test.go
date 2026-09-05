@@ -299,6 +299,39 @@ func TestTheAppConsumerCarriesTheWebhookSecretInTheFieldTheBridgeReads(t *testin
 	}
 }
 
+// A generator that hands back one of the bearer tokens is not random, and the
+// consequence is worse than either secret leaking alone: the webhook signing
+// key and the send credential become the same string, so one disclosure
+// forges inbound AND sends outbound.
+//
+// This exists because the guard shipped without it. Five mutations were run
+// against this file when the guard was written and none of them deleted the
+// guard itself — the empty-secret branch beside it was covered, which made the
+// gap look covered too.
+func TestAWebhookSecretEqualToABearerTokenIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, collidesWith string }{
+		{"collides with the app token", "app"},
+		{"collides with the manager token", "manager"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, _ := newTestProvisioner(t)
+			// Pin the tokens so the secret generator can return one of them
+			// verbatim. The fixture's default generators return a fresh value
+			// per call, which can never collide — which is exactly why the
+			// default fixture could not have caught this.
+			p.opts.AppToken = func() string { return "tok-app" }
+			p.opts.ManagerToken = func() string { return "tok-manager" }
+			collision := "tok-" + tc.collidesWith
+			p.opts.WebhookSecret = func() string { return collision }
+
+			if _, err := p.Create("t1", "Blitz"); err == nil {
+				t.Fatalf("Create accepted a webhook secret identical to the %s bearer token; "+
+					"one disclosure would both forge inbound and send outbound", tc.collidesWith)
+			}
+		})
+	}
+}
+
 // A nil WebhookSecret is the pre-signing shape and must keep working; a
 // generator that returns nothing must NOT, because the operator asked for a
 // signed tenant and would get an unsigned one without being told.

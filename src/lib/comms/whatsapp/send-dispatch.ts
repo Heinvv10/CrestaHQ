@@ -39,7 +39,7 @@ import type { SubAccountDoc } from "@/types";
  * a long-closed window anyway.
  */
 export async function readLastInboundAt(
-  contactId: string
+  contactId: string,
 ): Promise<Date | null> {
   const recent = await getAdminDb()
     .collection(`contacts/${contactId}/whatsappMessages`)
@@ -77,10 +77,10 @@ export interface WhatsappDispatchInput {
 }
 
 export async function dispatchWhatsappSend(
-  input: WhatsappDispatchInput
+  input: WhatsappDispatchInput,
 ): Promise<WhatsAppSendResult & { provider: WhatsAppProviderId }> {
   const { provider, capabilities } = resolveProviderForSubAccount(
-    input.subAccount
+    input.subAccount,
   );
 
   const lastInboundAt =

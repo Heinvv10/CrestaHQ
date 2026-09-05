@@ -387,3 +387,28 @@ func TestFanoutSignsWithAFreshTimestampEachSend(t *testing.T) {
 		t.Fatalf("signature must use the send-time clock, not the inbound message time: %q", header)
 	}
 }
+
+// TestSignPayloadMatchesTheGoldenVector pins the wire format this service
+// shares with the CRM that receives its webhooks.
+//
+// The receiver verifies with src/lib/api/webhooks/signing.ts, in a different
+// language and a module neither side can import. Every other signing test here
+// — and on the TypeScript side — recomputes the digest with the same
+// implementation it is testing, so both suites stay green if either side
+// changes the signed string, the "." separator or the "v1" prefix. Nothing
+// fails until a real inbound message is silently rejected in production.
+//
+// This vector is asserted verbatim in signing.test.ts as well. If the two
+// implementations drift, exactly one of the two suites goes red and names the
+// side that moved. Changing this expectation is a wire-format change: every
+// deployed bridge must be redeployed together with the receiver.
+func TestSignPayloadMatchesTheGoldenVector(t *testing.T) {
+	const (
+		secret = "whsec_golden_vector_do_not_change"
+		body   = `{"from":"27821234567@s.whatsapp.net","text":"hallo — \"toets\"","messageId":"3EB0GOLDEN","at":"2026-09-05T09:00:00Z"}`
+		want   = "t=1788600000,v1=68243cdfdf788bc7bff717acef17e8ee7aec563aa8f0c1462171c3f3146e551c"
+	)
+	if got := signPayload(secret, []byte(body), time.Unix(1788600000, 0)); got != want {
+		t.Fatalf("wire format drifted from the receiver.\n got: %s\nwant: %s", got, want)
+	}
+}

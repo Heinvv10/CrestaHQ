@@ -155,4 +155,29 @@ describe("checkWhatsappReadiness", () => {
     });
     expect(r).toMatchObject({ ready: false, provider: "twilio" });
   });
+
+  it("refuses a connected bridge whose kill switch is on", async () => {
+    // The fourth state. The kill switch is deliberate — somebody stopped this
+    // number during an incident — but a connected, killed bridge refuses every
+    // send at the rail. Reporting ready:true let the composer accept a message
+    // and fail it afterwards, which reads as a broken rail rather than as a
+    // brake somebody has to decide to release.
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    bridgeHealth.mockResolvedValue({
+      reachable: true,
+      connected: true,
+      killed: true,
+      number: "+27784356159",
+    });
+    const r = await checkWhatsappReadiness({
+      subAccountId: "sa_1",
+      subAccount: { whatsappProvider: "bridge" } as never,
+    });
+    expect(r.ready).toBe(false);
+    expect(r.ready === false && r.error).toMatch(/kill switch/i);
+  });
 });

@@ -26,6 +26,12 @@ let contactRows: Array<{ id: string; data: Record<string, unknown> }> = [];
 let subAccountDoc: Record<string, unknown> | undefined;
 let messageWrites: MessageWrite[] = [];
 let conversationUpserts: Array<Record<string, unknown>> = [];
+/** Message ids the fake reports as already stored — a prior delivery. */
+let existingMessageIds = new Set<string>();
+/** Set to make the conversation upsert throw, as a downstream outage would. */
+let upsertThrows = false;
+/** Message-doc reads issued — the redelivery check costs exactly one. */
+let messageReads: string[] = [];
 
 function makeSnap(row: { id: string; data: Record<string, unknown> }) {
   const ref = {
@@ -33,6 +39,10 @@ function makeSnap(row: { id: string; data: Record<string, unknown> }) {
     collection: (name: string) => ({
       doc: (docId?: string) => ({
         id: docId ?? "generated-id",
+        get: async () => {
+          messageReads.push(docId ?? "");
+          return { exists: existingMessageIds.has(docId ?? "") };
+        },
         set: async (data: Record<string, unknown>, opts: unknown) => {
           if (name === "whatsappMessages") {
             messageWrites.push({
@@ -99,6 +109,7 @@ vi.mock("@/lib/server/contacts-service", () => ({
 }));
 vi.mock("@/lib/server/conversations-service", () => ({
   upsertConversationForMessage: async (a: Record<string, unknown>) => {
+    if (upsertThrows) throw new Error("conversations index unavailable");
     conversationUpserts.push(a);
   },
 }));
@@ -145,6 +156,9 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
   beforeEach(() => {
     messageWrites = [];
     conversationUpserts = [];
+    existingMessageIds = new Set();
+    upsertThrows = false;
+    messageReads = [];
     contactRows = [
       { id: "c1", data: { name: "Thabo", phone: "+27821234567" } },
     ];
@@ -211,13 +225,6 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     // pointed at another workspace's URL must fail even if it signs cleanly.
     const res = await post(inbound(), { token: "tok_other" });
     expect(res.status).toBe(403);
-    expect(messageWrites).toHaveLength(0);
-  });
-
-  it("404s a sub-account with no bridge credentials", async () => {
-    getBridgeCreds.mockRejectedValue(new Error("not configured"));
-    const res = await post(inbound());
-    expect(res.status).toBe(404);
     expect(messageWrites).toHaveLength(0);
   });
 
@@ -291,5 +298,96 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites).toHaveLength(1);
     expect(messageWrites[0].data.body).toBe("STOP");
     expect(await res.json()).toMatchObject({ optedOut: true });
+  });
+
+  // ---- Findings from the adversarial and architecture reviews ----
+
+  it("answers a sub-account with no bridge credentials exactly like any other pre-auth drop", async () => {
+    // The credential lookup must precede authentication — the stored secret IS
+    // what authenticates — so its outcome is observable to a caller with no
+    // credentials. A distinct status or body here lets anyone probe ids
+    // against this public route and learn which sub-accounts have the bridge
+    // provisioned. It must be indistinguishable from the other drops.
+    getBridgeCreds.mockRejectedValue(new Error("not configured"));
+    const res = await post(inbound());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: "not_configured" });
+    expect(messageWrites).toHaveLength(0);
+  });
+
+  it("does not reach Firestore for a sub-account id that is not a plain document id", async () => {
+    // The id is interpolated into two document paths. "%2F" survives the
+    // middleware pattern that publishes this route, because Next decodes the
+    // segment after that match.
+    const res = await post(inbound(), { subAccountId: "sa_1/private/whatsappBridge" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: "not_configured" });
+    expect(getBridgeCreds).not.toHaveBeenCalled();
+    expect(messageWrites).toHaveLength(0);
+  });
+
+  it("stops a redelivery before the conversation upsert and the auto-reply", async () => {
+    // The message row is idempotent on its own id, but nothing after it is.
+    // A signature stays valid for five minutes, so a replayed request used to
+    // send another real WhatsApp message per replay while the row converged.
+    existingMessageIds.add("3EB0ABC");
+    const res = await post(inbound({ messageId: "3EB0ABC" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: "duplicate" });
+    expect(messageWrites).toHaveLength(0);
+    expect(conversationUpserts).toHaveLength(0);
+  });
+
+  it("processes a message with no provider id without paying for a dedupe read", async () => {
+    // The dedupe key is the provider id. An empty one falls back to a
+    // generated Firestore id, which cannot already exist — so the lookup could
+    // only ever return "not a duplicate", and issuing it would bill a read per
+    // message for an answer that is known in advance.
+    const res = await post(inbound({ messageId: "" }));
+    expect(res.status).toBe(200);
+    expect(messageReads).toEqual([]);
+    expect(messageWrites).toHaveLength(1);
+    expect(messageWrites[0].data).toMatchObject({ providerMessageId: null });
+  });
+
+  it("reads exactly once to check for a redelivery", async () => {
+    await post(inbound({ messageId: "3EB0ABC" }));
+    expect(messageReads).toEqual(["3EB0ABC"]);
+  });
+
+  it("ignores an `at` outside a day either way and stamps the server clock", async () => {
+    // `at` is the bridge's clock, written into the collection readLastInboundAt
+    // scans to decide the 24-hour window for the OTHER two rails. A future
+    // value would hold that window open.
+    for (const at of ["2099-01-01T00:00:00Z", "1999-01-01T00:00:00Z"]) {
+      messageWrites = [];
+      await post(inbound({ at, messageId: `id-${at}` }));
+      expect(messageWrites[0].data.createdAt).toBe("SERVER_TS");
+    }
+  });
+
+  it("keeps a recent `at` so a delayed delivery lands in its real place", async () => {
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    await post(inbound({ at: recent }));
+    expect(messageWrites[0].data.createdAt).toBeInstanceOf(Date);
+    expect((messageWrites[0].data.createdAt as Date).toISOString()).toBe(recent);
+  });
+
+  it("still answers 200 when the conversation index write fails", async () => {
+    // This runs after the message row is committed. Throwing here would make
+    // the bridge log a failed delivery for a message that actually landed.
+    upsertThrows = true;
+    const res = await post(inbound());
+    expect(res.status).toBe(200);
+    expect(messageWrites).toHaveLength(1);
+  });
+
+  it("does not persist when the contact cannot be created", async () => {
+    contactRows = [];
+    createContactServerSide.mockRejectedValue(new Error("firestore down"));
+    const res = await post(inbound());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, persisted: false });
+    expect(messageWrites).toHaveLength(0);
   });
 });

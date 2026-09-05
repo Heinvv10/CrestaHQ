@@ -79,6 +79,16 @@ export async function POST(
   // would verify a body the bridge never signed.
   const rawBody = await request.text();
 
+  // The id is interpolated into two Firestore document paths below, and a
+  // decoded "%2F" would still satisfy the `[^/]+` pattern that publishes this
+  // route in middleware — Next decodes the segment after that match. Nothing
+  // exploitable was demonstrated (a nested path simply finds no credentials),
+  // but a path segment that reaches `db.doc()` unvalidated is a guard that is
+  // absent rather than a guard that holds.
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(subAccountId)) {
+    return ok({ ok: true, ignored: "not_configured" });
+  }
+
   let creds;
   try {
     creds = await getBridgeCreds(subAccountId);
@@ -86,10 +96,18 @@ export async function POST(
     console.warn(
       `[whatsapp-bridge] inbound for sa=${subAccountId} which has no bridge credentials — dropping`
     );
-    return NextResponse.json(
-      { ok: false, error: "not_configured" },
-      { status: 404 }
-    );
+    // 200, and the SAME body as every other pre-verification drop.
+    //
+    // This lookup necessarily precedes authentication — the stored secret is
+    // what authentication is performed against — so its outcome is observable
+    // to a caller holding no credentials. Answering 404 here and 403 for a
+    // configured tenant turned that into an oracle: probe ids against a route
+    // the middleware does not guard and learn which sub-accounts exist and
+    // have the bridge provisioned. The sibling public webhook
+    // (webhooks/webinar1/sa/[subAccountId]) already answers
+    // `200 {ignored:"not_configured"}` for exactly this condition; diverging
+    // from it here was an accident, not a decision.
+    return ok({ ok: true, ignored: "not_configured" });
   }
 
   const sigHeader = request.headers.get("leadstack-signature");
@@ -197,9 +215,45 @@ export async function POST(
   // delayed delivery lands in its real place in the thread, not at the end.
   const providerMessageId = payload.messageId?.trim() ?? "";
   const docId = providerMessageId || db.collection("contacts").doc().id;
+
+  // A redelivery must stop HERE, not merely write the same row twice.
+  //
+  // The row is idempotent on its own id, but nothing after it is: the
+  // conversation upsert bumps the thread again, and the AI auto-reply sends
+  // another real WhatsApp message to a real person and spends another LLM
+  // call. A signature stays valid for the full five-minute tolerance, so one
+  // captured request replayed inside that window produced one outbound per
+  // replay — the message row converging while the customer's phone did not.
+  //
+  // Only a message carrying a real provider id can be deduplicated. An empty
+  // id gets a generated one, which is unique per delivery by construction and
+  // therefore matches nothing; that is the bridge telling us its transport
+  // supplied no id, and it is the pre-existing behaviour of the Twilio rail
+  // for the same reason.
+  if (providerMessageId && contactDocs.length > 0) {
+    const seen = await contactDocs[0].ref
+      .collection("whatsappMessages")
+      .doc(docId)
+      .get();
+    if (seen.exists) {
+      return ok({ ok: true, ignored: "duplicate" });
+    }
+  }
+
+  // `at` is preferred over the server timestamp so a delayed delivery lands in
+  // its real place in the thread rather than at the end — but it is the
+  // bridge's clock, not ours, and it is written into the same
+  // `whatsappMessages` collection that `readLastInboundAt` scans to decide the
+  // 24-hour service window for the OTHER two rails. A skewed or hostile value
+  // would pin a message at the top or bottom of the thread permanently, and a
+  // future-dated one would hold that window open. Outside a day either way we
+  // keep the ordering hint we can actually trust.
   const at = payload.at ? new Date(payload.at) : null;
-  const createdAt =
-    at && !Number.isNaN(at.getTime()) ? at : FieldValue.serverTimestamp();
+  const withinADay =
+    at !== null &&
+    !Number.isNaN(at.getTime()) &&
+    Math.abs(Date.now() - at.getTime()) <= 24 * 60 * 60 * 1000;
+  const createdAt = withinADay ? at : FieldValue.serverTimestamp();
 
   const writes = contactDocs.map((d) =>
     d.ref
@@ -232,21 +286,32 @@ export async function POST(
     console.warn("[whatsapp-bridge] message-row write failed", err);
   }
 
-  await Promise.all(
-    contactDocs.map((d) => {
-      const cdata = d.data() as { name?: string; phone?: string } | undefined;
-      return upsertConversationForMessage({
-        contactId: d.id,
-        subAccountId,
-        agencyId,
-        contactName: cdata?.name ?? "",
-        contactPhone: cdata?.phone ?? from,
-        channel: "whatsapp",
-        direction: "inbound",
-        body,
-      });
-    })
-  );
+  // Wrapped for the same reason the message-row write above is: this runs
+  // AFTER the row is committed, so an uncaught throw here would 500 a webhook
+  // whose message is already stored. The bridge reads any status >= 300 as a
+  // failed delivery and logs it, which would report a message that in fact
+  // landed. The inbox index is a derived view — losing an entry degrades the
+  // unified inbox until the next message on the thread rebuilds it, whereas
+  // failing the request loses nothing and reports a lie.
+  try {
+    await Promise.all(
+      contactDocs.map((d) => {
+        const cdata = d.data() as { name?: string; phone?: string } | undefined;
+        return upsertConversationForMessage({
+          contactId: d.id,
+          subAccountId,
+          agencyId,
+          contactName: cdata?.name ?? "",
+          contactPhone: cdata?.phone ?? from,
+          channel: "whatsapp",
+          direction: "inbound",
+          body,
+        });
+      })
+    );
+  } catch (err) {
+    console.warn("[whatsapp-bridge] conversation upsert failed", err);
+  }
 
   if (nextOptedOut !== null) {
     const batch = db.batch();
