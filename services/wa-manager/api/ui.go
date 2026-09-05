@@ -241,6 +241,13 @@ func (s *server) handleUIRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !sameOrigin(r, s.deps.PublicOrigin) {
+		// Log what was refused. None of these three is a secret, and without
+		// them a refusal is un-diagnosable from the operator's side: the
+		// browser shows five words of plain text and the server said nothing
+		// at all. That silence is what made the Origin: null bug take a human
+		// with a packet capture to find.
+		log.Printf("ui restart refused as cross-site tenant=%s origin=%q sec_fetch_site=%q host=%q",
+			id, r.Header.Get("Origin"), r.Header.Get("Sec-Fetch-Site"), r.Host)
 		noStore(w)
 		http.Error(w, "cross-site restart refused", http.StatusForbidden)
 		return
@@ -279,6 +286,30 @@ func (s *server) handleUIRestart(w http.ResponseWriter, r *http.Request) {
 // such as X-Forwarded-Host, which is attacker-controlled unless the proxy is
 // known to strip it — trusting it would turn this guard back off.
 func sameOrigin(r *http.Request, publicOrigin string) bool {
+	// Sec-Fetch-Site is consulted FIRST, because Origin is not reliable on a
+	// navigation this service itself made anonymous. noStore sets
+	// Referrer-Policy: no-referrer on every UI response, and Chrome derives a
+	// NAVIGATION's Origin from the referrer policy — so the restart form,
+	// submitted from this very page, arrives carrying the literal string
+	// "null". url.Parse("null") succeeds with an empty Host, the Host
+	// comparison below fails, and the one control this screen exists for was
+	// 403 for every browser while curl (no Origin at all) and fetch (whose
+	// Origin is not referrer-derived) both passed. That is why the whole
+	// suite stayed green.
+	//
+	// Sec-Fetch-Site does not have that problem: it is set by the browser,
+	// cannot be written by a page, and says same-origin on exactly the
+	// request Origin called null. When the browser sends it, it IS the
+	// answer — "none" is a user-typed URL or a bookmark, which is not a
+	// cross-site form.
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "same-site", "cross-site":
+		return false
+	}
+	// No Sec-Fetch-Site: a non-browser caller holding the operator token, or a
+	// browser too old to send it. Fall back to Origin, unchanged.
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
