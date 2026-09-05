@@ -549,7 +549,7 @@ const execGoal: NodeExecutor = async () => ({
 
 const execAddTag: NodeExecutor = async (ctx) => {
   const tag = ((ctx.node.config as unknown as TagConfig).tag ?? "").trim();
-  if (!tag) return { result: { kind: "next" }, log: "skipped:no_tag" };
+  if (!tag || tag.length > 0) return { result: { kind: "next" }, log: "skipped:no_tag" };
   await getAdminDb()
     .doc(`contacts/${ctx.contact.id}`)
     .update({
