@@ -3,6 +3,7 @@ package redact
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -19,10 +20,19 @@ func Body(s string) string {
 	return fmt.Sprintf("<%d chars>", utf8.RuneCountInString(s))
 }
 
-// JID returns j unchanged. JIDs are safe to log; this function exists purely
-// so call sites are uniform and greppable — every logged field goes through
-// redact.*, making a future leaked-body bug a one-line grep away instead of
-// an audit of every log.Info call.
+// JID masks all but the last 4 digits of the phone number in j, keeping the
+// value stable and greppable for debugging without disclosing the number it
+// embeds. A WhatsApp JID (e.g. "27821234567@s.whatsapp.net") is the
+// customer's phone number, and this service runs on a VPS whose logs are not
+// access-controlled — the same reason Body is masked — so under POPIA it
+// counts as personal information and must not be logged in full.
 func JID(j string) string {
-	return j
+	user, server, hasServer := strings.Cut(j, "@")
+	if hasServer {
+		server = "@" + server
+	}
+	if len(user) <= 4 {
+		return strings.Repeat("*", len(user)) + server
+	}
+	return strings.Repeat("*", len(user)-4) + user[len(user)-4:] + server
 }

@@ -64,6 +64,7 @@ type faultyStore struct {
 	*store.Memory
 	failRecordOutbound bool
 	failCountTotal     bool
+	failListAllowlist  bool
 }
 
 func (f *faultyStore) RecordOutbound(jid, consumer, messageID string, at time.Time) error {
@@ -103,6 +104,12 @@ func (c *stubConnection) Connected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.up
+}
+
+// PairingCode satisfies ConnectionState. The existing send/health/admin tests
+// describe an already-paired bridge, so this stub never has a live code.
+func (c *stubConnection) PairingCode() (string, time.Time, bool) {
+	return "", time.Time{}, false
 }
 
 func (c *stubConnection) set(up bool) {
@@ -184,4 +191,15 @@ func getAuthed(h http.Handler, path, token string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// failListAllowlist breaks the read the health endpoint uses to report how many
+// contacts have escaped reply-only. It exists so a test can tell "nobody is
+// allowlisted" apart from "we could not find out" — the two states health must
+// never render alike.
+func (f *faultyStore) ListAllowlist() ([]string, error) {
+	if f.failListAllowlist {
+		return nil, errors.New("disk is gone")
+	}
+	return f.Memory.ListAllowlist()
 }

@@ -1,0 +1,78 @@
+// Package systemd drives templated user units. It is an interface so the
+// provisioner can be tested without a systemd on the machine — and so a test
+// can never accidentally start a real unit.
+package systemd
+
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+)
+
+var errExit = errors.New("systemctl exited non-zero")
+
+type Controller interface {
+	Enable(instance string) error
+	Start(instance string) error
+	Stop(instance string) error
+	Disable(instance string) error
+	IsActive(instance string) (bool, error)
+}
+
+// safeInstance is deliberately strict. The instance name is interpolated into a
+// unit name and into filesystem paths the provisioner writes, so anything that
+// could traverse a directory or address a different unit is refused. This is
+// the manager's sharpest edge: it runs privileged-ish work on behalf of a
+// caller, and the instance name is the caller's input.
+var safeInstance = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+func Validate(instance string) error {
+	if !safeInstance.MatchString(instance) {
+		return fmt.Errorf("systemd: unsafe instance name %q", instance)
+	}
+	return nil
+}
+
+type systemctl struct {
+	unit string
+	run  func(args ...string) (string, error)
+}
+
+func New(unit string) Controller {
+	return &systemctl{unit: unit, run: func(args ...string) (string, error) {
+		out, err := exec.Command("systemctl", args...).CombinedOutput()
+		if err != nil {
+			return string(out), errExit
+		}
+		return string(out), nil
+	}}
+}
+
+func (c *systemctl) verb(v, instance string) error {
+	if err := Validate(instance); err != nil {
+		return err
+	}
+	out, err := c.run("--user", v, c.unit+"@"+instance)
+	if err != nil {
+		return fmt.Errorf("systemd: %s %s@%s: %s", v, c.unit, instance, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func (c *systemctl) Enable(i string) error  { return c.verb("enable", i) }
+func (c *systemctl) Start(i string) error   { return c.verb("start", i) }
+func (c *systemctl) Stop(i string) error    { return c.verb("stop", i) }
+func (c *systemctl) Disable(i string) error { return c.verb("disable", i) }
+
+// IsActive treats a non-zero exit as "not active" rather than an error:
+// `systemctl is-active` exits 3 for an inactive unit, which is an answer, not a
+// failure.
+func (c *systemctl) IsActive(instance string) (bool, error) {
+	if err := Validate(instance); err != nil {
+		return false, err
+	}
+	out, _ := c.run("--user", "is-active", c.unit+"@"+instance)
+	return strings.TrimSpace(out) == "active", nil
+}

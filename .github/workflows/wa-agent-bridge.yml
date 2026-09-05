@@ -26,7 +26,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.0'
+          # Bumped from 1.26.0 when govulncheck was added below: it reported
+          # eight STANDARD LIBRARY advisories with call paths this service
+          # actually reaches — net/http, crypto/tls, crypto/x509,
+          # net/textproto, net/url, encoding/asn1 — all fixed by 1.26.6. A
+          # vulnerability gate pinned to a toolchain that cannot pass it is
+          # not a gate. go.mod carries the same floor, for builds that never
+          # go through CI.
+          go-version: '1.26.6'
       # README.md calls gofmt a gate, so it has to actually be one. A gate
       # believed to run and not running is worse than no gate.
       - name: gofmt
@@ -52,3 +59,21 @@ jobs:
           echo "cgo guard holds: CGO_ENABLED=0 fails the build."
       - run: go test ./... -race
       - run: go build ./...
+      # A known-vulnerable dependency is the one class of defect no reviewer
+      # and no test on this branch can find: it is correct code calling
+      # something that was correct when it was written. govulncheck reports
+      # only advisories on code paths this module actually REACHES, so it is
+      # not a noise generator and is a blocking step like everything else here
+      # — nothing in this workflow is continue-on-error, and nothing should
+      # become so.
+      #
+      # Pinned to v1.7.0 rather than @latest: this runner is self-hosted and
+      # shared with four other repositories, so an unpinned `go run` of
+      # third-party code is a supply-chain path into all of them, and
+      # @latest also means CI can turn red with no code change here. The
+      # trade-off is real and deliberate: a pinned scanner will not pick up
+      # newly published advisories until this pin is bumped. Bump it on
+      # purpose; do not "fix" it back to @latest.
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...

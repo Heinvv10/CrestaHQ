@@ -56,7 +56,20 @@ CGO_ENABLED=1 go build -o wa-agent-bridge .   # correct
 CGO_ENABLED=0 go build ./...                  # MUST fail; that guard is intentional
 ```
 
-Gates before any commit: `go vet ./...`, `gofmt -l .`, `go test ./... -race`.
+**The `go 1.26.6` directive in `go.mod` is a security floor, not housekeeping —
+do not lower it.** On 1.26.0 `govulncheck` reports eight standard-library
+advisories with call paths this service actually reaches — `net/http`,
+`crypto/tls`, `crypto/x509`, `net/textproto`, `net/url`, `encoding/asn1` — and
+this service serves HTTP on `/v1/*`. All eight are fixed in 1.26.6. There is no
+deploy script here — the binary is built by hand on whatever box it lands on —
+so the directive is the only thing standing between an old toolchain and a
+vulnerable binary: with the default `GOTOOLCHAIN=auto` an older Go fetches
+1.26.6 and builds with it, and under `GOTOOLCHAIN=local` it refuses to build at
+all. Both outcomes are correct; neither ships a vulnerable binary. The CI pin
+governs only what CI builds.
+
+Gates before any commit: `go vet ./...`, `gofmt -l .`, `go test ./... -race`,
+`govulncheck ./...`.
 
 ## Configuration
 
@@ -210,6 +223,29 @@ reaches WhatsApp — the row is written before the transport is touched, so a
 store that cannot write is caught while the message can still be stopped. The
 switch exists because a store that cannot be written is one the caps cannot be
 read from either. Same admin-token release.
+
+## Running N instances
+
+One bridge process per WhatsApp number. `deploy/wa-agent-bridge@.service` is a
+templated unit — `systemctl --user start wa-agent-bridge@<instance>` starts
+one instance, reading its config from `/opt/wa-agent-bridge/<instance>/.env`.
+
+Each instance gets its own directory:
+
+- `/opt/wa-agent-bridge/<instance>/.env` — that instance's config, including
+  its own `LISTEN_ADDR` (they must differ) and `DB_PATH`.
+- `/opt/wa-agent-bridge/<instance>/session/` — that instance's whatsmeow
+  session store.
+- `/opt/wa-agent-bridge/<instance>/*.db` — that instance's rails SQLite file.
+
+The binary itself is shared at `/opt/wa-agent-bridge/bin/wa-agent-bridge` —
+every instance runs the same build; only the config under its own directory
+differs.
+
+**Two instances must never share a `DB_PATH`.** The cap serialization (per
+contact, per hour, global) is a process-local lock inside one bridge; pointing
+two processes at the same database file silently unserializes it — the caps
+would stop being enforced rather than fail loudly.
 
 ## Number swap
 

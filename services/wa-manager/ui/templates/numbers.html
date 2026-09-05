@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp numbers</title>
+{{- if .Refresh}}
+<meta http-equiv="refresh" content="{{.Refresh}}">
+{{- end}}
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #f6f7f9; color: #16181d; }
+  @media (prefers-color-scheme: dark) { body { background:#101216; color:#e8eaee; } }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  .cards { display: grid; gap: 14px; max-width: 640px; }
+  .card { background: Canvas; border: 1px solid #0002; border-radius: 10px; padding: 14px 16px; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .title { font-weight: 600; font-size: 16px; }
+  .muted { color: #0009; font-weight: 400; font-size: 13px; }
+  @media (prefers-color-scheme: dark) { .muted { color: #fff9; } }
+  .status { margin: 4px 0 12px; font-size: 14px; }
+  .dot { font-size: 11px; vertical-align: middle; }
+  .ok .dot { color: #1a8f3c; } .warn .dot { color: #b8860b; }
+  .bad .dot { color: #c0392b; } .unknown .dot { color: #7a7a7a; }
+  dl { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; margin: 0; }
+  dt { color: #0009; } dd { margin: 0; }
+  @media (prefers-color-scheme: dark) { dt { color: #fff9; } }
+  .bar { font-family: ui-monospace, monospace; letter-spacing: 1px; }
+  .problems { margin: 10px 0 0; padding-left: 18px; color: #c0392b; font-size: 13px; }
+  .qr { margin-top: 14px; } .qr img { width: 240px; height: 240px; image-rendering: pixelated; }
+  .qr button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid #0003;
+               background: Canvas; color: inherit; cursor: pointer; }
+  table { border-collapse: collapse; margin-top: 20px; font-size: 13px; max-width: 640px; width: 100%; }
+  td, th { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid #0001; vertical-align: top; }
+  a { color: inherit; }
+  .notice { max-width: 640px; margin: 0 0 14px; padding: 10px 14px; border-radius: 8px;
+            border: 1px solid #b8860b; background: #b8860b1a; font-size: 14px; }
+</style>
+
+{{define "card"}}
+<article class="card {{.Tone}}">
+  <div class="head">
+    <span class="title">
+      {{- .Title}}{{if not .Paired}} <span class="muted">not paired</span>{{end -}}
+    </span>
+    <a class="muted" href="/tenants/{{.TenantID}}">{{.TenantID}}</a>
+  </div>
+  <p class="status"><span class="dot">●</span> {{.Status}}</p>
+  <dl>
+    <dt>Sent today</dt><dd>{{.SentToday}} <span class="bar">{{.Bar}}</span></dd>
+    <dt>Last inbound</dt><dd>{{.LastInbound}}</dd>
+    <dt>Kill switch</dt><dd>{{.KillSwitch}}</dd>
+    <dt>Reply-only</dt><dd>{{.ReplyOnly}}</dd>
+  </dl>
+  {{- if .Problems}}
+  <ul class="problems">{{range .Problems}}<li>{{.}}</li>{{end}}</ul>
+  {{- end}}
+</article>
+{{end}}
+
+{{- if .Notice}}
+<p class="notice">{{.Notice}}</p>
+{{- end}}
+{{if .Tenant}}
+  <h1>{{.Tenant.Title}}</h1>
+  <div class="cards">{{template "card" .Tenant}}</div>
+  {{- if .Tenant.NeedsPairing}}
+  {{- if .Tenant.QRLive}}
+  <div class="qr">
+    <p class="muted">Scan this in WhatsApp → Linked devices. Anyone who scans it
+      links a device to this number, so do not forward or screenshot it.</p>
+    <img src="/tenants/{{.Tenant.TenantID}}/qr.png" alt="pairing code">
+  </div>
+  {{- else}}
+  <div class="qr">
+    <p class="muted">There is no pairing code waiting for this number — a
+      logged-out bridge only issues one when it starts. Restarting it generates
+      a fresh code here; nothing is sent or received in the meantime.</p>
+    <form method="post" action="/tenants/{{.Tenant.TenantID}}/restart">
+      <button type="submit">Restart this bridge</button>
+    </form>
+  </div>
+  {{- end}}
+  {{- end}}
+  {{- if .Events}}
+  <table>
+    <tr><th>When</th><th>What</th><th>Detail</th></tr>
+    {{range .Events}}<tr><td>{{.When}}</td><td>{{.Kind}}</td><td>{{.Detail}}</td></tr>{{end}}
+  </table>
+  {{- end}}
+{{else}}
+  <h1>WhatsApp numbers</h1>
+  <div class="cards">
+    {{- range .Cards}}{{template "card" .}}{{else}}<p class="muted">No numbers yet.</p>{{end -}}
+  </div>
+{{end}}

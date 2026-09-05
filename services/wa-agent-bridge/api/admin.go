@@ -131,6 +131,26 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		body["lastInboundAgeSeconds"] = int(s.deps.Now().Sub(at) / time.Second)
 	}
 
+	// How many contacts have escaped reply-only. Reply-only is the rail that
+	// keeps this number alive, and an allowlisted JID has nothing but the
+	// global daily cap left in front of it — so the count is safety state, and
+	// the manager's operator screen renders it beside the rail.
+	//
+	// The COUNT, never the entries: the entries are customer phone numbers and
+	// this endpoint is the one unauthenticated surface on the service.
+	//
+	// nil rather than 0 on a failed read, for the same reason as
+	// lastInboundAgeSeconds above: "nobody has escaped" and "we could not find
+	// out" are different facts, and a screen that draws them alike reports a
+	// safe number about a rail it cannot see.
+	body["allowlisted"] = nil
+	if jids, err := s.deps.Store.ListAllowlist(); err != nil {
+		problems = append(problems, "allowlist unreadable")
+		log.Printf("WARNING health allowlist failed err=%v", err)
+	} else {
+		body["allowlisted"] = len(jids)
+	}
+
 	killed, err := s.deps.Store.KillState()
 	if err != nil {
 		problems = append(problems, "kill state unreadable")

@@ -1,0 +1,81 @@
+name: wa-manager
+
+on:
+  push:
+    paths:
+      - 'services/wa-manager/**'
+      - '.github/workflows/wa-manager.yml'
+  pull_request:
+    paths:
+      - 'services/wa-manager/**'
+      - '.github/workflows/wa-manager.yml'
+
+jobs:
+  go:
+    runs-on: [self-hosted, linux, velo, crestahq]
+    defaults:
+      run:
+        working-directory: services/wa-manager
+    env:
+      # go-sqlite3 is a cgo package. Set explicitly rather than relying on the
+      # default, because the default is 1 only when a C toolchain is present —
+      # and because `-race` forces cgo on, which is how a cgo-less build stayed
+      # broken here without CI noticing.
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Bumped from 1.26.0 when govulncheck was added below: every one of
+          # the nine advisories it reported was in the STANDARD LIBRARY, all
+          # fixed by 1.26.6 — including an html/template one on the path that
+          # renders the operator screen. A vulnerability gate pinned to a
+          # toolchain that cannot pass it is not a gate.
+          go-version: '1.26.6'
+      # README.md calls gofmt a gate, so it has to actually be one. A gate
+      # believed to run and not running is worse than no gate.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      # CGO_ENABLED=0 must FAIL to build. Without the guard in
+      # store/requires_cgo.go it exits 0 and produces a binary that dies only at
+      # runtime, on first store open, with go-sqlite3's "This is a stub" — and
+      # CGO_ENABLED=0 is the default for cross-compiles and scratch/distroless
+      # images. This step is what makes that guard a gate rather than a comment.
+      #
+      # main.go opens the store before it binds, so here the failure is a boot
+      # crash-loop rather than a live-but-broken service. That is the better of
+      # the two, and still not something to discover on a deploy.
+      - name: cgo guard - a cgo-less build must be rejected loudly
+        run: |
+          if CGO_ENABLED=0 go build ./... 2>/dev/null; then
+            echo "::error::CGO_ENABLED=0 built cleanly. The cgo guard in store/requires_cgo.go has regressed; the resulting binary cannot open its SQLite store."
+            exit 1
+          fi
+          echo "cgo guard holds: CGO_ENABLED=0 fails the build."
+      - run: go test ./... -race
+      - run: go build ./...
+      # A known-vulnerable dependency is the one class of defect no reviewer
+      # and no test on this branch can find: it is correct code calling
+      # something that was correct when it was written. govulncheck reports
+      # only advisories on code paths this module actually REACHES, so it is
+      # not a noise generator and is a blocking step like everything else here
+      # — nothing in this workflow is continue-on-error, and nothing should
+      # become so.
+      #
+      # Pinned to v1.7.0 rather than @latest: this runner is self-hosted and
+      # shared with four other repositories, so an unpinned `go run` of
+      # third-party code is a supply-chain path into all of them, and
+      # @latest also means CI can turn red with no code change here. The
+      # trade-off is real and deliberate: a pinned scanner will not pick up
+      # newly published advisories until this pin is bumped. Bump it on
+      # purpose; do not "fix" it back to @latest.
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
