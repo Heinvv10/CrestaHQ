@@ -128,3 +128,73 @@ jobs:
           }
           gitleaks version
           gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 .
+
+  # Playwright, against THIS PR's build.
+  #
+  # The suite starts `pnpm start` on 127.0.0.1:3100 (playwright.config.ts) and
+  # drives that. Pointing it at crm.crestahq.com instead would test whatever
+  # main last deployed — green would prove nothing about the change under
+  # review, and an unrelated production blip would block the PR. See
+  # docs/parity/sp0.md for the full reasoning.
+  #
+  # Blocking, like every other step in this file. NOT continue-on-error. If it
+  # ever becomes too flaky to block, delete it rather than soften it.
+  e2e:
+    name: E2E (Playwright)
+    runs-on: [self-hosted, linux, velo, crestahq]
+    timeout-minutes: 30
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      # The build bakes NEXT_PUBLIC_* in, so they must be present at build
+      # time, not just at runtime — hence job-level env rather than step-level.
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+      NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3100
+      FIREBASE_ADMIN_PROJECT_ID: ${{ secrets.FIREBASE_ADMIN_PROJECT_ID }}
+      FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
+      FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
+      COOKIE_SECRET_CURRENT: ${{ secrets.COOKIE_SECRET_CURRENT }}
+      COOKIE_SECRET_PREVIOUS: ${{ secrets.COOKIE_SECRET_PREVIOUS }}
+      QSTASH_TOKEN: ${{ secrets.QSTASH_TOKEN }}
+      QSTASH_CURRENT_SIGNING_KEY: ${{ secrets.QSTASH_CURRENT_SIGNING_KEY }}
+      QSTASH_NEXT_SIGNING_KEY: ${{ secrets.QSTASH_NEXT_SIGNING_KEY }}
+      E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+      E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      E2E_SUBACCOUNT_ID: ${{ secrets.E2E_SUBACCOUNT_ID }}
+      E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # No --with-deps: the runner user has no sudo, and the apt step it runs
+      # would fail. The shared OS libraries are a host prerequisite.
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Build
+        run: pnpm build
+
+      - name: Playwright
+        run: pnpm exec playwright test
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

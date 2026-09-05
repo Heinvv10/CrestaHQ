@@ -17,7 +17,10 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ci:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm build"
+    "ci:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm build",
+    "e2e": "playwright test",
+    "e2e:server": "rm -rf .next/standalone/.next/static .next/standalone/public && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public && node .next/standalone/server.js",
+    "e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -60,6 +63,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "^4",
     "@tailwindcss/typography": "^0.5.19",
     "@types/mapbox-gl": "^3.5.0",

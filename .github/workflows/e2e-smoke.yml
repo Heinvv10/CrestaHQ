@@ -1,0 +1,60 @@
+name: E2E smoke (production)
+
+# The same specs, aimed at the deployed app instead of a PR build. This one
+# does NOT gate anything: crm.crestahq.com serves whatever was last deployed,
+# so a red run here means "production is unhappy", not "this change is bad".
+# The blocking Playwright job lives in ci.yml and tests the PR's own build.
+#
+# Expect the enrol spec to fail here until QStash credentials are present on
+# the deployment — see docs/parity/sp0.md, "Remaining risks".
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Playwright vs crm.crestahq.com
+    runs-on: [self-hosted, linux, velo, crestahq]
+    timeout-minutes: 30
+    env:
+      # No build step: the target is already running. Only the values the
+      # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK,
+      # the fixture ids, and the QStash key the enrol spec signs with.
+      PLAYWRIGHT_BASE_URL: https://crm.crestahq.com
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      FIREBASE_ADMIN_PROJECT_ID: ${{ secrets.FIREBASE_ADMIN_PROJECT_ID }}
+      FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
+      FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
+      QSTASH_CURRENT_SIGNING_KEY: ${{ secrets.QSTASH_CURRENT_SIGNING_KEY }}
+      E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+      E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      E2E_SUBACCOUNT_ID: ${{ secrets.E2E_SUBACCOUNT_ID }}
+      E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Playwright
+        run: pnpm exec playwright test
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-smoke
+          path: playwright-report/
+          retention-days: 7

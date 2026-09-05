@@ -13,6 +13,11 @@
 # testing
 /coverage
 
+# playwright: the E2E session cookie, its HTML report, and per-run artifacts
+e2e/.auth/
+playwright-report/
+test-results/
+
 # next.js
 /.next/
 /out/

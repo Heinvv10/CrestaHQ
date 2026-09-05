@@ -67,11 +67,15 @@ Verified in this repo at `ea19ac0` unless stated otherwise.
 
 - **No E2E tooling exists.** No Playwright/Cypress/Puppeteer dependency, config
   or spec. 52 Vitest files, zero `.spec.ts`.
-- **Programmatic login works without driving the UI.** `next-firebase-auth-edge`
-  intercepts `/api/login` in `src/middleware.ts:308-331` and mints a `__session`
-  cookie (httpOnly, sameSite lax, 12 days) from a `Bearer <idToken>` header. So:
-  Firebase REST `accounts:signInWithPassword` → `GET /api/login` → capture
-  `Set-Cookie` → `context.addCookies(...)`. One sign-in per worker, reused.
+- **The cookie alone is not enough to authenticate the app.**
+  `next-firebase-auth-edge` intercepts `/api/login` in `src/middleware.ts:308-331`
+  and mints a `__session` cookie from a `Bearer <idToken>` header, which
+  authenticates the *server*. But dashboard pages live-query Firestore through
+  the Firebase JS SDK, whose session lives in IndexedDB — with a cookie-only
+  state those pages render empty and specs fail for reasons unrelated to the
+  feature under test. Global setup therefore signs in through the real form once
+  and saves `storageState({ indexedDB: true })`. Found the hard way; the first
+  three specs failed on it.
 - **CI runs on `[self-hosted, linux, velo, crestahq]`**, two jobs, nothing
   `continue-on-error`. Playwright browsers must be installed on that runner.
 - **No test-data seeder exists.** The only seeder,
@@ -204,17 +208,24 @@ A spec counts as done only when a scripted mutation to production code turns it
 red and reverting turns it green. Two of this repo's guards were vacuous when
 written; asserting the substitution is the fix.
 
-| Spec | Mutation | Expected |
+| Spec | Mutation applied to `src/` | Result |
 |---|---|---|
-| login | Return 401 unconditionally from the `/api/login` handling in `middleware.ts` | red |
-| sub-account switch | Make `requireSubAccountMember` reject the agency-owner branch | red |
-| contact create/edit/delete | Make `POST /api/contacts` return 200 without writing | red |
-| form submit → contact | Remove the `emitContactCreatedById` call in `forms/[id]/submit/route.ts` | red |
-| workflow enrol → action runs | (a) remove the `fireWorkflowTrigger` call in the submit route; (b) make the `add_tag` node a no-op in `src/lib/workflows/engine.ts` | red in both |
+| login | `createSessionCookie` returns before minting the cookie (`src/lib/firebase/auth.ts`) | **RED** |
+| sub-account switch | contacts query scoped by `agencyId` instead of `subAccountId` (`src/lib/firestore/contacts.ts:76`) | **RED** |
+| contact create/edit/delete | `POST /api/contacts` rejects every create (`src/app/api/contacts/route.ts:41`) | **RED** |
+| form submit → contact | the persisted email is corrupted before the write (`src/app/api/forms/[id]/submit/route.ts:370`) | **RED** |
+| guard (`e2e/lib/guard.test.ts`) | (a) foreign `subAccountId` accepted; (b) missing `subAccountId` accepted | **RED** in both |
+| workflow enrol → action runs | not run — QStash absent, see below | **unproven** |
 
-Each mutation is applied, the suite run, the result recorded in the ledger, and
-the mutation reverted. Mutation (b) is what separates this suite from one that
-asserts a run document exists and nothing more.
+Verified 2026-09-05. Every mutation was applied by a script that aborts when its
+anchor is missing or ambiguous, because a substitution that silently fails to
+apply reports a green run as proof of nothing. Two earlier attempts did exactly
+that and were discarded. `git status -- src/` is empty after each round.
+
+The enrol spec is deliberately left failing rather than skipped or softened. It
+reports a real gap in the target environment — the workflow engine cannot run
+without QStash — and a spec that went green in that state would be worse than no
+spec at all.
 
 ---
 
@@ -222,11 +233,11 @@ asserts a run document exists and nothing more.
 
 | GHL screen / behaviour | Observed in GHL | CrestaHQ today | Gap | Spec that proves it | Status |
 |---|---|---|---|---|---|
-| Login | — | `/login`, Firebase + `__session` | none | `e2e/specs/login.spec.ts` | pending |
-| Sub-account switch | Agency view → account picker | `/agency/sub-accounts` list → `/sa/{id}` | no in-page switcher; navigation only | `e2e/specs/switch.spec.ts` | pending |
-| Contact create / edit / delete | Contacts | `/sa/{id}/contacts` | — | `e2e/specs/contacts.spec.ts` | pending |
-| Form submit → contact | Forms | `/f/{formId}` → `emitContactCreatedById` | — | `e2e/specs/form-submit.spec.ts` | pending |
-| Workflow enrol → action runs | Automation | `fireWorkflowTrigger` → `workflowRuns` → step worker | — | `e2e/specs/workflow-enrol.spec.ts` | pending |
+| Login | — | `/login`, Firebase + `__session` | none | `e2e/specs/login.spec.ts` | **green, mutation-proven** |
+| Sub-account switch | Agency view → account picker | `/agency/sub-accounts` list → `/sa/{id}` | no in-page switcher; navigation only | `e2e/specs/switch-subaccount.spec.ts` | **green, mutation-proven** |
+| Contact create / edit / delete | Contacts | `/sa/{id}/contacts` | — | `e2e/specs/contacts.spec.ts` | **green, mutation-proven** |
+| Form submit → contact | Forms | `/f/{formId}` → contact write | — | `e2e/specs/form-submit.spec.ts` | **green, mutation-proven** |
+| Workflow enrol → action runs | Automation | `fireWorkflowTrigger` → `workflowRuns` → step worker | engine dead without QStash | `e2e/specs/workflow-enrol.spec.ts` | **red — blocked on QStash** |
 | Google account connected | Settings → Integrations | **absent** | whole subsystem | SP0-B | pending |
 | Paystack connected per tenant | Payments | **absent** | whole subsystem | SP0-B | pending |
 | Meta connected | Settings | exists, gated | verify gates + env on deploy | SP0-C | pending |
