@@ -56,7 +56,20 @@ CGO_ENABLED=1 go build -o wa-agent-bridge .   # correct
 CGO_ENABLED=0 go build ./...                  # MUST fail; that guard is intentional
 ```
 
-Gates before any commit: `go vet ./...`, `gofmt -l .`, `go test ./... -race`.
+**The `go 1.26.6` directive in `go.mod` is a security floor, not housekeeping —
+do not lower it.** On 1.26.0 `govulncheck` reports eight standard-library
+advisories with call paths this service actually reaches — `net/http`,
+`crypto/tls`, `crypto/x509`, `net/textproto`, `net/url`, `encoding/asn1` — and
+this service serves HTTP on `/v1/*`. All eight are fixed in 1.26.6. There is no
+deploy script here — the binary is built by hand on whatever box it lands on —
+so the directive is the only thing standing between an old toolchain and a
+vulnerable binary: with the default `GOTOOLCHAIN=auto` an older Go fetches
+1.26.6 and builds with it, and under `GOTOOLCHAIN=local` it refuses to build at
+all. Both outcomes are correct; neither ships a vulnerable binary. The CI pin
+governs only what CI builds.
+
+Gates before any commit: `go vet ./...`, `gofmt -l .`, `go test ./... -race`,
+`govulncheck ./...`.
 
 ## Configuration
 

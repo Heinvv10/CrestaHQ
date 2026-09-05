@@ -288,6 +288,18 @@ cgo it compiles to a stub that fails only when the store is opened.
 that `CGO_ENABLED=0 go build ./...` **fails** — a guard nothing checks is a
 comment.
 
+**The `go 1.26.6` directive in `go.mod` is a security floor, not housekeeping —
+do not lower it.** On 1.26.0 `govulncheck` reports nine standard-library
+advisories with call paths this service actually reaches, including
+`GO-2026-6091` in `html/template`, which is the package that renders the
+operator screen. All nine are fixed in 1.26.6. There is no deploy script for
+this service — the binary is built by hand on whatever box it lands on — so
+the directive is the only thing standing between an old toolchain and a
+vulnerable binary: with the default `GOTOOLCHAIN=auto` an older Go fetches
+1.26.6 and builds with it, and under `GOTOOLCHAIN=local` it refuses to build
+at all. Both outcomes are correct; neither ships a vulnerable binary. The CI
+pin governs only what CI builds.
+
 Running it locally needs a token and a writable root, nothing else:
 
 ```bash
