@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // e2e/** carries the fixture guard's unit test — the guard is the only
+    // thing between a spec bug and production Firestore, so it is covered
+    // by `pnpm test` like any other module.
+    include: ["src/**/*.test.ts", "e2e/**/*.test.ts"],
   },
   resolve: {
     alias: {
