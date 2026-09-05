@@ -52,6 +52,7 @@ without both:
 | `OPERATOR_TOKEN` | *(none — required)* | The only credential the API accepts. Empty, or shorter than 32 characters, refuses to start. Not trimmed: whitespace you paste in is whitespace you must present. |
 | `LISTEN_ADDR` | `127.0.0.1:33000` | The manager's own listener. Loopback/tailnet enforced. |
 | `ALLOW_PUBLIC_BIND` | unset | Set to `1` to bypass the bind check. Deliberate only. |
+| `PUBLIC_ORIGIN` | unset | The origin (e.g. `https://wa.example.com`) a browser sees behind a reverse proxy. The UI's CSRF check accepts a request whose `Origin` matches this, because a proxy that rewrites `Host` otherwise fails that check for every legitimate operator. Unset means the check compares against the request's own `Host`, as it always has. |
 | `DB_PATH` | `./wa-manager.db` | The manager's own registry: tenants, ports, events. Not any bridge's database. |
 | `INSTANCE_ROOT` | `/opt/wa-agent-bridge` | Parent of every instance directory. Must be writable by the unit's user, and listed in the unit's `ReadWritePaths`. |
 | `UNIT_NAME` | `wa-agent-bridge` | The templated unit, without `@` or `.service`. Driven as `systemctl --user <verb> <UNIT_NAME>@<instance>`. |

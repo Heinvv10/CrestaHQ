@@ -12,6 +12,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -43,6 +44,16 @@ type Config struct {
 	// here so one bad string is caught once, at the manager's boot, rather
 	// than separately in every bridge it would go on to provision.
 	QuietTZ string
+
+	// PublicOrigin is the origin (scheme://host[:port]) a browser actually
+	// sees, for deployments where a reverse proxy sits in front of this
+	// process. Empty means direct-bind: the UI's same-origin check compares
+	// against the request's own Host, as it always has.
+	//
+	// Deliberately NOT derived from a request header. X-Forwarded-Host is
+	// attacker-controlled unless the proxy is known to strip it, and trusting
+	// it would turn the CSRF guard back off — the opposite of the point.
+	PublicOrigin string
 }
 
 // Defaults. The listener is loopback and the tenant range sits well clear of
@@ -106,6 +117,7 @@ func Load() (Config, error) {
 		OperatorToken:  os.Getenv("OPERATOR_TOKEN"),
 		WebhookBaseURL: os.Getenv("WEBHOOK_BASE_URL"),
 		QuietTZ:        envOr("QUIET_TZ", defaultQuietTZ),
+		PublicOrigin:   os.Getenv("PUBLIC_ORIGIN"),
 	}
 
 	// The token is NOT trimmed. An operator who pasted trailing whitespace into
@@ -155,6 +167,18 @@ func Load() (Config, error) {
 	// gets written into each tenant's .env, because the bridge parses its own.
 	if _, err := time.LoadLocation(cfg.QuietTZ); err != nil {
 		return Config{}, fmt.Errorf("bad QUIET_TZ %q: %w", cfg.QuietTZ, err)
+	}
+
+	// Caught at boot, not the first time a browser's Origin fails to match:
+	// PUBLIC_ORIGIN is compared verbatim against an Origin header, and a
+	// stray path or trailing slash would never match one, silently 403'ing
+	// every re-pair behind the proxy it was set up for.
+	if cfg.PublicOrigin != "" {
+		u, err := url.Parse(cfg.PublicOrigin)
+		if err != nil || u.Scheme == "" || u.Host == "" || u.Path != "" {
+			return Config{}, fmt.Errorf(
+				"PUBLIC_ORIGIN %q must be a bare origin like \"https://wa.example.com\" (scheme and host, no path)", cfg.PublicOrigin)
+		}
 	}
 	return cfg, nil
 }

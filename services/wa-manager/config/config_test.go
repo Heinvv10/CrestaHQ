@@ -17,6 +17,7 @@ func baseEnv(t *testing.T, overrides map[string]string) {
 		"LISTEN_ADDR": "", "DB_PATH": "", "INSTANCE_ROOT": "", "PORT_BASE": "",
 		"PORT_COUNT": "", "OPERATOR_TOKEN": testOperatorToken, "UNIT_NAME": "",
 		"WEBHOOK_BASE_URL": "", "QUIET_TZ": "", "ALLOW_PUBLIC_BIND": "",
+		"PUBLIC_ORIGIN": "",
 	} {
 		t.Setenv(k, v)
 	}
@@ -160,5 +161,47 @@ func TestABadQuietTZIsRefused(t *testing.T) {
 	baseEnv(t, map[string]string{"QUIET_TZ": "Mars/Olympus_Mons"})
 	if _, err := Load(); err == nil {
 		t.Fatal("a timezone the bridge cannot load must be caught here, not in every provisioned tenant")
+	}
+}
+
+// An empty PUBLIC_ORIGIN is the documented default (direct-bind) and must
+// load like anything else undeclared.
+func TestUnsetPublicOriginLoads(t *testing.T) {
+	baseEnv(t, nil)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("an unset PUBLIC_ORIGIN must load: %v", err)
+	}
+	if cfg.PublicOrigin != "" {
+		t.Fatalf("PublicOrigin must default to empty, got %q", cfg.PublicOrigin)
+	}
+}
+
+func TestAWellFormedPublicOriginLoads(t *testing.T) {
+	baseEnv(t, map[string]string{"PUBLIC_ORIGIN": "https://wa.example.com"})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a bare scheme+host origin must load: %v", err)
+	}
+	if cfg.PublicOrigin != "https://wa.example.com" {
+		t.Fatalf("PublicOrigin not carried through: %q", cfg.PublicOrigin)
+	}
+}
+
+// A PUBLIC_ORIGIN with a path, or that fails to parse, is caught at boot: it
+// can never match a browser's Origin header (which never carries a path), so
+// leaving it uncaught would silently 403 every re-pair behind the very proxy
+// the operator set PUBLIC_ORIGIN up for.
+func TestAMalformedPublicOriginIsRefused(t *testing.T) {
+	for _, bad := range []string{
+		"https://wa.example.com/",
+		"https://wa.example.com/ui",
+		"wa.example.com",
+		"://bad",
+	} {
+		baseEnv(t, map[string]string{"PUBLIC_ORIGIN": bad})
+		if _, err := Load(); err == nil {
+			t.Fatalf("PUBLIC_ORIGIN %q must be refused at boot, not accepted and silently never match", bad)
+		}
 	}
 }

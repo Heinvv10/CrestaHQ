@@ -148,6 +148,13 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithPublicOrigin(t, "")
+}
+
+// newHarnessWithPublicOrigin is newHarness with config.Config.PublicOrigin
+// threaded through, for the tests proving sameOrigin's proxy-configured path.
+func newHarnessWithPublicOrigin(t *testing.T, publicOrigin string) *harness {
+	t.Helper()
 	st, err := store.Open(t.TempDir() + "/manager.db")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -165,6 +172,7 @@ func newHarness(t *testing.T) *harness {
 		Poller:        poll,
 		Units:         units,
 		OperatorToken: operatorTok,
+		PublicOrigin:  publicOrigin,
 		TenantToken:   func(string) string { return mgrTok },
 		BridgeBaseURL: func(store.Tenant) string { return bridge.server.URL },
 	})

@@ -240,7 +240,7 @@ func (s *server) handleUIRestart(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !sameOrigin(r) {
+	if !sameOrigin(r, s.deps.PublicOrigin) {
 		noStore(w)
 		http.Error(w, "cross-site restart refused", http.StatusForbidden)
 		return
@@ -268,7 +268,17 @@ func (s *server) handleUIRestart(w http.ResponseWriter, r *http.Request) {
 // holding the operator token — curl, the runbook — and is admitted. A PRESENT
 // one that is not this host is a cross-site form, and the only thing it could
 // be doing is spending someone's live WhatsApp number.
-func sameOrigin(r *http.Request) bool {
+//
+// publicOrigin is config.Config.PublicOrigin, empty for a direct-bind
+// deployment. Behind a reverse proxy, r.Host is the upstream address the
+// proxy rewrote it to — never what the browser's Origin actually says — so a
+// bare r.Host comparison 403s every legitimate request in a deployment mode
+// the README documents. When publicOrigin is set, a matching Origin is
+// admitted on that basis FIRST; r.Host remains the fallback so a direct-bind
+// deployment needs no new setting. It is never derived from a request header
+// such as X-Forwarded-Host, which is attacker-controlled unless the proxy is
+// known to strip it — trusting it would turn this guard back off.
+func sameOrigin(r *http.Request, publicOrigin string) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
@@ -276,6 +286,9 @@ func sameOrigin(r *http.Request) bool {
 	u, err := url.Parse(origin)
 	if err != nil {
 		return false
+	}
+	if publicOrigin != "" && origin == publicOrigin {
+		return true
 	}
 	return u.Host == r.Host
 }

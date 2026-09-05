@@ -60,6 +60,12 @@ type Deps struct {
 	// discloses a device-linking credential.
 	OperatorToken string
 
+	// PublicOrigin is the origin a browser sees when this service runs behind
+	// a reverse proxy, from config.Config.PublicOrigin. Empty means
+	// direct-bind: sameOrigin falls back to comparing against r.Host, as it
+	// always has.
+	PublicOrigin string
+
 	// TenantToken returns the MANAGER's admin token for one tenant's bridge —
 	// the one the provisioner wrote into that instance's `.env`. The pair
 	// relay authenticates with this, never with the caller's token.

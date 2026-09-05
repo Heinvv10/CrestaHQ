@@ -373,6 +373,68 @@ func TestTheRestartFormAdmitsAPresentSameOriginHeader(t *testing.T) {
 	}
 }
 
+// Behind a reverse proxy that rewrites Host to the upstream address, r.Host
+// never matches the browser's real Origin — that is exactly what PUBLIC_ORIGIN
+// is for. A configured origin matching the browser's Origin must be admitted
+// even though it does not match r.Host (httptest.NewRequest's default,
+// "example.com").
+func TestTheRestartFormAdmitsAConfiguredPublicOrigin(t *testing.T) {
+	h := newHarnessWithPublicOrigin(t, "https://wa.example.com")
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "https://wa.example.com")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a request matching the configured PUBLIC_ORIGIN was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+		t.Fatalf("the configured-origin form did not bounce the unit: %v", got)
+	}
+}
+
+// PUBLIC_ORIGIN widens what is admitted; it must never widen it to "anything".
+// A cross-site origin is still refused even when a public origin is
+// configured for a different, legitimate proxy address.
+func TestTheRestartFormStillRefusesACrossSiteOriginWithPublicOriginConfigured(t *testing.T) {
+	h := newHarnessWithPublicOrigin(t, "https://wa.example.com")
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "https://evil.example")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for a cross-site restart even with PUBLIC_ORIGIN configured, got %d", rec.Code)
+	}
+	if got := h.units.seen(); len(got) != 0 {
+		t.Fatalf("a cross-site form bounced the unit: %v", got)
+	}
+}
+
+// An absent Origin (curl, the runbook) must stay admitted regardless of
+// PUBLIC_ORIGIN — this fix must not tighten that existing behaviour.
+func TestTheRestartFormStillAdmitsAnAbsentOriginWithPublicOriginConfigured(t *testing.T) {
+	h := newHarnessWithPublicOrigin(t, "https://wa.example.com")
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("an absent Origin must still be admitted, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// With nothing configured, today's r.Host behaviour is unchanged: a same-site
+// Origin is admitted and a cross-site one refused, exactly as before this fix.
+func TestSameOriginBehaviourUnchangedWithNoPublicOriginConfigured(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	same := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "http://example.com")
+	if same.Code != http.StatusSeeOther {
+		t.Fatalf("same-origin (r.Host) must still be admitted, got %d", same.Code)
+	}
+	cross := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "https://evil.example")
+	if cross.Code != http.StatusForbidden {
+		t.Fatalf("cross-site must still be refused, got %d", cross.Code)
+	}
+}
+
 // The two restart routes exist because a browser form cannot carry a bearer
 // header, and they must not come to mean two different things — an operator
 // reaching for the JSON route during an incident and the button on the page

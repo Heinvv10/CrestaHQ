@@ -127,6 +127,7 @@ func main() {
 		Poller:        poller,
 		Units:         units,
 		OperatorToken: cfg.OperatorToken,
+		PublicOrigin:  cfg.PublicOrigin,
 		HTTPClient:    bridges,
 		// The MANAGER's admin token for that tenant's bridge — never the
 		// caller's operator token, which opens every tenant on this box.

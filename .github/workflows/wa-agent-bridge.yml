@@ -66,6 +66,14 @@ jobs:
       # not a noise generator and is a blocking step like everything else here
       # — nothing in this workflow is continue-on-error, and nothing should
       # become so.
+      #
+      # Pinned to v1.7.0 rather than @latest: this runner is self-hosted and
+      # shared with four other repositories, so an unpinned `go run` of
+      # third-party code is a supply-chain path into all of them, and
+      # @latest also means CI can turn red with no code change here. The
+      # trade-off is real and deliberate: a pinned scanner will not pick up
+      # newly published advisories until this pin is bumped. Bump it on
+      # purpose; do not "fix" it back to @latest.
       - name: govulncheck
         run: |
-          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
