@@ -183,20 +183,6 @@ export function exchangeCodeForTokens(
   );
 }
 
-/** Trade the stored refresh token for a fresh access token. */
-export function refreshAccessToken(
-  refreshToken: string,
-): Promise<GoogleTokens> {
-  const { clientId, clientSecret } = credentials();
-  return postToken(
-    new URLSearchParams({
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "refresh_token",
-    }),
-  );
-}
 
 /**
  * Best-effort revoke at Google's end. Callers swallow failures — a revoke that

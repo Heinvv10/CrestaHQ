@@ -1,6 +1,5 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 
 /**
@@ -11,14 +10,4 @@ import { getAdminDb } from "@/lib/firebase/admin";
 export async function googleGateOn(subAccountId: string): Promise<boolean> {
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   return snap.data()?.googleEnabledByAgency === true;
-}
-
-export const GOOGLE_GATE_OFF_MESSAGE =
-  "Google Business Profile isn't enabled for this workspace. Ask your agency to turn it on.";
-
-export function googleGateOffResponse(): NextResponse {
-  return NextResponse.json(
-    { error: GOOGLE_GATE_OFF_MESSAGE },
-    { status: 403 },
-  );
 }

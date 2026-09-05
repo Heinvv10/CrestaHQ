@@ -72,7 +72,11 @@ export function SubAccountGoogleSection() {
   // ONE redirect URI for the whole deployment — registered once in the Google
   // Cloud console, never per sub-account. The connecting sub-account travels
   // in the signed OAuth `state`. Must mirror googleRedirectUri() on the server.
-  const redirectUri = `${window.location.origin}/api/google/callback`;
+  const redirectUri = `${
+    typeof window !== "undefined"
+      ? window.location.origin
+      : (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  }/api/google/callback`;
 
   function handleConnect() {
     // Full-page nav so the OAuth redirect chain works.

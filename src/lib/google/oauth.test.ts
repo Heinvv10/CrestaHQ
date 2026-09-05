@@ -6,7 +6,6 @@ import {
   exchangeCodeForTokens,
   googleAppConfigured,
   googleRedirectUri,
-  refreshAccessToken,
   signGoogleState,
   verifyGoogleState,
 } from "./oauth";
@@ -181,16 +180,6 @@ describe("token endpoint", () => {
     expect((await exchangeCodeForTokens("c", "http://x/cb")).refreshToken).toBeNull();
   });
 
-  it("refreshes with grant_type=refresh_token and no redirect URI", async () => {
-    const spy = stubToken({ access_token: "ya29.new", expires_in: 3599 });
-    const tokens = await refreshAccessToken("1//0gRefresh");
-    const body = Object.fromEntries(spy.mock.calls[0][1].body);
-    expect(body.grant_type).toBe("refresh_token");
-    expect(body.refresh_token).toBe("1//0gRefresh");
-    expect(body.redirect_uri).toBeUndefined();
-    expect(tokens.accessToken).toBe("ya29.new");
-  });
-
   it("throws with Google's own reason on an error response", async () => {
     stubToken({ error: "invalid_grant", error_description: "Bad Request" }, 400);
     await expect(exchangeCodeForTokens("c", "http://x/cb")).rejects.toThrow(
@@ -200,7 +189,7 @@ describe("token endpoint", () => {
 
   it("throws rather than storing a response missing an access token", async () => {
     stubToken({ expires_in: 3599 });
-    await expect(refreshAccessToken("r")).rejects.toThrow(
+    await expect(exchangeCodeForTokens("c", "http://x/cb")).rejects.toThrow(
       "Google token response was malformed",
     );
   });
