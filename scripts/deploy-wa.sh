@@ -126,7 +126,15 @@ STAGE=$(mktemp -d)
 trap 'rm -f "$LOCK"; rm -rf "$STAGE"' EXIT
 
 say "Building $SHA"
-( cd services/wa-manager && go build -o "$STAGE/wa-manager" . ) || die "build wa-manager"
+# -trimpath and -buildvcs=false on every build. Go stamps the VCS revision into
+# a binary by default, so WITHOUT buildvcs=false any commit anywhere in the repo
+# changes the bridge's bytes — a manager-only commit included — and the whole
+# "restart nothing unless the bridge changed" promise never fires once
+# (measured: it did not). -trimpath removes the build directory for the same
+# reason, so a build from the deploy checkout matches one from a worktree.
+GOFLAGS_REPRO=(-trimpath -buildvcs=false)
+
+( cd services/wa-manager && go build "${GOFLAGS_REPRO[@]}" -o "$STAGE/wa-manager" . ) || die "build wa-manager"
 
 # The bridge is built TWICE, and the reason is the whole "restart nothing
 # unless the bridge changed" promise.
@@ -144,14 +152,14 @@ say "Building $SHA"
 # So the version is derived from the ARTIFACT. Build unstamped, hash that, and
 # stamp the hash — prefixed with the last commit to touch the service so a
 # human can still trace it. Identical source and toolchain give an identical
-# unstamped binary (verified: Go builds here are byte-reproducible), so the
+# unstamped binary (verified, with the reproducibility flags above), so the
 # version is stable across redeploys; anything that actually changes the binary
 # changes the version and therefore triggers a rollout.
 bridge_src_sha=$(git log -1 --format=%h -- services/wa-agent-bridge)
-( cd services/wa-agent-bridge && go build -o "$STAGE/bridge.unstamped" . ) || die "build wa-agent-bridge"
+( cd services/wa-agent-bridge && go build "${GOFLAGS_REPRO[@]}" -o "$STAGE/bridge.unstamped" . ) || die "build wa-agent-bridge"
 bridge_hash=$(sha256sum "$STAGE/bridge.unstamped" | cut -c1-8)
 BRIDGE_VERSION="${bridge_src_sha}-${bridge_hash}"
-( cd services/wa-agent-bridge && go build -ldflags "-X main.version=$BRIDGE_VERSION" -o "$STAGE/wa-agent-bridge" . ) || die "stamp wa-agent-bridge"
+( cd services/wa-agent-bridge && go build "${GOFLAGS_REPRO[@]}" -ldflags "-X main.version=$BRIDGE_VERSION" -o "$STAGE/wa-agent-bridge" . ) || die "stamp wa-agent-bridge"
 echo "bridge version $BRIDGE_VERSION"
 
 # ── Decide what actually changed ────────────────────────────────────────────
