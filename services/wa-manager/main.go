@@ -87,13 +87,14 @@ func main() {
 	})
 
 	bridges := &http.Client{Timeout: bridgeTimeout}
-	poller := newPoller(bridges, tokens)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// The only caller of health.Reconcile. Without it a number's death is
-	// dated whenever an operator next opens the screen, not when it happened.
-	go poller.Run(ctx, st, pollEvery)
+	// Builds the poller AND starts the background sweep — the only caller of
+	// health.Reconcile. Without that sweep a number's death is dated whenever
+	// an operator next opens the screen, not when it happened. The two are one
+	// call so that a poller cannot exist here unstarted; see startPoller.
+	poller := startPoller(ctx, bridges, tokens, st)
 
 	handler := api.New(api.Deps{
 		Store:         st,

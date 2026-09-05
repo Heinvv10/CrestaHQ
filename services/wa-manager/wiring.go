@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -15,19 +16,33 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
 
-// newPoller builds the health poller with its fan-out bound SET EXPLICITLY.
+// startPoller builds the health poller with its fan-out bound SET EXPLICITLY,
+// and starts the background reconcile sweep that is its only caller.
 //
-// health.Poller defaults a zero Concurrency to 8, so leaving it unset would
-// work — which is exactly the problem. This fan-out was once unbounded and
-// nothing set it: an unlimited poll of 200 tenants opens 200 simultaneous
-// connections every cycle, a thundering herd this box aims at itself. The bound
-// living at the wiring site, in a function a test can call, is what stops that
-// recurring; a default relied upon is one nobody notices when it changes.
-func newPoller(client *http.Client, tokens provision.TokenSource) *health.Poller {
+// Building and starting are ONE function deliberately. They were two: main
+// built the poller here and started it with a bare `go poller.Run(...)` at the
+// call site, and a review found that deleting that line turned nothing red —
+// every test in both services stayed green with reconciliation dead, because
+// the API and the UI both Snapshot on demand and neither writes back. A number
+// that logged out at 02:00 would then be recorded as logged out whenever an
+// operator next opened the screen, and the `logged_out` event — the dated
+// record a WhatsApp ban appeal needs — would carry the wrong time.
+//
+// Fused, there is no way to obtain a poller without starting its loop, and the
+// loop is inside a function a test can call. The fan-out bound is set here for
+// the same reason: health.Poller defaults a zero Concurrency to 8, so leaving
+// it unset would work — which is exactly the problem. This fan-out was once
+// unbounded and nothing set it, and an unlimited poll of 200 tenants opens 200
+// simultaneous connections every cycle, a thundering herd this box aims at
+// itself. A number written at the wiring site is one a reviewer can see.
+//
+// The loop stops when ctx is cancelled, which main does before closing st.
+func startPoller(ctx context.Context, client *http.Client, tokens provision.TokenSource, st *store.Store) *health.Poller {
 	p := health.New(client, func(t store.Tenant) string {
 		return tokenFor(tokens, t.Instance)
 	})
 	p.Concurrency = pollConcurrency
+	go p.Run(ctx, st, pollEvery)
 	return p
 }
 

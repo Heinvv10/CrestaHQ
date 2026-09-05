@@ -2,17 +2,41 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/config"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 )
+
+// openStore opens a throwaway registry.
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "manager.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+// startTestPoller starts the poller exactly as main does, with a context the
+// test cancels on the way out so the sweep cannot outlive it.
+func startTestPoller(t *testing.T, client *http.Client, tokens provision.TokenSource, st *store.Store) *health.Poller {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return startPoller(ctx, client, tokens, st)
+}
 
 // A bridge provisioned before its consumer exists has no webhook. nil (rather
 // than a function returning "") is what makes the provisioner write no webhook
@@ -69,7 +93,7 @@ func TestTokenForReturnsTheManagerToken(t *testing.T) {
 // unbounded with NOTHING setting it, and the fix was an explicit value at the
 // wiring site — which is only a fix if something can see it go away.
 func TestPollerFanOutIsBoundedExplicitly(t *testing.T) {
-	p := newPoller(&http.Client{}, provision.TokenSource{Root: t.TempDir()})
+	p := startTestPoller(t, &http.Client{}, provision.TokenSource{Root: t.TempDir()}, openStore(t))
 	if p.Concurrency <= 0 {
 		t.Fatal("the health fan-out must be bounded at the wiring site, not left to a default; " +
 			"200 tenants unbounded is 200 simultaneous connections per cycle")
@@ -100,7 +124,7 @@ func TestPollerUsesThePerTenantManagerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newPoller(srv.Client(), provision.TokenSource{Root: root})
+	p := startTestPoller(t, srv.Client(), provision.TokenSource{Root: root}, openStore(t))
 	p.BaseURL = func(store.Tenant) string { return srv.URL }
 	p.Concurrency = 1 // keep `seen` ordered without a mutex
 	p.Snapshot(context.Background(), []store.Tenant{{ID: "one", Instance: "one"}})
@@ -135,4 +159,51 @@ func TestListenValidatedBindsTheValidatedAddressOnly(t *testing.T) {
 	if _, err := listenValidated(config.Config{ListenAddr: "203.0.113.1:0"}); err == nil {
 		t.Fatal("listenValidated must bind exactly what it was given; an unassignable address must fail, not fall back")
 	}
+}
+
+// The line a review found nobody could see. main built the poller and started
+// its loop as two statements, and replacing `go poller.Run(...)` with `_ = ctx`
+// left every test in both services green — reconciliation dead, the screen
+// still rendering, and a number's death dated whenever an operator next looked
+// rather than when it happened.
+//
+// So this drives the wiring function itself and asserts the sweep RAN: a bridge
+// reporting a logged-out number must reach the store with nobody watching. It
+// deliberately does not override p.BaseURL — the tenant's port is the real one,
+// which is the only way the assertion covers the production path rather than a
+// test-only one.
+func TestStartPollerRunsTheReconcileSweep(t *testing.T) {
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"ok":false,"connected":false,"killed":true}`))
+	}))
+	defer bridge.Close()
+
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(bridge.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := openStore(t)
+	if err := st.CreateTenant(store.Tenant{
+		ID: "blitz", Instance: "blitz", Port: port, State: store.StateRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	startTestPoller(t, bridge.Client(), provision.TokenSource{Root: t.TempDir()}, st)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := st.GetTenant("blitz")
+		if err == nil && got.State == store.StateLoggedOut {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("nothing reconciled the number: the wiring builds a poller whose sweep is never started, " +
+		"so a number's death is dated whenever an operator next opens the screen")
 }
