@@ -170,7 +170,19 @@ separate authenticated route and never rendered into HTML, because HTML reaches
 browser history, proxies, screenshots and bug reports far more readily than an
 image does. Do not forward it, and do not paste it into a ticket.
 
-The code expires in under a minute. Reload the page for a fresh one.
+**The pairing window is about two minutes long, and then it closes for good
+until the bridge is restarted.** whatsmeow issues roughly five QR codes, each
+valid for well under a minute, one after another; reloading the page picks up
+the next one. When the last one lapses the bridge logs `pairing ended: timeout`
+and closes the channel, and no amount of reloading brings another — the process
+has to start again to re-enter the QR exchange, which is what **Restart this
+bridge** does.
+
+Plan for that before you begin. Have the phone in your hand, already on
+**Linked devices → Link a device**, before you open the page. Two minutes is
+enough only if the scan is the first thing you do; it defeated a prepared
+operator twice during the 2026-09-05 soak, both times because the phone was
+still being unlocked when the window ran out.
 
 ## `logged_out`, and re-pairing
 

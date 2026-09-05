@@ -68,6 +68,10 @@
   <div class="qr">
     <p class="muted">Scan this in WhatsApp → Linked devices. Anyone who scans it
       links a device to this number, so do not forward or screenshot it.</p>
+    <p class="muted">Codes lapse in under a minute and the page fetches the next
+      one on its own — but the bridge only issues about five of them, so the
+      whole window is roughly two minutes from its start. After that it stops
+      offering codes until it is restarted.</p>
     <img src="/tenants/{{.Tenant.TenantID}}/qr.png" alt="pairing code">
   </div>
   {{- else}}
@@ -80,6 +84,15 @@
     </form>
   </div>
   {{- end}}
+  {{- else if .Tenant.Unreachable}}
+  <div class="qr">
+    <p class="muted">The manager cannot reach this bridge — its process is not
+      running, or its port is dead. Restarting it is the remedy; the WhatsApp
+      session is stored on disk, so a bridge that was paired comes back paired.</p>
+    <form method="post" action="/tenants/{{.Tenant.TenantID}}/restart">
+      <button type="submit">Restart this bridge</button>
+    </form>
+  </div>
   {{- end}}
   {{- if .Events}}
   <table>

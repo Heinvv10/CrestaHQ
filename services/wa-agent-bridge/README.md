@@ -149,6 +149,12 @@ restart.**
 4. Wait for `wa: paired successfully`, then `wa: connected`.
 5. Ctrl-C, `systemctl start wa-agent-bridge`.
 
+Have the phone unlocked and already on **Link a device** before step 2. The
+window is about two minutes: whatsmeow prints roughly five QR codes in
+succession, each good for well under a minute, and when the last lapses it logs
+`pairing ended: timeout` and closes the channel for the life of the process.
+Nothing reopens it but a restart — step 2 again.
+
 Session state persists under `SESSION_DIR`, so an ordinary restart re-uses the
 pairing and does not ask for a QR.
 

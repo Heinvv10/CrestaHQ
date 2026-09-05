@@ -421,3 +421,37 @@ func TestTheTruncationNoticeIsRendered(t *testing.T) {
 		t.Fatalf("the page-level notice never reached the HTML:\n%s", buf.String())
 	}
 }
+
+// A stopped bridge is the one state where restarting IS the whole remedy, and
+// it was the one state the screen offered no control for: NeedsPairing is
+// false when the manager cannot reach the bridge, so the page rendered a red
+// card and nothing to press. Found by stopping a real bridge and looking at
+// the page in a browser.
+func TestAnUnreachableBridgeIsOfferedARestart(t *testing.T) {
+	r := health.Report{Reachable: false, Err: "unreachable: request failed"}
+	card := BuildCard(pairedTenant(), &r)
+	if card.NeedsPairing {
+		t.Fatal("a bridge we cannot see has told us nothing about its pairing")
+	}
+	out := renderPage(t, Page{Tenant: &card})
+
+	mustContain(t, out,
+		`method="post"`,
+		`action="/tenants/blitz/restart"`,
+		"Restart this bridge",
+	)
+	if strings.Contains(out, "<img") || strings.Contains(out, "qr.png") {
+		t.Error("an unreachable bridge was shown a pairing code it cannot have issued")
+	}
+}
+
+// The sweep running out of time is not a dead bridge, and it must not grow a
+// restart button: pressing it would bounce a live customer's number over a
+// timeout in the manager's own poller.
+func TestANotCheckedCardIsNotOfferedARestart(t *testing.T) {
+	r := health.Report{Incomplete: true}
+	card := BuildCard(pairedTenant(), &r)
+	if strings.Contains(renderPage(t, Page{Tenant: &card}), "/restart") {
+		t.Error("an unchecked number was offered a restart")
+	}
+}
