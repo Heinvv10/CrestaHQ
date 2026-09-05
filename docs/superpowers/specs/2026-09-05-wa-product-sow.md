@@ -76,65 +76,101 @@ one thing: refuses with *"The WhatsApp bridge provider isn't available yet."*
 
 ## 2. Market baseline
 
-From a research pass on 2026-09-05. Items marked *unverified* were flagged as
-such by the researcher and must be confirmed before they are relied on.
+From a research pass on 2026-09-05, sources listed at the end of this section.
+Items marked *unverified* were flagged as such by the researcher and must be
+confirmed before anything is built on them.
 
-- **GHL's own WhatsApp (LeadConnector)** is the official Meta Cloud API, about
-  $10 per sub-account plus per-message billing. That is the safe incumbent we
-  are *not* competing with on safety.
-- **The unofficial competitors** — WAGHL, Wazzap, GoGHL — all use
-  whatsmeow/Baileys-style QR pairing, the same class of client as ours.
-- **There is no native WhatsApp provider type in the GHL marketplace.**
-  Competitors integrate either through the documented Custom Conversation
-  Provider mechanism, which supports SMS/Email/Call types only, or by simply
-  impersonating the SMS channel — which is what WAGHL does. **Phase B is
-  therefore "WhatsApp wearing an SMS costume", with the constraints that
-  implies.** Confirm the exact mechanism against GHL's docs before building.
-- **Anti-ban engineering is table stakes, not a differentiator.** Warm-up
-  periods, send pacing and number-age heuristics are shipped by every
-  unofficial player. One first-hand account, on a whatsmeow bridge structurally
-  identical to ours, reported a ban **after roughly five messages from a fresh
-  number**.
-- **A visible health/ban dashboard with self-service re-pairing is a documented
-  gap.** None of the surveyed competitors clearly ships one. This is the one
-  place where what we already built is ahead of the market rather than behind
-  it.
+### Who is actually in this market
 
-*Unverified and not to be relied on:* WhatsApp Connector's official/unofficial
-status and integration mechanism; GoGHL's ban-reduction claims; whether
-Wablas/Interakt have any real GHL-specific integration.
+| Product | Rail | Price | GHL integration |
+|---|---|---|---|
+| **LeadConnector** (GHL native) | Official Meta Cloud API | $10/sub-account/mo + per-message credit | First-party channel |
+| **WAGHL** | Unofficial, QR | $19–29/sub-account/mo | Rebinds GHL's native **SMS channel** |
+| **Wazzap** | Unofficial, QR | $19/sub-account/mo flat, unlimited messages | Two-way sync app |
+| **GoGHL** | *unverified* | undisclosed, "no per-message fees" | AI-first, multi-number |
+| **WhatsApp Connector** | *unverified* | undisclosed | Custom Conversation Provider |
 
----
+**The commercial anchor: $19–29 per sub-account per month, flat, unlimited
+messages.** That is what we would have to price against, and it is the whole
+reason this market exists — GHL's official channel bills per message, and
+agencies resell it at $30–100/mo. Unofficial providers sell "unlimited" and
+absorb the ban risk in the price.
+
+### What the incumbents do about bans, concretely
+
+- **WAGHL publishes its warm-up policy**: wait **2–3 weeks** after registering a
+  number before automating anything, use it normally first. Send pacing is
+  built in, not left to the agency: **3–4 seconds between text messages, 6–9
+  seconds for media**.
+- **WAGHL's re-pair is disconnect-and-rescan, about a minute.** *Self-service
+  re-pair is therefore NOT a market gap — I claimed it was in an earlier draft
+  of this document and that was wrong.*
+- The gap that IS real: **a visible health/ban status dashboard with proactive
+  re-pair prompts.** Nobody surveyed clearly demonstrates one, and none of the
+  marketing pages disclose what an agency actually sees when a number gets
+  flagged. That is the thing already built here.
+
+### The finding that should shape the pool design
+
+The first-hand account of a ban after ~5 messages on a fresh number comes with
+a sharper claim: the library has *"no queue, no throttle, no delay"*, banning
+decisions happen entirely on WhatsApp's side, and **the only mitigation anyone
+cites is number age and history — not any client-side technique.**
+
+If that holds, pacing buys less than it appears to, and **a pool of fresh spare
+numbers is close to worthless**: failing over from a dead number to a
+day-old one just kills the next number. The pool has to be a pool of *aged*
+numbers, which makes warm-up a continuous background activity rather than a
+one-off onboarding step, and makes the rented-number option (D4) a real
+operational business — you would be selling number age, which is the scarce
+thing.
+
+**This is the most important open question in the document. See §9.**
+
+### Sources
+
+marketplace.gohighlevel.com/docs/marketplace-modules/ConversationProviders ·
+gohighlevel.com/terms-of-service · waghl.com and waghl.com/faq ·
+wazzap.mx/en/gohighlevel and docs.wazzap.mx · goghl.ai ·
+help.gohighlevel.com WhatsApp pricing + setup guides ·
+artificiallyintimidating.com/p/go-whatsapp-web-multidevice ·
+sporesec.com/en/blog/whatsapp-unofficial-api-ban-risk ·
+achiya-automation.com/en/blog/whatsapp-spam-detection-2026
+
+*Unverified:* WhatsApp Connector's rail and mechanism; GoGHL's ban-reduction
+claims and whether it has a health dashboard; whether Wablas/Interakt have any
+real GHL integration beyond generic Zapier-style connectors.
 
 ## 3. Parity checklist
 
-Marked against what the unofficial incumbents ship.
+Marked against what the unofficial incumbents actually ship.
 
 | Capability | Status today | Class |
 |---|---|---|
-| QR pairing, self-service | **built** (manager UI) | table stakes |
-| Multi-number per account | not built | table stakes |
-| Inbound → CRM conversation thread | not wired | table stakes |
-| Outbound from the CRM | not wired | table stakes |
-| Media: image, document, audio, voice note | **not built at all** | table stakes |
+| QR pairing, self-service, <10 min to first message | **built** | table stakes |
+| Self-service re-pair after disconnect | **built** (WAGHL does it in ~1 min — not a gap) | table stakes |
+| Multi-number per sub-account | not built | table stakes |
+| Inbound → conversation thread, tied to the contact | not wired | table stakes |
+| Outbound from the conversation view and from workflows | not wired | table stakes |
+| Contact sync / dedup by phone | exists in CRM | table stakes |
+| Media: image, video, document, voice note | **not built at all** | table stakes |
 | Bulk / broadcast | CRM machinery exists, rail refuses | table stakes |
 | Templates | CRM machinery exists, rail refuses | table stakes |
 | Workflow / automation sends | CRM machinery exists, rail refuses | table stakes |
-| Contact sync, tags | exists in CRM | table stakes |
-| Opt-out / STOP | exists for SMS (`lib/comms/sms-consent.ts`) | table stakes, and a POPIA obligation |
-| Warm-up ramp on new numbers | not built | table stakes (see the five-message account) |
-| Send pacing | rails exist, not per-tenant | table stakes |
-| Delivery / read receipts | not built | expected |
-| Typing indicators | not built | expected |
-| Team inbox | exists in CRM | expected |
-| Analytics / reporting | not built for this rail | expected |
-| Group messaging | not built | expected |
-| **Health + ban dashboard** | **built today** | **differentiator** |
-| **Self-service re-pair after a ban** | **built today** | **differentiator** |
-| **Automatic failover to a spare number** | not built | **differentiator** |
-| Number rental (warmed) | not built | differentiator |
-
----
+| Opt-out / STOP | exists for SMS | table stakes + POPIA |
+| **Built-in send pacing as a rail, not agency guidance** | rails exist, not per-tenant or paced | table stakes (WAGHL: 3–4s text, 6–9s media) |
+| **Warm-up before automating** | not built | table stakes (WAGHL: 2–3 weeks) |
+| Two-way tag sync | partial | expected |
+| Pipeline / stage sync | exists in CRM, not wired to this rail | expected |
+| Fallback to SMS when a WhatsApp send fails | not built | expected |
+| White-label / resellable | exists (CUSTOM_BRAND) | expected |
+| Delivery / read receipts | not built | expected — **and no surveyed player advertises it** |
+| Typing indicators | not built | expected — same gap |
+| Group messaging | not built | differentiator (only Wazzap claims it) |
+| Interactive buttons / list messages | not built | differentiator (GoGHL claims it) |
+| **Health + ban status dashboard, proactive prompts** | **built today** | **differentiator — the real gap** |
+| **Automatic failover to an AGED spare** | not built | **differentiator** |
+| Number rental, pre-warmed | not built | differentiator, and see §2 on why age is the product |
 
 ## 4. Phase A — LeadStack, end to end
 
@@ -181,16 +217,27 @@ it requires the recorded acknowledgement in §5, after which caps are advisory.
 be exceeded through any UI path; and the acknowledgement is written with actor
 and timestamp before the first above-ceiling send is permitted.
 
-### WP-A6 · Warm-up
+### WP-A6 · Warm-up and pacing
 A number younger than N days is capped on a ramp regardless of configured or
-acknowledged caps. Non-negotiable (§5).
-**Done when:** a freshly paired number cannot be made to send above the ramp by
-any setting, and the ramp is visible in the UI with the date it completes.
+acknowledged caps, and per-message pacing is enforced in the bridge rather than
+left to the caller. Both non-negotiable (§5). WAGHL's published figures are the
+starting point: 2–3 weeks before automation, 3–4s between texts, 6–9s for
+media.
+**Done when:** a freshly paired number cannot be made to send above the ramp or
+faster than the pacing floor by any setting or tier; the ramp is visible in the
+UI with the date it completes; and a caller that submits faster than the pace
+is queued rather than refused.
 
 ### WP-A7 · Number pool and failover
 The manager gains an owner (sub-account) per tenant and a pool per owner: one
 active sender, spares in known states. Ban or logged-out detection promotes a
 spare and records the swap. Sends address the *pool*, not a number.
+
+**Do not start this before open question 1 in §9 is answered.** If number age
+is the only real mitigation, then spares must be AGED to be worth anything, and
+this package is really "maintain a set of warm numbers" — a background ageing
+process with its own cost — rather than "keep spare rows in a table". Failing
+over to a fresh number would just kill the next number, on a schedule.
 **Done when:** killing the active number's session causes the next send to go
 from the spare without operator action, the swap is on the operator screen and
 in the sub-account's own view, and no message is lost or duplicated across the
@@ -233,12 +280,15 @@ the difference between an aggressive product and an irresponsible one.
 1. **Warm-up applies to every number younger than N days.** No setting, tier or
    acknowledgement lifts it. A fresh number is the one that dies at five
    messages.
-2. **Opt-out/STOP is always honoured**, on every tier. POPIA obligation, not a
+2. **Send pacing has a floor** that no tier lifts. The incumbents build pacing
+   in rather than documenting it, and a caller asking to go faster is queued,
+   not refused and not obeyed.
+3. **Opt-out/STOP is always honoured**, on every tier. POPIA obligation, not a
    throughput setting.
-3. **No message bodies in bridge logs.** Bodies live in Firestore where access
+4. **No message bodies in bridge logs.** Bodies live in Firestore where access
    control applies.
-4. **The number identifies itself as the business.** POPIA.
-5. **Above-ceiling sending requires a recorded acknowledgement** — actor,
+5. **The number identifies itself as the business.** POPIA.
+6. **Above-ceiling sending requires a recorded acknowledgement** — actor,
    timestamp, and the text they were shown. This is what carries the position
    that the customer chose the risk, now that sub-account admins can enable the
    rail themselves (D6).
@@ -295,34 +345,77 @@ five-message failure, on purpose.
 
 Scoped, not specified. Do not start until Phase A is proven on Blitz.
 
-- Confirm the integration mechanism against GHL's documentation: Custom
-  Conversation Provider (SMS/Email/Call types only) versus SMS-channel
-  impersonation. This decision constrains everything else and the research on
-  it is not yet verified.
-- Marketplace app, OAuth install, per-sub-account provisioning against the
-  manager.
-- Message mapping in both directions, including how media survives a channel
-  that is nominally SMS.
-- Billing against agencies, and support for numbers we do not own.
-- The written risk statement required before selling to a third party.
+**There is no WhatsApp provider type in GHL.** Two mechanisms exist and they
+are genuinely different builds:
 
----
+**Option 1 — Custom Conversation Provider (the documented marketplace route).**
+`marketplace.gohighlevel.com/docs/marketplace-modules/ConversationProviders`.
+Registers as a custom **SMS-type** provider. Requires OAuth scopes
+`conversations/message.write`, `conversations.readonly`, `conversations.write`,
+`contacts.readonly`, `contacts.write`, `conversations/message.readonly`. You
+configure a Delivery URL that receives outbound webhook events signed with
+`X-GHL-Signature` (**Ed25519 — must be verified**); inbound goes back through
+the Add Inbound Message API. Text plus media attachments are supported.
+
+Three documented limitations that bite this product specifically:
+- **Only GHL's own default providers get bulk actions.** A broadcast feature
+  cannot ride GHL's bulk machinery — we would have to drive bulk ourselves,
+  message by message, through the inbound/outbound APIs.
+- The SMS module is unsupported in GHL "premium workflows" on custom SMS
+  channels.
+- The provider appears as SMS, not as a WhatsApp channel with its own icon.
+
+**Option 2 — SMS-channel impersonation**, which is what WAGHL actually does.
+No marketplace app at all: intercept and reroute GHL's native SMS send/receive
+so existing SMS automations fire over WhatsApp. Simpler, and it inherits SMS
+semantics wholesale, including the confusion of a sub-account user seeing
+"SMS" for a WhatsApp conversation.
+
+**Decide between them before scoping anything else** — it changes the auth
+model, the webhook surface, whether bulk is possible at all, and what the
+customer sees. Neither WhatsApp Connector's nor GoGHL's mechanism could be
+verified, so there is no third pattern to copy.
+
+Then: marketplace app and OAuth install, per-sub-account provisioning against
+the manager, message mapping including how media survives an SMS-shaped
+channel, billing against agencies, and the written risk statement required
+before selling to a third party.
+
+**On ToS:** GHL's terms disclaim responsibility for third-party apps — *"use of
+any third-party application is at your own risk"* — and require API users to
+warrant they have the rights and consents for data they transmit. GHL does not
+appear to prohibit unofficial WhatsApp providers outright; it pushes the risk
+onto the agency. WhatsApp's own terms **do** prohibit unofficial clients and
+bulk auto-messaging. That asymmetry is the business: GHL will not stop us,
+Meta will, eventually, per number.
 
 ## 9. Open questions for the next session
 
-1. **N for warm-up, and the ramp shape.** Needs a number. The five-message
-   account suggests the first days should be very slow.
-2. **The code ceiling.** What is the number no setting may exceed? Today's
-   rails are 150/day global and 10/contact/day.
-3. **Pool size per sub-account** at the rented tier, and where rented numbers
-   come from.
-4. **Whether `bridge` may become a sub-account's *only* WhatsApp rail**, or
-   must always have Twilio/Cloud configured as a fallback.
-5. **What the customer sees during a failover** — same thread, different
-   sender number. Silent, or announced?
-6. GHL integration mechanism (§8) — verify before scoping Phase B.
-
----
+1. **Is number AGE the only real mitigation?** §2 says the one first-hand
+   technical account claims pacing does nothing and only age and history
+   matter. If true it reshapes D3 and D4: a pool of fresh spares is worthless,
+   warm-up becomes continuous background activity, and the rented-number
+   business is really a number-ageing business. **Answer this before building
+   WP-A7.** The cheapest test is to age two numbers for three weeks with light
+   organic use and compare their survival against one used immediately.
+2. **Warm-up N and the ramp shape.** WAGHL publishes 2–3 weeks before any
+   automation. Proposal: adopt 21 days, with a ramp that starts at a handful of
+   messages a day. Cheap to be conservative here; expensive to be wrong.
+3. **Send pacing.** WAGHL uses 3–4s between texts and 6–9s for media, built in
+   rather than configurable. Proposal: adopt those as the floor, not settable
+   below, even at the acknowledged tier.
+4. **The code ceiling** for the two-tier caps (D7). Today's rails are 150/day
+   global and 10/contact/day.
+5. **Pool size per sub-account**, and where aged numbers come from at the
+   rented tier.
+6. **May `bridge` be a sub-account's only WhatsApp rail**, or must Twilio/Cloud
+   always be configured as a fallback? Note that fallback-to-SMS-on-failure is
+   an EXPECTED feature the incumbents ship.
+7. **What the customer sees during a failover** — same thread, different sender
+   number. Silent, or announced?
+8. **Phase B mechanism** (§8), Option 1 vs Option 2.
+9. **Pricing.** The market is $19–29/sub-account/month flat and unlimited.
+   Ours has to sit against that, and against LeadConnector's $10 + per-message.
 
 ## 10. Where the work happens
 
