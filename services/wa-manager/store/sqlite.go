@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS rollouts (
   finished_unix  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_rollouts_state ON rollouts(state, id);
+-- At most ONE outstanding rollout, enforced here rather than by the
+-- read-then-write in RequestRollout. Two deploys racing could each see no
+-- outstanding row and insert one, and two rollouts on different targets would
+-- take turns bouncing the same customer numbers back and forth. A partial
+-- unique index makes that impossible rather than unlikely.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rollouts_one_outstanding
+  ON rollouts((1)) WHERE state IN ('pending','running');
 `
 
 func Open(path string) (*Store, error) {
@@ -314,20 +321,31 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 		Scan(&existing.ID, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
 	switch {
 	case err == nil:
-		// Supersede in place: same row, new target. Immediate is sticky —
-		// an operator who has already said "now" is not overruled by a later
-		// deploy that did not.
+		// Immediate is sticky in both directions: an operator who has already
+		// said "now" is not overruled by a later deploy that did not, and a
+		// later `--now` DOES escalate a rollout already queued for tonight —
+		// which is the whole point of the flag when a fix cannot wait.
 		if immediate {
 			imm = 1
 		}
+		// A repeat request for the SAME build does not restart the state
+		// machine. The deploy script may legitimately ask twice, and resetting
+		// a rollout that is mid-flight back to pending throws away the
+		// progress detail the operator screen is currently showing. Only the
+		// target actually changing is a supersede.
+		state := existing.State
+		detail := existing.Detail
+		if existing.Version != version {
+			state, detail = RolloutPending, ""
+		}
 		if _, err := tx.Exec(
-			`UPDATE rollouts SET version = ?, state = ?, immediate = ?, detail = '', requested_unix = ?
+			`UPDATE rollouts SET version = ?, state = ?, immediate = ?, detail = ?, requested_unix = ?
 			   WHERE id = ?`,
-			version, RolloutPending, imm, time.Now().Unix(), existing.ID); err != nil {
+			version, state, imm, detail, time.Now().Unix(), existing.ID); err != nil {
 			return Rollout{}, err
 		}
 		return Rollout{
-			ID: existing.ID, Version: version, State: RolloutPending,
+			ID: existing.ID, Version: version, State: state, Detail: detail,
 			Immediate: imm == 1, Requested: time.Now(),
 		}, tx.Commit()
 	case !errors.Is(err, sql.ErrNoRows):

@@ -244,10 +244,19 @@ if [ "$ok" -ne 1 ]; then
 fi
 
 # ── Hand the fleet to the manager ───────────────────────────────────────────
+# The rollout is requested UNCONDITIONALLY, even when the binary did not
+# change. It is tempting to exit here and save a call — an earlier version did
+# — but `bridge_changed` compares the staged binary against the INSTALLED one,
+# which says nothing about what the fleet is RUNNING. After a rollout holds at
+# bridge 5 of 40, the binary on disk is already the new one, so a retry took
+# this branch, printed "no number will be restarted" and exited 0 with 28
+# numbers still on the old build and the deploy reported as a success. That is
+# a security fix sitting on disk that nothing is running, reported as done.
+#
+# Asking unconditionally costs nothing: a rollout whose fleet is already
+# current finds nothing stale and completes without restarting anything.
 if [ "$bridge_changed" -eq 0 ]; then
-  say "Bridge binary unchanged — no number will be restarted"
-  say "Deployed $SHA (manager only)"
-  exit 0
+  say "Bridge binary unchanged — the rollout below will restart nothing unless the fleet is behind"
 fi
 
 TOKEN=$(grep -E '^OPERATOR_TOKEN=' "$MANAGER_ROOT/.env" | cut -d= -f2-)
@@ -281,8 +290,11 @@ fi
 # --now: follow it, because the operator asked for it to happen while they are
 # watching. The rollout itself lives in the manager, so losing this terminal
 # does not stop it.
-say "Following the rollout"
-for _ in $(seq 1 120); do
+# One bridge per tick, one tick a minute, so a forty-number fleet takes about
+# forty minutes. The earlier ten-minute budget could not outlast a real
+# rollout and so always ended on the ambiguous "still running" branch.
+say "Following the rollout (one number a minute; Ctrl-C is safe, the manager keeps going)"
+for _ in $(seq 1 720); do
   sleep 5
   status=$(auth_curl --max-time 10 "http://$MANAGER_ADDR/api/rollout") || continue
   case "$status" in
@@ -290,4 +302,4 @@ for _ in $(seq 1 120); do
     *'"state":"failed"'*) echo "$status"; die "the rollout HELD — some bridges are on $SHA and some are not. See the operator screen." ;;
   esac
 done
-say "Deployed $SHA. The rollout is still running — follow it on the operator screen."
+say "Deployed $SHA. The rollout is STILL RUNNING after an hour — follow it on the operator screen; nothing here stopped it."

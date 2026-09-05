@@ -186,6 +186,16 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 
 	t := stale[0]
+	// Re-read the row immediately before acting on it. A tenant destroyed
+	// since the snapshot has had its unit stopped, its directory removed and
+	// its PORT RELEASED — so restarting it would fail the whole fleet upgrade
+	// because one customer was offboarded during the window, and a health
+	// probe against the freed port could be answered by whichever tenant was
+	// provisioned onto it next. A tenant that has gone is simply not our work.
+	if _, err := w.Store.GetTenant(t.ID); err != nil {
+		log.Printf("rollout %d: %s is gone, skipping it", r.ID, t.ID)
+		return nil
+	}
 	log.Printf("rollout %d: restarting %s onto %s (%d left)", r.ID, t.ID, r.Version, len(stale))
 	if err := w.restart(ctx, t, r.Version); err != nil {
 		log.Printf("rollout %d HELD at %s: %v", r.ID, t.ID, err)

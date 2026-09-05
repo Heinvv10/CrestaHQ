@@ -70,11 +70,20 @@ type fakePoll struct {
 	versions     map[string]string
 	afterRestart map[string]string
 	restarted    map[string]bool
+	// onSnapshot fires after a snapshot is served, so a test can change the
+	// world mid-tick — which is the only way to exercise a tenant that
+	// disappears between being listed and being acted on.
+	onSnapshot func()
 }
 
 func (p *fakePoll) Snapshot(_ context.Context, tenants []store.Tenant) map[string]health.Report {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.mu.Unlock()
+		if p.onSnapshot != nil {
+			p.onSnapshot()
+		}
+	}()
 	out := make(map[string]health.Report, len(tenants))
 	for _, t := range tenants {
 		v, ok := p.versions[t.ID]
@@ -615,5 +624,87 @@ func TestOnlyOneBridgeIsRestartedPerTick(t *testing.T) {
 	}
 	if restarts != 1 {
 		t.Fatalf("one tick restarted %d bridges: %v", restarts, u.seen())
+	}
+}
+
+// A tenant offboarded during the rollout window must not fail the fleet
+// upgrade. Destroy releases the unit, the directory AND the port, so acting on
+// a stale row could also probe whichever tenant was provisioned onto that port
+// next.
+func TestATenantDestroyedMidRolloutIsSkippedNotFailed(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "going", "staying")
+	p := &fakePoll{
+		versions:     map[string]string{"going": "v1", "staying": "v1"},
+		afterRestart: map[string]string{"staying": "v2"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarking(u, p)
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	// The tenant vanishes INSIDE the tick — after the fleet has been listed
+	// and polled, before the restart. Deleting it before the tick would prove
+	// nothing: ListTenants would simply never return it, and the guard under
+	// test would not be reached.
+	p.onSnapshot = func() {
+		if _, err := s.GetTenant("going"); err == nil {
+			if err := s.DeleteTenant("going"); err != nil {
+				t.Errorf("DeleteTenant: %v", err)
+			}
+		}
+	}
+
+	if err := drain(t, w, s, 10); err != nil {
+		t.Fatalf("an offboarded tenant failed the rollout: %v", err)
+	}
+	if u.started("going") != 0 {
+		t.Fatalf("a destroyed tenant was restarted: %v", u.seen())
+	}
+	if u.started("staying") != 1 {
+		t.Fatalf("the remaining tenant was not rolled: %v", u.seen())
+	}
+}
+
+// --now on a build already queued for tonight must ESCALATE it. Without this
+// the flag is decoration: a fix that cannot wait would sit until 22:00 because
+// an earlier, unhurried deploy had already queued the same build.
+func TestAnImmediateRequestEscalatesAQueuedRollout(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.RequestRollout("v2", false); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	got, err := s.RequestRollout("v2", true)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !got.Immediate {
+		t.Fatal("--now did not escalate a rollout already queued for the window")
+	}
+}
+
+// Re-requesting the SAME build must not restart the state machine. The deploy
+// script may legitimately ask twice, and resetting a mid-flight rollout to
+// pending discards the progress the operator screen is showing.
+func TestRerequestingTheSameBuildDoesNotResetAnInFlightRollout(t *testing.T) {
+	s := openStore(t)
+	r, err := s.RequestRollout("v2", false)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if err := s.SetRolloutState(r.ID, store.RolloutRunning, "held at a"); err != nil {
+		t.Fatalf("SetRolloutState: %v", err)
+	}
+	got, err := s.RequestRollout("v2", false)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if got.State != store.RolloutRunning {
+		t.Fatalf("state = %q, want the in-flight state left alone", got.State)
+	}
+	if got.Detail != "held at a" {
+		t.Fatalf("detail = %q, want the operator-visible progress kept", got.Detail)
 	}
 }

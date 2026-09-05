@@ -17,7 +17,7 @@ func baseEnv(t *testing.T, overrides map[string]string) {
 		"LISTEN_ADDR": "", "DB_PATH": "", "INSTANCE_ROOT": "", "PORT_BASE": "",
 		"PORT_COUNT": "", "OPERATOR_TOKEN": testOperatorToken, "UNIT_NAME": "",
 		"WEBHOOK_BASE_URL": "", "QUIET_TZ": "", "ALLOW_PUBLIC_BIND": "",
-		"PUBLIC_ORIGIN": "",
+		"PUBLIC_ORIGIN": "", "ROLLOUT_START_HOUR": "", "ROLLOUT_END_HOUR": "",
 	} {
 		t.Setenv(k, v)
 	}
@@ -203,5 +203,51 @@ func TestAMalformedPublicOriginIsRefused(t *testing.T) {
 		if _, err := Load(); err == nil {
 			t.Fatalf("PUBLIC_ORIGIN %q must be refused at boot, not accepted and silently never match", bad)
 		}
+	}
+}
+
+// The rollout window decides when customers' numbers are allowed to go briefly
+// deaf, so a nonsensical one must fail at boot rather than at 02:00.
+//
+// Equal hours describe no window and every reading of them is a trap.
+// "Always" is fail-OPEN — someone setting 0/0 to disable rollouts would
+// instead restart every number at ten in the morning. "Never" fails silently,
+// and a rollout that never runs looks exactly like one nobody requested.
+// Refusing is the only reading that cannot surprise the person who wrote it.
+func TestLoadRefusesARolloutWindowThatIsNotAWindow(t *testing.T) {
+	for _, hour := range []string{"0", "22", "13"} {
+		baseEnv(t, map[string]string{"ROLLOUT_START_HOUR": hour, "ROLLOUT_END_HOUR": hour})
+		if _, err := Load(); err == nil {
+			t.Fatalf("start == end == %s describes no window and must be refused", hour)
+		}
+	}
+}
+
+// An hour that is not on a clock is a typo, and a typo here produces a window
+// no clock ever enters — indistinguishable, later, from a rollout nobody asked
+// for.
+func TestLoadRefusesAnHourThatIsNotOnAClock(t *testing.T) {
+	for _, tc := range []map[string]string{
+		{"ROLLOUT_START_HOUR": "24"},
+		{"ROLLOUT_START_HOUR": "-1"},
+		{"ROLLOUT_END_HOUR": "99"},
+		{"ROLLOUT_END_HOUR": "not-a-number"},
+	} {
+		baseEnv(t, tc)
+		if _, err := Load(); err == nil {
+			t.Fatalf("%v must be refused", tc)
+		}
+	}
+}
+
+// The documented default is a real overnight window that wraps midnight.
+func TestTheDefaultRolloutWindowIsOvernight(t *testing.T) {
+	baseEnv(t, nil)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RolloutStartHour != 22 || cfg.RolloutEndHour != 5 {
+		t.Fatalf("default window = %d-%d, want 22-5", cfg.RolloutStartHour, cfg.RolloutEndHour)
 	}
 }
