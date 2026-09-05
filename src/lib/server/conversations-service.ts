@@ -172,6 +172,10 @@ export async function upsertConversationForMessage(
         subAccountId: input.subAccountId,
         contactId,
         channel: input.channel,
+        // The body, so a downstream if_else can branch on the answer itself.
+        // This is the only place it is available — the run has no other route
+        // to what the contact actually said.
+        text: input.body,
       });
       // And enrolls the contact in message.received workflows (the trigger's
       // optional channel filter narrows inside fireWorkflowTrigger).

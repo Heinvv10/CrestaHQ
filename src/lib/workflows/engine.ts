@@ -523,9 +523,23 @@ const execWait: NodeExecutor = async (ctx) => {
   return { result: { kind: "wait", seconds }, log: `wait:${seconds}s` };
 };
 
-const execIfElse: NodeExecutor = async (ctx) => {
+/** Enough for a button payload or a short free-text answer; short enough that
+ *  carrying it on the run doc costs nothing. */
+const REPLY_TEXT_MAX = 500;
+
+/** Exported for tests only — the registry is the production entry point. */
+export const execIfElse: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as IfElseConfig;
-  const pass = evalConditionGroup(cfg.conditions, ctx.contact);
+  // The reply that resumed an upstream wait_for_reply, if there was one. It
+  // rides run.context (surfaced here as triggerContext) rather than the
+  // contact, because it is per-run: the same contact can be mid-flight in two
+  // runs that are branching on different answers.
+  const lastReply = ctx.triggerContext?.lastReply as
+    | { text?: string }
+    | undefined;
+  const pass = evalConditionGroup(cfg.conditions, ctx.contact, {
+    replyText: lastReply?.text ?? null,
+  });
   return { result: { kind: "branch", value: pass }, log: `branch:${pass}` };
 };
 
@@ -1153,6 +1167,10 @@ export async function resumeWaitingRunsOnReply(input: {
   subAccountId: string;
   contactId: string;
   channel: string;
+  /** The inbound message body, so a downstream if_else can branch on WHAT the
+   *  contact said and not merely that they said something. Optional: callers
+   *  that predate this still resume the run, they just cannot branch on it. */
+  text?: string | null;
 }): Promise<void> {
   try {
     const db = getAdminDb();
@@ -1182,10 +1200,18 @@ export async function resumeWaitingRunsOnReply(input: {
           at: Timestamp.now(),
           result: `replied:${input.channel}`,
         };
+        // Capped: a run doc is read on every step, and an unbounded inbound
+        // body would be carried for the life of the run.
+        const replyText = (input.text ?? "").slice(0, REPLY_TEXT_MAX);
         tx.update(doc.ref, {
           waiting: null,
           status: "running",
           history: FieldValue.arrayUnion(entry),
+          "context.lastReply": {
+            text: replyText,
+            channel: input.channel,
+            at: Timestamp.now(),
+          },
           updatedAt: FieldValue.serverTimestamp(),
         });
         return true;
