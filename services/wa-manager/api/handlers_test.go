@@ -79,6 +79,7 @@ type fakeUnits struct {
 
 func (f *fakeUnits) Enable(i string) error  { return f.note("enable", i) }
 func (f *fakeUnits) Start(i string) error   { return f.note("start", i) }
+func (f *fakeUnits) Restart(i string) error { return f.note("restart", i) }
 func (f *fakeUnits) Stop(i string) error    { return f.note("stop", i) }
 func (f *fakeUnits) Disable(i string) error { return f.note("disable", i) }
 
@@ -471,7 +472,7 @@ func TestListReturnsTenantsWithHealth(t *testing.T) {
 	}
 }
 
-func TestRestartStopsThenStarts(t *testing.T) {
+func TestRestartClearsTheStartLimitThenBounces(t *testing.T) {
 	h := newHarness(t)
 	h.seed(t, "blitz", "blitz-inst", 8412)
 
@@ -482,9 +483,9 @@ func TestRestartStopsThenStarts(t *testing.T) {
 	// reset-failed sits between the two: a unit that tripped its start rate
 	// limit refuses to start until it is cleared, and this route exists to
 	// restart bridges that keep dying.
-	want := []string{"stop:blitz-inst", "reset-failed:blitz-inst", "start:blitz-inst"}
+	want := []string{"reset-failed:blitz-inst", "restart:blitz-inst"}
 	got := h.units.seen()
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("systemd verbs = %v, want %v", got, want)
 	}
 }

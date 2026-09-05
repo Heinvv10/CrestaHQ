@@ -45,8 +45,11 @@ type Poller interface {
 // reaching for the controller directly is cheaper than widening the
 // provisioner's surface for one verb pair.
 type Units interface {
-	Stop(instance string) error
-	Start(instance string) error
+	// Restart bounces a unit in ONE verb. Stop-then-Start leaves the number
+	// STOPPED when the start half fails — and systemd never auto-restarts a
+	// unit that was stopped on purpose, whatever Restart= says, so that number
+	// stays down until a human notices rather than being briefly deaf.
+	Restart(instance string) error
 	// ResetFailed clears the unit's failure and start-rate-limit state, which
 	// is otherwise what stops a restart from taking. See restartUnit.
 	ResetFailed(instance string) error

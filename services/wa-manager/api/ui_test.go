@@ -294,7 +294,7 @@ func TestTheRestartFormBouncesTheUnitAndRedirectsBack(t *testing.T) {
 	if got := rec.Header().Get("Location"); got != "/tenants/blitz" {
 		t.Errorf("Location = %q, want the number's page", got)
 	}
-	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 2 || got[0] != "reset-failed:blitz" || got[1] != "restart:blitz" {
 		t.Fatalf("the form did not bounce the unit: %v", got)
 	}
 }
@@ -382,7 +382,7 @@ func TestTheRestartFormAdmitsAPresentSameOriginHeader(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a same-origin browser POST was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 2 || got[0] != "reset-failed:blitz" || got[1] != "restart:blitz" {
 		t.Fatalf("the same-origin form did not bounce the unit: %v", got)
 	}
 }
@@ -406,7 +406,7 @@ func TestTheRestartFormAdmitsChromesNullOriginOnASameOriginNavigation(t *testing
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a same-origin form navigation was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 2 || got[0] != "reset-failed:blitz" || got[1] != "restart:blitz" {
 		t.Fatalf("the form did not bounce the unit: %v", got)
 	}
 }
@@ -459,7 +459,7 @@ func TestTheRestartFormAdmitsAConfiguredPublicOrigin(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a request matching the configured PUBLIC_ORIGIN was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 2 || got[0] != "reset-failed:blitz" || got[1] != "restart:blitz" {
 		t.Fatalf("the configured-origin form did not bounce the unit: %v", got)
 	}
 }
@@ -530,7 +530,7 @@ func TestBothRestartRoutesDoTheSameThing(t *testing.T) {
 	}
 
 	apiVerbs, uiVerbs := viaAPI.units.seen(), viaUI.units.seen()
-	if len(apiVerbs) != 3 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
+	if len(apiVerbs) != 2 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
 		t.Fatalf("the two restart routes drove the unit differently: api=%v ui=%v", apiVerbs, uiVerbs)
 	}
 

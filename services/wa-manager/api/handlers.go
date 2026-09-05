@@ -225,23 +225,25 @@ func (s *server) restartUnit(id string, t store.Tenant) string {
 	if s.deps.Units == nil {
 		return "no unit controller configured"
 	}
-	if err := s.deps.Units.Stop(t.Instance); err != nil {
-		log.Printf("restart stop failed tenant=%s err=%v", id, err)
-		return "could not stop the unit; check the manager log"
-	}
-	// Clear the start rate limit before starting. StartLimitBurst=5 in ten
-	// minutes counts every start, clean exits included, and once it trips
-	// systemd refuses the start — so the button offered for a bridge that
-	// keeps dying would report "did not start again" for up to ten minutes,
-	// with nothing telling the operator that `reset-failed` is the remedy.
-	// A failure here is not fatal: the start below is still worth attempting,
-	// and its error is the one the operator needs to see.
+
+	// Clear the start rate limit first. StartLimitBurst=5 in ten minutes
+	// counts every start, clean exits included, and once it trips systemd
+	// refuses the restart — so the button offered for a bridge that keeps
+	// dying would fail for up to ten minutes with nothing telling the operator
+	// that `reset-failed` is the remedy. A failure here is not fatal: the
+	// restart below is still worth attempting, and its error is the one the
+	// operator needs to see.
 	if err := s.deps.Units.ResetFailed(t.Instance); err != nil {
 		log.Printf("restart reset-failed did not take tenant=%s err=%v", id, err)
 	}
-	if err := s.deps.Units.Start(t.Instance); err != nil {
-		log.Printf("restart start failed tenant=%s err=%v", id, err)
-		return "the unit was stopped but did not start again; check the manager log"
+	// One verb, not Stop-then-Start. The pair leaves the number stopped when
+	// the start half fails, and systemd will not bring back a unit that was
+	// stopped deliberately — so an operator pressing this button on a broken
+	// bridge could take the number from "briefly deaf" to "down until someone
+	// notices". The rollout worker was fixed first; this is the other caller.
+	if err := s.deps.Units.Restart(t.Instance); err != nil {
+		log.Printf("restart failed tenant=%s err=%v", id, err)
+		return "the unit did not come back; check the manager log"
 	}
 	// A support record, not part of the operation: losing the line must not
 	// turn a successful bounce into a failure.

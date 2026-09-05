@@ -428,9 +428,15 @@ func TestASecondDeploySupersedesTheFirst(t *testing.T) {
 	}
 }
 
-// An operator who has already said "now" is not overruled by a later deploy
-// that did not.
-func TestSupersedeKeepsAnImmediateFlag(t *testing.T) {
+// Urgency belongs to the BUILD it was requested for and does not survive a
+// retarget.
+//
+// This test previously asserted the opposite, and the opposite is a way to
+// restart a customer's number in the middle of a Monday: `--now` on v1,
+// followed by a routine unhurried deploy of v2, left the row marked immediate,
+// and the worker then skipped the window for a rollout nobody had marked
+// urgent.
+func TestUrgencyDoesNotSurviveARetarget(t *testing.T) {
 	s := openStore(t)
 	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("first: %v", err)
@@ -439,8 +445,8 @@ func TestSupersedeKeepsAnImmediateFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	if !got.Immediate {
-		t.Fatal("a later deploy cleared the operator's immediate flag")
+	if got.Immediate {
+		t.Fatal("an unhurried deploy inherited the previous build's urgency")
 	}
 }
 
@@ -453,7 +459,7 @@ func TestARunningRolloutDoesNotBlockTheNextDeploy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := s.SetRolloutState(r.ID, store.RolloutRunning, ""); err != nil {
+	if _, err := s.SetRolloutState(r.ID, "v2", store.RolloutRunning, ""); err != nil {
 		t.Fatalf("SetRolloutState: %v", err)
 	}
 	if _, err := s.RequestRollout("v3", false); err != nil {
@@ -694,7 +700,7 @@ func TestRerequestingTheSameBuildDoesNotResetAnInFlightRollout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := s.SetRolloutState(r.ID, store.RolloutRunning, "held at a"); err != nil {
+	if _, err := s.SetRolloutState(r.ID, "v2", store.RolloutRunning, "held at a"); err != nil {
 		t.Fatalf("SetRolloutState: %v", err)
 	}
 	got, err := s.RequestRollout("v2", false)
@@ -706,5 +712,57 @@ func TestRerequestingTheSameBuildDoesNotResetAnInFlightRollout(t *testing.T) {
 	}
 	if got.Detail != "held at a" {
 		t.Fatalf("detail = %q, want the operator-visible progress kept", got.Detail)
+	}
+}
+
+// The lost update this compare-and-set exists for. The worker reads a rollout,
+// spends up to ninety seconds settling one bridge, then writes its verdict; a
+// deploy landing in that window supersedes the row in place. Without the
+// version check the OLD rollout's verdict lands on the NEW target — observed
+// as a row reading done/v3 while every bridge still ran v1, which the deploy
+// script reads as "every bridge rolled".
+func TestAVerdictCannotLandOnARolloutThatSupersededIt(t *testing.T) {
+	s := openStore(t)
+	r, err := s.RequestRollout("v2", true)
+	if err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	// A second deploy retargets the same row while the worker is mid-flight.
+	if _, err := s.RequestRollout("v3", false); err != nil {
+		t.Fatalf("supersede: %v", err)
+	}
+
+	ok, err := s.SetRolloutState(r.ID, "v2", store.RolloutDone, "every eligible bridge runs this build")
+	if err != nil {
+		t.Fatalf("SetRolloutState: %v", err)
+	}
+	if ok {
+		t.Fatal("a verdict for v2 was written onto a rollout that now targets v3")
+	}
+	cur, outstanding, err := s.CurrentRollout()
+	if err != nil {
+		t.Fatalf("CurrentRollout: %v", err)
+	}
+	if !outstanding {
+		t.Fatal("the superseding rollout was marked finished by the previous one's verdict")
+	}
+	if cur.Version != "v3" || cur.State == store.RolloutDone {
+		t.Fatalf("outstanding rollout = %+v, want v3 still to be done", cur)
+	}
+}
+
+// A verdict for the build actually being rolled still lands.
+func TestAVerdictForTheCurrentBuildIsWritten(t *testing.T) {
+	s := openStore(t)
+	r, err := s.RequestRollout("v2", true)
+	if err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	ok, err := s.SetRolloutState(r.ID, "v2", store.RolloutDone, "done")
+	if err != nil || !ok {
+		t.Fatalf("SetRolloutState ok=%v err=%v, want the verdict to land", ok, err)
+	}
+	if _, outstanding, _ := s.CurrentRollout(); outstanding {
+		t.Fatal("a finished rollout is still outstanding")
 	}
 }

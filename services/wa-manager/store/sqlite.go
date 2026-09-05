@@ -321,10 +321,18 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 		Scan(&existing.ID, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
 	switch {
 	case err == nil:
-		// Immediate is sticky in both directions: an operator who has already
-		// said "now" is not overruled by a later deploy that did not, and a
-		// later `--now` DOES escalate a rollout already queued for tonight —
-		// which is the whole point of the flag when a fix cannot wait.
+		// Urgency belongs to the BUILD it was requested for. A later `--now`
+		// escalates a rollout already queued for tonight — that is the whole
+		// point of the flag when a fix cannot wait — but a request that
+		// changes the target carries its own urgency and does not inherit the
+		// previous one. Making it sticky across a retarget meant an operator's
+		// `--now` on v1, followed by a routine unhurried deploy of v2, left
+		// the row marked immediate: at ten on Monday morning the worker
+		// skipped the window and restarted a customer's number for a rollout
+		// nobody had marked urgent.
+		if existing.Version != version {
+			imm = 0
+		}
 		if immediate {
 			imm = 1
 		}
@@ -410,23 +418,31 @@ func (s *Store) rolloutWhere(clause string) (Rollout, bool, error) {
 // SetRolloutState moves a rollout on, stamping finished_unix for a terminal
 // state. detail is what the operator screen shows — for a failure, which
 // instance stopped it.
-func (s *Store) SetRolloutState(id int64, state, detail string) error {
+//
+// It is a COMPARE-AND-SET on the version, and ok=false means the rollout was
+// superseded while the caller was working. That is not an error and the caller
+// must not treat it as one — but writing without the check was a lost update
+// with a false success at the end of it. The worker reads the rollout, spends
+// up to ninety seconds settling one bridge, then writes the outcome; a deploy
+// landing in that window supersedes the row in place, and a bare `WHERE id`
+// stamped the OLD rollout's verdict onto the NEW target. The observed result
+// was a row reading done/v2 while the only bridge was still running v1, and a
+// deploy script that read that and printed "every bridge rolled".
+func (s *Store) SetRolloutState(id int64, expectVersion, state, detail string) (bool, error) {
 	finished := int64(0)
 	if state == RolloutDone || state == RolloutFailed {
 		finished = time.Now().Unix()
 	}
 	res, err := s.db.Exec(
-		`UPDATE rollouts SET state = ?, detail = ?, finished_unix = ? WHERE id = ?`,
-		state, detail, finished, id)
+		`UPDATE rollouts SET state = ?, detail = ?, finished_unix = ?
+		   WHERE id = ? AND version = ?`,
+		state, detail, finished, id, expectVersion)
 	if err != nil {
-		return err
+		return false, err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if n == 0 {
-		return fmt.Errorf("store: no rollout %d", id)
-	}
-	return nil
+	return n > 0, nil
 }

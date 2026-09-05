@@ -170,8 +170,12 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return nil
 	}
 	if r.State != store.RolloutRunning {
-		if err := w.Store.SetRolloutState(r.ID, store.RolloutRunning, ""); err != nil {
+		ok, err := w.Store.SetRolloutState(r.ID, r.Version, store.RolloutRunning, "")
+		if err != nil {
 			return err
+		}
+		if !ok {
+			return nil // superseded between the read and the write; next tick
 		}
 	}
 
@@ -182,7 +186,15 @@ func (w *Worker) Tick(ctx context.Context) error {
 	stale := w.stale(ctx, tenants, r.Version)
 	if len(stale) == 0 {
 		log.Printf("rollout %d: every eligible bridge runs %s", r.ID, r.Version)
-		return w.Store.SetRolloutState(r.ID, store.RolloutDone, "every eligible bridge runs this build")
+		// Compare-and-set: a deploy that superseded this rollout while the
+		// fleet was being polled must not have OUR verdict stamped on ITS
+		// target. Dropping the write leaves the new rollout pending, which is
+		// exactly right — the next tick evaluates it on its own terms.
+		if ok, err := w.Store.SetRolloutState(r.ID, r.Version, store.RolloutDone,
+			"every eligible bridge runs this build"); err != nil || !ok {
+			return err
+		}
+		return nil
 	}
 
 	t := stale[0]
@@ -279,8 +291,17 @@ func (w *Worker) restart(ctx context.Context, t store.Tenant, version string) er
 }
 
 func (w *Worker) fail(r store.Rollout, detail string) error {
-	if err := w.Store.SetRolloutState(r.ID, store.RolloutFailed, detail); err != nil {
+	// Compare-and-set for the same reason the success path is: a failure
+	// against the build we were rolling says nothing about a build that
+	// superseded it mid-flight, and stamping it there would mark a rollout
+	// failed that has not been tried.
+	ok, err := w.Store.SetRolloutState(r.ID, r.Version, store.RolloutFailed, detail)
+	if err != nil {
 		return err
+	}
+	if !ok {
+		log.Printf("rollout %d was superseded while failing: %s", r.ID, detail)
+		return nil
 	}
 	return fmt.Errorf("rollout %d failed: %s", r.ID, detail)
 }

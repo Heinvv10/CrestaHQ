@@ -75,9 +75,13 @@ func (c *systemctl) Disable(i string) error { return c.verb("disable", i) }
 // Stop-then-Start has a gap this does not: when the start half fails, the
 // number is left stopped — down until a human notices, rather than briefly
 // deaf — and it is left stopped too if this process is signalled between the
-// two calls. systemd's restart has no such window, and a unit whose start
-// fails ends up `failed`, where the unit's own Restart=always brings it back
-// inside the start limit.
+// two calls. systemd never brings back a unit that was stopped deliberately,
+// whatever Restart= says, so nothing recovers that on its own.
+//
+// A failed restart leaves the unit `failed` instead, which Restart=always does
+// retry — but only within StartLimitBurst. A binary that genuinely cannot start
+// still ends up down after five attempts; the difference is that it got there
+// having tried, and sits visibly `failed` rather than quietly `inactive`.
 func (c *systemctl) Restart(i string) error { return c.verb("restart", i) }
 
 // ResetFailed clears `failed` and, with it, the start rate limit.
