@@ -285,10 +285,14 @@ func (s *server) handleRollout(w http.ResponseWriter, r *http.Request) {
 
 	got, err := s.deps.Store.RequestRollout(req.Version, req.Now)
 	if err != nil {
-		// The only expected failure is another rollout already outstanding on
-		// a different build. It is a conflict, not a server fault, and the
-		// message names the build that is in the way.
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		// Not a 409. An outstanding rollout is superseded rather than refused,
+		// so a conflict is no longer a thing this can return — anything that
+		// arrives here is a store failure, and dressing it as a conflict told
+		// the deploy script a lie it treats as fatal.
+		log.Printf("rollout request failed err=%v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not record the rollout; check the manager log",
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, rolloutBody(got))

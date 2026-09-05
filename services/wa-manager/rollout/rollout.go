@@ -210,6 +210,25 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	log.Printf("rollout %d: restarting %s onto %s (%d left)", r.ID, t.ID, r.Version, len(stale))
 	if err := w.restart(ctx, t, r.Version); err != nil {
+		// A cancelled context is this process shutting down, not a bridge
+		// failing. Marking the rollout failed here raised the loudest banner
+		// on the operator screen over a false incident — and the deploy script
+		// restarts the manager itself, so its own deploy could hold the
+		// rollout it had just requested. The rollout stays outstanding and the
+		// next tick, in this process or the next one, re-derives it.
+		if ctx.Err() != nil {
+			log.Printf("rollout %d: shutting down mid-restart of %s; it stays outstanding", r.ID, t.ID)
+			return nil
+		}
+		// A tenant that left `running` DURING its own restart — a number that
+		// logged out as it came back — can never satisfy the health gate. It
+		// is the same wedge the eligibility filter prevents at selection time,
+		// arriving one step later, so it is skipped rather than held against
+		// the fleet.
+		if cur, gerr := w.Store.GetTenant(t.ID); gerr != nil || cur.State != store.StateRunning {
+			log.Printf("rollout %d: %s left running during its restart; skipping it", r.ID, t.ID)
+			return nil
+		}
 		log.Printf("rollout %d HELD at %s: %v", r.ID, t.ID, err)
 		return w.fail(r, fmt.Sprintf("held at %s: %v", t.ID, err))
 	}

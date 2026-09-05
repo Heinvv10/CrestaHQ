@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -47,7 +48,13 @@ type Event struct {
 	At     time.Time
 }
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// rolloutMu serialises RequestRollout's read-then-write. See the comment
+	// there: a deferred SQLite transaction fails a lock upgrade outright
+	// rather than waiting.
+	rolloutMu sync.Mutex
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -305,6 +312,15 @@ type Rollout struct {
 // a rollout left `running` by a manager that was killed mid-tick used to block
 // every future request until someone edited the database by hand.
 func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) {
+	// Serialised in-process. This reads a row and then writes it, and a
+	// deferred SQLite transaction refuses that lock UPGRADE immediately with
+	// SQLITE_BUSY rather than waiting out _busy_timeout — so two deploys
+	// landing together would fail one of them for a reason no human could act
+	// on. One mutex is the readable fix; the partial unique index on the table
+	// is what still holds if a second process ever exists.
+	s.rolloutMu.Lock()
+	defer s.rolloutMu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Rollout{}, err

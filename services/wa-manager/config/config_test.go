@@ -251,3 +251,32 @@ func TestTheDefaultRolloutWindowIsOvernight(t *testing.T) {
 		t.Fatalf("default window = %d-%d, want 22-5", cfg.RolloutStartHour, cfg.RolloutEndHour)
 	}
 }
+
+// The width calculation the boot warning uses, including the wrap past
+// midnight that every real configuration relies on.
+func TestRolloutWindowWidth(t *testing.T) {
+	for _, tc := range []struct{ start, end, want int }{
+		{22, 5, 7},   // the documented default, wrapping midnight
+		{1, 5, 4},    // ordinary
+		{23, 22, 23}, // reversed hours: "every hour except 22:00"
+		{0, 23, 23},
+	} {
+		if got := rolloutWindowHours(tc.start, tc.end); got != tc.want {
+			t.Errorf("rolloutWindowHours(%d,%d) = %d, want %d", tc.start, tc.end, got, tc.want)
+		}
+	}
+}
+
+// Reversed hours are a legitimate thing to ask for, so they load — but the
+// operator is told how wide the window actually is, because "23 to 22" reads
+// like a one-hour window and is a 23-hour one.
+func TestAReversedWindowStillLoads(t *testing.T) {
+	baseEnv(t, map[string]string{"ROLLOUT_START_HOUR": "23", "ROLLOUT_END_HOUR": "22"})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a wide window must load, not be refused: %v", err)
+	}
+	if rolloutWindowHours(cfg.RolloutStartHour, cfg.RolloutEndHour) != 23 {
+		t.Fatal("the width the warning reports is wrong")
+	}
+}

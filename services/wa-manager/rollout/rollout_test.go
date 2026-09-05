@@ -766,3 +766,73 @@ func TestAVerdictForTheCurrentBuildIsWritten(t *testing.T) {
 		t.Fatal("a finished rollout is still outstanding")
 	}
 }
+
+// A manager shutting down mid-restart must not mark the rollout failed. The
+// deploy script restarts the manager itself, so this turned a routine deploy
+// into the loudest banner on the operator screen — over nothing.
+func TestAShutdownMidRestartLeavesTheRolloutOutstanding(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "a")
+	p := &fakePoll{
+		versions:     map[string]string{"a": "v1"},
+		afterRestart: map[string]string{"a": "v1"}, // never reaches the target
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarking(u, p)
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the process is going down
+	if err := w.Tick(ctx); err != nil {
+		t.Fatalf("a shutdown reported a rollout failure: %v", err)
+	}
+
+	r, ok, err := s.CurrentRollout()
+	if err != nil {
+		t.Fatalf("CurrentRollout: %v", err)
+	}
+	if !ok {
+		t.Fatal("a shutdown finished the rollout; it must stay outstanding for the next process")
+	}
+	if r.State == store.RolloutFailed {
+		t.Fatalf("a shutdown marked the rollout failed: %+v", r)
+	}
+}
+
+// A number that logs out DURING its own restart can never satisfy the health
+// gate. That is the same wedge the eligibility filter prevents at selection
+// time, arriving one step later — it must be skipped, not held against the
+// fleet.
+func TestATenantThatLogsOutMidRestartIsSkippedNotHeld(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "flaky", "healthy")
+	p := &fakePoll{
+		versions:     map[string]string{"flaky": "v1", "healthy": "v1"},
+		afterRestart: map[string]string{"flaky": "v1", "healthy": "v2"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarkingWith(u, p, func() {
+		// It comes back logged out rather than connected.
+		_ = s.SetTenantState("flaky", store.StateLoggedOut, "")
+	})
+	if _, err := s.RequestRollout("v2", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+
+	if err := drain(t, w, s, 10); err != nil {
+		t.Fatalf("a number that logged out mid-restart held the fleet: %v", err)
+	}
+	r, _, _ := s.LastRollout()
+	if r.State != store.RolloutDone {
+		t.Fatalf("state = %q detail=%q, want done", r.State, r.Detail)
+	}
+	if u.started("healthy") != 1 {
+		t.Fatalf("the healthy number was not rolled: %v", u.seen())
+	}
+}

@@ -11,6 +11,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -127,6 +128,15 @@ func envInt(key string, def int) (int, error) {
 	return n, nil
 }
 
+// rolloutWindowHours is the width of the window, counting a wrap past
+// midnight.
+func rolloutWindowHours(start, end int) int {
+	if start < end {
+		return end - start
+	}
+	return 24 - start + end
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		ListenAddr:     envOr("LISTEN_ADDR", defaultListenAddr),
@@ -193,6 +203,17 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf(
 			"ROLLOUT_START_HOUR and ROLLOUT_END_HOUR are both %d, which describes no window; set two different hours",
 			cfg.RolloutStartHour)
+	}
+	// A window wider than half a day is almost certainly reversed hours. The
+	// equal-hours refusal above catches one keystroke; `23`-`22` is the next
+	// one along, and it means "every hour except 22:00" — the same fail-open,
+	// on the control whose job is keeping outages out of business hours. It is
+	// a legitimate thing to ask for, so this warns rather than refuses, but it
+	// says the width out loud where somebody will read it.
+	if rolloutWindowHours(cfg.RolloutStartHour, cfg.RolloutEndHour) > 12 {
+		log.Printf("WARNING the rollout window %02d:00-%02d:00 is %d hours wide — bridges may restart during the working day; are the hours the right way round?",
+			cfg.RolloutStartHour, cfg.RolloutEndHour,
+			rolloutWindowHours(cfg.RolloutStartHour, cfg.RolloutEndHour))
 	}
 	if cfg.PortCount, err = envInt("PORT_COUNT", defaultPortCount); err != nil {
 		return Config{}, err
