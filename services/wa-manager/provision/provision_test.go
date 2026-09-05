@@ -527,3 +527,35 @@ func TestConcurrentCreatesForOneTenantLeaveOneLiveInstance(t *testing.T) {
 		st.Close()
 	}
 }
+
+// WriteFile's mode applies only when it CREATES the file. A leftover .env from
+// a hand-rolled or half-removed install keeps whatever permissions it had, so
+// two bearer tokens — either of which can send as this WhatsApp number — land
+// inside a world-readable file, and nothing anywhere says so.
+func TestEnvPermissionsAreTightenedOnAnExistingFile(t *testing.T) {
+	p, _, _, root := newTestProvisioner(t)
+	dir := filepath.Join(root, "t1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Written through the umask, so assert the starting state rather than
+	// assuming it.
+	if err := os.Chmod(envPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.Create("t1", "Blitz"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf(".env mode = %o, want 600: it holds two tokens that can send as this number", got)
+	}
+}

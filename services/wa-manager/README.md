@@ -155,7 +155,13 @@ QR on the number's own page. Open WhatsApp on the phone that owns the number →
 If that page instead says there is **no pairing code waiting**, its bridge is not
 offering one: a bridge only enters the QR exchange on a fresh start, so a
 logged-out one has nothing to show until it restarts. The page offers **Restart
-this bridge** for exactly that; the code appears on the reload that follows.
+this bridge** for exactly that.
+
+`systemctl start` returns as soon as the unit is launched, not when the bridge
+has opened its QR channel, so the code may not be there on the very next load.
+The page refreshes itself every 15 seconds; the code appears on one of the next
+few refreshes. If it has not appeared after a minute, check the unit's log —
+that is a bridge failing to start, not a slow one.
 
 **The QR is a write-grade credential.** Anyone who scans it links a device to
 that number with every permission the number has. It is served as a PNG from a
@@ -189,8 +195,10 @@ To recover:
    If the phone is fine, the device was merely unlinked.
 2. **Re-pair.** Open the number's page. A logged-out bridge has no code to
    show — it only enters the QR exchange on a fresh start — so the page offers
-   **Restart this bridge** instead of an image. Click it, then scan the code
-   that appears.
+   **Restart this bridge** instead of an image. Click it, then wait: the code
+   arrives a refresh or two later, not on the redirect, because `systemctl
+   start` returns before the bridge has opened its QR channel. The page's own
+   15-second refresh covers it.
 3. **Lift the kill switch.** Pairing restores the socket; it does not release
    the brakes. `POST /v1/kill {"on":false}` against that tenant's bridge, with
    an **admin** consumer token — the manager's own token from that instance's
@@ -215,6 +223,13 @@ To recover:
   blind. The card is degraded when it says that.
 - **Unreachable** — the manager cannot see the bridge. Every other field reads
   `unknown`, deliberately: an unseen number must never render as a healthy one.
+- **Not checked** — the page's health sweep hit its own deadline before it got
+  to this number. **Not** the same as unreachable: nothing was learned about
+  this bridge either way. A banner at the top of the page says the sweep was
+  truncated, and `GET /api/tenants` carries `healthSweepTruncated: true`
+  alongside `"incomplete": true` on each affected tenant. It happens when many
+  bridges are down at once — each dead one costs the sweep a 5s timeout — so
+  treat it as a symptom of the outage, not of these particular numbers.
 
 ## Tearing a tenant down
 

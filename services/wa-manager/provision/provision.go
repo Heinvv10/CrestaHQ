@@ -194,8 +194,17 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	dirCreated = true
 	// 0600: this file holds two bearer tokens, either of which can send as this
 	// WhatsApp number.
+	//
+	// The Chmod is not redundant. WriteFile's mode applies only when it
+	// CREATES the file; a leftover .env from a hand-rolled or half-removed
+	// install keeps whatever permissions it had, so the tokens land inside a
+	// world-readable file and nothing says so.
 	env := p.renderEnv(tenantID, instance, port, appTok, mgrTok)
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte(env), 0o600); err != nil {
+		return fail(err)
+	}
+	if err := os.Chmod(envPath, 0o600); err != nil {
 		return fail(err)
 	}
 	if err := p.sc.Enable(instance); err != nil {

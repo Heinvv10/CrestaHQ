@@ -351,3 +351,64 @@ func TestEveryUIResponseRefusesToBeFramed(t *testing.T) {
 		}
 	}
 }
+
+// A real browser sends Origin on every same-origin POST too, and the suite
+// only ever exercised the header being ABSENT (a curl or the runbook) or
+// hostile. The case an operator actually produces — clicking the button on the
+// page — was never covered, so a sameOrigin that rejected every present Origin
+// would have stayed green while the one control this screen exists for was
+// dead for every browser.
+func TestTheRestartFormAdmitsAPresentSameOriginHeader(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	// httptest.NewRequest builds requests for example.com, which is the Host
+	// the browser would echo back in Origin.
+	rec := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "http://example.com")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a same-origin browser POST was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+		t.Fatalf("the same-origin form did not bounce the unit: %v", got)
+	}
+}
+
+// The two restart routes exist because a browser form cannot carry a bearer
+// header, and they must not come to mean two different things — an operator
+// reaching for the JSON route during an incident and the button on the page
+// must get the same bounce and the same support record.
+//
+// Their RESPONSES differ deliberately and always will: the API answers JSON so
+// a script can read it, the form answers 303 so a reload cannot bounce the
+// number twice. What has to match is the effect.
+func TestBothRestartRoutesDoTheSameThing(t *testing.T) {
+	viaAPI := newHarness(t)
+	viaAPI.seed(t, "blitz", "blitz", 8412)
+	if rec := viaAPI.do(http.MethodPost, "/api/tenants/blitz/restart", operatorTok, ""); rec.Code != http.StatusOK {
+		t.Fatalf("api restart: %d %s", rec.Code, rec.Body.String())
+	}
+
+	viaUI := newHarness(t)
+	viaUI.seed(t, "blitz", "blitz", 8412)
+	if rec := viaUI.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("ui restart: %d %s", rec.Code, rec.Body.String())
+	}
+
+	apiVerbs, uiVerbs := viaAPI.units.seen(), viaUI.units.seen()
+	if len(apiVerbs) != 2 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
+		t.Fatalf("the two restart routes drove the unit differently: api=%v ui=%v", apiVerbs, uiVerbs)
+	}
+
+	apiEvents, err := viaAPI.st.ListEvents("blitz", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiEvents, err := viaUI.st.ListEvents("blitz", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(apiEvents) != 1 || len(uiEvents) != len(apiEvents) ||
+		apiEvents[0].Kind != uiEvents[0].Kind || apiEvents[0].Detail != uiEvents[0].Detail {
+		t.Fatalf("the two restart routes left different support records: api=%+v ui=%+v", apiEvents, uiEvents)
+	}
+}
