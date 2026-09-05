@@ -334,9 +334,12 @@ func Render(w io.Writer, p Page) error {
 // announces successes is a banner people stop reading, and this one has to
 // still work the day it says a customer's number is stranded on an old build.
 func BuildRolloutLine(state, version, detail string, immediate bool) *RolloutLine {
+	// Long enough to keep a "<commit>-<artifact hash>" version whole. A
+	// truncated version is worse than a long one: it reads as a commit an
+	// operator can look up, and is not one.
 	short := version
-	if len(short) > 12 {
-		short = short[:12]
+	if len(short) > 24 {
+		short = short[:24] + "…"
 	}
 	switch state {
 	case "pending":

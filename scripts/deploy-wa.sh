@@ -126,12 +126,33 @@ STAGE=$(mktemp -d)
 trap 'rm -f "$LOCK"; rm -rf "$STAGE"' EXIT
 
 say "Building $SHA"
-# The version is stamped into the bridge so the MANAGER can tell which bridges
-# are still on the old build. It has to come from the running process: one
-# binary is shared by every instance and is replaced before any of them
-# restart, so the file on disk says "new" for forty bridges running old code.
 ( cd services/wa-manager && go build -o "$STAGE/wa-manager" . ) || die "build wa-manager"
-( cd services/wa-agent-bridge && go build -ldflags "-X main.version=$SHA" -o "$STAGE/wa-agent-bridge" . ) || die "build wa-agent-bridge"
+
+# The bridge is built TWICE, and the reason is the whole "restart nothing
+# unless the bridge changed" promise.
+#
+# The manager decides which bridges to restart by comparing what each PROCESS
+# reports against a target version, so that version has to be stamped into the
+# binary. But stamping the DEPLOY commit into it makes every commit change the
+# bridge's bytes — including a manager-only one — and the promise never fires
+# once. Stamping the last commit that touched this directory is closer, and
+# still wrong the day a toolchain or dependency bump changes the binary without
+# changing any file here: the version would match, the rollout would find
+# nothing stale, and the new binary would sit on disk while every bridge kept
+# running the old one. That is a security patch silently not deployed.
+#
+# So the version is derived from the ARTIFACT. Build unstamped, hash that, and
+# stamp the hash — prefixed with the last commit to touch the service so a
+# human can still trace it. Identical source and toolchain give an identical
+# unstamped binary (verified: Go builds here are byte-reproducible), so the
+# version is stable across redeploys; anything that actually changes the binary
+# changes the version and therefore triggers a rollout.
+bridge_src_sha=$(git log -1 --format=%h -- services/wa-agent-bridge)
+( cd services/wa-agent-bridge && go build -o "$STAGE/bridge.unstamped" . ) || die "build wa-agent-bridge"
+bridge_hash=$(sha256sum "$STAGE/bridge.unstamped" | cut -c1-8)
+BRIDGE_VERSION="${bridge_src_sha}-${bridge_hash}"
+( cd services/wa-agent-bridge && go build -ldflags "-X main.version=$BRIDGE_VERSION" -o "$STAGE/wa-agent-bridge" . ) || die "stamp wa-agent-bridge"
+echo "bridge version $BRIDGE_VERSION"
 
 # ── Decide what actually changed ────────────────────────────────────────────
 # A byte-identical bridge binary means no bridge is restarted at all. This is
@@ -216,10 +237,10 @@ auth_curl() {
 immediate=false
 [ "$NOW" -eq 1 ] && immediate=true
 
-say "Requesting fleet rollout to $SHA (immediate=$immediate)"
+say "Requesting fleet rollout to $BRIDGE_VERSION (immediate=$immediate)"
 resp=$(auth_curl --max-time 10 -X POST "http://$MANAGER_ADDR/api/rollout" \
   -H 'Content-Type: application/json' \
-  -d "{\"version\":\"$SHA\",\"now\":$immediate}") || die "could not reach the manager to request a rollout"
+  -d "{\"version\":\"$BRIDGE_VERSION\",\"now\":$immediate}") || die "could not reach the manager to request a rollout"
 echo "$resp"
 case "$resp" in
   *'"error"'*) die "the manager refused the rollout: $resp" ;;
