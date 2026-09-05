@@ -824,3 +824,68 @@ func mustJSONString(s string) string {
 	}
 	return string(b)
 }
+
+// The whole point of admitting case is that the id survives verbatim: it is a
+// case-sensitive primary key (store/sqlite.go, no COLLATE NOCASE) and it is
+// interpolated into the bridge's inbound webhook. Every route above reached
+// through the create handler, which ignores checkTenantID's returned id — so
+// a checkTenantID that normalised what it returned would break every PATH
+// route in production while leaving the rest of this suite green.
+//
+// These routes bind that. Each one resolves the id against the store, so a
+// lowercased return value 404s instead of acting.
+func TestPathRoutesResolveAMixedCaseTenantVerbatim(t *testing.T) {
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	const instance = "54vpi0bs1zdmcxmymaya"
+
+	t.Run("pair relays to the bridge", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodGet, "/api/tenants/"+id+"/pair", operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		if len(h.bridge.headers()) != 1 {
+			t.Fatalf("the request never reached the bridge: %v", h.bridge.headers())
+		}
+	})
+
+	t.Run("restart acts on the lowercased instance", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodPost, "/api/tenants/"+id+"/restart", operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		// The unit name is the ONE place the id is allowed to differ, and it
+		// must differ in exactly one way: lowercased, nothing else renamed.
+		if seen := h.units.seen(); len(seen) == 0 || !strings.Contains(strings.Join(seen, ","), instance) {
+			t.Fatalf("systemd was not asked to restart %q: %v", instance, seen)
+		}
+	})
+
+	t.Run("delete matches the confirm parameter verbatim", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodDelete, "/api/tenants/"+id+"?confirm="+id, operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		_, destroys := h.prov.calls()
+		if len(destroys) != 1 || destroys[0] != id {
+			t.Fatalf("Destroy must receive the id unchanged, got %v", destroys)
+		}
+	})
+
+	t.Run("the operator screen renders the tenant", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodGet, "/tenants/"+id, operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), id) {
+			t.Fatalf("the screen does not name the tenant it claims to show:\n%s", rec.Body.String())
+		}
+	})
+}
