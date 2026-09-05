@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-
+import { readEnv } from "../lib/env";
 /**
  * Traces record request bodies, and this is the only spec that submits
  * E2E_PASSWORD (to Firebase's signInWithPassword) — a repository secret that
@@ -7,7 +7,6 @@ import { expect, test } from "@playwright/test";
  * from a saved session and never sees it, so they keep their traces.
  */
 test.use({ trace: "off", screenshot: "off" });
-import { readEnv } from "../lib/env";
 
 /**
  * The one spec that drives the real login form. Every other spec starts from

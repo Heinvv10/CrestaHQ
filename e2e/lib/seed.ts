@@ -21,6 +21,7 @@ export const MARKER_SECONDARY_NAME = "E2E Marker Secondary";
 
 export interface SeedResult {
   formId: string;
+  workflowId: string;
   /** Entry node of the fixture workflow — the `add_tag` step. */
   addTagNodeId: string;
 }
@@ -208,9 +209,9 @@ export async function ensureSeed(): Promise<SeedResult> {
 
   const uid = await ownerUid(agencyId);
   const formId = await ensureForm(agencyId, primary, uid);
-  await ensureWorkflow(agencyId, primary, uid, formId);
+  const workflowId = await ensureWorkflow(agencyId, primary, uid, formId);
   await ensureMarkerContact(agencyId, primary, uid, MARKER_PRIMARY_NAME);
   await ensureMarkerContact(agencyId, secondary, uid, MARKER_SECONDARY_NAME);
 
-  return { formId, addTagNodeId: ADD_TAG_NODE_ID };
+  return { formId, workflowId, addTagNodeId: ADD_TAG_NODE_ID };
 }
