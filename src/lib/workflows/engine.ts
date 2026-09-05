@@ -193,8 +193,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
   if (!hasSms) {
     return { result: { kind: "next" }, log: "error:sms_not_configured" };
   }
-  const subject = mergeSubject(ctx, "");
-  const body = resolveMergeTags(cfg.body ?? "", subject);
+  const body = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
   try {
     const sent = await sendSmsForSubAccount({
       subAccountId: ctx.subAccountId,
