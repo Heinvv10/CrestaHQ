@@ -862,6 +862,12 @@ func TestPathRoutesResolveAMixedCaseTenantVerbatim(t *testing.T) {
 		if seen := h.units.seen(); len(seen) == 0 || !strings.Contains(strings.Join(seen, ","), instance) {
 			t.Fatalf("systemd was not asked to restart %q: %v", instance, seen)
 		}
+		// Not merely "found the tenant": the id reported back to the operator
+		// must be the one they supplied, byte for byte. This also catches a
+		// refactor that keeps the lookup working but echoes a coerced id.
+		if got := decodeBody(t, rec)["tenantId"]; got != id {
+			t.Fatalf("the response renames the tenant: want %q, got %v", id, got)
+		}
 	})
 
 	t.Run("delete matches the confirm parameter verbatim", func(t *testing.T) {
