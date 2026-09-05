@@ -159,9 +159,14 @@ jobs:
       FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
       COOKIE_SECRET_CURRENT: ${{ secrets.COOKIE_SECRET_CURRENT }}
       COOKIE_SECRET_PREVIOUS: ${{ secrets.COOKIE_SECRET_PREVIOUS }}
-      QSTASH_TOKEN: ${{ secrets.QSTASH_TOKEN }}
-      QSTASH_CURRENT_SIGNING_KEY: ${{ secrets.QSTASH_CURRENT_SIGNING_KEY }}
-      QSTASH_NEXT_SIGNING_KEY: ${{ secrets.QSTASH_NEXT_SIGNING_KEY }}
+      # E2E_QSTASH_* are CI-ONLY values, not Upstash credentials. The app and
+      # the enrol spec sign/verify with the same string, so no Upstash round
+      # trip is involved. They are named apart from the production secrets so a
+      # future deploy or cron job reading secrets.QSTASH_TOKEN cannot silently
+      # pick up a dead token and look like an Upstash outage.
+      QSTASH_TOKEN: ${{ secrets.E2E_QSTASH_TOKEN }}
+      QSTASH_CURRENT_SIGNING_KEY: ${{ secrets.E2E_QSTASH_CURRENT_SIGNING_KEY }}
+      QSTASH_NEXT_SIGNING_KEY: ${{ secrets.E2E_QSTASH_NEXT_SIGNING_KEY }}
       E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
       E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
       E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}

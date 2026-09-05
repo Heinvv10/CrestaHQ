@@ -42,17 +42,26 @@ test("a form submission enrols the contact and the step worker runs the action",
       .limit(1)
       .get();
 
-  await expect
-    .poll(async () => (await runsQuery()).empty, { timeout: 30_000 })
-    .toBe(false);
+  // Wait for scheduleNode to COMMIT its outcome, not merely for the run to
+  // appear. enroll() writes {status:"running", qstashMessageId:null} and only
+  // then attempts the publish, settling on either {status:"failed"} or a
+  // qstashMessageId. Racing that with the reset below would make the gate
+  // flake red whenever the Upstash round trip outran the poll tick — and a
+  // spurious red on a blocking check is what breeds continue-on-error.
+  const settled = async () => {
+    const snap = await runsQuery();
+    if (snap.empty) return false;
+    const d = snap.docs[0].data();
+    return d.status === "failed" || d.qstashMessageId !== null;
+  };
+  await expect.poll(settled, { timeout: 30_000 }).toBe(true);
 
   const runDoc = (await runsQuery()).docs[0];
 
   // Enrolment really happened: the trigger matched this form and bound the run
-  // to the right workflow, contact and tenant. Asserted before anything below
-  // touches the document.
+  // to the workflow the seed created. Independent of runsQuery's own filters,
+  // which already select on subAccountId and contactId.
   expect(runDoc.data().workflowId).toBe(workflowId);
-  expect(runDoc.data().subAccountId).toBe(env.E2E_SUBACCOUNT_ID);
 
   // Stand in for QStash's delivery, and ONLY that.
   //
@@ -71,9 +80,11 @@ test("a form submission enrols the contact and the step worker runs the action",
   // The e2e-smoke job against crm.crestahq.com is where the publish becomes
   // provable — once that deployment has QStash configured, which today it does
   // not.
-  await adminDb()
-    .doc(`workflowRuns/${runDoc.id}`)
-    .update({ status: "running" });
+  if (runDoc.data().status === "failed") {
+    await adminDb()
+      .doc(`workflowRuns/${runDoc.id}`)
+      .update({ status: "running" });
+  }
 
   const stepUrl = new URL("/api/workflows/step", baseURL()).toString();
   const body = JSON.stringify({ runId: runDoc.id, nodeId: addTagNodeId });
