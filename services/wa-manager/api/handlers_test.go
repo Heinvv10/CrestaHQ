@@ -303,8 +303,12 @@ func TestCreateReturnsAllocatedPort(t *testing.T) {
 func TestUnsafeTenantIDIsRefusedBeforeProvisioning(t *testing.T) {
 	// Two kinds are refused: ids that yield NO usable instance name, and ids
 	// that would only survive by being silently renamed into one.
+	// "BLITZ" is deliberately absent: case is the one divergence from the
+	// canonical instance name that checkTenantID now admits, because a
+	// LeadStack subAccountId is mixed-case and the tenant id is interpolated
+	// into the inbound webhook. TestCreateAcceptsAMixedCaseTenantID pins that.
 	unsafe := []string{"", "..", "/", "----", "...", " ",
-		"../../etc", "a/../b", "Blitz Fibre", "BLITZ", "a.b", "blitz_fibre", "-blitz"}
+		"../../etc", "a/../b", "Blitz Fibre", "a.b", "blitz_fibre", "-blitz"}
 	for _, id := range unsafe {
 		h := newHarness(t)
 		body, _ := json.Marshal(map[string]string{"tenantId": id, "displayName": "x"})
@@ -324,7 +328,9 @@ func TestUnsafeTenantIDInPathIsRefused(t *testing.T) {
 	// ".." is excluded here only because net/http normalises it out of the
 	// path before any route matches; TestTraversalPathIsNotDispatched covers
 	// that case separately.
-	for _, id := range []string{"----", "Blitz", "a.b", "..%2f..%2fetc"} {
+	// "Blitz" is not here for the reason given in
+	// TestUnsafeTenantIDIsRefusedBeforeProvisioning: mixed case is admitted.
+	for _, id := range []string{"----", "Blitz_Fibre", "a.b", "..%2f..%2fetc"} {
 		for _, rt := range []route{
 			{http.MethodGet, "/api/tenants/" + id + "/pair", ""},
 			{http.MethodPost, "/api/tenants/" + id + "/restart", ""},
@@ -757,4 +763,64 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 		t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
 	}
 	return out
+}
+
+// A LeadStack subAccountId is a mixed-case Firestore document id, and the
+// manager interpolates the tenant id verbatim into each bridge's inbound
+// webhook (base + "/" + tenantID). Refusing uppercase therefore did not merely
+// inconvenience an operator: it made the CRM's own webhook route unreachable,
+// because no accepted id could ever spell one.
+func TestCreateAcceptsAMixedCaseTenantID(t *testing.T) {
+	h := newHarness(t)
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	h.prov.tenant = store.Tenant{Instance: "54vpi0bs1zdmcxmymaya", Port: 33101, State: store.StateProvisioned}
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok,
+		`{"tenantId":"`+id+`","displayName":"CrestaHQ"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	creates, _ := h.prov.calls()
+	if len(creates) != 1 || creates[0] != id {
+		// Verbatim matters more than acceptance: a lowercased id would build a
+		// webhook URL for a sub-account that does not exist, and inbound would
+		// 404 forever with every component reporting healthy.
+		t.Fatalf("the id must reach the provisioner unchanged, got %v", creates)
+	}
+}
+
+// Widening the alphabet to admit uppercase must not widen it to anything that
+// changes shape on the way to a path, a unit name or a URL.
+func TestCreateStillRefusesUnsafeTenantIDs(t *testing.T) {
+	for _, id := range []string{
+		"../../etc",     // traversal
+		"Blitz Fibre",   // a space: coerced to a name nobody typed
+		"a.b",           // a separator that collapses onto another id
+		"a_b",           // ditto
+		"-acme",         // systemd names start alphanumeric
+		"",              // no id at all
+		"acme/../other", // a slash would split the webhook path
+		"acme?x=1",      // a query string smuggled into the webhook URL
+		"acme#frag",
+		"acmé", // non-ASCII coerces to a dash
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 71 chars: silently truncated
+	} {
+		h := newHarness(t)
+		rec := h.do(http.MethodPost, "/api/tenants", operatorTok,
+			`{"tenantId":`+mustJSONString(id)+`,"displayName":"x"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("tenant id %q: want 400, got %d body=%s", id, rec.Code, rec.Body.String())
+		}
+		if creates, _ := h.prov.calls(); len(creates) != 0 {
+			t.Fatalf("tenant id %q reached the provisioner: %v", id, creates)
+		}
+	}
+}
+
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }

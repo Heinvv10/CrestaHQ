@@ -691,3 +691,66 @@ func TestEnvPermissionsAreTightenedOnAnExistingFile(t *testing.T) {
 		t.Fatalf(".env mode = %o, want 600: it holds two tokens that can send as this number", got)
 	}
 }
+
+// Uppercase is now admitted at the API boundary, so two ids differing only in
+// case reach the provisioner as distinct tenants that lowercase onto ONE
+// instance. That is the "share one WhatsApp session" failure again, wearing a
+// different hat, and the existing instance-uniqueness check must catch it.
+func TestCaseOnlyCollisionIsRefused(t *testing.T) {
+	p, st, _, root := newTestProvisioner(t)
+
+	first, err := p.Create("Acme", "First")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Instance != "acme" {
+		t.Fatalf("instance must be the lowercased id, got %q", first.Instance)
+	}
+	if first.ID != "Acme" {
+		t.Fatalf("the tenant id must be stored verbatim, got %q", first.ID)
+	}
+	if _, err := p.Create("acme", "Second"); err == nil {
+		t.Fatal("two tenants were given the same instance — they would share one WhatsApp session")
+	}
+	if _, err := st.GetTenant("acme"); err == nil {
+		t.Fatal("the refused second tenant left a row (and a consumed port) behind")
+	}
+	if _, err := os.Stat(filepath.Join(root, first.Instance, ".env")); err != nil {
+		t.Fatalf("the failed second Create damaged the first tenant: %v", err)
+	}
+}
+
+// The webhook the bridge is configured with must carry the tenant id exactly as
+// the operator supplied it. A lowercased or otherwise coerced id points at a
+// sub-account that does not exist, and nothing in the stack reports a problem:
+// the bridge posts, the CRM 404s, and every health check stays green.
+func TestRenderedWebhookKeepsTheTenantIDVerbatim(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "mgr.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := New(st, newFakeCtl(), Opts{
+		Root: root, PortBase: 33100, PortCount: 20,
+		AppToken:      func() string { return "app-token" },
+		ManagerToken:  func() string { return "mgr-token" },
+		WebhookSecret: func() string { return "hook-secret" },
+		WebhookURL: func(id string) string {
+			return "https://crm.example/api/webhooks/whatsapp/bridge/" + id
+		},
+	})
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	tenant, err := p.Create(id, "CrestaHQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(root, tenant.Instance, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://crm.example/api/webhooks/whatsapp/bridge/" + id
+	if !strings.Contains(string(env), want) {
+		t.Fatalf("rendered .env does not carry the verbatim webhook %q:\n%s", want, env)
+	}
+}

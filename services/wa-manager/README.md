@@ -111,10 +111,22 @@ curl -sS -X POST http://127.0.0.1:33000/api/tenants \
   -d '{"tenantId":"blitz","displayName":"Blitz Fibre"}'
 ```
 
-The tenant id must **already be its own instance name**: lowercase letters,
-digits and dashes, starting alphanumeric. Anything else is refused rather than
-coerced — a silent rename gives the operator a different tenant than the one
-they asked for, and two ids can collapse onto one instance.
+The tenant id must be **letters, digits and dashes, starting alphanumeric**,
+at most 63 characters. Anything else is refused rather than coerced — a silent
+rename gives the operator a different tenant than the one they asked for, and
+two ids can collapse onto one instance.
+
+Case is the one thing not required to match the instance name, which is always
+the lowercased id. That is deliberate: the tenant id is interpolated into the
+bridge's inbound webhook (`WEBHOOK_BASE_URL` + `/` + tenant id), and a LeadStack
+`subAccountId` is a mixed-case Firestore document id — so **name the tenant
+after the sub-account it serves**, or inbound posts to a route that does not
+exist. Two ids differing only in case are still a collision and the second is
+refused.
+
+```bash
+  -d '{"tenantId":"54vPI0BS1zDMcxMyMAyA","displayName":"CrestaHQ"}'
+```
 
 What one call does, in order, and undoes entirely on any failure:
 
