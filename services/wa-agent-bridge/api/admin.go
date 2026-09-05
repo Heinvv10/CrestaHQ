@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
@@ -99,7 +100,7 @@ func (s *server) handleKill(w http.ResponseWriter, r *http.Request, consumer con
 // receive — the historical worst case, and the one the off-box monitor exists
 // for. connected and lastInboundAgeSeconds are the two fields that make it
 // visible from outside.
-func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"killed":         false,
 		"dailyCap":       s.deps.Engine.Config().GlobalDailyCap,
@@ -119,6 +120,28 @@ func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	body["connected"] = connected
+
+	// The paired number, but ONLY to a caller holding a consumer token.
+	//
+	// It is what the manager's operator screen puts at the top of the card, so
+	// forty numbers can be told apart; without it the screen said "not paired"
+	// about a number that was connected and taking messages, which is the one
+	// thing a safety screen must never do.
+	//
+	// The token check is why it is here rather than in the unauthenticated
+	// body. This endpoint is the service's only ungated surface, and the same
+	// reasoning that puts the allowlist COUNT here and not its entries applies
+	// to a phone number: anyone who can reach the port would otherwise learn
+	// which number this is.
+	if hdr := r.Header.Get("Authorization"); len(hdr) > len("Bearer ") &&
+		strings.EqualFold(hdr[:len("Bearer ")], "Bearer ") &&
+		s.consumerIndex(hdr[len("Bearer "):]) >= 0 {
+		if s.deps.Connection != nil {
+			if number := s.deps.Connection.Number(); number != "" {
+				body["number"] = number
+			}
+		}
+	}
 
 	// nil rather than 0 when nobody has ever messaged the number: a fresh
 	// bridge is not a bridge that last heard from someone at the epoch, and a

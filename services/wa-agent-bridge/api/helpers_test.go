@@ -96,8 +96,9 @@ func (f *faultyStore) OutboundCountTotal(since time.Time) (int, error) {
 // defaults to CONNECTED so the existing tests describe a healthy bridge; the
 // tests that are about the socket set it false explicitly.
 type stubConnection struct {
-	mu sync.Mutex
-	up bool
+	mu     sync.Mutex
+	up     bool
+	number string
 }
 
 func (c *stubConnection) Connected() bool {
@@ -110,6 +111,14 @@ func (c *stubConnection) Connected() bool {
 // describe an already-paired bridge, so this stub never has a live code.
 func (c *stubConnection) PairingCode() (string, time.Time, bool) {
 	return "", time.Time{}, false
+}
+
+// Number satisfies ConnectionState. Empty unless a test is about the paired
+// number reaching the manager's card.
+func (c *stubConnection) Number() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.number
 }
 
 func (c *stubConnection) set(up bool) {

@@ -16,6 +16,7 @@ type stubPairer struct {
 }
 
 func (s stubPairer) Connected() bool { return s.connected }
+func (s stubPairer) Number() string  { return "" }
 func (s stubPairer) PairingCode() (string, time.Time, bool) {
 	return s.code, s.expiresAt, s.pairing
 }

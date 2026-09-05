@@ -33,6 +33,11 @@ type Report struct {
 	// out" — the second is a safety rail gone blind.
 	AllowlistCount *int
 
+	// Number is the phone number the bridge is paired to, digits only, empty
+	// when the bridge is unpaired or did not report one. The bridge sends it
+	// only to an authenticated caller, which the poller is.
+	Number string
+
 	// Incomplete says this tenant was never actually checked: the sweep's own
 	// deadline ran out first. It is NOT Reachable=false, and collapsing the
 	// two would be the worst kind of lie this screen can tell — "we ran out of
@@ -53,6 +58,7 @@ type bridgeHealthBody struct {
 	DailyCap              int      `json:"dailyCap"`
 	LastInboundAgeSeconds *int     `json:"lastInboundAgeSeconds"`
 	Allowlisted           *int     `json:"allowlisted"`
+	Number                string   `json:"number"`
 	Problems              []string `json:"problems"`
 }
 
@@ -169,6 +175,7 @@ func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
 		DailyCap:              body.DailyCap,
 		LastInboundAgeSeconds: body.LastInboundAgeSeconds,
 		AllowlistCount:        body.Allowlisted,
+		Number:                body.Number,
 		Problems:              body.Problems,
 	}
 }
@@ -205,10 +212,19 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 			// write is an fsync-backed UPDATE per tenant per cycle under
 			// synchronous=FULL — at 200 tenants on a 15s sweep, ~13 writes a
 			// second recording state that is not changing.
-			if t.State == store.StateRunning {
+			//
+			// The number the bridge reports is the second thing that can
+			// change here, and it is why this is not a bare state check.
+			// Nothing ever wrote Tenant.Phone, so a number that was paired,
+			// connected and taking messages still rendered as "not paired" —
+			// a safety screen contradicting itself about the one fact an
+			// operator uses to tell forty cards apart. It is learned once and
+			// then left alone: SetTenantState never blanks a known phone, and
+			// a bridge that reports no number cannot erase one.
+			if t.State == store.StateRunning && (r.Number == "" || t.Phone != "") {
 				continue
 			}
-			if err := st.SetTenantState(t.ID, store.StateRunning, ""); err != nil {
+			if err := st.SetTenantState(t.ID, store.StateRunning, r.Number); err != nil {
 				errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
 			}
 		case r.Killed && !r.Connected:

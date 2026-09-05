@@ -223,3 +223,37 @@ func TestAdminBodiesAreBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestHealthReportsTheNumberOnlyToAnAuthenticatedCaller.
+//
+// The manager's operator screen showed "not paired" beside a number that was
+// connected and taking messages, because nothing ever told it which number the
+// bridge holds. Health is where it now learns that — but health is the only
+// ungated surface this service has, so the number is reported to a caller
+// holding a consumer token and to nobody else. The same reasoning already puts
+// the allowlist COUNT in this body and keeps its entries out.
+func TestHealthReportsTheNumberOnlyToAnAuthenticatedCaller(t *testing.T) {
+	st := store.NewMemory()
+	conn := &stubConnection{up: true, number: "27821234567"}
+	h := newHandlerWithConnection(t, st, &stubSender{}, conn)
+
+	if got, present := decode(t, get(h, "/v1/health"))["number"]; present {
+		t.Fatalf("an unauthenticated caller must not learn the number, got %v", got)
+	}
+	if got, present := decode(t, getAuthed(h, "/v1/health", "not-a-real-token"))["number"]; present {
+		t.Fatalf("an unknown token must not learn the number, got %v", got)
+	}
+	if got := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["number"]; got != "27821234567" {
+		t.Fatalf("an authenticated caller must be told the number, got %v", got)
+	}
+}
+
+// An unpaired bridge has no number, and the field is then absent rather than
+// empty: the manager writes what it is told, and "" written over a number
+// already known would erase it on the first sweep after a restart.
+func TestHealthOmitsTheNumberBeforePairing(t *testing.T) {
+	h := newHandlerWithConnection(t, store.NewMemory(), &stubSender{}, &stubConnection{up: true})
+	if got, present := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["number"]; present {
+		t.Fatalf("an unpaired bridge must not report a number, got %v", got)
+	}
+}
