@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/systemd"
 )
 
 // fakeCtl is declared HERE rather than imported from the systemd package: a
@@ -752,5 +753,57 @@ func TestRenderedWebhookKeepsTheTenantIDVerbatim(t *testing.T) {
 	want := "https://crm.example/api/webhooks/whatsapp/bridge/" + id
 	if !strings.Contains(string(env), want) {
 		t.Fatalf("rendered .env does not carry the verbatim webhook %q:\n%s", want, env)
+	}
+}
+
+// AllocatePort seeds `instance` with the OPAQUE tenant id and SetTenantIdentity
+// rewrites it to the derived name. Admitting mixed-case ids made those two
+// values differ for the first time, and the seeded value is one systemd refuses
+// — so a manager killed abruptly between the INSERT and the UPDATE leaves a row
+// that every teardown path bounces off, holding its port forever.
+//
+// The real systemd controller is used deliberately: the fake does not call
+// systemd.Validate, so this test passes against it whether or not the bug
+// exists. The unit name is one that does not resolve, which is harmless because
+// Validate refuses before anything is executed.
+func TestARowStillCarryingItsSeedCanBeDestroyed(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "mgr.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := New(st, systemd.New("wa-agent-bridge-absent"), Opts{
+		Root: root, PortBase: 33100, PortCount: 20,
+		AppToken:     func() string { return "app" },
+		ManagerToken: func() string { return "mgr" },
+	})
+
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	port, inserted, err := st.AllocatePort(id, 33100, 20)
+	if err != nil || !inserted {
+		t.Fatalf("could not reproduce the crash window: port=%d inserted=%v err=%v", port, inserted, err)
+	}
+	ten, err := st.GetTenant(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ten.Instance != id {
+		t.Fatalf("this test is meaningless unless the row still carries the raw id, got %q", ten.Instance)
+	}
+
+	if err := p.Destroy(id); err != nil {
+		t.Fatalf("the row cannot be torn down through the API: %v", err)
+	}
+	if _, err := st.GetTenant(id); err == nil {
+		t.Fatal("Destroy reported success but left the row behind")
+	}
+	// The port must return to the pool, or the range leaks one slot per crash.
+	got, inserted, err := st.AllocatePort("later", 33100, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted || got != port {
+		t.Fatalf("the freed port was not reused: want %d, got %d (inserted=%v)", port, got, inserted)
 	}
 }
