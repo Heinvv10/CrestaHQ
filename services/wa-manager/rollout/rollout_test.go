@@ -803,36 +803,112 @@ func TestAShutdownMidRestartLeavesTheRolloutOutstanding(t *testing.T) {
 	}
 }
 
-// A number that logs out DURING its own restart can never satisfy the health
-// gate. That is the same wedge the eligibility filter prevents at selection
-// time, arriving one step later — it must be skipped, not held against the
-// fleet.
-func TestATenantThatLogsOutMidRestartIsSkippedNotHeld(t *testing.T) {
+// A bridge that does not come back is a HOLD, whatever the reason.
+//
+// This test asserted the opposite once, and the opposite was catastrophic: the
+// manager's reconciler marks a bridge logged_out DURING the settle precisely
+// because the restart failed, so "skip a tenant that is no longer running"
+// consumed the failure signal as its excuse. A fleet whose new binary could
+// not hold a session was walked down one number at a time and reported as a
+// successful deploy.
+func TestABridgeThatComesBackLoggedOutHoldsTheRollout(t *testing.T) {
 	s := openStore(t)
-	seed(t, s, "flaky", "healthy")
+	seed(t, s, "a", "b", "c")
 	p := &fakePoll{
-		versions:     map[string]string{"flaky": "v1", "healthy": "v1"},
-		afterRestart: map[string]string{"flaky": "v1", "healthy": "v2"},
+		versions:     map[string]string{"a": "v1", "b": "v1", "c": "v1"},
+		afterRestart: map[string]string{"a": "v1", "b": "v1", "c": "v1"},
 		restarted:    map[string]bool{},
 	}
 	u := &fakeUnits{}
 	w := newWorker(t, s, u, p)
+	// The reconciler runs during the settle and marks the number logged out,
+	// which is exactly what a bridge whose session is rejected looks like.
 	wireRestartMarkingWith(u, p, func() {
-		// It comes back logged out rather than connected.
-		_ = s.SetTenantState("flaky", store.StateLoggedOut, "")
+		_ = s.SetTenantState("a", store.StateLoggedOut, "")
 	})
 	if _, err := s.RequestRollout("v2", true); err != nil {
 		t.Fatalf("RequestRollout: %v", err)
 	}
 
-	if err := drain(t, w, s, 10); err != nil {
-		t.Fatalf("a number that logged out mid-restart held the fleet: %v", err)
+	var err error
+	for i := 0; i < 5 && err == nil; i++ {
+		err = w.Tick(context.Background())
 	}
+	if err == nil {
+		t.Fatal("a fleet whose bridges never came back reported success")
+	}
+
 	r, _, _ := s.LastRollout()
-	if r.State != store.RolloutDone {
-		t.Fatalf("state = %q detail=%q, want done", r.State, r.Detail)
+	if r.State != store.RolloutFailed {
+		t.Fatalf("state = %q detail=%q, want failed and LOUD", r.State, r.Detail)
+	}
+	if u.started("b") != 0 || u.started("c") != 0 {
+		t.Fatalf("the rollout walked the rest of the fleet down: %v", u.seen())
+	}
+}
+
+// Holding does not wedge the NEXT deploy: the number that failed is no longer
+// `running`, so it is not eligible, and the rest of the fleet rolls.
+func TestAHeldNumberDoesNotBlockTheNextRollout(t *testing.T) {
+	s := openStore(t)
+	seed(t, s, "healthy")
+	seedState(t, s, store.StateLoggedOut, "casualty")
+	p := &fakePoll{
+		versions:     map[string]string{"healthy": "v1"},
+		afterRestart: map[string]string{"healthy": "v3"},
+		restarted:    map[string]bool{},
+	}
+	u := &fakeUnits{}
+	w := newWorker(t, s, u, p)
+	wireRestartMarking(u, p)
+
+	if _, err := s.RequestRollout("v3", true); err != nil {
+		t.Fatalf("RequestRollout: %v", err)
+	}
+	if err := drain(t, w, s, 10); err != nil {
+		t.Fatalf("a previously held number blocked the next rollout: %v", err)
+	}
+	if u.started("casualty") != 0 {
+		t.Fatalf("a logged-out number was restarted: %v", u.seen())
 	}
 	if u.started("healthy") != 1 {
 		t.Fatalf("the healthy number was not rolled: %v", u.seen())
+	}
+}
+
+// Urgency is exactly what the LATEST request said. Nothing is inherited.
+//
+// Both earlier attempts at cleverness restarted a customer's number during a
+// working day: sticky-in-both-directions, then cleared-only-on-retarget —
+// which still let a SAME-build redeploy inherit last night's --now, and a
+// manager-only deploy is a same-build redeploy because the version is the
+// bridge artifact hash.
+func TestUrgencyIsNeverInherited(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		firstVersion      string
+		first             bool
+		secondVersion     string
+		second, wantImmed bool
+	}{
+		{"same build, later deploy is unhurried", "v1", true, "v1", false, false},
+		{"retarget, later deploy is unhurried", "v1", true, "v2", false, false},
+		{"same build, later deploy asks for now", "v1", false, "v1", true, true},
+		{"retarget, later deploy asks for now", "v1", false, "v2", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openStore(t)
+			if _, err := s.RequestRollout(tc.firstVersion, tc.first); err != nil {
+				t.Fatalf("first: %v", err)
+			}
+			got, err := s.RequestRollout(tc.secondVersion, tc.second)
+			if err != nil {
+				t.Fatalf("second: %v", err)
+			}
+			if got.Immediate != tc.wantImmed {
+				t.Fatalf("immediate = %v, want %v — urgency must be the latest request's, never inherited",
+					got.Immediate, tc.wantImmed)
+			}
+		})
 	}
 }

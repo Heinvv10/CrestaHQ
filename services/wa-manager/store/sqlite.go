@@ -337,18 +337,18 @@ func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) 
 		Scan(&existing.ID, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
 	switch {
 	case err == nil:
-		// Urgency belongs to the BUILD it was requested for. A later `--now`
-		// escalates a rollout already queued for tonight — that is the whole
-		// point of the flag when a fix cannot wait — but a request that
-		// changes the target carries its own urgency and does not inherit the
-		// previous one. Making it sticky across a retarget meant an operator's
-		// `--now` on v1, followed by a routine unhurried deploy of v2, left
-		// the row marked immediate: at ten on Monday morning the worker
-		// skipped the window and restarted a customer's number for a rollout
-		// nobody had marked urgent.
-		if existing.Version != version {
-			imm = 0
-		}
+		// Urgency is exactly what the LATEST request said, and nothing is
+		// inherited. Every attempt to be cleverer than this has restarted a
+		// customer's number in the middle of a working day: first by making
+		// the flag sticky in both directions, then by clearing it only on a
+		// retarget — which still let a same-build redeploy (the common case,
+		// since the version is the bridge artifact hash and a manager-only
+		// deploy does not change it) inherit last night's `--now`.
+		//
+		// Losing an operator's `--now` to a later routine deploy is the safe
+		// direction: it moves restarts OUT of business hours, and passing the
+		// flag again costs one word.
+		imm = 0
 		if immediate {
 			imm = 1
 		}

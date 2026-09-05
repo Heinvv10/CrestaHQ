@@ -143,13 +143,18 @@ func (w *Worker) Run(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		if err := w.Tick(ctx); err != nil {
-			log.Printf("WARNING rollout tick failed err=%v", err)
-		}
+		// Wait BEFORE the first tick, unlike the health poller which sweeps
+		// immediately. A restart-looping manager would otherwise bounce one
+		// customer's number on every process start, ignoring the one-a-minute
+		// pacing entirely — the pacing is the whole protection here, and a
+		// rollout is never so urgent that a minute matters.
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if err := w.Tick(ctx); err != nil {
+			log.Printf("WARNING rollout tick failed err=%v", err)
 		}
 	}
 }
@@ -220,15 +225,22 @@ func (w *Worker) Tick(ctx context.Context) error {
 			log.Printf("rollout %d: shutting down mid-restart of %s; it stays outstanding", r.ID, t.ID)
 			return nil
 		}
-		// A tenant that left `running` DURING its own restart — a number that
-		// logged out as it came back — can never satisfy the health gate. It
-		// is the same wedge the eligibility filter prevents at selection time,
-		// arriving one step later, so it is skipped rather than held against
-		// the fleet.
-		if cur, gerr := w.Store.GetTenant(t.ID); gerr != nil || cur.State != store.StateRunning {
-			log.Printf("rollout %d: %s left running during its restart; skipping it", r.ID, t.ID)
-			return nil
-		}
+		// NOTHING else is consulted here. A bridge that did not come back is a
+		// hold, full stop.
+		//
+		// An earlier version skipped a tenant that was no longer `running`,
+		// reasoning that it could never satisfy the health gate. That check
+		// was circular and catastrophic: the manager's own reconciler marks a
+		// bridge `logged_out` DURING the settle precisely BECAUSE the restart
+		// did not bring it back, so the failure signal became the excuse to
+		// skip it. A fleet whose new binary could not hold a session was
+		// walked down one number at a time and the rollout then reported
+		// "every eligible bridge runs this build" with every number logged
+		// out — an outage reported as a successful deploy.
+		//
+		// There was never a wedge to fix. Holding is loud, and a number that
+		// is logged_out is not eligible for the NEXT rollout, so it cannot
+		// block future deploys.
 		log.Printf("rollout %d HELD at %s: %v", r.ID, t.ID, err)
 		return w.fail(r, fmt.Sprintf("held at %s: %v", t.ID, err))
 	}
