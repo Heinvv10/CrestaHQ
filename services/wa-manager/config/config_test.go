@@ -8,7 +8,7 @@ import (
 // testOperatorToken is a token of realistic shape: 32 characters, the floor
 // Load enforces. Tests that are not ABOUT the token's strength use this so a
 // change to that floor does not read as a failure of something else.
-const testOperatorToken = "op-secret-0123456789abcdef012345"
+const testOperatorToken = "testtokentesttokentesttokentestt"
 
 // baseEnv is the smallest environment that must load.
 func baseEnv(t *testing.T, overrides map[string]string) {

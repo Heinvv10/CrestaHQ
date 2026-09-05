@@ -22,4 +22,10 @@ regexes = [
   '''^YOUR_QSTASH_TOKEN$''',
   # Public API docs page showing buyers the Bearer format.
   '''^lsk_live_\.\.\.$''',
+  # Retired wa-manager test fixture: only exists in commit 36549d2's diff
+  # (services/wa-manager/config/config_test.go line 11 at that point in
+  # history). Never a credential — a >=32-char OPERATOR_TOKEN test value.
+  # Replaced at the tip by a low-entropy fixture; this anchor exists only
+  # so the retired commit's diff stops tripping the history scan.
+  '''^op-secret-0123456789abcdef012345$''',
 ]
