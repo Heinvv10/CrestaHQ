@@ -57,6 +57,11 @@ func (f *Fake) Stop(instance string) error {
 	return nil
 }
 
+// ResetFailed satisfies Controller. The fake has no failure state to clear;
+// the provisioner never calls it, and the restart route's use of it is
+// asserted against api's own fake.
+func (f *Fake) ResetFailed(instance string) error { return Validate(instance) }
+
 func (f *Fake) Disable(instance string) error {
 	if err := Validate(instance); err != nil {
 		return err

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
@@ -133,13 +132,23 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// reasoning that puts the allowlist COUNT here and not its entries applies
 	// to a phone number: anyone who can reach the port would otherwise learn
 	// which number this is.
-	if hdr := r.Header.Get("Authorization"); len(hdr) > len("Bearer ") &&
-		strings.EqualFold(hdr[:len("Bearer ")], "Bearer ") &&
-		s.consumerIndex(hdr[len("Bearer "):]) >= 0 {
-		if s.deps.Connection != nil {
-			if number := s.deps.Connection.Number(); number != "" {
-				body["number"] = number
+	if token, ok := bearerToken(r); ok {
+		if s.consumerIndex(token) >= 0 {
+			if s.deps.Connection != nil {
+				if number := s.deps.Connection.Number(); number != "" {
+					body["number"] = number
+				}
 			}
+		} else {
+			// A rejected token is logged here exactly as `authed` logs one,
+			// and for the same reason. Without this line the one endpoint
+			// that needs no credential would quietly answer "is this token
+			// valid?" — the `number` key appears or it does not — and a
+			// grind against it from anywhere on the tailnet would leave no
+			// trace, while the same grind against any other route writes a
+			// line per attempt. The token itself is never logged: a rejected
+			// one is often a mistyped real one.
+			log.Printf("auth rejected path=%s", r.URL.Path)
 		}
 	}
 

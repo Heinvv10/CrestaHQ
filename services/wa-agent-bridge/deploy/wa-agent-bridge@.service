@@ -8,7 +8,7 @@ Description=WhatsApp agent bridge (rails-guarded) — instance %i
 # takes.
 
 # Bound the restart loop. A failing initial WhatsApp connect exits the process,
-# and Restart= with RestartSec=15 would otherwise retry forever at
+# and Restart=always with RestartSec=15 would otherwise retry forever at
 # ~4 attempts/minute — "retrying in a loop turns a soft flag into a harder
 # block", the exact behaviour the Go code refuses and this file would hand
 # back. RestartSec=15 never trips systemd's default 5-in-10s limit, so the

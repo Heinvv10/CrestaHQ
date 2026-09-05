@@ -46,6 +46,9 @@ func (f *fakeCtl) Stop(i string) error {
 	return f.mark(f.stopped, i)
 }
 func (f *fakeCtl) Disable(i string) error { return f.mark(f.disabled, i) }
+
+// ResetFailed satisfies systemd.Controller; provisioning never calls it.
+func (f *fakeCtl) ResetFailed(string) error { return nil }
 func (f *fakeCtl) Start(i string) error {
 	f.mu.Lock()
 	fail := f.FailStart

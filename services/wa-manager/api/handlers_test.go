@@ -81,6 +81,10 @@ func (f *fakeUnits) Enable(i string) error  { return f.note("enable", i) }
 func (f *fakeUnits) Start(i string) error   { return f.note("start", i) }
 func (f *fakeUnits) Stop(i string) error    { return f.note("stop", i) }
 func (f *fakeUnits) Disable(i string) error { return f.note("disable", i) }
+
+// ResetFailed is recorded like the rest so a test can assert it happens
+// between the stop and the start.
+func (f *fakeUnits) ResetFailed(i string) error { return f.note("reset-failed", i) }
 func (f *fakeUnits) IsActive(string) (bool, error) {
 	return true, nil
 }
@@ -475,9 +479,12 @@ func TestRestartStopsThenStarts(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	want := []string{"stop:blitz-inst", "start:blitz-inst"}
+	// reset-failed sits between the two: a unit that tripped its start rate
+	// limit refuses to start until it is cleared, and this route exists to
+	// restart bridges that keep dying.
+	want := []string{"stop:blitz-inst", "reset-failed:blitz-inst", "start:blitz-inst"}
 	got := h.units.seen()
-	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("systemd verbs = %v, want %v", got, want)
 	}
 }

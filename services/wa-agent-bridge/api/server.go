@@ -151,6 +151,18 @@ func New(deps Deps) http.Handler {
 	return mux
 }
 
+// bearerToken pulls the token out of an Authorization header. One function,
+// because handleHealth asks the same question `authed` does and two copies of
+// a credential parse are two things that have to stay in step.
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	return header[len(prefix):], true
+}
+
 // consumerIndex resolves a bearer token to a registered consumer, or -1.
 //
 // Every candidate is compared and the comparison is constant-time; the loop
@@ -180,13 +192,12 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, consumer config.
 // not break on a match for the same reason.
 func (s *server) authed(next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		header := r.Header.Get("Authorization")
-		if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		token, ok := bearerToken(r)
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing bearer token"})
 			return
 		}
-		matched := s.consumerIndex(header[len(prefix):])
+		matched := s.consumerIndex(token)
 		if matched < 0 {
 			// The token itself is never logged: a rejected token is often a
 			// mistyped real one, and a log file is not the place for it.

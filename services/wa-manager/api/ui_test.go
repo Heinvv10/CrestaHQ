@@ -294,7 +294,7 @@ func TestTheRestartFormBouncesTheUnitAndRedirectsBack(t *testing.T) {
 	if got := rec.Header().Get("Location"); got != "/tenants/blitz" {
 		t.Errorf("Location = %q, want the number's page", got)
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the form did not bounce the unit: %v", got)
 	}
 }
@@ -382,7 +382,7 @@ func TestTheRestartFormAdmitsAPresentSameOriginHeader(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a same-origin browser POST was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the same-origin form did not bounce the unit: %v", got)
 	}
 }
@@ -406,7 +406,7 @@ func TestTheRestartFormAdmitsChromesNullOriginOnASameOriginNavigation(t *testing
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a same-origin form navigation was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the form did not bounce the unit: %v", got)
 	}
 }
@@ -459,7 +459,7 @@ func TestTheRestartFormAdmitsAConfiguredPublicOrigin(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("a request matching the configured PUBLIC_ORIGIN was refused: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+	if got := h.units.seen(); len(got) != 3 || got[0] != "stop:blitz" || got[1] != "reset-failed:blitz" || got[2] != "start:blitz" {
 		t.Fatalf("the configured-origin form did not bounce the unit: %v", got)
 	}
 }
@@ -530,7 +530,7 @@ func TestBothRestartRoutesDoTheSameThing(t *testing.T) {
 	}
 
 	apiVerbs, uiVerbs := viaAPI.units.seen(), viaUI.units.seen()
-	if len(apiVerbs) != 2 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
+	if len(apiVerbs) != 3 || strings.Join(apiVerbs, ",") != strings.Join(uiVerbs, ",") {
 		t.Fatalf("the two restart routes drove the unit differently: api=%v ui=%v", apiVerbs, uiVerbs)
 	}
 
@@ -545,5 +545,41 @@ func TestBothRestartRoutesDoTheSameThing(t *testing.T) {
 	if len(apiEvents) != 1 || len(uiEvents) != len(apiEvents) ||
 		apiEvents[0].Kind != uiEvents[0].Kind || apiEvents[0].Detail != uiEvents[0].Detail {
 		t.Fatalf("the two restart routes left different support records: api=%+v ui=%+v", apiEvents, uiEvents)
+	}
+}
+
+// "none" means the browser had no initiator — a typed URL, a bookmark, the
+// browser's own UI. It is the branch that WIDENS admission, so it is the one
+// that most needs a test. It cannot be reached with a POST from a page (every
+// page-initiated request has an initiator and computes to at least
+// same-origin), but an operator's own tooling can produce it.
+func TestTheRestartFormAdmitsAnInitiatorlessRequest(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Sec-Fetch-Site": "none",
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("an initiator-less request was refused: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// "same-site" is a different origin under the same registrable domain — a
+// sibling subdomain. This service is single-origin, so that is somebody else,
+// and it is refused exactly like cross-site.
+func TestTheRestartFormRefusesASameSiteRequest(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicHeaders(http.MethodPost, "/tenants/blitz/restart", operatorTok, map[string]string{
+		"Origin":         "http://other.example.com",
+		"Sec-Fetch-Site": "same-site",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for a same-site POST, got %d", rec.Code)
+	}
+	if got := h.units.seen(); len(got) != 0 {
+		t.Fatalf("a same-site form bounced the unit: %v", got)
 	}
 }

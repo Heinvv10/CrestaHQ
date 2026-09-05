@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -240,9 +243,23 @@ func TestHealthReportsTheNumberOnlyToAnAuthenticatedCaller(t *testing.T) {
 	if got, present := decode(t, get(h, "/v1/health"))["number"]; present {
 		t.Fatalf("an unauthenticated caller must not learn the number, got %v", got)
 	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
 	if got, present := decode(t, getAuthed(h, "/v1/health", "not-a-real-token"))["number"]; present {
 		t.Fatalf("an unknown token must not learn the number, got %v", got)
 	}
+	// And the refusal is LOGGED. Health needs no credential, so without this
+	// line it would answer "is this token valid?" — the number key appears or
+	// it does not — silently, while the same grind against any other route
+	// writes a line per attempt.
+	if !strings.Contains(logged.String(), "auth rejected path=/v1/health") {
+		t.Fatalf("a rejected token on the ungated endpoint was not logged, got %q", logged.String())
+	}
+	if strings.Contains(logged.String(), "not-a-real-token") {
+		t.Fatal("the rejected token was written to the log")
+	}
+	logged.Reset()
 	if got := decode(t, getAuthed(h, "/v1/health", "tok-operator"))["number"]; got != "27821234567" {
 		t.Fatalf("an authenticated caller must be told the number, got %v", got)
 	}
