@@ -144,6 +144,59 @@ export function NodeConfigDialog({
                   ))}
                 </select>
               </Field>
+              {(() => {
+                // A fallback template's variables still have to be filled in.
+                // Without these inputs `manualValues` is unreachable from the
+                // UI, and Meta receives a template with empty parameters.
+                const tpl =
+                  whatsappTemplates.find((t) => t.id === str("templateId")) ??
+                  null;
+                if (!tpl) return null;
+                const manualValues =
+                  (cfg.manualValues as Record<string, string> | undefined) ?? {};
+                const mergeVars = tpl.variables.filter(
+                  (v) => v.source === "merge_tag",
+                );
+                const manualVars = tpl.variables.filter(
+                  (v) => v.source === "manual",
+                );
+                return (
+                  <>
+                    <div className="bg-muted/30 text-muted-foreground rounded-md border p-2 text-xs whitespace-pre-wrap">
+                      {tpl.body}
+                    </div>
+                    {mergeVars.length > 0 && (
+                      <p className="text-muted-foreground text-xs">
+                        Auto-filled from the contact:{" "}
+                        {mergeVars
+                          .map((v) => `{{${v.position}}} ${v.label}`)
+                          .join(", ")}
+                        .
+                      </p>
+                    )}
+                    {manualVars.map((v) => (
+                      <Field
+                        key={v.position}
+                        label={`Variable {{${v.position}}} — ${v.label}`}
+                        hint="Static text, or merge tags like {{contact.firstName}}."
+                      >
+                        <Input
+                          value={manualValues[String(v.position)] ?? ""}
+                          placeholder={v.sampleValue}
+                          onChange={(e) =>
+                            set({
+                              manualValues: {
+                                ...manualValues,
+                                [v.position]: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </Field>
+                    ))}
+                  </>
+                );
+              })()}
             </>
           )}
 

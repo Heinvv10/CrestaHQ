@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { defaultConfig, NODE_REQUIREMENT, ADDABLE_TYPES } from "./catalog";
 import { resolveWaSendMode } from "@/lib/comms/whatsapp/send-mode";
 import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
