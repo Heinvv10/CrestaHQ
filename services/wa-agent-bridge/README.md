@@ -100,7 +100,7 @@ Everything comes from the environment (systemd reads
 | `DB_PATH` | `./wa-agent-bridge.db` | Rail state (messages, allowlist, idempotency, flags) |
 | `SESSION_DIR` | `./session` | whatsmeow session store (`session.db` lives here) |
 | `OWNER_JID` | — | Restricts forwarding to this one sender (matched on the user part, device-suffix-agnostic; a bare user with no `@server` matches any server). Non-owner inbound is still recorded (reply-only history stays accurate) but never posted to a consumer webhook. Unset accepts every sender — the **phase-2** shape, and the only safe default (unset meaning "accept none" would brick a deployment that omits the variable, silently and with no error to read). **Phase 1 should SET it:** the design has the bridge verify the sender against the owner JID and drop anything else, because the number is unpublished and the only intended sender is the owner. This row previously called unset "the phase-1 default", contradicting `api/webhook.go`; that was the stale half. |
-| `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin\|quietStartHour\|quietEndHour`, comma-separated. See below. |
+| `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin\|quietStartHour\|quietEndHour\|webhookSecret`, comma-separated. See below. |
 | `CAP_PER_CONTACT_PER_DAY` | `10` | Rail 5 |
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |
 | `CAP_GLOBAL_DAILY` | `150` | Rail 6 |
@@ -122,7 +122,36 @@ above has **five** pipes before `admin` (`webhookURL`, `perHour` and `perDay`
 are all empty). `ops|tok-ops|||admin` puts `admin` in the `perDay` slot and
 startup refuses it with `unparseable perDay "admin"`.
 
-**Per-consumer quiet hours** are the last two fields, and they are optional.
+**The webhook signing secret** is the ninth and last field, and it is
+optional. When set, every inbound POST to that consumer's `webhookURL` carries
+
+```
+LeadStack-Signature: t=<unix_seconds>,v1=<hex HMAC-SHA256>
+```
+
+over `"<unix_seconds>.<raw body>"`, alongside the `Authorization: Bearer`
+header, which is unchanged. The timestamp is the moment of the POST, not of the
+inbound message, so a receiver enforcing a freshness window measures delivery
+lag rather than how long the message sat in a replay buffer.
+
+Empty — including every entry written before this field existed — means the
+consumer's webhooks are **not signed**. That is the safe default here only
+because it is the pre-existing behaviour: a receiver that requires a signature
+must reject an unsigned POST itself. The bridge cannot invent a secret the
+receiver has never seen.
+
+Being the ninth field, it needs all eight pipes before it. A consumer that
+wants a secret but no privilege and no quiet-hour override writes three empty
+fields:
+
+```
+app|tok-app|http://127.0.0.1:4300/api/webhooks/whatsapp/bridge/sa-123|100|500||||whsec-…
+```
+
+`wa-manager` generates exactly this line, with a fresh secret per tenant.
+
+**Per-consumer quiet hours** are the seventh and eighth fields, and they are
+optional.
 Given, they replace `QUIET_START_HOUR`/`QUIET_END_HOUR` for that consumer;
 omitted, the consumer inherits the deployment window — inheriting the
 restriction, never escaping it. `0|0` (start == end) disables quiet hours for

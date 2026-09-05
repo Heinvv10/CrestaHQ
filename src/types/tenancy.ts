@@ -1,6 +1,7 @@
 import type { StripeConnectionMeta } from "@/types/payments";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
+import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
 
 export type AgencyRole = "owner" | "staff";
 export type SubAccountRole = "admin" | "collaborator";
@@ -484,6 +485,12 @@ export interface SubAccountDoc {
    * member-readable. See {@link WhatsappCloudMeta}.
    */
   whatsappCloudMeta?: WhatsappCloudMeta | null;
+  /**
+   * Non-secret display half of the wa-agent-bridge connection. The credentials
+   * themselves are in `private/whatsappBridge` — this doc is member-readable.
+   * See {@link WhatsappBridgeMeta}.
+   */
+  whatsappBridgeMeta?: WhatsappBridgeMeta | null;
   bookingConfig: BookingConfig | null;
   sendWindow: SendWindow | null;
   /**

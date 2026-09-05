@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
@@ -99,9 +100,21 @@ export function SubAccountGoogleReviewSection() {
 
   // WhatsApp manual (free-form, in-window) needs just the gate + a sender.
   // WhatsApp template additionally needs an approved template.
+  //
+  // "Has a sender" is asked PER RAIL, for the same reason `checkWhatsappReadiness`
+  // is: demanding a Twilio number from a workspace that does not send over
+  // Twilio is not a stricter check, it is the wrong one. This asked for
+  // `twilioConfig.whatsappFromNumber` unconditionally, so a correctly connected
+  // Cloud workspace has been seeing these channels greyed out — a live bug the
+  // bridge rail would simply have made a third victim of.
+  //
+  // This is a client component and cannot call the server-only readiness
+  // helper, so it reads the member-readable display metadata each connect
+  // route writes. That answers "is a sender configured", not "is it healthy
+  // right now" — the live check belongs to the send path, which already has it.
   const whatsappBaseReady =
     subAccount?.whatsappEnabledByAgency === true &&
-    !!subAccount?.twilioConfig?.whatsappFromNumber;
+    whatsappSenderConfigured(subAccount);
   const whatsappTemplateReady = whatsappBaseReady && approved.length > 0;
   const connected = !!cfg?.reviewUrl;
   // WhatsApp Manual is free-form + in-window only, so it can't reliably fire on

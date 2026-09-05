@@ -400,11 +400,10 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
  * belongs to `dispatchWhatsappSend`, which calls the one shared window rule,
  * so a step that fires just after a customer replies costs nothing.
  *
- * It is also the node a `bridge` workspace will use once that rail ships: the
- * rail has no templates, and `resolveWaSendMode` returns text mode for it by
- * declared capability rather than by special case. Today `checkWhatsappReadiness`
- * still refuses `bridge` outright, so this node is no more runnable there than
- * any other — do not read this comment as "bridge works"; check readiness.ts.
+ * It is also the node a `bridge` workspace uses: the rail has no templates, and
+ * `resolveWaSendMode` returns text mode for it by declared capability rather
+ * than by special case. `checkWhatsappReadiness` now resolves the bridge for
+ * real — credentials plus a live health probe — so this node runs there.
  *
  * Readiness goes through `checkWhatsappReadiness` rather than the Twilio-shaped
  * credential check, which would refuse a correctly configured Cloud or bridge

@@ -4,7 +4,9 @@ import type { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { getWabaCreds } from "./cloud-credentials";
+import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
+import { sendWhatsappBridge } from "./bridge-client";
 import { resolveProviderForSubAccount } from "./resolve-provider";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
 import type { WhatsAppProviderId, WhatsAppSendResult } from "./provider";
@@ -64,6 +66,12 @@ export interface WhatsappDispatchInput {
   template?: CloudTemplateRef | null;
   /** Injected by tests and by callers that already read the window. */
   lastInboundAt?: Date | null;
+  /**
+   * Bridge rail only. The bridge requires an idempotency key and generates one
+   * per call when none is given, so a caller whose OWN retry must converge on
+   * the first send rather than duplicate it has to supply a stable key here.
+   */
+  idempotencyKey?: string;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
 }
@@ -128,22 +136,32 @@ export async function dispatchWhatsappSend(
   }
 
   if (provider === "bridge") {
-    // Declared, not silently unreachable. The arm lands in 1.2b; until then a
-    // workspace pointed at it must fail loudly rather than fall through to a
-    // rail it was deliberately switched away from.
-    return {
-      provider,
-      ok: false,
-      error:
-        "The WhatsApp bridge provider isn't available yet. Switch this workspace back to Twilio or Cloud.",
-      providerOutcome: "DEFINITELY_REJECTED",
-    };
+    let creds;
+    try {
+      creds = await getBridgeCreds(input.subAccountId);
+    } catch (e) {
+      // A workspace switched to the bridge rail without credentials would
+      // otherwise fail deep inside a fetch against an empty base URL.
+      return {
+        provider,
+        ok: false,
+        error:
+          e instanceof Error ? e.message : "Bridge credentials unavailable",
+        providerOutcome: "DEFINITELY_REJECTED",
+      };
+    }
+    const r = await sendWhatsappBridge({
+      creds,
+      to: input.to,
+      message: input.body,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return { ...r, provider };
   }
 
   const r = await input.sendViaTwilio();
   return { ...r, provider };
 }
-
 
 /**
  * Free-form send for call sites that expect the Twilio helper's

@@ -39,6 +39,13 @@ type Consumer struct {
 	QuietSet       bool
 	QuietStartHour int
 	QuietEndHour   int
+	// WebhookSecret, when set, signs every webhook POST to this consumer with
+	// an HMAC (see api.Fanout.post) so the receiver can verify the request
+	// really came from the bridge and reject a replay. Empty is the default
+	// and the safe one: a bridge deployed from an old config keeps delivering,
+	// it just doesn't sign — nothing about signing is required for the
+	// fanout to work.
+	WebhookSecret string
 }
 
 type Config struct {
@@ -62,10 +69,10 @@ func envInt(key string, def int) int {
 // Load reads configuration from the environment.
 //
 // CONSUMERS format:
-// "name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour",
+// "name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour|webhookSecret",
 // comma-separated. Every field after `token` is optional and the list is only
-// ever appended to, so the 5- and 6-field forms that predate quiet hours parse
-// exactly as they did.
+// ever appended to, so the 5-, 6- and 8-field forms that predate the webhook
+// secret parse exactly as they did.
 // Pipe-separated rather than colon-separated because a webhook URL carries a
 // scheme and a port, and splitting a URL on ":" mangles it into fragments.
 //
@@ -146,7 +153,8 @@ func Load() (Config, error) {
 }
 
 // parseConsumer reads one
-// "name|token|webhook|perHour|perDay|admin|quietStart|quietEnd" entry.
+// "name|token|webhook|perHour|perDay|admin|quietStart|quietEnd|webhookSecret"
+// entry.
 //
 // Every field error is returned rather than defaulted. A typo'd budget parses
 // to zero, which fails closed and then silently mutes a consumer nobody will
@@ -156,7 +164,7 @@ func parseConsumer(entry string) (Consumer, error) {
 	parts := strings.Split(strings.TrimSpace(entry), "|")
 	if len(parts) < 2 {
 		return Consumer{}, fmt.Errorf(
-			"bad CONSUMERS entry %q (want name|token|webhook|perHour|perDay|admin)", entry)
+			"bad CONSUMERS entry %q (want name|token|webhook|perHour|perDay|admin|quietStart|quietEnd|webhookSecret)", entry)
 	}
 	c := Consumer{Name: parts[0], Token: parts[1], PerHour: 100, PerDay: 500}
 	if c.Name == "" {
@@ -204,6 +212,7 @@ func parseConsumer(entry string) (Consumer, error) {
 		}
 		c.QuietSet = true
 	}
+	c.WebhookSecret = strings.TrimSpace(fieldAt(parts, 8))
 	return c, nil
 }
 

@@ -2,7 +2,11 @@ package api
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -29,6 +33,10 @@ type Fanout struct {
 	inReplayWindow func() bool
 	client         *http.Client
 	wg             sync.WaitGroup
+	// now is the signing clock. Defaulted to time.Now by NewFanout; tests
+	// that need to assert a fixed signature override it directly (same
+	// package, deliberate unexported access — see f.client.Transport above).
+	now func() time.Time
 }
 
 // NewFanout wires a Fanout. inReplayWindow is required — it decides whether
@@ -53,6 +61,7 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 		store:          st,
 		inReplayWindow: inReplayWindow,
 		client:         &http.Client{Timeout: 10 * time.Second},
+		now:            time.Now,
 	}
 }
 
@@ -157,6 +166,14 @@ func (f *Fanout) post(c config.Consumer, payload []byte) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
+	// Signing is additive: the bearer token stays as the primary credential,
+	// this header only lets a receiver ALSO verify the request wasn't forged
+	// or replayed. An empty secret (the default) means the consumer never
+	// configured one, so nothing is signed — a config carried over from
+	// before this field existed keeps delivering unchanged.
+	if c.WebhookSecret != "" {
+		req.Header.Set("LeadStack-Signature", signPayload(c.WebhookSecret, payload, f.now()))
+	}
 	resp, err := f.client.Do(req)
 	if err != nil {
 		log.Printf("WARNING webhook delivery failed consumer=%s err=%v", c.Name, err)
@@ -166,6 +183,25 @@ func (f *Fanout) post(c config.Consumer, payload []byte) {
 	if resp.StatusCode >= 300 {
 		log.Printf("WARNING webhook consumer=%s status=%d", c.Name, resp.StatusCode)
 	}
+}
+
+// signPayload produces a Stripe-style "LeadStack-Signature" header value:
+// t=<unix_seconds>,v1=<hex HMAC-SHA256 of "<unix_seconds>.<rawBody>">.
+//
+// This mirrors src/lib/api/webhooks/signing.ts (signWebhookPayload) byte for
+// byte — same signed string, same header shape, same v1 prefix — because
+// that file's verifyWebhookSignature is the receiver this emitter exists to
+// satisfy. The timestamp is generated here, at send time, rather than
+// threaded in from Deliver, because the receiver enforces a 5-minute
+// tolerance against it: signing a stale "at" would make a slow consumer's
+// delivery reject on arrival for a reason that has nothing to do with
+// forgery or replay.
+func signPayload(secret string, body []byte, at time.Time) string {
+	ts := at.Unix()
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(fmt.Sprintf("%d.", ts)))
+	mac.Write(body)
+	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
 // Wait blocks until in-flight deliveries finish. Used by tests and by

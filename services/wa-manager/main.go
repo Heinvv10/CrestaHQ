@@ -114,10 +114,11 @@ func main() {
 		// A fresh pair per tenant, minted here and never reused: one token
 		// shared across tenants would let a compromised consumer of one number
 		// send as every other.
-		AppToken:     provision.NewToken,
-		ManagerToken: provision.NewToken,
-		WebhookURL:   webhookURL(cfg.WebhookBaseURL),
-		QuietTZ:      cfg.QuietTZ,
+		AppToken:      provision.NewToken,
+		ManagerToken:  provision.NewToken,
+		WebhookSecret: provision.NewToken,
+		WebhookURL:    webhookURL(cfg.WebhookBaseURL),
+		QuietTZ:       cfg.QuietTZ,
 	})
 
 	bridges := &http.Client{Timeout: bridgeTimeout}
