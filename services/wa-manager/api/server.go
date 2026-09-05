@@ -79,6 +79,53 @@ type Deps struct {
 // memory-exhaustion lever for anything holding the operator token.
 const maxBodyBytes = 4 << 10
 
+// SnapshotBudget bounds the ON-DEMAND health sweep — the one a page load or a
+// list call runs synchronously.
+//
+// It has to exist because that sweep's natural duration is a function of how
+// many tenants are dead. Every bridge gets the HTTPClient's 5s timeout, and
+// with the poller's 8 workers, 200 tenants all timing out is ~125 seconds on a
+// page whose meta-refresh is 15 — the operator screen collapses during exactly
+// the outage it exists to show.
+//
+// Eight seconds: longer than one full per-bridge timeout, so a single slow
+// bridge still resolves and the common case is unaffected, and comfortably
+// inside the 15s refresh, so a truncated page is replaced by a fresh attempt
+// rather than piling up behind the previous one.
+//
+// Exported because main derives the server's WriteTimeout from it: a write
+// deadline shorter than this budget would cut the response off mid-render,
+// and two independently chosen numbers would drift.
+const SnapshotBudget = 8 * time.Second
+
+// snapshot runs the on-demand poll under SnapshotBudget and reports whether the
+// deadline truncated it.
+//
+// A truncated sweep is SAID OUT LOUD, never absorbed. health.poll marks the
+// tenants it never reached Incomplete rather than unreachable, and the caller
+// turns "truncated" into a banner — a safety screen that quietly omits numbers,
+// or draws unchecked ones as dead, is worse than one that admits it is
+// incomplete.
+func (s *server) snapshot(ctx context.Context, tenants []store.Tenant) (map[string]health.Report, bool) {
+	if s.deps.Poller == nil {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, SnapshotBudget)
+	defer cancel()
+
+	reports := s.deps.Poller.Snapshot(ctx, tenants)
+	for _, r := range reports {
+		if r.Incomplete {
+			return reports, true
+		}
+	}
+	return reports, false
+}
+
+// truncatedNotice is what the operator reads when the sweep ran out of time.
+const truncatedNotice = "The health check ran out of time, so some numbers below were not checked. " +
+	"Their cards say “not checked” — that is not the same as a number being down."
+
 type server struct{ deps Deps }
 
 func New(deps Deps) http.Handler {

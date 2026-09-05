@@ -74,12 +74,12 @@ func (s *server) handleUIIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not list numbers", http.StatusInternalServerError)
 		return
 	}
-	var reports map[string]health.Report
-	if s.deps.Poller != nil {
-		reports = s.deps.Poller.Snapshot(r.Context(), tenants)
-	}
+	reports, truncated := s.snapshot(r.Context(), tenants)
 
 	page := ui.Page{Refresh: refreshSeconds, Cards: make([]ui.Card, 0, len(tenants))}
+	if truncated {
+		page.Notice = truncatedNotice
+	}
 	for _, t := range tenants {
 		page.Cards = append(page.Cards, ui.BuildCard(t, reportFor(reports, t.ID)))
 	}
@@ -97,10 +97,7 @@ func (s *server) handleUITenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var reports map[string]health.Report
-	if s.deps.Poller != nil {
-		reports = s.deps.Poller.Snapshot(r.Context(), []store.Tenant{t})
-	}
+	reports, truncated := s.snapshot(r.Context(), []store.Tenant{t})
 	card := ui.BuildCard(t, reportFor(reports, t.ID))
 	// Whether a code EXISTS is decided here, on the server, and only on this
 	// page. The card says the number needs pairing; only the bridge knows
@@ -114,6 +111,9 @@ func (s *server) handleUITenant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := ui.Page{Refresh: refreshSeconds, Tenant: &card}
+	if truncated {
+		page.Notice = truncatedNotice
+	}
 	// History is context, not the operation: a failure to read it must not
 	// cost the operator the status they came for.
 	if events, err := s.deps.Store.ListEvents(id, maxEventRows); err != nil {

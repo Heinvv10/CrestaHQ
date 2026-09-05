@@ -46,6 +46,23 @@ func startPoller(ctx context.Context, client *http.Client, tokens provision.Toke
 	return p
 }
 
+// newHTTPServer applies the listener's deadlines.
+//
+// It is a function rather than a literal in main so a test can see the
+// deadlines exist. A server with none of them is the default, looks identical
+// at a glance, and lets one client hold a goroutine and an fd open forever on
+// a service where every route is privileged — precisely the kind of gap that
+// is believed to be closed and is not.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
 // listenValidated binds the address config.Load already validated.
 //
 // cfg.ListenAddr is the ONLY source. config.Load refuses anything that is not

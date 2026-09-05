@@ -53,6 +53,31 @@ const (
 	// are short — the longest is a pairing relay bounded by bridgeTimeout — so
 	// this only has to outlast that, with headroom.
 	shutdownBudget = 15 * time.Second
+
+	// The listener's own deadlines. Without them a single client that opens a
+	// connection and never finishes its request line holds a goroutine and an
+	// fd for as long as it likes, and a slow reader holds a response open the
+	// same way — on a service whose every route is privileged.
+	//
+	// readHeaderTimeout is the slow-header defence and is deliberately tight:
+	// no legitimate caller here is slow to send a request line.
+	readHeaderTimeout = 5 * time.Second
+
+	// readTimeout covers the body too. Every body this API accepts is capped
+	// at 4 KiB (api.maxBodyBytes), so ten seconds is already enormous.
+	readTimeout = 10 * time.Second
+
+	// writeTimeout must outlast the longest response this service can
+	// legitimately produce, which is a page whose on-demand health sweep runs
+	// the full api.SnapshotBudget and then renders. DERIVED from that budget
+	// rather than chosen separately: a write deadline shorter than the sweep
+	// would cut the page off mid-render, and two independently picked numbers
+	// drift apart the first time one is tuned.
+	writeTimeout = api.SnapshotBudget + 10*time.Second
+
+	// idleTimeout closes keep-alive connections nobody is using. The UI's
+	// 15s meta-refresh means a watching operator reconnects well inside this.
+	idleTimeout = 60 * time.Second
 )
 
 func main() {
@@ -119,7 +144,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.ListenAddr, err)
 	}
-	srv := &http.Server{Handler: handler}
+	srv := newHTTPServer(handler)
+
 	go func() {
 		log.Printf("listening on %s", ln.Addr())
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {

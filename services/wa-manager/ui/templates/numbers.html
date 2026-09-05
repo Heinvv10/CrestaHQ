@@ -32,6 +32,8 @@
   table { border-collapse: collapse; margin-top: 20px; font-size: 13px; max-width: 640px; width: 100%; }
   td, th { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid #0001; vertical-align: top; }
   a { color: inherit; }
+  .notice { max-width: 640px; margin: 0 0 14px; padding: 10px 14px; border-radius: 8px;
+            border: 1px solid #b8860b; background: #b8860b1a; font-size: 14px; }
 </style>
 
 {{define "card"}}
@@ -55,6 +57,9 @@
 </article>
 {{end}}
 
+{{- if .Notice}}
+<p class="notice">{{.Notice}}</p>
+{{- end}}
 {{if .Tenant}}
   <h1>{{.Tenant.Title}}</h1>
   <div class="cards">{{template "card" .Tenant}}</div>

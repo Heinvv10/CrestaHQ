@@ -120,6 +120,13 @@ type Page struct {
 	Tenant  *Card
 	Events  []EventLine
 	Refresh int // seconds; 0 disables the meta refresh
+
+	// Notice is a page-level banner for a fact about the PAGE rather than
+	// about any one number — today, that the health sweep hit its deadline
+	// and some cards were never checked. A safety screen that quietly omits
+	// numbers, or renders unchecked ones as dead, is worse than one that
+	// admits it is incomplete.
+	Notice string
 }
 
 // EventLine is one row of a tenant's history — the "why did this die" record.
@@ -151,6 +158,13 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 		c.Title = label
 	}
 
+	// Checked BEFORE the unreachable branch: an incomplete report has
+	// Reachable false too, and it must not be read as a dead bridge.
+	if r != nil && r.Incomplete {
+		c.Status, c.Tone = "Not checked — the health sweep ran out of time", ToneUnknown
+		c.SentToday, c.LastInbound, c.KillSwitch, c.ReplyOnly = "unknown", "unknown", "unknown", "unknown"
+		return c
+	}
 	if r == nil || !r.Reachable {
 		c.Status, c.Tone = "Unreachable — the manager cannot see this bridge", ToneBad
 		c.SentToday, c.LastInbound, c.KillSwitch = "unknown", "unknown", "unknown"

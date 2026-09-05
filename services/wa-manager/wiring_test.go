@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/api"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/config"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
@@ -206,4 +207,34 @@ func TestStartPollerRunsTheReconcileSweep(t *testing.T) {
 	}
 	t.Fatal("nothing reconciled the number: the wiring builds a poller whose sweep is never started, " +
 		"so a number's death is dated whenever an operator next opens the screen")
+}
+
+// A server with no deadlines is the Go default and looks identical at a
+// glance: one client that opens a connection and never finishes its request
+// line holds a goroutine and an fd indefinitely, on a service where every
+// route writes an .env full of bearer tokens or starts a systemd unit.
+//
+// The write deadline additionally has to outlast the longest response this
+// service can legitimately produce — a page whose on-demand health sweep runs
+// the full api.SnapshotBudget and then renders. A write deadline shorter than
+// that budget cuts the page off mid-render.
+func TestHTTPServerHasEveryTimeoutSet(t *testing.T) {
+	srv := newHTTPServer(http.NewServeMux())
+	for _, tc := range []struct {
+		name string
+		got  time.Duration
+	}{
+		{"ReadHeaderTimeout", srv.ReadHeaderTimeout},
+		{"ReadTimeout", srv.ReadTimeout},
+		{"WriteTimeout", srv.WriteTimeout},
+		{"IdleTimeout", srv.IdleTimeout},
+	} {
+		if tc.got <= 0 {
+			t.Errorf("%s is unset; a client that never finishes its request holds a goroutine forever", tc.name)
+		}
+	}
+	if srv.WriteTimeout <= api.SnapshotBudget {
+		t.Fatalf("WriteTimeout (%v) does not outlast the on-demand health sweep (%v); "+
+			"the page would be cut off mid-render", srv.WriteTimeout, api.SnapshotBudget)
+	}
 }

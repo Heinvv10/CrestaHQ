@@ -33,6 +33,13 @@ type Report struct {
 	// out" — the second is a safety rail gone blind.
 	AllowlistCount *int
 
+	// Incomplete says this tenant was never actually checked: the sweep's own
+	// deadline ran out first. It is NOT Reachable=false, and collapsing the
+	// two would be the worst kind of lie this screen can tell — "we ran out of
+	// time" rendered as "this number is down" sends an operator to fix a
+	// bridge that is fine, during the outage the screen exists to explain.
+	Incomplete bool
+
 	Problems []string
 	Err      string
 }
@@ -135,6 +142,12 @@ func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		// The caller's deadline expiring is not evidence about the bridge.
+		// Checked first, because a cancelled request fails exactly like a
+		// refused connection.
+		if ctx.Err() != nil {
+			return Report{Incomplete: true, Err: "not checked: the health sweep ran out of time"}
+		}
 		// A URL can carry a token in the query string on a misconfigured
 		// BaseURL; err from net/http already includes the URL, so redact
 		// rather than pass it straight into the report.

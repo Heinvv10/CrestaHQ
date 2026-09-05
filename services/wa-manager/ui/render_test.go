@@ -386,3 +386,38 @@ func TestReplyOnlyLineIsRendered(t *testing.T) {
 		t.Fatalf("the reply-only line has no label:\n%s", buf.String())
 	}
 }
+
+// A tenant the health sweep ran out of time to check must not render as a dead
+// bridge. "We did not look" and "this number is down" are different facts, and
+// the second sends an operator to fix something that is fine.
+func TestAnUncheckedTenantDoesNotRenderAsUnreachable(t *testing.T) {
+	c := BuildCard(store.Tenant{ID: "blitz", DisplayName: "Blitz"},
+		&health.Report{Incomplete: true, Err: "not checked: the health sweep ran out of time"})
+
+	if !strings.Contains(strings.ToLower(c.Status), "not checked") {
+		t.Fatalf("status = %q, want it to say the number was not checked", c.Status)
+	}
+	if strings.Contains(strings.ToLower(c.Status), "unreachable") {
+		t.Fatalf("an unchecked number was rendered as a dead bridge: %q", c.Status)
+	}
+	if c.Tone != ToneUnknown {
+		t.Fatalf("tone = %q, want unknown: we know nothing about this number", c.Tone)
+	}
+	if c.KillSwitch != "unknown" || c.ReplyOnly != "unknown" {
+		t.Fatalf("an unchecked number must claim nothing about its rails: kill=%q reply-only=%q",
+			c.KillSwitch, c.ReplyOnly)
+	}
+}
+
+// The page-level banner is what tells the operator the LIST is incomplete. A
+// per-card "not checked" is not enough on its own: it reads as one odd number
+// rather than as the screen admitting it did not finish.
+func TestTheTruncationNoticeIsRendered(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, Page{Notice: "the health check ran out of time", Cards: []Card{}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "the health check ran out of time") {
+		t.Fatalf("the page-level notice never reached the HTML:\n%s", buf.String())
+	}
+}

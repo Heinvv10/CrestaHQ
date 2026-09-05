@@ -45,9 +45,13 @@ type healthView struct {
 	// rail. Never omitempty and never a plain int: null means the bridge could
 	// not read its own allowlist, which is a rail gone blind and the opposite
 	// fact from "nobody has escaped".
-	AllowlistCount *int     `json:"allowlisted"`
-	Problems       []string `json:"problems,omitempty"`
-	Error          string   `json:"error,omitempty"`
+	AllowlistCount *int `json:"allowlisted"`
+	// Incomplete says this tenant was never checked because the sweep hit its
+	// deadline. Never omitempty: "we did not look" and "we looked and it is
+	// down" are different facts, and a caller must be able to see which.
+	Incomplete bool     `json:"incomplete"`
+	Problems   []string `json:"problems,omitempty"`
+	Error      string   `json:"error,omitempty"`
 }
 
 func viewOf(t store.Tenant, r *health.Report) tenantView {
@@ -69,6 +73,7 @@ func viewOf(t store.Tenant, r *health.Report) tenantView {
 			DailyCap:              r.DailyCap,
 			LastInboundAgeSeconds: r.LastInboundAgeSeconds,
 			AllowlistCount:        r.AllowlistCount,
+			Incomplete:            r.Incomplete,
 			Problems:              r.Problems,
 			Error:                 r.Err,
 		}
@@ -84,10 +89,7 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var reports map[string]health.Report
-	if s.deps.Poller != nil {
-		reports = s.deps.Poller.Snapshot(r.Context(), tenants)
-	}
+	reports, truncated := s.snapshot(r.Context(), tenants)
 
 	out := make([]tenantView, 0, len(tenants))
 	for _, t := range tenants {
@@ -97,7 +99,13 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, viewOf(t, rep))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tenants": out})
+	body := map[string]any{"tenants": out}
+	if truncated {
+		// Said in the body, not only per-tenant, so a script polling this
+		// endpoint cannot mistake a truncated sweep for a healthy one.
+		body["healthSweepTruncated"] = true
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 type createRequest struct {

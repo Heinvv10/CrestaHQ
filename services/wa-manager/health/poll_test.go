@@ -187,3 +187,52 @@ func TestSnapshotNeverExceedsItsConcurrencyBound(t *testing.T) {
 			"test cannot see a bound being exceeded", peak)
 	}
 }
+
+// A sweep cut short by its own deadline must not report the bridges it never
+// reached as DOWN. Both failures arrive at the client identically — a
+// cancelled request looks exactly like a refused connection — so the report
+// has to distinguish them explicitly, or the operator screen tells someone to
+// go fix a bridge that is fine, during the outage that caused the timeout.
+func TestADeadlineTruncatedPollIsNotReportedAsUnreachable(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.Write([]byte(`{"connected":true}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p := New(srv.Client(), func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return srv.URL }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	r := p.Snapshot(ctx, []store.Tenant{{ID: "t1"}})["t1"]
+
+	if !r.Incomplete {
+		t.Fatalf("a tenant the deadline never reached must be marked incomplete: %+v", r)
+	}
+	if r.Reachable || r.Connected {
+		t.Fatalf("an unchecked tenant must not read as reachable or connected: %+v", r)
+	}
+	if r.Err == "" {
+		t.Fatal("an incomplete report must carry the reason")
+	}
+}
+
+// The complement: a bridge that is genuinely refusing connections, polled with
+// time to spare, is UNREACHABLE and not "incomplete". Without this the fix
+// could be "mark everything incomplete", which hides real deaths.
+func TestAGenuinelyDeadBridgeIsUnreachableNotIncomplete(t *testing.T) {
+	p := New(&http.Client{Timeout: 200 * time.Millisecond},
+		func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return "http://127.0.0.1:1" }
+
+	r := p.Snapshot(context.Background(), []store.Tenant{{ID: "t1"}})["t1"]
+	if r.Incomplete {
+		t.Fatalf("a refused connection is a dead bridge, not an unchecked one: %+v", r)
+	}
+	if r.Reachable {
+		t.Fatalf("a refused connection must read as unreachable: %+v", r)
+	}
+}
