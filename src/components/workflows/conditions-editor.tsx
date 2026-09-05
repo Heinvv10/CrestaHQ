@@ -3,7 +3,7 @@
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CONDITION_OPS } from "@/lib/workflows/catalog";
+import { CONDITION_OPS, REPLY_TEXT_FIELD } from "@/lib/workflows/catalog";
 import type { Condition, ConditionGroup, ConditionOp } from "@/types/workflows";
 
 const COMMON_FIELDS = [
@@ -21,9 +21,12 @@ const NO_VALUE_OPS: ConditionOp[] = ["is_set", "not_set"];
 export function ConditionsEditor({
   value,
   onChange,
+  allowReplyField = false,
 }: {
   value: ConditionGroup;
   onChange: (g: ConditionGroup) => void;
+  /** Set on an if_else; leave false for trigger filters. */
+  allowReplyField?: boolean;
 }) {
   const all = value?.all ?? [];
   const match = value?.match === "any" ? "any" : "all";
@@ -58,7 +61,7 @@ export function ConditionsEditor({
       {all.map((c, i) => (
         <div key={i} className="flex items-center gap-1.5">
           <Input
-            list="wf-fields"
+            list={allowReplyField ? "wf-fields-reply" : "wf-fields"}
             value={c.field}
             placeholder="field"
             onChange={(e) => update(i, { field: e.target.value })}
@@ -94,11 +97,20 @@ export function ConditionsEditor({
           </Button>
         </div>
       ))}
-      <datalist id="wf-fields">
-        {COMMON_FIELDS.map((f) => (
-          <option key={f} value={f} />
-        ))}
+      <datalist id={allowReplyField ? "wf-fields-reply" : "wf-fields"}>
+        {(allowReplyField ? [REPLY_TEXT_FIELD, ...COMMON_FIELDS] : COMMON_FIELDS).map(
+          (f) => (
+            <option key={f} value={f} />
+          ),
+        )}
       </datalist>
+      {allowReplyField && (
+        <p className="text-muted-foreground text-xs">
+          <code>reply.text</code> is what the contact replied with at the
+          preceding &ldquo;Wait for reply&rdquo; step — use it with{" "}
+          <em>contains</em> to branch on their answer.
+        </p>
+      )}
       <Button
         type="button"
         variant="outline"

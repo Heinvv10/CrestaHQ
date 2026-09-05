@@ -345,6 +345,7 @@ export function NodeConfigDialog({
           {step.type === "if_else" && (
             <Field label="Continue down “yes” when:">
               <ConditionsEditor
+                allowReplyField
                 value={(cfg.conditions as ConditionGroup) ?? { all: [] }}
                 onChange={(g) => set({ conditions: g })}
               />

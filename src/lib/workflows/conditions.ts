@@ -1,15 +1,41 @@
 import "server-only";
 
+import { REPLY_TEXT_FIELD } from "@/lib/workflows/catalog";
 import type { Condition, ConditionGroup } from "@/types/workflows";
 import type { Contact } from "@/types/contacts";
+
+export { REPLY_TEXT_FIELD };
+
+/**
+ * Extra values a condition can read that do not live on the contact.
+ *
+ * `replyText` is the message body that resumed a `wait_for_reply` node. It is
+ * deliberately NOT stored on the contact: it is per-run, and two runs of the
+ * same workflow for one contact can be branching on different answers.
+ */
+export interface ConditionContext {
+  replyText?: string | null;
+}
 
 /**
  * Evaluate a workflow ConditionGroup against a contact. `match: "all"` (the
  * default) requires every condition; `match: "any"` requires at least one.
  * Used for both trigger filters and `if_else` branch nodes. An empty group
  * is always true (no filter).
+ *
+ * Trigger filters pass no context, so a `reply.text` condition there reads
+ * null — a trigger fires before any reply exists. The builder does not offer
+ * the field on a trigger, but nothing rejects it in stored JSON, so be aware
+ * of the shape it degrades to: `is_set`/`contains`/`equals` are always false
+ * and `not_set`/`not_equals` always TRUE. The second is the trap — such a
+ * filter would match every contact rather than none.
  */
-function getField(contact: Contact, path: string): unknown {
+function getField(
+  contact: Contact,
+  path: string,
+  ctx?: ConditionContext,
+): unknown {
+  if (path === REPLY_TEXT_FIELD) return ctx?.replyText ?? null;
   if (path.startsWith("customFields.")) {
     const key = path.slice("customFields.".length);
     return contact.customFields?.[key] ?? null;
@@ -17,8 +43,8 @@ function getField(contact: Contact, path: string): unknown {
   return (contact as unknown as Record<string, unknown>)[path] ?? null;
 }
 
-function evalOne(contact: Contact, c: Condition): boolean {
-  const raw = getField(contact, c.field);
+function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolean {
+  const raw = getField(contact, c.field, ctx);
   const val = (c.value ?? "").trim();
   switch (c.op) {
     case "is_set":
@@ -45,10 +71,11 @@ function evalOne(contact: Contact, c: Condition): boolean {
 export function evalConditionGroup(
   group: ConditionGroup | undefined,
   contact: Contact,
+  ctx?: ConditionContext,
 ): boolean {
   const all = group?.all ?? [];
   if (all.length === 0) return true;
   return group?.match === "any"
-    ? all.some((c) => evalOne(contact, c))
-    : all.every((c) => evalOne(contact, c));
+    ? all.some((c) => evalOne(contact, c, ctx))
+    : all.every((c) => evalOne(contact, c, ctx));
 }
