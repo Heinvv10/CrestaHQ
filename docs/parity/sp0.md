@@ -215,7 +215,7 @@ written; asserting the substitution is the fix.
 | contact create/edit/delete | `POST /api/contacts` rejects every create (`src/app/api/contacts/route.ts:41`) | **RED** |
 | form submit → contact | the persisted email is corrupted before the write (`src/app/api/forms/[id]/submit/route.ts:370`) | **RED** |
 | guard (`e2e/lib/guard.test.ts`) | (a) foreign `subAccountId` accepted; (b) missing `subAccountId` accepted | **RED** in both |
-| workflow enrol → action runs | `runStep` made a no-op / `add_tag` neutered | **to run in CI** |
+| workflow enrol → action runs | `add_tag` neutered into a no-op that still reports success | **RED** (proven in CI, PR #28, closed) |
 
 Verified 2026-09-05. Every mutation was applied by a script that aborts when its
 anchor is missing or ambiguous, because a substitution that silently fails to
@@ -254,7 +254,7 @@ than a harness defect.
 | Sub-account switch | Agency view → account picker | `/agency/sub-accounts` list → `/sa/{id}` | no in-page switcher; navigation only | `e2e/specs/switch-subaccount.spec.ts` | **green, mutation-proven** |
 | Contact create / edit / delete | Contacts | `/sa/{id}/contacts` | — | `e2e/specs/contacts.spec.ts` | **green, mutation-proven** |
 | Form submit → contact | Forms | `/f/{formId}` → contact write | — | `e2e/specs/form-submit.spec.ts` | **green, mutation-proven** |
-| Workflow enrol → action runs | Automation | `fireWorkflowTrigger` → `workflowRuns` → signed step worker | publish leg unprovable on loopback; prod has no QStash | `e2e/specs/workflow-enrol.spec.ts` | **green in CI; smoke red until prod QStash** |
+| Workflow enrol → action runs | Automation | `fireWorkflowTrigger` → `workflowRuns` → signed step worker | publish leg unprovable on loopback; prod has no QStash | `e2e/specs/workflow-enrol.spec.ts` | **green, mutation-proven; smoke red until prod QStash** |
 | Google account connected | Settings → Integrations | **absent** | whole subsystem | SP0-B | pending |
 | Paystack connected per tenant | Payments | **absent** | whole subsystem | SP0-B | pending |
 | Meta connected | Settings | exists, gated | verify gates + env on deploy | SP0-C | pending |
