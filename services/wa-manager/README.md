@@ -35,9 +35,11 @@ reaching *any* handler is remote code execution.
 Two things make a single bearer token adequate, and the process refuses to start
 without both:
 
-1. **`OPERATOR_TOKEN` must be set.** An empty one is a fatal config error, not a
-   permissive default. Forgetting an environment variable must never be the
-   thing standing between the internet and `systemctl start`.
+1. **`OPERATOR_TOKEN` must be set, and be at least 32 characters.** An empty or
+   trivial one is a fatal config error, not a permissive default. Forgetting an
+   environment variable — or typing a word — must never be the thing standing
+   between the tailnet and `systemctl start`. Generate one with
+   `openssl rand -hex 16`.
 2. **`LISTEN_ADDR` must be loopback or tailnet.** Anything publicly routable —
    including an empty host like `:33000`, which binds every interface — is
    refused. `ALLOW_PUBLIC_BIND=1` is the deliberate escape hatch for an operator
@@ -47,7 +49,7 @@ without both:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `OPERATOR_TOKEN` | *(none — required)* | The only credential the API accepts. Empty refuses to start. Not trimmed: whitespace you paste in is whitespace you must present. |
+| `OPERATOR_TOKEN` | *(none — required)* | The only credential the API accepts. Empty, or shorter than 32 characters, refuses to start. Not trimmed: whitespace you paste in is whitespace you must present. |
 | `LISTEN_ADDR` | `127.0.0.1:33000` | The manager's own listener. Loopback/tailnet enforced. |
 | `ALLOW_PUBLIC_BIND` | unset | Set to `1` to bypass the bind check. Deliberate only. |
 | `DB_PATH` | `./wa-manager.db` | The manager's own registry: tenants, ports, events. Not any bridge's database. |
@@ -129,7 +131,9 @@ the file the bridge itself loaded is the single source of truth, so the two
 cannot drift.
 
 List what exists: `GET /api/tenants`. Bounce one:
-`POST /api/tenants/{id}/restart`. Both take the same bearer token.
+`POST /api/tenants/{id}/restart`. Both take the same bearer token. The operator
+screen has its own restart control at `POST /tenants/{id}/restart` — same
+operation, reachable with the Basic credential a browser form can actually send.
 
 ## Pairing
 
@@ -147,6 +151,11 @@ takes a bearer token.)
 A card reading **"Not paired — scan the code to link this number"** offers the
 QR on the number's own page. Open WhatsApp on the phone that owns the number →
 **Linked devices** → **Link a device** → scan.
+
+If that page instead says there is **no pairing code waiting**, its bridge is not
+offering one: a bridge only enters the QR exchange on a fresh start, so a
+logged-out one has nothing to show until it restarts. The page offers **Restart
+this bridge** for exactly that; the code appears on the reload that follows.
 
 **The QR is a write-grade credential.** Anyone who scans it links a device to
 that number with every permission the number has. It is served as a PNG from a
@@ -178,7 +187,10 @@ To recover:
 1. **Find out which it was.** Try sending from the number on the phone itself.
    If WhatsApp refuses, it is a ban and re-pairing will not help; appeal first.
    If the phone is fine, the device was merely unlinked.
-2. **Re-pair.** Open the number's page and scan the QR again.
+2. **Re-pair.** Open the number's page. A logged-out bridge has no code to
+   show — it only enters the QR exchange on a fresh start — so the page offers
+   **Restart this bridge** instead of an image. Click it, then scan the code
+   that appears.
 3. **Lift the kill switch.** Pairing restores the socket; it does not release
    the brakes. `POST /v1/kill {"on":false}` against that tenant's bridge, with
    an **admin** consumer token — the manager's own token from that instance's
@@ -264,7 +276,9 @@ comment.
 Running it locally needs a token and a writable root, nothing else:
 
 ```bash
-OPERATOR_TOKEN=dev-token \
+export OPERATOR_TOKEN=$(openssl rand -hex 16)   # 32 chars; below that it refuses to start
+echo "$OPERATOR_TOKEN"                          # you need it to reach the screen
+
 INSTANCE_ROOT=/tmp/wa-instances \
 DB_PATH=/tmp/wa-manager.db \
 LISTEN_ADDR=127.0.0.1:33000 \

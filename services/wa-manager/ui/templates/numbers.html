@@ -27,6 +27,8 @@
   .bar { font-family: ui-monospace, monospace; letter-spacing: 1px; }
   .problems { margin: 10px 0 0; padding-left: 18px; color: #c0392b; font-size: 13px; }
   .qr { margin-top: 14px; } .qr img { width: 240px; height: 240px; image-rendering: pixelated; }
+  .qr button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid #0003;
+               background: Canvas; color: inherit; cursor: pointer; }
   table { border-collapse: collapse; margin-top: 20px; font-size: 13px; max-width: 640px; width: 100%; }
   td, th { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid #0001; vertical-align: top; }
   a { color: inherit; }
@@ -57,11 +59,22 @@
   <h1>{{.Tenant.Title}}</h1>
   <div class="cards">{{template "card" .Tenant}}</div>
   {{- if .Tenant.NeedsPairing}}
+  {{- if .Tenant.QRLive}}
   <div class="qr">
     <p class="muted">Scan this in WhatsApp → Linked devices. Anyone who scans it
       links a device to this number, so do not forward or screenshot it.</p>
     <img src="/tenants/{{.Tenant.TenantID}}/qr.png" alt="pairing code">
   </div>
+  {{- else}}
+  <div class="qr">
+    <p class="muted">There is no pairing code waiting for this number — a
+      logged-out bridge only issues one when it starts. Restarting it generates
+      a fresh code here; nothing is sent or received in the meantime.</p>
+    <form method="post" action="/tenants/{{.Tenant.TenantID}}/restart">
+      <button type="submit">Restart this bridge</button>
+    </form>
+  </div>
+  {{- end}}
   {{- end}}
   {{- if .Events}}
   <table>

@@ -140,6 +140,10 @@ type harness struct {
 	prov   *fakeProvisioner
 	units  *fakeUnits
 	bridge *fakeBridge
+	// poll is the harness's health source. Held so a test can change what the
+	// screen is looking at — a logged-out number renders a different page from
+	// a connected one, and that difference is the point of the pairing block.
+	poll *fakePoller
 }
 
 func newHarness(t *testing.T) *harness {
@@ -153,17 +157,18 @@ func newHarness(t *testing.T) *harness {
 	prov := &fakeProvisioner{tenant: store.Tenant{Instance: "blitz", Port: 8412, State: store.StateProvisioned}}
 	units := &fakeUnits{}
 	bridge := newFakeBridge(t)
+	poll := &fakePoller{reports: map[string]health.Report{"blitz": {Reachable: true, Connected: true, OutboundLast24h: 7}}}
 
 	h := New(Deps{
 		Store:         st,
 		Provisioner:   prov,
-		Poller:        &fakePoller{reports: map[string]health.Report{"blitz": {Reachable: true, Connected: true, OutboundLast24h: 7}}},
+		Poller:        poll,
 		Units:         units,
 		OperatorToken: operatorTok,
 		TenantToken:   func(string) string { return mgrTok },
 		BridgeBaseURL: func(store.Tenant) string { return bridge.server.URL },
 	})
-	return &harness{h: h, st: st, prov: prov, units: units, bridge: bridge}
+	return &harness{h: h, st: st, prov: prov, units: units, bridge: bridge, poll: poll}
 }
 
 // seed writes a tenant row directly, standing in for a completed provision.
@@ -207,6 +212,8 @@ func allRoutes() []route {
 		{http.MethodGet, "/", ""},
 		{http.MethodGet, "/tenants/blitz", ""},
 		{http.MethodGet, "/tenants/blitz/qr.png", ""},
+		// The re-pair control bounces a customer's live number.
+		{http.MethodPost, "/tenants/blitz/restart", ""},
 	}
 }
 

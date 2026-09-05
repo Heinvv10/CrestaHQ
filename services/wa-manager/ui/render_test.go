@@ -241,10 +241,9 @@ func TestVolumeBarClampsOverCap(t *testing.T) {
 	}
 }
 
-// A number that needs pairing offers the code inline — as an IMAGE from a
-// separate route. The payload itself never reaches this package, which is the
-// structural reason it cannot reach the page.
-func TestPairingPageLinksTheQRImageRatherThanEmbeddingAPayload(t *testing.T) {
+// pairingCard is a number that needs a code: unpaired and disconnected.
+func pairingCard(t *testing.T) Card {
+	t.Helper()
 	tn := pairedTenant()
 	tn.Phone, tn.State = "", store.StateProvisioned
 	r := health.Report{Reachable: true, Connected: false}
@@ -252,11 +251,65 @@ func TestPairingPageLinksTheQRImageRatherThanEmbeddingAPayload(t *testing.T) {
 	if !card.NeedsPairing {
 		t.Fatal("an unpaired, disconnected number must offer pairing")
 	}
+	return card
+}
+
+// A number with a code in flight offers it inline — as an IMAGE from a separate
+// route. The payload itself never reaches this package, which is the structural
+// reason it cannot reach the page.
+func TestPairingPageLinksTheQRImageRatherThanEmbeddingAPayload(t *testing.T) {
+	card := pairingCard(t)
+	card.QRLive = true
 	out := renderPage(t, Page{Tenant: &card})
 
 	mustContain(t, out, `src="/tenants/blitz/qr.png"`)
 	if strings.Contains(out, "<script") {
 		t.Error("the page must render without shipping script to the browser")
+	}
+}
+
+// The card this screen exists for. A banned or logged-out number needs a code
+// and has none: whatsmeow re-enters GetQRChannel only on a fresh process start,
+// so its bridge will not issue one until it restarts. Rendering the <img>
+// anyway showed the operator instructions to scan a broken image — the QR
+// route answers 409 with text, and text is invisible inside an <img> — with
+// nothing to do next.
+//
+// So: no image, and the restart offered as a real POST. A GET would let a link
+// prefetcher or a crawler bounce a customer's live number.
+func TestPairingPageWithNoLiveCodeOffersARestartInsteadOfABrokenImage(t *testing.T) {
+	card := pairingCard(t)
+	card.QRLive = false
+	out := renderPage(t, Page{Tenant: &card})
+
+	if strings.Contains(out, "<img") {
+		t.Errorf("a number with no live code must not be shown an image; it renders broken\n---\n%s", out)
+	}
+	if strings.Contains(out, "Scan this in WhatsApp") {
+		t.Error("the page tells the operator to scan a code that does not exist")
+	}
+	mustContain(t, out,
+		`method="post"`,
+		`action="/tenants/blitz/restart"`,
+		"Restart this bridge",
+	)
+}
+
+// A connected number gets neither block. The QR link on a live number would be
+// an invitation to link a stranger's device to it.
+func TestConnectedPageOffersNeitherAQRNorARestart(t *testing.T) {
+	r := healthyReport()
+	card := BuildCard(pairedTenant(), &r)
+	if card.NeedsPairing {
+		t.Fatal("a connected number does not need pairing")
+	}
+	out := renderPage(t, Page{Tenant: &card})
+
+	if strings.Contains(out, "<img") || strings.Contains(out, "qr.png") {
+		t.Error("a connected number was offered a pairing code")
+	}
+	if strings.Contains(out, "/restart") {
+		t.Error("a connected number was offered a restart it does not need")
 	}
 }
 

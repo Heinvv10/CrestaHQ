@@ -196,22 +196,35 @@ func (s *server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if s.deps.Units == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "no unit controller configured"})
+	if problem := s.restartUnit(id, t); problem != "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": problem})
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenantId": id, "instance": t.Instance})
+}
+
+// restartUnit does the bounce, returning the operator-facing reason it failed
+// or "" for success. Every failure is a 500 at both call sites, so the status
+// does not travel with it.
+//
+// Shared by the JSON route and the UI's re-pair form so a bounce cannot come to
+// mean two different things depending on which one an operator reached for —
+// the UI form exists precisely because a logged-out bridge only issues a
+// pairing code on a fresh start.
+func (s *server) restartUnit(id string, t store.Tenant) string {
+	if s.deps.Units == nil {
+		return "no unit controller configured"
 	}
 	if err := s.deps.Units.Stop(t.Instance); err != nil {
 		log.Printf("restart stop failed tenant=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not stop the unit; check the manager log"})
-		return
+		return "could not stop the unit; check the manager log"
 	}
 	if err := s.deps.Units.Start(t.Instance); err != nil {
 		log.Printf("restart start failed tenant=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the unit was stopped but did not start again; check the manager log"})
-		return
+		return "the unit was stopped but did not start again; check the manager log"
 	}
 	// A support record, not part of the operation: losing the line must not
 	// turn a successful bounce into a failure.
 	_ = s.deps.Store.AppendEvent(id, "restarted", "operator requested a restart")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenantId": id, "instance": t.Instance})
+	return ""
 }

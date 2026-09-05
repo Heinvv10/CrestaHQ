@@ -90,6 +90,24 @@ type Card struct {
 	// the one card an operator has to act on.
 	NeedsPairing bool
 
+	// QRLive says a pairing code EXISTS right now, and is set only on the
+	// single-number page, by the caller that asked the bridge.
+	//
+	// NeedsPairing alone is not that fact, and the difference is the whole
+	// point. whatsmeow re-enters GetQRChannel only on a fresh process start, so
+	// a number that logged out — a ban, the state this screen exists for — has
+	// no code until its bridge is restarted. Rendering the <img> off
+	// NeedsPairing showed those operators a broken image under copy telling
+	// them to scan it, with no way forward: the QR route's 409 is text, and
+	// text is invisible inside an <img>. False here means the page says what
+	// happened and offers the restart instead of promising a code that does
+	// not exist.
+	//
+	// It is a BOOLEAN, never the payload. The QR is a device-linking
+	// credential and nothing in this package has ever seen one; see the package
+	// comment.
+	QRLive bool
+
 	Problems []string
 }
 

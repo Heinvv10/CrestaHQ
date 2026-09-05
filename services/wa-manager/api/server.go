@@ -106,6 +106,12 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /{$}", s.authedUI(s.handleUIIndex))
 	mux.HandleFunc("GET /tenants/{id}", s.authedUI(s.handleUITenant))
 	mux.HandleFunc("GET /tenants/{id}/qr.png", s.authedUI(s.handleQRPNG))
+	// The re-pair control. It duplicates the API's restart because that route
+	// takes only a bearer token and a browser form cannot send one; both drive
+	// the same restartUnit. A ban is a self-service event (design spec §2.4),
+	// and a logged-out bridge issues no pairing code until it restarts — so
+	// without this the one card this screen exists for is a dead end.
+	mux.HandleFunc("POST /tenants/{id}/restart", s.authedUI(s.handleUIRestart))
 	return mux
 }
 

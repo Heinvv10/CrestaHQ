@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
 )
 
 // pngMagic is the first eight bytes of every PNG.
@@ -17,11 +19,26 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 const qrPayload = "2@QR-PAYLOAD"
 
 func (h *harness) doBasic(path, pass string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(http.MethodGet, path, nil)
+	return h.doBasicMethod(http.MethodGet, path, pass, "")
+}
+
+// doBasicMethod is how a BROWSER reaches this service: the operator token as
+// HTTP Basic, because a form POST cannot carry a bearer header.
+func (h *harness) doBasicMethod(method, path, pass, origin string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, nil)
 	r.SetBasicAuth("operator", pass)
+	if origin != "" {
+		r.Header.Set("Origin", origin)
+	}
 	rec := httptest.NewRecorder()
 	h.h.ServeHTTP(rec, r)
 	return rec
+}
+
+// loggedOut puts the seeded number in the state this whole fix is about: killed
+// and disconnected, which is what a WhatsApp ban looks like from the bridge.
+func (h *harness) loggedOut() {
+	h.poll.reports["blitz"] = health.Report{Reachable: true, Connected: false, Killed: true}
 }
 
 // The card is the product surface: it must show the number's safety state, in
@@ -146,5 +163,155 @@ func TestUIRefusesUnknownTenant(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s: want 404, got %d", path, rec.Code)
 		}
+	}
+}
+
+// THE defect. A banned number is killed and disconnected, and its bridge has no
+// pairing code to give — whatsmeow re-enters GetQRChannel only on a fresh
+// process start. The page used to render the <img> anyway, so the one card this
+// screen exists for showed instructions to scan a broken image, with the QR
+// route's 409 invisible inside the element. Design spec §2.4 makes re-pairing a
+// self-service event; a dead end is the opposite of that.
+func TestLoggedOutNumberIsOfferedARestartRatherThanABrokenImage(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+	h.loggedOut()
+	// The bridge for a logged-out number reports no code in flight.
+	h.bridge.body = `{"pairing":false,"connected":false}`
+
+	rec := h.do(http.MethodGet, "/tenants/blitz", operatorTok, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<img") {
+		t.Errorf("a number with no live code was shown an image that can only render broken\n---\n%s", body)
+	}
+	if !strings.Contains(body, `action="/tenants/blitz/restart"`) || !strings.Contains(body, `method="post"`) {
+		t.Errorf("no way forward from a logged-out number; the operator is at a dead end\n---\n%s", body)
+	}
+}
+
+// The other side of the same decision: a bridge that IS offering a code still
+// gets the image and the credential warning that goes with it.
+func TestNumberWithALiveCodeStillGetsTheImage(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+	h.loggedOut() // needs pairing...
+	// ...and this bridge has a code in flight (the fake's default body).
+
+	rec := h.do(http.MethodGet, "/tenants/blitz", operatorTok, "")
+	body := rec.Body.String()
+	if !strings.Contains(body, `src="/tenants/blitz/qr.png"`) {
+		t.Errorf("a live pairing code was not offered\n---\n%s", body)
+	}
+	if !strings.Contains(body, "do not forward or screenshot") {
+		t.Error("the credential warning went missing from the pairing block")
+	}
+	if strings.Contains(body, qrPayload) {
+		t.Error("the page carries the payload itself")
+	}
+}
+
+// An unreachable bridge cannot be offering a code. Failing closed to the
+// restart is both honest and the right move for a bridge in that state.
+func TestUnreachableBridgeGetsTheRestartRatherThanAnImage(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+	h.loggedOut()
+	h.bridge.status = http.StatusServiceUnavailable
+
+	body := h.do(http.MethodGet, "/tenants/blitz", operatorTok, "").Body.String()
+	if strings.Contains(body, "<img") {
+		t.Errorf("an unreachable bridge was reported as serving a pairing code\n---\n%s", body)
+	}
+	if !strings.Contains(body, `action="/tenants/blitz/restart"`) {
+		t.Error("no restart offered for an unreachable bridge")
+	}
+}
+
+// Found by a deliberate break that stayed GREEN: dropping the empty-code check
+// went unnoticed. A bridge can answer pairing:true with no code — the QR
+// channel opened and has not produced one yet — and handleQRPNG 409s on exactly
+// that pair, so believing the flag alone puts the operator back at the broken
+// image this fix exists to remove. The page and the image must agree.
+func TestPairingTrueWithNoCodeIsNotALiveCode(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+	h.loggedOut()
+	h.bridge.body = `{"pairing":true,"connected":false,"code":""}`
+
+	body := h.do(http.MethodGet, "/tenants/blitz", operatorTok, "").Body.String()
+	if strings.Contains(body, "<img") {
+		t.Errorf("an empty code was offered as an image; the QR route answers 409 for exactly this\n---\n%s", body)
+	}
+	if !strings.Contains(body, `action="/tenants/blitz/restart"`) {
+		t.Error("no restart offered for a bridge with no actual code")
+	}
+}
+
+// The list page must NOT ask each bridge whether it has a code. One call per
+// tenant per render is the fan-out the poller's concurrency bound exists to
+// prevent, and forty numbers on a 15-second meta-refresh would be a herd this
+// box aims at itself.
+func TestTheListPageAsksNoBridgeAnything(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+	h.loggedOut()
+
+	if rec := h.do(http.MethodGet, "/", operatorTok, ""); rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if got := h.bridge.headers(); len(got) != 0 {
+		t.Fatalf("the list page called %d bridge(s); that fan-out is per-tenant and unbounded", len(got))
+	}
+}
+
+// The control an operator actually clicks: Basic auth from a browser, a real
+// POST, and it must bounce the unit and send them back to the page.
+func TestTheRestartFormBouncesTheUnitAndRedirectsBack(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("want 303 so a reload cannot bounce the number twice, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/tenants/blitz" {
+		t.Errorf("Location = %q, want the number's page", got)
+	}
+	if got := h.units.seen(); len(got) != 2 || got[0] != "stop:blitz" || got[1] != "start:blitz" {
+		t.Fatalf("the form did not bounce the unit: %v", got)
+	}
+}
+
+// GET must not do it. A link prefetcher or a crawler following the page would
+// otherwise bounce a customer's live number.
+func TestTheRestartControlIsPOSTOnly(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicMethod(http.MethodGet, "/tenants/blitz/restart", operatorTok, "")
+	if rec.Code == http.StatusSeeOther || rec.Code == http.StatusOK {
+		t.Fatalf("GET reached the restart, status %d", rec.Code)
+	}
+	if got := h.units.seen(); len(got) != 0 {
+		t.Fatalf("a GET bounced the unit: %v", got)
+	}
+}
+
+// The browser attaches its stored Basic credential to a cross-site form POST
+// too, so the token alone does not make this control safe. A form on someone
+// else's page must not spend a customer's number.
+func TestTheRestartFormRefusesACrossSitePost(t *testing.T) {
+	h := newHarness(t)
+	h.seed(t, "blitz", "blitz", 8412)
+
+	rec := h.doBasicMethod(http.MethodPost, "/tenants/blitz/restart", operatorTok, "https://evil.example")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for a cross-site restart, got %d", rec.Code)
+	}
+	if got := h.units.seen(); len(got) != 0 {
+		t.Fatalf("a cross-site form bounced the unit: %v", got)
 	}
 }

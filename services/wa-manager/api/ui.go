@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
@@ -101,6 +102,16 @@ func (s *server) handleUITenant(w http.ResponseWriter, r *http.Request) {
 		reports = s.deps.Poller.Snapshot(r.Context(), []store.Tenant{t})
 	}
 	card := ui.BuildCard(t, reportFor(reports, t.ID))
+	// Whether a code EXISTS is decided here, on the server, and only on this
+	// page. The card says the number needs pairing; only the bridge knows
+	// whether one is in flight, and a logged-out bridge has none until it is
+	// restarted. Deciding it here is what keeps the page from promising a code
+	// it cannot produce — and it is deliberately NOT done on the list page,
+	// where one bridge call per tenant would be the fan-out the poller's
+	// concurrency bound exists to prevent.
+	if card.NeedsPairing {
+		card.QRLive = s.hasLivePairingCode(r, id, t)
+	}
 
 	page := ui.Page{Refresh: refreshSeconds, Tenant: &card}
 	// History is context, not the operation: a failure to read it must not
@@ -170,6 +181,80 @@ func (s *server) handleQRPNG(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(png); err != nil {
 		log.Printf("qr write failed tenant=%s", id)
 	}
+}
+
+// hasLivePairingCode reports whether this tenant's bridge is offering a pairing
+// code right now.
+//
+// It reuses the same relay handleQRPNG uses, so the page and the image cannot
+// disagree about whether there is a code — the failure this fixes was exactly
+// that disagreement, rendered as a broken <img>.
+//
+// It returns only a BOOLEAN. The payload is a device-linking credential and
+// must never reach the HTML; see handleQRPNG. An unreachable or refusing bridge
+// is false — the page then offers the restart, which is the right move for a
+// bridge in that state anyway.
+func (s *server) hasLivePairingCode(r *http.Request, id string, t store.Tenant) bool {
+	body, failure := s.bridgePair(r, id, t)
+	if failure != nil {
+		return false
+	}
+	return body.Pairing && body.Code != ""
+}
+
+// handleUIRestart is the re-pair control on the single-number page.
+//
+// It exists rather than pointing the form at POST /api/tenants/{id}/restart
+// because that route admits ONLY a bearer token, and a browser form cannot
+// attach one. Same operation, same helper, the carrier the browser has.
+//
+// POST, never GET: a GET would let a link prefetcher or a crawler bounce a
+// customer's live number. sameOrigin is the other half of that — a form on
+// someone else's page would otherwise ride the browser's stored Basic
+// credential to the same effect.
+func (s *server) handleUIRestart(w http.ResponseWriter, r *http.Request) {
+	id, ok := tenantIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	if !sameOrigin(r) {
+		noStore(w)
+		http.Error(w, "cross-site restart refused", http.StatusForbidden)
+		return
+	}
+	t, err := s.deps.Store.GetTenant(id)
+	if err != nil {
+		http.Error(w, "no such number", http.StatusNotFound)
+		return
+	}
+	if problem := s.restartUnit(id, t); problem != "" {
+		noStore(w)
+		http.Error(w, problem, http.StatusInternalServerError)
+		return
+	}
+	// See-other, so the browser follows with a GET and a reload cannot bounce
+	// the number a second time.
+	noStore(w)
+	http.Redirect(w, r, "/tenants/"+id, http.StatusSeeOther)
+}
+
+// sameOrigin refuses a state-changing browser request that came from another
+// site.
+//
+// Browsers send Origin on every POST, so an absent one is a non-browser caller
+// holding the operator token — curl, the runbook — and is admitted. A PRESENT
+// one that is not this host is a cross-site form, and the only thing it could
+// be doing is spending someone's live WhatsApp number.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return u.Host == r.Host
 }
 
 func reportFor(reports map[string]health.Report, id string) *health.Report {
