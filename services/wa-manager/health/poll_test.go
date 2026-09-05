@@ -2,8 +2,10 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,5 +123,67 @@ func TestAnUnreadableAllowlistStaysUnknown(t *testing.T) {
 	r := p.Snapshot(context.Background(), []store.Tenant{{ID: "t1"}})["t1"]
 	if r.AllowlistCount != nil {
 		t.Fatalf("a null allowlist count must not become a number, got %d", *r.AllowlistCount)
+	}
+}
+
+// The fan-out bound must be observable as BEHAVIOUR, not as a field value.
+//
+// A reviewer deleted the semaphore from Snapshot entirely and all eight
+// packages stayed green: the only test on this bound read p.Concurrency back,
+// which a poller with no semaphore at all reports just as happily. This
+// service is built to ramp to a few hundred numbers on one host, and an
+// unbounded sweep of 200 tenants opens 200 simultaneous connections every
+// cycle — a thundering herd the box aims at itself, during the outage the
+// screen exists to show.
+//
+// So this counts what actually arrives at the bridges at once.
+func TestSnapshotNeverExceedsItsConcurrencyBound(t *testing.T) {
+	const bound, tenants = 3, 24
+
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		// Held long enough that the workers genuinely overlap. Without it
+		// every request could complete before the next begins and the test
+		// would pass with no bound at all.
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.Write([]byte(`{"connected":true}`))
+	}))
+	defer srv.Close()
+
+	p := New(srv.Client(), func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return srv.URL }
+	p.Concurrency = bound
+
+	list := make([]store.Tenant, tenants)
+	for i := range list {
+		list[i] = store.Tenant{ID: fmt.Sprintf("t%d", i)}
+	}
+	got := p.Snapshot(context.Background(), list)
+	if len(got) != tenants {
+		t.Fatalf("polled %d of %d tenants", len(got), tenants)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > bound {
+		t.Fatalf("%d bridges were polled at once with the bound set to %d; "+
+			"the fan-out is not actually bounded", peak, bound)
+	}
+	// Without this the test would also pass on a Snapshot that polled strictly
+	// one at a time, which is not what the bound means and would make the
+	// sweep unusably slow.
+	if peak < 2 {
+		t.Fatalf("peak in-flight was %d: the poll never ran concurrently, so this "+
+			"test cannot see a bound being exceeded", peak)
 	}
 }
