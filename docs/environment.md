@@ -176,6 +176,16 @@ One Meta app powers BOTH the FB Messenger / IG DM inbox AND the Social Planner (
 
 **Gray-out behavior:** when `META_APP_ID` + `META_APP_SECRET` are absent, `metaAppConfigured()` is false, so the **"Facebook + Instagram inbox"** and **"Social Planner"** toggles in the agency Manage dialog are **disabled/grayed out** (with a "set META_APP_ID / META_APP_SECRET" hint), and the feature-gates PATCH route refuses to enable either gate (400). The client reads this via `GET /api/agency/deployment-config` (returns `{ metaConfigured }` — non-sensitive booleans only). An already-enabled gate can still be turned OFF so a legacy state isn't trapped. Derives from the two secrets — there is no separate `NEXT_PUBLIC` flag to keep in sync.
 
+## Optional — Google Business Profile
+One Google OAuth client lets each sub-account connect the Google account that manages its Business Profile listings. Optional — leave unset and the Connect button reports "not configured on this deployment".
+
+| Var | Source |
+|---|---|
+| `GOOGLE_CLIENT_ID` | [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → Create credentials → OAuth client ID → **Web application**. |
+| `GOOGLE_CLIENT_SECRET` | Same screen. Keep secret. |
+
+Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth consent screen, and register **one** authorised redirect URI for the whole deployment: `NEXT_PUBLIC_APP_URL` + `/api/google/callback`. Google matches it byte for byte, so a trailing slash or a different host breaks the exchange. The connecting sub-account travels in the HMAC-signed OAuth `state` (keyed by `AUTOMATIONS_TOKEN_SECRET`), so no per-client registration is needed. Tokens are stored server-only at `subAccounts/{id}/private/googleConnection`; the sub-account doc carries display metadata only.
+
 Beyond the env vars, posting also requires **Meta App Review** for `pages_manage_posts` + `instagram_content_publish` (on top of the messaging review). Until approved, only Meta app admins/testers can connect. See [Social Planner](features/social-planner.md) + the Meta inbox section of [AI Agents](features/ai-agents.md).
 
 ## Required for leads map (disables cleanly if missing)

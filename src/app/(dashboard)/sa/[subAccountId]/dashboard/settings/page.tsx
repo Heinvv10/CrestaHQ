@@ -22,6 +22,7 @@ import { SubAccountPipelineSection } from "@/components/settings/sub-account-pip
 import { GhlImportWizard } from "@/components/import/ghl-import-wizard";
 import { SubAccountSmsSection } from "@/components/settings/sub-account-sms-section";
 import { SubAccountMetaSection } from "@/components/settings/sub-account-meta-section";
+import { SubAccountGoogleSection } from "@/components/settings/sub-account-google-section";
 import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
@@ -297,6 +298,7 @@ export default function SettingsPage() {
           {/* Facebook + Instagram inbox (beta) — self-gates: renders only when
               the agency flipped metaInboxEnabledByAgency on for this sub-account. */}
           <SubAccountMetaSection />
+          <SubAccountGoogleSection />
 
           {/* Sending preferences — Reply-To, send window, pause-all-workflows.
               Rehomed from the deleted legacy Automations → Settings page; MUST

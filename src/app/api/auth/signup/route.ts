@@ -241,6 +241,7 @@ export async function POST(request: Request) {
         labsEnabledByAgency: false,
         paymentsEnabledByAgency: false,
         webinar1EnabledByAgency: false,
+        googleEnabledByAgency: false,
         aiSuiteEnabledByAgency: false,
         metaConfig: null,
         stripeConnectionMeta: null,

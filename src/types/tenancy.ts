@@ -1,4 +1,5 @@
 import type { StripeConnectionMeta } from "@/types/payments";
+import type { GoogleConnectionMeta } from "@/types/google";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
 import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
@@ -422,6 +423,30 @@ export interface SubAccountDoc {
    * connection is preserved, so re-enabling resumes instantly.
    */
   webinar1EnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for the Google Business Profile connection
+   * (Settings → Google Business Profile: the OAuth connect card and the
+   * connect/disconnect routes). Opt-in like every other gate: defaults to
+   * `false` at creation and consumers read `=== true` so legacy docs
+   * (undefined) stay off. Standalone (not plan-managed) like Payments and
+   * Webinar1 — connecting a client's Google account is an explicit per-client
+   * decision. While off the settings card renders nothing and the connect
+   * route refuses. No tear-down on disable: the stored connection is
+   * preserved so re-enabling resumes instantly; disconnecting (which revokes
+   * the token at Google) is always an explicit operator action and stays
+   * available even while the gate is off.
+   */
+  googleEnabledByAgency?: boolean;
+  /**
+   * Non-secret display metadata for the connected Google account (see
+   * {@link GoogleConnectionMeta}). Null/absent until connected.
+   *
+   * The OAuth tokens are deliberately NOT here — this doc is readable by every
+   * active member, and Firestore rules can't hide a single field. The refresh
+   * token lives at `subAccounts/{id}/private/googleConnection`
+   * (`allow read, write: if false`). Never add a credential to this object.
+   */
+  googleConnectionMeta?: GoogleConnectionMeta | null;
   /**
    * Agency-controlled gate for the Workspace Assistant (the in-app AI
    * assistant at Sidebar → Workspace Assistant). Only the agency owner can

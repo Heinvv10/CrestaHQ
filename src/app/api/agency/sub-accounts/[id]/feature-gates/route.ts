@@ -63,6 +63,7 @@ interface PatchBody {
   getLeadsEnabled?: boolean;
   paymentsEnabled?: boolean;
   webinar1Enabled?: boolean;
+  googleEnabled?: boolean;
   /**
    * Usage Metering v1 — per-workspace quota override. Not a gate: writes
    * directly like the hide flags. `null` clears back to plan/unlimited;
@@ -133,6 +134,7 @@ export async function PATCH(
   const wantsGetLeads = typeof body.getLeadsEnabled === "boolean";
   const wantsPayments = typeof body.paymentsEnabled === "boolean";
   const wantsWebinar1 = typeof body.webinar1Enabled === "boolean";
+  const wantsGoogle = typeof body.googleEnabled === "boolean";
   const wantsBroadcastsHidden =
     typeof body.broadcastsHiddenWhenDisabled === "boolean";
   const wantsWebsiteHidden =
@@ -177,6 +179,7 @@ export async function PATCH(
     !wantsGetLeads &&
     !wantsPayments &&
     !wantsWebinar1 &&
+    !wantsGoogle &&
     !wantsBroadcastsHidden &&
     !wantsWebsiteHidden &&
     !wantsSocialPlannerHidden &&
@@ -286,6 +289,9 @@ export async function PATCH(
   if (typeof body.webinar1Enabled === "boolean") {
     gates.webinar1EnabledByAgency = body.webinar1Enabled;
   }
+  if (typeof body.googleEnabled === "boolean") {
+    gates.googleEnabledByAgency = body.googleEnabled;
+  }
 
   let clearedDomain = false;
   if (Object.keys(gates).length > 0) {
@@ -374,6 +380,7 @@ export async function PATCH(
     ...(wantsLabs ? { labsEnabled: body.labsEnabled } : {}),
     ...(wantsGetLeads ? { getLeadsEnabled: body.getLeadsEnabled } : {}),
     ...(wantsWebinar1 ? { webinar1Enabled: body.webinar1Enabled } : {}),
+    ...(wantsGoogle ? { googleEnabled: body.googleEnabled } : {}),
     ...(wantsWebinar1Hidden
       ? { webinar1HiddenWhenDisabled: body.webinar1HiddenWhenDisabled }
       : {}),
