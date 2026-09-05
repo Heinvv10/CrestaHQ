@@ -24,8 +24,16 @@ type Report struct {
 	OutboundLast24h       int
 	DailyCap              int
 	LastInboundAgeSeconds *int
-	Problems              []string
-	Err                   string
+
+	// AllowlistCount is how many contacts have escaped the bridge's reply-only
+	// rail. A POINTER, like LastInboundAgeSeconds and for the same reason: the
+	// bridge sends null when it could not read its own allowlist, and "nobody
+	// has escaped" must never render as the same fact as "we could not find
+	// out" — the second is a safety rail gone blind.
+	AllowlistCount *int
+
+	Problems []string
+	Err      string
 }
 
 // bridgeHealthBody mirrors wa-agent-bridge's /v1/health response shape.
@@ -36,6 +44,7 @@ type bridgeHealthBody struct {
 	OutboundLast24h       int      `json:"outboundLast24h"`
 	DailyCap              int      `json:"dailyCap"`
 	LastInboundAgeSeconds *int     `json:"lastInboundAgeSeconds"`
+	Allowlisted           *int     `json:"allowlisted"`
 	Problems              []string `json:"problems"`
 }
 
@@ -56,6 +65,10 @@ type Poller struct {
 	// the bound: an unlimited poll of 200 tenants opens 200 simultaneous
 	// connections every cycle, a thundering herd against its own box.
 	Concurrency int
+
+	// reconcileFn overrides Reconcile in the background sweep. Test-only; see
+	// (*Poller).reconciler.
+	reconcileFn func(*store.Store, []store.Tenant, map[string]Report) error
 }
 
 // defaultConcurrency is used when Concurrency is left at its zero value.
@@ -141,6 +154,7 @@ func (p *Poller) poll(ctx context.Context, t store.Tenant) Report {
 		OutboundLast24h:       body.OutboundLast24h,
 		DailyCap:              body.DailyCap,
 		LastInboundAgeSeconds: body.LastInboundAgeSeconds,
+		AllowlistCount:        body.Allowlisted,
 		Problems:              body.Problems,
 	}
 }

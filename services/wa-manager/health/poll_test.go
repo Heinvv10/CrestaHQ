@@ -65,3 +65,61 @@ func TestDegradedBridgeIsCarriedThrough(t *testing.T) {
 		t.Fatalf("degraded detail lost: %+v", r)
 	}
 }
+
+// The allowlist count is how the operator screen reports the reply-only rail.
+// It travels as a POINTER because the bridge sends null when it could not read
+// its own allowlist, and "nobody has escaped reply-only" must not be
+// indistinguishable from "we could not find out".
+func TestAllowlistCountIsCarriedThrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"ok":true,"connected":true,"allowlisted":2}`))
+	}))
+	defer srv.Close()
+
+	p := New(srv.Client(), func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return srv.URL }
+
+	r := p.Snapshot(context.Background(), []store.Tenant{{ID: "t1"}})["t1"]
+	if r.AllowlistCount == nil {
+		t.Fatal("a reported allowlist count must reach the report")
+	}
+	if *r.AllowlistCount != 2 {
+		t.Fatalf("want 2 allowlisted, got %d", *r.AllowlistCount)
+	}
+}
+
+// An empty allowlist is a real, reportable state and must arrive as 0, not as
+// "unknown" — otherwise the screen would say it cannot see a rail it can.
+func TestAnEmptyAllowlistArrivesAsZeroNotUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"ok":true,"connected":true,"allowlisted":0}`))
+	}))
+	defer srv.Close()
+
+	p := New(srv.Client(), func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return srv.URL }
+
+	r := p.Snapshot(context.Background(), []store.Tenant{{ID: "t1"}})["t1"]
+	if r.AllowlistCount == nil || *r.AllowlistCount != 0 {
+		t.Fatalf("an empty allowlist must arrive as 0, got %v", r.AllowlistCount)
+	}
+}
+
+// A bridge that could not read its own allowlist sends null. That must stay
+// unknown all the way up rather than collapsing to a reassuring zero.
+func TestAnUnreadableAllowlistStaysUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"ok":false,"degraded":true,"connected":true,"allowlisted":null,
+			"problems":["allowlist unreadable"]}`))
+	}))
+	defer srv.Close()
+
+	p := New(srv.Client(), func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return srv.URL }
+
+	r := p.Snapshot(context.Background(), []store.Tenant{{ID: "t1"}})["t1"]
+	if r.AllowlistCount != nil {
+		t.Fatalf("a null allowlist count must not become a number, got %d", *r.AllowlistCount)
+	}
+}

@@ -633,3 +633,24 @@ func assertNoInternals(t *testing.T, body string) {
 		}
 	}
 }
+
+// The operator UI shows how many contacts have escaped reply-only. This JSON
+// view is the same health, read by a machine, and the two must not disagree
+// about what health contains — a monitor built on this endpoint would
+// otherwise be blind to a rail the human screen displays.
+func TestTenantViewCarriesTheAllowlistCount(t *testing.T) {
+	n := 2
+	v := viewOf(store.Tenant{ID: "t1"}, &health.Report{Reachable: true, AllowlistCount: &n})
+	if v.Health == nil || v.Health.AllowlistCount == nil {
+		t.Fatal("the allowlist count must reach the JSON view")
+	}
+	if *v.Health.AllowlistCount != 2 {
+		t.Fatalf("want 2, got %d", *v.Health.AllowlistCount)
+	}
+
+	// null, not 0, when the bridge could not read its own allowlist.
+	blind := viewOf(store.Tenant{ID: "t1"}, &health.Report{Reachable: true, AllowlistCount: nil})
+	if blind.Health.AllowlistCount != nil {
+		t.Fatal("an unreadable allowlist must stay null in JSON, never become 0")
+	}
+}

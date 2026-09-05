@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"html"
 	"strings"
 	"testing"
@@ -256,5 +257,79 @@ func TestPairingPageLinksTheQRImageRatherThanEmbeddingAPayload(t *testing.T) {
 	mustContain(t, out, `src="/tenants/blitz/qr.png"`)
 	if strings.Contains(out, "<script") {
 		t.Error("the page must render without shipping script to the browser")
+	}
+}
+
+func intPtr(n int) *int { return &n }
+
+// Reply-only is the rail that keeps a number alive, and this screen's whole
+// job is showing real safety state. The line names the rail AND how many
+// contacts have escaped it, because an allowlisted JID has nothing but the
+// global daily cap left in front of it.
+func TestReplyOnlyLineReportsTheAllowlistCount(t *testing.T) {
+	r := &health.Report{Reachable: true, Connected: true, AllowlistCount: intPtr(2)}
+	got := BuildCard(store.Tenant{ID: "t1", Phone: "+27821112222"}, r).ReplyOnly
+	if got != "on · 2 contacts allowlisted" {
+		t.Fatalf("want the count beside the rail, got %q", got)
+	}
+}
+
+// One is not "1 contacts". An operator reads this line during an incident.
+func TestReplyOnlyLineIsSingularForOne(t *testing.T) {
+	r := &health.Report{Reachable: true, Connected: true, AllowlistCount: intPtr(1)}
+	got := BuildCard(store.Tenant{ID: "t1", Phone: "+27821112222"}, r).ReplyOnly
+	if got != "on · 1 contact allowlisted" {
+		t.Fatalf("want a singular contact, got %q", got)
+	}
+}
+
+// The healthy, boring case: nobody has escaped. It must read as a fact, not as
+// an absence.
+func TestReplyOnlyLineReportsAnEmptyAllowlist(t *testing.T) {
+	r := &health.Report{Reachable: true, Connected: true, AllowlistCount: intPtr(0)}
+	got := BuildCard(store.Tenant{ID: "t1", Phone: "+27821112222"}, r).ReplyOnly
+	if got != "on · nobody allowlisted" {
+		t.Fatalf("want an explicit empty allowlist, got %q", got)
+	}
+}
+
+// The defect this whole line exists to avoid: a decorative safety claim. A
+// bridge that could not read its own allowlist sends no count, and the card
+// must say so rather than reassuring the operator with a zero.
+func TestReplyOnlyLineDoesNotClaimAnUnknownAllowlistIsEmpty(t *testing.T) {
+	r := &health.Report{Reachable: true, Connected: true, AllowlistCount: nil}
+	got := BuildCard(store.Tenant{ID: "t1", Phone: "+27821112222"}, r).ReplyOnly
+	if got == "on · nobody allowlisted" || got == "on · 0 contacts allowlisted" {
+		t.Fatalf("an unreadable allowlist rendered as an empty one: %q", got)
+	}
+	if got != "on · allowlist unreadable" {
+		t.Fatalf("want an explicit unreadable allowlist, got %q", got)
+	}
+}
+
+// An unreachable bridge tells us nothing about its rails. Claiming reply-only
+// is "on" for a number we cannot see is precisely the decorative safety claim
+// this card refuses to make.
+func TestUnreachableCardMakesNoReplyOnlyClaim(t *testing.T) {
+	got := BuildCard(store.Tenant{ID: "t1"}, nil).ReplyOnly
+	if got != "unknown" {
+		t.Fatalf("an unseen bridge must not claim its rails; got %q", got)
+	}
+}
+
+// The line has to reach the operator, not just the struct. A field built and
+// never rendered is the failure mode a previous task in this project shipped.
+func TestReplyOnlyLineIsRendered(t *testing.T) {
+	r := &health.Report{Reachable: true, Connected: true, AllowlistCount: intPtr(2)}
+	var buf bytes.Buffer
+	page := Page{Cards: []Card{BuildCard(store.Tenant{ID: "t1", Phone: "+27821112222"}, r)}}
+	if err := Render(&buf, page); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "on · 2 contacts allowlisted") {
+		t.Fatalf("the reply-only line never reached the page:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Reply-only") {
+		t.Fatalf("the reply-only line has no label:\n%s", buf.String())
 	}
 }

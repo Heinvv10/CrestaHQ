@@ -45,6 +45,7 @@
     <dt>Sent today</dt><dd>{{.SentToday}} <span class="bar">{{.Bar}}</span></dd>
     <dt>Last inbound</dt><dd>{{.LastInbound}}</dd>
     <dt>Kill switch</dt><dd>{{.KillSwitch}}</dd>
+    <dt>Reply-only</dt><dd>{{.ReplyOnly}}</dd>
   </dl>
   {{- if .Problems}}
   <ul class="problems">{{range .Problems}}<li>{{.}}</li>{{end}}</ul>

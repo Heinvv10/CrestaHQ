@@ -34,15 +34,20 @@ type tenantView struct {
 // reporting all-zeroes are different incidents, and collapsing them would
 // render the manager's whole reason for existing useless.
 type healthView struct {
-	Reachable             bool     `json:"reachable"`
-	Connected             bool     `json:"connected"`
-	Killed                bool     `json:"killed"`
-	Degraded              bool     `json:"degraded"`
-	OutboundLast24h       int      `json:"outboundLast24h"`
-	DailyCap              int      `json:"dailyCap"`
-	LastInboundAgeSeconds *int     `json:"lastInboundAgeSeconds"`
-	Problems              []string `json:"problems,omitempty"`
-	Error                 string   `json:"error,omitempty"`
+	Reachable             bool `json:"reachable"`
+	Connected             bool `json:"connected"`
+	Killed                bool `json:"killed"`
+	Degraded              bool `json:"degraded"`
+	OutboundLast24h       int  `json:"outboundLast24h"`
+	DailyCap              int  `json:"dailyCap"`
+	LastInboundAgeSeconds *int `json:"lastInboundAgeSeconds"`
+	// AllowlistCount is how many contacts have escaped the bridge's reply-only
+	// rail. Never omitempty and never a plain int: null means the bridge could
+	// not read its own allowlist, which is a rail gone blind and the opposite
+	// fact from "nobody has escaped".
+	AllowlistCount *int     `json:"allowlisted"`
+	Problems       []string `json:"problems,omitempty"`
+	Error          string   `json:"error,omitempty"`
 }
 
 func viewOf(t store.Tenant, r *health.Report) tenantView {
@@ -63,6 +68,7 @@ func viewOf(t store.Tenant, r *health.Report) tenantView {
 			OutboundLast24h:       r.OutboundLast24h,
 			DailyCap:              r.DailyCap,
 			LastInboundAgeSeconds: r.LastInboundAgeSeconds,
+			AllowlistCount:        r.AllowlistCount,
 			Problems:              r.Problems,
 			Error:                 r.Err,
 		}

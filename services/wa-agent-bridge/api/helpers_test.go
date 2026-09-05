@@ -64,6 +64,7 @@ type faultyStore struct {
 	*store.Memory
 	failRecordOutbound bool
 	failCountTotal     bool
+	failListAllowlist  bool
 }
 
 func (f *faultyStore) RecordOutbound(jid, consumer, messageID string, at time.Time) error {
@@ -190,4 +191,15 @@ func getAuthed(h http.Handler, path, token string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// failListAllowlist breaks the read the health endpoint uses to report how many
+// contacts have escaped reply-only. It exists so a test can tell "nobody is
+// allowlisted" apart from "we could not find out" — the two states health must
+// never render alike.
+func (f *faultyStore) ListAllowlist() ([]string, error) {
+	if f.failListAllowlist {
+		return nil, errors.New("disk is gone")
+	}
+	return f.Memory.ListAllowlist()
 }

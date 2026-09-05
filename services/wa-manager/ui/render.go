@@ -80,6 +80,12 @@ type Card struct {
 	LastInbound string // "6 min ago", "never", or "unknown"
 	KillSwitch  string
 
+	// ReplyOnly names the rail that keeps the number alive, and how many
+	// contacts have escaped it. Reply-only has no toggle in this design — the
+	// allowlist is its only override — so the line states the rail is on and
+	// spends its width on the number that actually varies.
+	ReplyOnly string
+
 	// NeedsPairing offers the re-pair route inline. A disconnected number is
 	// the one card an operator has to act on.
 	NeedsPairing bool
@@ -130,6 +136,9 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 	if r == nil || !r.Reachable {
 		c.Status, c.Tone = "Unreachable — the manager cannot see this bridge", ToneBad
 		c.SentToday, c.LastInbound, c.KillSwitch = "unknown", "unknown", "unknown"
+		// Not "on": a bridge we cannot see tells us nothing about its rails,
+		// and a safety claim about an unobserved number is worse than no claim.
+		c.ReplyOnly = "unknown"
 		if r != nil && r.Err != "" {
 			c.Problems = []string{r.Err}
 		}
@@ -140,6 +149,7 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 	c.SentToday, c.Bar = volume(r.OutboundLast24h, r.DailyCap)
 	c.LastInbound = humanizeAge(r.LastInboundAgeSeconds)
 	c.KillSwitch = killState(r.Killed)
+	c.ReplyOnly = replyOnlyState(r.AllowlistCount)
 	c.Problems = r.Problems
 	return c
 }
@@ -214,6 +224,30 @@ func humanizeAge(sec *int) string {
 		return fmt.Sprintf("%d hr ago", s/3600)
 	default:
 		return fmt.Sprintf("%d days ago", s/86400)
+	}
+}
+
+// replyOnlyState renders the reply-only rail and its only override.
+//
+// Reply-only is always on in this design; the allowlist is the sole way out of
+// it, so the count is the part worth a line. nil means the bridge could not
+// read its own allowlist — a rail gone blind — and that must NOT collapse into
+// "nobody allowlisted". The two are opposite facts: one says the rail is
+// intact, the other says we cannot tell. Rendering them alike would make this
+// line a decoration, which on this screen is worse than omitting it.
+func replyOnlyState(count *int) string {
+	switch {
+	case count == nil:
+		return "on · allowlist unreadable"
+	case *count <= 0:
+		// Negative is a broken bridge, not a negative allowlist. It reads as
+		// empty rather than inventing "-1 contacts allowlisted"; the degraded
+		// status line carries the fact that the bridge is wrong.
+		return "on · nobody allowlisted"
+	case *count == 1:
+		return "on · 1 contact allowlisted"
+	default:
+		return fmt.Sprintf("on · %d contacts allowlisted", *count)
 	}
 }
 
