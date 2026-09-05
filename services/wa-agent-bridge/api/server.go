@@ -52,6 +52,16 @@ type Deps struct {
 	// job is catching silent failure must not answer "ok" about a thing it
 	// cannot see.
 	Connection ConnectionState
+
+	// Version is the build this process is running, stamped by the deploy
+	// script with -ldflags. Empty in a dev build and in every test.
+	//
+	// It exists so the manager can tell which bridges are still on the old
+	// binary after a deploy. That question has to be answered by the running
+	// PROCESS, not by a file on disk: the binary is shared by every instance
+	// and is replaced before any of them restart, so the file says "new" for
+	// forty bridges that are all still running the old code.
+	Version string
 }
 
 // recordFailureLimit is how many CONSECUTIVE RecordOutbound failures are

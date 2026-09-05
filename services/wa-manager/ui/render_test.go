@@ -455,3 +455,49 @@ func TestANotCheckedCardIsNotOfferedARestart(t *testing.T) {
 		t.Error("an unchecked number was offered a restart")
 	}
 }
+
+// The banner exists for the state where numbers disagree about which build
+// they run and one of them did not come back. A held rollout must say so, name
+// what stopped it, and be loud.
+func TestAHeldRolloutIsAnnouncedLoudly(t *testing.T) {
+	line := BuildRolloutLine("failed", "abc1234def5678", "held at soak1 after 2 of 5 restarted", false)
+	if line == nil {
+		t.Fatal("a held rollout said nothing")
+	}
+	if line.Tone != ToneBad {
+		t.Fatalf("tone = %q, want bad", line.Tone)
+	}
+	if !strings.Contains(line.Text, "held at soak1") {
+		t.Fatalf("the banner does not name what stopped it: %q", line.Text)
+	}
+	out := renderPage(t, Page{Rollout: line})
+	if !strings.Contains(out, "held at soak1") {
+		t.Fatalf("the page did not render the rollout banner:\n%s", out)
+	}
+}
+
+// A rollout that finished cleanly says NOTHING. A banner that announces
+// successes is one people stop reading, and this one has to still work on the
+// day it reports a stranded number.
+func TestAFinishedRolloutIsNotAnnounced(t *testing.T) {
+	if line := BuildRolloutLine("done", "abc1234", "5 bridges restarted", false); line != nil {
+		t.Fatalf("a finished rollout produced a banner: %q", line.Text)
+	}
+	out := renderPage(t, Page{Rollout: nil})
+	if strings.Contains(out, "Rollout") {
+		t.Errorf("a page with no outstanding rollout mentions one:\n%s", out)
+	}
+}
+
+// A queued rollout tells the operator when it will actually move, because
+// "queued" without "overnight" reads as "stuck".
+func TestAQueuedRolloutSaysWhenItWillRun(t *testing.T) {
+	deferred := BuildRolloutLine("pending", "abc1234", "", false)
+	if !strings.Contains(deferred.Text, "overnight") {
+		t.Fatalf("a deferred rollout does not say when it runs: %q", deferred.Text)
+	}
+	immediate := BuildRolloutLine("pending", "abc1234", "", true)
+	if strings.Contains(immediate.Text, "overnight") {
+		t.Fatalf("an immediate rollout claims it waits for the window: %q", immediate.Text)
+	}
+}

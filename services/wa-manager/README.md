@@ -59,7 +59,9 @@ without both:
 | `PORT_BASE` | `33100` | First port of the tenant bridge range. |
 | `PORT_COUNT` | `200` | Width of that range. Zero is refused — no tenant could ever be provisioned. |
 | `WEBHOOK_BASE_URL` | unset | Where a tenant's bridge posts inbound. The tenant id is appended, so each number is distinguishable. Unset means bridges receive and record but forward nowhere — correct for a number provisioned before its consumer exists. |
-| `QUIET_TZ` | `Africa/Johannesburg` | Written into every provisioned `.env`. Validated here so one bad string fails at the manager's boot rather than separately inside every bridge it provisions. |
+| `QUIET_TZ` | `Africa/Johannesburg` | Written into every provisioned `.env`, and the timezone the rollout window below is read in. Validated here so one bad string fails at the manager's boot rather than separately inside every bridge it provisions. |
+| `ROLLOUT_START_HOUR` | `22` | Start of the window a deferred fleet rollout may restart bridges in, local to `QUIET_TZ`. The window wraps midnight when start > end. |
+| `ROLLOUT_END_HOUR` | `5` | End of that window. Equal start and end mean "any time" — the other reading turns a typo into a rollout that never runs, which looks exactly like one nobody requested. An hour outside 0–23 is refused at boot. |
 
 Two configuration errors are caught at boot rather than left to surface later:
 
@@ -183,6 +185,42 @@ Plan for that before you begin. Have the phone in your hand, already on
 enough only if the scan is the first thing you do; it defeated a prepared
 operator twice during the 2026-09-05 soak, both times because the phone was
 still being unlocked when the window ran out.
+
+## Deploying, and rolling the fleet
+
+`bash scripts/deploy-wa.sh` — run on velo-server as the user that owns
+`/opt/wa-*`. It runs both services' gates, builds both binaries, installs them
+and the unit files, restarts the manager, and then **asks this service to roll
+the fleet**. It never restarts a bridge itself.
+
+That split is the whole point. A bridge restart is not free: the bridge records
+inbound for five minutes after connecting and forwards none of it, so every
+bounce is a five-minute hole in webhook delivery for that number. Bouncing forty
+numbers from a shell loop is an outage with a progress bar.
+
+So the manager rolls them:
+
+- **Only the stale ones.** Each bridge reports the build it is running on
+  `/v1/health`; one already on the target build is not touched. A deploy that
+  changed only the manager restarts nothing.
+- **One at a time**, waiting for each to come back *and report the new build*
+  before starting the next. A bridge that comes back on the old binary is a
+  failure, not a success — that is what a half-written install looks like.
+- **Overnight by default**, inside `ROLLOUT_START_HOUR`–`ROLLOUT_END_HOUR`
+  (22–05 local, in `QUIET_TZ`). `--now` overrides it for a fix that cannot
+  wait, at the cost of every number taking its five minutes during the day.
+- **Held on the first failure.** Bridges already restarted stay on the new
+  build, the rest stay as they were, and the screen says which number stopped
+  it. A split fleet is inspectable; spending more delivery holes to undo a
+  change mid-incident is not.
+
+A rollout is a standing intent — "every bridge should run build X" — not a list
+of steps, so it is safe to re-request, survives a manager restart, and picks up
+a bridge that was down while it ran. Watch it on the operator screen; the banner
+is silent for a rollout that finished cleanly and loud for one that is held.
+
+The previous binaries are kept in `~/.wa-deploy-backups`, so a rollback is a
+copy and a restart rather than a rebuild.
 
 ## `logged_out`, and re-pairing
 

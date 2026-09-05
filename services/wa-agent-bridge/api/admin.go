@@ -139,6 +139,13 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 					body["number"] = number
 				}
 			}
+			// The build this process is running. Token-gated beside the
+			// number rather than published, for the same reason: this is the
+			// service's one ungated surface and a version string tells an
+			// unauthenticated caller which advisories apply to it.
+			if s.deps.Version != "" {
+				body["version"] = s.deps.Version
+			}
 		} else {
 			// A rejected token is logged here exactly as `authed` logs one,
 			// and for the same reason. Without this line the one endpoint

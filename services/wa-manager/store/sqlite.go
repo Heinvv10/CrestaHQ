@@ -8,6 +8,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -68,6 +69,25 @@ CREATE TABLE IF NOT EXISTS events (
   at_unix   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id, id DESC);
+
+-- One row per requested rollout. A rollout is a standing intent — "every
+-- bridge should be running version X" — not a list of steps, so there is
+-- nothing here enumerating tenants: the worker asks each bridge what it is
+-- running and restarts the ones that disagree. That makes a rollout
+-- idempotent, resumable across a manager restart, and self-correcting for a
+-- bridge that was down while it ran.
+--
+-- At most one row is ever pending or running; see ClaimRollout.
+CREATE TABLE IF NOT EXISTS rollouts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  version       TEXT NOT NULL,          -- the build every bridge should reach
+  state         TEXT NOT NULL,          -- pending | running | done | failed
+  immediate     INTEGER NOT NULL,       -- 1 = --now, ignore the window
+  detail        TEXT NOT NULL DEFAULT '',
+  requested_unix INTEGER NOT NULL,
+  finished_unix  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_rollouts_state ON rollouts(state, id);
 `
 
 func Open(path string) (*Store, error) {
@@ -234,6 +254,142 @@ func (s *Store) SetTenantIdentity(id, displayName, instance string) error {
 	}
 	if n == 0 {
 		return fmt.Errorf("store: no tenant %q", id)
+	}
+	return nil
+}
+
+// Rollout states. A rollout is pending until the worker picks it up, running
+// while it is bouncing bridges, and then terminal — done or failed.
+const (
+	RolloutPending = "pending"
+	RolloutRunning = "running"
+	RolloutDone    = "done"
+	RolloutFailed  = "failed"
+)
+
+// Rollout is one requested fleet upgrade.
+type Rollout struct {
+	ID        int64
+	Version   string
+	State     string
+	Immediate bool
+	Detail    string
+	Requested time.Time
+	Finished  time.Time
+}
+
+// RequestRollout records the intent to bring every bridge to version.
+//
+// It refuses while another rollout is pending or running, and that refusal is
+// the whole concurrency design: two workers bouncing the same fleet on
+// different target versions would fight, and each restart costs a five-minute
+// hole in delivery for a real customer's number. One at a time, or none.
+//
+// A repeat request for the SAME version while one is already outstanding is
+// not an error to the caller — the deploy script may legitimately run twice —
+// so the existing rollout is returned instead.
+func (s *Store) RequestRollout(version string, immediate bool) (Rollout, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Rollout{}, err
+	}
+	defer tx.Rollback()
+
+	var existing Rollout
+	var req, fin int64
+	var imm int
+	err = tx.QueryRow(
+		`SELECT id, version, state, immediate, detail, requested_unix, finished_unix
+		   FROM rollouts WHERE state IN (?, ?) ORDER BY id LIMIT 1`,
+		RolloutPending, RolloutRunning).
+		Scan(&existing.ID, &existing.Version, &existing.State, &imm, &existing.Detail, &req, &fin)
+	switch {
+	case err == nil && existing.Version == version:
+		existing.Immediate = imm == 1
+		existing.Requested = time.Unix(req, 0)
+		return existing, tx.Commit()
+	case err == nil:
+		return Rollout{}, fmt.Errorf("store: rollout %d to %q is already %s",
+			existing.ID, existing.Version, existing.State)
+	case !errors.Is(err, sql.ErrNoRows):
+		return Rollout{}, err
+	}
+
+	now := time.Now()
+	immInt := 0
+	if immediate {
+		immInt = 1
+	}
+	res, err := tx.Exec(
+		`INSERT INTO rollouts (version, state, immediate, requested_unix) VALUES (?, ?, ?, ?)`,
+		version, RolloutPending, immInt, now.Unix())
+	if err != nil {
+		return Rollout{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Rollout{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Rollout{}, err
+	}
+	return Rollout{ID: id, Version: version, State: RolloutPending, Immediate: immediate, Requested: now}, nil
+}
+
+// CurrentRollout returns the outstanding rollout, or ok=false when there is
+// none. Only pending and running rollouts are outstanding; a finished one is
+// history and is read with LastRollout.
+func (s *Store) CurrentRollout() (Rollout, bool, error) {
+	return s.rolloutWhere(`state IN ('pending','running') ORDER BY id LIMIT 1`)
+}
+
+// LastRollout returns the most recent rollout in any state.
+func (s *Store) LastRollout() (Rollout, bool, error) {
+	return s.rolloutWhere(`1=1 ORDER BY id DESC LIMIT 1`)
+}
+
+func (s *Store) rolloutWhere(clause string) (Rollout, bool, error) {
+	var r Rollout
+	var req, fin int64
+	var imm int
+	err := s.db.QueryRow(
+		`SELECT id, version, state, immediate, detail, requested_unix, finished_unix
+		   FROM rollouts WHERE `+clause).
+		Scan(&r.ID, &r.Version, &r.State, &imm, &r.Detail, &req, &fin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Rollout{}, false, nil
+	}
+	if err != nil {
+		return Rollout{}, false, err
+	}
+	r.Immediate = imm == 1
+	r.Requested = time.Unix(req, 0)
+	if fin != 0 {
+		r.Finished = time.Unix(fin, 0)
+	}
+	return r, true, nil
+}
+
+// SetRolloutState moves a rollout on, stamping finished_unix for a terminal
+// state. detail is what the operator screen shows — for a failure, which
+// instance stopped it.
+func (s *Store) SetRolloutState(id int64, state, detail string) error {
+	finished := int64(0)
+	if state == RolloutDone || state == RolloutFailed {
+		finished = time.Now().Unix()
+	}
+	res, err := s.db.Exec(
+		`UPDATE rollouts SET state = ?, detail = ?, finished_unix = ? WHERE id = ?`,
+		state, detail, finished, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("store: no rollout %d", id)
 	}
 	return nil
 }

@@ -153,6 +153,11 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/tenants/{id}", s.authed(s.handleDelete))
 	mux.HandleFunc("GET /api/tenants/{id}/pair", s.authed(s.handlePair))
 	mux.HandleFunc("POST /api/tenants/{id}/restart", s.authed(s.handleRestart))
+	// Fleet rollout. Requesting one only writes a row; the worker restarts
+	// bridges on its own loop, so a rollout outlives the request and the ssh
+	// session that made it. The deploy script polls the GET.
+	mux.HandleFunc("POST /api/rollout", s.authed(s.handleRollout))
+	mux.HandleFunc("GET /api/rollout", s.authed(s.handleRolloutStatus))
 
 	// The operator UI. Authenticated exactly like everything else here — it
 	// is a view onto the same privileged surface, and an unauthenticated

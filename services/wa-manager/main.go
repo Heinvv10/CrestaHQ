@@ -43,6 +43,15 @@ const (
 	// relied upon is one nobody notices when it changes.
 	pollConcurrency = 8
 
+	// rolloutEvery paces the rollout worker's check for outstanding work.
+	//
+	// A minute, not fifteen seconds: the thing it is waiting for is a clock
+	// reaching an overnight window, and checking on a timer rather than
+	// sleeping until the window opens is what lets a manager restarted at
+	// 23:00 pick up a rollout requested at 18:00 without anyone re-requesting
+	// it.
+	rolloutEvery = time.Minute
+
 	// bridgeTimeout bounds every call to a tenant's bridge — the health poll
 	// and the pairing relay both. A hung bridge must not pin an operator's
 	// request, and with pollConcurrency workers a long timeout would stall the
@@ -120,6 +129,9 @@ func main() {
 	// an operator next opens the screen, not when it happened. The two are one
 	// call so that a poller cannot exist here unstarted; see startPoller.
 	poller := startPoller(ctx, bridges, tokens, st)
+
+	// Starts the rollout loop as well as building the worker; see startRollout.
+	startRollout(ctx, st, units, poller, cfg)
 
 	handler := api.New(api.Deps{
 		Store:         st,

@@ -135,6 +135,23 @@ type Page struct {
 	// numbers, or renders unchecked ones as dead, is worse than one that
 	// admits it is incomplete.
 	Notice string
+
+	// Rollout is a fleet upgrade that is outstanding, or the last one if it
+	// FAILED. A separate field from Notice because both can be true at once,
+	// and because a held rollout is the loudest thing that can be on this
+	// screen: it means some numbers are on a new build, some are not, and one
+	// of them did not come back.
+	//
+	// A rollout that finished cleanly is not shown. It is history, and a
+	// safety screen that keeps announcing successes trains the operator to
+	// stop reading the banner.
+	Rollout *RolloutLine
+}
+
+// RolloutLine is the banner for a rollout, already worded for a human.
+type RolloutLine struct {
+	Text string
+	Tone Tone
 }
 
 // EventLine is one row of a tenant's history — the "why did this die" record.
@@ -308,4 +325,43 @@ var tpl = template.Must(template.ParseFS(templateFS, "templates/numbers.html"))
 // because display names are operator-supplied and problems come off a bridge.
 func Render(w io.Writer, p Page) error {
 	return tpl.ExecuteTemplate(w, "numbers.html", p)
+}
+
+// BuildRolloutLine words a rollout for the operator screen, or returns nil
+// when there is nothing worth saying.
+//
+// Nothing is said about a rollout that finished cleanly. A banner that
+// announces successes is a banner people stop reading, and this one has to
+// still work the day it says a customer's number is stranded on an old build.
+func BuildRolloutLine(state, version, detail string, immediate bool) *RolloutLine {
+	short := version
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	switch state {
+	case "pending":
+		when := "at the next overnight window"
+		if immediate {
+			when = "as soon as the manager gets to it"
+		}
+		return &RolloutLine{
+			Tone: ToneWarn,
+			Text: "Rollout to " + short + " is queued — bridges restart " + when +
+				". Each restart costs that number about five minutes of forwarding.",
+		}
+	case "running":
+		return &RolloutLine{
+			Tone: ToneWarn,
+			Text: "Rollout to " + short + " is running — one number at a time. " +
+				"A number that looks briefly disconnected is being restarted, not lost.",
+		}
+	case "failed":
+		return &RolloutLine{
+			Tone: ToneBad,
+			Text: "Rollout to " + short + " HELD: " + detail +
+				". Numbers before it are on the new build, the rest are not — this needs a human.",
+		}
+	default:
+		return nil
+	}
 }

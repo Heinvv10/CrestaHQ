@@ -60,6 +60,9 @@
 {{- if .Notice}}
 <p class="notice">{{.Notice}}</p>
 {{- end}}
+{{- if .Rollout}}
+<p class="notice {{.Rollout.Tone}}">{{.Rollout.Text}}</p>
+{{- end}}
 {{if .Tenant}}
   <h1>{{.Tenant.Title}}</h1>
   <div class="cards">{{template "card" .Tenant}}</div>

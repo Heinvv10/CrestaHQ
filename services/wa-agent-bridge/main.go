@@ -25,6 +25,15 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/wa"
 )
 
+// version is the build this binary was cut from, stamped by the deploy script
+// with `-ldflags "-X main.version=<sha>"`. It stays "dev" in a plain `go build`,
+// which is the honest answer for a hand-built binary and is deliberately not
+// silence: a rollout compares this against the sha it is rolling out, so a
+// hand-built bridge reads as stale and gets restarted rather than skipped.
+//
+// The manager reads it to decide which bridges a rollout still has to restart.
+var version = "dev"
+
 // clientHolder breaks the construction cycle between the WhatsApp client and
 // everything constructed before it — the fanout and the HTTP API.
 //
@@ -176,6 +185,7 @@ func main() {
 		// Set after this call, via gate.set(client) above; the holder answers
 		// "not connected" until then.
 		Connection: gate,
+		Version:    version,
 	})
 
 	ln, err := listenValidated(cfg)

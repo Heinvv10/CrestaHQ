@@ -45,6 +45,21 @@ type Config struct {
 	// than separately in every bridge it would go on to provision.
 	QuietTZ string
 
+	// RolloutStartHour, RolloutEndHour bound the local-time window in which a
+	// deferred rollout is allowed to restart bridges, in QuietTZ. The window
+	// wraps midnight when start > end, which is the normal case.
+	//
+	// A restart is not free: the bridge records inbound for five minutes after
+	// connecting and forwards none of it (wa.ReplayWindow), so every bounce is
+	// a five-minute hole in delivery for that number. The window exists to put
+	// those holes where the fewest customers are messaging.
+	//
+	// Deliberately separate from the bridge's own quiet hours even though the
+	// span is similar. Those mean "do not SEND to customers now"; this means
+	// "it is cheap to be briefly deaf now". Conflating them would mean one
+	// edit silently changing the other.
+	RolloutStartHour, RolloutEndHour int
+
 	// PublicOrigin is the origin (scheme://host[:port]) a browser actually
 	// sees, for deployments where a reverse proxy sits in front of this
 	// process. Empty means direct-bind: the UI's same-origin check compares
@@ -66,6 +81,10 @@ const (
 	defaultPortBase     = 33100
 	defaultPortCount    = 200
 	defaultQuietTZ      = "Africa/Johannesburg"
+	// 22:00-05:00 local. Wide enough that a rollout of forty bridges at one
+	// restart per minute finishes inside it.
+	defaultRolloutStart = 22
+	defaultRolloutEnd   = 5
 )
 
 // minOperatorTokenLen is the shortest OPERATOR_TOKEN this process will boot
@@ -144,6 +163,23 @@ func Load() (Config, error) {
 	var err error
 	if cfg.PortBase, err = envInt("PORT_BASE", defaultPortBase); err != nil {
 		return Config{}, err
+	}
+	if cfg.RolloutStartHour, err = envInt("ROLLOUT_START_HOUR", defaultRolloutStart); err != nil {
+		return Config{}, err
+	}
+	if cfg.RolloutEndHour, err = envInt("ROLLOUT_END_HOUR", defaultRolloutEnd); err != nil {
+		return Config{}, err
+	}
+	// An hour outside 0-23 is a typo that would otherwise produce a window no
+	// clock ever enters, and a deferred rollout that never runs looks exactly
+	// like a rollout that was never requested.
+	for _, h := range []struct {
+		name string
+		val  int
+	}{{"ROLLOUT_START_HOUR", cfg.RolloutStartHour}, {"ROLLOUT_END_HOUR", cfg.RolloutEndHour}} {
+		if h.val < 0 || h.val > 23 {
+			return Config{}, fmt.Errorf("%s must be an hour 0-23, got %d", h.name, h.val)
+		}
 	}
 	if cfg.PortCount, err = envInt("PORT_COUNT", defaultPortCount); err != nil {
 		return Config{}, err
