@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
@@ -111,14 +112,9 @@ export function SubAccountGoogleReviewSection() {
   // helper, so it reads the member-readable display metadata each connect
   // route writes. That answers "is a sender configured", not "is it healthy
   // right now" — the live check belongs to the send path, which already has it.
-  const whatsappSender =
-    waProvider === "cloud"
-      ? subAccount?.whatsappCloudMeta?.phoneNumberId
-      : waProvider === "bridge"
-        ? subAccount?.whatsappBridgeMeta?.displayPhoneNumber
-        : subAccount?.twilioConfig?.whatsappFromNumber;
   const whatsappBaseReady =
-    subAccount?.whatsappEnabledByAgency === true && !!whatsappSender;
+    subAccount?.whatsappEnabledByAgency === true &&
+    whatsappSenderConfigured(subAccount);
   const whatsappTemplateReady = whatsappBaseReady && approved.length > 0;
   const connected = !!cfg?.reviewUrl;
   // WhatsApp Manual is free-form + in-window only, so it can't reliably fire on

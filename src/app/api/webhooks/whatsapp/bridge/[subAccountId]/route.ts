@@ -230,14 +230,29 @@ export async function POST(
   // therefore matches nothing; that is the bridge telling us its transport
   // supplied no id, and it is the pre-existing behaviour of the Twilio rail
   // for the same reason.
+  // A redelivery suppresses the two effects that are NOT idempotent, and
+  // nothing else. It deliberately does not return early.
+  //
+  // Returning early was wrong in a way that only shows up on the unhappy path:
+  // if a first delivery wrote the message row and then failed before the
+  // opt-out flip — a contended `batch.commit()`, say — the bridge would retry,
+  // the retry would be swallowed as a duplicate, and the customer's STOP would
+  // be dropped permanently. Honouring an opt-out is a POPIA obligation, not a
+  // best effort, so the only safe design is one where every delivery re-runs
+  // everything idempotent and skips only what is not.
+  //
+  // Idempotent, so always re-run: the row write (`{merge:true}` on this same
+  // doc id) and the STOP/START flip (sets the same boolean, and its activity
+  // row now carries a deterministic id for exactly this reason).
+  // Not idempotent, so gated: the conversation upsert re-bumps the thread, and
+  // the AI auto-reply sends another real WhatsApp message to a real person.
+  let isRedelivery = false;
   if (providerMessageId && contactDocs.length > 0) {
     const seen = await contactDocs[0].ref
       .collection("whatsappMessages")
       .doc(docId)
       .get();
-    if (seen.exists) {
-      return ok({ ok: true, ignored: "duplicate" });
-    }
+    isRedelivery = seen.exists;
   }
 
   // `at` is preferred over the server timestamp so a delayed delivery lands in
@@ -293,26 +308,33 @@ export async function POST(
   // landed. The inbox index is a derived view — losing an entry degrades the
   // unified inbox until the next message on the thread rebuilds it, whereas
   // failing the request loses nothing and reports a lie.
-  try {
-    await Promise.all(
-      contactDocs.map((d) => {
-        const cdata = d.data() as { name?: string; phone?: string } | undefined;
-        return upsertConversationForMessage({
-          contactId: d.id,
-          subAccountId,
-          agencyId,
-          contactName: cdata?.name ?? "",
-          contactPhone: cdata?.phone ?? from,
-          channel: "whatsapp",
-          direction: "inbound",
-          body,
-        });
-      })
-    );
-  } catch (err) {
-    console.warn("[whatsapp-bridge] conversation upsert failed", err);
+  // Skipped on a redelivery: the row above already carries this message, and
+  // re-upserting only re-bumps the thread to the top of the inbox.
+  if (!isRedelivery) {
+    try {
+      await Promise.all(
+        contactDocs.map((d) => {
+          const cdata = d.data() as { name?: string; phone?: string } | undefined;
+          return upsertConversationForMessage({
+            contactId: d.id,
+            subAccountId,
+            agencyId,
+            contactName: cdata?.name ?? "",
+            contactPhone: cdata?.phone ?? from,
+            channel: "whatsapp",
+            direction: "inbound",
+            body,
+          });
+        })
+      );
+    } catch (err) {
+      console.warn("[whatsapp-bridge] conversation upsert failed", err);
+    }
   }
 
+  // Runs on EVERY delivery, redelivery included. An opt-out is a POPIA
+  // obligation, so the one thing this handler must never do is drop a STOP
+  // because it thinks it has seen the message before.
   if (nextOptedOut !== null) {
     const batch = db.batch();
     for (const docSnap of contactDocs) {
@@ -320,21 +342,55 @@ export async function POST(
         whatsappOptedOut: nextOptedOut,
         updatedAt: FieldValue.serverTimestamp(),
       });
-      batch.set(docSnap.ref.collection("activities").doc(), {
-        type: "automation_step_skipped",
-        content: nextOptedOut
-          ? `WhatsApp opt-out (${word}) received from ${from}.`
-          : `WhatsApp opt-in (${word}) received from ${from}.`,
-        createdBy: "bridge_whatsapp_inbound",
-        meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
-        createdAt: FieldValue.serverTimestamp(),
-      });
+      // Deterministic id, keyed on the message this opt-out came from, so a
+      // retry overwrites its own activity row instead of appending a second
+      // one. A generated id made the write non-idempotent, which is what
+      // stopped the whole branch from being safe to re-run — and re-running it
+      // is exactly what a retry after a failed commit has to do. Falls back to
+      // a generated id only when the transport gave us no message id to key
+      // on, where there is nothing to be idempotent against anyway.
+      const activities = docSnap.ref.collection("activities");
+      batch.set(
+        providerMessageId
+          ? activities.doc(`whatsapp-optout-${providerMessageId}`)
+          : activities.doc(),
+        {
+          type: "automation_step_skipped",
+          content: nextOptedOut
+            ? `WhatsApp opt-out (${word}) received from ${from}.`
+            : `WhatsApp opt-in (${word}) received from ${from}.`,
+          createdBy: "bridge_whatsapp_inbound",
+          meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
+          createdAt: FieldValue.serverTimestamp(),
+        }
+      );
     }
-    await batch.commit();
+    try {
+      await batch.commit();
+    } catch (err) {
+      // The ONE place this handler deliberately answers non-2xx. Everything
+      // else degrades to a logged warning and a 200, because the bridge treats
+      // >= 300 as a failed delivery and retrying costs more than the data
+      // lost. Here the opposite holds: the customer asked to stop being
+      // messaged and we did not record it, so we want the retry — and the
+      // retry now honours it, because nothing above returns early on a
+      // redelivery any more.
+      console.error(
+        `[whatsapp-bridge] opt-out commit failed (sa=${subAccountId}) — asking the bridge to retry`,
+        err
+      );
+      return NextResponse.json(
+        { ok: false, error: "optout_not_recorded" },
+        { status: 503 }
+      );
+    }
     return ok({ ok: true, persisted: true, optedOut: nextOptedOut });
   }
 
-  if (contactDocs.length > 0 && aiIsConfigured()) {
+  // Gated on redelivery: this sends a real WhatsApp message to a real person
+  // and spends an LLM call, so it is the effect a replayed request must never
+  // repeat. It is also the last step, so skipping it strands nothing.
+  if (!isRedelivery && contactDocs.length > 0 && aiIsConfigured()) {
     try {
       const agent = await resolveAgent(subAccountId, "whatsapp");
       if (agent?.effective.enabled) {

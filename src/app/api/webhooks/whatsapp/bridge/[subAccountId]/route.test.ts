@@ -32,13 +32,19 @@ let existingMessageIds = new Set<string>();
 let upsertThrows = false;
 /** Message-doc reads issued — the redelivery check costs exactly one. */
 let messageReads: string[] = [];
+/** Contact-doc updates from the STOP/START branch. */
+let contactUpdates: Array<Record<string, unknown>> = [];
+/** Activity rows written by the STOP/START branch, with their doc ids. */
+let activityWrites: Array<{ docId: string; data: Record<string, unknown> }> = [];
+/** Set to make the opt-out batch commit fail, as contention would. */
+let commitThrows = false;
 
 function makeSnap(row: { id: string; data: Record<string, unknown> }) {
   const ref = {
     id: row.id,
     collection: (name: string) => ({
       doc: (docId?: string) => ({
-        id: docId ?? "generated-id",
+        id: docId ?? `generated-${name}-id`,
         get: async () => {
           messageReads.push(docId ?? "");
           return { exists: existingMessageIds.has(docId ?? "") };
@@ -86,11 +92,27 @@ const fakeDb = {
       }),
     };
   },
-  batch: () => ({
-    update: () => {},
-    set: () => {},
-    commit: async () => {},
-  }),
+  // A batch is atomic: nothing it buffers is visible until commit succeeds.
+  // Recording at call time instead would report writes that never landed —
+  // and the whole point of the retry tests below is what survives a commit
+  // that throws.
+  batch: () => {
+    const pendingUpdates: Array<Record<string, unknown>> = [];
+    const pendingSets: Array<{ docId: string; data: Record<string, unknown> }> = [];
+    return {
+      update: (_ref: unknown, data: Record<string, unknown>) => {
+        pendingUpdates.push(data);
+      },
+      set: (ref: { id?: string }, data: Record<string, unknown>) => {
+        pendingSets.push({ docId: ref?.id ?? "", data });
+      },
+      commit: async () => {
+        if (commitThrows) throw new Error("contention");
+        contactUpdates.push(...pendingUpdates);
+        activityWrites.push(...pendingSets);
+      },
+    };
+  },
 };
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => fakeDb }));
@@ -113,9 +135,16 @@ vi.mock("@/lib/server/conversations-service", () => ({
     conversationUpserts.push(a);
   },
 }));
-vi.mock("@/lib/comms/ai/openrouter", () => ({ aiIsConfigured: () => false }));
-vi.mock("@/lib/comms/ai/agent", () => ({ resolveAgent: async () => null }));
-vi.mock("@/lib/comms/ai/respond", () => ({ maybeRespondWithAi: async () => {} }));
+/** Most tests keep the AI off; the auto-reply tests switch it on. */
+let aiOn = false;
+const maybeRespondWithAi = vi.fn();
+vi.mock("@/lib/comms/ai/openrouter", () => ({ aiIsConfigured: () => aiOn }));
+vi.mock("@/lib/comms/ai/agent", () => ({
+  resolveAgent: async () => (aiOn ? { effective: { enabled: true } } : null),
+}));
+vi.mock("@/lib/comms/ai/respond", () => ({
+  maybeRespondWithAi: (...a: unknown[]) => maybeRespondWithAi(...a),
+}));
 
 import { POST } from "./route";
 
@@ -159,6 +188,11 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     existingMessageIds = new Set();
     upsertThrows = false;
     messageReads = [];
+    contactUpdates = [];
+    activityWrites = [];
+    commitThrows = false;
+    aiOn = false;
+    maybeRespondWithAi.mockReset();
     contactRows = [
       { id: "c1", data: { name: "Thabo", phone: "+27821234567" } },
     ];
@@ -326,16 +360,78 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites).toHaveLength(0);
   });
 
-  it("stops a redelivery before the conversation upsert and the auto-reply", async () => {
-    // The message row is idempotent on its own id, but nothing after it is.
+  it("suppresses only the non-idempotent effects on a redelivery", async () => {
     // A signature stays valid for five minutes, so a replayed request used to
-    // send another real WhatsApp message per replay while the row converged.
+    // send another real WhatsApp message per replay. What it must NOT do is
+    // skip the idempotent work — see the STOP test below for why that matters.
     existingMessageIds.add("3EB0ABC");
     const res = await post(inbound({ messageId: "3EB0ABC" }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, ignored: "duplicate" });
-    expect(messageWrites).toHaveLength(0);
     expect(conversationUpserts).toHaveLength(0);
+    // The row write still runs; it merges onto the same doc id, so it is a
+    // no-op in effect and the handler does not have to reason about ordering.
+    expect(messageWrites).toHaveLength(1);
+  });
+
+  it("honours a STOP that arrives again after the first delivery failed to record it", async () => {
+    // The regression an earlier fix introduced. Delivery 1 wrote the message
+    // row and then died on the opt-out commit; the retry was swallowed as a
+    // duplicate and the opt-out was lost for good. Dropping a STOP is a POPIA
+    // failure, not a missing nicety.
+    commitThrows = true;
+    const first = await post(inbound({ text: "STOP", messageId: "3EB0STOP" }));
+    expect(first.status).toBe(503);
+    expect(contactUpdates).toEqual([]);
+
+    // The bridge retries anything >= 300. By now the row from delivery 1 is
+    // stored, so this IS a redelivery.
+    commitThrows = false;
+    existingMessageIds.add("3EB0STOP");
+    contactUpdates = [];
+    const retry = await post(inbound({ text: "STOP", messageId: "3EB0STOP" }));
+    expect(retry.status).toBe(200);
+    expect(contactUpdates).toEqual([
+      expect.objectContaining({ whatsappOptedOut: true }),
+    ]);
+  });
+
+  it("auto-replies on a first delivery but never on a redelivery", async () => {
+    // The auto-reply sends a real WhatsApp message to a real person and spends
+    // an LLM call, so it is THE effect a replayed request must not repeat —
+    // and the reason the five-minute signature window mattered at all.
+    aiOn = true;
+
+    await post(inbound({ messageId: "3EB0AI" }));
+    expect(maybeRespondWithAi).toHaveBeenCalledTimes(1);
+
+    existingMessageIds.add("3EB0AI");
+    maybeRespondWithAi.mockReset();
+    await post(inbound({ messageId: "3EB0AI" }));
+    expect(maybeRespondWithAi).not.toHaveBeenCalled();
+  });
+
+  it("never auto-replies to a STOP", async () => {
+    aiOn = true;
+    await post(inbound({ text: "STOP", messageId: "3EB0STOPAI" }));
+    expect(maybeRespondWithAi).not.toHaveBeenCalled();
+  });
+
+  it("keys the opt-out activity row on the message so a retry cannot duplicate it", async () => {
+    await post(inbound({ text: "STOP", messageId: "3EB0STOP" }));
+    expect(activityWrites).toHaveLength(1);
+    expect(activityWrites[0].docId).toBe("whatsapp-optout-3EB0STOP");
+    expect(activityWrites[0].data).toMatchObject({
+      meta: { kind: "whatsapp_opt_out", optedOut: true },
+    });
+  });
+
+  it("answers 503 when the opt-out cannot be recorded, so the bridge retries", async () => {
+    // Every other failure here degrades to a logged warning and a 200, because
+    // a retry costs more than the data lost. This one inverts that.
+    commitThrows = true;
+    const res = await post(inbound({ text: "STOP", messageId: "3EB0STOP2" }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ ok: false, error: "optout_not_recorded" });
   });
 
   it("processes a message with no provider id without paying for a dedupe read", async () => {
