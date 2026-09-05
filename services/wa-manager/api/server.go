@@ -278,11 +278,19 @@ func tenantIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
 var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
 
 func checkTenantID(w http.ResponseWriter, id string) (string, bool) {
-	// The pattern is the gate; InstanceName is still consulted so that
-	// systemd.Validate — the actual authority on a unit name — keeps its veto
-	// rather than being reasoned about second-hand from a regexp here.
-	_, err := provision.InstanceName(id)
-	if !tenantIDPattern.MatchString(id) || err != nil {
+	// Two gates, and the second is the one that survives editing.
+	//
+	// The pattern alone would make the no-silent-rename invariant depend on a
+	// hand-written alphabet kept in step with InstanceName's by memory. So the
+	// id is also compared against its OWN coercion: InstanceName differs from
+	// strings.ToLower(id) exactly when it renamed something ("a.b" and "a_b"
+	// both become "a-b"; "acmé" becomes "acm-"; anything over 63 characters is
+	// truncated). Widening the pattern later therefore cannot quietly admit a
+	// coerced id — this comparison refuses it without being told to, which is
+	// the property the old name != id check had and a regexp on its own does
+	// not.
+	name, err := provision.InstanceName(id)
+	if !tenantIDPattern.MatchString(id) || err != nil || name != strings.ToLower(id) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": fmt.Sprintf("tenant id %q is not usable as an instance name; "+
 				"use letters, digits and dashes, starting with a letter or digit", id),
