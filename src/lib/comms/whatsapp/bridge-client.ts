@@ -72,6 +72,23 @@ export function isLidJid(jid: string): boolean {
  * A device suffix (`27821234567:12@s.whatsapp.net`) is a legitimate 1:1 sender
  * and is admitted; `jidToE164` strips it.
  */
+/**
+ * Mask a JID for logging, mirroring the bridge's own `redact.JID`.
+ *
+ * The server half is kept deliberately — `@lid` vs `@newsletter` vs
+ * `@s.whatsapp.net` IS the diagnosis a dropped-message log line exists to
+ * give — while the user half is a customer's phone number and must not sit in
+ * plaintext logs. Last four digits survive, which is enough to correlate with
+ * a contact somebody is looking at.
+ */
+export function redactJid(jid: string): string {
+  const at = jid.indexOf("@");
+  const user = at === -1 ? jid : jid.slice(0, at);
+  const server = at === -1 ? "" : jid.slice(at);
+  if (user.length <= 4) return "*".repeat(user.length) + server;
+  return "*".repeat(user.length - 4) + user.slice(-4) + server;
+}
+
 export function isPhoneJid(jid: string): boolean {
   return jid.trim().toLowerCase().endsWith("@s.whatsapp.net");
 }

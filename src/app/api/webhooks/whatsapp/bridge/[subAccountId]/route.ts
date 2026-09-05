@@ -10,7 +10,7 @@ import { resolveAgent } from "@/lib/comms/ai/agent";
 import { maybeRespondWithAi } from "@/lib/comms/ai/respond";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { getBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
-import { isGroupJid, isLidJid, isPhoneJid, jidToE164 } from "@/lib/comms/whatsapp/bridge-client";
+import { isGroupJid, isLidJid, isPhoneJid, jidToE164, redactJid } from "@/lib/comms/whatsapp/bridge-client";
 import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
@@ -168,7 +168,7 @@ export async function POST(
   // messages with nothing to grep for. This names the cause and the fix.
   if (isLidJid(fromJid)) {
     console.warn(
-      `[wa-bridge] dropped a LID sender for ${subAccountId}: ${fromJid} — this bridge predates the SenderAlt fix and cannot be replied to`,
+      `[wa-bridge] dropped a LID sender for ${subAccountId}: ${redactJid(fromJid)} — this bridge predates the SenderAlt fix and cannot be replied to`,
     );
     return ok({ ok: true, ignored: "lid" });
   }
@@ -178,7 +178,7 @@ export async function POST(
   // contacts with a "+" in front of an id that was never dialled.
   if (!isPhoneJid(fromJid)) {
     console.warn(
-      `[wa-bridge] dropped an unsupported sender address for ${subAccountId}: ${fromJid}`,
+      `[wa-bridge] dropped an unsupported sender address for ${subAccountId}: ${redactJid(fromJid)}`,
     );
     return ok({ ok: true, ignored: "unsupported_jid" });
   }
