@@ -256,8 +256,8 @@ than a harness defect.
 | Form submit → contact | Forms | `/f/{formId}` → contact write | — | `e2e/specs/form-submit.spec.ts` | **green, mutation-proven** |
 | Workflow enrol → action runs | Automation | `fireWorkflowTrigger` → `workflowRuns` → signed step worker | publish leg unprovable on loopback; prod has no QStash | `e2e/specs/workflow-enrol.spec.ts` | **green, mutation-proven; smoke red until prod QStash** |
 | Google account connected | Settings → Integrations | `/api/google/callback`, tokens at `subAccounts/{id}/private/googleConnection` | code shipped (#32); `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` **not on the deployment**, so the card cannot complete a connect in production | SP0-B | **code merged, not live** |
-| Paystack connected per tenant | Payments | `/api/sub-accounts/{id}/paystack-connection`, secret at `subAccounts/{id}/private/paystackConnection` | code shipped (#31); no tenant has connected yet, so `webhookSeenAt` is unset everywhere | SP0-B | **code merged, not live** |
-| Meta connected | Settings → Messaging tab | connect card + `page` / `instagram` webhook subscriptions registered | `META_APP_ID` / `META_APP_SECRET` set on the deployment; Meta **App Review not submitted** — that is an outward-facing submission and stays with Hein | SP0-C | **wired; blocked on App Review** |
+| Paystack connected per tenant | Payments | `/api/sub-accounts/{id}/paystack-connection`, secret at `subAccounts/{id}/private/paystackConnection` | code shipped (#31); no tenant was connected through it in SP0, so `webhookSeenAt` is expected to be unset — not read back from Firestore to confirm | SP0-B | **code merged, not live** |
+| Meta connected | Settings → Messaging tab | connect card + `page` / `instagram` webhook subscriptions registered | `META_APP_ID` / `META_APP_SECRET` set on the deployment; Meta **App Review not submitted by SP0** — that is an outward-facing submission and stays with Hein. Review state is not verifiable from this repo; check it in the Meta dashboard | SP0-C | **wired; blocked on App Review** |
 | Async work runs at all | — | QStash | `QSTASH_TOKEN` + both signing keys now set on the deployment and proven end to end | `e2e/specs/workflow-enrol.spec.ts` (smoke) | **fixed — was a live production defect** |
 | Logged-out redirect | — | `loginRedirectUrl` in `src/middleware.ts` | was sending users to `http://localhost:4300/login`; now derives the origin from `NEXT_PUBLIC_APP_URL`, with a post-build assertion in `scripts/deploy-velo.sh` | `e2e/specs/logged-out-redirect.spec.ts` | **fixed and verified in production (#38)** |
 | Agency owner lands on `/agency` | Agency dashboard | race: `agencyRole` has no `userDoc` fallback when the token refresh fails | real defect, deliberately not fixed in SP0 | `e2e/specs/owner-lands-on-agency.spec.ts` (`test.fixme`) | **documented, open** |
@@ -320,12 +320,17 @@ location: https://crm.crestahq.com/login?redirect=%2Fagency
 Neither was visible in code review; both surfaced the first time something was
 actually run against the deployment.
 
-1. **QStash was absent from production.** Every one of the 66 call sites that
-   schedules async work was dead — no workflow step, reminder or broadcast could
-   ever have fired. Green CI throughout, because CI supplies its own keys.
-2. **Logged-out users were redirected to `http://localhost:4300/login`.** The
-   middleware derived the login origin from the request `Host`, which behind the
-   tunnel is the loopback bind address. Fixed in #38 and guarded at deploy time
-   by asserting the built middleware chunk actually contains
-   `NEXT_PUBLIC_APP_URL` — the value is constant-folded at build time, so a
-   shell-env check would have passed on a bad artifact.
+1. **QStash was absent from production.** All 20 `publishCallback` /
+   `publishSocialPost` call sites, across 17 files, were dead — no workflow
+   step, reminder or broadcast could ever have fired. Green CI throughout,
+   because CI supplies its own keys.
+2. **Logged-out users were redirected to `http://localhost:4300/login`.** Not a
+   `Host`-header problem: under the standalone server systemd sets
+   `HOSTNAME=127.0.0.1`, and `request.nextUrl` is derived from that bind address
+   rather than from the incoming `Host` — an explicit
+   `Host: crm.crestahq.com` still produced localhost. Fixed in #38 by pinning
+   the origin to `NEXT_PUBLIC_APP_URL`, and guarded at deploy time by asserting
+   the built middleware chunk actually contains that origin — the value is
+   constant-folded at build time, so a shell-env check would have passed on a
+   bad artifact. See the comment on `loginRedirectUrl` in `src/middleware.ts`
+   for the full mechanism.
