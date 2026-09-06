@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signWebhookPayload } from "@/lib/api/webhooks/signing";
 
 /**
@@ -179,6 +179,12 @@ function post(
   );
 }
 
+// The route clamps `at` into [now - 24h, now], so a fixture pinned to a real
+// calendar date is a time bomb: it passed the day it was written and started
+// failing every run once it aged past the window, taking `main` red with it.
+// The clock is frozen instead, so the fixture stays inside the window forever.
+const NOW = new Date("2026-09-05T12:00:00Z");
+
 const inbound = (over: Record<string, unknown> = {}) => ({
   from: "27821234567@s.whatsapp.net",
   text: "hi there",
@@ -189,6 +195,9 @@ const inbound = (over: Record<string, unknown> = {}) => ({
 
 describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
   beforeEach(() => {
+    // Only Date. Faking timers wholesale would stall the awaits in `post`.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
     messageWrites = [];
     conversationUpserts = [];
     existingMessageIds = new Set();
@@ -211,6 +220,10 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     getBridgeCreds.mockReset();
     getBridgeCreds.mockResolvedValue(CREDS);
     createContactServerSide.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("writes the message row and upserts the conversation for a signed payload", async () => {
