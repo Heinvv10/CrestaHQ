@@ -24,7 +24,15 @@ export function safeRedirect(value: string | null | undefined): string {
     // Anything that changed origin was absolute, protocol-relative, or used a
     // scheme — none of which may steer a post-login navigation.
     if (url.origin !== PROBE_ORIGIN) return "/dashboard";
-    return `${url.pathname}${url.search}${url.hash}`;
+
+    // Necessary but NOT sufficient. Normalising dot segments can itself produce
+    // a leading `//`: `/a/..//evil.com` resolves same-origin here, but its
+    // pathname is `//evil.com`, which `router.push` then treats as
+    // protocol-relative. Re-check the exact string handed onward — eight inputs
+    // escaped this way when only the origin was checked.
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    if (!path.startsWith("/") || path.startsWith("//")) return "/dashboard";
+    return path;
   } catch {
     return "/dashboard";
   }

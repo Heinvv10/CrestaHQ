@@ -128,7 +128,11 @@ pnpm build || die "build"
 # a variable the deploy never sets — failing every correct deploy while proving
 # nothing about the bundle.
 say "Verifying NEXT_PUBLIC_APP_URL was inlined"
-APP_URL="$(sed -n 's/^NEXT_PUBLIC_APP_URL=//p' .env.production 2>/dev/null | head -1 | tr -d '\r\"' )"
+[ -f .env.production ] || die "$DEPLOY_DIR/.env.production is missing — the build reads NEXT_PUBLIC_APP_URL from it"
+# `|| true`: under `set -e` a failing substitution kills the script before `die`
+# can explain why. Strip CR and BOTH quote styles — a single-quoted value would
+# otherwise never match the bundle and would fail a correct deploy.
+APP_URL="$(sed -n 's/^NEXT_PUBLIC_APP_URL=//p' .env.production 2>/dev/null | head -1 | tr -d '\r\"'"'" || true)"
 [ -n "$APP_URL" ] || die "NEXT_PUBLIC_APP_URL is not set in $DEPLOY_DIR/.env.production — the build inlines it, so login redirects would point at the server's bind address"
 grep -rqF "$APP_URL" .next/server/edge/chunks/ \
   || die "NEXT_PUBLIC_APP_URL ($APP_URL) is not present in the built middleware — the build did not pick it up; login redirects would point at the server's bind address"

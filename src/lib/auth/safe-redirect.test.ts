@@ -32,6 +32,33 @@ describe("safeRedirect", () => {
     }
   });
 
+  it("refuses dot-segment normalisation that yields a leading //", () => {
+    // These resolve SAME-ORIGIN against the probe, so an origin check alone
+    // waves them through — but their pathname is `//evil.com`, which
+    // router.push treats as protocol-relative. All eight escaped a version of
+    // this guard that checked only the origin.
+    for (const attack of [
+      "/.//evil.com",
+      "/..//evil.com",
+      "/a/..//evil.com",
+      "/a/../..//evil.com",
+      "/././/evil.com",
+      "/./\\evil.com",
+      "/.\t//evil.com",
+      "/a/%2e%2e//evil.com",
+    ]) {
+      expect(safeRedirect(attack), attack).toBe("/dashboard");
+      expect(resolves(attack), attack).toBe(ORIGIN);
+    }
+  });
+
+  it("keeps a legitimate path that merely contains a doubled slash", () => {
+    // Same-origin after normalisation and no leading //, so it must NOT be
+    // blocked — the guard has to be precise, not merely strict.
+    expect(safeRedirect("/x/.//evil.com")).toBe("/x//evil.com");
+    expect(resolves("/x/.//evil.com")).toBe(ORIGIN);
+  });
+
   it("refuses protocol-relative and backslash escapes", () => {
     for (const attack of ["//evil.com", "//evil.com/steal", "/\\evil.com"]) {
       expect(safeRedirect(attack), attack).toBe("/dashboard");
