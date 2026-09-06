@@ -17,9 +17,10 @@
  * so the seam looked wired while every surface bypassed it.
  *
  * Nothing in the type system prevents that, so this script does: any .ts or
- * .tsx under src/ that reads `twilioConfig?.whatsappFromNumber`, or that calls
- * `subAccountWhatsappIsConfigured(...)`, fails the lint unless it is listed
- * below. It is a source inspection, in the same spirit as
+ * .tsx under src/ that so much as NAMES `whatsappFromNumber` or
+ * `subAccountWhatsappIsConfigured` in code fails the lint unless it is listed
+ * below. Mention, not use — the rule cannot tell a call from a reference, and
+ * deliberately does not try. It is a source inspection, in the same spirit as
  * check-capability-tenancy.mjs — it proves the wrong check is ABSENT, not that
  * the right one is correct.
  *

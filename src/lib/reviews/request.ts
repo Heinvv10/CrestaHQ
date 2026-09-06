@@ -169,9 +169,11 @@ export async function maybeSendReviewRequest(
       // alone would only have moved the refusal one line down: the
       // whatsapp_manual branch refused a shut 24h window on every rail
       // (the bridge has no window), and the whatsapp_template branch had no
-      // answer for a rail with no templates. All three are capability-driven
-      // below. Same readiness call the workflow engine's WhatsApp executors
-      // make, so the two agree.
+      // answer for a rail with no templates. All three are per-rail below —
+      // the window and template checks read `capabilitiesFor`, this gate is
+      // rail-aware in its own right (per-rail credentials and health). Same
+      // readiness call the workflow engine's WhatsApp executors make, so the
+      // two agree.
       const readiness = await checkWhatsappReadiness({
         subAccountId: input.subAccountId,
         subAccount,
