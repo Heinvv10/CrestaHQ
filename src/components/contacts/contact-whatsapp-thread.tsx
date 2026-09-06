@@ -21,6 +21,7 @@ import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { MessageDoc } from "@/types/messages";
+import { whatsappSenderNumber } from "@/lib/comms/whatsapp/sender-configured";
 
 const WINDOW_HOURS = 24;
 
@@ -91,7 +92,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   }, [hydrated, messages, contact.id]);
 
   const optedOut = !!contact.whatsappOptedOut;
-  const fromNumber = subAccount?.twilioConfig?.whatsappFromNumber ?? "";
+  const fromNumber = whatsappSenderNumber(subAccount);
 
   // Compute whether the 24h session window is open from the loaded thread.
   const windowOpen = useMemo(() => {

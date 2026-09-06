@@ -65,8 +65,8 @@ export function ConversationComposer({
   if (availableChannels.length === 0) {
     return (
       <div className="border-t px-4 py-3 text-xs text-muted-foreground">
-        No messaging channel is configured for this sub-account. Set up a
-        dedicated Twilio number (Settings → SMS) to reply here.
+        No messaging channel is configured for this sub-account. Connect a
+        sender in Settings to reply here.
       </div>
     );
   }

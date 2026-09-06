@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { parseBodyPositions } from "@/lib/comms/whatsapp/template-validation";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import {
   WHATSAPP_STARTER_TEMPLATES,
   type WhatsappStarterTemplate,
@@ -60,7 +62,13 @@ export function WhatsappTemplatesManager() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const agencyEnabled = subAccount?.whatsappEnabledByAgency === true;
-  const senderConfigured = !!subAccount?.twilioConfig?.whatsappFromNumber;
+  // Rail-aware, and NOT simply the shared helper: templates are a Twilio/Cloud
+  // concept and the submit route refuses the bridge outright
+  // ([templateId]/submit/route.ts:76). Treating a connected bridge as "sender
+  // configured" here would advertise a builder whose every submission 400s.
+  const senderConfigured =
+    resolveWhatsAppProviderId(subAccount?.whatsappProvider) !== "bridge" &&
+    whatsappSenderConfigured(subAccount);
 
   // Builder form state.
   const [displayName, setDisplayName] = useState("");

@@ -40,3 +40,35 @@ export function whatsappSenderConfigured(
       return !!sub?.twilioConfig?.whatsappFromNumber;
   }
 }
+
+/**
+ * The sender number to DISPLAY for this workspace, on whichever rail it uses.
+ *
+ * Same reasoning as `whatsappSenderConfigured`, applied to the value rather
+ * than the boolean: a bridge or Cloud workspace has no
+ * `twilioConfig.whatsappFromNumber`, so a component reading that field shows
+ * an empty string and quietly drops the "From ..." line it meant to render.
+ *
+ * Returns "" when nothing is connected, so callers can keep using a falsy
+ * check. Display metadata only — never a credential.
+ */
+export function whatsappSenderNumber(
+  sub:
+    | {
+        whatsappProvider?: string | null;
+        twilioConfig?: { whatsappFromNumber?: string | null } | null;
+        whatsappCloudMeta?: { displayPhoneNumber?: string | null } | null;
+        whatsappBridgeMeta?: { displayPhoneNumber?: string | null } | null;
+      }
+    | null
+    | undefined,
+): string {
+  switch (resolveWhatsAppProviderId(sub?.whatsappProvider)) {
+    case "cloud":
+      return sub?.whatsappCloudMeta?.displayPhoneNumber ?? "";
+    case "bridge":
+      return sub?.whatsappBridgeMeta?.displayPhoneNumber ?? "";
+    default:
+      return sub?.twilioConfig?.whatsappFromNumber ?? "";
+  }
+}

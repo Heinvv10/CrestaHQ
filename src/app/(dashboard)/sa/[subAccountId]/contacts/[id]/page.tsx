@@ -19,6 +19,7 @@ import { ContactWhatsappThread } from "@/components/contacts/contact-whatsapp-th
 import { ActivityTimeline } from "@/components/contacts/activity-timeline";
 import { AddNoteInput } from "@/components/contacts/add-note-input";
 import type { Contact } from "@/types/contacts";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 
 export default function ContactProfilePage() {
   const params = useParams<{ id: string }>();
@@ -61,7 +62,7 @@ export default function ContactProfilePage() {
   // WhatsApp thread renders when the sub-account has a WhatsApp sender AND the
   // agency gate is on — mirrors the channel's own gating.
   const showWhatsapp =
-    !!subAccount?.twilioConfig?.whatsappFromNumber &&
+    whatsappSenderConfigured(subAccount) &&
     subAccount?.whatsappEnabledByAgency === true;
 
   return (
