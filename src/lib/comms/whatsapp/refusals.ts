@@ -40,8 +40,12 @@ export type WaRefusalCode =
 const MESSAGES: Record<WaRefusalCode, string> = {
   consecutive_cap:
     "This contact hasn't replied to your last few messages, so WhatsApp would read more as spam. Wait for them to reply — that resets it.",
+  // The rail names a remedy this message used to hide: an operator can
+  // allowlist the contact (checkReplyOnly, "add them to the allowlist to
+  // override"). Saying only "they have to start the conversation" told an
+  // operator the situation was out of their hands when it was not.
   reply_only:
-    "This contact has never messaged this number, so we can't message them first. They have to start the conversation.",
+    "This contact has never messaged this number, so it cannot message them first. Either they start the conversation, or an operator allowlists them for this number.",
   // Names no clock value: the window is a deployment default, overridable
   // globally AND per consumer (CONSUMERS fields 7 and 8), in a configurable
   // timezone. The old wording also inverted it - "outside sending hours
@@ -50,8 +54,10 @@ const MESSAGES: Record<WaRefusalCode, string> = {
   // HUMAN_REPLY_SESSION_HOURS is 0.
   quiet_hours:
     "It's inside this number's quiet hours, so outreach is held until they end. A reply to a contact who messaged recently normally still goes out.",
+  // Rolling 24 hours (caps.go: dayAgo), not a calendar day - the same
+  // mistake as daily_cap, made in the same sitting.
   per_contact_cap:
-    "This contact has already had its daily message limit from this number.",
+    "This contact has already had the maximum number of messages from this number in the last 24 hours.",
   // A ROLLING 24 hours (caps.go: Now.Add(-24*time.Hour)), not a calendar day.
   // Waiting for midnight after a 23:00 burst is refused again.
   daily_cap:

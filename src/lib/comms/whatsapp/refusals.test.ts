@@ -79,3 +79,29 @@ describe("refusal wording states nothing configurable", () => {
     }
   });
 });
+
+/**
+ * Where a rail offers the operator a way out, the message has to name it.
+ *
+ * Asserted per-rail rather than generically, because "does this sentence
+ * contain guidance" is exactly the kind of thing that cannot be checked and
+ * that produced three assertions passing against forty-five letter As.
+ */
+describe("refusal wording names the remedy the rail offers", () => {
+  it("tells the operator the allowlist exists", () => {
+    // checkReplyOnly's own refusal says "add them to the allowlist to
+    // override". Omitting it told an operator the situation was out of their
+    // hands when it was not.
+    expect(WA_REFUSAL_MESSAGES.reply_only).toMatch(/allowlist/i);
+  });
+
+  it("tells the operator a reply clears the consecutive rail", () => {
+    // An inbound resets ConsecutiveOutbound to zero. Without that, the only
+    // apparent option is to keep retrying into the rail.
+    expect(WA_REFUSAL_MESSAGES.consecutive_cap).toMatch(/repl(y|ied)/i);
+  });
+
+  it("tells the operator a person must act on the kill switch", () => {
+    expect(WA_REFUSAL_MESSAGES.kill_switch).toMatch(/operator/i);
+  });
+});
