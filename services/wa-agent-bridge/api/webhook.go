@@ -110,7 +110,7 @@ func (f *Fanout) refreshWatermark() {
 	}
 	f.watermarkFor = c
 	f.catchUp, f.skippedOld, f.skippedCap = 0, 0, 0
-	w, err := f.store.LastRecordedAt()
+	w, err := f.store.LastInboundAt()
 	if err != nil {
 		log.Printf("WARNING watermark unreadable, admitting the backlog up to %d messages: %v",
 			maxCatchUpForward, err)
@@ -126,7 +126,11 @@ func (f *Fanout) admitDuringReplay(jid, text string, at time.Time) bool {
 	f.wmMu.Lock()
 	defer f.wmMu.Unlock()
 
-	if !at.After(f.watermark) {
+	// STRICTLY older, not "not newer". at_unix is whole seconds, so a message
+	// in the same second as the newest recorded one is ordinary, not history —
+	// and treating it as history drops it permanently, while admitting it at
+	// worst re-delivers one message that the consumer merges on its id.
+	if at.Before(f.watermark) {
 		f.skippedOld++
 		log.Printf("inbound is history, older than the watermark jid=%s len=%s — recorded, not forwarded",
 			redact.JID(jid), redact.Body(text))
@@ -166,19 +170,24 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time) {
 		log.Printf("WARNING inbound not recorded jid=%s err=%v", redact.JID(jid), err)
 	}
 
-	if f.inReplayWindow() && !f.admitDuringReplay(jid, text, at) {
-		return
-	}
-
 	// Phase 1 runs on an unpublished number that only the owner is supposed to
 	// message. Anything else is recorded and dropped. The check sits AFTER
 	// RecordInbound for the same reason the replay gate does: reply-only
 	// decides whether a JID may be messaged at all, and it decides on recorded
 	// history — dropping the record here would leave a contact who really did
 	// message us looking like a stranger.
+	//
+	// It sits BEFORE the replay gate so the catch-up budget is spent only on
+	// messages that could actually be forwarded. With OWNER_JID set, 200
+	// non-owner messages during the window would otherwise exhaust the cap and
+	// the owner's genuinely new message would be the one dropped.
 	if !f.fromOwner(jid) {
 		log.Printf("inbound from non-owner jid=%s len=%s — recorded, not forwarded",
 			redact.JID(jid), redact.Body(text))
+		return
+	}
+
+	if f.inReplayWindow() && !f.admitDuringReplay(jid, text, at) {
 		return
 	}
 
