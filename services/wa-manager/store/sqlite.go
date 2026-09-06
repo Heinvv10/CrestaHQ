@@ -25,6 +25,13 @@ var ErrInstanceTaken = errors.New("store: instance already held by another tenan
 // isUniqueViolation reports whether err is SQLite refusing a UNIQUE constraint.
 // Matched on the driver's TYPED extended code — an error string is a moving
 // target across driver and SQLite versions.
+//
+// It says WHICH constraint only by where it is called. `tenants` has three
+// unique columns — id, instance and port — and all three report the same
+// extended code, so mapping this to ErrInstanceTaken is sound ONLY in a
+// statement whose SET list touches `instance` and no other unique column.
+// Adding a column to that UPDATE, or reusing this helper elsewhere, would
+// silently produce a misleading ErrInstanceTaken and hence a wrong 409.
 func isUniqueViolation(err error) bool {
 	var serr sqlite3.Error
 	return errors.As(err, &serr) && serr.ExtendedCode == sqlite3.ErrConstraintUnique
