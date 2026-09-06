@@ -162,11 +162,16 @@ export async function maybeSendReviewRequest(
       }
       // Readiness is PER RAIL. The old Twilio-shaped credential check refused
       // every correctly connected Cloud or bridge workspace and told the
-      // operator to add a Twilio number, which is not the fix on either rail —
-      // while both send helpers below (sendWhatsappFreeFormForSubAccount,
-      // dispatchWhatsappTemplateSend) were already rail-agnostic, so this gate
-      // was the only thing refusing the send. Same call the workflow engine's
-      // WhatsApp executors make, so the two agree.
+      // operator to add a Twilio number, which is not the fix on either rail.
+      // The two send helpers below (sendWhatsappFreeFormForSubAccount,
+      // dispatchWhatsappTemplateSend) are themselves rail-agnostic — but this
+      // gate was NOT the only rail-blind check on the path, so converting it
+      // alone would only have moved the refusal one line down: the
+      // whatsapp_manual branch refused a shut 24h window on every rail
+      // (the bridge has no window), and the whatsapp_template branch had no
+      // answer for a rail with no templates. All three are capability-driven
+      // below. Same readiness call the workflow engine's WhatsApp executors
+      // make, so the two agree.
       const readiness = await checkWhatsappReadiness({
         subAccountId: input.subAccountId,
         subAccount,
@@ -181,14 +186,21 @@ export async function maybeSendReviewRequest(
       );
 
       if (channel === "whatsapp_manual") {
-        // Free-form — only valid while the 24h session window is open (the
-        // customer messaged recently). No approved template required.
-        // Read the window ONCE and hand the timestamp to the dispatcher.
-        // Letting each re-read it would mean two queries that can disagree —
-        // and the caller needs the answer anyway, to report `window_closed`
-        // rather than a generic send failure.
+        // Free-form. No approved template required. Read the window ONCE and
+        // hand the timestamp to the dispatcher: letting each re-read it would
+        // mean two queries that can disagree — and the caller needs the answer
+        // anyway, to report `window_closed` rather than a generic send failure.
         const lastInboundAt = await whatsappLastInboundAt(db, contact.id);
-        if (!isWithinServiceWindow(lastInboundAt, new Date())) {
+        // Whether a shut window refuses the send is a CAPABILITY of the rail,
+        // not a special case for one provider. A rail outside Meta's system
+        // has no service window at all, and `resolveWaSendMode` — which the
+        // dispatcher below runs — reads `enforcesWindow` exactly this way.
+        // Refusing unconditionally here would admit the bridge past the
+        // readiness gate only to turn it away at this one.
+        if (
+          capabilitiesFor(readiness.provider).enforcesWindow &&
+          !isWithinServiceWindow(lastInboundAt, new Date())
+        ) {
           return { sent: false, reason: "window_closed" };
         }
         const res = await sendWhatsappFreeFormForSubAccount({

@@ -1,5 +1,31 @@
 import { describe, it, expect } from "vitest";
-import { offendingLines } from "../../../../scripts/check-whatsapp-rail.mjs";
+import {
+  offendingLines,
+  shouldScan,
+} from "../../../../scripts/check-whatsapp-rail.mjs";
+
+describe("check-whatsapp-rail — which files get scanned", () => {
+  // The walk is what decides whether the gate sees anything at all. It used to
+  // visit `.tsx` only, and the offending readiness gates live in server `.ts`
+  // modules — so a narrowed predicate leaves the gate running, green, and
+  // blind. Nothing else in the repo asserts the extension set.
+  it("scans .ts as well as .tsx", () => {
+    expect(shouldScan("request.ts")).toBe(true);
+    expect(shouldScan("sub-account-sms-section.tsx")).toBe(true);
+  });
+
+  it("skips tests — a test's job may be to write the wrong check down", () => {
+    expect(shouldScan("rail-check.test.ts")).toBe(false);
+    expect(shouldScan("thing.test.tsx")).toBe(false);
+  });
+
+  it("skips everything that is not TypeScript", () => {
+    expect(shouldScan("check-whatsapp-rail.mjs")).toBe(false);
+    expect(shouldScan("env-schema.mjs")).toBe(false);
+    expect(shouldScan("README.md")).toBe(false);
+    expect(shouldScan("styles.css")).toBe(false);
+  });
+});
 
 describe("check-whatsapp-rail", () => {
   it("flags a Twilio-only readiness gate", () => {
@@ -32,6 +58,25 @@ describe("check-whatsapp-rail", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0].line).toBe(3);
+  });
+
+  it("reports the real line number after a multi-line block comment", () => {
+    // Deleting a block comment outright instead of blanking it shifts every
+    // line after it, and a blocking gate whose `file:line` points at the wrong
+    // code is not actionable — the failure output IS the product here.
+    const out = offendingLines(
+      [
+        "import { x } from './y';", // 1
+        "/**", // 2
+        " * Readiness is per rail.", // 3
+        " * Several paragraphs of reasoning.", // 4
+        " */", // 5
+        "const a = 1;", // 6
+        "const ok = !!sub?.twilioConfig?.whatsappFromNumber;", // 7
+      ].join("\n"),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].line).toBe(7);
   });
 
   it("matches across whitespace variants the codebase actually uses", () => {

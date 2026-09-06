@@ -102,32 +102,56 @@ const ALLOWED_HELPER = new Map([
  * routes doing this on 2026-09-06: a Cloud workspace could not send a template
  * or enable the AI WhatsApp channel, and was told to add a Twilio number.
  */
-// Alias-proof BY DESIGN: the rule is "does this file read the Twilio-only
-// field at all", not "does it read it through a chain I thought of". Blind
-// review showed the chain-shaped matcher missed
-// `const cfg = sub?.twilioConfig` followed by `cfg?.whatsappFromNumber` —
-// which is the form BOTH files that mattered actually used, so the allowlist
-// entry was never even exercised and a live bug in a scanned .tsx was
-// invisible. A name is the one thing an alias cannot hide.
+// Name-based, not chain-based: the rule is "does this file mention the
+// Twilio-only field at all", not "does it read it through a chain I thought
+// of". The earlier chain-shaped matcher missed `const cfg = sub?.twilioConfig`
+// followed by `cfg?.whatsappFromNumber` — the form BOTH files that mattered
+// actually used — so the allowlist entry was never exercised and a live bug in
+// a scanned .tsx was invisible. Matching the bare name survives an import
+// alias and an intermediate `const check = subAccountWhatsappIsConfigured`.
+//
+// What this does NOT buy. It is a source inspection over a fixed pair of
+// identifiers, so three shapes defeat it, all confirmed by blind review:
+//
+//   1. An identifier assembled at runtime —
+//      `(twilio as any)["subAccountWhatsapp" + "IsConfigured"](…)`.
+//   2. The defect written out fresh with neither name —
+//      `!!sub?.twilioConfig?.accountSid && !!sub?.twilioConfig?.authToken`.
+//   3. An alias RE-EXPORTED from an allowlisted file. `lib/comms/twilio.ts` is
+//      listed under both rules, so `export const waReady =
+//      subAccountWhatsappIsConfigured` there makes every consumer invisible.
+//
+// (1) and (2) take deliberate effort; (3) is the one an author could hit by
+// accident, so treat an allowlisted file as a place that must not grow new
+// exports of these checks. Chasing any of the three with more pattern matching
+// would add complexity a name-based scan cannot cash — the gate's job is to
+// keep the ORDINARY spelling of the wrong check out of new code, and it is a
+// backstop for review, not a replacement for it.
 const FIELD = /\bwhatsappFromNumber\b/;
-// Same reasoning, applied to the helper: name-based, not chain-based, so an
-// import alias or an intermediate `const check = subAccountWhatsappIsConfigured`
-// cannot slip past. The remaining genuine callers are Twilio-specific and
-// listed in ALLOWED_HELPER; the review-request dispatcher and the
-// google-review save route were converted rather than allowlisted.
 const HELPER = /\bsubAccountWhatsappIsConfigured\b/;
+
+/**
+ * Which filenames the walk inspects, as a pure predicate so the extension set
+ * is actually TESTED. `.ts` matters as much as `.tsx`: the send paths this
+ * gate exists to police are server modules, and narrowing back to `.tsx` alone
+ * would leave the walk running, the output green, and every one of them
+ * unscanned. Tests are excluded because a test's whole job may be to write the
+ * wrong check down.
+ */
+export function shouldScan(filename) {
+  return (
+    (filename.endsWith(".ts") || filename.endsWith(".tsx")) &&
+    !filename.endsWith(".test.ts") &&
+    !filename.endsWith(".test.tsx")
+  );
+}
 
 function walk(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) out.push(...walk(full));
-    else if (
-      (entry.endsWith(".ts") || entry.endsWith(".tsx")) &&
-      !entry.endsWith(".test.ts") &&
-      !entry.endsWith(".test.tsx")
-    )
-      out.push(full);
+    else if (shouldScan(entry)) out.push(full);
   }
   return out;
 }
@@ -145,7 +169,11 @@ function walk(dir) {
  */
 function stripComments(src) {
   return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
+    // Blank a block comment, do not DELETE it: removing its newlines shifts
+    // every line number after it, and the reported `file:line` is the whole
+    // value of a blocking gate's output. Replace each block with the same
+    // count of newlines it spanned.
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => "\n".repeat((m.match(/\n/g) ?? []).length))
     .split("\n")
     .map((l) => l.replace(/\/\/.*$/, ""))
     // A JSDoc continuation line, which survives when a block comment's opener

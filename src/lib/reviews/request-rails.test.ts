@@ -113,6 +113,11 @@ function openWindow() {
   ];
 }
 
+/** No inbound at all — the window is shut on any rail that has one. */
+function shutWindow() {
+  collections[WA_THREAD_PATH] = [];
+}
+
 beforeEach(() => {
   resetHarness();
   cloudConfigured.mockResolvedValue(true);
@@ -178,6 +183,42 @@ describe("readiness is per rail, not per Twilio credential", () => {
       sent: false,
       reason: "whatsapp_not_configured",
     });
+    expect(freeForm).not.toHaveBeenCalled();
+  });
+});
+
+describe("the 24h window refuses per rail, not universally", () => {
+  // The rails suite above opens the window before every free-form case, which
+  // is precisely what let an unconditional window check survive review: the
+  // bridge was admitted by the readiness gate and refused by the next one, and
+  // nothing here noticed. These drive the SHUT window on purpose.
+
+  it("sends free-form on the BRIDGE with the window SHUT", async () => {
+    // The bridge is outside Meta's system: it has no service window, so there
+    // is nothing for a shut one to refuse. `capabilitiesFor("bridge")
+    // .enforcesWindow` is false, and `resolveWaSendMode` reads it the same way.
+    setSub({ whatsappEnabledByAgency: true, whatsappProvider: "bridge" });
+    setReviewCfg({ channel: "whatsapp_manual" });
+    shutWindow();
+    expect(await send()).toEqual({ sent: true });
+    expect(freeForm).toHaveBeenCalledTimes(1);
+  });
+
+  it("still refuses free-form on CLOUD with the window SHUT", async () => {
+    // Not a blanket bypass: Cloud is a Meta rail and the window still binds.
+    setSub({ whatsappEnabledByAgency: true, whatsappProvider: "cloud" });
+    setReviewCfg({ channel: "whatsapp_manual" });
+    shutWindow();
+    expect(await send()).toEqual({ sent: false, reason: "window_closed" });
+    expect(freeForm).not.toHaveBeenCalled();
+  });
+
+  it("still refuses free-form on TWILIO with the window SHUT", async () => {
+    setSub({ whatsappEnabledByAgency: true, whatsappProvider: "twilio" });
+    subAccountWhatsappIsConfigured.mockReturnValue(true);
+    setReviewCfg({ channel: "whatsapp_manual" });
+    shutWindow();
+    expect(await send()).toEqual({ sent: false, reason: "window_closed" });
     expect(freeForm).not.toHaveBeenCalled();
   });
 });
