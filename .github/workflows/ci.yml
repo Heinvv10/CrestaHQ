@@ -139,14 +139,27 @@ jobs:
       # it. Pinning to HEAD scans exactly the commit CI built, plus all of its
       # own history, and nothing else.
       #
-      # Coverage is unchanged for anything that matters: HEAD on a PR is the
-      # merge ref (main + this PR) and HEAD on a push is main itself, so every
-      # commit that reaches main is still scanned with full history behind it.
+      # Be clear about what this narrowing COSTS, because a security gate that
+      # quietly covers less than its comment claims is the failure mode this
+      # file exists to avoid. Measured on a synthetic repo, `--all` found 3
+      # planted keys where HEAD found 1. What stops being scanned: branches
+      # that are never PR'd, tags off HEAD's ancestry, and any other stale ref
+      # (`refs/notes/*`, leftovers in a reused workspace). A credential pushed
+      # to a branch nobody opens a PR for is now invisible to CI, and still
+      # needs rotating.
       #
-      # This does NOT explain the flake — that root cause is still unknown, and
-      # #33 stays open until it recurs with detail. It removes one whole source
-      # of variance and makes the next occurrence reproducible: the printed SHA
-      # plus the command below is the entire input.
+      # Accepted, because nothing reaches main unscanned: HEAD on a PR is the
+      # merge ref, and `git log -p` walks BOTH parents, so the PR's own commits
+      # are included; HEAD on a push is main itself. Every commit that lands on
+      # main is scanned with its full history behind it.
+      #
+      # This does NOT explain the flake and #33 stays open. The obvious
+      # hypothesis — `--all` picked up a leaky branch that was deleted between
+      # the two runs — was tested and does not hold: the only closed-unmerged
+      # branch in this repo (`tmp/mutation-proof-enrol`, PR #28) scans clean,
+      # and both runs reported the same 187 commits, which an extra branch
+      # would have raised. What this buys is that the next occurrence is
+      # reproducible: the printed SHA plus the command below is the whole input.
       - name: gitleaks
         run: |
           command -v gitleaks >/dev/null || {
@@ -157,6 +170,10 @@ jobs:
           gitleaks version
           git --version
           echo "scanning HEAD=$(git rev-parse HEAD)"
+          # `--redact` and `-v` travel together. Do not drop `--redact` while
+          # `-v` is here: verbose output would print live credentials into
+          # Actions logs, which persist and are readable by anyone with repo
+          # read access.
           gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 \
             -v --log-opts="--full-history HEAD" .
 
