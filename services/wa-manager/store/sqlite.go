@@ -61,6 +61,14 @@ type Tenant struct {
 	Phone       string // filled once paired; empty before
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+
+	// LastDroppedInbound is the highest droppedInbound count the manager has
+	// already recorded for this tenant. It is the baseline a health sweep
+	// compares against, and it is a COLUMN rather than a map in the poller
+	// because Reconcile is stateless between sweeps: an in-memory baseline
+	// would restart at zero with the manager and re-fire an event for drops
+	// already recorded.
+	LastDroppedInbound int
 }
 
 type Event struct {
@@ -86,7 +94,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   state        TEXT NOT NULL,
   phone        TEXT NOT NULL DEFAULT '',
   created_unix INTEGER NOT NULL,
-  updated_unix INTEGER NOT NULL
+  updated_unix INTEGER NOT NULL,
+  last_dropped_inbound INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -144,7 +153,114 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := addLastDroppedInboundColumn(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// addLastDroppedInboundColumn adds tenants.last_dropped_inbound to a database
+// created before that column existed.
+//
+// This is deliberately ONE guarded ALTER and not the start of a migration
+// framework. The schema above is a single CREATE TABLE IF NOT EXISTS, which is
+// a no-op against the live database on disk — so a new column reaches an
+// existing deployment only if something alters the table. SQLite has no
+// ADD COLUMN IF NOT EXISTS, and swallowing a generic error from the ALTER to
+// fake idempotence would hide a real failure behind "already applied", so the
+// presence check is an explicit PRAGMA. The ALTER's error is returned too,
+// with exactly one exception, named where it is made below: it is discarded
+// when a fresh PRAGMA proves the column is now present, which is a
+// postcondition check rather than a guess at what the error meant.
+func addLastDroppedInboundColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(tenants)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	present, err := hasDroppedInboundColumn(rows)
+	if err != nil {
+		return err
+	}
+	if present {
+		return nil
+	}
+	return addDroppedInboundColumn(db)
+}
+
+// addDroppedInboundColumn runs the ALTER, tolerating exactly one thing: another
+// process having added the same column first.
+//
+// Split out from the presence check above so it can be tested deterministically
+// — calling it twice on one database reproduces the race's losing side without
+// any concurrency, because the second call's ALTER fails the same way the
+// loser's does.
+//
+// The race is real but rare: hammering Open from six goroutines against an
+// un-migrated database, 1200 opens produced 3 "duplicate column name" (and 29
+// "database is locked", which is NOT this — see the test).
+func addDroppedInboundColumn(db *sql.DB) error {
+	if _, err := db.Exec(
+		`ALTER TABLE tenants ADD COLUMN last_dropped_inbound INTEGER NOT NULL DEFAULT 0`,
+	); err != nil {
+		// The presence check above is check-then-act: a second process can add
+		// the column between the PRAGMA and this statement, and SQLite answers
+		// the loser with "duplicate column name". Returning that would take the
+		// manager down on start over a database that is, in fact, correct.
+		//
+		// So re-ask rather than swallow. This is NOT the generic-error swallow
+		// the comment above refuses — the ALTER's error is discarded only when
+		// a fresh PRAGMA proves the column is now there, which is the one
+		// reading under which it was never a failure. Any other error, and any
+		// error where the column is still missing, is returned.
+		rows, qerr := db.Query(`PRAGMA table_info(tenants)`)
+		if qerr != nil {
+			return err
+		}
+		defer rows.Close()
+		// The ORIGINAL ALTER error is what surfaces if this re-check cannot
+		// prove the column is there — including when the re-check itself
+		// fails. Reporting the loser's real problem beats reporting a second
+		// symptom of it.
+		if present, rerr := hasDroppedInboundColumn(rows); rerr == nil && present {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// hasDroppedInboundColumn reports whether a PRAGMA table_info result set names
+// the dropped-inbound column. It drains the rows and folds in rows.Err(), so a
+// caller has one thing to check.
+//
+// A Scan error is returned rather than reported as "column absent". Rows.Scan
+// does not record a conversion failure in rows.Err(), so demoting it here
+// would lose it entirely — and "absent" is the answer that provokes an ALTER,
+// which is the wrong move to make on a result set nobody could read.
+//
+// UNPROVEN, and deliberately so: PRAGMA table_info returns six columns of
+// fixed type, so nothing this scans can fail to convert, and reaching it would
+// take a fake driver. Mutating the branch away leaves every test green. Read
+// it as defence on an unreachable path, not as a checked invariant.
+func hasDroppedInboundColumn(rows *sql.Rows) (bool, error) {
+	present := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == "last_dropped_inbound" {
+			present = true
+		}
+	}
+	return present, rows.Err()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -155,9 +271,9 @@ func (s *Store) CreateTenant(t Tenant) error {
 		now = time.Now()
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO tenants (id, display_name, instance, port, state, phone, created_unix, updated_unix)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.DisplayName, t.Instance, t.Port, string(t.State), t.Phone, now.Unix(), now.Unix())
+		`INSERT INTO tenants (id, display_name, instance, port, state, phone, created_unix, updated_unix, last_dropped_inbound)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.DisplayName, t.Instance, t.Port, string(t.State), t.Phone, now.Unix(), now.Unix(), t.LastDroppedInbound)
 	return err
 }
 
@@ -166,9 +282,9 @@ func (s *Store) GetTenant(id string) (Tenant, error) {
 	var created, updated int64
 	var state string
 	err := s.db.QueryRow(
-		`SELECT id, display_name, instance, port, state, phone, created_unix, updated_unix
+		`SELECT id, display_name, instance, port, state, phone, created_unix, updated_unix, last_dropped_inbound
 		 FROM tenants WHERE id = ?`, id).
-		Scan(&t.ID, &t.DisplayName, &t.Instance, &t.Port, &state, &t.Phone, &created, &updated)
+		Scan(&t.ID, &t.DisplayName, &t.Instance, &t.Port, &state, &t.Phone, &created, &updated, &t.LastDroppedInbound)
 	if err != nil {
 		return Tenant{}, err
 	}
@@ -179,7 +295,7 @@ func (s *Store) GetTenant(id string) (Tenant, error) {
 
 func (s *Store) ListTenants() ([]Tenant, error) {
 	rows, err := s.db.Query(
-		`SELECT id, display_name, instance, port, state, phone, created_unix, updated_unix
+		`SELECT id, display_name, instance, port, state, phone, created_unix, updated_unix, last_dropped_inbound
 		 FROM tenants ORDER BY display_name, id`)
 	if err != nil {
 		return nil, err
@@ -192,7 +308,7 @@ func (s *Store) ListTenants() ([]Tenant, error) {
 		var created, updated int64
 		var state string
 		if err := rows.Scan(&t.ID, &t.DisplayName, &t.Instance, &t.Port, &state,
-			&t.Phone, &created, &updated); err != nil {
+			&t.Phone, &created, &updated, &t.LastDroppedInbound); err != nil {
 			return nil, err
 		}
 		t.State = State(state)
@@ -215,6 +331,26 @@ func (s *Store) SetTenantState(id string, st State, phone string) error {
 		return err
 	}
 	if n == 0 {
+		return fmt.Errorf("store: no tenant %q", id)
+	}
+	return nil
+}
+
+// SetLastDroppedInbound records the droppedInbound count the manager has now
+// accounted for. Written only when the observed count actually moves — see
+// health.Reconcile, which is the sole caller and explains why.
+func (s *Store) SetLastDroppedInbound(id string, n int) error {
+	res, err := s.db.Exec(
+		`UPDATE tenants SET last_dropped_inbound = ?, updated_unix = ? WHERE id = ?`,
+		n, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
 		return fmt.Errorf("store: no tenant %q", id)
 	}
 	return nil

@@ -229,6 +229,71 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 			continue
 		}
 
+		// Dropped inbound is checked BEFORE the switch, not after it. The
+		// Connected branch `continue`s on the unchanged case — which is
+		// precisely the healthy, steady-state sweep on which a drop is most
+		// likely to be reported — so anything after the switch would be
+		// skipped exactly when it matters.
+		//
+		// The bridge stores no message body, so this counter is the only trace
+		// a customer message was received and never delivered; it lives in the
+		// bridge process and restarts at zero when the bridge reconnects. An
+		// event on the rising edge is what survives that reset, and the tenant
+		// row is what survives a manager restart.
+		//
+		// It is a FLOOR on the loss, not a count of it. This polls a volatile
+		// counter every pollEvery, so a rise that is fully undone by a
+		// reconnect between two sweeps is never seen. And the repeat is not a
+		// coincidence: a reconnect replays the same backlog past the same
+		// forward cap, so "dropped N, reconnected, dropped N again" lands here
+		// as observed == baseline, and writes nothing. Closing that needs the
+		// bridge to report a connection epoch alongside the counter, so a
+		// reset is detectable independently of the value. Until then, an event
+		// here means messages were certainly lost; the absence of one does not
+		// mean none were.
+		if r.DroppedInbound != nil {
+			observed := *r.DroppedInbound
+			switch {
+			case observed > t.LastDroppedInbound:
+				detail := fmt.Sprintf(
+					"%d more inbound message(s) dropped and never delivered (bridge reports %d this connection); not recoverable",
+					observed-t.LastDroppedInbound, observed)
+				if err := st.AppendEvent(t.ID, "dropped_inbound", detail); err != nil {
+					// The baseline is NOT moved when the event failed to
+					// land: leaving it behind means the next sweep tries
+					// again, where advancing it would lose the only record
+					// the drop ever happened. That makes the event
+					// at-least-once — a store that fails here and recovers
+					// writes the same line twice. Deliberate: a duplicated
+					// "messages were lost" is harmless, a dropped one is the
+					// failure this whole path exists to prevent.
+					errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
+				} else if err := st.SetLastDroppedInbound(t.ID, observed); err != nil {
+					errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
+				}
+			case observed < t.LastDroppedInbound:
+				// The counter went backwards, which means the bridge
+				// reconnected and started counting again — NOT that the
+				// messages were recovered. Take the new baseline silently; an
+				// event here would announce a recovery that never happened.
+				if err := st.SetLastDroppedInbound(t.ID, observed); err != nil {
+					errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
+				}
+			}
+			// observed == baseline writes NOTHING. Polling is continuous, and
+			// an unconditional write here is an fsync-backed UPDATE per tenant
+			// per sweep under synchronous=FULL — the same cost the Connected
+			// branch below refuses to pay.
+		}
+		// A nil DroppedInbound is UNKNOWN, not zero. Two ways to get one: an
+		// older bridge omits the field entirely — and deploy-wa.sh restarts
+		// the manager first, then hands the fleet to a rollout, so that is the
+		// normal state mid-rollout — and a current bridge reports it only when
+		// its inbound-suppression dependency is wired. A current bridge with a
+		// genuine zero sends 0, not nothing, so the pointer really does carry
+		// the distinction. Neither an event nor a baseline write may come from
+		// an unknown.
+
 		switch {
 		case r.Connected:
 			// Only on CHANGE, like the logged_out branch below. A healthy
