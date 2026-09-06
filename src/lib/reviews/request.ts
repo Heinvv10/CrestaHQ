@@ -7,9 +7,10 @@ import {
   sendSmsForSubAccount,
   smsIsConfigured,
   subAccountTwilioIsConfigured,
-  subAccountWhatsappIsConfigured,
   sendWhatsappTemplateForSubAccount,
 } from "@/lib/comms/twilio";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
 import { isWithinServiceWindow } from "@/lib/comms/whatsapp/send-mode";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
@@ -57,8 +58,9 @@ export interface SendReviewResult {
   sent: boolean;
   /** When sent is false: not_configured | trigger_disabled | no_contact |
    *  no_phone | opted_out | cooldown | sms_not_configured | whatsapp_gate_off |
-   *  whatsapp_not_configured | no_template | template_not_approved |
-   *  template_var_missing | send_failed | error */
+   *  whatsapp_not_configured | window_closed | rail_has_no_templates |
+   *  no_template | template_not_approved | template_var_missing |
+   *  send_failed | error */
   reason?: string;
 }
 
@@ -158,7 +160,25 @@ export async function maybeSendReviewRequest(
       if (subAccount.whatsappEnabledByAgency !== true) {
         return { sent: false, reason: "whatsapp_gate_off" };
       }
-      if (!subAccountWhatsappIsConfigured(subAccount.twilioConfig)) {
+      // Readiness is PER RAIL. The old Twilio-shaped credential check refused
+      // every correctly connected Cloud or bridge workspace and told the
+      // operator to add a Twilio number, which is not the fix on either rail.
+      // The two send helpers below (sendWhatsappFreeFormForSubAccount,
+      // dispatchWhatsappTemplateSend) are themselves rail-agnostic — but this
+      // gate was NOT the only rail-blind check on the path, so converting it
+      // alone would only have moved the refusal one line down: the
+      // whatsapp_manual branch refused a shut 24h window on every rail
+      // (the bridge has no window), and the whatsapp_template branch had no
+      // answer for a rail with no templates. All three are per-rail below —
+      // the window and template checks read `capabilitiesFor`, this gate is
+      // rail-aware in its own right (per-rail credentials and health). Same
+      // readiness call the workflow engine's WhatsApp executors make, so the
+      // two agree.
+      const readiness = await checkWhatsappReadiness({
+        subAccountId: input.subAccountId,
+        subAccount,
+      });
+      if (!readiness.ready) {
         return { sent: false, reason: "whatsapp_not_configured" };
       }
 
@@ -168,14 +188,21 @@ export async function maybeSendReviewRequest(
       );
 
       if (channel === "whatsapp_manual") {
-        // Free-form — only valid while the 24h session window is open (the
-        // customer messaged recently). No approved template required.
-        // Read the window ONCE and hand the timestamp to the dispatcher.
-        // Letting each re-read it would mean two queries that can disagree —
-        // and the caller needs the answer anyway, to report `window_closed`
-        // rather than a generic send failure.
+        // Free-form. No approved template required. Read the window ONCE and
+        // hand the timestamp to the dispatcher: letting each re-read it would
+        // mean two queries that can disagree — and the caller needs the answer
+        // anyway, to report `window_closed` rather than a generic send failure.
         const lastInboundAt = await whatsappLastInboundAt(db, contact.id);
-        if (!isWithinServiceWindow(lastInboundAt, new Date())) {
+        // Whether a shut window refuses the send is a CAPABILITY of the rail,
+        // not a special case for one provider. A rail outside Meta's system
+        // has no service window at all, and `resolveWaSendMode` — which the
+        // dispatcher below runs — reads `enforcesWindow` exactly this way.
+        // Refusing unconditionally here would admit the bridge past the
+        // readiness gate only to turn it away at this one.
+        if (
+          capabilitiesFor(readiness.provider).enforcesWindow &&
+          !isWithinServiceWindow(lastInboundAt, new Date())
+        ) {
           return { sent: false, reason: "window_closed" };
         }
         const res = await sendWhatsappFreeFormForSubAccount({
@@ -191,6 +218,13 @@ export async function maybeSendReviewRequest(
         renderedBody = freeFormBody;
       } else {
         // whatsapp_template — approved template (compliant outside the window).
+        // The bridge has no templates at all, so the configured send can never
+        // run there. That is a different fact from "your template was not
+        // approved" and has a different fix (switch rail, or use the in-window
+        // mode), so it gets its own reason rather than borrowing that one.
+        if (!capabilitiesFor(readiness.provider).supportsTemplates) {
+          return { sent: false, reason: "rail_has_no_templates" };
+        }
         if (!cfg.whatsappTemplateId) return { sent: false, reason: "no_template" };
         const tplSnap = await db
           .doc(`subAccounts/${input.subAccountId}/whatsappTemplates/${cfg.whatsappTemplateId}`)

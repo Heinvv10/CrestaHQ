@@ -1,5 +1,31 @@
 import { describe, it, expect } from "vitest";
-import { offendingLines } from "../../../../scripts/check-whatsapp-rail.mjs";
+import {
+  offendingLines,
+  shouldScan,
+} from "../../../../scripts/check-whatsapp-rail.mjs";
+
+describe("check-whatsapp-rail — which files get scanned", () => {
+  // The walk is what decides whether the gate sees anything at all. It used to
+  // visit `.tsx` only, and the offending readiness gates live in server `.ts`
+  // modules — so a narrowed predicate leaves the gate running, green, and
+  // blind. Nothing else in the repo asserts the extension set.
+  it("scans .ts as well as .tsx", () => {
+    expect(shouldScan("request.ts")).toBe(true);
+    expect(shouldScan("sub-account-sms-section.tsx")).toBe(true);
+  });
+
+  it("skips tests — a test's job may be to write the wrong check down", () => {
+    expect(shouldScan("rail-check.test.ts")).toBe(false);
+    expect(shouldScan("thing.test.tsx")).toBe(false);
+  });
+
+  it("skips everything that is not TypeScript", () => {
+    expect(shouldScan("check-whatsapp-rail.mjs")).toBe(false);
+    expect(shouldScan("env-schema.mjs")).toBe(false);
+    expect(shouldScan("README.md")).toBe(false);
+    expect(shouldScan("styles.css")).toBe(false);
+  });
+});
 
 describe("check-whatsapp-rail", () => {
   it("flags a Twilio-only readiness gate", () => {
@@ -34,6 +60,25 @@ describe("check-whatsapp-rail", () => {
     expect(out[0].line).toBe(3);
   });
 
+  it("reports the real line number after a multi-line block comment", () => {
+    // Deleting a block comment outright instead of blanking it shifts every
+    // line after it, and a blocking gate whose `file:line` points at the wrong
+    // code is not actionable — the failure output IS the product here.
+    const out = offendingLines(
+      [
+        "import { x } from './y';", // 1
+        "/**", // 2
+        " * Readiness is per rail.", // 3
+        " * Several paragraphs of reasoning.", // 4
+        " */", // 5
+        "const a = 1;", // 6
+        "const ok = !!sub?.twilioConfig?.whatsappFromNumber;", // 7
+      ].join("\n"),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].line).toBe(7);
+  });
+
   it("matches across whitespace variants the codebase actually uses", () => {
     expect(offendingLines(`x = sub.twilioConfig.whatsappFromNumber;`)).toHaveLength(1);
     expect(offendingLines(`x = sub?.twilioConfig?. whatsappFromNumber;`)).toHaveLength(1);
@@ -43,5 +88,73 @@ describe("check-whatsapp-rail", () => {
     expect(
       offendingLines(`const ok = whatsappSenderConfigured(subAccount);`),
     ).toHaveLength(0);
+  });
+});
+
+describe("check-whatsapp-rail — the HELPER rule", () => {
+  it("flags subAccountWhatsappIsConfigured standing in for readiness", () => {
+    const out = offendingLines(
+      `if (!subAccountWhatsappIsConfigured(sub?.twilioConfig)) return null;`,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].rule).toBe("helper");
+    expect(out[0].line).toBe(1);
+  });
+
+  it("flags the import too — an alias is still the same wrong check", () => {
+    const out = offendingLines(
+      `import { subAccountWhatsappIsConfigured as ready } from "@/lib/comms/twilio";`,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].rule).toBe("helper");
+  });
+
+  it("ignores the helper name in prose", () => {
+    expect(
+      offendingLines(` * use checkWhatsappReadiness, not subAccountWhatsappIsConfigured`),
+    ).toHaveLength(0);
+    expect(
+      offendingLines(`// subAccountWhatsappIsConfigured is Twilio-only`),
+    ).toHaveLength(0);
+  });
+
+  it("does not flag the rail-aware replacements", () => {
+    expect(
+      offendingLines(
+        [
+          `const r = await checkWhatsappReadiness({ subAccountId, subAccount });`,
+          `if (!capabilitiesFor(r.provider).supportsTemplates) return null;`,
+        ].join("\n"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("reports both rules independently when a file trips both", () => {
+    const out = offendingLines(
+      [
+        `const n = sub?.twilioConfig?.whatsappFromNumber;`,
+        `const ok = subAccountWhatsappIsConfigured(sub?.twilioConfig);`,
+      ].join("\n"),
+    );
+    expect(out.map((o) => [o.rule, o.line])).toEqual([
+      ["field", 1],
+      ["helper", 2],
+    ]);
+  });
+
+  it("runs only the rules the caller asked for — the allowlists are separate", () => {
+    // A file that is Twilio-internals for the FIELD rule is not thereby
+    // excused from the HELPER rule, and vice versa. Sharing one allowlist
+    // would hide exactly the defect this gate exists to catch.
+    const src = [
+      `const n = sub?.twilioConfig?.whatsappFromNumber;`,
+      `const ok = subAccountWhatsappIsConfigured(sub?.twilioConfig);`,
+    ].join("\n");
+    expect(offendingLines(src, { field: false, helper: true })).toEqual([
+      { line: 2, rule: "helper", text: expect.any(String) },
+    ]);
+    expect(offendingLines(src, { field: true, helper: false })).toEqual([
+      { line: 1, rule: "field", text: expect.any(String) },
+    ]);
   });
 });

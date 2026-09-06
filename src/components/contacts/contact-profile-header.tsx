@@ -524,6 +524,10 @@ function reviewSkipMessage(reason?: string): string {
     case "whatsapp_not_configured":
     case "whatsapp_gate_off":
       return "WhatsApp isn't fully configured for this sub-account.";
+    case "rail_has_no_templates":
+      // Distinct from an unapproved template: nothing to approve, and the fix
+      // is to change the channel (or the rail), not to wait for Meta.
+      return "This workspace's WhatsApp rail can't send templates. Switch the review request to the in-window WhatsApp message or SMS.";
     case "no_template":
     case "template_not_approved":
       return "The WhatsApp review template isn't approved yet.";

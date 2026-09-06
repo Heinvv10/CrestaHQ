@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { subAccountWhatsappIsConfigured } from "@/lib/comms/twilio";
 import {
   DEFAULT_REVIEW_COOLDOWN_DAYS,
   DEFAULT_REVIEW_SMS_TEMPLATE,
@@ -12,6 +11,11 @@ import {
 } from "@/lib/reviews/constants";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import {
+  capabilitiesFor,
+  resolveWhatsAppProviderId,
+} from "@/lib/comms/whatsapp/provider";
 import type { SubAccountDoc } from "@/types";
 import type { GoogleReviewConfig } from "@/types/tenancy";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -98,11 +102,30 @@ export async function POST(
         { status: 403 },
       );
     }
-    if (!subAccountWhatsappIsConfigured(sub?.twilioConfig)) {
+    const rail = resolveWhatsAppProviderId(sub?.whatsappProvider);
+    // The PURE sender check, deliberately NOT checkWhatsappReadiness: this is a
+    // config SAVE, and readiness does a live bridge probe. Refusing to save a
+    // configuration because the bridge happens to be unreachable right now
+    // would be wrong — health belongs on the send path, which re-checks every
+    // time. This only asks whether a sender has been connected at all, on the
+    // rail this workspace actually sends over.
+    if (!whatsappSenderConfigured(sub)) {
       return NextResponse.json(
         {
           error:
-            "Add a WhatsApp sender under Settings → SMS before using WhatsApp for review requests.",
+            rail === "twilio"
+              ? "Add a WhatsApp sender under Settings → SMS before using WhatsApp for review requests."
+              : "Connect this workspace's WhatsApp sender under Settings → WhatsApp before using WhatsApp for review requests.",
+        },
+        { status: 400 },
+      );
+    }
+    // Saving a template config on a rail with no templates configures a send
+    // that can never run — refuse it here rather than at 3am on a trigger.
+    if (channel === "whatsapp_template" && !capabilitiesFor(rail).supportsTemplates) {
+      return NextResponse.json(
+        {
+          error: `This workspace's ${rail} WhatsApp rail can't send templates. Use the in-window WhatsApp message or SMS for review requests.`,
         },
         { status: 400 },
       );
