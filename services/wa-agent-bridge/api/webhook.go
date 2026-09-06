@@ -31,13 +31,36 @@ type Fanout struct {
 	ownerJID       string
 	store          rails.Store
 	inReplayWindow func() bool
+	connectedAt    func() time.Time
 	client         *http.Client
 	wg             sync.WaitGroup
 	// now is the signing clock. Defaulted to time.Now by NewFanout; tests
 	// that need to assert a fixed signature override it directly (same
 	// package, deliberate unexported access — see f.client.Transport above).
 	now func() time.Time
+
+	// Watermark state, guarded by wmMu. Deliver is called from whatsmeow's
+	// event goroutine today, but a lock is cheaper than the assumption.
+	wmMu sync.Mutex
+	// watermark is the newest INBOUND message this bridge had recorded BEFORE
+	// the current connection. Anything STRICTLY older is history whatsmeow is
+	// re-delivering; anything at or after it arrived while we were down, or
+	// since. Inbound only, and "at" counts as new — see admitDuringReplay for
+	// why both of those are load-bearing rather than incidental.
+	watermark time.Time
+	// watermarkFor is the connectedAt the watermark was taken for, so a new
+	// connection re-snapshots it exactly once.
+	watermarkFor time.Time
+	catchUp      int
+	skippedOld   int
+	skippedCap   int
 }
+
+// maxCatchUpForward bounds how many messages one connection may forward from
+// its backlog. A re-pair can hand us a large recent backlog, all of it newer
+// than the watermark and all of it genuinely unseen — forwarding is right, but
+// unbounded forwarding turns one re-pair into a flood across every thread.
+const maxCatchUpForward = 200
 
 // NewFanout wires a Fanout. inReplayWindow is required — it decides whether
 // an inbound message wakes a consumer or is recorded silently, and getting
@@ -51,18 +74,87 @@ type Fanout struct {
 // Deliver). Empty accepts every sender — the phase-2 shape, and the only safe
 // default: empty meaning "accept none" would brick any deployment that omits
 // the variable, silently and with no error to read.
-func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inReplayWindow func() bool) *Fanout {
+func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inReplayWindow func() bool, connectedAt func() time.Time) *Fanout {
 	if inReplayWindow == nil {
 		panic("api: NewFanout requires a non-nil inReplayWindow func")
+	}
+	// Same reasoning as inReplayWindow: without it the watermark can never be
+	// re-snapshotted, so the first connection's watermark would govern every
+	// later one and a long-lived process would drift into forwarding history.
+	if connectedAt == nil {
+		panic("api: NewFanout requires a non-nil connectedAt func")
 	}
 	return &Fanout{
 		consumers:      consumers,
 		ownerJID:       ownerJID,
 		store:          st,
 		inReplayWindow: inReplayWindow,
+		connectedAt:    connectedAt,
 		client:         &http.Client{Timeout: 10 * time.Second},
 		now:            time.Now,
 	}
+}
+
+// refreshWatermark re-reads the watermark once per connection.
+//
+// On a read error the watermark is left at the zero time, which admits
+// everything and leans on maxCatchUpForward to bound the damage. That is the
+// deliberate direction: a message forwarded twice merges in the consumer (the
+// payload carries WhatsApp's own message id and consumers key on it), while a
+// message never forwarded is gone — this bridge stores no message body, so
+// there is nothing to replay it from later.
+func (f *Fanout) refreshWatermark() {
+	c := f.connectedAt()
+	f.wmMu.Lock()
+	defer f.wmMu.Unlock()
+	if c.Equal(f.watermarkFor) {
+		return
+	}
+	f.watermarkFor = c
+	f.catchUp, f.skippedOld, f.skippedCap = 0, 0, 0
+	w, err := f.store.LastInboundAt()
+	if err != nil {
+		log.Printf("WARNING watermark unreadable, admitting the backlog up to %d messages: %v",
+			maxCatchUpForward, err)
+		f.watermark = time.Time{}
+		return
+	}
+	f.watermark = w
+}
+
+// admitDuringReplay decides whether one message survives the post-connect
+// window, and reports true when it should be forwarded.
+func (f *Fanout) admitDuringReplay(jid, text string, at time.Time) bool {
+	f.wmMu.Lock()
+	defer f.wmMu.Unlock()
+
+	// STRICTLY older, not "not newer". at_unix is whole seconds, so a message
+	// in the same second as the newest recorded one is ordinary, not history —
+	// and treating it as history drops it permanently, while admitting it at
+	// worst re-delivers one message that the consumer merges on its id.
+	if at.Before(f.watermark) {
+		f.skippedOld++
+		log.Printf("inbound is history, older than the watermark jid=%s len=%s — recorded, not forwarded",
+			redact.JID(jid), redact.Body(text))
+		return false
+	}
+	if f.catchUp >= maxCatchUpForward {
+		f.skippedCap++
+		log.Printf("ALERT catch-up cap reached, DROPPING new inbound jid=%s len=%s (%d suppressed this connection)",
+			redact.JID(jid), redact.Body(text), f.skippedCap)
+		return false
+	}
+	f.catchUp++
+	return true
+}
+
+// SuppressedInbound reports what this connection did not forward: messages
+// recognised as history, and genuinely new ones dropped by the catch-up cap.
+// The second number is data loss and belongs in front of an operator.
+func (f *Fanout) SuppressedInbound() (history, capped int) {
+	f.wmMu.Lock()
+	defer f.wmMu.Unlock()
+	return f.skippedOld, f.skippedCap
 }
 
 // Deliver records one inbound message and, outside the replay window, POSTs
@@ -72,14 +164,12 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 // redelivery on the id rather than on the body. It is empty when the transport
 // did not supply one; consumers must treat empty as "unknown".
 func (f *Fanout) Deliver(jid, text, msgID string, at time.Time) {
+	// Before RecordInbound, or this very message raises the watermark above
+	// itself and every message looks like history.
+	f.refreshWatermark()
+
 	if err := f.store.RecordInbound(jid, at); err != nil {
 		log.Printf("WARNING inbound not recorded jid=%s err=%v", redact.JID(jid), err)
-	}
-
-	if f.inReplayWindow() {
-		log.Printf("inbound during replay window jid=%s len=%s — recorded, not forwarded",
-			redact.JID(jid), redact.Body(text))
-		return
 	}
 
 	// Phase 1 runs on an unpublished number that only the owner is supposed to
@@ -88,9 +178,18 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time) {
 	// decides whether a JID may be messaged at all, and it decides on recorded
 	// history — dropping the record here would leave a contact who really did
 	// message us looking like a stranger.
+	//
+	// It sits BEFORE the replay gate so the catch-up budget is spent only on
+	// messages that could actually be forwarded. With OWNER_JID set, 200
+	// non-owner messages during the window would otherwise exhaust the cap and
+	// the owner's genuinely new message would be the one dropped.
 	if !f.fromOwner(jid) {
 		log.Printf("inbound from non-owner jid=%s len=%s — recorded, not forwarded",
 			redact.JID(jid), redact.Body(text))
+		return
+	}
+
+	if f.inReplayWindow() && !f.admitDuringReplay(jid, text, at) {
 		return
 	}
 

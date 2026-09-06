@@ -154,7 +154,14 @@ func (m *Memory) LastInboundAt() (time.Time, error) {
 			}
 		}
 	}
-	return last, nil
+	if last.IsZero() {
+		return last, nil
+	}
+	// Floored to whole seconds because SQLite writes at.Unix() and reads it
+	// back floored. A fake with FINER resolution than the real store hides
+	// every boundary bug at the second mark: the equal-second comparison in
+	// the fanout looked covered by tests using this store and was not.
+	return time.Unix(last.Unix(), 0), nil
 }
 
 func (m *Memory) HasInboundFrom(jid string) (bool, error) {

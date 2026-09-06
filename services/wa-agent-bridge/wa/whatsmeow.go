@@ -313,6 +313,15 @@ func (c *Client) Number() string {
 	return wac.Store.ID.User
 }
 
+// ConnectedAt is the moment the current connection was established, or the
+// zero time when there is none. The fanout uses it as the key that tells it a
+// new connection has begun and its watermark needs re-reading.
+func (c *Client) ConnectedAt() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connectedAt
+}
+
 // InReplayWindow reports whether the socket is still inside the post-connect
 // period during which whatsmeow replays recent history. Callers record what
 // arrives during it but must not act on it.

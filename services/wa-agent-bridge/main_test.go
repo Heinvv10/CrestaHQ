@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"testing"
+	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/api"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
@@ -56,7 +57,7 @@ func TestFanoutAcceptsTheGatePredicate(t *testing.T) {
 		}
 	}()
 	g := &clientHolder{}
-	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow); f == nil {
+	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow, g.connectedAt); f == nil {
 		t.Fatal("nil fanout")
 	}
 }
@@ -113,5 +114,29 @@ func TestClientHolderReportsNotConnectedBeforeSet(t *testing.T) {
 	g := &clientHolder{}
 	if g.Connected() {
 		t.Fatal("before the client exists the holder must report NOT connected")
+	}
+}
+
+// connectedAt is load-bearing and was untested: replacing its body with
+// time.Now() passed every test in the repo while destroying the design. A
+// watermark keyed on a value that changes every call re-snapshots on every
+// message, which resets the catch-up counter — so maxCatchUpForward never
+// fires and the flood protection is gone — and makes any out-of-order message
+// look like history.
+//
+// The property that matters is STABILITY: the same connection must yield the
+// same key. Asserting it with no client set is enough to kill that mutation
+// and needs no whatsmeow socket.
+func TestClientHolderConnectedAtIsStableAcrossCalls(t *testing.T) {
+	g := &clientHolder{}
+	first := g.connectedAt()
+	time.Sleep(2 * time.Millisecond)
+	second := g.connectedAt()
+
+	if !first.Equal(second) {
+		t.Fatalf("connectedAt must be stable for one connection, got %v then %v", first, second)
+	}
+	if !first.IsZero() {
+		t.Fatalf("with no client set the key must be the zero time, got %v", first)
 	}
 }
