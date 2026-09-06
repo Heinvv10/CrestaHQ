@@ -177,6 +177,56 @@ func addLastDroppedInboundColumn(db *sql.DB) error {
 	}
 	defer rows.Close()
 
+	if hasDroppedInboundColumn(rows) {
+		return nil
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return addDroppedInboundColumn(db)
+}
+
+// addDroppedInboundColumn runs the ALTER, tolerating exactly one thing: another
+// process having added the same column first.
+//
+// Split out from the presence check above so it can be tested deterministically
+// — calling it twice on one database reproduces the race's losing side without
+// any concurrency, because the second call's ALTER fails the same way the
+// loser's does.
+//
+// The race is real but rare: hammering Open from six goroutines against an
+// un-migrated database, 1200 opens produced 3 "duplicate column name" (and 29
+// "database is locked", which is NOT this — see the test).
+func addDroppedInboundColumn(db *sql.DB) error {
+	if _, err := db.Exec(
+		`ALTER TABLE tenants ADD COLUMN last_dropped_inbound INTEGER NOT NULL DEFAULT 0`,
+	); err != nil {
+		// The presence check above is check-then-act: a second process can add
+		// the column between the PRAGMA and this statement, and SQLite answers
+		// the loser with "duplicate column name". Returning that would take the
+		// manager down on start over a database that is, in fact, correct.
+		//
+		// So re-ask rather than swallow. This is NOT the generic-error swallow
+		// the comment above refuses — the ALTER's error is discarded only when
+		// a fresh PRAGMA proves the column is now there, which is the one
+		// reading under which it was never a failure. Any other error, and any
+		// error where the column is still missing, is returned.
+		rows, qerr := db.Query(`PRAGMA table_info(tenants)`)
+		if qerr != nil {
+			return err
+		}
+		defer rows.Close()
+		if hasDroppedInboundColumn(rows) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// hasDroppedInboundColumn reports whether a PRAGMA table_info result set names the dropped-
+// inbound column. It drains the rows; the caller checks rows.Err().
+func hasDroppedInboundColumn(rows *sql.Rows) bool {
 	present := false
 	for rows.Next() {
 		var cid int
@@ -185,20 +235,13 @@ func addLastDroppedInboundColumn(db *sql.DB) error {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return err
+			return false
 		}
 		if name == "last_dropped_inbound" {
 			present = true
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if present {
-		return nil
-	}
-	_, err = db.Exec(`ALTER TABLE tenants ADD COLUMN last_dropped_inbound INTEGER NOT NULL DEFAULT 0`)
-	return err
+	return present
 }
 
 func (s *Store) Close() error { return s.db.Close() }

@@ -240,6 +240,17 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 		// bridge process and restarts at zero when the bridge reconnects. An
 		// event on the rising edge is what survives that reset, and the tenant
 		// row is what survives a manager restart.
+		//
+		// It is a FLOOR on the loss, not a count of it. This polls a volatile
+		// counter every pollEvery, so a rise that is fully undone by a
+		// reconnect between two sweeps is never seen — and because catch-up
+		// drops are bounded by a fixed cap, "dropped N, reconnected, dropped N
+		// again" is a likely shape rather than a coincidence, and reads here
+		// as observed == baseline: no event. Closing that needs the bridge to
+		// report a connection epoch alongside the counter, so a reset is
+		// detectable independently of the value. Until then, an event here
+		// means messages were certainly lost; the absence of one does not mean
+		// none were.
 		if r.DroppedInbound != nil {
 			observed := *r.DroppedInbound
 			switch {
@@ -251,7 +262,11 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 					// The baseline is NOT moved when the event failed to
 					// land: leaving it behind means the next sweep tries
 					// again, where advancing it would lose the only record
-					// the drop ever happened.
+					// the drop ever happened. That makes the event
+					// at-least-once — a store that fails here and recovers
+					// writes the same line twice. Deliberate: a duplicated
+					// "messages were lost" is harmless, a dropped one is the
+					// failure this whole path exists to prevent.
 					errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
 				} else if err := st.SetLastDroppedInbound(t.ID, observed); err != nil {
 					errs = append(errs, fmt.Errorf("reconcile %q: %w", t.ID, err))
@@ -270,10 +285,14 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 			// per sweep under synchronous=FULL — the same cost the Connected
 			// branch below refuses to pay.
 		}
-		// A nil DroppedInbound is UNKNOWN, not zero: an older bridge omits the
-		// field entirely, and deploy-wa.sh rolls the manager and the bridges
-		// separately, so that is the normal state during a rollout. Neither an
-		// event nor a baseline write may come from it.
+		// A nil DroppedInbound is UNKNOWN, not zero. Two ways to get one: an
+		// older bridge omits the field entirely — and deploy-wa.sh restarts
+		// the manager first, then hands the fleet to a rollout, so that is the
+		// normal state mid-rollout — and a current bridge reports it only when
+		// its inbound-suppression dependency is wired. A current bridge with a
+		// genuine zero sends 0, not nothing, so the pointer really does carry
+		// the distinction. Neither an event nor a baseline write may come from
+		// an unknown.
 
 		switch {
 		case r.Connected:

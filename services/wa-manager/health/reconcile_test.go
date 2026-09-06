@@ -1,6 +1,7 @@
 package health
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -489,5 +490,57 @@ func TestReconcileIgnoresAnUnknownDroppedInboundCount(t *testing.T) {
 	ev := onlyEvent(t, s, "t1")
 	if !strings.Contains(ev.Detail, "2 more") || !strings.Contains(ev.Detail, "bridge reports 7") {
 		t.Fatalf("the preserved baseline was not used: %q", ev.Detail)
+	}
+}
+
+// A store whose file path the caller knows, so a test can reach the database
+// behind the Store's back.
+func openStoreAt(t *testing.T) (*store.Store, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mgr.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s, path
+}
+
+// The baseline must NOT advance when the event failed to land.
+//
+// This is the one branch whose comment promises the most and which nothing
+// pinned: a blind review mutated it to advance the baseline anyway and every
+// test still passed. Advancing it would mark the drop as recorded when the only
+// record of it never got written — the loss would be silently forgotten, which
+// is the exact failure this whole change exists to prevent.
+//
+// The fault is injected by dropping the `events` table on a second connection.
+// That fails AppendEvent while leaving SetLastDroppedInbound working, which is
+// what makes the two writes distinguishable — closing the database would fail
+// both and the test would pass for the wrong reason.
+func TestReconcileKeepsTheBaselineWhenTheEventCannotBeRecorded(t *testing.T) {
+	s, path := openStoreAt(t)
+	tenant, _ := steadyTenant(t, s, "t1", 2)
+
+	raw, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`DROP TABLE events`); err != nil {
+		t.Fatalf("DROP TABLE events: %v", err)
+	}
+
+	five := 5
+	err = Reconcile(s, []store.Tenant{tenant}, map[string]Report{
+		"t1": {Reachable: true, Connected: true, Number: tenant.Phone, DroppedInbound: &five},
+	})
+	if err == nil {
+		t.Fatal("a failed AppendEvent must be reported, not swallowed")
+	}
+
+	if got := reload(t, s, "t1").LastDroppedInbound; got != 2 {
+		t.Fatalf("baseline = %d, want 2 left behind so the next sweep retries; "+
+			"advancing it marks the drop recorded when nothing recorded it", got)
 	}
 }

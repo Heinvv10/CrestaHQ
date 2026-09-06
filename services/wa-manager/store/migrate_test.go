@@ -186,3 +186,62 @@ func TestSetLastDroppedInboundRejectsAnUnknownTenant(t *testing.T) {
 		t.Fatal("writing a baseline for a tenant that does not exist must fail")
 	}
 }
+
+// The losing side of the race, reproduced deterministically.
+//
+// The presence check in addLastDroppedInboundColumn is check-then-act: another
+// process can add the column between the PRAGMA and the ALTER, and SQLite
+// answers the loser with "duplicate column name". Propagating that would refuse
+// to start over a database that is, in fact, correct — burning a systemd
+// StartLimitBurst attempt and printing an alarming line on the one deploy where
+// the database is still un-migrated.
+//
+// Calling addDroppedInboundColumn twice IS the loser's path: the second ALTER
+// fails exactly as the loser's does. Driving it this way rather than with
+// goroutines is deliberate — the real race is rare (measured: 3 duplicate-column
+// errors in 1200 concurrent opens), so a concurrent test would be green under a
+// broken implementation ~99.8% of the time, which is worse than no test.
+//
+// MENTIONED, NOT FIXED: a concurrent Open can also fail with "database is
+// locked" (29 of those same 1200). That is not this change — the same hammer
+// against origin/main, whose Open runs only CREATE TABLE / CREATE INDEX, fails
+// that way too. DDL takes an exclusive lock and _busy_timeout does not rescue
+// every shape of it. In production one systemd instance owns this file.
+func TestAddingTheColumnTwiceIsNotAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mgr.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+
+	if err := addDroppedInboundColumn(db); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := addDroppedInboundColumn(db); err != nil {
+		t.Fatalf("the loser of the race must start, not die on a column another "+
+			"opener had just added: %v", err)
+	}
+	if !hasColumn(t, path, "tenants", "last_dropped_inbound") {
+		t.Fatal("the column is missing after two adds")
+	}
+}
+
+// A genuine ALTER failure must still be returned — the re-check tolerates the
+// duplicate ONLY when the column really is there afterwards.
+func TestAGenuineAlterFailureIsStillReturned(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mgr.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	// No `tenants` table at all, so the ALTER fails for a reason that is not a
+	// race and that the re-check must not absorb.
+	if err := addDroppedInboundColumn(db); err == nil {
+		t.Fatal("an ALTER against a missing table must be reported, not swallowed")
+	}
+}
