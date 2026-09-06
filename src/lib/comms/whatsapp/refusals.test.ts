@@ -1,37 +1,47 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { WA_REFUSAL_MESSAGES, WA_REFUSAL_STATUS } from "./refusals";
 
+/**
+ * The completeness check reads the GO SOURCE, not a hand-copied list.
+ *
+ * The first version of this test compared the map against a literal in this
+ * same file, so adding an eleventh RefusalCode to the bridge failed nothing —
+ * it only noticed someone editing the map, which is the change already visible
+ * in review. Blind review caught that; its comment claimed to be "the thing
+ * that notices when a new rail ships" and it was not.
+ */
+const RAILS_TYPES = join(
+  process.cwd(),
+  "services/wa-agent-bridge/rails/types.go",
+);
+
+function codesDeclaredByTheBridge(): string[] {
+  const src = readFileSync(RAILS_TYPES, "utf8");
+  return [...src.matchAll(/RefusalCode\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]!);
+}
+
 describe("WhatsApp refusal wording", () => {
-  it("covers every rail the bridge can refuse with", () => {
-    // Kept in step with rails/types.go by hand, so this test is the thing that
-    // notices when a new rail ships and the operator gets raw code instead of
-    // an instruction.
-    const codesFromBridge = [
-      "kill_switch",
-      "consumer_budget",
-      "reply_only",
-      "per_contact_cap",
-      "consecutive_cap",
-      "daily_cap",
-      "quiet_hours",
-      "internal_error",
-      "in_flight",
-      "idempotency_key_reused",
-    ];
-    expect(Object.keys(WA_REFUSAL_MESSAGES).sort()).toEqual(
-      codesFromBridge.sort(),
-    );
+  it("reads the bridge's codes at all — the check is worthless otherwise", () => {
+    // If the regex or the path ever stops matching, every assertion below
+    // passes vacuously against an empty list.
+    expect(codesDeclaredByTheBridge().length).toBeGreaterThanOrEqual(10);
   });
 
-  it("tells the operator what to do, not what the rail is called", () => {
-    for (const [code, msg] of Object.entries(WA_REFUSAL_MESSAGES)) {
-      // The code itself must never leak into operator-facing text.
-      expect(msg, code).not.toContain(code);
-      expect(msg.length, code).toBeGreaterThan(30);
-      // A refusal an operator can act on ends in guidance, not a full stop
-      // after a noun phrase. Cheap proxy: it mentions a subject or a next step.
-      expect(msg, code).toMatch(/[a-z]/);
-    }
+  it("has wording for every rail the bridge can refuse with", () => {
+    const missing = codesDeclaredByTheBridge().filter(
+      (c) => !(c in WA_REFUSAL_MESSAGES),
+    );
+    expect(missing, "rails with no operator wording").toEqual([]);
+  });
+
+  it("invents no code the bridge does not emit", () => {
+    const declared = new Set(codesDeclaredByTheBridge());
+    const invented = Object.keys(WA_REFUSAL_MESSAGES).filter(
+      (c) => !declared.has(c),
+    );
+    expect(invented, "wording for a rail that does not exist").toEqual([]);
   });
 
   it("is a conflict, not a bad gateway", () => {

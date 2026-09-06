@@ -18,7 +18,26 @@ import "server-only";
  * answer is "wait for the contact", it says so, because the alternative is an
  * operator retrying into a rail that exists to stop exactly that.
  */
-export const WA_REFUSAL_MESSAGES: Record<string, string> = {
+/**
+ * Every rail the bridge can refuse with, mirroring RefusalCode in
+ * services/wa-agent-bridge/rails/types.go. Declared as a union so a rail added
+ * to the map without being added here — or removed from here without being
+ * removed from the map — fails to compile. refusals.test.ts covers the other
+ * direction, which a type cannot: a rail added to the GO file and to neither.
+ */
+export type WaRefusalCode =
+  | "kill_switch"
+  | "consumer_budget"
+  | "reply_only"
+  | "per_contact_cap"
+  | "consecutive_cap"
+  | "daily_cap"
+  | "quiet_hours"
+  | "internal_error"
+  | "in_flight"
+  | "idempotency_key_reused";
+
+const MESSAGES: Record<WaRefusalCode, string> = {
   consecutive_cap:
     "This contact hasn't replied to your last few messages, so WhatsApp would read more as spam. Wait for them to reply — that resets it.",
   reply_only:
@@ -27,7 +46,7 @@ export const WA_REFUSAL_MESSAGES: Record<string, string> = {
     "It's outside sending hours (21:00–07:00). Replying to someone who messaged in the last 24 hours still works.",
   per_contact_cap:
     "This contact has already had its daily message limit from this number.",
-  daily_cap: "This number has hit its daily sending limit. It resets tomorrow.",
+  daily_cap: "This number has sent its maximum for the last 24 hours. Capacity comes back gradually as older messages age out, not at midnight.",
   consumer_budget:
     "This workspace has hit its WhatsApp sending limit for now. It resets on the hour.",
   kill_switch:
@@ -39,6 +58,14 @@ export const WA_REFUSAL_MESSAGES: Record<string, string> = {
   internal_error:
     "The WhatsApp bridge could not check its own limits, so it refused to send. This needs an operator.",
 };
+
+/**
+ * Indexed by a plain string on purpose: `refusedBy` arrives over HTTP from a
+ * bridge that may be running an older or newer build than this CRM, so a code
+ * outside the union is a real runtime case and the caller falls back to the
+ * provider's own words.
+ */
+export const WA_REFUSAL_MESSAGES: Readonly<Record<string, string>> = MESSAGES;
 
 /**
  * A refusal is the provider deliberately declining, not a broken gateway.
