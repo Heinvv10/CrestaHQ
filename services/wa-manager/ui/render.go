@@ -392,13 +392,15 @@ func BuildRolloutLine(state, version, detail string, immediate bool) *RolloutLin
 
 // lostInboundState words the count for an operator. Plain "none" rather than a
 // zero, so a scan of the fleet reads as prose and a non-zero stands out.
-func lostInboundState(n int) string {
+func lostInboundState(n *int) string {
 	switch {
-	case n <= 0:
+	case n == nil:
+		return "unknown"
+	case *n <= 0:
 		return "none"
-	case n == 1:
+	case *n == 1:
 		return "1 message lost since this bridge last connected"
 	default:
-		return fmt.Sprintf("%d messages lost since this bridge last connected", n)
+		return fmt.Sprintf("%d messages lost since this bridge last connected", *n)
 	}
 }

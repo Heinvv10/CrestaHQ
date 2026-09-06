@@ -518,7 +518,7 @@ func TestLostInboundLineReportsTheCount(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := healthyReport()
-			r.DroppedInbound = tc.count
+			r.DroppedInbound = ptr(tc.count)
 			c := BuildCard(pairedTenant(), &r)
 			if c.LostInbound != tc.want {
 				t.Fatalf("LostInbound = %q, want %q", c.LostInbound, tc.want)
@@ -533,5 +533,17 @@ func TestLostInboundIsUnknownWhenUnreachable(t *testing.T) {
 	c := BuildCard(pairedTenant(), nil)
 	if c.LostInbound != "unknown" {
 		t.Fatalf("LostInbound = %q, want \"unknown\"", c.LostInbound)
+	}
+}
+
+// Nor does a REACHABLE bridge that simply did not report the field — which is
+// every bridge on the fleet during a rollout, since deploy-wa.sh updates the
+// manager and the bridges separately.
+func TestLostInboundIsUnknownWhenTheBridgeDidNotReport(t *testing.T) {
+	r := healthyReport()
+	r.DroppedInbound = nil
+	c := BuildCard(pairedTenant(), &r)
+	if c.LostInbound != "unknown" {
+		t.Fatalf("LostInbound = %q, want \"unknown\" for an unreported count", c.LostInbound)
 	}
 }

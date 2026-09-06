@@ -37,7 +37,13 @@ type Report struct {
 	// because its catch-up cap was reached. It is customer messages nobody
 	// will ever see — the bridge stores no message body, so this counter is
 	// their only trace. Resets when the bridge reconnects.
-	DroppedInbound int
+	//
+	// A POINTER, for the same reason as AllowlistCount above: a bridge that
+	// omits the field has not told us it lost nothing, and rendering "none"
+	// for it is a safety claim about something unobserved. That case is not
+	// hypothetical — deploy-wa.sh rolls the manager and the bridges
+	// separately, so during a rollout every older bridge omits it.
+	DroppedInbound *int
 
 	// Number is the phone number the bridge is paired to, digits only, empty
 	// when the bridge is unpaired or did not report one. The bridge sends it
@@ -72,7 +78,7 @@ type bridgeHealthBody struct {
 	DailyCap              int      `json:"dailyCap"`
 	LastInboundAgeSeconds *int     `json:"lastInboundAgeSeconds"`
 	Allowlisted           *int     `json:"allowlisted"`
-	DroppedInbound        int      `json:"droppedInbound"`
+	DroppedInbound        *int     `json:"droppedInbound"`
 	Number                string   `json:"number"`
 	Version               string   `json:"version"`
 	Problems              []string `json:"problems"`
