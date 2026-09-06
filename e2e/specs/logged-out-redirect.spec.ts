@@ -17,8 +17,9 @@ import { baseURL } from "../lib/env";
  * A reproduction IS achievable: serve with HOSTNAME=127.0.0.1 while both
  * DEFAULT_BASE_URL and NEXT_PUBLIC_APP_URL use a NON-loopback-literal name that
  * still resolves to loopback (e.g. a multi-label *.localhost, so
- * funnelSubdomainFrom does not treat it as a funnel host). Fixed then emits a
- * relative Location (green) and unfixed an absolute localhost one (red). Not
+ * funnelSubdomainFrom does not treat it as a funnel host). Measured: fixed emits
+ * an absolute Location carrying the CORRECT origin (green), unfixed an absolute
+ * localhost one (red). Not
  * adopted here only because it changes the base URL for all six specs and that
  * was not re-verified; it is the right next step if this gate is wanted.
  *
