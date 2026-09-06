@@ -61,6 +61,17 @@ type Deps struct {
 	// must degrade rather than fail when a dependency is unwired.
 	InboundSuppression func() (history, capped int)
 
+	// InboundDropAge is how long ago the most recent drop happened, and false
+	// when this connection has dropped nothing.
+	//
+	// It exists so a drop can alert LOUDLY and then stop. The counter only
+	// resets on a new connection, so treating any non-zero count as a problem
+	// latches the bridge into degraded/503 for the whole connection — hours
+	// after one lost message, on a number that is otherwise perfectly healthy.
+	// An alert that never clears is one an operator learns to ignore, which is
+	// the same reasoning this endpoint already applies to suppressed history.
+	InboundDropAge func() (age time.Duration, ok bool)
+
 	// Version is the build this process is running, stamped by the deploy
 	// script with -ldflags. A plain `go build` leaves it "dev"; it is empty
 	// only in tests that construct Deps directly.

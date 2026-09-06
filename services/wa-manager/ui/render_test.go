@@ -501,3 +501,49 @@ func TestAQueuedRolloutSaysWhenItWillRun(t *testing.T) {
 		t.Fatalf("an immediate rollout claims it waits for the window: %q", immediate.Text)
 	}
 }
+
+// A dropped inbound is a customer message nobody will ever see — the bridge
+// stores no body, so this counter is its only trace. It must stay on the card
+// after the bridge stops flagging it as a fresh problem, or the loss becomes
+// invisible half an hour later.
+func TestLostInboundLineReportsTheCount(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count int
+		want  string
+	}{
+		{"none", 0, "none"},
+		{"one", 1, "1 message lost since this bridge last connected"},
+		{"many", 4, "4 messages lost since this bridge last connected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := healthyReport()
+			r.DroppedInbound = ptr(tc.count)
+			c := BuildCard(pairedTenant(), &r)
+			if c.LostInbound != tc.want {
+				t.Fatalf("LostInbound = %q, want %q", c.LostInbound, tc.want)
+			}
+		})
+	}
+}
+
+// An unreachable bridge tells us nothing about what it lost, and "none" would
+// be a safety claim about something unobserved.
+func TestLostInboundIsUnknownWhenUnreachable(t *testing.T) {
+	c := BuildCard(pairedTenant(), nil)
+	if c.LostInbound != "unknown" {
+		t.Fatalf("LostInbound = %q, want \"unknown\"", c.LostInbound)
+	}
+}
+
+// Nor does a REACHABLE bridge that simply did not report the field — which is
+// every bridge on the fleet during a rollout, since deploy-wa.sh updates the
+// manager and the bridges separately.
+func TestLostInboundIsUnknownWhenTheBridgeDidNotReport(t *testing.T) {
+	r := healthyReport()
+	r.DroppedInbound = nil
+	c := BuildCard(pairedTenant(), &r)
+	if c.LostInbound != "unknown" {
+		t.Fatalf("LostInbound = %q, want \"unknown\" for an unreported count", c.LostInbound)
+	}
+}
