@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { safeRedirect } from "@/lib/auth/safe-redirect";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { sendPasswordReset, signInWithEmail } from "@/lib/firebase/auth";
@@ -38,8 +39,7 @@ export function LoginForm() {
     try {
       await signInWithEmail(email, password);
       const params = new URLSearchParams(window.location.search);
-      const redirect = params.get("redirect") ?? "/dashboard";
-      router.push(redirect);
+      router.push(safeRedirect(params.get("redirect")));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in.");

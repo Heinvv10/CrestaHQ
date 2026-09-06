@@ -47,7 +47,12 @@ export default defineConfig({
           command: "pnpm e2e:server",
           env: { PORT: "3100" },
           url: DEFAULT_BASE_URL,
-          reuseExistingServer: !process.env.CI,
+          // Never reuse. `!process.env.CI` silently attached a local run to the
+          // CI runner's server on this same port, so a change to `env` above was
+          // ignored and a mutation test "passed" against another branch's build.
+          // A gate whose verification can be measured against the wrong server
+          // is not a gate.
+          reuseExistingServer: false,
           // A cold Next.js production start on the shared runner box, which
           // also hosts four other repos' runners.
           timeout: 180_000,

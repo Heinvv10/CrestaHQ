@@ -117,6 +117,26 @@ fi
 say "Build"
 pnpm build || die "build"
 
+# NEXT_PUBLIC_* are INLINED at build time, so a build that cannot see
+# NEXT_PUBLIC_APP_URL silently ships a different program: the logged-out login
+# redirect falls back to the server's bind address and sends real visitors to
+# http://localhost:<port>/login. Nothing at runtime recovers it and every gate
+# stays green, so it has to be caught here.
+#
+# Assert the ARTIFACT, not the shell: this script sources no dotenv, Next reads
+# .env.production off disk itself, so `[ -n "$NEXT_PUBLIC_APP_URL" ]` would test
+# a variable the deploy never sets — failing every correct deploy while proving
+# nothing about the bundle.
+say "Verifying NEXT_PUBLIC_APP_URL was inlined"
+[ -f .env.production ] || die "$DEPLOY_DIR/.env.production is missing — the build reads NEXT_PUBLIC_APP_URL from it"
+# `|| true`: under `set -e` a failing substitution kills the script before `die`
+# can explain why. Strip CR and BOTH quote styles — a single-quoted value would
+# otherwise never match the bundle and would fail a correct deploy.
+APP_URL="$(sed -n 's/^NEXT_PUBLIC_APP_URL=//p' .env.production 2>/dev/null | head -1 | tr -d '\r\"'"'" || true)"
+[ -n "$APP_URL" ] || die "NEXT_PUBLIC_APP_URL is not set in $DEPLOY_DIR/.env.production — the build inlines it, so login redirects would point at the server's bind address"
+grep -rqF "$APP_URL" .next/server/edge/chunks/ \
+  || die "NEXT_PUBLIC_APP_URL ($APP_URL) is not present in the built middleware — the build did not pick it up; login redirects would point at the server's bind address"
+
 # Next's standalone output ships server.js + a minimal node_modules, but NOT
 # the static assets or /public — those must be copied in beside it.
 say "Assembling standalone bundle"
