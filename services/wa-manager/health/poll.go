@@ -243,14 +243,14 @@ func Reconcile(st *store.Store, tenants []store.Tenant, reports map[string]Repor
 		//
 		// It is a FLOOR on the loss, not a count of it. This polls a volatile
 		// counter every pollEvery, so a rise that is fully undone by a
-		// reconnect between two sweeps is never seen — and because catch-up
-		// drops are bounded by a fixed cap, "dropped N, reconnected, dropped N
-		// again" is a likely shape rather than a coincidence, and reads here
-		// as observed == baseline: no event. Closing that needs the bridge to
-		// report a connection epoch alongside the counter, so a reset is
-		// detectable independently of the value. Until then, an event here
-		// means messages were certainly lost; the absence of one does not mean
-		// none were.
+		// reconnect between two sweeps is never seen. And the repeat is not a
+		// coincidence: a reconnect replays the same backlog past the same
+		// forward cap, so "dropped N, reconnected, dropped N again" lands here
+		// as observed == baseline, and writes nothing. Closing that needs the
+		// bridge to report a connection epoch alongside the counter, so a
+		// reset is detectable independently of the value. Until then, an event
+		// here means messages were certainly lost; the absence of one does not
+		// mean none were.
 		if r.DroppedInbound != nil {
 			observed := *r.DroppedInbound
 			switch {

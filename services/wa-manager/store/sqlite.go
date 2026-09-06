@@ -169,7 +169,10 @@ func Open(path string) (*Store, error) {
 // existing deployment only if something alters the table. SQLite has no
 // ADD COLUMN IF NOT EXISTS, and swallowing a generic error from the ALTER to
 // fake idempotence would hide a real failure behind "already applied", so the
-// presence check is an explicit PRAGMA and every error is returned.
+// presence check is an explicit PRAGMA. The ALTER's error is returned too,
+// with exactly one exception, named where it is made below: it is discarded
+// when a fresh PRAGMA proves the column is now present, which is a
+// postcondition check rather than a guess at what the error meant.
 func addLastDroppedInboundColumn(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(tenants)`)
 	if err != nil {
@@ -177,11 +180,12 @@ func addLastDroppedInboundColumn(db *sql.DB) error {
 	}
 	defer rows.Close()
 
-	if hasDroppedInboundColumn(rows) {
-		return nil
-	}
-	if err := rows.Err(); err != nil {
+	present, err := hasDroppedInboundColumn(rows)
+	if err != nil {
 		return err
+	}
+	if present {
+		return nil
 	}
 	return addDroppedInboundColumn(db)
 }
@@ -216,7 +220,11 @@ func addDroppedInboundColumn(db *sql.DB) error {
 			return err
 		}
 		defer rows.Close()
-		if hasDroppedInboundColumn(rows) {
+		// The ORIGINAL ALTER error is what surfaces if this re-check cannot
+		// prove the column is there — including when the re-check itself
+		// fails. Reporting the loser's real problem beats reporting a second
+		// symptom of it.
+		if present, rerr := hasDroppedInboundColumn(rows); rerr == nil && present {
 			return nil
 		}
 		return err
@@ -224,9 +232,20 @@ func addDroppedInboundColumn(db *sql.DB) error {
 	return nil
 }
 
-// hasDroppedInboundColumn reports whether a PRAGMA table_info result set names the dropped-
-// inbound column. It drains the rows; the caller checks rows.Err().
-func hasDroppedInboundColumn(rows *sql.Rows) bool {
+// hasDroppedInboundColumn reports whether a PRAGMA table_info result set names
+// the dropped-inbound column. It drains the rows and folds in rows.Err(), so a
+// caller has one thing to check.
+//
+// A Scan error is returned rather than reported as "column absent". Rows.Scan
+// does not record a conversion failure in rows.Err(), so demoting it here
+// would lose it entirely — and "absent" is the answer that provokes an ALTER,
+// which is the wrong move to make on a result set nobody could read.
+//
+// UNPROVEN, and deliberately so: PRAGMA table_info returns six columns of
+// fixed type, so nothing this scans can fail to convert, and reaching it would
+// take a fake driver. Mutating the branch away leaves every test green. Read
+// it as defence on an unreachable path, not as a checked invariant.
+func hasDroppedInboundColumn(rows *sql.Rows) (bool, error) {
 	present := false
 	for rows.Next() {
 		var cid int
@@ -235,13 +254,13 @@ func hasDroppedInboundColumn(rows *sql.Rows) bool {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false
+			return false, err
 		}
 		if name == "last_dropped_inbound" {
 			present = true
 		}
 	}
-	return present
+	return present, rows.Err()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
