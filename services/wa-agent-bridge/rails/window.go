@@ -118,7 +118,16 @@ func humanReplyInOpenSession(req SendRequest, s Store, cfg Config) bool {
 		return false
 	}
 	last, ok, err := s.LastInboundFrom(req.To)
-	if err != nil || !ok {
+	if err != nil {
+		// An exemption that cannot verify its own precondition is not one.
+		return false
+	}
+	if !ok {
+		// Never messaged us, so there is no session to be inside. Checked
+		// separately from the error: collapsed into one condition, a test for
+		// this case passes even when the branch is gone, because the zero time
+		// makes req.Now.Sub(last) about two thousand years — comfortably
+		// outside any window, for entirely the wrong reason.
 		return false
 	}
 	return req.Now.Sub(last) < cfg.HumanReplySessionWindow

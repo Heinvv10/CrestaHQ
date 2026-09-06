@@ -1,6 +1,7 @@
 package rails
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -241,5 +242,36 @@ func TestQuietHoursIgnoresTheFlagOutsideTheWindow(t *testing.T) {
 	req := SendRequest{To: "27829999999@s.whatsapp.net", Consumer: "app", Now: now}
 	if d := checkQuietHours(req, st, cfg); !d.Allow {
 		t.Fatalf("midday is not quiet hours: %s", d.Reason)
+	}
+}
+
+// A stranger is refused even at the widest window the type can express.
+//
+// Blind review noted the plain stranger test passes for the wrong reason: with
+// no inbound, `last` is the zero time and req.Now.Sub(last) is ~2026 years, so
+// the window comparison refuses on its own and the explicit not-found branch
+// is never the deciding factor.
+//
+// That branch CANNOT be isolated by a window test: time.Duration saturates at
+// math.MaxInt64 (~292 years), so no configurable window can be wide enough to
+// let the zero-time fallthrough allow. It is kept as defence in depth — it
+// states the intent, and it survives a future change to the comparison — and
+// the contract it depends on is pinned directly instead, at
+// store.TestLastInboundFromReportsNotFoundForAStranger.
+//
+// What this test does prove: even at the maximum representable window, a
+// contact who never messaged is refused.
+func TestQuietHoursRefusesAStrangerAtTheWidestPossibleWindow(t *testing.T) {
+	st := store.NewMemory()
+	now := time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC)
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = time.Duration(math.MaxInt64)
+
+	req := SendRequest{To: "27829999999@s.whatsapp.net", Consumer: "app", Now: now, HumanReply: true}
+	if d := checkQuietHours(req, st, cfg); d.Allow {
+		t.Fatal("a contact who has never messaged has no open session, whatever the window")
 	}
 }

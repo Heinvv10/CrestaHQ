@@ -70,6 +70,30 @@ function res(status: number, body: unknown) {
 }
 
 describe("sendWhatsappBridge", () => {
+
+  it("sends humanReply on the wire exactly as the caller set it", async () => {
+    // This function composes the actual HTTP body. Hardcoding the field here
+    // marks EVERY bridge send human — AI auto-reply, review requests, workflow
+    // steps — and the tests one layer up on dispatchWhatsappSend cannot see it.
+    for (const [given, expected] of [
+      [true, true],
+      [false, false],
+      [undefined, false],
+    ] as const) {
+      const fetchImpl = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, messageId: "3EB0" }), { status: 200 }),
+      );
+      await sendWhatsappBridge({
+        creds,
+        to: "+27821234567",
+        message: "hi",
+        humanReply: given,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]!.body));
+      expect(body.humanReply, `humanReply=${String(given)}`).toBe(expected);
+    }
+  });
   function send(
     fetchImpl: ReturnType<typeof vi.fn>,
     overrides: Record<string, unknown> = {}
