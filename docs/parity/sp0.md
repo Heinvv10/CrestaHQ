@@ -255,9 +255,12 @@ than a harness defect.
 | Contact create / edit / delete | Contacts | `/sa/{id}/contacts` | — | `e2e/specs/contacts.spec.ts` | **green, mutation-proven** |
 | Form submit → contact | Forms | `/f/{formId}` → contact write | — | `e2e/specs/form-submit.spec.ts` | **green, mutation-proven** |
 | Workflow enrol → action runs | Automation | `fireWorkflowTrigger` → `workflowRuns` → signed step worker | publish leg unprovable on loopback; prod has no QStash | `e2e/specs/workflow-enrol.spec.ts` | **green, mutation-proven; smoke red until prod QStash** |
-| Google account connected | Settings → Integrations | **absent** | whole subsystem | SP0-B | pending |
-| Paystack connected per tenant | Payments | **absent** | whole subsystem | SP0-B | pending |
-| Meta connected | Settings | exists, gated | verify gates + env on deploy | SP0-C | pending |
+| Google account connected | Settings → Integrations | `/api/google/callback`, tokens at `subAccounts/{id}/private/googleConnection` | code shipped (#32); `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` **not on the deployment**, so the card cannot complete a connect in production | SP0-B | **code merged, not live** |
+| Paystack connected per tenant | Payments | `/api/sub-accounts/{id}/paystack-connection`, secret at `subAccounts/{id}/private/paystackConnection` | code shipped (#31); no tenant has connected yet, so `webhookSeenAt` is unset everywhere | SP0-B | **code merged, not live** |
+| Meta connected | Settings → Messaging tab | connect card + `page` / `instagram` webhook subscriptions registered | `META_APP_ID` / `META_APP_SECRET` set on the deployment; Meta **App Review not submitted** — that is an outward-facing submission and stays with Hein | SP0-C | **wired; blocked on App Review** |
+| Async work runs at all | — | QStash | `QSTASH_TOKEN` + both signing keys now set on the deployment and proven end to end | `e2e/specs/workflow-enrol.spec.ts` (smoke) | **fixed — was a live production defect** |
+| Logged-out redirect | — | `loginRedirectUrl` in `src/middleware.ts` | was sending users to `http://localhost:4300/login`; now derives the origin from `NEXT_PUBLIC_APP_URL`, with a post-build assertion in `scripts/deploy-velo.sh` | `e2e/specs/logged-out-redirect.spec.ts` | **fixed and verified in production (#38)** |
+| Agency owner lands on `/agency` | Agency dashboard | race: `agencyRole` has no `userDoc` fallback when the token refresh fails | real defect, deliberately not fixed in SP0 | `e2e/specs/owner-lands-on-agency.spec.ts` (`test.fixme`) | **documented, open** |
 | CrestaHQ workflow live | 1 published workflow | to rebuild | — | SP0-C | pending |
 
 A row is done only when the last two columns are filled and the spec is green in
@@ -267,20 +270,62 @@ CI.
 
 ## Needs Hein
 
-Blocking items that cannot be resolved from the repo:
+Blocking items that cannot be resolved from the repo. Items 4 and 5 of the
+original list are **done** — the Meta app credentials and all three QStash
+credentials are now on the deployment.
 
 1. **Stripe restricted TEST key** (`rk_test_…`/`sk_test_…`) for the Payments v1
-   connection on #1000. Authorised to enter it this session; a live key will be
-   refused.
-2. **Paystack TEST secret key** for SP0-B.
-3. **Google Cloud console access** on project `crestahq-app` to create the OAuth
-   consent screen and client — browser work under Hein's login.
-4. **`META_APP_ID` / `META_APP_SECRET`** — absent from the deployment; the
-   connect button cannot work until they are set.
-5. **QStash credentials (`QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`,
-   `QSTASH_NEXT_SIGNING_KEY`)** — absent from the deployment. Without them no
-   workflow can run on crm.crestahq.com, which blocks the "tenant live" half of
-   SP0 outright and is also needed by the enrol spec in CI.
-6. **Which agency feature gates are on for #1000** — `paymentsEnabledByAgency`,
+   connection on #1000. A live key will be refused.
+2. **Paystack TEST secret key**, to connect a tenant through the card shipped in
+   #31. The code is merged; nothing is connected.
+3. **`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` on the deployment.** The OAuth
+   code merged in #32 and the callback is deployment-wide, but the two
+   credentials are absent from `/home/velo/crestahq/.env.production`, so the
+   connect button cannot complete a round trip in production.
+4. **Meta App Review submission.** The app is wired — credentials set, `page`
+   and `instagram` webhooks registered, icon and copy filled in — but submitting
+   for review is an outward-facing action and was deliberately left to Hein.
+5. **Which agency feature gates are on for #1000** — `paymentsEnabledByAgency`,
    `metaInboxEnabledByAgency`, `socialPlannerEnabledByAgency` all default false,
    and each connect card is invisible until its gate is on.
+
+---
+
+## Where SP0 stands
+
+**SP0-A (harness) is done.** Playwright runs on every PR against the PR's own
+build, blocks merge, and every spec in the table above was proven by mutation —
+the production code was broken and the spec went red.
+
+**SP0-B (integrations) is code-complete and partly live.** QStash is live and
+proven. Google and Paystack are merged but need credentials before a tenant can
+actually connect.
+
+**SP0-C (tenant live) has not started.** Rebuilding CrestaHQ's own published
+workflow, and the side-by-side GHL screenshots, are the remaining work.
+
+### Deployed
+
+`3ee48a3` on crm.crestahq.com (port 4300, systemd user service `crestahq`),
+deployed 2026-09-06. The logged-out redirect was verified against the public
+origin after the deploy rather than assumed:
+
+```
+$ curl -sI https://crm.crestahq.com/agency | grep -i location
+location: https://crm.crestahq.com/login?redirect=%2Fagency
+```
+
+### Two live defects SP0 found
+
+Neither was visible in code review; both surfaced the first time something was
+actually run against the deployment.
+
+1. **QStash was absent from production.** Every one of the 66 call sites that
+   schedules async work was dead — no workflow step, reminder or broadcast could
+   ever have fired. Green CI throughout, because CI supplies its own keys.
+2. **Logged-out users were redirected to `http://localhost:4300/login`.** The
+   middleware derived the login origin from the request `Host`, which behind the
+   tunnel is the loopback bind address. Fixed in #38 and guarded at deploy time
+   by asserting the built middleware chunk actually contains
+   `NEXT_PUBLIC_APP_URL` — the value is constant-folded at build time, so a
+   shell-env check would have passed on a bad artifact.
