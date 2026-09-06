@@ -175,7 +175,6 @@ func (m *Memory) HasInboundFrom(jid string) (bool, error) {
 	return false, nil
 }
 
-
 func (m *Memory) IsAllowlisted(jid string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

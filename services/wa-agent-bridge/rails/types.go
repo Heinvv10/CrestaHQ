@@ -121,7 +121,6 @@ type Store interface {
 	// misses every entry added before the current log file.
 	ListAllowlist() ([]string, error)
 
-
 	OutboundCountForContact(jid string, since time.Time) (int, error)
 	// ConsecutiveOutbound returns the number of outbound messages sent to this
 	// JID since that contact's most recent inbound message. An inbound resets the
