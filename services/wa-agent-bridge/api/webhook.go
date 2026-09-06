@@ -42,9 +42,11 @@ type Fanout struct {
 	// Watermark state, guarded by wmMu. Deliver is called from whatsmeow's
 	// event goroutine today, but a lock is cheaper than the assumption.
 	wmMu sync.Mutex
-	// watermark is the newest message this bridge had recorded BEFORE the
-	// current connection. Anything at or before it is history whatsmeow is
-	// re-delivering; anything after it arrived while we were down or since.
+	// watermark is the newest INBOUND message this bridge had recorded BEFORE
+	// the current connection. Anything STRICTLY older is history whatsmeow is
+	// re-delivering; anything at or after it arrived while we were down, or
+	// since. Inbound only, and "at" counts as new — see admitDuringReplay for
+	// why both of those are load-bearing rather than incidental.
 	watermark time.Time
 	// watermarkFor is the connectedAt the watermark was taken for, so a new
 	// connection re-snapshots it exactly once.

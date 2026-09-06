@@ -177,7 +177,15 @@ type Store interface {
 	// LastInboundAt is the timestamp of the most recent inbound message from
 	// anyone, zero when none has ever arrived. The health endpoint reports its
 	// age: a bridge whose socket has quietly died still answers HTTP, and an
-	// inbound age that keeps climbing is the only externally visible symptom.
+	// LastInboundAt is the newest INBOUND timestamp recorded, or the zero time
+	// when there is none.
+	//
+	// Two consumers now, and the second one is data-loss-critical: the health
+	// endpoint reports how long the number has been silent, AND the fanout
+	// snapshots this at connect as the replay watermark. Inbound only is not
+	// incidental there — outbound rows carry this host's wall clock, and
+	// mixing the two lets a fast clock shadow real inbound, which is dropped
+	// permanently because no message body is stored. Do not widen it.
 	LastInboundAt() (time.Time, error)
 
 	// LookupIdempotency is the cheap read-path check for a replay. It is NOT the

@@ -228,3 +228,37 @@ func TestSenderIsForwardedUnchangedWithoutAnAlternative(t *testing.T) {
 		t.Fatalf("with no alternative the sender must pass through unchanged, got %q", seen)
 	}
 }
+
+// ConnectedAt is the key the fanout uses to decide a new connection has begun
+// and its replay watermark needs re-reading. STABILITY is the property that
+// matters: a value that changes between calls re-snapshots the watermark on
+// every message, which resets the catch-up counter so the flood cap never
+// fires, and makes any out-of-order message look like history.
+//
+// Tested here rather than on the clientHolder that wraps it, because a
+// *wa.Client with a live connection cannot be constructed from package main
+// without either a whatsmeow socket or a test double promoted into the
+// shipped binary — which this package deliberately refuses to do.
+func TestConnectedAtIsStableWhileConnected(t *testing.T) {
+	c := &Client{}
+	if !c.ConnectedAt().IsZero() {
+		t.Fatal("an unconnected client must report the zero time")
+	}
+
+	c.handleEvent(&events.Connected{})
+	first := c.ConnectedAt()
+	if first.IsZero() {
+		t.Fatal("ConnectedAt must be set once the socket connects")
+	}
+	time.Sleep(2 * time.Millisecond)
+	if second := c.ConnectedAt(); !second.Equal(first) {
+		t.Fatalf("ConnectedAt must not move while one connection lasts: %v then %v", first, second)
+	}
+
+	// A NEW connection must move it, or the watermark is never re-read.
+	time.Sleep(2 * time.Millisecond)
+	c.handleEvent(&events.Connected{})
+	if again := c.ConnectedAt(); !again.After(first) {
+		t.Fatalf("a new connection must advance ConnectedAt: %v then %v", first, again)
+	}
+}

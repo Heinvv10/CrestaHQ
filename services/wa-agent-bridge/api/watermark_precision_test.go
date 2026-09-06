@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,5 +129,55 @@ func TestUnreadableWatermarkAdmitsRatherThanMutes(t *testing.T) {
 
 	if n != 1 {
 		t.Fatalf("an unreadable watermark must admit rather than mute (forwarded=%d, want 1)", n)
+	}
+}
+
+// The catch-up budget must only be spent on messages that could actually be
+// forwarded. With OWNER_JID set, non-owner traffic used to charge the cap
+// before fromOwner ran, so a burst of it exhausted the budget and the owner's
+// genuinely new message — the one message that mattered — was the one dropped.
+//
+// This is the repair whose justification is permanent message loss, and it was
+// the one repair of four with no test: reverting the ordering left all seven
+// packages green.
+func TestNonOwnerTrafficDoesNotSpendTheCatchUpBudget(t *testing.T) {
+	const owner = "27821111111@s.whatsapp.net"
+	at := time.Now().Add(-time.Minute)
+
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "b.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		seen = append(seen, string(b))
+		mu.Unlock()
+	}))
+	defer srv.Close()
+
+	connectedAt := time.Now()
+	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
+		owner, st, func() bool { return true }, func() time.Time { return connectedAt })
+
+	// A burst from strangers, more than the whole budget.
+	for i := 0; i < maxCatchUpForward+50; i++ {
+		f.Deliver("27829999999@s.whatsapp.net", "not the owner", "wamid.N", at)
+	}
+	// Then the one message that must get through.
+	f.Deliver(owner, "the owner's real message", "wamid.OWNER", at)
+	f.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("exactly the owner's message should be forwarded, got %d deliveries", len(seen))
+	}
+	if !strings.Contains(seen[0], "wamid.OWNER") {
+		t.Fatalf("the forwarded message is not the owner's: %s", seen[0])
 	}
 }
