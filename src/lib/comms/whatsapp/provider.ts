@@ -76,6 +76,13 @@ export interface WhatsAppSendResult {
   messageId?: string;
   error?: string;
   providerOutcome?: "DEFINITELY_REJECTED" | "AMBIGUOUS";
+  /**
+   * The rail that refused this send, when the provider named one — the
+   * bridge's `refusedBy` code. Carried structurally rather than parsed back
+   * out of `error`, so the UI can say what to do about it without pattern
+   * matching on a message that is free to change.
+   */
+  refusedBy?: string;
   /** True when a dry-run/test path short-circuited the real send. */
   simulated?: boolean;
 }

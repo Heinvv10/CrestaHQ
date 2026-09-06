@@ -251,6 +251,9 @@ export async function sendWhatsappBridge(opts: {
       opts.creds.token
     )}`,
     providerOutcome: outcomeFor(res.status, data?.outcome),
+    // Carried through so a caller can render what to DO about the refusal.
+    // The bridge documents these codes as stable API surface for exactly this.
+    refusedBy: data?.refusedBy,
   };
 }
 
