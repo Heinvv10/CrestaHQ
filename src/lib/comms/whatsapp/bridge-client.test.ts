@@ -71,6 +71,43 @@ function res(status: number, body: unknown) {
 
 describe("sendWhatsappBridge", () => {
 
+  it("carries the refusal code structurally, not just inside the error text", async () => {
+    // The bridge documents refusedBy as stable API surface precisely so a
+    // consumer can render what to DO. Parsing it back out of the message
+    // couples the UI to wording that is free to change.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: false,
+          refusedBy: "consecutive_cap",
+          reason: "3 unanswered messages already sent to this contact (cap 3)",
+        }),
+        { status: 422 },
+      ),
+    );
+    const r = await sendWhatsappBridge({
+      creds,
+      to: "+27821234567",
+      message: "hi",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.refusedBy).toBe("consecutive_cap");
+  });
+
+  it("leaves refusedBy unset when the provider named no rail", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: false, error: "boom" }), { status: 500 }),
+    );
+    const r = await sendWhatsappBridge({
+      creds,
+      to: "+27821234567",
+      message: "hi",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(r.refusedBy).toBeUndefined();
+  });
+
   it("sends humanReply on the wire exactly as the caller set it", async () => {
     // This function composes the actual HTTP body. Hardcoding the field here
     // marks EVERY bridge send human — AI auto-reply, review requests, workflow

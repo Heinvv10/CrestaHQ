@@ -119,7 +119,12 @@ export function ConversationComposer({
         error?: string;
       };
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? "Couldn't send.");
+        // Never a bare "Couldn't send.". When the body is not JSON — a proxy
+        // error page, a gateway timeout — the status is the only fact we have,
+        // and an operator with a status can tell "it was refused" from "the
+        // server is down". Without it, both look identical and identically
+        // unactionable.
+        throw new Error(data.error ?? `Couldn't send (HTTP ${res.status}).`);
       }
       setBody("");
       // Snapshot listener appends the row.

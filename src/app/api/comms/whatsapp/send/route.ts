@@ -12,6 +12,10 @@ import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import type { SubAccountDoc } from "@/types";
+import {
+  WA_REFUSAL_MESSAGES,
+  WA_REFUSAL_STATUS,
+} from "@/lib/comms/whatsapp/refusals";
 
 type Body = { contactId?: string; body?: string };
 
@@ -138,6 +142,26 @@ export async function POST(request: Request) {
             code: "session_window_closed",
           },
           { status: 409 },
+        );
+      }
+      // A rail deliberately refusing is not a bad gateway. 502 was both untrue
+      // — nothing failed — and actively harmful: it sends whoever reads it
+      // hunting an infrastructure fault, and it invites proxies and retry
+      // logic to treat the refusal as transient and try again, which is the
+      // one thing these rails exist to prevent.
+      const refusal = result.refusedBy
+        ? WA_REFUSAL_MESSAGES[result.refusedBy]
+        : undefined;
+      if (result.refusedBy) {
+        return NextResponse.json(
+          {
+            // Falls back to the provider's own words rather than a generic
+            // line: an unmapped code is a rail we have not worded yet, and the
+            // raw reason still beats "couldn't send".
+            error: refusal ?? result.error ?? "WhatsApp refused this message.",
+            code: result.refusedBy,
+          },
+          { status: WA_REFUSAL_STATUS },
         );
       }
       return NextResponse.json(
