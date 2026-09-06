@@ -28,22 +28,23 @@ test("agency owner signs in through the login form", async ({
   await page.locator("#password").fill(env.E2E_PASSWORD);
   await page.getByRole("button", { name: "Sign In" }).click();
 
-  // This spec's subject is LOGIN, so it asserts what login guarantees: the
-  // form authenticates and lands the user on an authenticated surface.
+  // Subject is LOGIN, so assert what login guarantees: an authenticated
+  // session on an authenticated surface. /agency is deliberately NOT pinned.
   //
-  // It deliberately does NOT pin /agency. The form pushes /dashboard, and
-  // `LegacyRedirect` sends an agency owner to /agency only when
-  // `agencyRole === "owner"` has arrived. `auth-context.tsx` reads that from
-  // custom claims behind `getIdTokenResult(true).catch(() => null)`, so a
-  // transient token-refresh failure yields empty claims, the owner branch is
-  // skipped, and the owner is dropped into a sub-account dashboard instead.
-  // (`agencyId` has a `userDoc.primaryAgencyId` fallback; `agencyRole` has
-  // none — that asymmetry is the bug.) It is intermittent and load-dependent,
-  // and it turned this gate red on 2026-09-05.
+  // The form pushes /dashboard, and `LegacyRedirect` sends an agency owner to
+  // /agency on two different branches — when `memberships` is still empty (the
+  // first state after login) and when `agencyRole === "owner"` has arrived.
+  // `agencyRole` comes only from custom claims, read behind
+  // `getIdTokenResult(true).catch(() => null)` (auth-context.tsx:120), and has
+  // no `userDoc` fallback the way `agencyId` does — so when that read fails the
+  // owner branch is skipped and the owner lands on a sub-account dashboard
+  // instead. Both destinations are session-gated, so neither is reachable
+  // without a valid __session: the assertion below still fails on a broken
+  // login, which the __session check then confirms independently.
   //
-  // Pinning /agency here made a real product race look like a login failure.
-  // The redirect deserves its own spec once the race is fixed; asserting it
-  // from the login spec tests the wrong thing and blocks merges meanwhile.
+  // The redirect itself is covered by owner-lands-on-agency.spec.ts, currently
+  // `test.fixme` against that unfixed race. See project memory:
+  // project_agency_owner_redirect_race.
   await page.waitForURL(/\/(agency|sa\/[^/]+\/dashboard)$/, {
     timeout: 30_000,
   });

@@ -38,7 +38,14 @@ async function saveAuthenticatedState(): Promise<void> {
     await page.locator("#email").fill(env.E2E_EMAIL);
     await page.locator("#password").fill(env.E2E_PASSWORD);
     await page.getByRole("button", { name: "Sign In" }).click();
-    await page.waitForURL(/\/agency$/, { timeout: 60_000 });
+    // Either landing page proves the session exists — see login.spec.ts for
+    // why /agency is not pinned. Setup only needs to BE authenticated; which
+    // of the two dashboards it lands on is irrelevant to saving storageState,
+    // and pinning one would abort all six specs whenever the redirect went the
+    // other way.
+    await page.waitForURL(/\/(agency|sa\/[^/]+\/dashboard)$/, {
+      timeout: 60_000,
+    });
     await page
       .context()
       .storageState({ path: STORAGE_STATE, indexedDB: true });
