@@ -96,11 +96,16 @@ func Load() (Config, error) {
 			PerContactPerDay: envInt("CAP_PER_CONTACT_PER_DAY", 10),
 			ConsecutiveMax:   envInt("CAP_CONSECUTIVE", 3),
 			GlobalDailyCap:   envInt("CAP_GLOBAL_DAILY", 150),
-			QuietStartHour:   envInt("QUIET_START_HOUR", 21),
-			QuietEndHour:     envInt("QUIET_END_HOUR", 7),
-			Location:         loc,
-			Budgets:          map[string]rails.ConsumerBudget{},
-			QuietHours:       map[string]rails.QuietWindow{},
+			// A human reply only escapes quiet hours while the contact is
+			// still waiting on one. 24h matches the session window every
+			// WhatsApp rail already reasons in, so an operator does not have
+			// to hold two different definitions of "recent" in their head.
+			HumanReplySessionWindow: time.Duration(envInt("HUMAN_REPLY_SESSION_HOURS", 24)) * time.Hour,
+			QuietStartHour:          envInt("QUIET_START_HOUR", 21),
+			QuietEndHour:            envInt("QUIET_END_HOUR", 7),
+			Location:                loc,
+			Budgets:                 map[string]rails.ConsumerBudget{},
+			QuietHours:              map[string]rails.QuietWindow{},
 		},
 	}
 	if cfg.ListenAddr == "" {

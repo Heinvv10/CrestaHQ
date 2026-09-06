@@ -20,6 +20,13 @@ type SendRequest struct {
 	IdempotencyKey string
 	Consumer       string // registry key: "hermes", "leadstack"
 	Now            time.Time
+	// HumanReply marks a message an operator typed in a thread, as opposed to
+	// anything a workflow, an AI auto-reply or a campaign produced. It relaxes
+	// exactly one rail — quiet hours — and only inside an open session; see
+	// checkQuietHours. It is self-declared by the consumer and is therefore no
+	// stronger than that consumer's token, which is why it buys a narrow
+	// exemption rather than a general one.
+	HumanReply bool
 }
 
 // RefusalCode is machine-readable so a consumer can render a real reason
@@ -105,6 +112,12 @@ type Config struct {
 	// to QuietStartHour/QuietEndHour, so every existing deployment keeps
 	// exactly the behaviour it has.
 	QuietHours map[string]QuietWindow
+
+	// HumanReplySessionWindow is how recently a contact must have messaged for
+	// an operator's reply to count as answering them rather than reaching for
+	// them. Zero disables the exemption entirely, which is the safe default
+	// for a config that forgot to set it.
+	HumanReplySessionWindow time.Duration
 }
 
 // Store is the persisted state the rails consult. Every counter lives on disk:
@@ -120,6 +133,10 @@ type Store interface {
 	// incident, and answering it by grepping logs for past AddAllowlist calls
 	// misses every entry added before the current log file.
 	ListAllowlist() ([]string, error)
+
+	// LastInboundFrom is when this contact last messaged us, and false when
+	// they never have. Quiet hours use it to tell a reply from an outreach.
+	LastInboundFrom(jid string) (time.Time, bool, error)
 
 	OutboundCountForContact(jid string, since time.Time) (int, error)
 	// ConsecutiveOutbound returns the number of outbound messages sent to this

@@ -104,6 +104,27 @@ describe("dispatchWhatsappSend", () => {
     expect(sendWhatsappCloud).not.toHaveBeenCalled();
   });
 
+  it("does not claim a send is human unless the caller said so", async () => {
+    // The default has to be false at every layer. A send wrongly marked human
+    // escapes quiet hours, which means a customer's phone lighting up at 03:00
+    // — so "forgot to pass it" must fail towards the guard, not around it.
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge") }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ humanReply: false }),
+    );
+  });
+
+  it("passes humanReply through to the bridge when the caller marks it", async () => {
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge"), humanReply: true }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ humanReply: true }),
+    );
+  });
+
   it("fails clearly when the bridge rail has no credentials", async () => {
     // Otherwise this fails deep inside a fetch against an empty base URL.
     getBridgeCreds.mockRejectedValue(new Error("not configured for sa_1"));

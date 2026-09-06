@@ -72,6 +72,16 @@ export interface WhatsappDispatchInput {
    * the first send rather than duplicate it has to supply a stable key here.
    */
   idempotencyKey?: string;
+  /**
+   * Bridge rail only. True when an operator typed this in a thread, as opposed
+   * to a workflow, an AI auto-reply or a campaign producing it.
+   *
+   * It relaxes exactly one guard on the bridge — quiet hours — and only while
+   * the contact is still inside an open session. Default false, so any caller
+   * that does not think about it gets the full guard, which is the direction
+   * that fails safe: a send wrongly marked human reaches a customer at 03:00.
+   */
+  humanReply?: boolean;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
 }
@@ -155,6 +165,7 @@ export async function dispatchWhatsappSend(
       to: input.to,
       message: input.body,
       idempotencyKey: input.idempotencyKey,
+      humanReply: input.humanReply === true,
     });
     return { ...r, provider };
   }

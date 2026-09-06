@@ -17,6 +17,11 @@ type sendBody struct {
 	To             string `json:"to"`
 	Text           string `json:"text"`
 	IdempotencyKey string `json:"idempotencyKey"`
+	// HumanReply marks a message an operator typed in a thread. It relaxes
+	// quiet hours, and only while the contact is still inside an open session
+	// — see rails.checkQuietHours. Absent means false, which is the safe
+	// default: a consumer that forgets the field gets the full guard.
+	HumanReply bool `json:"humanReply"`
 }
 
 func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer config.Consumer) {
@@ -51,6 +56,7 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		IdempotencyKey: body.IdempotencyKey,
 		Consumer:       consumer.Name,
 		Now:            s.deps.Now(),
+		HumanReply:     body.HumanReply,
 	}
 	// Composed ONCE and reused for the reserve, the save and the release. Two
 	// call sites composing it independently is how the raw key sneaks back in

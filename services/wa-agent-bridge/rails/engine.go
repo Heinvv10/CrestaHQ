@@ -11,7 +11,11 @@ import "sync"
 //  2. idempotency     — a replay is answered before any counter is consulted, so
 //     a retry cannot consume budget
 //  3. consumer budget — cheapest per-consumer gate
-//  4. quiet hours     — time-of-day, no Store reads beyond this point are wasted
+//  4. quiet hours     — time-of-day, plus ONE Store read for the human-reply
+//     exemption's session check. It stays here rather than moving down with
+//     the other reads: a send refused for the hour should not pay for the
+//     volume counters, and the exemption's read only happens for a request
+//     that actually claims to be a human reply.
 //  5. reply-only      — the core protection
 //  6. caps            — volume, the most expensive reads
 //
@@ -68,7 +72,7 @@ func (e *Engine) Evaluate(req SendRequest) Decision {
 		func() Decision { return checkKill(e.store) },
 		func() Decision { return checkIdempotency(req, e.store) },
 		func() Decision { return checkBudget(req, e.store, e.cfg) },
-		func() Decision { return checkQuietHours(req, e.cfg) },
+		func() Decision { return checkQuietHours(req, e.store, e.cfg) },
 		func() Decision { return checkReplyOnly(req, e.store) },
 		func() Decision { return checkCaps(req, e.store, e.cfg) },
 	} {
