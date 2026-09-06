@@ -60,6 +60,19 @@ type clientHolder struct {
 
 func (g *clientHolder) set(c *wa.Client) { g.client.Store(c) }
 
+// connectedAt is the fanout's watermark key: it re-snapshots the watermark
+// once per connection. Before the client is set it returns the zero time,
+// which is stable and therefore snapshots nothing — the fanout's first real
+// refresh happens on the first message after the socket connects, which is
+// also the first moment a watermark could be meaningful.
+func (g *clientHolder) connectedAt() time.Time {
+	c := g.client.Load()
+	if c == nil {
+		return time.Time{}
+	}
+	return c.ConnectedAt()
+}
+
 func (g *clientHolder) inReplayWindow() bool {
 	c := g.client.Load()
 	if c == nil {
@@ -129,7 +142,7 @@ func main() {
 	engine := rails.NewEngine(st, cfg.Rails)
 
 	gate := &clientHolder{}
-	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow)
+	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow, gate.connectedAt)
 
 	client, err := wa.NewClient(
 		cfg.SessionDir,
@@ -184,8 +197,9 @@ func main() {
 		Now:       time.Now,
 		// Set after this call, via gate.set(client) above; the holder answers
 		// "not connected" until then.
-		Connection: gate,
-		Version:    version,
+		Connection:         gate,
+		InboundSuppression: fanout.SuppressedInbound,
+		Version:            version,
 	})
 
 	ln, err := listenValidated(cfg)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -106,6 +107,18 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"recordFailures": s.recordFailureCount(),
 	}
 	var problems []string
+
+	// Dropped inbound is the one counter here that represents messages a
+	// customer sent and nobody will ever see, so it is a problem, not a stat.
+	if s.deps.InboundSuppression != nil {
+		history, capped := s.deps.InboundSuppression()
+		body["suppressedHistory"] = history
+		body["droppedInbound"] = capped
+		if capped > 0 {
+			problems = append(problems,
+				fmt.Sprintf("%d inbound message(s) dropped by the catch-up cap since this connection began", capped))
+		}
+	}
 
 	// Fail closed on an unwired Connection: reporting "connected" for something
 	// we cannot observe is exactly the silent failure this endpoint answers.

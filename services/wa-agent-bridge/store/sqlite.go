@@ -175,6 +175,24 @@ func (s *SQLite) HasInboundFrom(jid string) (bool, error) {
 	return n > 0, err
 }
 
+// LastRecordedAt is the timestamp of the newest message this bridge has ever
+// recorded, inbound or outbound, or the zero time when it has recorded none.
+//
+// It is the watermark the fanout uses to tell a genuinely new message from
+// history whatsmeow re-delivers on reconnect. Both directions count: an
+// outbound row is equally good evidence of how far this bridge had got, and
+// ignoring them would re-forward inbound that arrived before our last send.
+func (s *SQLite) LastRecordedAt() (time.Time, error) {
+	var at sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(at_unix) FROM messages`).Scan(&at); err != nil {
+		return time.Time{}, err
+	}
+	if !at.Valid {
+		return time.Time{}, nil
+	}
+	return time.Unix(at.Int64, 0), nil
+}
+
 func (s *SQLite) IsAllowlisted(jid string) (bool, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(1) FROM allowlist WHERE jid = ?`, jid).Scan(&n)

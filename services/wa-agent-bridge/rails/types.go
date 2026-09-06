@@ -121,6 +121,11 @@ type Store interface {
 	// misses every entry added before the current log file.
 	ListAllowlist() ([]string, error)
 
+	// LastRecordedAt is the newest message timestamp this bridge has recorded,
+	// either direction, or the zero time when it has recorded none. The fanout
+	// snapshots it at connect to tell a new message from re-delivered history.
+	LastRecordedAt() (time.Time, error)
+
 	OutboundCountForContact(jid string, since time.Time) (int, error)
 	// ConsecutiveOutbound returns the number of outbound messages sent to this
 	// JID since that contact's most recent inbound message. An inbound resets the

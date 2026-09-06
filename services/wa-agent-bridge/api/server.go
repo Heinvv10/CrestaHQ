@@ -53,6 +53,14 @@ type Deps struct {
 	// cannot see.
 	Connection ConnectionState
 
+	// InboundSuppression reports what the fanout did not forward on the current
+	// connection: history it recognised, and NEW messages it dropped because
+	// the catch-up cap was reached. The second number is data loss with no
+	// other trace — the bridge stores no message body — so it belongs on the
+	// endpoint an off-box monitor already watches. Nil is tolerated: health
+	// must degrade rather than fail when a dependency is unwired.
+	InboundSuppression func() (history, capped int)
+
 	// Version is the build this process is running, stamped by the deploy
 	// script with -ldflags. A plain `go build` leaves it "dev"; it is empty
 	// only in tests that construct Deps directly.

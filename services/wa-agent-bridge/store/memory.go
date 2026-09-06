@@ -168,6 +168,22 @@ func (m *Memory) HasInboundFrom(jid string) (bool, error) {
 	return false, nil
 }
 
+// LastRecordedAt mirrors the SQLite watermark: newest recorded message either
+// direction, zero time when there are none.
+func (m *Memory) LastRecordedAt() (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var newest time.Time
+	for _, evs := range m.events {
+		for _, e := range evs {
+			if e.at.After(newest) {
+				newest = e.at
+			}
+		}
+	}
+	return newest, nil
+}
+
 func (m *Memory) IsAllowlisted(jid string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
