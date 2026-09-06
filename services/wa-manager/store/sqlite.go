@@ -13,8 +13,22 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 )
+
+// ErrInstanceTaken reports that another tenant already holds the instance name
+// being written. It is a sentinel rather than the driver's error so the
+// go-sqlite3 detail stays inside this package: a caller matches on this, never
+// on an error string or an extended result code.
+var ErrInstanceTaken = errors.New("store: instance already held by another tenant")
+
+// isUniqueViolation reports whether err is SQLite refusing a UNIQUE constraint.
+// Matched on the driver's TYPED extended code — an error string is a moving
+// target across driver and SQLite versions.
+func isUniqueViolation(err error) bool {
+	var serr sqlite3.Error
+	return errors.As(err, &serr) && serr.ExtendedCode == sqlite3.ErrConstraintUnique
+}
 
 type State string
 
@@ -254,19 +268,26 @@ func (s *Store) ListEvents(tenantID string, limit int) ([]Event, error) {
 // a tenant that AllocatePort has already created.
 //
 // AllocatePort has to insert the row to make the allocation atomic, and at that
-// moment it knows only the opaque id — so it seeds `instance` with the id and
+// moment it knows only the opaque id — so it seeds `instance` with
+// PendingInstance(id), a placeholder no real instance name can equal, and
 // leaves the display name empty. The provisioner is the component that derives
 // the real, systemd-safe instance name, so it writes it here.
 //
 // The UNIQUE constraint on `instance` is doing real work: two different tenant
 // ids can sanitise to the same instance name, and two tenants sharing one
 // instance would share one WhatsApp session. The loser of that race fails here
-// rather than silently taking over its neighbour's directory.
+// rather than silently taking over its neighbour's directory — and it fails
+// with ErrInstanceTaken, not a raw driver error, so the caller can turn a lost
+// race into a 409 instead of a 500. This is the ONLY place that collision can
+// surface now that the seed cannot collide.
 func (s *Store) SetTenantIdentity(id, displayName, instance string) error {
 	res, err := s.db.Exec(
 		`UPDATE tenants SET display_name = ?, instance = ?, updated_unix = ? WHERE id = ?`,
 		displayName, instance, time.Now().Unix(), id)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %q", ErrInstanceTaken, instance)
+		}
 		return err
 	}
 	n, err := res.RowsAffected()

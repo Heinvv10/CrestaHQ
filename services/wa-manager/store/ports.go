@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+// PendingInstance is the placeholder AllocatePort writes into `instance` before
+// the provisioner knows the real name. The ':' is what makes it safe: it can
+// never match ^[a-z0-9][a-z0-9-]{0,62}$, so it collides with no real instance
+// name and systemd.Validate always refuses it.
+func PendingInstance(tenantID string) string { return "pending:" + tenantID }
+
 // AllocatePort assigns the lowest free port in [base, base+count) to tenantID
 // and returns it, along with whether this call is the one that CREATED the
 // tenant's row.
@@ -23,6 +29,17 @@ import (
 // two concurrent provisioners cannot both take one port however they interleave.
 // The same INSERT is the mutual exclusion for one tenant id, because id is the
 // PRIMARY KEY: exactly one concurrent caller can see inserted=true.
+//
+// The `instance` column is seeded with "pending:"+id, NOT the raw id. INSERT OR
+// IGNORE suppresses EVERY constraint violation, so the loop can only read an
+// ignored row as "that port is taken" if the port is the only column that can
+// collide. Seeding the raw id broke that: a tenant whose id equalled another
+// row's already-sanitised instance name collided on UNIQUE(instance) for every
+// candidate in the range — the value does not change between iterations — and
+// the loop ran to exhaustion, reporting "no free port" for a range that was
+// nearly empty. A valid instance name matches ^[a-z0-9][a-z0-9-]{0,62}$
+// (systemd.Validate), so a ':' can never equal a final instance name, and the
+// seed stays unique because it derives from the primary key.
 func (s *Store) AllocatePort(tenantID string, base, count int) (int, bool, error) {
 	var existing int
 	err := s.db.QueryRow(`SELECT port FROM tenants WHERE id = ?`, tenantID).Scan(&existing)
@@ -37,7 +54,7 @@ func (s *Store) AllocatePort(tenantID string, base, count int) (int, bool, error
 		res, err := s.db.Exec(
 			`INSERT OR IGNORE INTO tenants (id, instance, port, state, created_unix, updated_unix)
 			 VALUES (?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))`,
-			tenantID, tenantID, p, string(StateProvisioned))
+			tenantID, PendingInstance(tenantID), p, string(StateProvisioned))
 		if err != nil {
 			return 0, false, err
 		}

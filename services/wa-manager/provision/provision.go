@@ -214,14 +214,28 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 
 	// SetTenantIdentity is the mutual-exclusion point for two DIFFERENT ids
 	// that sanitise to one instance name. Both clear checkInstanceFree, and
-	// both insert their own row — AllocatePort seeds `instance` with the OPAQUE
-	// id, so no UNIQUE collision exists yet — and only this UPDATE decides
-	// which of them owns the name. It excludes nothing for two callers sharing
-	// one id: for a single id this UPDATE succeeds every time, which is why
-	// the INSERT above, not this line, is what serialises them. Everything
-	// after this is exclusive on the NAME; the directory flag is only set
-	// below for that reason.
+	// both insert their own row — AllocatePort seeds `instance` with a
+	// "pending:" placeholder that can collide with nothing, so no UNIQUE
+	// collision exists yet — and only this UPDATE decides which of them owns
+	// the name. It excludes nothing for two callers sharing one id: for a
+	// single id this UPDATE succeeds every time, which is why the INSERT
+	// above, not this line, is what serialises them. Everything after this is
+	// exclusive on the NAME; the directory flag is only set below for that
+	// reason.
+	//
+	// Losing that race is an AUTHORED refusal, not an incident: the tenant is a
+	// duplicate of one that already exists. Relabelling it as a ConflictError
+	// is what makes the API answer 409 instead of a 500 blaming the disk. The
+	// unwind still runs, and at this point enabled and dirCreated are both
+	// false, so it releases only THIS call's own row — it never touches the
+	// winner's directory or unit.
 	if err := p.st.SetTenantIdentity(tenantID, displayName, instance); err != nil {
+		if errors.Is(err, store.ErrInstanceTaken) {
+			return fail(&ConflictError{
+				Msg: fmt.Sprintf("tenant %q would take instance %q, already held by another tenant",
+					tenantID, instance),
+			})
+		}
 		return fail(err)
 	}
 	dir := p.instanceDir(instance)
@@ -330,12 +344,18 @@ func (p *Provisioner) Destroy(tenantID string) error {
 		return err
 	}
 	// A row whose instance is not a usable instance name never got past
-	// AllocatePort's INSERT, which seeds the column with the opaque id;
-	// the unit is enabled and the directory created only after
-	// SetTenantIdentity rewrites it. So there is nothing in systemd to stop
-	// and nothing on disk to remove — and every verb below would refuse the
-	// name, leaving the row untouchable and its port held forever. Dropping
+	// AllocatePort's INSERT, which seeds the column with
+	// store.PendingInstance(id); the unit is enabled and the directory created
+	// only after SetTenantIdentity rewrites it. So there is nothing in systemd
+	// to stop and nothing on disk to remove — and every verb below would refuse
+	// the name, leaving the row untouchable and its port held forever. Dropping
 	// the row IS the teardown for that state.
+	//
+	// The "pending:" seed is what makes that reliable. Seeding the raw tenant id
+	// meant an id that happened to be a valid instance name PASSED Validate, so
+	// this function fell through and tried to Stop, Disable and RemoveAll a unit
+	// and a directory that were never created. A "pending:" seed always fails
+	// Validate, so a row still carrying it is simply dropped.
 	//
 	// Reachable only if the manager dies abruptly inside the few statements
 	// between those two writes. A graceful shutdown or an ordinary failure
