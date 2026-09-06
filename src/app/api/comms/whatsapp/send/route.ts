@@ -112,6 +112,12 @@ export async function POST(request: Request) {
       // This is the manual free-form composer — it has no template to fall
       // back on, so a closed window is a refusal, exactly as before.
       template: null,
+      // This route is the ONLY human-typed send path: requireUid above means a
+      // person with a session pressed send in a thread. Every automated sender
+      // — AI auto-reply, review requests, workflow steps — goes through
+      // sendWhatsappFreeFormForSubAccount or the workflow engine instead and
+      // is left unmarked, so it keeps the full quiet-hours guard.
+      humanReply: true,
       sendViaTwilio: async () => {
         const r = await sendWhatsappForSubAccount({
           subAccountId: contact.subAccountId,

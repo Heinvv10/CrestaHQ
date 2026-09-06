@@ -184,12 +184,17 @@ export async function sendWhatsappBridge(opts: {
   idempotencyKey?: string;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  /** True only for a message an operator typed; see WhatsappDispatchInput. */
+  humanReply?: boolean;
 }): Promise<WhatsAppSendResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const body = {
     to: toWhatsappJid(opts.to),
     text: opts.message,
     idempotencyKey: opts.idempotencyKey ?? randomUUID(),
+    // Sent explicitly rather than omitted when false, so the wire format says
+    // what this send claims to be instead of leaving the bridge to infer it.
+    humanReply: opts.humanReply === true,
   };
 
   let res: Response;

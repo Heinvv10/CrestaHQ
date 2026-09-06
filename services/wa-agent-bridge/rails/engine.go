@@ -68,7 +68,7 @@ func (e *Engine) Evaluate(req SendRequest) Decision {
 		func() Decision { return checkKill(e.store) },
 		func() Decision { return checkIdempotency(req, e.store) },
 		func() Decision { return checkBudget(req, e.store, e.cfg) },
-		func() Decision { return checkQuietHours(req, e.cfg) },
+		func() Decision { return checkQuietHours(req, e.store, e.cfg) },
 		func() Decision { return checkReplyOnly(req, e.store) },
 		func() Decision { return checkCaps(req, e.store, e.cfg) },
 	} {

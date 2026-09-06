@@ -72,7 +72,7 @@ func quietWindowFor(consumer string, cfg Config) QuietWindow {
 // so the comparison is written for both the wrapping and non-wrapping cases.
 // start == end disables the rail rather than refusing every hour of the day —
 // the alternative silently bricks the service on a zero-valued config.
-func checkQuietHours(req SendRequest, cfg Config) Decision {
+func checkQuietHours(req SendRequest, s Store, cfg Config) Decision {
 	w := quietWindowFor(req.Consumer, cfg)
 	if w.StartHour == w.EndHour {
 		return Allow()
@@ -89,10 +89,37 @@ func checkQuietHours(req SendRequest, cfg Config) Decision {
 	} else {
 		quiet = h >= w.StartHour || h < w.EndHour
 	}
+	if quiet && humanReplyInOpenSession(req, s, cfg) {
+		return Allow()
+	}
 	if quiet {
 		return Refuse(RefusedQuietHours,
 			fmt.Sprintf("local time %02d:00 is inside quiet hours %02d:00-%02d:00 for consumer %q",
 				h, w.StartHour, w.EndHour, req.Consumer))
 	}
 	return Allow()
+}
+
+// humanReplyInOpenSession reports whether this send is an operator answering a
+// contact who is still waiting on them.
+//
+// Quiet hours exist to stop this number looking like a 03:00 bulk sender. A
+// person replying to someone who messaged an hour ago is the opposite signal —
+// it is what a real business does — and refusing it is what pushes an operator
+// to disable the window for the whole number, which strips the protection from
+// the automated sends too. That is the failure this narrow exemption prevents.
+//
+// Both conditions are required and neither is sufficient. The flag alone would
+// make "human" a blanket pass, and reaching for a contact who last wrote days
+// ago is an outreach at 06:00 however it was typed. A store error refuses,
+// because an exemption that cannot verify its own precondition is not one.
+func humanReplyInOpenSession(req SendRequest, s Store, cfg Config) bool {
+	if !req.HumanReply || cfg.HumanReplySessionWindow <= 0 || s == nil {
+		return false
+	}
+	last, ok, err := s.LastInboundFrom(req.To)
+	if err != nil || !ok {
+		return false
+	}
+	return req.Now.Sub(last) < cfg.HumanReplySessionWindow
 }
