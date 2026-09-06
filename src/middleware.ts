@@ -259,6 +259,42 @@ function isPublicPath(pathname: string): boolean {
 }
 
 /**
+ * Build the /login redirect for an unauthenticated request.
+ *
+ * MUST NOT use `request.nextUrl` for the ORIGIN. Under the standalone server
+ * (systemd sets `HOSTNAME=127.0.0.1 PORT=4300`, behind a cloudflared tunnel)
+ * `nextUrl` is derived from the server's own bind address, not the Host header
+ * — so a logged-out visit to any protected route on crm.crestahq.com used to
+ * 307 to `https://localhost:4300/login`, a dead address for every real user.
+ * Verified 2026-09-06: even an explicit `Host: crm.crestahq.com` still produced
+ * localhost, so this is the app's own doing, not the tunnel's.
+ *
+ * The path and query are still taken from `nextUrl` (preserving any existing
+ * query string, as before); only protocol + host are pinned to
+ * NEXT_PUBLIC_APP_URL. If that var is unset or malformed we fall back to the
+ * previous behaviour rather than throwing inside auth middleware.
+ */
+export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
+  const url = request.nextUrl.clone();
+  url.pathname = "/login";
+  url.searchParams.set("redirect", pathname);
+
+  const configured = process.env.NEXT_PUBLIC_APP_URL;
+  if (configured) {
+    try {
+      // Rebuild against the configured origin rather than assigning
+      // protocol/host onto the clone: the URL `host` setter leaves an existing
+      // port in place unless the new value carries one, which silently yielded
+      // `https://crm.crestahq.com:4300`.
+      return new URL(`${url.pathname}${url.search}`, configured);
+    } catch {
+      // Malformed env var — fall through to the request-derived origin.
+    }
+  }
+  return url;
+}
+
+/**
  * Vanity funnel subdomains (Labs): `{name}.{app domain}` serves the claimed
  * funnel at its root. Extracts the subdomain from the Host header, or null.
  *
@@ -354,10 +390,7 @@ export default function middleware(request: NextRequest) {
       }
 
       // Redirect unauthenticated users to login for protected paths
-      const url = request.nextUrl.clone();
-      url.pathname = "/login";
-      url.searchParams.set("redirect", pathname);
-      return NextResponse.redirect(url);
+      return NextResponse.redirect(loginRedirectUrl(request, pathname));
     },
     handleError: async () => {
       const pathname = request.nextUrl.pathname;
@@ -367,10 +400,7 @@ export default function middleware(request: NextRequest) {
         return NextResponse.next();
       }
 
-      const url = request.nextUrl.clone();
-      url.pathname = "/login";
-      url.searchParams.set("redirect", pathname);
-      return NextResponse.redirect(url);
+      return NextResponse.redirect(loginRedirectUrl(request, pathname));
     },
   });
 }
