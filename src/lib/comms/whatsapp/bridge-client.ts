@@ -41,6 +41,74 @@ export function isGroupJid(jid: string): boolean {
 }
 
 /**
+ * A LID ("hidden user") address — WhatsApp's privacy-preserving sender id.
+ *
+ * Its user part LOOKS like a long phone number and is not one. Treating it as
+ * a phone number mints a contact nobody dialled, and a reply then rebuilds
+ * `<lid>@s.whatsapp.net` — delivered to whoever genuinely owns that number, or
+ * to nobody. Observed in production on 2026-09-05, where a real inbound was
+ * filed under `+155228775178345`.
+ *
+ * The bridge is expected to send the phone address instead, but this seam does
+ * not get to assume the bridge is up to date: the consequence of being wrong
+ * is a message to a stranger.
+ */
+export function isLidJid(jid: string): boolean {
+  const j = jid.trim().toLowerCase();
+  // "@hosted.lid" too: whatsmeow rewrites that server before we see it, but
+  // this seam is explicitly written not to trust the bridge.
+  return j.endsWith("@lid") || j.endsWith("@hosted.lid");
+}
+
+/**
+ * A 1:1 phone address — the ONLY shape this rail can file under a contact.
+ *
+ * Written as an allow-list on purpose. A deny-list of the shapes we happened to
+ * think of lets every other one through to `jidToE164`, which will cheerfully
+ * turn `120363042…@newsletter` or `867051314767696@bot` into a `+`-prefixed
+ * contact that was never a phone number. Those are exactly the same defect as
+ * the LID one, wearing a different server.
+ *
+ * A device suffix (`27821234567:12@s.whatsapp.net`) is a legitimate 1:1 sender
+ * and is admitted; `jidToE164` strips it.
+ *
+ * Matched as a whole address rather than by suffix. `endsWith("@s.whatsapp.net")`
+ * also accepts `27821234567@lid@s.whatsapp.net`, and a suffix test one edit away
+ * from losing its "@" accepts `…@evil.s.whatsapp.net`. Neither is exploitable —
+ * reaching this line needs a valid HMAC signature AND the bearer token, and a
+ * holder of both could simply send a well-formed address — but a shape test
+ * that only mostly describes the shape is not worth keeping over one regexp.
+ *
+ * KNOWN, DELIBERATE DROP: `@msgr` / `@interop` (Meta cross-app messaging) is a
+ * real human sender and is refused here, because there is no phone number to
+ * file it under. Previously it was MISfiled as a contact; now it is dropped and
+ * logged. If interop ever becomes real traffic this is the line to revisit, and
+ * the warn above is how you will find out.
+ */
+/**
+ * Mask a JID for logging, mirroring the bridge's own `redact.JID`.
+ *
+ * The server half is kept deliberately — `@lid` vs `@newsletter` vs
+ * `@s.whatsapp.net` IS the diagnosis a dropped-message log line exists to
+ * give — while the user half is a customer's phone number and must not sit in
+ * plaintext logs. Last four digits survive, which is enough to correlate with
+ * a contact somebody is looking at.
+ */
+export function redactJid(jid: string): string {
+  const at = jid.indexOf("@");
+  const user = at === -1 ? jid : jid.slice(0, at);
+  const server = at === -1 ? "" : jid.slice(at);
+  if (user.length <= 4) return "*".repeat(user.length) + server;
+  return "*".repeat(user.length - 4) + user.slice(-4) + server;
+}
+
+const PHONE_JID = /^\d{5,20}(?::\d+)?@s\.whatsapp\.net$/;
+
+export function isPhoneJid(jid: string): boolean {
+  return PHONE_JID.test(jid.trim().toLowerCase());
+}
+
+/**
  * The inverse of `toWhatsappJid`, for the inbound path.
  *
  * The device suffix is dropped: whatsmeow reports a multi-device sender as

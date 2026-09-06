@@ -291,6 +291,60 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites).toHaveLength(0);
   });
 
+  it("drops a LID sender rather than filing it as a phone number", async () => {
+    // A LID's user part looks exactly like a long MSISDN. Filed as one, it
+    // becomes a contact whose reply is addressed to <lid>@s.whatsapp.net —
+    // delivered to whoever really owns that number. This is the exact value
+    // seen in production on 2026-09-05.
+    const res = await post(inbound({ from: "155228775178345@lid" }));
+    expect(await res.json()).toMatchObject({ ignored: "lid" });
+    expect(messageWrites).toHaveLength(0);
+    expect(createContactServerSide).not.toHaveBeenCalled();
+  });
+
+  it("drops every sender address that is not a 1:1 phone JID", async () => {
+    // An allow-list, not a deny-list. A newsletter and a bot both arrive with
+    // IsGroup false, so a list of "group and LID" lets them through to be
+    // filed as contacts with a "+" in front of an id nobody ever dialled.
+    for (const from of [
+      "120363042000000000@newsletter",
+      "867051314767696@bot",
+      "27821234567@c.us",
+      "27821234567",
+      // The "@" anchor: a suffix test without it accepts this as a phone JID.
+      "27821234567@evil.s.whatsapp.net",
+      // A second "@": endsWith would file this as +27821234567.
+      "27821234567@lid@s.whatsapp.net",
+      "27821234567@msgr",
+      // The trailing anchor: without it the server can be a prefix of anything.
+      "27821234567@s.whatsapp.net.evil.example",
+    ]) {
+      messageWrites.length = 0;
+      vi.mocked(createContactServerSide).mockClear();
+      const res = await post(inbound({ from }));
+      expect(await res.json(), from).toMatchObject({
+        ignored: expect.stringMatching(/^(lid|unsupported_jid)$/),
+      });
+      expect(messageWrites, from).toHaveLength(0);
+      expect(createContactServerSide, from).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reports a hosted LID as a LID, not merely as unsupported", async () => {
+    // The reason is the operator's diagnosis: "lid" means a bridge in the
+    // fleet predates the SenderAlt fix, which is actionable. Falling through
+    // to the generic allow-list would still drop it, but would say nothing
+    // about why a real customer went missing.
+    const res = await post(inbound({ from: "155228775178345@hosted.lid" }));
+    expect(await res.json()).toMatchObject({ ignored: "lid" });
+  });
+
+  it("still accepts an ordinary phone sender, device suffix and all", async () => {
+    await post(inbound({ from: "27821234567:12@s.whatsapp.net" }));
+    expect(messageWrites).toHaveLength(1);
+    expect(messageWrites[0].data.from).toBe("+27821234567");
+  });
+
   it("matches the stored contact through a multi-device suffix", async () => {
     // An un-stripped ":12" would mint a duplicate contact on every inbound
     // from a multi-device account.

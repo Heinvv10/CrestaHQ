@@ -228,8 +228,30 @@ func (c *Client) handleMessage(v *events.Message) {
 		// consumer dedupe a redelivery on the id rather than on the body.
 		// quotedMessageId (which of OUR messages this is a reply to) is a
 		// different lookup into ContextInfo and stays phase-2 work.
-		c.onInbound(v.Info.Sender.String(), text, v.Info.ID, v.Info.Timestamp)
+		c.onInbound(senderAddress(v.Info.MessageSource), text, v.Info.ID, v.Info.Timestamp)
 	}
+}
+
+// senderAddress picks the address a consumer can actually reply to.
+//
+// WhatsApp addresses many senders by LID, and for those Info.Sender is
+// "<lid>@lid" while Info.SenderAlt carries "<msisdn>@s.whatsapp.net". A
+// consumer takes the JID's user part as the contact's phone number and
+// rebuilds "<user>@s.whatsapp.net" to reply, so forwarding the LID mints a
+// phone number nobody dialled: the reply is delivered to whoever genuinely
+// owns that number, or to nobody. That is a wrong recipient, not a formatting
+// blemish, which is why this prefers the phone address wherever one exists.
+//
+// It never invents one. With no alternative the sender passes through
+// unchanged — the caller is better served by an address it may not understand
+// than by a dropped message from a real customer.
+func senderAddress(src types.MessageSource) string {
+	if src.Sender.Server == types.HiddenUserServer &&
+		src.SenderAlt.Server == types.DefaultUserServer &&
+		src.SenderAlt.User != "" {
+		return src.SenderAlt.String()
+	}
+	return src.Sender.String()
 }
 
 // handleLoggedOut marks the client dead immediately.

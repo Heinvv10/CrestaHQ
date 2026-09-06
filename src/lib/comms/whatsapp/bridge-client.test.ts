@@ -5,6 +5,7 @@ import {
   jidToE164,
   sendWhatsappBridge,
   toWhatsappJid,
+  redactJid,
 } from "./bridge-client";
 
 const creds = {
@@ -26,7 +27,7 @@ describe("toWhatsappJid", () => {
     // Numbers reaching this rail may have been stored by the Twilio path.
     // Go's types.ParseJID rejects the prefixed form outright.
     expect(toWhatsappJid("whatsapp:+27821234567")).toBe(
-      "27821234567@s.whatsapp.net",
+      "27821234567@s.whatsapp.net"
     );
   });
 
@@ -71,7 +72,7 @@ function res(status: number, body: unknown) {
 describe("sendWhatsappBridge", () => {
   function send(
     fetchImpl: ReturnType<typeof vi.fn>,
-    overrides: Record<string, unknown> = {},
+    overrides: Record<string, unknown> = {}
   ) {
     return sendWhatsappBridge({
       creds,
@@ -83,13 +84,15 @@ describe("sendWhatsappBridge", () => {
   }
 
   it("posts a JID, the text and a key to /v1/send with the bearer token", () => {
-    const f = vi.fn().mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
+    const f = vi
+      .fn()
+      .mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
     return send(f).then(() => {
       expect(f.mock.calls[0][0]).toBe("http://bridge.local:33001/v1/send");
       const init = f.mock.calls[0][1] as RequestInit;
-      expect(
-        (init.headers as Record<string, string>)["Authorization"],
-      ).toBe("Bearer tok_secret");
+      expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+        "Bearer tok_secret"
+      );
       expect(JSON.parse(init.body as string)).toMatchObject({
         to: "27821234567@s.whatsapp.net",
         text: "hello",
@@ -98,7 +101,9 @@ describe("sendWhatsappBridge", () => {
   });
 
   it("returns the provider message id on success", async () => {
-    const f = vi.fn().mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
+    const f = vi
+      .fn()
+      .mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
     await expect(send(f)).resolves.toEqual({ ok: true, messageId: "M1" });
   });
 
@@ -107,13 +112,17 @@ describe("sendWhatsappBridge", () => {
     // caller would retry into a second message.
     const f = vi
       .fn()
-      .mockResolvedValue(res(200, { ok: true, messageId: "M1", duplicate: true }));
+      .mockResolvedValue(
+        res(200, { ok: true, messageId: "M1", duplicate: true })
+      );
     await expect(send(f)).resolves.toEqual({ ok: true, messageId: "M1" });
   });
 
   it("generates an idempotency key when the caller supplies none", async () => {
     // The bridge 400s without one, so an absent key would fail every send.
-    const f = vi.fn().mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
+    const f = vi
+      .fn()
+      .mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
     await send(f);
     const body = JSON.parse((f.mock.calls[0][1] as RequestInit).body as string);
     expect(typeof body.idempotencyKey).toBe("string");
@@ -121,7 +130,9 @@ describe("sendWhatsappBridge", () => {
   });
 
   it("uses a caller-supplied idempotency key verbatim", async () => {
-    const f = vi.fn().mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
+    const f = vi
+      .fn()
+      .mockResolvedValue(res(200, { ok: true, messageId: "M1" }));
     await send(f, { idempotencyKey: "wf-step-7" });
     const body = JSON.parse((f.mock.calls[0][1] as RequestInit).body as string);
     expect(body.idempotencyKey).toBe("wf-step-7");
@@ -142,7 +153,7 @@ describe("sendWhatsappBridge", () => {
         ok: false,
         providerOutcome: "DEFINITELY_REJECTED",
       });
-    },
+    }
   );
 
   it("surfaces a 422 rail refusal's reason AND machine code to the operator", async () => {
@@ -153,7 +164,7 @@ describe("sendWhatsappBridge", () => {
         ok: false,
         refusedBy: "quiet_hours",
         reason: "outside the configured sending window",
-      }),
+      })
     );
     const r = await send(f);
     expect(r.ok).toBe(false);
@@ -161,7 +172,7 @@ describe("sendWhatsappBridge", () => {
     // The exact string, not a substring: raw JSON also "contains" both words,
     // so a substring assertion passes even when the operator gets a blob.
     expect(r.error).toBe(
-      "WhatsApp bridge 422: quiet_hours: outside the configured sending window",
+      "WhatsApp bridge 422: quiet_hours: outside the configured sending window"
     );
   });
 
@@ -176,7 +187,9 @@ describe("sendWhatsappBridge", () => {
   it("prefers the body outcome over the status: 502 failed is rejected", async () => {
     const f = vi
       .fn()
-      .mockResolvedValue(res(502, { ok: false, error: "x", outcome: "failed" }));
+      .mockResolvedValue(
+        res(502, { ok: false, error: "x", outcome: "failed" })
+      );
     expect((await send(f)).providerOutcome).toBe("DEFINITELY_REJECTED");
   });
 
@@ -186,15 +199,21 @@ describe("sendWhatsappBridge", () => {
     const f = vi
       .fn()
       .mockResolvedValue(
-        res(502, { ok: false, error: "timeout", outcome: "ambiguous" }),
+        res(502, { ok: false, error: "timeout", outcome: "ambiguous" })
       );
     expect((await send(f)).providerOutcome).toBe("AMBIGUOUS");
   });
 
   it("marks a 500 not_sent as rejected so no retry races the caller", async () => {
-    const f = vi.fn().mockResolvedValue(
-      res(500, { ok: false, error: "reservation failed", outcome: "not_sent" }),
-    );
+    const f = vi
+      .fn()
+      .mockResolvedValue(
+        res(500, {
+          ok: false,
+          error: "reservation failed",
+          outcome: "not_sent",
+        })
+      );
     expect((await send(f)).providerOutcome).toBe("DEFINITELY_REJECTED");
   });
 
@@ -224,11 +243,13 @@ describe("sendWhatsappBridge", () => {
 
 describe("bridgeHealth", () => {
   it("reports connected from a 200", async () => {
-    const f = vi.fn().mockResolvedValue(
-      res(200, { ok: true, connected: true, killed: false, number: "+2782" }),
-    );
+    const f = vi
+      .fn()
+      .mockResolvedValue(
+        res(200, { ok: true, connected: true, killed: false, number: "+2782" })
+      );
     await expect(
-      bridgeHealth(creds, { fetchImpl: f as unknown as typeof fetch }),
+      bridgeHealth(creds, { fetchImpl: f as unknown as typeof fetch })
     ).resolves.toEqual({
       reachable: true,
       connected: true,
@@ -242,7 +263,9 @@ describe("bridgeHealth", () => {
     // as unreachable hides "needs re-pairing" behind a network error.
     const f = vi
       .fn()
-      .mockResolvedValue(res(503, { ok: false, connected: false, killed: true }));
+      .mockResolvedValue(
+        res(503, { ok: false, connected: false, killed: true })
+      );
     const h = await bridgeHealth(creds, {
       fetchImpl: f as unknown as typeof fetch,
     });
@@ -257,7 +280,7 @@ describe("bridgeHealth", () => {
   it("reports unreachable, never throws, when the process is down", async () => {
     const f = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
     await expect(
-      bridgeHealth(creds, { fetchImpl: f as unknown as typeof fetch }),
+      bridgeHealth(creds, { fetchImpl: f as unknown as typeof fetch })
     ).resolves.toMatchObject({ reachable: false, connected: false });
   });
 
@@ -267,7 +290,33 @@ describe("bridgeHealth", () => {
     expect(f.mock.calls[0][0]).toBe("http://bridge.local:33001/v1/health");
     const init = f.mock.calls[0][1] as RequestInit;
     expect((init.headers as Record<string, string>)["Authorization"]).toBe(
-      "Bearer tok_secret",
+      "Bearer tok_secret"
     );
+  });
+});
+
+describe("redactJid", () => {
+  it("keeps the server and the last four digits, masks the rest", () => {
+    expect(redactJid("27821234567@s.whatsapp.net")).toBe(
+      "*******4567@s.whatsapp.net"
+    );
+    expect(redactJid("155228775178345@lid")).toBe("***********8345@lid");
+  });
+
+  it("never leaks a short user part either", () => {
+    expect(redactJid("123@s.whatsapp.net")).toBe("***@s.whatsapp.net");
+    expect(redactJid("@lid")).toBe("@lid");
+  });
+
+  it("tolerates an address with no server at all", () => {
+    // A malformed `from` must not throw inside a log line on the drop path.
+    expect(redactJid("27821234567")).toBe("*******4567");
+  });
+
+  it("leaves no run of the original digits beyond the last four", () => {
+    // The point is the log line, so assert the property rather than a literal:
+    // nothing but the tail may survive.
+    const out = redactJid("27821234567@s.whatsapp.net");
+    expect(out).not.toContain("2782123");
   });
 });

@@ -10,7 +10,7 @@ import { resolveAgent } from "@/lib/comms/ai/agent";
 import { maybeRespondWithAi } from "@/lib/comms/ai/respond";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { getBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
-import { isGroupJid, jidToE164 } from "@/lib/comms/whatsapp/bridge-client";
+import { isGroupJid, isLidJid, isPhoneJid, jidToE164, redactJid } from "@/lib/comms/whatsapp/bridge-client";
 import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
@@ -159,6 +159,29 @@ export async function POST(
   // 1:1 only: a group message has no single contact to file it under.
   const fromJid = payload.from?.trim() ?? "";
   if (isGroupJid(fromJid)) return ok({ ok: true, ignored: "group" });
+  // A LID is not a phone number, however much its user part resembles one.
+  // Filing it as one produces a contact whose replies reach a stranger, so it
+  // is dropped rather than guessed at.
+  //
+  // Logged, not silent. The bridge posts at most once and never retries, so an
+  // out-of-date bridge in the fleet would otherwise lose real customer
+  // messages with nothing to grep for. This names the cause and the fix.
+  if (isLidJid(fromJid)) {
+    console.warn(
+      `[wa-bridge] dropped a LID sender for ${subAccountId}: ${redactJid(fromJid)} — this bridge predates the SenderAlt fix and cannot be replied to`,
+    );
+    return ok({ ok: true, ignored: "lid" });
+  }
+  // Everything that is not a 1:1 phone address. An allow-list, because a
+  // deny-list only ever catches the shapes somebody remembered: newsletter and
+  // bot senders reach here with IsGroup false and would otherwise be filed as
+  // contacts with a "+" in front of an id that was never dialled.
+  if (!isPhoneJid(fromJid)) {
+    console.warn(
+      `[wa-bridge] dropped an unsupported sender address for ${subAccountId}: ${redactJid(fromJid)}`,
+    );
+    return ok({ ok: true, ignored: "unsupported_jid" });
+  }
   const from = jidToE164(fromJid);
   if (!from) return ok({ ok: true, ignored: "no_sender" });
 
