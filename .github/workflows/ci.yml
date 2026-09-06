@@ -119,6 +119,34 @@ jobs:
       # a documented-but-false claim that its scanner ran in CI, and found out
       # via a real credential leak (issue #1830) plus a 26-credential audit.
       # Cheap gate, expensive absence.
+      #
+      # `-v` and `--log-opts` are both here because of issue #33, where this
+      # gate reported "leaks found: 6" and then, re-run on the same SHA with
+      # nothing changed, reported none.
+      #
+      # `-v` prints the rule, file, line, commit and author of every finding.
+      # Without it a failure prints the single word "6" — no rule, no file, no
+      # commit — which is close to unactionable, and pushes whoever hits it
+      # toward re-running until green. That is exactly the wrong response to a
+      # possible real leak, and exactly what happened. `--redact` still applies
+      # with `-v`: the finding lines read `Secret: REDACTED`.
+      #
+      # `--log-opts` replaces gitleaks' default `--full-history --all`. `--all`
+      # scans every ref that happens to exist in the clone, so what this gate
+      # examines depends on the state of a reused runner workspace rather than
+      # on the commit under test — a PR could fail on a secret sitting in an
+      # unrelated branch, and the same command run locally would not reproduce
+      # it. Pinning to HEAD scans exactly the commit CI built, plus all of its
+      # own history, and nothing else.
+      #
+      # Coverage is unchanged for anything that matters: HEAD on a PR is the
+      # merge ref (main + this PR) and HEAD on a push is main itself, so every
+      # commit that reaches main is still scanned with full history behind it.
+      #
+      # This does NOT explain the flake — that root cause is still unknown, and
+      # #33 stays open until it recurs with detail. It removes one whole source
+      # of variance and makes the next occurrence reproducible: the printed SHA
+      # plus the command below is the entire input.
       - name: gitleaks
         run: |
           command -v gitleaks >/dev/null || {
@@ -127,7 +155,10 @@ jobs:
             exit 1
           }
           gitleaks version
-          gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 .
+          git --version
+          echo "scanning HEAD=$(git rev-parse HEAD)"
+          gitleaks git --redact --no-banner --config .gitleaks.toml --exit-code 1 \
+            -v --log-opts="--full-history HEAD" .
 
   # Playwright, against THIS PR's build.
   #
