@@ -232,6 +232,7 @@ async function ensureSubAccount(name, slug) {
       labsEnabledByAgency: false,
       paymentsEnabledByAgency: false,
       webinar1EnabledByAgency: false,
+      googleEnabledByAgency: false,
       aiSuiteEnabledByAgency: false,
       metaConfig: null,
       stripeConnectionMeta: null,

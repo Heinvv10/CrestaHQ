@@ -220,6 +220,7 @@ export async function createSubAccountForAgency(
       // integration with an outside deployment is an explicit per-client
       // decision, same reasoning as Payments.
       webinar1EnabledByAgency: false,
+      googleEnabledByAgency: false,
       webinar1ConnectionMeta: null,
       // Workspace Assistant ships OFF like every other gate (opt-in) — the
       // agency owner enables it per sub-account from the Manage dialog.

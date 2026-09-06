@@ -11,6 +11,7 @@ import {
   KeyRound,
   Loader2,
   Mail,
+  MapPin,
   MessageCircle,
   MessageSquareText,
   MessagesSquare,
@@ -96,6 +97,7 @@ export function SubAccountManageDialog({
   const initialWebinar1 = subAccount?.webinar1EnabledByAgency === true;
   const initialWebinar1Hidden =
     subAccount?.webinar1HiddenWhenDisabled !== false;
+  const initialGoogle = subAccount?.googleEnabledByAgency === true;
   // Workspace Assistant is opt-in like every other gate — off unless
   // explicitly enabled (legacy/unset reads as off).
   const initialAiSuite = subAccount?.aiSuiteEnabledByAgency === true;
@@ -141,6 +143,7 @@ export function SubAccountManageDialog({
   const [paymentsHidden, setPaymentsHidden] = useState(initialPaymentsHidden);
   const [webinar1Enabled, setWebinar1Enabled] = useState(initialWebinar1);
   const [webinar1Hidden, setWebinar1Hidden] = useState(initialWebinar1Hidden);
+  const [googleEnabled, setGoogleEnabled] = useState(initialGoogle);
   const [missedCallEnabled, setMissedCallEnabled] = useState(initialMissedCall);
   const [aiSuiteEnabled, setAiSuiteEnabled] = useState(initialAiSuite);
   const [aiSuiteModel, setAiSuiteModel] = useState<"opus" | "sonnet">(
@@ -275,6 +278,7 @@ export function SubAccountManageDialog({
   const paymentsHiddenDirty = paymentsHidden !== initialPaymentsHidden;
   const webinar1Dirty = webinar1Enabled !== initialWebinar1;
   const webinar1HiddenDirty = webinar1Hidden !== initialWebinar1Hidden;
+  const googleDirty = googleEnabled !== initialGoogle;
   const missedCallDirty = missedCallEnabled !== initialMissedCall;
   const aiSuiteDirty = aiSuiteEnabled !== initialAiSuite;
   const aiSuiteModelDirty = aiSuiteModel !== initialAiSuiteModel;
@@ -305,6 +309,7 @@ export function SubAccountManageDialog({
     paymentsHiddenDirty ||
     webinar1Dirty ||
     webinar1HiddenDirty ||
+    googleDirty ||
     missedCallDirty ||
     aiSuiteDirty ||
     aiSuiteModelDirty ||
@@ -348,6 +353,7 @@ export function SubAccountManageDialog({
         paymentsHiddenWhenDisabled?: boolean;
         webinar1Enabled?: boolean;
         webinar1HiddenWhenDisabled?: boolean;
+        googleEnabled?: boolean;
         missedCallTextBackEnabled?: boolean;
         aiSuiteEnabled?: boolean;
         aiSuiteModel?: "opus" | "sonnet";
@@ -382,6 +388,7 @@ export function SubAccountManageDialog({
       if (webinar1HiddenDirty) {
         payload.webinar1HiddenWhenDisabled = webinar1Hidden;
       }
+      if (googleDirty) payload.googleEnabled = googleEnabled;
       if (missedCallDirty)
         payload.missedCallTextBackEnabled = missedCallEnabled;
       if (aiSuiteDirty) payload.aiSuiteEnabled = aiSuiteEnabled;
@@ -524,6 +531,13 @@ export function SubAccountManageDialog({
           webinar1Enabled
             ? "Webinars enabled."
             : "Webinars disabled. The connected webinar platform is preserved; re-enabling resumes instantly."
+        );
+      }
+      if (googleDirty) {
+        parts.push(
+          googleEnabled
+            ? "Google Business Profile enabled."
+            : "Google Business Profile disabled. The connection is preserved; re-enabling resumes instantly."
         );
       }
       if (missedCallDirty) {
@@ -969,6 +983,22 @@ export function SubAccountManageDialog({
             attendance synced back onto contact timelines. Disabling locks the
             sidebar entry and 403s the routes; the stored connection is
             preserved, so re-enabling resumes instantly.
+          </GateToggle>
+
+          <GateToggle
+            checked={googleEnabled}
+            onChange={setGoogleEnabled}
+            disabled={saving}
+            icon={
+              <MapPin className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+            }
+            title="Google Business Profile"
+          >
+            When enabled, this sub-account can connect the Google account that
+            manages its Business Profile (Settings → Google Business Profile).
+            Disabling hides the card and refuses new connects; the stored
+            connection is preserved, so re-enabling resumes instantly.
+            Disconnecting stays available either way.
           </GateToggle>
 
           <GateToggle

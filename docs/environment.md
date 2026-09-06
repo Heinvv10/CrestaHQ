@@ -178,6 +178,16 @@ One Meta app powers BOTH the FB Messenger / IG DM inbox AND the Social Planner (
 
 Beyond the env vars, posting also requires **Meta App Review** for `pages_manage_posts` + `instagram_content_publish` (on top of the messaging review). Until approved, only Meta app admins/testers can connect. See [Social Planner](features/social-planner.md) + the Meta inbox section of [AI Agents](features/ai-agents.md).
 
+## Optional — Google Business Profile
+One Google OAuth client lets each sub-account connect the Google account that manages its Business Profile listings. Optional — leave unset and the Connect button reports "not configured on this deployment".
+
+| Var | Source |
+|---|---|
+| `GOOGLE_CLIENT_ID` | [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → Create credentials → OAuth client ID → **Web application**. |
+| `GOOGLE_CLIENT_SECRET` | Same screen. Keep secret. |
+
+Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth consent screen, and register **one** authorised redirect URI for the whole deployment: `NEXT_PUBLIC_APP_URL` + `/api/google/callback`. Google matches it byte for byte, so a trailing slash or a different host breaks the exchange. The connecting sub-account travels in the HMAC-signed OAuth `state` (keyed by `AUTOMATIONS_TOKEN_SECRET`), so no per-client registration is needed. Tokens are stored server-only at `subAccounts/{id}/private/googleConnection`; the sub-account doc carries display metadata only.
+
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |
 |---|---|

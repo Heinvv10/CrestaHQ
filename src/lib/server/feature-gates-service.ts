@@ -51,7 +51,10 @@ export type AgencyGateField =
   | "paymentsEnabledByAgency"
   // Webinar1 external-platform connection — standalone like Payments (an
   // outside integration is an explicit per-client decision, not a plan perk).
-  | "webinar1EnabledByAgency";
+  | "webinar1EnabledByAgency"
+  // Google Business Profile OAuth connection — standalone for the same reason
+  // as Webinar1: an outside account link is an explicit per-client decision.
+  | "googleEnabledByAgency";
 
 export interface ApplyGatesResult {
   /** True when a live Resend sending domain was removed by the email disable. */

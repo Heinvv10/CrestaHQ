@@ -383,6 +383,10 @@ const FEATURE_GATES: Record<
     field: "webinar1EnabledByAgency",
     label: "Webinars (Webinar1 integration)",
   },
+  google: {
+    field: "googleEnabledByAgency",
+    label: "Google Business Profile connection",
+  },
   // Get Leads is PARKED — while the flag is on the assistant can't flip (or
   // report) its gate, matching the hidden Manage-dialog toggle. When
   // un-parked, enabling doesn't require OUTSCRAPER_API_KEY to be set —
