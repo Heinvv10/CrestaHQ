@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { readEnv } from "../lib/env";
 /**
- * Traces record request bodies, and this is the only spec that submits
- * E2E_PASSWORD (to Firebase's signInWithPassword) — a repository secret that
- * must not be re-emitted into an uploaded CI artifact. Every other spec starts
- * from a saved session and never sees it, so they keep their traces.
+ * Traces record request bodies, and this spec submits E2E_PASSWORD (to
+ * Firebase's signInWithPassword) — a repository secret that must not be
+ * re-emitted into an uploaded CI artifact. Every spec that drives the login
+ * form opts out of traces and screenshots for this reason; the rest start from
+ * a saved session, never see the password, and keep their traces.
  */
 test.use({ trace: "off", screenshot: "off" });
 
@@ -42,9 +43,8 @@ test("agency owner signs in through the login form", async ({
   // without a valid __session: the assertion below still fails on a broken
   // login, which the __session check then confirms independently.
   //
-  // The redirect itself is covered by owner-lands-on-agency.spec.ts, currently
-  // `test.fixme` against that unfixed race. See project memory:
-  // project_agency_owner_redirect_race.
+  // The redirect itself is covered by owner-lands-on-agency.spec.ts, which
+  // documents the race in full and is `test.fixme` until it is fixed.
   await page.waitForURL(/\/(agency|sa\/[^/]+\/dashboard)$/, {
     timeout: 30_000,
   });
