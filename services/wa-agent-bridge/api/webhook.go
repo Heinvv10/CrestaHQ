@@ -50,10 +50,11 @@ type Fanout struct {
 	watermark time.Time
 	// watermarkFor is the connectedAt the watermark was taken for, so a new
 	// connection re-snapshots it exactly once.
-	watermarkFor time.Time
-	catchUp      int
-	skippedOld   int
-	skippedCap   int
+	watermarkFor  time.Time
+	catchUp       int
+	skippedOld    int
+	skippedCap    int
+	lastDroppedAt time.Time
 }
 
 // maxCatchUpForward bounds how many messages one connection may forward from
@@ -112,6 +113,7 @@ func (f *Fanout) refreshWatermark() {
 	}
 	f.watermarkFor = c
 	f.catchUp, f.skippedOld, f.skippedCap = 0, 0, 0
+	f.lastDroppedAt = time.Time{}
 	w, err := f.store.LastInboundAt()
 	if err != nil {
 		log.Printf("WARNING watermark unreadable, admitting the backlog up to %d messages: %v",
@@ -140,12 +142,26 @@ func (f *Fanout) admitDuringReplay(jid, text string, at time.Time) bool {
 	}
 	if f.catchUp >= maxCatchUpForward {
 		f.skippedCap++
+		f.lastDroppedAt = f.now()
 		log.Printf("ALERT catch-up cap reached, DROPPING new inbound jid=%s len=%s (%d suppressed this connection)",
 			redact.JID(jid), redact.Body(text), f.skippedCap)
 		return false
 	}
 	f.catchUp++
 	return true
+}
+
+// InboundDropAge is how long ago this connection last DROPPED a new inbound,
+// and false when it has dropped none. The health endpoint uses it to alert on
+// a fresh loss without calling a healthy bridge degraded for the rest of the
+// connection.
+func (f *Fanout) InboundDropAge() (time.Duration, bool) {
+	f.wmMu.Lock()
+	defer f.wmMu.Unlock()
+	if f.lastDroppedAt.IsZero() {
+		return 0, false
+	}
+	return f.now().Sub(f.lastDroppedAt), true
 }
 
 // SuppressedInbound reports what this connection did not forward: messages

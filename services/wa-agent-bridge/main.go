@@ -199,6 +199,7 @@ func main() {
 		// "not connected" until then.
 		Connection:         gate,
 		InboundSuppression: fanout.SuppressedInbound,
+		InboundDropAge:     fanout.InboundDropAge,
 		Version:            version,
 	})
 

@@ -181,3 +181,30 @@ func TestNonOwnerTrafficDoesNotSpendTheCatchUpBudget(t *testing.T) {
 		t.Fatalf("the forwarded message is not the owner's: %s", seen[0])
 	}
 }
+
+// The age must come from a real drop, not from a test double. This drives the
+// actual cap and then asks the Fanout how long ago it dropped something.
+func TestInboundDropAgeReflectsARealDrop(t *testing.T) {
+	f, _, _ := realStoreFanout(t, time.Now())
+
+	if _, ok := f.InboundDropAge(); ok {
+		t.Fatal("a connection that has dropped nothing must report no drop")
+	}
+
+	at := time.Now()
+	for i := 0; i < maxCatchUpForward+1; i++ {
+		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", at)
+	}
+	f.Wait()
+
+	age, ok := f.InboundDropAge()
+	if !ok {
+		t.Fatal("after the cap dropped a message the age must be reported")
+	}
+	if age < 0 || age > time.Minute {
+		t.Fatalf("age should be freshly measured, got %v", age)
+	}
+	if _, capped := f.SuppressedInbound(); capped != 1 {
+		t.Fatalf("expected exactly one drop, got %d", capped)
+	}
+}

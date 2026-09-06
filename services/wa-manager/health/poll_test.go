@@ -236,3 +236,27 @@ func TestAGenuinelyDeadBridgeIsUnreachableNotIncomplete(t *testing.T) {
 		t.Fatalf("a refused connection must read as unreachable: %+v", r)
 	}
 }
+
+// The count must survive the wire. A bridge that reports lost customer
+// messages and a manager that drops the field on the floor is the same
+// invisibility, one hop further along.
+func TestPollCarriesDroppedInbound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"connected":true,"killed":false,"degraded":false,
+			"outboundLast24h":3,"dailyCap":150,"lastInboundAgeSeconds":10,
+			"allowlisted":0,"droppedInbound":4,"number":"27820000000","version":"v1"}`)
+	}))
+	defer srv.Close()
+
+	p := New(srv.Client(), func(store.Tenant) string { return "tok" })
+	p.BaseURL = func(store.Tenant) string { return srv.URL }
+
+	rep := p.Snapshot(context.Background(), []store.Tenant{{ID: "t1"}})["t1"]
+	if !rep.Reachable {
+		t.Fatalf("expected a reachable report, got %+v", rep)
+	}
+	if rep.DroppedInbound != 4 {
+		t.Fatalf("DroppedInbound = %d, want 4 — the manager dropped the count", rep.DroppedInbound)
+	}
+}
