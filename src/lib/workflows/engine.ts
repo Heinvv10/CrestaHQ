@@ -9,13 +9,13 @@ import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import {
   sendSmsForSubAccount,
   sendWhatsappForSubAccount,
   sendWhatsappTemplateForSubAccount,
   smsIsConfigured,
   subAccountTwilioIsConfigured,
-  subAccountWhatsappIsConfigured,
   SmsRecipientUnsubscribedError,
 } from "@/lib/comms/twilio";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
@@ -316,11 +316,24 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   // Requires the agency WhatsApp gate AND a configured WhatsApp sender. The
   // builder surfaces this as a red node, but re-check here in case the gate
   // flipped off after the workflow was built.
-  if (
-    ctx.subAccount?.whatsappEnabledByAgency !== true ||
-    !subAccountWhatsappIsConfigured(ctx.subAccount?.twilioConfig)
-  ) {
+  if (ctx.subAccount?.whatsappEnabledByAgency !== true) {
     return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  }
+  // Per-rail, and it must agree with the builder's red-node readiness or the
+  // builder promises a step the run then skips. The old Twilio-shaped check
+  // refused Cloud, whose templates dispatchWhatsappTemplateSend supports.
+  const tplReadiness = await checkWhatsappReadiness({
+    subAccountId: ctx.subAccountId,
+    subAccount: ctx.subAccount ?? null,
+  });
+  if (!tplReadiness.ready) {
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  }
+  // The bridge has no templates at all; its own dispatcher refuses, but
+  // skipping here keeps the log honest about WHY rather than surfacing a send
+  // failure for a step that could never run.
+  if (!capabilitiesFor(tplReadiness.provider).supportsTemplates) {
+    return { result: { kind: "next" }, log: "skipped:rail_has_no_templates" };
   }
   if (!cfg.templateId)
     return { result: { kind: "next" }, log: "skipped:no_template" };

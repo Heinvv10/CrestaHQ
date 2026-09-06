@@ -29,6 +29,7 @@ import { ConversationAiControls } from "@/components/conversations/conversation-
 import { ConversationDraftCard } from "@/components/conversations/conversation-draft-card";
 import { ConversationContactPanel } from "@/components/conversations/conversation-contact-panel";
 import type { Contact } from "@/types/contacts";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import {
   parseWebChatConversationId,
   type ConversationChannel,
@@ -113,8 +114,11 @@ export default function ConversationDetailPage() {
 
   const availableChannels: ConversationChannel[] = [];
   if (subAccount?.twilioConfig?.enabled) availableChannels.push("sms");
+  // Rail-agnostic on purpose: asking a bridge or Cloud workspace for a Twilio
+  // number is not a stricter check, it is the wrong one, and it hides the
+  // composer on a workspace that is correctly connected.
   if (
-    subAccount?.twilioConfig?.whatsappFromNumber &&
+    whatsappSenderConfigured(subAccount) &&
     subAccount?.whatsappEnabledByAgency === true
   ) {
     availableChannels.push("whatsapp");

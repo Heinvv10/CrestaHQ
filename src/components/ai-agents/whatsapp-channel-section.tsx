@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { AiAgentProfile, AiChannelConfig } from "@/types/ai";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 
 /**
  * WhatsApp-specific operational settings. Mirrors the SMS channel — the
@@ -98,7 +99,7 @@ export function WhatsappChannelSection() {
 
   if (!isAdmin) return null;
 
-  const whatsappConfigured = !!subAccount?.twilioConfig?.whatsappFromNumber;
+  const whatsappConfigured = whatsappSenderConfigured(subAccount);
   const profileReady = !!profile?.systemPrompt?.trim();
 
   // Agency gate locked state — mirrors the email-domain section's locked card.

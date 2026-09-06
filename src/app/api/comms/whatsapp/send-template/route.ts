@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
 import {
   sendWhatsappTemplateForSubAccount,
-  subAccountWhatsappIsConfigured,
 } from "@/lib/comms/twilio";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
@@ -88,11 +88,18 @@ export async function POST(request: Request) {
       { status: 403 },
     );
   }
-  if (!subAccountWhatsappIsConfigured(subAccount?.twilioConfig)) {
-    return NextResponse.json(
-      { error: "WhatsApp isn't configured. Add a sender under Settings → SMS." },
-      { status: 503 },
-    );
+  // Per-rail, not Twilio-only. dispatchWhatsappTemplateSend below already
+  // supports Cloud and refuses the bridge with its own message, but this gate
+  // ran first and demanded Twilio credentials — so a correctly connected Cloud
+  // workspace could never reach the dispatcher that supports it. Asking a
+  // Cloud workspace for a Twilio number is not a stricter check, it is the
+  // wrong one.
+  const readiness = await checkWhatsappReadiness({
+    subAccountId: contact.subAccountId,
+    subAccount,
+  });
+  if (!readiness.ready) {
+    return NextResponse.json({ error: readiness.error }, { status: 503 });
   }
   if (!tplSnap.exists) {
     return NextResponse.json({ error: "Template not found" }, { status: 404 });

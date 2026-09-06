@@ -21,6 +21,11 @@ import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { MessageDoc } from "@/types/messages";
+import { whatsappSenderNumber } from "@/lib/comms/whatsapp/sender-configured";
+import {
+  capabilitiesFor,
+  resolveWhatsAppProviderId,
+} from "@/lib/comms/whatsapp/provider";
 
 const WINDOW_HOURS = 24;
 
@@ -91,7 +96,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   }, [hydrated, messages, contact.id]);
 
   const optedOut = !!contact.whatsappOptedOut;
-  const fromNumber = subAccount?.twilioConfig?.whatsappFromNumber ?? "";
+  const fromNumber = whatsappSenderNumber(subAccount);
 
   // Compute whether the 24h session window is open from the loaded thread.
   const windowOpen = useMemo(() => {
@@ -107,7 +112,20 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
     );
   }, [messages]);
 
-  const canSend = !optedOut && windowOpen && !!contact.phone;
+  // The 24-hour session window is a Meta rule, and it binds the rails that
+  // talk to Meta. The bridge does not enforce it (capabilities: enforcesWindow
+  // false), and it cannot send templates either — so applying the window here
+  // would disable the composer and tell the operator to use a template that
+  // rail has no way to send. The send route makes the real decision per rail;
+  // this only decides what to grey out.
+  const railCaps = capabilitiesFor(
+    resolveWhatsAppProviderId(subAccount?.whatsappProvider),
+  );
+  const railEnforcesWindow = railCaps.enforcesWindow;
+  const railSupportsTemplates = railCaps.supportsTemplates;
+  const windowBlocks = railEnforcesWindow && !windowOpen;
+
+  const canSend = !optedOut && !windowBlocks && !!contact.phone;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -138,7 +156,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
 
   const placeholder = optedOut
     ? "Contact opted out of WhatsApp"
-    : !windowOpen
+    : windowBlocks
       ? "24-hour window closed — a template is required to message again"
       : `Reply to ${contact.phone}…`;
 
@@ -185,7 +203,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
         )}
       </div>
 
-      {!optedOut && !windowOpen && messages.length > 0 && !templateMode && (
+      {!optedOut && windowBlocks && messages.length > 0 && !templateMode && (
         <div className="border-t bg-amber-500/5 px-4 py-2 text-[11px] text-amber-700 dark:text-amber-400">
           The 24-hour messaging window has closed. Free-form replies are only
           allowed within 24h of the contact&apos;s last message — send an
@@ -221,7 +239,10 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
             className="resize-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
           />
           <div className="mt-2 flex items-center justify-between gap-2">
-            {!optedOut && (
+            {/* Templates are a Meta-rail feature. Offering the button on a
+                rail that cannot send one (capabilities: supportsTemplates
+                false) is a control whose every use fails. */}
+            {!optedOut && railSupportsTemplates && (
               <Button
                 type="button"
                 variant="ghost"
