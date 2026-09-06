@@ -265,9 +265,16 @@ function isPublicPath(pathname: string): boolean {
  * (systemd sets `HOSTNAME=127.0.0.1 PORT=4300`, behind a cloudflared tunnel)
  * `nextUrl` is derived from the server's own bind address, not the Host header
  * — so a logged-out visit to any protected route on crm.crestahq.com used to
- * 307 to `https://localhost:4300/login`, a dead address for every real user.
- * Verified 2026-09-06: even an explicit `Host: crm.crestahq.com` still produced
- * localhost, so this is the app's own doing, not the tunnel's.
+ * 307 to `http://localhost:4300/login`, a dead address for every real user.
+ * Verified 2026-09-06 against the live deployment: even an explicit
+ * `Host: crm.crestahq.com` still produced localhost, so this is the app's own
+ * doing, not the tunnel's. (It reproduces only when HOSTNAME is set, as systemd
+ * sets it; without it the adapter emits a relative Location and the bug hides.)
+ *
+ * The mechanism is that Next emits a RELATIVE Location once the URL's host
+ * matches the request Host, and an absolute one when it does not — so pinning
+ * the configured origin fixes this by making them agree, rather than by
+ * literally shipping the public origin in the header.
  *
  * The path and query are still taken from `nextUrl` (preserving any existing
  * query string, as before); only protocol + host are pinned to

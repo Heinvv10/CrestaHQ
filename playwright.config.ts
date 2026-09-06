@@ -45,7 +45,12 @@ export default defineConfig({
           // warns it does not support output:"standalone". Boot the same
           // artifact the deploy does, or the gate tests a different program.
           command: "pnpm e2e:server",
-          env: { PORT: "3100" },
+          // HOSTNAME matters, and its absence made the logged-out-redirect
+          // spec vacuous: without it the standalone server emits a RELATIVE
+          // Location and the spec passes even on unfixed code. systemd sets
+          // HOSTNAME=127.0.0.1 in production, so pin the same shape here or
+          // the gate does not exercise the bug it was written for.
+          env: { PORT: "3100", HOSTNAME: "127.0.0.1" },
           url: DEFAULT_BASE_URL,
           reuseExistingServer: !process.env.CI,
           // A cold Next.js production start on the shared runner box, which

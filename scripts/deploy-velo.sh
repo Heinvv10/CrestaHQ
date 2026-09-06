@@ -114,7 +114,14 @@ else
   pnpm test || die "tests"
 fi
 
+# NEXT_PUBLIC_* are INLINED into the bundle at build time, so a build without
+# this one silently ships a different program: the logged-out login redirect
+# falls back to the server's bind address and sends real visitors to
+# http://localhost:<port>/login. Nothing at runtime can recover it, and every
+# gate stays green -- so assert it here, before the build, rather than
+# discovering it from a user report.
 say "Build"
+[ -n "${NEXT_PUBLIC_APP_URL:-}" ] || die "NEXT_PUBLIC_APP_URL is not set at build time — it is inlined into the bundle; building without it ships broken login redirects"
 pnpm build || die "build"
 
 # Next's standalone output ships server.js + a minimal node_modules, but NOT
