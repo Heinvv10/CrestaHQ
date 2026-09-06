@@ -30,6 +30,7 @@ import { SubAccountPlanBillingSection } from "@/components/settings/sub-account-
 import { SubAccountSendingPreferencesSection } from "@/components/settings/sub-account-sending-preferences-section";
 import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account-google-review-section";
 import { SubAccountStripeSection } from "@/components/settings/sub-account-stripe-section";
+import { SubAccountPaystackSection } from "@/components/settings/sub-account-paystack-section";
 import { SubAccountWebinar1Section } from "@/components/settings/sub-account-webinar1-section";
 import { SubAccountApiKeysSection } from "@/components/settings/sub-account-api-keys-section";
 import { SubAccountApiRecipesSection } from "@/components/settings/sub-account-api-recipes-section";
@@ -233,6 +234,11 @@ export default function SettingsPage() {
 
           {/* Stripe Connect — v2 roadmap placeholder. */}
           <SubAccountStripeSection />
+
+          {/* Paystack — the SA card rail. Same Payments gate as Stripe; both
+              cards can be connected, and an operator outside Stripe's payout
+              countries will only ever use this one. */}
+          <SubAccountPaystackSection />
 
           {/* Webinar1 — connect a self-hosted webinar deployment (create
               webinars from the CRM, sync registrations/attendance back). */}

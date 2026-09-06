@@ -213,6 +213,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // against that ONE sub-account's stored signing secret — not the session
   // cookie, since the caller is Stripe.
   /^\/api\/webhooks\/stripe\/sa\/[^/]+$/,
+  // Per-sub-account Paystack webhook: /api/webhooks/paystack/sa/{subAccountId}.
+  // Distinct from /api/webhooks/paystack, which is the agency's own Paystack
+  // (Client Billing). Security is the x-paystack-signature HMAC, verified
+  // inside the route against that ONE sub-account's stored secret key — which
+  // for Paystack IS the signing key, so there is no separate webhook secret.
+  /^\/api\/webhooks\/paystack\/sa\/[^/]+$/,
   // Per-sub-account Webinar1 webhook: /api/webhooks/webinar1/sa/{subAccountId}
   // (Webinar1 integration). Security is the X-Webinar1-Signature header,
   // verified inside the route against that ONE sub-account's stored signing
