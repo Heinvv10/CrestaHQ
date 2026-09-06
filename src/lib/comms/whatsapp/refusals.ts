@@ -42,13 +42,27 @@ const MESSAGES: Record<WaRefusalCode, string> = {
     "This contact hasn't replied to your last few messages, so WhatsApp would read more as spam. Wait for them to reply — that resets it.",
   reply_only:
     "This contact has never messaged this number, so we can't message them first. They have to start the conversation.",
+  // Names no clock value: the window is a deployment default, overridable
+  // globally AND per consumer (CONSUMERS fields 7 and 8), in a configurable
+  // timezone. The old wording also inverted it - "outside sending hours
+  // (21:00-07:00)" reads as though those ARE the sending hours - and promised
+  // the reply exemption unconditionally, which is false wherever
+  // HUMAN_REPLY_SESSION_HOURS is 0.
   quiet_hours:
-    "It's outside sending hours (21:00–07:00). Replying to someone who messaged in the last 24 hours still works.",
+    "It's inside this number's quiet hours, so outreach is held until they end. A reply to a contact who messaged recently normally still goes out.",
   per_contact_cap:
     "This contact has already had its daily message limit from this number.",
-  daily_cap: "This number has sent its maximum for the last 24 hours. Capacity comes back gradually as older messages age out, not at midnight.",
+  // A ROLLING 24 hours (caps.go: Now.Add(-24*time.Hour)), not a calendar day.
+  // Waiting for midnight after a 23:00 burst is refused again.
+  daily_cap:
+    "This number has hit its sending limit for the last 24 hours. Capacity frees up as earlier messages age out, so try again later rather than at midnight.",
+  // THREE conditions share this code (window.go:28,37,46): a rolling hourly
+  // cap, a rolling daily one, and - not a limit at all - "consumer has no
+  // registered budget", a missing CONSUMERS entry that never clears on its
+  // own. Promising a reset was the most harmful line in this map: it sent an
+  // operator away to wait out a permanent configuration error.
   consumer_budget:
-    "This workspace has hit its WhatsApp sending limit for now. It resets on the hour.",
+    "This workspace has hit its WhatsApp sending allowance. If it has been quiet for a while and this keeps happening, the bridge may have no budget configured for this workspace - that needs an operator.",
   kill_switch:
     "Sending is stopped for this number. An operator has to lift the kill switch before anything goes out.",
   in_flight:

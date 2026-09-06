@@ -50,3 +50,32 @@ describe("WhatsApp refusal wording", () => {
     expect(WA_REFUSAL_STATUS).toBe(409);
   });
 });
+
+/**
+ * No message may state a value the deployment can change.
+ *
+ * Every quiet-hour bound, budget and session window in the bridge is
+ * configurable — globally, and several of them per consumer. A message naming
+ * "21:00-07:00" is right on the default deployment and wrong everywhere else,
+ * and an operator cannot tell which. This is the one property of the wording
+ * worth asserting; the earlier "tells the operator what to do" checks asserted
+ * nothing and passed against forty-five letter As.
+ */
+describe("refusal wording states nothing configurable", () => {
+  it("names no clock time", () => {
+    for (const [code, msg] of Object.entries(WA_REFUSAL_MESSAGES)) {
+      expect(msg, `${code} names a clock time`).not.toMatch(/\d{1,2}:\d{2}/);
+    }
+  });
+
+  it("promises no fixed reset moment", () => {
+    // Every cap in the bridge is a ROLLING window, so "at midnight", "on the
+    // hour" and "tomorrow" are all wrong, and send an operator away to wait
+    // for a boundary that never arrives.
+    for (const [code, msg] of Object.entries(WA_REFUSAL_MESSAGES)) {
+      expect(msg, `${code} promises a reset boundary`).not.toMatch(
+        /resets? (on the hour|tomorrow|at midnight)/i,
+      );
+    }
+  });
+});
