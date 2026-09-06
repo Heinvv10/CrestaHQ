@@ -895,3 +895,72 @@ func TestPathRoutesResolveAMixedCaseTenantVerbatim(t *testing.T) {
 		}
 	})
 }
+
+// Two POSTs whose ids sanitise to one instance name, through the REAL
+// provisioner. One is created; the other is a duplicate tenant, and a duplicate
+// tenant is a 409 naming the conflict. It used to be a 500 — "could not
+// provision this tenant" — because the loser of the instance-name race came
+// back as a raw sqlite error, and before that as a bogus "no free port" from a
+// range that was almost entirely empty.
+func TestConcurrentCreatesForOneInstanceNameYieldA409(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		root := t.TempDir()
+		st, err := store.Open(root + "/manager.db")
+		if err != nil {
+			t.Fatal(err)
+		}
+		units := &fakeUnits{}
+		prov := provision.New(st, units, provision.Opts{
+			Root: root, PortBase: 33100, PortCount: 20,
+			AppToken:     func() string { return "app-" + fmt.Sprint(round) },
+			ManagerToken: func() string { return "mgr-" + fmt.Sprint(round) },
+		})
+		h := &harness{h: New(Deps{
+			Store: st, Provisioner: prov, Poller: &fakePoller{}, Units: units,
+			OperatorToken: operatorTok,
+			TenantToken:   func(string) string { return mgrTok },
+			BridgeBaseURL: func(store.Tenant) string { return "http://127.0.0.1:1" },
+		}), st: st}
+
+		// The API only admits ids it would not rename, so two admissible ids
+		// collide on one instance name exactly when they differ in CASE — the
+		// mixed-case Firestore sub-account id pasted once and retyped in lower
+		// case later, which is how this was reached in the first place.
+		ids := [2]string{"Ab-Cd", "ab-cd"}
+		var codes [2]int
+		var bodies [2]string
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range ids {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				rec := h.do(http.MethodPost, "/api/tenants", operatorTok,
+					fmt.Sprintf(`{"tenantId":%q,"displayName":"Race"}`, ids[i]))
+				codes[i], bodies[i] = rec.Code, rec.Body.String()
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		st.Close()
+
+		created, conflicted := 0, 0
+		for i := range ids {
+			switch codes[i] {
+			case http.StatusCreated:
+				created++
+			case http.StatusConflict:
+				conflicted++
+				if !strings.Contains(bodies[i], "ab-cd") {
+					t.Fatalf("round %d: the 409 must name the contested instance: %s", round, bodies[i])
+				}
+			default:
+				t.Fatalf("round %d: a duplicate tenant must be 409, got %d: %s", round, codes[i], bodies[i])
+			}
+		}
+		if created != 1 || conflicted != 1 {
+			t.Fatalf("round %d: want one 201 and one 409, got %d and %d", round, created, conflicted)
+		}
+	}
+}

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,5 +101,60 @@ func TestDeleteTenantRemovesEvents(t *testing.T) {
 	}
 	if len(evts) != 0 {
 		t.Fatalf("want events gone with the tenant, got %d: %+v", len(evts), evts)
+	}
+}
+
+// Two different tenant ids can sanitise to one instance name, and the loser of
+// that race discovers it here. It must come back as ErrInstanceTaken: the
+// caller turns that into an authored 409 naming the duplicate, where a raw
+// driver error becomes a 500 blaming the manager's disk.
+func TestSetTenantIdentityReportsAContestedInstance(t *testing.T) {
+	s := openTemp(t)
+	for _, id := range []string{"a.b", "a-b"} {
+		if _, _, err := s.AllocatePort(id, 33100, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetTenantIdentity("a.b", "Winner", "a-b"); err != nil {
+		t.Fatalf("the winner must take the name: %v", err)
+	}
+	err := s.SetTenantIdentity("a-b", "Loser", "a-b")
+	if !errors.Is(err, ErrInstanceTaken) {
+		t.Fatalf("a contested instance must be ErrInstanceTaken, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "a-b") {
+		t.Fatalf("the error must name the contested instance: %v", err)
+	}
+	// The loser's row keeps its seed — nothing partial was written.
+	loser, err := s.GetTenant("a-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loser.Instance != PendingInstance("a-b") {
+		t.Fatalf("a refused identity write still changed the row: instance=%q", loser.Instance)
+	}
+	// And the winner is untouched.
+	winner, err := s.GetTenant("a.b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if winner.Instance != "a-b" || winner.DisplayName != "Winner" {
+		t.Fatalf("the loser's failure disturbed the winner: %+v", winner)
+	}
+}
+
+// An id that does not exist is a different failure and must not be reported as
+// a contested instance — one is a caller bug, the other a duplicate tenant.
+func TestSetTenantIdentityUnknownTenantIsNotAContestedInstance(t *testing.T) {
+	s := openTemp(t)
+	err := s.SetTenantIdentity("ghost", "Ghost", "ghost")
+	if err == nil {
+		t.Fatal("writing an identity for a tenant that does not exist must fail")
+	}
+	if errors.Is(err, ErrInstanceTaken) {
+		t.Fatalf("a missing tenant is not a contested instance: %v", err)
+	}
+	if !strings.Contains(err.Error(), `no tenant "ghost"`) {
+		t.Fatalf("want the existing no-tenant error, got %v", err)
 	}
 }

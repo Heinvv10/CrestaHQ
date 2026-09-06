@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -146,5 +147,63 @@ func TestAllocatePortConcurrentSameTenantNeverErrors(t *testing.T) {
 			t.Fatalf("round %d: %d of %d concurrent same-tenant allocations reported inserted; exactly one may",
 				r, created, workers)
 		}
+	}
+}
+
+// A tenant id can equal another tenant's already-sanitised instance name — the
+// natural accident is pasting a mixed-case sub-account id and later retyping it
+// in lower case. AllocatePort seeds the `instance` column, and INSERT OR IGNORE
+// suppresses EVERY constraint violation, so seeding the raw id made that
+// collision look exactly like "this port is taken" — for every port in the
+// range, since the seeded value does not change between iterations. The loop
+// then reported a full range that was almost entirely empty.
+func TestAllocatePortWhenAnotherRowHoldsThisTenantsRawID(t *testing.T) {
+	s := openTemp(t)
+	if err := s.CreateTenant(Tenant{
+		ID: "54vPI0BS", Instance: "54vpi0bs", Port: 33100, State: StateRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// This tenant's OPAQUE id is the instance name the row above already holds.
+	port, inserted, err := s.AllocatePort("54vpi0bs", 33100, 10)
+	if err != nil {
+		t.Fatalf("a duplicate tenant id must not look like an exhausted port range: %v", err)
+	}
+	if !inserted {
+		t.Fatal("the allocation created the row and must report inserted")
+	}
+	if port != 33101 {
+		t.Fatalf("want the lowest free port 33101, got %d", port)
+	}
+}
+
+// The loop's remaining job: step over ports that really are taken, and still
+// say so loudly when the range really is full.
+func TestAllocatePortStepsOverTakenPortsAndStillReportsRealExhaustion(t *testing.T) {
+	s := openTemp(t)
+	for _, seed := range []struct {
+		id, instance string
+		port         int
+	}{{"a", "inst-a", 33100}, {"b", "inst-b", 33102}} {
+		if err := s.CreateTenant(Tenant{
+			ID: seed.id, Instance: seed.instance, Port: seed.port, State: StateRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []int{33101, 33103} {
+		got, _, err := s.AllocatePort("t"+string(rune('0'+want%10)), 33100, 4)
+		if err != nil {
+			t.Fatalf("want port %d, got error %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("want the lowest free port %d, got %d", want, got)
+		}
+	}
+	// [33100,33104) now holds four rows.
+	if _, _, err := s.AllocatePort("overflow", 33100, 4); err == nil {
+		t.Fatal("a genuinely full range must still be a loud error")
+	} else if !strings.Contains(err.Error(), "no free port") {
+		t.Fatalf("exhaustion must still name itself: %v", err)
 	}
 }

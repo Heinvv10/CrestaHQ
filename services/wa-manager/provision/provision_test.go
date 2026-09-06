@@ -481,8 +481,8 @@ func TestReprovisioningALiveTenantIsRefused(t *testing.T) {
 }
 
 // Two ids that sanitise to one instance name can both clear checkInstanceFree
-// concurrently: AllocatePort seeds `instance` with the OPAQUE id, so no UNIQUE
-// collision exists yet. The loser only discovers it at SetTenantIdentity — by
+// concurrently: AllocatePort seeds `instance` with a "pending:" placeholder, so
+// no UNIQUE collision exists yet. The loser only discovers it at SetTenantIdentity — by
 // which point the winner may already own the directory of that name.
 //
 // The loser must not clean up the winner's instance. Deleting a live bridge's
@@ -756,11 +756,11 @@ func TestRenderedWebhookKeepsTheTenantIDVerbatim(t *testing.T) {
 	}
 }
 
-// AllocatePort seeds `instance` with the OPAQUE tenant id and SetTenantIdentity
-// rewrites it to the derived name. Admitting mixed-case ids made those two
-// values differ for the first time, and the seeded value is one systemd refuses
-// — so a manager killed abruptly between the INSERT and the UPDATE leaves a row
-// that every teardown path bounces off, holding its port forever.
+// AllocatePort seeds `instance` with store.PendingInstance(id) and
+// SetTenantIdentity rewrites it to the derived name. The seeded value is one
+// systemd refuses — so a manager killed abruptly between the INSERT and the
+// UPDATE leaves a row that every teardown path bounces off, holding its port
+// forever.
 //
 // The real systemd controller is used deliberately: the fake does not call
 // systemd.Validate, so this test passes against it whether or not the bug
@@ -788,8 +788,13 @@ func TestARowStillCarryingItsSeedCanBeDestroyed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ten.Instance != id {
-		t.Fatalf("this test is meaningless unless the row still carries the raw id, got %q", ten.Instance)
+	if ten.Instance != store.PendingInstance(id) {
+		t.Fatalf("this test is meaningless unless the row still carries the seed, got %q", ten.Instance)
+	}
+	// The seed must be a name systemd refuses, or Destroy would fall through to
+	// stopping a unit that was never created.
+	if err := systemd.Validate(ten.Instance); err == nil {
+		t.Fatalf("the seed %q passes systemd.Validate; Destroy would try to stop a unit that never existed", ten.Instance)
 	}
 
 	if err := p.Destroy(id); err != nil {
@@ -805,5 +810,86 @@ func TestARowStillCarryingItsSeedCanBeDestroyed(t *testing.T) {
 	}
 	if !inserted || got != port {
 		t.Fatalf("the freed port was not reused: want %d, got %d (inserted=%v)", port, got, inserted)
+	}
+}
+
+// Two ids that sanitise to one instance name both clear checkInstanceFree and
+// both take a port; the loser only finds out at SetTenantIdentity. That is a
+// duplicate tenant — an authored refusal — so it must come back as a
+// *ConflictError, which the API answers 409. Left as a raw sqlite error it
+// became a 500 telling the operator to go and read the manager log.
+//
+// The loser's unwind must also stay inside its own row: at that point nothing
+// is enabled and no directory exists, so it releases its own port and touches
+// neither the winner's row, its port, its name nor its files.
+func TestTwoIdsRacingForOneInstanceNameConflictAndUnwindOnlyTheLoser(t *testing.T) {
+	const rounds = 40
+	lateLosses := 0
+	for round := 0; round < rounds; round++ {
+		p, st, _, root := newTestProvisioner(t)
+
+		ids := [2]string{"a.b", "a-b"}
+		var got [2]store.Tenant
+		var errs [2]error
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range ids {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				got[i], errs[i] = p.Create(ids[i], "concurrent")
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		winner, loser := -1, -1
+		for i := range ids {
+			if errs[i] == nil {
+				winner = i
+			} else {
+				loser = i
+			}
+		}
+		if winner < 0 || loser < 0 {
+			t.Fatalf("round %d: exactly one Create must win: %v / %v", round, errs[0], errs[1])
+		}
+
+		var conflict *ConflictError
+		if !errors.As(errs[loser], &conflict) {
+			t.Fatalf("round %d: the loser of an instance-name race must be an authored ConflictError, got %#v",
+				round, errs[loser])
+		}
+		if !strings.Contains(conflict.Error(), ids[loser]) || !strings.Contains(conflict.Error(), "a-b") {
+			t.Fatalf("round %d: the refusal must name the tenant and the contested instance: %q",
+				round, conflict.Error())
+		}
+		// Which of the two exclusion points fired depends on the interleave.
+		// The one this test exists for is the LATE one, inside
+		// SetTenantIdentity; checkInstanceFree only catches the loser when the
+		// winner finished first.
+		if strings.Contains(conflict.Error(), "already held by another tenant") {
+			lateLosses++
+		}
+
+		// The winner is untouched: row, port, name and files.
+		w, err := st.GetTenant(ids[winner])
+		if err != nil {
+			t.Fatalf("round %d: the loser's unwind deleted the winner's row: %v", round, err)
+		}
+		if w.Instance != "a-b" || w.Port != got[winner].Port {
+			t.Fatalf("round %d: the winner's row was disturbed: %+v (created %+v)", round, w, got[winner])
+		}
+		if _, err := os.Stat(filepath.Join(root, "a-b", ".env")); err != nil {
+			t.Fatalf("round %d: the loser's unwind removed the winner's .env: %v", round, err)
+		}
+		// The loser left nothing behind — its port is back in the pool.
+		if _, err := st.GetTenant(ids[loser]); err == nil {
+			t.Fatalf("round %d: the loser's row survived its own unwind", round)
+		}
+	}
+	if lateLosses == 0 {
+		t.Fatalf("no round lost the name at SetTenantIdentity in %d rounds; this test never exercised the path it exists for", rounds)
 	}
 }
