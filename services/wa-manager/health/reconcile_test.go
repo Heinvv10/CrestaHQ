@@ -302,3 +302,192 @@ func TestReconcileNeverErasesAKnownNumber(t *testing.T) {
 		t.Fatalf("phone = %q, want the known number left alone", got.Phone)
 	}
 }
+
+// intp is a local helper: Report.DroppedInbound is a pointer precisely so that
+// "unknown" and "zero" cannot be spelled the same way, so the tests below have
+// to be explicit about which one they mean.
+func intp(n int) *int { return &n }
+
+// steadyTenant is a tenant that is already running with its number known, so
+// the Connected branch of Reconcile writes nothing. Any updated_unix movement
+// observed by these tests therefore came from the dropped-inbound path alone.
+// created is far in the past so a write is unmistakable rather than a
+// second-boundary coin flip.
+func steadyTenant(t *testing.T, s *store.Store, id string, baseline int) (store.Tenant, time.Time) {
+	t.Helper()
+	created := time.Now().Add(-100 * 24 * time.Hour).Truncate(time.Second)
+	tenant := store.Tenant{
+		ID: id, Instance: id, Port: 1, State: store.StateRunning,
+		Phone: "27821234567", CreatedAt: created, LastDroppedInbound: baseline,
+	}
+	if err := s.CreateTenant(tenant); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	return tenant, created
+}
+
+func reload(t *testing.T, s *store.Store, id string) store.Tenant {
+	t.Helper()
+	got, err := s.GetTenant(id)
+	if err != nil {
+		t.Fatalf("GetTenant %q: %v", id, err)
+	}
+	return got
+}
+
+func onlyEvent(t *testing.T, s *store.Store, id string) store.Event {
+	t.Helper()
+	events, err := s.ListEvents(id, 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want exactly 1: %+v", len(events), events)
+	}
+	return events[0]
+}
+
+// The whole point of the feature: a bridge that drops customer messages at
+// 02:00 and reconnects at 03:00 used to leave nothing behind but a journald
+// line, because the counter is the only trace (no body is stored anywhere) and
+// it resets on reconnect. The rising edge must be recorded.
+func TestReconcileRecordsARiseInDroppedInbound(t *testing.T) {
+	s := openStore(t)
+	tenant, _ := steadyTenant(t, s, "t1", 2)
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true,
+		Number: "27821234567", DroppedInbound: intp(5)}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	ev := onlyEvent(t, s, "t1")
+	if ev.Kind != "dropped_inbound" {
+		t.Fatalf("kind = %q, want dropped_inbound", ev.Kind)
+	}
+	// The DELTA is 3 (5 observed against a baseline of 2) and the TOTAL is 5.
+	// Both must appear: the delta alone hides how deep the hole is, and the
+	// total alone re-reports messages already recorded.
+	if !strings.Contains(ev.Detail, "3 more") {
+		t.Fatalf("detail must report the delta of 3; got %q", ev.Detail)
+	}
+	if !strings.Contains(ev.Detail, "bridge reports 5") {
+		t.Fatalf("detail must report the running total of 5; got %q", ev.Detail)
+	}
+	// Nothing here retries or redelivers, so the detail must not imply it.
+	if !strings.Contains(ev.Detail, "not recoverable") {
+		t.Fatalf("detail must not imply the loss was undone; got %q", ev.Detail)
+	}
+
+	if got := reload(t, s, "t1"); got.LastDroppedInbound != 5 {
+		t.Fatalf("baseline = %d, want 5", got.LastDroppedInbound)
+	}
+}
+
+// An unchanged count must write NOTHING — not just no event. Polling is
+// continuous, so an unconditional UPDATE here is an fsync per tenant per sweep
+// under synchronous=FULL, the exact cost the Connected branch already refuses.
+func TestReconcileWritesNothingWhenDroppedInboundIsUnchanged(t *testing.T) {
+	s := openStore(t)
+	tenant, created := steadyTenant(t, s, "t1", 5)
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true,
+		Number: "27821234567", DroppedInbound: intp(5)}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	events, err := s.ListEvents("t1", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events = %d, want 0 for an unchanged count: %+v", len(events), events)
+	}
+	got := reload(t, s, "t1")
+	if !got.UpdatedAt.Equal(created) {
+		t.Fatalf("an unchanged count wrote the row anyway (updated_unix %v -> %v); "+
+			"only a CHANGE may write", created, got.UpdatedAt)
+	}
+	if got.LastDroppedInbound != 5 {
+		t.Fatalf("baseline = %d, want 5", got.LastDroppedInbound)
+	}
+}
+
+// The counter going backwards means the bridge RECONNECTED and started
+// counting again. The messages are still lost, so there is no event — but the
+// baseline must follow the counter down, or a later real drop from the new
+// lower count would be invisible.
+func TestReconcileTakesALoweredCounterAsANewBaselineWithoutAnEvent(t *testing.T) {
+	s := openStore(t)
+	tenant, _ := steadyTenant(t, s, "t1", 5)
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true,
+		Number: "27821234567", DroppedInbound: intp(1)}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	events, err := s.ListEvents("t1", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("a reconnect is not a recovery and must record no event; got %+v", events)
+	}
+	got := reload(t, s, "t1")
+	if got.LastDroppedInbound != 1 {
+		t.Fatalf("baseline = %d, want 1 (the counter restarted)", got.LastDroppedInbound)
+	}
+
+	// A rise from the NEW, lower baseline is a real drop and must be caught.
+	reports["t1"] = Report{Reachable: true, Connected: true,
+		Number: "27821234567", DroppedInbound: intp(3)}
+	if err := Reconcile(s, []store.Tenant{got}, reports); err != nil {
+		t.Fatalf("Reconcile (2nd): %v", err)
+	}
+	ev := onlyEvent(t, s, "t1")
+	if !strings.Contains(ev.Detail, "2 more") || !strings.Contains(ev.Detail, "bridge reports 3") {
+		t.Fatalf("rise from the lowered baseline mis-reported: %q", ev.Detail)
+	}
+}
+
+// nil is UNKNOWN, not zero. An older bridge omits the field entirely, and
+// deploy-wa.sh rolls the manager and the bridges separately — so during every
+// rollout this is the normal case. Treating it as zero would either invent a
+// drop or, worse, reset the baseline and lose the next real one.
+func TestReconcileIgnoresAnUnknownDroppedInboundCount(t *testing.T) {
+	s := openStore(t)
+	tenant, created := steadyTenant(t, s, "t1", 5)
+
+	reports := map[string]Report{"t1": {Reachable: true, Connected: true,
+		Number: "27821234567", DroppedInbound: nil}}
+	if err := Reconcile(s, []store.Tenant{tenant}, reports); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	events, err := s.ListEvents("t1", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("unknown must record nothing; got %+v", events)
+	}
+	got := reload(t, s, "t1")
+	if got.LastDroppedInbound != 5 {
+		t.Fatalf("baseline = %d, want 5 untouched by an unknown count", got.LastDroppedInbound)
+	}
+	if !got.UpdatedAt.Equal(created) {
+		t.Fatalf("unknown wrote the row (updated_unix %v -> %v)", created, got.UpdatedAt)
+	}
+
+	// And the baseline it preserved must still be the one a later real count
+	// is compared against.
+	reports["t1"] = Report{Reachable: true, Connected: true,
+		Number: "27821234567", DroppedInbound: intp(7)}
+	if err := Reconcile(s, []store.Tenant{got}, reports); err != nil {
+		t.Fatalf("Reconcile (2nd): %v", err)
+	}
+	ev := onlyEvent(t, s, "t1")
+	if !strings.Contains(ev.Detail, "2 more") || !strings.Contains(ev.Detail, "bridge reports 7") {
+		t.Fatalf("the preserved baseline was not used: %q", ev.Detail)
+	}
+}
