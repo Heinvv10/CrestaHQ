@@ -6,9 +6,13 @@ import { emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import {
   smsIsConfigured,
   subAccountTwilioIsConfigured,
-  subAccountWhatsappIsConfigured,
 } from "@/lib/comms/twilio";
 import type { SubAccountDoc } from "@/types";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import {
+  capabilitiesFor,
+  resolveWhatsAppProviderId,
+} from "@/lib/comms/whatsapp/provider";
 
 export const dynamic = "force-dynamic";
 
@@ -50,8 +54,14 @@ export default async function WorkflowBuilderPage({
   const emailSub = tenantFrom(sub) !== undefined;
   const emailAgency = emailIsConfigured();
   const whatsappGate = sub?.whatsappEnabledByAgency === true;
-  const whatsappSender = subAccountWhatsappIsConfigured(tc);
-  const whatsappTemplate = !approvedWhatsapp.empty;
+  // Per-rail, and it must agree with executeWhatsappTemplate in the engine —
+  // a builder that paints a node green for a step the run then skips is worse
+  // than one that paints it red. The Twilio-shaped check refused Cloud, whose
+  // templates the dispatcher supports.
+  const whatsappSender = whatsappSenderConfigured(sub);
+  const whatsappRail = resolveWhatsAppProviderId(sub?.whatsappProvider);
+  const whatsappTemplate =
+    capabilitiesFor(whatsappRail).supportsTemplates && !approvedWhatsapp.empty;
 
   const readiness: BuilderReadiness = {
     emailReady: emailAgency,

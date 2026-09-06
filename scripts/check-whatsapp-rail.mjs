@@ -56,9 +56,14 @@ const ALLOWED = new Map([
  * routes doing this on 2026-09-06: a Cloud workspace could not send a template
  * or enable the AI WhatsApp channel, and was told to add a Twilio number.
  */
-const FIELD =
-  /twilioConfig\s*\??\.\s*(?:whatsappFromNumber|\[\s*["']whatsappFromNumber["']\s*\])/;
-const DESTRUCTURE = /\{[^}]*\bwhatsappFromNumber\b[^}]*\}\s*=\s*[^;]*twilioConfig/;
+// Alias-proof BY DESIGN: the rule is "does this file read the Twilio-only
+// field at all", not "does it read it through a chain I thought of". Blind
+// review showed the chain-shaped matcher missed
+// `const cfg = sub?.twilioConfig` followed by `cfg?.whatsappFromNumber` —
+// which is the form BOTH files that mattered actually used, so the allowlist
+// entry was never even exercised and a live bug in a scanned .tsx was
+// invisible. A name is the one thing an alias cannot hide.
+const FIELD = /\bwhatsappFromNumber\b/;
 // NOT scanned here yet: `subAccountWhatsappIsConfigured(...)` standing in for
 // readiness in server code. Blind review found two routes doing it, fixed in
 // this PR, and the same rule then flags four more genuine cases in workflow
@@ -115,16 +120,11 @@ export function offendingLines(src) {
   // against the whole file with whitespace collapsed, and report the first
   // line naming the field so the message still points somewhere useful.
   const flat = clean.replace(/\s+/g, " ");
-  if (
-    (FIELD.test(flat) || DESTRUCTURE.test(flat)) &&
-    out.every((o) => !FIELD.test(o.text))
-  ) {
-    const idx = clean
-      .split("\n")
-      .findIndex((l) => /whatsappFromNumber|twilioConfig/.test(l));
+  if (FIELD.test(flat) && out.length === 0) {
+    const idx = clean.split("\n").findIndex((l) => FIELD.test(l));
     out.push({
       line: idx + 1,
-      text: "(multi-line or destructured) reads twilioConfig.whatsappFromNumber",
+      text: "(aliased or multi-line) reads the Twilio-only whatsappFromNumber",
     });
   }
   return out;
