@@ -4,8 +4,9 @@ import { readEnv } from "../lib/env";
  * Traces record request bodies, and this spec submits E2E_PASSWORD (to
  * Firebase's signInWithPassword) — a repository secret that must not be
  * re-emitted into an uploaded CI artifact. Every spec that drives the login
- * form opts out of traces and screenshots for this reason; the rest start from
- * a saved session, never see the password, and keep their traces.
+ * form opts out of traces and screenshots for this reason. Most other specs
+ * start from a saved session; form-submit.spec.ts deliberately runs anonymous.
+ * None of them sees the password, so they keep their traces.
  */
 test.use({ trace: "off", screenshot: "off" });
 
@@ -35,8 +36,8 @@ test("agency owner signs in through the login form", async ({
   // The form pushes /dashboard, and `LegacyRedirect` sends an agency owner to
   // /agency on two different branches — when `memberships` is still empty (the
   // first state after login) and when `agencyRole === "owner"` has arrived.
-  // `agencyRole` comes only from custom claims, read behind
-  // `getIdTokenResult(true).catch(() => null)` (auth-context.tsx:120), and has
+  // `agencyRole` comes only from custom claims, which `AuthProvider` reads
+  // behind a `getIdTokenResult(true).catch(() => null)`, and it has
   // no `userDoc` fallback the way `agencyId` does — so when that read fails the
   // owner branch is skipped and the owner lands on a sub-account dashboard
   // instead. Both destinations are session-gated, so neither is reachable
