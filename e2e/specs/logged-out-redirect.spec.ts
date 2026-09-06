@@ -2,14 +2,21 @@ import { expect, test } from "@playwright/test";
 import { baseURL } from "../lib/env";
 
 /**
- * The gap that let a real bug ship: every other spec is authenticated, and
- * login.spec visits /login directly — a PUBLIC path. Nothing exercised a
- * logged-out visitor hitting a protected route.
+ * A logged-out visitor must reach a WORKING login page on the origin they
+ * asked for, carrying ?redirect so they can be bounced back.
  *
- * On 2026-09-06 that visitor was 307'd to `https://localhost:4300/login`,
- * because middleware built the redirect from `request.nextUrl`, which under the
- * standalone server is the bind address rather than the Host header. Dead for
- * anyone following a bookmark, a deep link, or an expired session.
+ * Scope, stated honestly: this does NOT reproduce the localhost:4300 bug that
+ * prompted it. That bug needs the server's bind host to differ from the browsed
+ * host, which only happens behind the tunnel — here Playwright talks to the
+ * server directly, and Next normalises loopback forms (127.0.0.1 -> localhost)
+ * so a pinned HOSTNAME makes the FIXED code fail too. Measured both ways before
+ * giving up on it; the regression itself is covered by src/middleware.test.ts,
+ * which is mutation-proven, and by the e2e-smoke job against the real
+ * deployment, where the mismatch is real and where this spec did detect it.
+ *
+ * What it still buys: the whole unauthenticated path — middleware classifying a
+ * protected route, the redirect, and a login page that actually LOADS rather
+ * than merely a plausible URL.
  */
 test.use({ storageState: { cookies: [], origins: [] } });
 
