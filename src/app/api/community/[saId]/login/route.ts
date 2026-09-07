@@ -1,3 +1,5 @@
+import { getAdminDb } from "@/lib/firebase/admin";
+import type { SubAccountDoc } from "@/types";
 import { NextResponse } from "next/server";
 import { getCommunityGate } from "@/lib/community/gate";
 import { signMemberMagicLinkToken } from "@/lib/community/member-auth";
@@ -42,11 +44,15 @@ export async function POST(
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
   try {
-    if (emailIsConfigured()) {
+    const snap = await getAdminDb().doc(`subAccounts/${saId}`).get();
+    const subAccount = snap.data() as SubAccountDoc | undefined;
+    if (subAccount && emailIsConfigured(subAccount)) {
       const token = signMemberMagicLinkToken(saId, email, joinGroupId);
       const link = `${appUrl}/api/community/${saId}/login/verify?token=${encodeURIComponent(token)}`;
 
       await sendEmail({
+        subAccount,
+        meter: { subAccountId: saId },
         to: email,
         subject: "Your sign-in link",
         text: `Hi,

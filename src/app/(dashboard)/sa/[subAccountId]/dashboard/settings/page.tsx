@@ -26,6 +26,7 @@ import { SubAccountGoogleSection } from "@/components/settings/sub-account-googl
 import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
 import { SubAccountWhatsappSendersSection } from "@/components/settings/sub-account-whatsapp-senders-section";
 import { SubAccountWhatsappBridgeSection } from "@/components/settings/sub-account-whatsapp-bridge-section";
+import { SubAccountSmtpSection } from "@/components/settings/sub-account-smtp-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
 import { SubAccountPlanBillingSection } from "@/components/settings/sub-account-plan-billing-section";
@@ -326,6 +327,7 @@ export default function SettingsPage() {
           <SubAccountSendingPreferencesSection />
 
           {/* Email sending domain — opt-in dedicated Resend domain. */}
+          <SubAccountSmtpSection />
           <SubAccountEmailDomainSection />
 
           {/* Google reviews — SMS / WhatsApp review-request sends. */}

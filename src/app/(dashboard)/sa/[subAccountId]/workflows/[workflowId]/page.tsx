@@ -49,8 +49,8 @@ export default async function WorkflowBuilderPage({
   // accounts to use the shared sender.
   const smsSub = subAccountTwilioIsConfigured(tc);
   const smsAgency = smsIsConfigured() && (await agencyAllowsSharedSms(sub?.agencyId));
-  const emailSub = tenantFrom(sub) !== undefined;
-  const emailAgency = emailIsConfigured();
+  const emailSub = sub?.emailProvider === "smtp" ? emailIsConfigured(sub) : tenantFrom(sub) !== undefined && emailIsConfigured();
+  const emailAgency = sub?.emailProvider !== "smtp" && emailIsConfigured();
   const whatsappGate = sub?.whatsappEnabledByAgency === true;
   // Per-rail, and it must agree with executeWhatsappTemplate in the engine —
   // a builder that paints a node green for a step the run then skips is worse
@@ -65,7 +65,7 @@ export default async function WorkflowBuilderPage({
     capabilitiesFor(whatsappRail).supportsTemplates && !approvedWhatsapp.empty;
 
   const readiness: BuilderReadiness = {
-    emailReady: emailAgency,
+    emailReady: emailIsConfigured(sub),
     smsReady: smsSub || smsAgency,
     whatsappReady: whatsappGate && whatsappSender && whatsappTemplate,
     detail: {

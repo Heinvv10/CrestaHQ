@@ -4,6 +4,8 @@ import { Resend } from "resend";
 
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { recordUsage } from "@/lib/server/usage-meter";
+import type { SmtpMeta } from "@/types/email";
+import { getSmtpConnection, sendSmtpEmail } from "./smtp";
 import type { ResendConfig } from "@/types/tenancy";
 
 let _client: Resend | null = null;
@@ -13,7 +15,7 @@ export function getResend(): Resend {
     const key = process.env.RESEND_API_KEY;
     if (!key) {
       throw new Error(
-        "RESEND_API_KEY is not set. Add it to .env.local to enable email.",
+        "RESEND_API_KEY is not set. Add it to .env.local to enable email."
       );
     }
     _client = new Resend(key);
@@ -21,7 +23,20 @@ export function getResend(): Resend {
   return _client;
 }
 
-export function emailIsConfigured(): boolean {
+export interface EmailAccount {
+  emailProvider?: "resend" | "smtp";
+  smtpConfig?: SmtpMeta | null;
+  replyToEmail?: string | null;
+}
+
+export function emailIsConfigured(sub?: EmailAccount | null): boolean {
+  if (sub?.emailProvider === "smtp") {
+    return !!(
+      sub.smtpConfig?.verifiedAt &&
+      sub.smtpConfig.host &&
+      sub.smtpConfig.fromEmail
+    );
+  }
   // `.trim()` so a present-but-blank env var doesn't read as configured.
   return (
     !!process.env.RESEND_API_KEY?.trim() && !!process.env.EMAIL_FROM?.trim()
@@ -43,7 +58,7 @@ export function tenantFrom(
   sub?: {
     resendConfig?: ResendConfig | null;
     emailDomainEnabledByAgency?: boolean;
-  } | null,
+  } | null
 ): string | undefined {
   if (sub?.emailDomainEnabledByAgency !== true) return undefined;
   const cfg = sub.resendConfig;
@@ -107,7 +122,7 @@ export async function sendEmail({
    */
   from?: string;
   /** Sub-account whose `replyToEmail` should answer replies (see `replyTo`). */
-  subAccount?: { replyToEmail?: string | null } | null;
+  subAccount?: EmailAccount | null;
   /**
    * Usage Metering v1 — when set, a successful send increments the
    * workspace's monthly `emailsSent` ledger. Passed by customer/workspace
@@ -124,16 +139,33 @@ export async function sendEmail({
    */
   attachments?: { filename: string; content: string; contentType?: string }[];
 }): Promise<{ id: string }> {
+  const preferredReplyTo = replyTo?.trim() || subAccount?.replyToEmail?.trim();
+  if (subAccount?.emailProvider === "smtp") {
+    if (!meter?.subAccountId) {
+      throw new Error("SMTP sending requires an explicit sub-account.");
+    }
+    const connection = await getSmtpConnection(meter.subAccountId);
+    const result = await sendSmtpEmail(connection, {
+      to,
+      subject,
+      text,
+      html,
+      replyTo: preferredReplyTo || connection.fromEmail,
+      attachments,
+    });
+    void recordUsage({
+      subAccountId: meter.subAccountId,
+      unit: "emailsSent",
+      qty: 1,
+    });
+    return result;
+  }
   const resolvedFrom = from ?? process.env.EMAIL_FROM;
   if (!resolvedFrom) {
     throw new Error(
-      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain.",
+      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain."
     );
   }
-  const resolvedReplyTo =
-    replyTo?.trim() ||
-    subAccount?.replyToEmail?.trim() ||
-    (await defaultReplyTo());
   const client = getResend();
   const result = await client.emails.send({
     from: resolvedFrom,
@@ -141,7 +173,7 @@ export async function sendEmail({
     subject,
     text,
     ...(html ? { html } : {}),
-    replyTo: resolvedReplyTo,
+    replyTo: preferredReplyTo || (await defaultReplyTo()),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
   });
   if (result.error) {
@@ -183,7 +215,7 @@ export async function sendPlainTextBroadcast({
   const resolvedFrom = from ?? process.env.EMAIL_FROM;
   if (!resolvedFrom) {
     throw new Error(
-      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain.",
+      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain."
     );
   }
   const client = getResend();
@@ -201,7 +233,7 @@ export async function sendPlainTextBroadcast({
           subject,
           text,
           ...(replyTo ? { replyTo } : {}),
-        })),
+        }))
       );
       if (res.error) {
         failed += chunk.length;

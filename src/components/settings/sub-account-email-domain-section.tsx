@@ -131,10 +131,11 @@ export function SubAccountEmailDomainSection() {
   // Re-fetch DNS records when a pending domain exists (records aren't stored).
   useEffect(() => {
     setRecords([]);
-    if (cfg && cfg.status !== "verified") void loadRecords();
-  }, [cfg, loadRecords]);
+    if (isAdmin && subAccount?.emailProvider !== "smtp" && cfg && cfg.status !== "verified") void loadRecords();
+  }, [cfg, loadRecords, isAdmin, subAccount?.emailProvider]);
 
   if (!isAdmin) return null;
+  if (subAccount?.emailProvider === "smtp") return <section className="rounded-2xl border bg-card p-6"><h2 className="text-base font-semibold">Resend sending domain</h2><p className="mt-1 text-sm text-muted-foreground">SMTP is active. Resend domain settings do not control SMTP sending. Disconnect SMTP above to manage your Resend sending domain.</p></section>;
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
@@ -254,7 +255,7 @@ export function SubAccountEmailDomainSection() {
               Disabled by your agency
             </p>
             <p className="mt-1">
-              Email for this sub-account is sending from the shared deployment
+              When Resend is configured, email uses the shared deployment
               address. Ask your agency owner to enable the dedicated sending
               domain feature from the agency sub-accounts page.
             </p>

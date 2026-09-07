@@ -108,10 +108,6 @@ export async function POST(request: Request) {
   if (!event.contactId) {
     return NextResponse.json({ ok: true, skipped: "no_contact" });
   }
-  if (!emailIsConfigured()) {
-    return NextResponse.json({ ok: true, skipped: "email_not_configured" });
-  }
-
   const [contactSnap, subSnap, pageSnap] = await Promise.all([
     db.collection("contacts").doc(event.contactId).get(),
     db.doc(`subAccounts/${event.subAccountId}`).get(),
@@ -131,6 +127,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "opt_out_or_no_email" });
   }
   const sub = subSnap.data() as SubAccountDoc;
+  if (!emailIsConfigured(sub)) {
+    return NextResponse.json({ ok: true, skipped: "email_not_configured" });
+  }
+
+
   // Booking-page may have been deleted since the schedule landed. Fall
   // back to event-level defaults so the reminder still sends sensibly.
   const page = (pageSnap?.data() ?? null) as BookingPage | null;
@@ -173,6 +174,7 @@ export async function POST(request: Request) {
       html: rendered.html,
       replyTo: sub.replyToEmail ?? undefined,
       from: tenantFrom(sub),
+      subAccount: sub,
       meter: { subAccountId: event.subAccountId },
     });
   } catch (err) {

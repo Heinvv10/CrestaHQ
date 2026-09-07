@@ -113,7 +113,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "skipped:opt_out" };
   const to = contact.email;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_email" };
-  if (!emailIsConfigured()) {
+  if (!emailIsConfigured(ctx.subAccount)) {
     return { result: { kind: "next" }, log: "error:email_not_configured" };
   }
 
@@ -154,6 +154,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
       html,
       replyTo: ctx.subAccount?.replyToEmail ?? undefined,
       from: tenantFrom(ctx.subAccount),
+      subAccount: ctx.subAccount,
       meter: { subAccountId: ctx.subAccountId },
     });
     // Trace on the CONTACT, not just the run history — an automation that
@@ -721,7 +722,7 @@ const execNotify: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as NotifyConfig;
   const to = resolveNotifyTo(cfg, ctx);
   if (!to) return { result: { kind: "next" }, log: "skipped:no_recipient" };
-  if (!emailIsConfigured()) {
+  if (!emailIsConfigured(ctx.subAccount)) {
     return { result: { kind: "next" }, log: "error:email_not_configured" };
   }
   const subject = resolveMergeTags(

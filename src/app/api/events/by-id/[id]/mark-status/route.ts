@@ -209,12 +209,6 @@ async function runStatusSideEffects(
 
   // Operator-cancelled bookings notify the visitor via email.
   if (next !== "cancelled") return { emailSent: false, emailSkipReason: "not_cancelled" };
-  if (!emailIsConfigured()) {
-    console.warn(
-      `[events/mark-status] email not configured — skipping cancel notify for event=${event.id}`,
-    );
-    return { emailSent: false, emailSkipReason: "email_not_configured" };
-  }
   const db = getAdminDb();
   try {
     const [contactSnap, subSnap, pageSnap] = await Promise.all([
@@ -236,6 +230,13 @@ async function runStatusSideEffects(
     }
     const contact = contactSnap.data() as Contact;
     const sub = subSnap.data() as SubAccountDoc;
+  if (!emailIsConfigured(sub)) {
+    console.warn(
+      `[events/mark-status] email not configured — skipping cancel notify for event=${event.id}`,
+    );
+    return { emailSent: false, emailSkipReason: "email_not_configured" };
+  }
+
     const page = (pageSnap?.data() ?? null) as BookingPage | null;
     if (!contact.email) {
       return { emailSent: false, emailSkipReason: "no_contact_email" };
@@ -284,6 +285,7 @@ async function runStatusSideEffects(
         html: rendered.html,
         replyTo: sub.replyToEmail ?? undefined,
         from: tenantFrom(sub),
+        subAccount: sub,
         meter: { subAccountId: event.subAccountId },
       });
       return { emailSent: true };

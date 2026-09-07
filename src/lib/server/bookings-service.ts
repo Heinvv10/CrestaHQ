@@ -189,7 +189,7 @@ async function runMarkPaidSideEffects(args: {
     "event_paid",
   );
 
-  if (!contact || !sub || !emailIsConfigured()) return;
+  if (!contact || !sub || !emailIsConfigured(sub)) return;
   if (!contact.email || contact.emailOptedOut) return;
 
   const publicEventUrl = buildEventPublicUrl(rawToken);
@@ -262,6 +262,7 @@ async function runMarkPaidSideEffects(args: {
         html: rendered.html,
         replyTo: sub.replyToEmail ?? undefined,
         from: tenantFrom(sub),
+        subAccount: sub,
         meter: { subAccountId: event.subAccountId },
       });
     } catch (err2) {

@@ -552,7 +552,7 @@ function Connector() {
 
 const REQUIREMENT_WARNING: Record<string, string> = {
   email:
-    "Email isn't configured on this deployment, so this step will be skipped when the workflow runs. Add RESEND_API_KEY + EMAIL_FROM to fix it.",
+    "Email isn't configured for this sub-account. Connect an email provider in Settings → Messaging.",
   sms: "SMS can't run for this sub-account, so this step will be skipped. Give this sub-account a dedicated Twilio number in Settings → SMS, or have your agency enable the shared SMS sender. (See the sub/agency indicators below.)",
   whatsappFreeform:
     "WhatsApp isn't ready for this sub-account. Ask your agency to enable WhatsApp and connect a sender in Settings → SMS.",
@@ -595,7 +595,7 @@ function ReadinessChips({
       badges.push({
         code: "SA",
         title:
-          "Sub-account sender — this sub-account's own verified sending domain is active; email sends from it.",
+          "Sub-account sender — this sub-account's email provider or verified sending domain is configured.",
       });
     if (detail.emailAgency)
       badges.push({

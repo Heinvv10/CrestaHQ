@@ -147,6 +147,9 @@ export interface SubAccountDoc {
    * Orthogonal to `replyToEmail`, which only sets the Reply-To header.
    */
   resendConfig: ResendConfig | null;
+  /** Unset preserves shared Resend. SMTP credentials are server-only. */
+  emailProvider?: "resend" | "smtp";
+  smtpConfig?: import("./email").SmtpMeta | null;
   /**
    * Agency-controlled gate for the dedicated email sending domain feature.
    * Only the agency owner can flip this (PATCH /api/agency/sub-accounts/[id]/

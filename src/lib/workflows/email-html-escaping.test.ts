@@ -22,10 +22,12 @@ let emailConfig: { subject: string; body: string };
 /** Swapped to "notify" to exercise the other HTML builder in this file. */
 let nodeType: "send_email" | "notify" = "send_email";
 let notifyConfig: Record<string, unknown>;
-const sent: Array<{ subject: string; text: string; html: string }> = [];
+let smtpOnly = false;
+let subAccount: Record<string, unknown>;
+const sent: Array<{ subject: string; text: string; html: string; subAccount?: unknown; meter?: unknown }> = [];
 
 vi.mock("@/lib/comms/resend", () => ({
-  emailIsConfigured: () => true,
+  emailIsConfigured: (sub?: { emailProvider?: string }) => !smtpOnly || sub?.emailProvider === "smtp",
   tenantFrom: () => "sender@tenant.test",
   sendEmail: async (args: { subject: string; text: string; html: string }) => {
     sent.push(args);
@@ -80,7 +82,7 @@ vi.mock("@/lib/firebase/admin", () => ({
           return { exists: true, id: "c1", data: () => contact };
         }
         if (path === "subAccounts/sa1") {
-          return { exists: true, data: () => ({ name: "Blitz Fibre" }) };
+          return { exists: true, data: () => subAccount };
         }
         if (path === "agencies/ag1") return { exists: true, data: () => ({}) };
         throw new Error(`unexpected doc ${path}`);
@@ -114,6 +116,8 @@ const { runStep } = await import("./engine");
 
 beforeEach(() => {
   sent.length = 0;
+  smtpOnly = false;
+  subAccount = { name: "Blitz Fibre" };
   nodeType = "send_email";
   notifyConfig = {
     to: "ops@tenant.test",
@@ -220,5 +224,26 @@ describe("execNotify — HTML escaping of merge-tag values", () => {
 
     expect(sent[0]!.text).toContain(XSS);
     expect(sent[0]!.text).not.toContain("&lt;");
+  });
+});
+
+
+describe("workspace email provider routing", () => {
+  it.each(["send_email", "notify"] as const)("passes the workspace provider and identity to %s when shared email is absent", async (type) => {
+    nodeType = type;
+    smtpOnly = true;
+    subAccount = { name: "Blitz Fibre", emailProvider: "smtp" };
+    await runStep("run1", "n1");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.subAccount).toEqual(subAccount);
+    expect(sent[0]?.meter).toEqual({ subAccountId: "sa1" });
+  });
+
+  it("still skips opted-out contacts on SMTP", async () => {
+    smtpOnly = true;
+    subAccount = { emailProvider: "smtp" };
+    contact.emailOptedOut = true;
+    await runStep("run1", "n1");
+    expect(sent).toHaveLength(0);
   });
 });

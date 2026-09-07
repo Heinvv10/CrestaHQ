@@ -449,14 +449,14 @@ export async function bookVoiceSlot(input: {
   // Notify the assigned host — voice sends NO customer email, but the host
   // still needs to know (a v1 gap: Voice Booking never notified the host).
   // Best-effort; never affects the caller's booking. Team mode only.
-  if (created.assignedToUid && created.assignedToName && emailIsConfigured()) {
+  if (created.assignedToUid && created.assignedToName) {
     try {
       const [hostContact, subSnap] = await Promise.all([
         loadHostNotifyContact(subAccountId, created.assignedToUid),
         db.doc(`subAccounts/${subAccountId}`).get(),
       ]);
       const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
-      if (hostContact && sub) {
+      if (hostContact && sub && emailIsConfigured(sub)) {
         const rendered = renderBookingHostNotificationEmail({
           hostName: hostContact.name,
           businessName: sub.name ?? "Booking",

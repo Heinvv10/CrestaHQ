@@ -102,14 +102,6 @@ export async function sendQuoteServerSide(input: {
 }): Promise<SendQuoteResult> {
   const { subAccountId, quoteId } = input;
 
-  if (!emailIsConfigured()) {
-    return fail(
-      "email_not_configured",
-      503,
-      "Email isn't configured on this deployment — set RESEND_API_KEY + EMAIL_FROM to send quotes.",
-    );
-  }
-
   const db = getAdminDb();
 
   // 2. Load quote + tenancy gate
@@ -152,6 +144,15 @@ export async function sendQuoteServerSide(input: {
   // 5. Sub-account doc for business name + PayPal config + logo
   const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
   const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
+  if (!emailIsConfigured(sub)) {
+    return fail(
+      "email_not_configured",
+      503,
+      "Email isn't configured for this sub-account — connect an email provider in Settings → Messaging.",
+    );
+  }
+
+
   const businessName = sub?.name || "Your business";
   const businessLogoUrl = sub?.logoUrl ?? null;
 
@@ -247,6 +248,7 @@ export async function sendQuoteServerSide(input: {
       html: email.html,
       replyTo: input.replyTo || undefined,
       from: tenantFrom(sub),
+      subAccount: sub,
       meter: { subAccountId },
     });
   } catch (err) {
