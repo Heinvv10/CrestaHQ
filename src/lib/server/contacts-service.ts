@@ -93,7 +93,7 @@ export interface ContactWriteResult {
  * fire-and-forget — the write never blocks on dispatch.
  */
 export async function createContactServerSide(
-  input: CreateContactInput,
+  input: CreateContactInput
 ): Promise<ContactWriteResult> {
   const db = getAdminDb();
   const ref = db.collection("contacts").doc();
@@ -106,7 +106,7 @@ export async function createContactServerSide(
     company: input.company,
     address: input.address,
     source: input.source,
-    tags: input.tags,
+    tags: [...new Set(input.tags)],
     pipelineStage: input.pipelineStage ?? null,
     customFields: input.customFields ?? {},
     attribution: input.attribution ?? null,
@@ -134,7 +134,7 @@ export async function createContactServerSide(
   const contact = serializeContactForApi(
     ref.id,
     { ...doc, createdAt: now, updatedAt: now },
-    input.mode,
+    input.mode
   );
 
   void emitWebhookEvent({
@@ -207,11 +207,15 @@ export async function updateContactServerSide(opts: {
 
   const existing = snap.data()!;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
+  const patch = {
+    ...opts.patch,
+    ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
+  };
 
   // update(), not set(..., {merge: true}): merge recurses into nested maps,
   // which would keep cleared customFields values forever. update() replaces
   // a map field wholesale and behaves identically for the scalar fields.
-  await ref.update({ ...opts.patch, updatedAt: FieldValue.serverTimestamp() });
+  await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
 
   const fresh = await ref.get();
   const contact = serializeContactForApi(fresh.id, fresh.data()!, mode);
@@ -226,9 +230,9 @@ export async function updateContactServerSide(opts: {
   // contact.tag.added fires once per update when the patch introduces a new
   // tag (replace-semantics patch → diff against the pre-update tags).
   let firedTrigger = false;
-  if (mode === "live" && opts.patch.tags) {
+  if (mode === "live" && patch.tags) {
     const oldTags: string[] = Array.isArray(existing.tags) ? existing.tags : [];
-    const added = opts.patch.tags.filter((t) => !oldTags.includes(t));
+    const added = patch.tags.filter((t) => !oldTags.includes(t));
     if (added.length > 0) {
       firedTrigger = true;
       void fireWorkflowTrigger({

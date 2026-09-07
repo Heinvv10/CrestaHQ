@@ -55,12 +55,12 @@ export function ContactForm({
   const [source, setSource] = useState<ContactSource>(initial?.source ?? "");
   const [tagsInput, setTagsInput] = useState((initial?.tags ?? []).join(", "));
   const [territoryId, setTerritoryId] = useState<string | null>(
-    initial?.territoryId ?? null,
+    initial?.territoryId ?? null
   );
 
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
   const [cfValues, setCfValues] = useState<Record<string, CustomFieldValue>>(
-    (initial?.customFields ?? {}) as Record<string, CustomFieldValue>,
+    (initial?.customFields ?? {}) as Record<string, CustomFieldValue>
   );
 
   // Live custom-field definitions for contacts in this sub-account.
@@ -70,7 +70,7 @@ export function ContactForm({
       subAccountId,
       "contact",
       setCfDefs,
-      () => {},
+      () => {}
     );
     return () => unsub();
   }, [subAccountId]);
@@ -82,15 +82,19 @@ export function ContactForm({
     e.preventDefault();
     const next: Record<string, string> = {};
     if (!name.trim()) next.name = "Name is required";
-    if (!email.trim()) next.email = "Email is required";
-    else if (!EMAIL_RE.test(email.trim())) next.email = "Enter a valid email";
+    if (email.trim() && !EMAIL_RE.test(email.trim()))
+      next.email = "Enter a valid email";
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
-    const tags = tagsInput
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
+    const tags = [
+      ...new Set(
+        tagsInput
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean)
+      ),
+    ];
 
     // Validate + coerce custom-field values against the live definitions.
     const cf = validateCustomFieldValues(cfValues, cfDefs);
@@ -139,14 +143,12 @@ export function ContactForm({
           aria-invalid={!!errors.name}
         />
         {errors.name && (
-          <p className="text-xs text-destructive">{errors.name}</p>
+          <p className="text-destructive text-xs">{errors.name}</p>
         )}
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="c-email">
-          Email <span className="text-destructive">*</span>
-        </Label>
+        <Label htmlFor="c-email">Email</Label>
         <Input
           id="c-email"
           type="email"
@@ -156,7 +158,7 @@ export function ContactForm({
           aria-invalid={!!errors.email}
         />
         {errors.email && (
-          <p className="text-xs text-destructive">{errors.email}</p>
+          <p className="text-destructive text-xs">{errors.email}</p>
         )}
       </div>
 
@@ -191,7 +193,7 @@ export function ContactForm({
           placeholder="Street, City, State, Postal, Country"
           rows={3}
         />
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           Auto-populates on quotes and invoices billed to this contact.
         </p>
       </div>
@@ -202,7 +204,7 @@ export function ContactForm({
           id="c-source"
           value={source}
           onChange={(e) => setSource(e.target.value as ContactSource)}
-          className="flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
+          className="border-input text-foreground focus-visible:border-ring focus-visible:ring-ring/50 dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground flex h-8 w-full rounded-lg border bg-transparent px-2.5 text-sm transition-colors outline-none focus-visible:ring-3"
         >
           {SOURCES.map((s) => (
             <option key={s.value} value={s.value}>
@@ -220,7 +222,7 @@ export function ContactForm({
           onChange={(e) => setTagsInput(e.target.value)}
           placeholder="lead, warm, 2026-q2"
         />
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           Separate tags with commas
         </p>
       </div>
@@ -237,7 +239,7 @@ export function ContactForm({
       {/* Operator-defined custom fields (renders nothing when none defined). */}
       {cfDefs.length > 0 && (
         <div className="space-y-4 border-t pt-4">
-          <p className="text-xs font-medium text-muted-foreground">
+          <p className="text-muted-foreground text-xs font-medium">
             Custom fields
           </p>
           <CustomFieldInputs

@@ -26,7 +26,8 @@ const CTX = {
 let enrolmentCount = 0;
 /** Makes the contact write blow up, as a Firestore outage would. */
 let createThrows = false;
-const contactsCreated: Array<{ id: string; data: Record<string, unknown> }> = [];
+const contactsCreated: Array<{ id: string; data: Record<string, unknown> }> =
+  [];
 const fireWorkflowTrigger = vi.fn();
 const emitWebhookEvent = vi.fn();
 
@@ -56,7 +57,7 @@ vi.mock("@/lib/firebase/admin", () => ({
       fn: (tx: {
         get: (ref: unknown) => Promise<{ data: () => unknown }>;
         set: (ref: unknown, data: Record<string, unknown>) => void;
-      }) => Promise<T>,
+      }) => Promise<T>
     ): Promise<T> =>
       fn({
         get: async () => ({ data: () => ({ count: enrolmentCount }) }),
@@ -116,7 +117,7 @@ function post(body: Record<string, unknown>): Promise<Response> {
       method: "POST",
       body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({}) },
+    { params: Promise.resolve({}) }
   ) as unknown as Promise<Response>;
 }
 
@@ -228,7 +229,7 @@ describe("POST /api/v1/contacts — hourly enrolment cap", () => {
     createThrows = true;
 
     await expect(post({ name: "Doomed" })).rejects.toThrow(
-      "firestore unavailable",
+      "firestore unavailable"
     );
     // withApiAuth turns the throw into a 500. Nothing enrolled, so the slot
     // must not stay held for the rest of the hour.
@@ -259,4 +260,10 @@ describe("POST /api/v1/contacts — hourly enrolment cap", () => {
     expect(res.status).toBe(201);
     expect(contactsCreated).toHaveLength(1);
   });
+});
+
+it("stores each tag once on contact creation", async () => {
+  const res = await post({ name: "Thandi", tags: ["lead", "audit", "lead"] });
+  expect(res.status).toBe(201);
+  expect(contactsCreated[0].data.tags).toEqual(["lead", "audit"]);
 });
