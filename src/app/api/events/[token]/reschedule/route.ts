@@ -295,7 +295,7 @@ async function runRescheduleSideEffects(args: {
 
   // Visitor confirmation email + ICS (UPDATE, sequence+1 so calendar
   // clients overwrite the existing entry).
-  if (!event.contactId || !emailIsConfigured()) return;
+  if (!event.contactId) return;
   try {
     const [contactSnap, subSnap] = await Promise.all([
       db.collection("contacts").doc(event.contactId).get(),
@@ -304,6 +304,7 @@ async function runRescheduleSideEffects(args: {
     if (!contactSnap.exists || !subSnap.exists) return;
     const contact = contactSnap.data() as Contact;
     const sub = subSnap.data() as SubAccountDoc;
+    if (!emailIsConfigured(sub)) return;
     if (!contact.email || contact.emailOptedOut) return;
 
     const rendered = renderBookingConfirmationEmail({
@@ -354,6 +355,7 @@ async function runRescheduleSideEffects(args: {
         html: rendered.html,
         replyTo: sub.replyToEmail ?? undefined,
         from: tenantFrom(sub),
+        subAccount: sub,
         meter: { subAccountId: event.subAccountId },
       });
       return;

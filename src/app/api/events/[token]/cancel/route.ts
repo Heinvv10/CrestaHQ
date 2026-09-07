@@ -115,7 +115,7 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
             .get()
         : Promise.resolve(null),
     ]);
-    if (contactSnap.exists && subSnap.exists && emailIsConfigured()) {
+    if (contactSnap.exists && subSnap.exists && emailIsConfigured(subSnap.data() as SubAccountDoc)) {
       const contact = contactSnap.data() as Contact;
       const sub = subSnap.data() as SubAccountDoc;
       const page = (pageSnap?.data() ?? null) as BookingPage | null;
@@ -159,6 +159,7 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
             html: rendered.html,
             replyTo: sub.replyToEmail ?? undefined,
             from: tenantFrom(sub),
+            subAccount: sub,
             meter: { subAccountId: event.subAccountId },
           });
         } catch (err) {

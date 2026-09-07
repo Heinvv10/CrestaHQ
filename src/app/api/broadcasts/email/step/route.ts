@@ -50,16 +50,6 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-  if (!emailIsConfigured()) {
-    // Resend creds disappeared after the fan-out was scheduled. Returning
-    // 503 lets QStash retry; ops can re-enable the keys without losing the
-    // batch. Different from a per-recipient failure (which we record + 200).
-    return NextResponse.json(
-      { error: "Email is not configured." },
-      { status: 503 },
-    );
-  }
-
   const signature = request.headers.get("upstash-signature");
   if (!signature) {
     return NextResponse.json(
@@ -159,6 +149,9 @@ export async function POST(request: Request) {
   const subAccount = subAccountSnap.exists
     ? (subAccountSnap.data() as SubAccountDoc)
     : null;
+  if (!emailIsConfigured(subAccount)) {
+    return NextResponse.json({ error: "Email is not configured for this sub-account." }, { status: 503 });
+  }
   const agency = agencySnap.exists ? (agencySnap.data() as AgencyDoc) : null;
 
   // Owner snapshot for merge tags (matches the automation executor pattern).
@@ -236,6 +229,7 @@ export async function POST(request: Request) {
       html,
       replyTo: subAccount?.replyToEmail ?? undefined,
       from: tenantFrom(subAccount),
+      subAccount: subAccount,
       meter: { subAccountId: broadcast.subAccountId },
     });
     resendMessageId = result.id;

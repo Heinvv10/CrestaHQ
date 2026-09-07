@@ -2,6 +2,7 @@
 
 Per-feature specs live beside this file. The list below is the shipped surface; a bolded name links to its full spec.
 
+- **[Email providers](email-providers.md)** — per-sub-account SMTP setup, connection verification and admin test email; shared Resend default
 - **Contacts** — list + search, add/edit modal, profile with notes + unified activity timeline, CSV import/export
 - **Pipeline / Kanban** — `@dnd-kit` 6-stage board (New → Contacted → Qualified → Proposal → Won / Lost), deal cards with value + days-in-stage, lost-reason prompt
 - **Calendar** — manual events, month grid with click-to-add, optional contact linking, activity write on create

@@ -510,7 +510,7 @@ export async function POST(
       ?.toLowerCase() ?? "leadstack.dev";
 
   // Confirmation / payment-pending email.
-  if (emailIsConfigured()) {
+  if (emailIsConfigured(sub)) {
     try {
       const rendered = paymentRequired
         ? renderBookingPaymentPendingEmail({
@@ -581,6 +581,7 @@ export async function POST(
         html: rendered.html,
         replyTo: sub.replyToEmail ?? undefined,
         from: tenantFrom(sub),
+        subAccount: sub,
         icsAttachment: attachments,
         meterSubAccountId: saId,
       });
@@ -597,7 +598,7 @@ export async function POST(
     !paymentRequired &&
     created.assignedToUid &&
     created.assignedToName &&
-    emailIsConfigured()
+    emailIsConfigured(sub)
   ) {
     try {
       const hostContact = await loadHostNotifyContact(
@@ -728,6 +729,7 @@ function labelForField(page: BookingPage, id: string): string {
 // so the From/Reply-To policy can't be bypassed by the ICS path.
 
 interface SendWithIcs {
+  subAccount: SubAccountDoc;
   to: string;
   subject: string;
   text: string;
@@ -781,6 +783,7 @@ async function sendEmailWithIcs(input: SendWithIcs): Promise<void> {
     html: input.html,
     replyTo: input.replyTo,
     from: input.from,
+    subAccount: input.subAccount,
     meter: input.meterSubAccountId
       ? { subAccountId: input.meterSubAccountId }
       : null,

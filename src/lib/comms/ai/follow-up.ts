@@ -123,83 +123,82 @@ export async function createCaptureFollowUp(
 
   // ----- 2. Send the escalation email -----
   let emailSent = false;
-  if (!emailIsConfigured()) {
-    errors.push("email: not configured");
-  } else {
-    try {
-      const db = getAdminDb();
-      const [agent, subSnap] = await Promise.all([
-        resolveAgent(input.subAccountId, input.channelId),
-        db.doc(`subAccounts/${input.subAccountId}`).get(),
-      ]);
-      const subAccount = subSnap.data() as SubAccountDoc | undefined;
-      const to = agent?.effective.escalationNotifyEmail?.trim();
-      if (!to) {
-        errors.push("email: no escalation address configured");
-      } else {
-        const appUrl =
-          process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
-        const sessionUrl = input.sessionDeepLinkPath
-          ? `${appUrl}${input.sessionDeepLinkPath}`
-          : null;
-        const contactUrl = `${appUrl}/sa/${input.subAccountId}/contacts/${input.contactId}`;
-
-        const subject = `New ${input.channelLabel} lead: ${identity}`;
-        const businessName =
-          agent?.effective.businessName?.trim() || "your business";
-
-        const html = renderCaptureEmail({
-          channelLabel: input.channelLabel,
-          sessionNoun: input.sessionNoun,
-          businessName,
-          identity,
-          capturedName: input.capturedName,
-          capturedEmail: input.capturedEmail,
-          capturedPhone: input.capturedPhone,
-          pageUrl: input.pageUrl,
-          lastInboundMessage: input.lastInboundMessage,
-          sessionUrl,
-          contactUrl,
-        });
-
-        const text = [
-          `New ${input.channelLabel} lead — ${identity}`,
-          "",
-          input.capturedName ? `Name: ${input.capturedName}` : null,
-          input.capturedEmail ? `Email: ${input.capturedEmail}` : null,
-          input.capturedPhone ? `Phone: ${input.capturedPhone}` : null,
-          input.pageUrl ? `Page: ${input.pageUrl}` : null,
-          input.lastInboundMessage
-            ? `\nLatest ${input.sessionNoun === "call" ? "call summary" : "message"}:\n${input.lastInboundMessage}`
-            : null,
-          "",
-          sessionUrl ? `${capitalize(input.sessionNoun)}: ${sessionUrl}` : null,
-          `Contact: ${contactUrl}`,
-          "",
-          "A follow-up task has been created in your Tasks list, due today.",
-        ]
-          .filter((s): s is string => s !== null)
-          .join("\n");
-
-        await sendEmail({
-          to,
-          subject,
-          text,
-          html,
-          from: tenantFrom(subAccount),
-          subAccount,
-          meter: { subAccountId: input.subAccountId },
-        });
-        emailSent = true;
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      console.error(
-        `[ai/follow-up] email send failed sa=${input.subAccountId} channel=${input.channelId}`,
-        err,
-      );
-      errors.push(`email: ${msg}`);
+  try {
+    const db = getAdminDb();
+    const [agent, subSnap] = await Promise.all([
+      resolveAgent(input.subAccountId, input.channelId),
+      db.doc(`subAccounts/${input.subAccountId}`).get(),
+    ]);
+    const subAccount = subSnap.data() as SubAccountDoc | undefined;
+    if (!emailIsConfigured(subAccount)) {
+      throw new Error("Email is not configured for this sub-account.");
     }
+    const to = agent?.effective.escalationNotifyEmail?.trim();
+    if (!to) {
+      errors.push("email: no escalation address configured");
+    } else {
+      const appUrl =
+        process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
+      const sessionUrl = input.sessionDeepLinkPath
+        ? `${appUrl}${input.sessionDeepLinkPath}`
+        : null;
+      const contactUrl = `${appUrl}/sa/${input.subAccountId}/contacts/${input.contactId}`;
+
+      const subject = `New ${input.channelLabel} lead: ${identity}`;
+      const businessName =
+        agent?.effective.businessName?.trim() || "your business";
+
+      const html = renderCaptureEmail({
+        channelLabel: input.channelLabel,
+        sessionNoun: input.sessionNoun,
+        businessName,
+        identity,
+        capturedName: input.capturedName,
+        capturedEmail: input.capturedEmail,
+        capturedPhone: input.capturedPhone,
+        pageUrl: input.pageUrl,
+        lastInboundMessage: input.lastInboundMessage,
+        sessionUrl,
+        contactUrl,
+      });
+
+      const text = [
+        `New ${input.channelLabel} lead — ${identity}`,
+        "",
+        input.capturedName ? `Name: ${input.capturedName}` : null,
+        input.capturedEmail ? `Email: ${input.capturedEmail}` : null,
+        input.capturedPhone ? `Phone: ${input.capturedPhone}` : null,
+        input.pageUrl ? `Page: ${input.pageUrl}` : null,
+        input.lastInboundMessage
+          ? `\nLatest ${input.sessionNoun === "call" ? "call summary" : "message"}:\n${input.lastInboundMessage}`
+          : null,
+        "",
+        sessionUrl ? `${capitalize(input.sessionNoun)}: ${sessionUrl}` : null,
+        `Contact: ${contactUrl}`,
+        "",
+        "A follow-up task has been created in your Tasks list, due today.",
+      ]
+        .filter((s): s is string => s !== null)
+        .join("\n");
+
+      await sendEmail({
+        to,
+        subject,
+        text,
+        html,
+        from: tenantFrom(subAccount),
+        subAccount,
+        meter: { subAccountId: input.subAccountId },
+      });
+      emailSent = true;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    console.error(
+      `[ai/follow-up] email send failed sa=${input.subAccountId} channel=${input.channelId}`,
+      err,
+    );
+    errors.push(`email: ${msg}`);
   }
 
   return { taskId, emailSent, errors };

@@ -10,13 +10,6 @@ import type { SubAccountDoc } from "@/types";
 type Body = { contactId?: string; subject?: string; body?: string };
 
 export async function POST(request: Request) {
-  if (!emailIsConfigured()) {
-    return NextResponse.json(
-      { error: "Email is not configured on this deployment." },
-      { status: 503 },
-    );
-  }
-
   const auth = requireUid(request);
   if (auth instanceof NextResponse) return auth;
 
@@ -57,6 +50,14 @@ export async function POST(request: Request) {
     .doc(`subAccounts/${contact.subAccountId}`)
     .get();
   const subAccount = subAccountSnap.data() as SubAccountDoc | undefined;
+  if (!emailIsConfigured(subAccount)) {
+    return NextResponse.json(
+      { error: "Email is not configured for this sub-account." },
+      { status: 503 },
+    );
+  }
+
+
   const replyTo = subAccount?.replyToEmail ?? auth.email ?? undefined;
 
   // Monthly email quota (Usage Metering v1). Fails open.
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
       text: body,
       replyTo,
       from: tenantFrom(subAccount),
+      subAccount: subAccount,
       meter: { subAccountId: contact.subAccountId },
     });
     messageId = result.id;

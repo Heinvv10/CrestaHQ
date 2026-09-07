@@ -51,3 +51,12 @@
 | `trackedLinks/{id}/clicks/{autoId}` | server-only | Raw click log written by the `/l/{token}` redirect. `contactId` (null for a tokenless `/l/{linkId}` click), `clickedAt`, `userAgent`, `referer`. |
 | `socialPosts/{id}` | sub-account read; server-only write | Social Planner post (top-level, like `quotes`). Carries tenancy (`agencyId`, `subAccountId`, `createdByUid`), `caption`, `imageUrl`, `targets` (`("facebook"\|"instagram")[]`), `status` (draft → scheduled → publishing → published/failed), `scheduledAt`, `publishedAt`, per-target `results[]` (`{platform, status, externalId, error}`), and `qstashMessageId`. Reads stream to the content calendar via `subscribeToSocialPosts`; all writes go through Admin-SDK routes (rules are read-only for members, mirrors `products`). |
 
+
+
+### Workspace SMTP connection
+`subAccounts/{id}/private/smtpConnection` stores host, port, TLS mode, username,
+password, From email/name and verifiedAt. Admin SDK only; existing
+`private/{docId}` rules deny all client reads/writes. No new index required.
+The parent has `emailProvider` and password-free `smtpConfig` display metadata.
+Admin settings routes verify TLS/auth before atomically switching credentials
+and provider. Disconnect atomically deletes the secret and selects Resend.
