@@ -8,7 +8,10 @@ import {
   hasStoredBridgeCredentials,
   storeBridgeConnection,
 } from "@/lib/comms/whatsapp/bridge-connection";
-import { provisionTenant } from "@/lib/comms/whatsapp/manager-client";
+import {
+  managerHasTenant,
+  provisionTenant,
+} from "@/lib/comms/whatsapp/manager-client";
 import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
 import { resolveBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
 import { requireWhatsappEnabledByAgency } from "@/lib/comms/whatsapp/bridge-agency-gate";
@@ -81,22 +84,38 @@ export async function POST(
       // the disconnect 404s, is treated as success, clears a rail that was
       // never set, and the retry fails identically.
       //
-      // Classified from the CRM's OWN state, never from the manager's prose.
-      // The manager's collision sentence names the other tenant — which is
-      // another customer's sub-account id — so relaying it would hand this
-      // workspace's admin the identity of a workspace they have no business
-      // knowing exists. It goes to the server log, where a real collision
-      // actually needs to be read, and no further.
+      // The question that separates the two is "does the manager hold a tenant
+      // with THIS id", so it is put to the manager. It is NOT inferred from the
+      // stored credentials: a bridge can be running for this id with no secret
+      // doc behind it — every failure between the manager's 201 and the
+      // Firestore commit below leaves exactly that orphan, and the token is
+      // unrecoverable, so the orphan is permanent until someone disconnects.
+      // Inferring sent that admin to "contact support" for a state Disconnect
+      // recovers on its own.
       //
-      // Stored credentials are the whole test: this workspace has a bridge if
-      // and only if its secret doc is there.
-      const ours = await hasStoredBridgeCredentials(subAccountId);
+      // Disconnect is therefore the remedy for BOTH tenant-exists cases. It
+      // destroys the manager tenant whether or not the CRM has credentials,
+      // and clears a rail that may never have been set; the reconnect that
+      // follows is a fresh provision of a name that is now free.
+      //
+      // The manager's own prose is never relayed. Its collision sentence names
+      // the other tenant — another customer's sub-account id — so it goes to
+      // the server log, where a real collision actually needs to be read, and
+      // no further.
+      const probe = await managerHasTenant(subAccountId);
+      // A manager that cannot be asked leaves the question open, and the two
+      // answers are not interchangeable. Falling back to the stored
+      // credentials keeps the degraded classification pointed at the case the
+      // CRM can still see for itself rather than guessing "collision".
+      const theirs = probe.ok
+        ? probe.data
+        : await hasStoredBridgeCredentials(subAccountId);
       console.error(
-        `[whatsapp-bridge/provision] manager 409 for ${subAccountId} (ours=${ours}): ${result.error}`,
+        `[whatsapp-bridge/provision] manager 409 for ${subAccountId} (tenantExists=${theirs}, probed=${probe.ok}): ${result.error}`,
       );
       return NextResponse.json(
         {
-          error: ours
+          error: theirs
             ? "This workspace already has a bridge on the manager. Disconnect it first, then provision again — that erases the WhatsApp session, so the number has to be re-paired."
             : // No remedy is offered because the admin has none: the name is
               // held by a workspace they cannot see, let alone disconnect.
@@ -124,6 +143,13 @@ export async function POST(
   // provisioned an UNSIGNED tenant (no webhook-secret generator configured) is
   // caught here rather than at the first inbound message. An unsigned rail
   // accepts anything that can reach the webhook URL.
+  //
+  // Nothing is stored and nothing is destroyed, so the tenant the manager just
+  // 201'd is left running with its token discarded — the same unrecoverable
+  // loss the store-failure branch below answers, and it needs the same remedy
+  // rather than "provision again", which can only 409 from here. Auto-destroy
+  // is deliberately NOT done: a destroy on a failure path is how a bridge
+  // someone is mid-way through pairing gets deleted.
   let creds;
   try {
     creds = resolveBridgeCreds(raw, subAccountId);
@@ -131,7 +157,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "The bridge manager provisioned this workspace without a webhook signing secret, so inbound messages could not be verified. Ask your agency to configure the manager's webhook secret, then provision again.",
+          "The bridge manager provisioned this workspace without a webhook signing secret, so inbound messages could not be verified, and its credentials can't be recovered. Ask your agency to configure the manager's webhook secret, then disconnect this workspace's bridge and connect again — that erases the WhatsApp session, so the number has to be re-paired.",
       },
       { status: 502 },
     );

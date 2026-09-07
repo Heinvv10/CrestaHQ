@@ -288,6 +288,18 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // WhatsApp bridge connection records. Append-only audit records written
+      // exclusively by the Admin SDK, in the same batch that puts a workspace
+      // on the bridge rail (storeBridgeConnection). Closed to clients in both
+      // directions for the same reasons as the acks above, and they outlive a
+      // disconnect for a sharper one: the ack proves only that SOMEONE here
+      // once agreed to the warning, while these name who linked THIS number —
+      // the fact a ban dispute turns on, and the one `whatsappBridgeMeta`
+      // loses on disconnect.
+      match /whatsappBridgeConnections/{connectionId} {
+        allow read, write: if false;
+      }
+
       // Per-sub-account counters (e.g. quote-number sequence). Written
       // exclusively by Admin SDK transactions (issueQuoteNumber). Never
       // read or written by clients — the resulting numbers come back in

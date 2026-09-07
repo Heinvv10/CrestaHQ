@@ -31,6 +31,9 @@ interface Write {
 
 let docs: Map<string, Record<string, unknown>>;
 let writes: Write[];
+/** Auto-ids handed out by `collection().doc()`, so the batch-written
+ *  connection record lands on a predictable path. */
+let autoId: number;
 let claims: Map<string, Record<string, unknown>>;
 
 function docRef(path: string) {
@@ -52,6 +55,9 @@ function docRef(path: string) {
 
 const fakeDb = {
   doc: docRef,
+  // `storeBridgeConnection` also appends an audit record naming who connected
+  // the number, as an auto-id child in the same batch.
+  collection: (path: string) => ({ doc: () => docRef(`${path}/auto_${++autoId}`) }),
   batch: () => {
     const staged: Write[] = [];
     return {
@@ -138,6 +144,7 @@ async function json(res: Response) {
 
 beforeEach(() => {
   writes = [];
+  autoId = 0;
   docs = new Map<string, Record<string, unknown>>([
     [`subAccounts/${SUB}`, { agencyId: "ag_1", whatsappEnabledByAgency: true }],
     [`subAccounts/${OTHER_SUB}`, { agencyId: "ag_1", whatsappEnabledByAgency: true }],

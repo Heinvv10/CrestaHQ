@@ -87,6 +87,40 @@ export function whatsappBridgeRiskAcksPath(subAccountId: string): string {
   return `subAccounts/${subAccountId}/whatsappBridgeRiskAcks`;
 }
 
+/**
+ * Firestore path to one sub-account's append-only log of CONNECTIONS.
+ *
+ * Separate from the acknowledgement log because it answers a different
+ * question. The ack gate is per-workspace and permanent — one acknowledgement
+ * unlocks provisioning for everyone at that workspace forever, including a
+ * reconnect months later by somebody else — so an ack proves only that
+ * *someone here once* agreed to a version of the warning. Who linked THIS
+ * number is a separate fact, and the only field carrying it lived in
+ * `whatsappBridgeMeta`, which disconnect nulls. In a ban dispute that is
+ * precisely the fact that has been erased.
+ *
+ * Append-only and never cleared, for the same reason the acks are: the record
+ * covers the period the number was connected, which is the only period anyone
+ * would ever ask about.
+ */
+export function whatsappBridgeConnectionsPath(subAccountId: string): string {
+  return `subAccounts/${subAccountId}/whatsappBridgeConnections`;
+}
+
+/**
+ * One recorded connection. Written by the server, never by a client, in the
+ * same batch that stores the credentials — so a workspace cannot end up on the
+ * bridge rail with no record of who put it there.
+ */
+export interface WhatsappBridgeConnectionRecord {
+  /** Who connected the number, from the session. */
+  uid: string;
+  /** When, from the server's clock — never the browser's. */
+  connectedAt: unknown;
+  /** Which version of the warning was in force at the time. */
+  riskTextId: string;
+}
+
 /** One recorded acknowledgement. Written by the server, never by a client. */
 export interface WhatsappBridgeRiskAck {
   /** Who agreed. */

@@ -4,7 +4,10 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
+  WA_BRIDGE_RISK_TEXT_ID,
+  whatsappBridgeConnectionsPath,
   whatsappBridgeSecretPath,
+  type WhatsappBridgeConnectionRecord,
   type WhatsappBridgeMeta,
   type WhatsappBridgeSecret,
 } from "@/types/whatsapp-bridge";
@@ -69,6 +72,25 @@ export async function storeBridgeConnection(
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
+  );
+  // The audit record of WHO connected this number, in the same batch as the
+  // rail switch rather than as a follow-up write: a second write has a failure
+  // mode in which the workspace is connected and nobody is named, which is the
+  // exact gap this record exists to close. An auto-id, never a deterministic
+  // one — a reconnect is a second decision, on a later date and possibly by a
+  // different admin, and collapsing them would discard the earlier one.
+  //
+  // It goes to a subcollection `clearBridgeConnection` does not touch. The
+  // only other field naming the connector is `whatsappBridgeMeta.connectedByUid`,
+  // and disconnect nulls that — the moment a ban dispute would start.
+  const record: WhatsappBridgeConnectionRecord = {
+    uid: meta.connectedByUid ?? "",
+    connectedAt: FieldValue.serverTimestamp(),
+    riskTextId: WA_BRIDGE_RISK_TEXT_ID,
+  };
+  batch.set(
+    db.collection(whatsappBridgeConnectionsPath(subAccountId)).doc(),
+    record,
   );
   await batch.commit();
 }

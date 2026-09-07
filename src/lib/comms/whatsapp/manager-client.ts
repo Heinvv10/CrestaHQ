@@ -238,6 +238,52 @@ export function provisionTenant(
   );
 }
 
+/**
+ * Does the manager hold a tenant with THIS id?
+ *
+ * Exists because a manager 409 on provision has two causes and the CRM cannot
+ * tell them apart from its own state. A workspace can have a running bridge on
+ * the manager while the CRM holds no credentials for it — the provisioning
+ * 201 is the only moment the token exists outside the bridge's `.env` and
+ * there is no rotation route, so every failure between that 201 and the
+ * Firestore commit leaves exactly that orphan. Asking the manager answers the
+ * question the classifier actually needs answered.
+ *
+ * It goes through the LIST route because the manager has no single-tenant JSON
+ * route: `GET /api/tenants/{id}/pair` exists but proxies to the bridge, so it
+ * answers 502 for a tenant that is present and merely not listening, which is
+ * the opposite of what a presence probe may conflate (services/wa-manager/
+ * api/server.go's route table). The list body never leaves this module and no
+ * enumeration is exported — a caller that could read the whole fleet would be
+ * reading every other customer's sub-account id.
+ *
+ * `false` means the manager answered and this id was not among its tenants. A
+ * failure comes back as a failure: "the manager could not be asked" is not
+ * "the tenant is absent", and a caller that flattened the two would classify
+ * an outage as a name collision.
+ */
+export async function managerHasTenant(
+  tenantId: string,
+  opts: {
+    fetchImpl?: typeof fetch;
+    env?: Record<string, string | undefined>;
+  } = {},
+): Promise<ManagerResult<boolean>> {
+  const res = await call<{ tenants?: unknown }>(
+    "/api/tenants",
+    { method: "GET" },
+    opts,
+  );
+  if (!res.ok) return res;
+  const tenants = Array.isArray(res.data?.tenants) ? res.data.tenants : [];
+  return {
+    ok: true,
+    data: tenants.some(
+      (t) => (t as ManagerTenant | null)?.tenantId === tenantId,
+    ),
+  };
+}
+
 /** Live pairing state. The `code` is a write-grade credential — never log it. */
 export function getPairing(
   tenantId: string,

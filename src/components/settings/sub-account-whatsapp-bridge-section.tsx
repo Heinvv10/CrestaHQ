@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Smartphone } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -8,9 +8,17 @@ import { Button } from "@/components/ui/button";
 import {
   ConnectPanel,
   ConnectedPanel,
+  NoCodePanel,
+  OrphanPanel,
   QrPanel,
   type BridgeBusy,
 } from "@/components/settings/sub-account-whatsapp-bridge-panels";
+import {
+  bridgePollMode,
+  bridgeStatusFrom,
+  type BridgeStatus,
+  type PairingAnswer,
+} from "@/lib/comms/whatsapp/bridge-card-status";
 
 /**
  * Sub-account WhatsApp bridge settings — the `bridge` arm of the provider seam,
@@ -31,22 +39,15 @@ import {
  * opening it.
  */
 
-/** What the manager says about this workspace right now. */
-type Status =
-  | { kind: "loading" }
-  /** No manager on this deployment (a buyer copy, a dev box). Not an outage. */
-  | { kind: "unavailable" }
-  /** No bridge provisioned for this workspace yet. */
-  | { kind: "absent" }
-  | { kind: "pairing"; expiresAt?: string }
-  | { kind: "connected" }
-  | { kind: "error"; message: string };
-
 const POLL_MS = 4000;
+/** About a minute of retries. A bridge the manager has just started or bounced
+ *  answers within a few seconds; anything still failing after this is not
+ *  waiting on a restart, and "Try again" is right there. */
+const RECOVERY_POLLS = 15;
 
 export function SubAccountWhatsappBridgeSection() {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
-  const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [status, setStatus] = useState<BridgeStatus>({ kind: "loading" });
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState<BridgeBusy>(null);
   const [qrNonce, setQrNonce] = useState(0);
@@ -56,23 +57,8 @@ export function SubAccountWhatsappBridgeSection() {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(`${base}/pairing`, { cache: "no-store" });
-      const data = (await res.json().catch(() => ({}))) as {
-        connected?: boolean;
-        expiresAt?: string;
-        error?: string;
-      };
-      // 503 is "this deployment has no manager" and 404 is "the manager has no
-      // tenant for this workspace" — two ordinary answers that must not read
-      // as breakage. Everything else genuinely is a fault worth showing.
-      if (res.status === 503) setStatus({ kind: "unavailable" });
-      else if (res.status === 404) setStatus({ kind: "absent" });
-      else if (!res.ok)
-        setStatus({
-          kind: "error",
-          message: data.error ?? "Couldn't read the connection status.",
-        });
-      else if (data.connected) setStatus({ kind: "connected" });
-      else setStatus({ kind: "pairing", expiresAt: data.expiresAt });
+      const data = (await res.json().catch(() => ({}))) as PairingAnswer;
+      setStatus(bridgeStatusFrom(res.status, data));
     } catch {
       setStatus({
         kind: "error",
@@ -85,15 +71,43 @@ export function SubAccountWhatsappBridgeSection() {
     void refresh();
   }, [refresh]);
 
-  // Polling exists only for the pairing screen: the scan completes on the
-  // customer's phone, with nothing to tell this page about it. It stops the
-  // moment the state leaves `pairing`, so a connected workspace — and a
-  // deployment with no manager — sits quiet.
+  /** How many bounded retries are left. A ref, not state: spending one must
+   *  not itself re-render and restart the interval it is bounding. */
+  const recoveryLeft = useRef(RECOVERY_POLLS);
+
+  // Polling. `pairing` runs for as long as the screen does — the scan happens
+  // on the customer's phone with nothing to tell this page about it — while
+  // the two recovery states get a capped run at resolving themselves. See
+  // `bridgePollMode` for why each state is where it is; the cap is what stops
+  // a genuinely broken deployment being polled by every open tab forever.
   useEffect(() => {
-    if (status.kind !== "pairing") return;
-    const timer = setInterval(() => void refresh(), POLL_MS);
+    const mode = bridgePollMode(status.kind);
+    // A settled answer refills the budget, so a later failure gets a fresh
+    // window instead of inheriting an exhausted one. Moving between the two
+    // recovery states does NOT refill it: they can alternate.
+    if (mode === "none") {
+      recoveryLeft.current = RECOVERY_POLLS;
+      return;
+    }
+    const timer = setInterval(() => {
+      if (mode === "bounded") {
+        if (recoveryLeft.current <= 0) {
+          clearInterval(timer);
+          return;
+        }
+        recoveryLeft.current -= 1;
+      }
+      void refresh();
+    }, POLL_MS);
     return () => clearInterval(timer);
   }, [status.kind, refresh]);
+
+  /** The manual "Try again". An explicit ask refills the budget — the admin
+   *  has told us the wait is worth restarting. */
+  const retry = useCallback(() => {
+    recoveryLeft.current = RECOVERY_POLLS;
+    void refresh();
+  }, [refresh]);
 
   /** One mutating call. A refusal is raised, never swallowed. */
   async function post(path: string, method = "POST") {
@@ -210,7 +224,7 @@ export function SubAccountWhatsappBridgeSection() {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => void refresh()}
+            onClick={retry}
           >
             Try again
           </Button>
@@ -222,6 +236,21 @@ export function SubAccountWhatsappBridgeSection() {
           accepted={accepted}
           onAcceptedChange={setAccepted}
           onConnect={() => void handleConnect()}
+          busy={busy}
+        />
+      )}
+
+      {status.kind === "orphaned" && (
+        <OrphanPanel
+          onDisconnect={() => void handleDisconnect()}
+          busy={busy}
+        />
+      )}
+
+      {status.kind === "nocode" && (
+        <NoCodePanel
+          onNewCode={() => void handleNewCode()}
+          onRemove={() => void handleDisconnect()}
           busy={busy}
         />
       )}

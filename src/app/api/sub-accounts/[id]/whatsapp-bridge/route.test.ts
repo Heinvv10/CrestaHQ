@@ -27,6 +27,7 @@ const PAIR_CODE = "2@abcdef-pairing-code";
 const COLLIDING_SUB = "sa_someone_elses_workspace";
 
 const SECRET_PATH = `subAccounts/${SUB}/private/whatsappBridge`;
+const CONNECTIONS_PATH = `subAccounts/${SUB}/whatsappBridgeConnections`;
 const ACKS_PATH = `subAccounts/${SUB}/whatsappBridgeRiskAcks`;
 const OTHER_ACKS_PATH = `subAccounts/${OTHER_SUB}/whatsappBridgeRiskAcks`;
 /** Must equal WA_BRIDGE_RISK_TEXT_ID. Spelled out rather than imported so a
@@ -57,6 +58,13 @@ let calls: { url: string; init: RequestInit }[];
 /** Set to make every batch commit throw, standing in for a Firestore that is
  *  unreachable at the exact moment the minted credentials must be persisted. */
 let failCommit: boolean;
+/** Set to make every direct (non-batch) document write throw. Only
+ *  `clearBridgeConnection` writes that way, so this stands in for a Firestore
+ *  that dies AFTER the manager has already destroyed the tenant. */
+let failDocWrite: boolean;
+/** Auto-ids handed out by `collection().doc()`, so a batch-written audit
+ *  record lands on a predictable path. */
+let autoId: number;
 
 function docRef(path: string) {
   return {
@@ -67,9 +75,11 @@ function docRef(path: string) {
       id: path.split("/").pop(),
     }),
     set: async (data: Record<string, unknown>, opts?: unknown) => {
+      if (failDocWrite) throw new Error("firestore: unavailable");
       writes.push({ op: "set", path, data, opts });
     },
     delete: async () => {
+      if (failDocWrite) throw new Error("firestore: unavailable");
       writes.push({ op: "delete", path });
     },
   };
@@ -78,6 +88,8 @@ function docRef(path: string) {
 function collectionRef(path: string) {
   const rows = () => collections.get(path) ?? [];
   return {
+    // An auto-id child, the way the Admin SDK mints one for a batch write.
+    doc: () => docRef(`${path}/auto_${++autoId}`),
     add: async (data: Record<string, unknown>) => {
       writes.push({ op: "add", path, data });
       collections.set(path, [...rows(), data]);
@@ -149,7 +161,35 @@ function stubManager(
   return spy;
 }
 
+/** One row of the manager's list projection. Carries no credential, by
+ *  design — see `tenantView` in services/wa-manager/api. */
+function tenantRow(id: string) {
+  return {
+    tenantId: id,
+    displayName: id,
+    instance: id.replace(/_/g, "-"),
+    port: 33101,
+    state: "running",
+  };
+}
+
+/**
+ * A manager holding `tenantIds`, refusing every write with a 409 carrying
+ * `error`. This is the shape the provision route's classifier has to read: the
+ * 409 alone cannot say whether the id is already taken by THIS workspace or by
+ * another one, and only the list can.
+ */
+function conflictResponder(tenantIds: string[], error: string) {
+  return (url: string, init: RequestInit): Response =>
+    init.method === "GET" && url.endsWith("/api/tenants")
+      ? json({ tenants: tenantIds.map(tenantRow) })
+      : json({ error }, 409);
+}
+
 function defaultResponder(url: string, init: RequestInit): Response {
+  if (init.method === "GET" && url.endsWith("/api/tenants")) {
+    return json({ tenants: [tenantRow(SUB)] });
+  }
   if (init.method === "POST" && url.endsWith("/api/tenants")) {
     return json(
       {
@@ -251,6 +291,8 @@ beforeEach(() => {
   writes = [];
   calls = [];
   failCommit = false;
+  failDocWrite = false;
+  autoId = 0;
   // Both workspaces have already accepted the CURRENT warning, so the
   // provisioning tests exercise the happy path. The ack tests below empty this
   // deliberately.
@@ -447,19 +489,30 @@ describe("provision", () => {
     const { status, body } = await read(await provision());
     expect(status).toBe(502);
     expect(body.error).toContain("webhook signing secret");
+    // The manager has already 201'd and the token is in hand but never
+    // stored, so this is the same unrecoverable loss as the commit failure
+    // below and needs the same remedy. "Provision again" is not one: from
+    // here it can only 409.
+    expect(String(body.error)).toContain("can't be recovered");
+    expect(String(body.error)).toContain("disconnect");
+    expect(String(body.error)).not.toContain("provision again");
     expect(writes).toEqual([]);
+    // Nothing is torn down automatically: a destroy on a failure path is how
+    // a bridge someone is mid-way through pairing gets deleted.
+    expect(calls.some((c) => c.init.method === "DELETE")).toBe(false);
   });
 
   it("tells a workspace that DOES hold credentials to disconnect first, and stores nothing", async () => {
-    // The secret doc is there, so this workspace genuinely has a bridge and
-    // the remedy is one it can perform.
+    // The manager holds a tenant with this id and the CRM holds its
+    // credentials: an ordinary already-connected workspace, and the remedy is
+    // one it can perform.
     docs.set(SECRET_PATH, {
       baseUrl: "http://127.0.0.1:33101",
       token: APP_TOKEN,
       webhookSecret: HOOK_SECRET,
     });
-    stubManager(() =>
-      json({ error: `tenant "sa_1" already exists; destroy it first` }, 409),
+    stubManager(
+      conflictResponder([SUB], `tenant "sa_1" already exists; destroy it first`),
     );
     const { status, body } = await read(await provision());
     expect(status).toBe(409);
@@ -467,19 +520,41 @@ describe("provision", () => {
     expect(writes).toEqual([]);
   });
 
+  it("tells an ORPHANED workspace to disconnect first — a bridge on the manager with no credentials here", async () => {
+    // THE case the CRM cannot see from its own state. Every failure between
+    // the manager's 201 and the Firestore commit leaves this: a running bridge
+    // for this id, no secret doc, and a token that cannot be minted again.
+    // Classifying on the stored credentials calls it a name collision and
+    // answers "contact support" — a dead end for a state Disconnect fully
+    // recovers. The manager is asked instead.
+    expect(docs.has(SECRET_PATH)).toBe(false);
+    stubManager(
+      conflictResponder([SUB], `tenant "sa_1" already exists; destroy it first`),
+    );
+    const { status, body } = await read(await provision());
+    expect(status).toBe(409);
+    expect(String(body.error)).toContain("Disconnect it first");
+    expect(String(body.error)).not.toContain("Contact support");
+    // The classification came from the manager, not from a Firestore guess.
+    expect(
+      calls.some(
+        (c) => c.init.method === "GET" && c.url.endsWith("/api/tenants"),
+      ),
+    ).toBe(true);
+    expect(writes).toEqual([]);
+  });
+
   it("answers a name collision without naming the other workspace", async () => {
     // The manager's own sentence names the tenant holding the instance name —
-    // another customer's sub-account id. This workspace holds no credentials,
-    // so the 409 cannot be its own bridge; the admin is told what happened and
-    // given no remedy, because they have none. Asserted on the SERIALISED body
-    // rather than one field, the way the pairing-code test is: a foreign id
-    // added to any other key would be the same disclosure.
-    stubManager(() =>
-      json(
-        {
-          error: `tenant "sa_1" would take instance "sa-1", already held by tenant "${COLLIDING_SUB}"`,
-        },
-        409,
+    // another customer's sub-account id. The manager has NO tenant with this
+    // id, so the 409 cannot be this workspace's own bridge; the admin is told
+    // what happened and given no remedy, because they have none. Asserted on
+    // the SERIALISED body rather than one field, the way the pairing-code test
+    // is: a foreign id added to any other key would be the same disclosure.
+    stubManager(
+      conflictResponder(
+        [COLLIDING_SUB],
+        `tenant "sa_1" would take instance "sa-1", already held by tenant "${COLLIDING_SUB}"`,
       ),
     );
     const { status, body, raw } = await read(await provision());
@@ -487,6 +562,53 @@ describe("provision", () => {
     expect(String(body.error)).toContain("collides with another workspace");
     expect(String(body.error)).not.toContain("Disconnect it first");
     expect(raw).not.toContain(COLLIDING_SUB);
+    expect(writes).toEqual([]);
+  });
+
+  it("falls back to the stored credentials when the manager can't be asked", async () => {
+    // A manager that refuses the list leaves the question open, and "could not
+    // ask" is not "no such tenant". The degraded answer points at the case the
+    // CRM can still see for itself rather than guessing collision.
+    docs.set(SECRET_PATH, {
+      baseUrl: "http://127.0.0.1:33101",
+      token: APP_TOKEN,
+      webhookSecret: HOOK_SECRET,
+    });
+    stubManager((url, init) =>
+      init.method === "GET" && url.endsWith("/api/tenants")
+        ? json({ error: "could not list tenants" }, 500)
+        : json({ error: "tenant exists" }, 409),
+    );
+    const { status, body } = await read(await provision());
+    expect(status).toBe(409);
+    expect(String(body.error)).toContain("Disconnect it first");
+    expect(writes).toEqual([]);
+  });
+
+  it("records who connected the number, in a log a disconnect never clears", async () => {
+    // The ack gate is per-workspace and PERMANENT: one acknowledgement unlocks
+    // provisioning for everyone here forever, so an ack names nobody in
+    // particular. `whatsappBridgeMeta.connectedByUid` did name this connector
+    // — and disconnect nulls it, at exactly the moment a ban dispute starts.
+    await provision();
+    const record = writes.find((w) => w.path.startsWith(CONNECTIONS_PATH));
+    expect(record?.op).toBe("set");
+    // From the SESSION. A record whose subject the client chose records
+    // nothing.
+    expect(record?.data?.uid).toBe("uid_admin");
+    // The server's clock, never the browser's.
+    expect(record?.data?.connectedAt).toBe("SERVER_TS");
+    expect(record?.data?.riskTextId).toBe(RISK_TEXT_ID);
+    // No credential in an audit record.
+    expect(JSON.stringify(record?.data)).not.toContain(APP_TOKEN);
+    expect(JSON.stringify(record?.data)).not.toContain(HOOK_SECRET);
+
+    // Same batch as the rail switch: a workspace cannot end up connected with
+    // nobody named.
+    failCommit = true;
+    writes = [];
+    docs.delete(SECRET_PATH);
+    await provision();
     expect(writes).toEqual([]);
   });
 
@@ -641,6 +763,18 @@ describe("risk acknowledgement", () => {
     );
     expect(collections.get(ACKS_PATH)).toHaveLength(1);
   });
+
+  it("the connection record survives a disconnect too", async () => {
+    // It is the record that names WHO linked this number — the ack names only
+    // that somebody here once agreed to the warning — so a disconnect that
+    // cleared it would erase the only evidence a ban dispute turns on.
+    await provision();
+    writes = [];
+    await disconnect();
+    expect(
+      writes.some((w) => w.path.includes("whatsappBridgeConnections")),
+    ).toBe(false);
+  });
 });
 
 describe("qr image", () => {
@@ -652,7 +786,12 @@ describe("qr image", () => {
     // A route that answered by relaying ../pair's JSON would put the
     // write-grade payload in a body the browser can read as a string.
     expect(raw).not.toContain(PAIR_CODE);
-    expect(raw).not.toContain(OPERATOR_TOKEN);
+    // The manager's actual bytes, not a CRM-authored substitute. An
+    // `expect(raw).not.toContain(OPERATOR_TOKEN)` stood here and could not
+    // fail: on success `raw` is PNG bytes and every failure path answers with
+    // a sentence this file wrote. This one goes red if the route stops
+    // relaying the image.
+    expect(raw).toContain("PNG");
   });
 
   it("never lets the code be cached, on success or on failure", async () => {
@@ -685,6 +824,9 @@ describe("pairing", () => {
     expect(body).toEqual({
       pairing: true,
       connected: false,
+      // The CRM's half of the answer: false here and the screen must not
+      // invite a scan. See the orphan test below.
+      credentialsStored: false,
       expiresAt: "2026-09-07T10:00:00Z",
     });
     expect("code" in body).toBe(false);
@@ -697,8 +839,33 @@ describe("pairing", () => {
     stubManager(() => json({ tenantId: SUB, pairing: false, connected: true }));
     const { status, body } = await read(await pairing());
     expect(status).toBe(200);
-    expect(body).toEqual({ pairing: false, connected: true });
+    expect(body).toEqual({
+      pairing: false,
+      connected: true,
+      credentialsStored: false,
+    });
     expect("expiresAt" in body).toBe(false);
+  });
+
+  it("says whether the CRM holds credentials, so the card can see an orphan", async () => {
+    // Derived from the manager alone, a bridge whose credentials were never
+    // saved looks exactly like an ordinary pairing round — and the card
+    // invites the admin to link a real number to a rail that can never send.
+    // The manager cannot answer this; only the CRM can.
+    const orphan = await read(await pairing());
+    expect(orphan.body.credentialsStored).toBe(false);
+
+    docs.set(SECRET_PATH, {
+      baseUrl: "http://127.0.0.1:33101",
+      token: APP_TOKEN,
+      webhookSecret: HOOK_SECRET,
+    });
+    const healthy = await read(await pairing());
+    expect(healthy.body.credentialsStored).toBe(true);
+    // A boolean and nothing else. The secret doc is never read back to a
+    // browser, and this route is the one place that touches it on a read path.
+    expect(healthy.raw).not.toContain(APP_TOKEN);
+    expect(healthy.raw).not.toContain(HOOK_SECRET);
   });
 });
 
@@ -740,6 +907,19 @@ describe("disconnect", () => {
     stubManager(() => json({ error: "could not tear this tenant down" }, 500));
     const { status } = await read(await disconnect());
     expect(status).toBe(502);
+    expect(writes).toEqual([]);
+  });
+
+  it("names the retry when the CRM write fails after the tenant is destroyed", async () => {
+    // The manager tenant is gone by then, so an unwrapped throw leaves the
+    // workspace on the bridge rail holding credentials for a bridge that no
+    // longer exists — every outbound send fails until somebody notices.
+    // Retrying is the whole remedy: the manager's 404 counts as success, so a
+    // second disconnect goes straight to this write.
+    failDocWrite = true;
+    const { status, body } = await read(await disconnect());
+    expect(status).toBe(500);
+    expect(String(body.error)).toContain("Disconnect again");
     expect(writes).toEqual([]);
   });
 
