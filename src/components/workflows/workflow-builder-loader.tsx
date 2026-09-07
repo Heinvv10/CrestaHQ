@@ -9,7 +9,10 @@ import {
   type BuilderInitial,
   type BuilderReadiness,
 } from "./workflow-builder";
-import type { WhatsappTemplateOption } from "./node-config-dialog";
+import type {
+  WhatsappSenderOption,
+  WhatsappTemplateOption,
+} from "./node-config-dialog";
 import type { WhatsappTemplateVariable } from "@/types/whatsapp-templates";
 
 /**
@@ -18,8 +21,8 @@ import type { WhatsappTemplateVariable } from "@/types/whatsapp-templates";
  * links (for the link-trigger picker) via the client SDK. Keeps the page
  * component a thin server shell.
  *
- * `readiness` (which send-integrations can actually run) is computed on the
- * SERVER and passed in — env vars, the sub-account's twilioConfig, and the
+ * `readiness` (which send-integrations can actually run) and the WhatsApp
+ * sender list are computed on the SERVER and passed in — env vars, the sub-account's twilioConfig, and the
  * approved-template inventory are all readable there, so doomed steps are
  * flagged deterministically rather than guessed from a defaults-open probe.
  */
@@ -27,10 +30,12 @@ export function WorkflowBuilderLoader({
   saId,
   workflowId,
   readiness,
+  whatsappSenders,
 }: {
   saId: string;
   workflowId: string;
   readiness: BuilderReadiness;
+  whatsappSenders: WhatsappSenderOption[];
 }) {
   const [initial, setInitial] = useState<BuilderInitial | null>(null);
   const [forms, setForms] = useState<{ id: string; name: string }[]>([]);
@@ -143,6 +148,7 @@ export function WorkflowBuilderLoader({
       trackedLinks={trackedLinks}
       readiness={readiness}
       whatsappTemplates={whatsappTemplates}
+      whatsappSenders={whatsappSenders}
     />
   );
 }

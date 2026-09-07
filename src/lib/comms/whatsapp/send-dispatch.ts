@@ -7,9 +7,13 @@ import { getWabaCreds } from "./cloud-credentials";
 import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
 import { sendWhatsappBridge } from "./bridge-client";
-import { resolveProviderForSubAccount } from "./resolve-provider";
+import { resolveWhatsappSender } from "./resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
-import type { WhatsAppProviderId, WhatsAppSendResult } from "./provider";
+import {
+  resolveWhatsAppProviderId,
+  type WhatsAppProviderId,
+  type WhatsAppSendResult,
+} from "./provider";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -89,9 +93,18 @@ export interface WhatsappDispatchInput {
 export async function dispatchWhatsappSend(
   input: WhatsappDispatchInput,
 ): Promise<WhatsAppSendResult & { provider: WhatsAppProviderId }> {
-  const { provider, capabilities } = resolveProviderForSubAccount(
-    input.subAccount,
-  );
+  // Through the sender registry, so this dispatcher and the readiness gate in
+  // front of it cannot pick different rails for the same workspace.
+  const resolved = resolveWhatsappSender(input.subAccount);
+  if (!resolved.ok) {
+    return {
+      provider: resolveWhatsAppProviderId(input.subAccount.whatsappProvider),
+      ok: false,
+      error: resolved.error,
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
+  const { provider, capabilities } = resolved;
 
   const lastInboundAt =
     input.lastInboundAt !== undefined

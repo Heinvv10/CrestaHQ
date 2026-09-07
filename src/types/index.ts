@@ -7,6 +7,7 @@ export * from "./broadcasts";
 export * from "./voice-campaigns";
 export * from "./messages";
 export * from "./whatsapp-templates";
+export * from "./whatsapp-senders";
 export * from "./website";
 export * from "./api";
 export * from "./webhooks";

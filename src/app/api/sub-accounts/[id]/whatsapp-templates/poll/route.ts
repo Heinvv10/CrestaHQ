@@ -12,7 +12,7 @@ import {
   fetchApprovalStatus,
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import {
   buildRegistrationUpdate,
   classifyPollTick,
@@ -102,7 +102,28 @@ export async function POST(
 
   const subSnap0 = await db.doc(`subAccounts/${subAccountId}`).get();
   const sub = subSnap0.exists ? (subSnap0.data() as SubAccountDoc) : null;
-  const { provider } = resolveProviderForSubAccount(sub);
+  // The same resolution the submit route ran, so a poll chases the approval on
+  // the rail the template was actually submitted to.
+  const resolvedSender = resolveWhatsappSender(sub);
+  if (!resolvedSender.ok) {
+    // No rail, so there is nothing to compare the registration against. Every
+    // branch below is keyed on the provider, and guessing one makes
+    // `classifyPollTick` read the WRONG rail's registration, report
+    // "rail-switched", and park the template as `failed` with a reason that is
+    // not true.
+    //
+    // The comment below explains why a tick that gives up is dangerous: it can
+    // strand a template in `pending`, which the UI cannot escape. That still
+    // applies — this tick ends the poll chain — but it is the lesser harm,
+    // because it writes NOTHING. The template keeps whatever state it really
+    // has, and the cure is fixing the sender configuration and re-submitting,
+    // which re-arms the poll. A terminal state written on a guess has no cure.
+    console.warn(
+      `[whatsapp-templates/poll] no resolvable WhatsApp sender for sa=${subAccountId} (${resolvedSender.error}) — leaving template ${payload.templateId} untouched`,
+    );
+    return NextResponse.json({ ok: true, ignored: "sender-unresolved" });
+  }
+  const { provider } = resolvedSender;
 
   // Bail if we're no longer chasing this approval — re-submitted with a new
   // external id, switched rails since the tick was scheduled, or already

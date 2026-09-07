@@ -8,7 +8,6 @@ import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-disp
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
 import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import {
   sendSmsForSubAccount,
@@ -306,7 +305,10 @@ const execSendSms: NodeExecutor = async (ctx) => {
   }
 };
 
-const execWhatsappTemplate: NodeExecutor = async (ctx) => {
+/** Exported for tests only — the registry below is the production entry point.
+ *  The one seam where readiness, template approval and dispatch have to agree
+ *  on the sender has no other place to be asserted from. */
+export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as WhatsappTemplateConfig;
   const contact = ctx.contact;
   if (contact.whatsappOptedOut)
@@ -325,6 +327,7 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   const tplReadiness = await checkWhatsappReadiness({
     subAccountId: ctx.subAccountId,
     subAccount: ctx.subAccount ?? null,
+    senderId: cfg.senderId,
   });
   if (!tplReadiness.ready) {
     return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
@@ -345,8 +348,9 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   // Approval is per rail — a template cleared on Twilio has never been seen by
   // our own WABA. Checking the flat fields would pass a template approved on
   // the rail this workspace no longer uses.
-  const { provider: waProvider } = resolveProviderForSubAccount(ctx.subAccount);
-  if (!tpl || !isTemplateApprovedFor(tpl, waProvider)) {
+  // The rail READINESS resolved, not a second resolution of its own: asking
+  // twice is how a step gets admitted on one rail and refused on another.
+  if (!tpl || !isTemplateApprovedFor(tpl, tplReadiness.provider)) {
     // Deleted, never approved on this rail, or approval lost (paused/disabled).
     return { result: { kind: "next" }, log: "error:template_not_approved" };
   }
@@ -374,6 +378,7 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
       to,
       template: tpl,
       values: contentVariables,
+      senderId: cfg.senderId,
       sendViaTwilio: async (contentSid) => {
         const r = await sendWhatsappTemplateForSubAccount({
           subAccountId: ctx.subAccountId,
@@ -456,12 +461,10 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       .doc(`subAccounts/${ctx.subAccountId}/whatsappTemplates/${cfg.templateId}`)
       .get();
     tplDoc = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
-    const { provider: waProvider } = resolveProviderForSubAccount(
-      ctx.subAccount,
-    );
     // Approval is per rail, as in execWhatsappTemplate: a template cleared on
-    // Twilio has never been seen by our own WABA.
-    if (tplDoc && isTemplateApprovedFor(tplDoc, waProvider)) {
+    // Twilio has never been seen by our own WABA. The rail is the one
+    // readiness resolved, so this check and the dispatcher below agree.
+    if (tplDoc && isTemplateApprovedFor(tplDoc, readiness.provider)) {
       // The variables have to be resolved here, exactly as execWhatsappTemplate
       // does. Meta fills a template's {{1}}, {{2}} from the `parameters` list;
       // sending an empty `components` for a template that declares variables

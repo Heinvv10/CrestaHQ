@@ -11,7 +11,7 @@ import { maybeRespondWithAi } from "@/lib/comms/ai/respond";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { getBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
 import { isGroupJid, isLidJid, isPhoneJid, jidToE164, redactJid } from "@/lib/comms/whatsapp/bridge-client";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import type { SubAccountDoc } from "@/types";
@@ -139,12 +139,13 @@ export async function POST(
     return ok({ ok: true, ignored: "channel_disabled" });
   }
 
-  const { provider } = resolveProviderForSubAccount(subAccount);
-  if (provider !== "bridge") {
-    // A bridge left running against a switched-back workspace must not keep
-    // writing into its threads.
+  // Membership, not "is the bridge the default sender": a workspace that sends
+  // its campaigns from another rail still has to receive replies on the number
+  // its bridge is paired to. A bridge left running against a workspace that
+  // removed it has no sender here and is still refused.
+  if (!hasWhatsappSenderOnRail(subAccount, "bridge")) {
     console.warn(
-      `[whatsapp-bridge] inbound for sa=${subAccountId} but the workspace is on the ${provider} rail — dropping`
+      `[whatsapp-bridge] inbound for sa=${subAccountId} but the workspace has no bridge sender — dropping`
     );
     return ok({ ok: true, ignored: "wrong_rail" });
   }

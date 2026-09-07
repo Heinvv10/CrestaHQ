@@ -59,6 +59,10 @@ const ALLOWED_FIELD = new Map([
     "The Twilio client: the field IS its sender number.",
   ],
   [
+    "lib/comms/whatsapp/resolve-sender.ts",
+    "The sender resolver itself. It reads the field only in the `default:` (Twilio) branch of the per-rail number lookup that synthesizes a legacy sub-account's sender — the correct value for that rail.",
+  ],
+  [
     "lib/comms/whatsapp/sender-configured.ts",
     "The rail-agnostic helper itself. It reads the field only in its `default:` (Twilio) branch, which is the correct value for that rail.",
   ],

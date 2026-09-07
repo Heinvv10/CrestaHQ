@@ -12,7 +12,7 @@ import {
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
 import { toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { buildRegistrationUpdate } from "@/lib/comms/whatsapp/template-registrations";
 import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
 import {
@@ -70,9 +70,15 @@ export async function POST(
       { status: 403 },
     );
   }
-  // Readiness is per-rail: demanding Twilio credentials from a workspace that
-  // submits over the Graph API would refuse a correctly configured one.
-  const { provider } = resolveProviderForSubAccount(sub);
+  // The rail of the sender this workspace SENDS on, resolved by the same
+  // function the send path uses. Reading `whatsappProvider` here instead would
+  // submit a template for approval on one rail while dispatch sends it on
+  // another — approval belongs to a WABA, so the send then fails at Meta.
+  const submitOn = resolveWhatsappSender(sub);
+  if (!submitOn.ok) {
+    return NextResponse.json({ error: submitOn.error }, { status: 400 });
+  }
+  const { provider } = submitOn;
   if (provider === "bridge") {
     return NextResponse.json(
       {

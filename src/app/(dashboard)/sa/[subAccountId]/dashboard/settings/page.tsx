@@ -24,6 +24,7 @@ import { SubAccountSmsSection } from "@/components/settings/sub-account-sms-sect
 import { SubAccountMetaSection } from "@/components/settings/sub-account-meta-section";
 import { SubAccountGoogleSection } from "@/components/settings/sub-account-google-section";
 import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
+import { SubAccountWhatsappSendersSection } from "@/components/settings/sub-account-whatsapp-senders-section";
 import { SubAccountWhatsappBridgeSection } from "@/components/settings/sub-account-whatsapp-bridge-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
@@ -307,6 +308,11 @@ export default function SettingsPage() {
               the Cloud card. Placed beside it because the two are the same
               decision: which rail this workspace's WhatsApp runs on. */}
           <SubAccountWhatsappBridgeSection />
+
+          {/* Which numbers this workspace can send FROM. Sits under both rail
+              cards because a sender is added on top of a rail's existing
+              connection — it carries no credentials of its own. */}
+          <SubAccountWhatsappSendersSection />
 
           {/* Facebook + Instagram inbox (beta) — self-gates: renders only when
               the agency flipped metaInboxEnabledByAgency on for this sub-account. */}

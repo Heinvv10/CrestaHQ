@@ -291,6 +291,52 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites).toHaveLength(0);
   });
 
+  it("accepts inbound when the bridge is a sender but NOT the default", async () => {
+    // Membership, not the default. A workspace that sends its campaigns over
+    // Cloud still has to receive the replies arriving on its paired number —
+    // dropping them loses a real customer message.
+    subAccountDoc = {
+      ...subAccountDoc,
+      whatsappProvider: "cloud",
+      whatsappSenders: [
+        {
+          id: "s_cloud",
+          label: "Support",
+          provider: "cloud",
+          phoneNumber: "+27110000000",
+          isDefault: true,
+        },
+        {
+          id: "s_bridge",
+          label: "Own number",
+          provider: "bridge",
+          phoneNumber: "+27784356159",
+        },
+      ],
+    };
+    const res = await post(inbound());
+    expect(res.status).toBe(200);
+    expect(messageWrites).toHaveLength(1);
+  });
+
+  it("drops inbound for a workspace whose registry has no bridge sender", async () => {
+    subAccountDoc = {
+      ...subAccountDoc,
+      whatsappSenders: [
+        {
+          id: "s_cloud",
+          label: "Support",
+          provider: "cloud",
+          phoneNumber: "+27110000000",
+          isDefault: true,
+        },
+      ],
+    };
+    const res = await post(inbound());
+    expect(await res.json()).toMatchObject({ ignored: "wrong_rail" });
+    expect(messageWrites).toHaveLength(0);
+  });
+
   it("drops inbound when the agency gate is off", async () => {
     subAccountDoc = { ...subAccountDoc, whatsappEnabledByAgency: false };
     const res = await post(inbound());

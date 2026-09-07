@@ -2,12 +2,16 @@ import "server-only";
 
 import { getWabaCreds } from "./cloud-credentials";
 import { sendWhatsappCloud } from "./cloud-client";
-import { resolveProviderForSubAccount } from "./resolve-provider";
+import { resolveWhatsappSender } from "./resolve-sender";
 import {
   isTemplateApprovedFor,
   templateRegistration,
 } from "./template-registrations";
-import type { WhatsAppProviderId, WhatsAppSendResult } from "./provider";
+import {
+  resolveWhatsAppProviderId,
+  type WhatsAppProviderId,
+  type WhatsAppSendResult,
+} from "./provider";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 /**
@@ -27,9 +31,23 @@ export async function dispatchWhatsappTemplateSend(input: {
   template: WhatsappTemplateDoc;
   /** Positional values for {{1}}, {{2}}, … already resolved and validated. */
   values: string[];
+  /** The step's chosen sender. Absent = the workspace default. */
+  senderId?: string | null;
   sendViaTwilio: (contentSid: string) => Promise<WhatsAppSendResult>;
 }): Promise<WhatsAppSendResult & { provider: WhatsAppProviderId }> {
-  const { provider } = resolveProviderForSubAccount(input.subAccount);
+  // The SAME resolution readiness ran, not a second read of the rail: a
+  // template approved on the rail one gate picked and refused on the rail the
+  // other picked is a bug this repo has already shipped once.
+  const resolved = resolveWhatsappSender(input.subAccount, input.senderId);
+  if (!resolved.ok) {
+    return {
+      provider: resolveWhatsAppProviderId(input.subAccount.whatsappProvider),
+      ok: false,
+      error: resolved.error,
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
+  const { provider } = resolved;
 
   if (provider === "bridge") {
     return {
