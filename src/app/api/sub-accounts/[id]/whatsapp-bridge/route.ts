@@ -53,6 +53,27 @@ export async function DELETE(
     return managerFailureResponse(result);
   }
 
-  const fallback = await clearBridgeConnection(subAccountId);
+  // The manager tenant is gone by here. If the CRM write fails now, the
+  // workspace is left on `whatsappProvider: "bridge"` holding credentials for
+  // a bridge that no longer exists, and every outbound WhatsApp send fails
+  // until somebody notices. Retrying is safe and is the whole remedy: a
+  // manager with no such tenant answers 404, which the guard above treats as
+  // success, so a second disconnect goes straight to this write.
+  let fallback;
+  try {
+    fallback = await clearBridgeConnection(subAccountId);
+  } catch (err) {
+    console.error(
+      `[whatsapp-bridge] tenant destroyed but the CRM rail could not be cleared for ${subAccountId}; sending stays broken:`,
+      err,
+    );
+    return NextResponse.json(
+      {
+        error:
+          "The bridge was destroyed but this workspace couldn't be taken off it, so WhatsApp sending stays broken until it is. Disconnect again — the bridge is already gone, and repeating it is safe.",
+      },
+      { status: 500 },
+    );
+  }
   return NextResponse.json({ ok: true, provider: fallback });
 }

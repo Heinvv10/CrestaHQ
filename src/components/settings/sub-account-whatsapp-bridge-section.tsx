@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Smartphone } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -8,9 +8,17 @@ import { Button } from "@/components/ui/button";
 import {
   ConnectPanel,
   ConnectedPanel,
+  NoCodePanel,
+  OrphanPanel,
   QrPanel,
   type BridgeBusy,
 } from "@/components/settings/sub-account-whatsapp-bridge-panels";
+import {
+  bridgePollMode,
+  bridgeStatusFrom,
+  type BridgeStatus,
+  type PairingAnswer,
+} from "@/lib/comms/whatsapp/bridge-card-status";
 
 /**
  * Sub-account WhatsApp bridge settings — the `bridge` arm of the provider seam,
@@ -31,48 +39,33 @@ import {
  * opening it.
  */
 
-/** What the manager says about this workspace right now. */
-type Status =
-  | { kind: "loading" }
-  /** No manager on this deployment (a buyer copy, a dev box). Not an outage. */
-  | { kind: "unavailable" }
-  /** No bridge provisioned for this workspace yet. */
-  | { kind: "absent" }
-  | { kind: "pairing"; expiresAt?: string }
-  | { kind: "connected" }
-  | { kind: "error"; message: string };
-
 const POLL_MS = 4000;
+/** About a minute of retries. A bridge the manager has just started or bounced
+ *  answers within a few seconds; anything still failing after this is not
+ *  waiting on a restart, and "Try again" is right there. */
+const RECOVERY_POLLS = 15;
 
 export function SubAccountWhatsappBridgeSection() {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
-  const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [status, setStatus] = useState<BridgeStatus>({ kind: "loading" });
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState<BridgeBusy>(null);
   const [qrNonce, setQrNonce] = useState(0);
+  /** Bumped whenever the poll budget is refilled. It is in the polling
+   *  effect's deps because refilling the budget has to RESTART the interval:
+   *  a drained interval clears itself, and re-reading into the same
+   *  `status.kind` re-runs no effect, so without this the refill below sets a
+   *  counter nothing will ever read again — a one-shot fetch dressed up as a
+   *  restart. */
+  const [retryToken, setRetryToken] = useState(0);
 
   const base = `/api/sub-accounts/${subAccountId}/whatsapp-bridge`;
 
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(`${base}/pairing`, { cache: "no-store" });
-      const data = (await res.json().catch(() => ({}))) as {
-        connected?: boolean;
-        expiresAt?: string;
-        error?: string;
-      };
-      // 503 is "this deployment has no manager" and 404 is "the manager has no
-      // tenant for this workspace" — two ordinary answers that must not read
-      // as breakage. Everything else genuinely is a fault worth showing.
-      if (res.status === 503) setStatus({ kind: "unavailable" });
-      else if (res.status === 404) setStatus({ kind: "absent" });
-      else if (!res.ok)
-        setStatus({
-          kind: "error",
-          message: data.error ?? "Couldn't read the connection status.",
-        });
-      else if (data.connected) setStatus({ kind: "connected" });
-      else setStatus({ kind: "pairing", expiresAt: data.expiresAt });
+      const data = (await res.json().catch(() => ({}))) as PairingAnswer;
+      setStatus(bridgeStatusFrom(res.status, data));
     } catch {
       setStatus({
         kind: "error",
@@ -85,15 +78,47 @@ export function SubAccountWhatsappBridgeSection() {
     void refresh();
   }, [refresh]);
 
-  // Polling exists only for the pairing screen: the scan completes on the
-  // customer's phone, with nothing to tell this page about it. It stops the
-  // moment the state leaves `pairing`, so a connected workspace — and a
-  // deployment with no manager — sits quiet.
+  /** How many bounded retries are left. A ref, not state: spending one must
+   *  not itself re-render and restart the interval it is bounding. */
+  const recoveryLeft = useRef(RECOVERY_POLLS);
+
+  // Polling. `pairing` runs for as long as the screen does — the scan happens
+  // on the customer's phone with nothing to tell this page about it — while
+  // the two recovery states get a capped run at resolving themselves. See
+  // `bridgePollMode` for why each state is where it is; the cap is what stops
+  // a genuinely broken deployment being polled by every open tab forever.
   useEffect(() => {
-    if (status.kind !== "pairing") return;
-    const timer = setInterval(() => void refresh(), POLL_MS);
+    const mode = bridgePollMode(status.kind);
+    // A settled answer refills the budget, so a later failure gets a fresh
+    // window instead of inheriting an exhausted one. Moving between the two
+    // recovery states does NOT refill it: they can alternate.
+    if (mode === "none") {
+      recoveryLeft.current = RECOVERY_POLLS;
+      return;
+    }
+    const timer = setInterval(() => {
+      if (mode === "bounded") {
+        if (recoveryLeft.current <= 0) {
+          clearInterval(timer);
+          return;
+        }
+        recoveryLeft.current -= 1;
+      }
+      void refresh();
+    }, POLL_MS);
     return () => clearInterval(timer);
-  }, [status.kind, refresh]);
+  }, [status.kind, refresh, retryToken]);
+
+  /** Refill the budget and read again. An explicit ask restarts the wait — the
+   *  admin has told us it is worth restarting. `retryToken` is what makes the
+   *  refill real: it re-runs the effect above even when the state that comes
+   *  back is the same one, which is the ordinary case here. Returns the read
+   *  so callers can sequence a toast after it. */
+  const retry = useCallback(() => {
+    recoveryLeft.current = RECOVERY_POLLS;
+    setRetryToken((n) => n + 1);
+    return refresh();
+  }, [refresh]);
 
   /** One mutating call. A refusal is raised, never swallowed. */
   async function post(path: string, method = "POST") {
@@ -129,7 +154,11 @@ export function SubAccountWhatsappBridgeSection() {
     try {
       await post("/restart");
       setQrNonce((n) => n + 1);
-      await refresh();
+      // `retry`, not `refresh`: a bounced bridge is not listening yet, so this
+      // read lands back in `error` or `nocode` — the states the budget bounds
+      // — and the panel's own copy promises the page keeps checking. A plain
+      // refresh from a drained budget makes that promise false.
+      await retry();
       toast.success("Restarting — a new code appears in a few seconds.");
     } catch (err) {
       toast.error(
@@ -201,19 +230,43 @@ export function SubAccountWhatsappBridgeSection() {
         </p>
       )}
 
+      {/* Disconnect belongs here, not only on the settled panels. An orphaned
+          bridge whose process is not listening makes `../pairing` answer 502 —
+          which is exactly why the 409 classifier asks the manager's LIST route
+          instead — so the card lands in `error` rather than `orphaned`, and
+          `error` is therefore the state most likely to be holding an orphan.
+          With only "Try again" it was a dead end for a state Disconnect fully
+          recovers. */}
       {status.kind === "error" && (
         <div className="space-y-3">
           <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-700 dark:text-amber-400">
             {status.message}
           </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void refresh()}
-          >
-            Try again
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void retry()}
+              disabled={busy !== null}
+            >
+              Try again
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void handleDisconnect()}
+              disabled={busy !== null}
+            >
+              {busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            If this keeps happening, disconnecting and connecting again clears a
+            half-finished connection. It erases the WhatsApp session, so the
+            number has to be paired again.
+          </p>
         </div>
       )}
 
@@ -222,6 +275,21 @@ export function SubAccountWhatsappBridgeSection() {
           accepted={accepted}
           onAcceptedChange={setAccepted}
           onConnect={() => void handleConnect()}
+          busy={busy}
+        />
+      )}
+
+      {status.kind === "orphaned" && (
+        <OrphanPanel
+          onDisconnect={() => void handleDisconnect()}
+          busy={busy}
+        />
+      )}
+
+      {status.kind === "nocode" && (
+        <NoCodePanel
+          onNewCode={() => void handleNewCode()}
+          onRemove={() => void handleDisconnect()}
           busy={busy}
         />
       )}

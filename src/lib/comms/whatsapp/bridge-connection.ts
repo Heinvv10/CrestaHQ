@@ -4,7 +4,9 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
+  whatsappBridgeConnectionsPath,
   whatsappBridgeSecretPath,
+  type WhatsappBridgeConnectionRecord,
   type WhatsappBridgeMeta,
   type WhatsappBridgeSecret,
 } from "@/types/whatsapp-bridge";
@@ -57,7 +59,25 @@ export async function storeBridgeConnection(
   subAccountId: string,
   creds: WhatsappBridgeSecret,
   meta: WhatsappBridgeMeta,
+  /**
+   * The acknowledged warning version, passed ONLY by a caller that gated on a
+   * recorded acknowledgement. Omitted, the record simply carries no such
+   * claim. It is a parameter rather than a constant read here because this
+   * function is shared with the manual connect route, which has no ack gate —
+   * writing the current constant unconditionally would put "they agreed to
+   * v1" into an audit record for an admin who was never shown v1.
+   */
+  ack?: { riskTextId: string },
 ): Promise<void> {
+  // Loudly, not as an empty string. This record exists to answer "who linked
+  // this number" in a ban dispute; one naming nobody answers nothing, and a
+  // silent "" is a record that looks written and is not. Both callers take the
+  // uid from the session, so this can only fire on a wiring mistake.
+  if (!meta.connectedByUid) {
+    throw new Error(
+      "storeBridgeConnection: meta.connectedByUid is required — the connection record must name who connected the number.",
+    );
+  }
   const db = getAdminDb();
   const batch = db.batch();
   batch.set(db.doc(whatsappBridgeSecretPath(subAccountId)), creds);
@@ -69,6 +89,25 @@ export async function storeBridgeConnection(
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
+  );
+  // The audit record of WHO connected this number, in the same batch as the
+  // rail switch rather than as a follow-up write: a second write has a failure
+  // mode in which the workspace is connected and nobody is named, which is the
+  // exact gap this record exists to close. An auto-id, never a deterministic
+  // one — a reconnect is a second decision, on a later date and possibly by a
+  // different admin, and collapsing them would discard the earlier one.
+  //
+  // It goes to a subcollection `clearBridgeConnection` does not touch. The
+  // only other field naming the connector is `whatsappBridgeMeta.connectedByUid`,
+  // and disconnect nulls that — the moment a ban dispute would start.
+  const record: WhatsappBridgeConnectionRecord = {
+    uid: meta.connectedByUid,
+    connectedAt: FieldValue.serverTimestamp(),
+    ...(ack ? { riskTextId: ack.riskTextId } : {}),
+  };
+  batch.set(
+    db.collection(whatsappBridgeConnectionsPath(subAccountId)).doc(),
+    record,
   );
   await batch.commit();
 }
