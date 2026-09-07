@@ -77,6 +77,7 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "quote.accepted",
   "quote.paid",
   "message.received",
+  "link.clicked",
 ];
 
 const MESSAGE_CHANNELS: { value: string; label: string }[] = [
@@ -173,12 +174,14 @@ export function WorkflowBuilder({
   saId,
   initial,
   forms,
+  trackedLinks,
   readiness,
   whatsappTemplates,
 }: {
   saId: string;
   initial: BuilderInitial;
   forms: { id: string; name: string }[];
+  trackedLinks: { id: string; name: string }[];
   readiness: BuilderReadiness;
   whatsappTemplates: WhatsappTemplateOption[];
 }) {
@@ -332,6 +335,23 @@ export function WorkflowBuilder({
               {forms.map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {trigger.type === "link.clicked" && (
+            <select
+              value={trigger.linkId ?? ""}
+              onChange={(e) =>
+                setTrigger({ ...trigger, linkId: e.target.value || null })
+              }
+              className="border-input bg-background mt-2 h-9 w-full rounded-md border px-2 text-sm"
+            >
+              <option value="">Any tracked link</option>
+              {trackedLinks.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
                 </option>
               ))}
             </select>

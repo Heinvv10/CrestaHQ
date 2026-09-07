@@ -825,6 +825,13 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         continue;
       }
       if (
+        wf.trigger.type === "link.clicked" &&
+        wf.trigger.linkId &&
+        wf.trigger.linkId !== input.context?.linkId
+      ) {
+        continue;
+      }
+      if (
         wf.trigger.type === "message.received" &&
         wf.trigger.channel &&
         wf.trigger.channel !== input.context?.channel

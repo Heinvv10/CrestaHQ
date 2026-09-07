@@ -19,6 +19,7 @@ export const TRIGGER_LABELS: Record<WorkflowTriggerType, string> = {
   "quote.paid": "Quote/invoice paid",
   "message.received": "Message received (inbox)",
   "order.paid": "Order paid (card)",
+  "link.clicked": "Tracked link clicked",
 };
 
 export const NODE_LABELS: Record<WorkflowNodeType, string> = {
