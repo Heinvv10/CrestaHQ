@@ -94,6 +94,7 @@ export const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
   { value: "is_set", label: "is set" },
   { value: "not_set", label: "is empty" },
   { value: "has_tag", label: "has tag" },
+  { value: "not_has_tag", label: "does not have tag" },
   { value: "in_stage", label: "is in stage" },
   { value: "source_is", label: "source is" },
 ];

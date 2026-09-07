@@ -47,6 +47,11 @@ export type ConditionOp =
   | "is_set"
   | "not_set"
   | "has_tag"
+  // The only way to express an EXCLUSION over tags. `not_equals` on `tags`
+  // cannot do it: the field holds an array, so it stringifies to "a,b,c" and
+  // the comparison is true for nearly every contact — a filter that reads as
+  // "exclude these people" and matches almost all of them instead.
+  | "not_has_tag"
   | "in_stage"
   | "source_is";
 

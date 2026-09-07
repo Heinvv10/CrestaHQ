@@ -53,6 +53,12 @@ function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolea
       return raw === null || raw === undefined || raw === "";
     case "has_tag":
       return Array.isArray(contact.tags) && contact.tags.includes(val);
+    // A contact with no tags array at all is EXCLUDED FROM NOTHING, so this is
+    // true for it — the same answer as an empty array, and the opposite of
+    // `has_tag`. Reading it as false would silently drop every contact whose
+    // tags field is missing from a campaign that merely means "not opted out".
+    case "not_has_tag":
+      return !(Array.isArray(contact.tags) && contact.tags.includes(val));
     case "in_stage":
       return (contact.pipelineStage ?? "") === val;
     case "source_is":
