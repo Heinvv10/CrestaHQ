@@ -547,8 +547,25 @@ func TestReadRoutesNeverCarryTokens(t *testing.T) {
 		h.do(http.MethodPost, "/api/tenants/blitz/restart", operatorTok, "").Body.String(),
 		h.do(http.MethodDelete, "/api/tenants/blitz?confirm=blitz", operatorTok, "").Body.String(),
 	}
+	// operatorTok and mgrTok ONLY.
+	//
+	// appTok and hookSecret used to be in this list and could not fail it. A
+	// read route can only disclose what it can reach, and those two reach the
+	// server as provision.Created fields — returned by the create call and
+	// never persisted. store.Tenant, which every read route projects, has no
+	// credential field and deliberately must not gain one (see the comment on
+	// provision.Created), so no widening of tenantView could ever make them
+	// appear here. Asserting their absence bought false confidence: it read as
+	// a guard on the projection while being unable to go red for any change to
+	// it. The projection's create-path disclosure is guarded by
+	// TestCreateReturnsTheMintedAppCredentialsOnce and
+	// TestCreateOmitsTheWebhookSecretWhenSigningIsOff instead.
+	//
+	// The two that remain are genuinely reachable: operatorTok is the token
+	// this request presented, and mgrTok is the token the manager presents to
+	// the bridge whose body the pair route relays.
 	for _, b := range bodies {
-		for _, secret := range []string{operatorTok, mgrTok, appTok, hookSecret} {
+		for _, secret := range []string{operatorTok, mgrTok} {
 			if strings.Contains(b, secret) {
 				t.Fatalf("response leaked a credential: %s", b)
 			}

@@ -278,6 +278,16 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // WhatsApp bridge ban-risk acknowledgements. Append-only audit records
+      // written exclusively by /api/sub-accounts/[id]/whatsapp-bridge/risk-ack
+      // via the Admin SDK. Closed to clients in BOTH directions: a client
+      // write would let the admin who must be gated forge their own gate, and
+      // there is no surface that reads them back — the provisioning route
+      // checks them server-side. They deliberately outlive a disconnect.
+      match /whatsappBridgeRiskAcks/{ackId} {
+        allow read, write: if false;
+      }
+
       // Per-sub-account counters (e.g. quote-number sequence). Written
       // exclusively by Admin SDK transactions (issueQuoteNumber). Never
       // read or written by clients — the resulting numbers come back in

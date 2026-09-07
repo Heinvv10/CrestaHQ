@@ -21,22 +21,42 @@ const OTHER_SUB = "sa_2";
 const APP_TOKEN = "app-token-from-the-manager";
 const HOOK_SECRET = "hook-secret-from-the-manager";
 const PAIR_CODE = "2@abcdef-pairing-code";
+/** The sub-account id of an unrelated workspace, as it appears in the
+ *  manager's collision sentence. It must never reach a response body: it is
+ *  another customer's identity. */
+const COLLIDING_SUB = "sa_someone_elses_workspace";
 
 const SECRET_PATH = `subAccounts/${SUB}/private/whatsappBridge`;
+const ACKS_PATH = `subAccounts/${SUB}/whatsappBridgeRiskAcks`;
+const OTHER_ACKS_PATH = `subAccounts/${OTHER_SUB}/whatsappBridgeRiskAcks`;
+/** Must equal WA_BRIDGE_RISK_TEXT_ID. Spelled out rather than imported so a
+ *  silent rename of the constant shows up here as a failure rather than as a
+ *  test that quietly follows the code wherever it goes. */
+const RISK_TEXT_ID = "wa-bridge-risk-v1";
+/** The fake manager's QR bytes. Deliberately do NOT contain PAIR_CODE: a qr
+ *  route that answered with the pairing string instead of the image would then
+ *  fail the "no code as text" assertion. */
+const QR_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MANAGER_URL = "http://127.0.0.1:33000";
 const OPERATOR_TOKEN = "operator-token-that-opens-every-tenant";
 
 interface Write {
-  op: "set" | "delete";
+  op: "set" | "delete" | "add";
   path: string;
   data?: Record<string, unknown>;
   opts?: unknown;
 }
 
 let docs: Map<string, Record<string, unknown>>;
+/** Subcollection contents, keyed by collection path. Only the risk-ack log
+ *  uses this today; the routes read it through a real where()/limit()/get(). */
+let collections: Map<string, Record<string, unknown>[]>;
 let writes: Write[];
 let claims: Map<string, Record<string, unknown>>;
 let calls: { url: string; init: RequestInit }[];
+/** Set to make every batch commit throw, standing in for a Firestore that is
+ *  unreachable at the exact moment the minted credentials must be persisted. */
+let failCommit: boolean;
 
 function docRef(path: string) {
   return {
@@ -55,8 +75,31 @@ function docRef(path: string) {
   };
 }
 
+function collectionRef(path: string) {
+  const rows = () => collections.get(path) ?? [];
+  return {
+    add: async (data: Record<string, unknown>) => {
+      writes.push({ op: "add", path, data });
+      collections.set(path, [...rows(), data]);
+    },
+    // Only the shape the ack gate uses: one equality filter, then a limit.
+    where: (field: string, op: string, value: unknown) => ({
+      limit: (n: number) => ({
+        get: async () => {
+          if (op !== "==") throw new Error(`unsupported operator ${op}`);
+          const hits = rows()
+            .filter((r) => r[field] === value)
+            .slice(0, n);
+          return { empty: hits.length === 0, docs: hits };
+        },
+      }),
+    }),
+  };
+}
+
 const fakeDb = {
   doc: docRef,
+  collection: collectionRef,
   batch: () => {
     const staged: Write[] = [];
     return {
@@ -68,6 +111,7 @@ const fakeDb = {
         staged.push({ op: "set", path: ref.__path, data, opts });
       },
       commit: async () => {
+        if (failCommit) throw new Error("firestore: unavailable");
         writes.push(...staged);
       },
     };
@@ -88,6 +132,8 @@ import { POST as PROVISION } from "./provision/route";
 import { GET as PAIRING } from "./pairing/route";
 import { POST as RESTART } from "./restart/route";
 import { DELETE as DISCONNECT } from "./route";
+import { GET as QR } from "./qr/route";
+import { POST as RISK_ACK } from "./risk-ack/route";
 
 type Handler = typeof PROVISION | typeof PAIRING;
 
@@ -118,6 +164,12 @@ function defaultResponder(url: string, init: RequestInit): Response {
       },
       201,
     );
+  }
+  if (url.includes("/qr.png")) {
+    return new Response(QR_PNG, {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
   }
   if (url.includes("/pair")) {
     return json({
@@ -177,17 +229,38 @@ const restart = (o?: Parameters<typeof call>[3]) =>
   call(RESTART as unknown as Handler, "POST", "/restart", o);
 const disconnect = (o?: Parameters<typeof call>[3]) =>
   call(DISCONNECT as unknown as Handler, "DELETE", "", o);
+const qr = (o?: Parameters<typeof call>[3]) =>
+  call(QR as Handler, "GET", "/qr", o);
+const riskAck = (o?: Parameters<typeof call>[3]) =>
+  call(RISK_ACK as unknown as Handler, "POST", "/risk-ack", o);
 
 async function read(res: Response) {
-  return {
-    status: res.status,
-    body: (await res.json()) as Record<string, unknown>,
-  };
+  // Read as text first: the QR route answers with PNG bytes, and a helper that
+  // insisted on JSON could not probe it at all.
+  const raw = await res.text();
+  let body: Record<string, unknown> = {};
+  try {
+    body = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  return { status: res.status, body, raw, headers: res.headers };
 }
 
 beforeEach(() => {
   writes = [];
   calls = [];
+  failCommit = false;
+  // Both workspaces have already accepted the CURRENT warning, so the
+  // provisioning tests exercise the happy path. The ack tests below empty this
+  // deliberately.
+  collections = new Map<string, Record<string, unknown>[]>([
+    [ACKS_PATH, [{ uid: "uid_admin", textId: RISK_TEXT_ID, text: "…" }]],
+    [
+      OTHER_ACKS_PATH,
+      [{ uid: "uid_other_admin", textId: RISK_TEXT_ID, text: "…" }],
+    ],
+  ]);
   vi.stubEnv("WA_MANAGER_BASE_URL", MANAGER_URL);
   vi.stubEnv("WA_MANAGER_OPERATOR_TOKEN", OPERATOR_TOKEN);
   docs = new Map<string, Record<string, unknown>>([
@@ -233,6 +306,7 @@ const ROUTES: Array<[string, () => Promise<Response>]> = [
   ["pairing", () => pairing()],
   ["restart", () => restart()],
   ["disconnect", () => disconnect()],
+  ["qr", () => qr()],
 ];
 
 describe("tenancy", () => {
@@ -301,6 +375,10 @@ async function runAs(
       return read(await pairing(opts));
     case "restart":
       return read(await restart(opts));
+    case "qr":
+      return read(await qr(opts));
+    case "risk-ack":
+      return read(await riskAck(opts));
     default:
       return read(await disconnect(opts));
   }
@@ -372,35 +450,254 @@ describe("provision", () => {
     expect(writes).toEqual([]);
   });
 
-  it("relays a manager 409 as an actionable conflict and stores nothing", async () => {
-    stubManager(() => json({ error: "tenant already exists" }, 409));
+  it("tells a workspace that DOES hold credentials to disconnect first, and stores nothing", async () => {
+    // The secret doc is there, so this workspace genuinely has a bridge and
+    // the remedy is one it can perform.
+    docs.set(SECRET_PATH, {
+      baseUrl: "http://127.0.0.1:33101",
+      token: APP_TOKEN,
+      webhookSecret: HOOK_SECRET,
+    });
+    stubManager(() =>
+      json({ error: `tenant "sa_1" already exists; destroy it first` }, 409),
+    );
     const { status, body } = await read(await provision());
     expect(status).toBe(409);
-    expect(body.error).toContain("Disconnect it first");
+    expect(String(body.error)).toContain("Disconnect it first");
     expect(writes).toEqual([]);
+  });
+
+  it("answers a name collision without naming the other workspace", async () => {
+    // The manager's own sentence names the tenant holding the instance name —
+    // another customer's sub-account id. This workspace holds no credentials,
+    // so the 409 cannot be its own bridge; the admin is told what happened and
+    // given no remedy, because they have none. Asserted on the SERIALISED body
+    // rather than one field, the way the pairing-code test is: a foreign id
+    // added to any other key would be the same disclosure.
+    stubManager(() =>
+      json(
+        {
+          error: `tenant "sa_1" would take instance "sa-1", already held by tenant "${COLLIDING_SUB}"`,
+        },
+        409,
+      ),
+    );
+    const { status, body, raw } = await read(await provision());
+    expect(status).toBe(409);
+    expect(String(body.error)).toContain("collides with another workspace");
+    expect(String(body.error)).not.toContain("Disconnect it first");
+    expect(raw).not.toContain(COLLIDING_SUB);
+    expect(writes).toEqual([]);
+  });
+
+  it("says the credentials are lost when the store write fails after the manager 201'd", async () => {
+    // The 201 is the only moment these values exist outside the bridge's .env
+    // — no rotation route, no readable copy. A bare 500 leaves an operator
+    // retrying a provision that will now 409 forever, so the response has to
+    // name the remedy.
+    failCommit = true;
+    const { status, body } = await read(await provision());
+    expect(status).toBe(500);
+    expect(String(body.error)).toContain("can't be recovered");
+    expect(String(body.error)).toContain("Disconnect");
+    // No automatic cleanup: a destroy on a failure path is how a bridge
+    // someone is mid-way through pairing gets deleted.
+    expect(calls.some((c) => c.init.method === "DELETE")).toBe(false);
+  });
+});
+
+/**
+ * The agency feature gate. `whatsappEnabledByAgency` is the agency's switch for
+ * this workspace, and a gate that only stopped NEW bridges would leave every
+ * existing one fully operable: a switched-off workspace's admin could still
+ * pull a live pairing credential and bounce the bridge to mint fresh ones.
+ */
+describe("agency feature gate", () => {
+  const GATED: Array<[string, string]> = [
+    ["provision", "creates a bridge"],
+    ["pairing", "hands out live pairing state"],
+    ["restart", "mints a fresh batch of pairing codes"],
+    ["qr", "hands out the pairing credential as an image"],
+  ];
+
+  for (const [name, why] of GATED) {
+    it(`${name} is refused when the agency switched WhatsApp off (it ${why}), and never reaches the manager`, async () => {
+      docs.set(`subAccounts/${SUB}`, { agencyId: "ag_1", name: "Blitz" });
+      const res = await runAs(name, "uid_admin", SUB);
+      expect(res.status).toBe(403);
+      expect(String(res.body.error)).toContain("isn't enabled for this workspace");
+      expect(calls).toEqual([]);
+      expect(writes).toEqual([]);
+    });
+
+    it(`${name} proceeds when the agency has WhatsApp on`, async () => {
+      // The other direction. A gate asserted only in its refusing state passes
+      // just as well when it refuses everything.
+      const res = await runAs(name, "uid_admin", SUB);
+      expect(res.status).toBeLessThan(400);
+      expect(calls.length).toBeGreaterThan(0);
+    });
+  }
+
+  it("disconnect still works with the gate off — the off-switch is never gated", async () => {
+    // Deliberate carve-out. A workspace whose gate was just switched off is
+    // precisely the one that may need to tear its bridge down; gating the
+    // disconnect would strand it with a running bridge nothing can address.
+    docs.set(`subAccounts/${SUB}`, { agencyId: "ag_1", name: "Blitz" });
+    const { status, body } = await read(await disconnect());
+    expect(status).toBe(200);
+    expect(body).toEqual({ ok: true, provider: "twilio" });
+    expect(calls.some((c) => c.init.method === "DELETE")).toBe(true);
+    expect(writes.map((w) => w.op)).toEqual(["set", "delete"]);
+  });
+});
+
+describe("risk acknowledgement", () => {
+  /**
+   * THE test of this slice. The bridge rail is an unofficial WhatsApp
+   * connection and the number can be banned, so the acknowledgement is a
+   * condition of provisioning rather than a checkbox. A client-side-only check
+   * refuses nothing: this endpoint is one authenticated `curl` away.
+   */
+  it("provision is REFUSED without a recorded acknowledgement, before the manager is touched", async () => {
+    collections.set(ACKS_PATH, []);
+    const { status, body } = await read(await provision());
+    expect(status).toBe(403);
+    expect(String(body.error)).toContain("risks");
+    expect(calls).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  it("provision is refused when the only acknowledgement is of an OLDER warning", async () => {
+    // Bumping the id after a material change to the wording re-asks everyone:
+    // somebody who agreed to different words has not agreed to these.
+    collections.set(ACKS_PATH, [
+      { uid: "uid_admin", textId: "wa-bridge-risk-v0", text: "older words" },
+    ]);
+    const { status } = await read(await provision());
+    expect(status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  it("provision is ACCEPTED once the current warning is acknowledged", async () => {
+    collections.set(ACKS_PATH, []);
+    expect((await read(await provision())).status).toBe(403);
+
+    const ack = await read(await riskAck());
+    expect(ack.status).toBe(200);
+    expect(ack.body.textId).toBe(RISK_TEXT_ID);
+
+    calls = [];
+    const { status } = await read(await provision());
+    expect(status).toBe(200);
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("records who agreed, when, which version and the exact words shown", async () => {
+    collections.set(ACKS_PATH, []);
+    await riskAck();
+    const added = writes.filter((w) => w.op === "add");
+    expect(added).toHaveLength(1);
+    expect(added[0].path).toBe(ACKS_PATH);
+    const rec = added[0].data as Record<string, unknown>;
+    // The uid comes from the SESSION. An audit record whose subject the client
+    // chose records nothing.
+    expect(rec.uid).toBe("uid_admin");
+    // The server's clock, never the browser's.
+    expect(rec.acknowledgedAt).toBe("SERVER_TS");
+    expect(rec.textId).toBe(RISK_TEXT_ID);
+    // The full text, copied in, so the record stays readable after the
+    // constant is edited or deleted.
+    expect(String(rec.text)).toContain("ban");
+    expect(String(rec.text).length).toBeGreaterThan(200);
+  });
+
+  it("is admin-only and refuses an admin of a DIFFERENT sub-account", async () => {
+    for (const uid of ["uid_member", "uid_other_admin"]) {
+      writes = [];
+      const res = await read(await riskAck({ uid, id: SUB }));
+      expect(res.status).toBe(403);
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("writes under the SESSION's sub-account, not the one the request names", async () => {
+    await riskAck({
+      uid: "uid_other_admin",
+      id: OTHER_SUB,
+      body: { subAccountId: SUB, uid: "uid_admin" },
+    });
+    const added = writes.filter((w) => w.op === "add");
+    expect(added.map((w) => w.path)).toEqual([OTHER_ACKS_PATH]);
+    expect(added[0].data?.uid).toBe("uid_other_admin");
+  });
+
+  it("survives a disconnect — the record is not deleted with the rail", async () => {
+    // The audit record covers the period the number WAS connected, which is
+    // the only period anyone would ever ask about.
+    await disconnect();
+    expect(writes.some((w) => w.path.includes("whatsappBridgeRiskAcks"))).toBe(
+      false,
+    );
+    expect(collections.get(ACKS_PATH)).toHaveLength(1);
+  });
+});
+
+describe("qr image", () => {
+  it("answers with the manager's PNG and never the code as text", async () => {
+    const res = await qr();
+    const { status, raw, headers } = await read(res);
+    expect(status).toBe(200);
+    expect(headers.get("content-type")).toBe("image/png");
+    // A route that answered by relaying ../pair's JSON would put the
+    // write-grade payload in a body the browser can read as a string.
+    expect(raw).not.toContain(PAIR_CODE);
+    expect(raw).not.toContain(OPERATOR_TOKEN);
+  });
+
+  it("never lets the code be cached, on success or on failure", async () => {
+    // An <img> response is exactly what a disk cache or a proxy keeps, and a
+    // cached QR is a credential surviving its own expiry.
+    expect((await qr()).headers.get("cache-control")).toBe("no-store");
+
+    stubManager(() => new Response("not waiting to pair", { status: 409 }));
+    const failed = await qr();
+    expect(failed.status).toBe(409);
+    expect(failed.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("asks the manager for the SESSION's tenant", async () => {
+    await qr({ uid: "uid_other_admin", id: OTHER_SUB, body: { id: SUB } });
+    expect(calls.map((c) => c.url)).toEqual([
+      `${MANAGER_URL}/tenants/${OTHER_SUB}/qr.png`,
+    ]);
   });
 });
 
 describe("pairing", () => {
-  it("passes the code through when a round is in flight", async () => {
-    const { status, body } = await read(await pairing());
+  it("answers the question the screen asks, and NEVER the pairing code", async () => {
+    // The code is a write-grade credential. It reaches the admin as pixels
+    // from ../qr and in no other form, so it must not appear here — not as a
+    // field, and not anywhere in the serialised body.
+    const res = await pairing();
+    const { status, body, raw } = await read(res);
     expect(status).toBe(200);
     expect(body).toEqual({
       pairing: true,
       connected: false,
-      code: PAIR_CODE,
       expiresAt: "2026-09-07T10:00:00Z",
     });
+    expect("code" in body).toBe(false);
+    expect(raw).not.toContain(PAIR_CODE);
   });
 
-  it("omits code and expiresAt entirely when no round is in flight", async () => {
-    // ABSENT, not "". A blank code renders as a QR of nothing and a caller
-    // cannot tell it from a missing one.
+  it("omits expiresAt entirely when no round is in flight", async () => {
+    // ABSENT, not "". "" parses as the epoch and a caller cannot tell a blank
+    // timestamp from a missing one.
     stubManager(() => json({ tenantId: SUB, pairing: false, connected: true }));
     const { status, body } = await read(await pairing());
     expect(status).toBe(200);
     expect(body).toEqual({ pairing: false, connected: true });
-    expect("code" in body).toBe(false);
     expect("expiresAt" in body).toBe(false);
   });
 });

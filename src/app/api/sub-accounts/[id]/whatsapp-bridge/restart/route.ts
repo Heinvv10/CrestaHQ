@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { restartTenant } from "@/lib/comms/whatsapp/manager-client";
+import { requireWhatsappEnabledByAgency } from "@/lib/comms/whatsapp/bridge-agency-gate";
 import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
 
 /**
@@ -25,6 +26,13 @@ export async function POST(
   const { id: subAccountId } = await ctx.params;
   const auth = await requireSubAccountAdmin(request, subAccountId);
   if (auth instanceof NextResponse) return auth;
+
+  // The agency feature gate, same check and same refusal as ../provision. A
+  // workspace whose agency has switched WhatsApp off must not be able to pull
+  // a live pairing credential or mint fresh ones; without this the gate only
+  // stops NEW bridges and leaves every existing one fully operable.
+  const gate = await requireWhatsappEnabledByAgency(subAccountId);
+  if (!gate.ok) return gate.response;
 
   const result = await restartTenant(subAccountId);
   if (!result.ok) return managerFailureResponse(result);

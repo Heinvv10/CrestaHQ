@@ -3,14 +3,17 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 
-import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { storeBridgeConnection } from "@/lib/comms/whatsapp/bridge-connection";
+import {
+  hasStoredBridgeCredentials,
+  storeBridgeConnection,
+} from "@/lib/comms/whatsapp/bridge-connection";
 import { provisionTenant } from "@/lib/comms/whatsapp/manager-client";
 import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
 import { resolveBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
+import { requireWhatsappEnabledByAgency } from "@/lib/comms/whatsapp/bridge-agency-gate";
+import { hasCurrentRiskAck } from "@/lib/comms/whatsapp/bridge-risk-ack";
 import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
-import type { SubAccountDoc } from "@/types";
 
 /**
  * Provision this sub-account its own wa-agent-bridge, without a human on the
@@ -32,7 +35,14 @@ import type { SubAccountDoc } from "@/types";
  * costs the customer a re-pair.
  *
  * The response carries no credential. Provisioning does not pair: the customer
- * still has to scan a code, which is what GET ../pairing is for.
+ * still has to scan a code, which is what GET ../qr renders.
+ *
+ * THE RISK ACKNOWLEDGEMENT IS ENFORCED HERE, not in the card. This rail is an
+ * unofficial WhatsApp connection and the number can be banned, so a recorded
+ * acknowledgement is a condition of provisioning rather than a checkbox. A
+ * client-side check refuses nobody — this endpoint is one `curl` away from
+ * anyone holding an admin session — and the record is worthless if the thing
+ * it gates can happen without it.
  */
 export async function POST(
   request: Request,
@@ -42,23 +52,20 @@ export async function POST(
   const auth = await requireSubAccountAdmin(request, subAccountId);
   if (auth instanceof NextResponse) return auth;
 
-  const db = getAdminDb();
-  const saSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  const sub = saSnap.exists ? (saSnap.data() as SubAccountDoc) : null;
-  if (!sub) {
-    return NextResponse.json(
-      { error: "Sub-account not found" },
-      { status: 404 },
-    );
-  }
   // Same gate as the manual connect route: an agency that has not turned
   // WhatsApp on for this workspace must not have a number provisioned for it,
   // let alone billed for it.
-  if (sub.whatsappEnabledByAgency !== true) {
+  const gate = await requireWhatsappEnabledByAgency(subAccountId);
+  if (!gate.ok) return gate.response;
+  const sub = gate.sub;
+
+  // Checked AFTER the agency gate and BEFORE the manager is touched: a refusal
+  // must not leave a half-provisioned tenant behind for someone to tear down.
+  if (!(await hasCurrentRiskAck(subAccountId))) {
     return NextResponse.json(
       {
         error:
-          "WhatsApp isn't enabled for this workspace. Ask your agency to turn it on.",
+          "Accept the WhatsApp connection risks before connecting a number.",
       },
       { status: 403 },
     );
@@ -67,13 +74,33 @@ export async function POST(
   const result = await provisionTenant(subAccountId, sub.name ?? subAccountId);
   if (!result.ok) {
     if (result.reason === "conflict") {
-      // The manager already has a tenant under this id, and its credentials
-      // are unrecoverable by design — there is no route that reads a stored
-      // token back. Retrying cannot help, so say what actually clears it.
+      // A 409 is NOT always "this workspace already has a bridge". The manager
+      // also refuses when a DIFFERENT tenant holds the instance name this id
+      // derives (provision.checkInstanceFree and the SetTenantIdentity race),
+      // and telling that caller to disconnect sends them somewhere useless:
+      // the disconnect 404s, is treated as success, clears a rail that was
+      // never set, and the retry fails identically.
+      //
+      // Classified from the CRM's OWN state, never from the manager's prose.
+      // The manager's collision sentence names the other tenant — which is
+      // another customer's sub-account id — so relaying it would hand this
+      // workspace's admin the identity of a workspace they have no business
+      // knowing exists. It goes to the server log, where a real collision
+      // actually needs to be read, and no further.
+      //
+      // Stored credentials are the whole test: this workspace has a bridge if
+      // and only if its secret doc is there.
+      const ours = await hasStoredBridgeCredentials(subAccountId);
+      console.error(
+        `[whatsapp-bridge/provision] manager 409 for ${subAccountId} (ours=${ours}): ${result.error}`,
+      );
       return NextResponse.json(
         {
-          error:
-            "This workspace already has a bridge on the manager. Disconnect it first, then provision again — that erases the WhatsApp session, so the number has to be re-paired.",
+          error: ours
+            ? "This workspace already has a bridge on the manager. Disconnect it first, then provision again — that erases the WhatsApp session, so the number has to be re-paired."
+            : // No remedy is offered because the admin has none: the name is
+              // held by a workspace they cannot see, let alone disconnect.
+              "This workspace can't be connected right now because its bridge name collides with another workspace. Contact support.",
         },
         { status: 409 },
       );
@@ -116,7 +143,24 @@ export async function POST(
     connectedAt: FieldValue.serverTimestamp(),
     connectedByUid: auth.uid,
   };
-  await storeBridgeConnection(subAccountId, creds, meta);
+  // The 201 above is the only moment these credentials exist outside the
+  // bridge's own `.env`: the manager keeps no readable copy and there is no
+  // rotation route. If the write fails they are gone, so say that and say the
+  // remedy — an opaque 500 leaves an operator retrying a provision that will
+  // now 409 forever. Nothing is cleaned up automatically on purpose: a destroy
+  // on a failure path is how a bridge someone is mid-way through pairing gets
+  // deleted.
+  try {
+    await storeBridgeConnection(subAccountId, creds, meta);
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "The bridge was created but its credentials couldn't be saved, and they can't be recovered. Disconnect this workspace's bridge and connect again — that erases the WhatsApp session, so the number has to be re-paired.",
+      },
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json({
     ok: true,

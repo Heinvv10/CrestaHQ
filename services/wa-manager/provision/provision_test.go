@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/systemd"
@@ -21,6 +24,10 @@ type fakeCtl struct {
 	mu                                  sync.Mutex
 	enabled, started, stopped, disabled map[string]bool
 	FailStart, FailStop                 bool
+	// OnStart runs inside Start, which is the last injection point Create
+	// offers before it reads the tenant back. See
+	// TestCreateUnwindsWhenTheFinalReadBackFails.
+	OnStart func(instance string)
 }
 
 func newFakeCtl() *fakeCtl {
@@ -55,10 +62,13 @@ func (f *fakeCtl) ResetFailed(string) error { return nil }
 func (f *fakeCtl) Restart(i string) error { return f.mark(f.started, i) }
 func (f *fakeCtl) Start(i string) error {
 	f.mu.Lock()
-	fail := f.FailStart
+	fail, hook := f.FailStart, f.OnStart
 	f.mu.Unlock()
 	if fail {
 		return errors.New("fake: start refused")
+	}
+	if hook != nil {
+		hook(i)
 	}
 	return f.mark(f.started, i)
 }
@@ -976,5 +986,67 @@ func TestCreateReturnsAnEmptyWebhookSecretWhenSigningIsOff(t *testing.T) {
 	}
 	if got.WebhookSecret != "" {
 		t.Fatalf("webhook secret = %q, want empty for an unsigned tenant", got.WebhookSecret)
+	}
+}
+
+// Create's LAST step reads the tenant back, and that read failing must unwind
+// like every other failure: stop and disable the unit, remove the instance dir,
+// release the port. A bare `return Created{}, err` there reports failure while
+// leaving a running systemd unit, a WhatsApp session directory and a held port
+// behind — an orphan nothing owns and nothing will clean up, because the
+// caller was told the tenant does not exist.
+//
+// Getting the read-back to fail takes a fault injection, because it is the one
+// step with no seam of its own. The store column the projection scans into an
+// int is corrupted to a non-numeric value mid-Create (SQLite columns hold any
+// type regardless of declared affinity), from inside the systemd Start — the
+// last hook before the read. Nothing between Start and the read touches the
+// port: SetTenantState writes state and updated_unix, AppendEvent writes an
+// event row. So the write succeeds, the read fails on the Scan, and the
+// failure lands exactly on the line under test.
+func TestCreateUnwindsWhenTheFinalReadBackFails(t *testing.T) {
+	p, st, sc, root := newTestProvisioner(t)
+
+	instance, err := InstanceName("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.OnStart = func(string) {
+		raw, err := sql.Open("sqlite3", filepath.Join(root, "mgr.db")+"?_busy_timeout=5000")
+		if err != nil {
+			t.Errorf("open raw db: %v", err)
+			return
+		}
+		defer raw.Close()
+		if _, err := raw.Exec(`UPDATE tenants SET port = 'not-a-number' WHERE id = ?`, "t1"); err != nil {
+			t.Errorf("corrupt port: %v", err)
+		}
+	}
+
+	if _, err := p.Create("t1", "Blitz"); err == nil {
+		t.Fatal("a failed read-back must fail the whole Create")
+	}
+
+	// Everything this call made must be gone.
+	if !sc.Stopped(instance) || !sc.Disabled(instance) {
+		t.Fatalf("the unit is still enabled after a failed Create: stopped=%v disabled=%v",
+			sc.Stopped(instance), sc.Disabled(instance))
+	}
+	if _, err := os.Stat(filepath.Join(root, instance)); !os.IsNotExist(err) {
+		t.Fatal("a failed Create left the instance dir, WhatsApp session and all")
+	}
+	if _, err := st.GetTenant("t1"); err == nil {
+		t.Fatal("a failed Create left the tenant row, so its port is still held")
+	}
+
+	// And the port is reusable: provisioning is retried, and a leaked port
+	// eats the range one failure at a time.
+	sc.OnStart = nil
+	ten, err := createTenant(p, "t1", "Blitz")
+	if err != nil {
+		t.Fatalf("retry after a failed read-back must succeed: %v", err)
+	}
+	if ten.Port != 33100 {
+		t.Fatalf("port = %d, want the base port back", ten.Port)
 	}
 }

@@ -24,6 +24,7 @@ import { SubAccountSmsSection } from "@/components/settings/sub-account-sms-sect
 import { SubAccountMetaSection } from "@/components/settings/sub-account-meta-section";
 import { SubAccountGoogleSection } from "@/components/settings/sub-account-google-section";
 import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
+import { SubAccountWhatsappBridgeSection } from "@/components/settings/sub-account-whatsapp-bridge-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
 import { SubAccountPlanBillingSection } from "@/components/settings/sub-account-plan-billing-section";
@@ -300,6 +301,12 @@ export default function SettingsPage() {
               hosts the Twilio WhatsApp sender this one is the alternative to;
               an operator comparing the two rails should see them together. */}
           <SubAccountWhatsappCloudSection />
+
+          {/* WhatsApp over the operator's OWN number (unofficial linked
+              device) — self-gates on the same admin + agency WhatsApp gate as
+              the Cloud card. Placed beside it because the two are the same
+              decision: which rail this workspace's WhatsApp runs on. */}
+          <SubAccountWhatsappBridgeSection />
 
           {/* Facebook + Instagram inbox (beta) — self-gates: renders only when
               the agency flipped metaInboxEnabledByAgency on for this sub-account. */}

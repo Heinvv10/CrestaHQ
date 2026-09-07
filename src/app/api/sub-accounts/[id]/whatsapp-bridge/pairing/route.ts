@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getPairing } from "@/lib/comms/whatsapp/manager-client";
+import { requireWhatsappEnabledByAgency } from "@/lib/comms/whatsapp/bridge-agency-gate";
 import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
 
 /**
@@ -16,18 +17,17 @@ import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
  * from a query parameter here would hand any workspace admin a code that links
  * a device to another customer's WhatsApp number.
  *
- * THE CODE LEAVES THE SERVER, DELIBERATELY. It is a write-grade credential —
- * whoever scans it can send as that number — and it is nevertheless returned,
- * because the only person who can complete a pairing is the admin holding the
- * phone, and they cannot scan what they cannot see. What makes that acceptable
- * is that it goes to an authenticated admin OF THIS WORKSPACE, over the
- * session, for their own number, and that it expires in seconds. What is not
- * acceptable is it reaching a log: nothing here logs the response, and the
- * manager client is written not to log a body for the same reason.
+ * THE CODE NEVER LEAVES THE SERVER. It is a write-grade credential — whoever
+ * scans it can send as that number — and the admin holding the phone can only
+ * scan a picture, not a string, so the string has no reason to cross at all.
+ * It is destructured out and stranded in a local rather than merely not being
+ * read, so a later `...result.data` spread cannot quietly reintroduce it. The
+ * scannable form is the PNG at `../qr`, which the manager renders.
  *
- * `code` and `expiresAt` are passed through as ABSENT when no pairing round is
- * in flight, never coerced to "". A blank code renders as a QR of nothing and
- * is indistinguishable from a missing one.
+ * This route answers only the QUESTION the screen asks — is a round in flight,
+ * is it connected, when does the code lapse. `expiresAt` is passed through as
+ * ABSENT when no round is in flight, never coerced to "": "" parses as the
+ * epoch, and a caller cannot tell a blank timestamp from a missing one.
  */
 export async function GET(
   request: Request,
@@ -37,14 +37,21 @@ export async function GET(
   const auth = await requireSubAccountAdmin(request, subAccountId);
   if (auth instanceof NextResponse) return auth;
 
+  // The agency feature gate, same check and same refusal as ../provision. A
+  // workspace whose agency has switched WhatsApp off must not be able to pull
+  // a live pairing credential or mint fresh ones; without this the gate only
+  // stops NEW bridges and leaves every existing one fully operable.
+  const gate = await requireWhatsappEnabledByAgency(subAccountId);
+  if (!gate.ok) return gate.response;
+
   const result = await getPairing(subAccountId);
   if (!result.ok) return managerFailureResponse(result);
 
-  const { pairing, connected, code, expiresAt } = result.data;
+  // `code` is named only to strand it in a local the response cannot reach.
+  const { pairing, connected, code: _code, expiresAt } = result.data;
   return NextResponse.json({
     pairing,
     connected,
-    ...(code === undefined ? {} : { code }),
     ...(expiresAt === undefined ? {} : { expiresAt }),
   });
 }

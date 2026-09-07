@@ -34,6 +34,25 @@ import type { SubAccountDoc } from "@/types";
  * active member and Firestore rules are document-level, so a field there is a
  * secret handed to every collaborator seat. Only the display number goes up.
  */
+/**
+ * Does this workspace already hold bridge credentials?
+ *
+ * Lives here because this module owns the credential path; a second copy of
+ * `whatsappBridgeSecretPath` in a route is how the path drifts. Only the
+ * document's EXISTENCE is answered — nothing reads the token back, and no
+ * route in this deployment can.
+ *
+ * The provision route uses it to classify a manager 409 from the CRM's own
+ * state instead of from the manager's prose. See the comment there.
+ */
+export async function hasStoredBridgeCredentials(
+  subAccountId: string,
+): Promise<boolean> {
+  const db = getAdminDb();
+  const snap = await db.doc(whatsappBridgeSecretPath(subAccountId)).get();
+  return snap.exists;
+}
+
 export async function storeBridgeConnection(
   subAccountId: string,
   creds: WhatsappBridgeSecret,

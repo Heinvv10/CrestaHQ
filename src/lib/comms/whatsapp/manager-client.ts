@@ -35,6 +35,11 @@ import "server-only";
  *  mid-sweep. */
 const TIMEOUT_MS = 15_000;
 
+/** One sentence, one copy: every route answers a manager-less deployment the
+ *  same way, and `managerFailureResponse` turns it into the same 503. */
+const NOT_CONFIGURED =
+  "The WhatsApp bridge manager isn't configured on this deployment. Set WA_MANAGER_BASE_URL and WA_MANAGER_OPERATOR_TOKEN, or connect a bridge manually.";
+
 export interface ManagerConfig {
   baseUrl: string;
   token: string;
@@ -101,16 +106,6 @@ export interface ManagerTenant {
   port: number;
   state: string;
   phone?: string;
-  health: ManagerTenantHealth | null;
-}
-
-export interface ManagerTenantHealth {
-  reachable: boolean;
-  connected: boolean;
-  killed: boolean;
-  degraded: boolean;
-  /** null means the sweep never checked this tenant — NOT that it is down. */
-  incomplete: boolean;
 }
 
 /**
@@ -162,8 +157,7 @@ async function call<T>(
     return {
       ok: false,
       reason: "not_configured",
-      error:
-        "The WhatsApp bridge manager isn't configured on this deployment. Set WA_MANAGER_BASE_URL and WA_MANAGER_OPERATOR_TOKEN, or connect a bridge manually.",
+      error: NOT_CONFIGURED,
     };
   }
   const doFetch = opts.fetchImpl ?? fetch;
@@ -244,48 +238,6 @@ export function provisionTenant(
   );
 }
 
-/** Every tenant on the box. Agency-wide; not something a sub-account route
- *  may expose. */
-export function listTenants(
-  opts: {
-    fetchImpl?: typeof fetch;
-    env?: Record<string, string | undefined>;
-  } = {},
-): Promise<ManagerResult<ManagerTenant[]>> {
-  return call<{ tenants?: ManagerTenant[] }>(
-    "/api/tenants",
-    { method: "GET" },
-    opts,
-  ).then((res) =>
-    res.ok ? { ok: true as const, data: res.data.tenants ?? [] } : res,
-  );
-}
-
-/**
- * One tenant, or null when the manager has no such tenant.
- *
- * List-then-filter because the manager exposes no single-tenant JSON route —
- * its route table is list / create / delete / pair / restart (see
- * services/wa-manager/api/server.go). The filter runs HERE rather than being
- * pushed to the manager, so a caller can never widen it.
- */
-export function getTenant(
-  tenantId: string,
-  opts: {
-    fetchImpl?: typeof fetch;
-    env?: Record<string, string | undefined>;
-  } = {},
-): Promise<ManagerResult<ManagerTenant | null>> {
-  return listTenants(opts).then((res) =>
-    res.ok
-      ? {
-          ok: true as const,
-          data: res.data.find((t) => t.tenantId === tenantId) ?? null,
-        }
-      : res,
-  );
-}
-
 /** Live pairing state. The `code` is a write-grade credential — never log it. */
 export function getPairing(
   tenantId: string,
@@ -345,4 +297,78 @@ export function destroyTenant(
     { method: "DELETE" },
     opts,
   );
+}
+
+/**
+ * The pairing QR as a PNG, rendered by the manager.
+ *
+ * THIS IS THE ONLY WAY A PAIRING CODE MAY REACH A BROWSER. The code is a
+ * write-grade credential — whoever scans it can send as that number — and the
+ * admin holding the phone is nevertheless the only person who can complete a
+ * pairing, so something has to cross. An image is what crosses: the payload is
+ * encoded into pixels the manager drew, so it never exists as a string in a
+ * JSON body, a React prop, a devtools network tab, a `localStorage` write or a
+ * copy-paste into a support ticket. `getPairing` above deliberately does not
+ * hand `code` to any route.
+ *
+ * It does NOT go through `call`, because `call` parses JSON and this answers
+ * with bytes. The error body is never read at all: the manager writes plain
+ * operator prose here, not JSON, and this seam authors its own sentences from
+ * the status rather than relaying an unparsed body of unknown provenance.
+ *
+ * The manager's qr.png route sits behind `authedUI`, which accepts the
+ * operator token as a bearer exactly like the JSON API — its Basic arm exists
+ * only because a browser cannot put a header on an `<img src>`. This is a
+ * server-to-server call, so the bearer is used.
+ */
+export async function getPairingQrPng(
+  tenantId: string,
+  opts: {
+    fetchImpl?: typeof fetch;
+    env?: Record<string, string | undefined>;
+  } = {},
+): Promise<ManagerResult<ArrayBuffer>> {
+  const cfg = resolveManagerConfig(opts.env);
+  if (!cfg) {
+    return { ok: false, reason: "not_configured", error: NOT_CONFIGURED };
+  }
+  const doFetch = opts.fetchImpl ?? fetch;
+
+  let res: Response;
+  let png: ArrayBuffer;
+  try {
+    res = await doFetch(
+      `${cfg.baseUrl}/tenants/${encodeURIComponent(tenantId)}/qr.png`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${cfg.token}` },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      },
+    );
+    png = res.ok ? await res.arrayBuffer() : new ArrayBuffer(0);
+  } catch {
+    return {
+      ok: false,
+      reason: "unreachable",
+      error: "Couldn't reach the WhatsApp bridge manager.",
+    };
+  }
+
+  if (!res.ok) {
+    // 409 is the manager saying this bridge is not offering a code right now —
+    // it is connected already, or it has issued its handful and needs a
+    // restart. That is a state the screen renders, not an outage, and it is
+    // the one the caller most needs to tell apart.
+    return {
+      ok: false,
+      reason: res.status === 409 ? "conflict" : "refused",
+      error:
+        res.status === 409
+          ? "This number isn't waiting to be paired right now. Get a new code and try again."
+          : "No pairing code is available for this workspace yet.",
+      status: res.status,
+    };
+  }
+
+  return { ok: true, data: png };
 }

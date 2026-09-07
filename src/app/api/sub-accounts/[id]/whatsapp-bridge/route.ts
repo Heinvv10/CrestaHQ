@@ -29,6 +29,16 @@ import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
  * still needs clearing, and refusing to clean up a workspace because the thing
  * it points at is already gone is how a workspace gets stuck pointed at a
  * bridge that does not exist.
+ *
+ * NO AGENCY FEATURE GATE HERE, and that is a decision rather than an omission.
+ * ../provision, ../pairing, ../restart and ../qr all refuse a workspace whose
+ * agency has switched WhatsApp off, because each of them creates a bridge or
+ * hands out a device-linking credential. Disconnecting does neither — it only
+ * takes one away — and a workspace whose gate was JUST switched off is
+ * precisely the one that may need to tear its bridge down. A gate on the
+ * off-switch would strand it with a running bridge nothing in the product can
+ * address. The tenancy check above still stands: only this workspace's own
+ * admins may fire it.
  */
 export async function DELETE(
   request: Request,
