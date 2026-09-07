@@ -19,8 +19,12 @@ import (
 //
 // It is an explicit projection rather than store.Tenant re-encoded, so that a
 // field added to the row later cannot start appearing in an operator console
-// by accident. Neither the app token nor the manager token has any
-// representation here — the manager holds both and must never hand either back.
+// by accident. No credential has any representation here: the manager never
+// hands back a STORED credential, and there is no route anywhere in this API
+// that reads one. The single exception is the moment of creation — see
+// tenantCreatedView, which handleCreate alone uses to return the app
+// consumer's freshly minted pair once, and which is deliberately a separate
+// type so that this projection cannot acquire them by accident.
 type tenantView struct {
 	TenantID    string      `json:"tenantId"`
 	DisplayName string      `json:"displayName"`
@@ -133,7 +137,7 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := s.deps.Provisioner.Create(req.TenantID, req.DisplayName)
+	created, err := s.deps.Provisioner.Create(req.TenantID, req.DisplayName)
 	if err != nil {
 		// Only a refusal the provisioner AUTHORED is relayed and called a
 		// conflict. Create also surfaces os.MkdirAll / os.WriteFile
@@ -153,7 +157,41 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusCreated, viewOf(t, nil))
+	// The ONE disclosure of a credential in this API, and only for the pair
+	// this call just minted. Nothing logs either value — not here and not in
+	// provision — and no other route can produce them, so a caller that drops
+	// this response must destroy and re-provision the tenant, which costs the
+	// customer a re-pair. That is the accepted v1 tradeoff in place of a
+	// rotation route: a route that could re-read a stored token would give
+	// every operator-token holder the ability to send as any number on the box
+	// forever, which is exactly the property this API is built not to have.
+	writeJSON(w, http.StatusCreated, tenantCreatedView{
+		tenantView:    viewOf(created.Tenant, nil),
+		Token:         created.AppToken,
+		WebhookSecret: created.WebhookSecret,
+	})
+}
+
+// tenantCreatedView is the 201 body of POST /api/tenants, and the only shape
+// in this package that carries a secret.
+//
+// It embeds tenantView rather than adding fields to it: that struct's whole
+// job is to be an explicit projection nothing can leak through, and widening
+// it would put these two values on the list route and the operator console as
+// well. Only handleCreate constructs this.
+//
+// WebhookSecret is omitempty because a manager configured without a webhook
+// secret generator provisions unsigned tenants — the legal pre-signing shape —
+// and an empty string in the body would read as "the secret is blank" rather
+// than "this tenant has none".
+type tenantCreatedView struct {
+	tenantView
+	// Token is the app consumer's bearer token: the credential the CRM
+	// presents on the bridge's /v1/*. Shown once, here, never again.
+	Token string `json:"token"`
+	// WebhookSecret is the HMAC key the bridge signs inbound deliveries with,
+	// which the receiver must store to verify them. Shown once, here.
+	WebhookSecret string `json:"webhookSecret,omitempty"`
 }
 
 // handleDelete tears a tenant down completely: unit, files, WhatsApp session

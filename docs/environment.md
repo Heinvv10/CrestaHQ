@@ -137,6 +137,32 @@ Without `GITPAGE_API_KEY`, `/api/sub-accounts/[id]/website/[siteId]/build` retur
 
 Without `OPENROUTER_API_KEY`, the AI Agents settings UI still renders but every channel stays silent: the SMS inbound webhook short-circuits past `maybeRespondWithAi`, the Web Chat `/api/web-chat/message` endpoint returns the fallback "I had trouble reaching the server" reply, and the `/api/sub-accounts/[id]/ai-agent/test` endpoint returns 503.
 
+## Optional — wa-manager (self-serve WhatsApp bridge provisioning)
+| Var | Source |
+|---|---|
+| `WA_MANAGER_BASE_URL` | The wa-manager listener, e.g. `http://127.0.0.1:33000`. It binds to loopback on the CRM's own box and stays there — it is never exposed publicly, because every one of its routes is privileged. |
+| `WA_MANAGER_OPERATOR_TOKEN` | `OPERATOR_TOKEN` from the manager's own `.env` on that box. |
+
+CrestaHQ operates the bridge as a service: `wa-manager` runs one
+`wa-agent-bridge` process per sub-account and holds the credentials for all of
+them. **The operator token has no notion of tenant ownership** — it can link a
+WhatsApp device on any tenant on the box — so the CRM, not the manager, is the
+tenancy boundary: every route under
+`/api/sub-accounts/[id]/whatsapp-bridge/*` derives the manager tenant id from
+the authenticated session's sub-account and never from the request.
+
+Without these, nothing 500s and no page breaks: the self-serve provision /
+pairing / restart / disconnect routes answer 503 with a sentence saying the
+manager isn't configured, and a bridge can still be connected by hand through
+`/api/sub-accounts/[id]/whatsapp-bridge-connection` with credentials read off
+the box. A buyer copy deploying to Vercel has no manager and never sets these.
+
+Note there is no rotation route by design. The manager returns the bridge's app
+token and webhook secret exactly once, in the 201 of the provision call, and
+keeps no readable copy. If the CRM loses them the recovery is
+disconnect-and-reprovision, which erases the WhatsApp session and costs the
+customer a re-pair.
+
 ## Optional — Firecrawl (powers the website KB on the AI Agent profile)
 | Var | Source |
 |---|---|

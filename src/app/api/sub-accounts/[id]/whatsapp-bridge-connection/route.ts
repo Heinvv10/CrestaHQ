@@ -11,10 +11,10 @@ import {
 } from "@/lib/comms/whatsapp/bridge-credentials";
 import { bridgeHealth } from "@/lib/comms/whatsapp/bridge-client";
 import {
-  whatsappBridgeSecretPath,
-  type WhatsappBridgeMeta,
-} from "@/types/whatsapp-bridge";
-import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+  clearBridgeConnection,
+  storeBridgeConnection,
+} from "@/lib/comms/whatsapp/bridge-connection";
+import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -164,21 +164,7 @@ export async function POST(
     connectedByUid: auth.uid,
   };
 
-  // One batch, so the workspace is never switched onto a rail whose
-  // credentials are not there yet, and never left holding credentials it is
-  // not routed to.
-  const batch = db.batch();
-  batch.set(db.doc(whatsappBridgeSecretPath(subAccountId)), creds);
-  batch.set(
-    db.doc(`subAccounts/${subAccountId}`),
-    {
-      whatsappBridgeMeta: meta,
-      whatsappProvider: "bridge",
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
-  await batch.commit();
+  await storeBridgeConnection(subAccountId, creds, meta);
 
   return NextResponse.json({
     ok: true,
@@ -195,34 +181,10 @@ export async function DELETE(
   const auth = await requireSubAccountAdmin(request, subAccountId);
   if (auth instanceof NextResponse) return auth;
 
-  const db = getAdminDb();
-
-  // Which rail to fall back to is a QUESTION, not the constant "twilio".
-  //
-  // A workspace that ran on Cloud, tried the bridge, and disconnected was
-  // being moved to Twilio with its Cloud credentials still sitting there —
-  // silently switching a working rail for one it may never have configured.
-  // Cloud is restored when its connection is still present; otherwise Twilio,
-  // which is the documented default for a workspace carrying no provider.
-  const saSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  const cloudStillConnected =
-    (saSnap.data() as SubAccountDoc | undefined)?.whatsappCloudMeta
-      ?.phoneNumberId != null;
-  const fallback: WhatsAppProviderId = cloudStillConnected ? "cloud" : "twilio";
-
-  // Repointed BEFORE the credentials are deleted, so there is no interval in
-  // which the workspace is aimed at a rail whose token is already gone.
   // Disconnect stays ungated so a workspace can always be cleaned up even
-  // after the agency turns the feature off.
-  await db.doc(`subAccounts/${subAccountId}`).set(
-    {
-      whatsappProvider: fallback,
-      whatsappBridgeMeta: null,
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
-  await db.doc(whatsappBridgeSecretPath(subAccountId)).delete();
+  // after the agency turns the feature off. The fallback-rail reasoning lives
+  // in clearBridgeConnection.
+  const fallback = await clearBridgeConnection(subAccountId);
 
   return NextResponse.json({ ok: true, provider: fallback });
 }
