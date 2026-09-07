@@ -32,7 +32,7 @@ import (
 // Taking the interface keeps the handlers testable without a systemd on the
 // machine — a test that could start a real unit is not a test.
 type Provisioner interface {
-	Create(tenantID, displayName string) (store.Tenant, error)
+	Create(tenantID, displayName string) (provision.Created, error)
 	Destroy(tenantID string) error
 }
 

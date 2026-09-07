@@ -1,0 +1,92 @@
+import "server-only";
+
+import { FieldValue } from "firebase-admin/firestore";
+
+import { getAdminDb } from "@/lib/firebase/admin";
+import {
+  whatsappBridgeSecretPath,
+  type WhatsappBridgeMeta,
+  type WhatsappBridgeSecret,
+} from "@/types/whatsapp-bridge";
+import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import type { SubAccountDoc } from "@/types";
+
+/**
+ * The two writes that put a sub-account on the bridge rail, and take it off
+ * again.
+ *
+ * Extracted from the manual connect/disconnect route so the self-serve
+ * provisioning routes drive the SAME writes rather than a second copy. Two
+ * copies is how one of them stops clearing `whatsappBridgeMeta`, leaving a
+ * workspace showing a number it no longer has — and how the credential path
+ * drifts, which is worse: a secret written to a path Firestore rules do not
+ * cover is readable by every collaborator seat.
+ */
+
+/**
+ * Store the credentials and switch the workspace onto the bridge.
+ *
+ * One batch, so the workspace is never switched onto a rail whose credentials
+ * are not there yet, and never left holding credentials it is not routed to.
+ *
+ * `token` and `webhookSecret` go to `subAccounts/{id}/private/whatsappBridge`
+ * and NEVER onto the sub-account doc: `subAccounts/{id}` is readable by any
+ * active member and Firestore rules are document-level, so a field there is a
+ * secret handed to every collaborator seat. Only the display number goes up.
+ */
+export async function storeBridgeConnection(
+  subAccountId: string,
+  creds: WhatsappBridgeSecret,
+  meta: WhatsappBridgeMeta,
+): Promise<void> {
+  const db = getAdminDb();
+  const batch = db.batch();
+  batch.set(db.doc(whatsappBridgeSecretPath(subAccountId)), creds);
+  batch.set(
+    db.doc(`subAccounts/${subAccountId}`),
+    {
+      whatsappBridgeMeta: meta,
+      whatsappProvider: "bridge",
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+  await batch.commit();
+}
+
+/**
+ * Take the workspace off the bridge and delete its credentials. Returns the
+ * rail it was moved to.
+ *
+ * Which rail to fall back to is a QUESTION, not the constant "twilio". A
+ * workspace that ran on Cloud, tried the bridge, and disconnected was being
+ * moved to Twilio with its Cloud credentials still sitting there — silently
+ * swapping a working rail for one it may never have configured. Cloud is
+ * restored when its connection is still present; otherwise Twilio, the
+ * documented default for a workspace carrying no provider.
+ *
+ * Repointed BEFORE the credentials are deleted, so there is no interval in
+ * which the workspace is aimed at a rail whose token is already gone.
+ */
+export async function clearBridgeConnection(
+  subAccountId: string,
+): Promise<WhatsAppProviderId> {
+  const db = getAdminDb();
+  const saSnap = await db.doc(`subAccounts/${subAccountId}`).get();
+  const cloudStillConnected =
+    (saSnap.data() as SubAccountDoc | undefined)?.whatsappCloudMeta
+      ?.phoneNumberId != null;
+  const fallback: WhatsAppProviderId = cloudStillConnected ? "cloud" : "twilio";
+
+  await db.doc(`subAccounts/${subAccountId}`).set(
+    {
+      whatsappProvider: fallback,
+      whatsappBridgeMeta: null,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+  await db.doc(whatsappBridgeSecretPath(subAccountId)).delete();
+
+  return fallback;
+}

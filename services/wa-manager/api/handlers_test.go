@@ -20,7 +20,11 @@ import (
 const (
 	operatorTok = "op-token-hermes"
 	appTok      = "app-token-that-must-never-appear"
-	mgrTok      = "manager-token-for-tenant"
+	// hookSecret is the webhook signing key a real provision would have just
+	// minted. Like appTok it must appear in exactly one response — the 201 of
+	// the call that minted it — and nowhere else.
+	hookSecret = "hook-secret-that-must-never-appear"
+	mgrTok     = "manager-token-for-tenant"
 )
 
 // fakeProvisioner records what it was asked to do WITHOUT touching systemd or
@@ -31,19 +35,28 @@ type fakeProvisioner struct {
 	creates  []string
 	destroys []string
 	tenant   store.Tenant
-	err      error
+	// appToken and webhookSecret are what a real provisioner would have just
+	// minted. They are fields rather than constants so a test can set the
+	// webhook secret empty and assert the pre-signing shape.
+	appToken      string
+	webhookSecret string
+	err           error
 }
 
-func (f *fakeProvisioner) Create(tenantID, displayName string) (store.Tenant, error) {
+func (f *fakeProvisioner) Create(tenantID, displayName string) (provision.Created, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, tenantID)
 	if f.err != nil {
-		return store.Tenant{}, f.err
+		return provision.Created{}, f.err
 	}
 	t := f.tenant
 	t.ID, t.DisplayName = tenantID, displayName
-	return t, nil
+	return provision.Created{
+		Tenant:        t,
+		AppToken:      f.appToken,
+		WebhookSecret: f.webhookSecret,
+	}, nil
 }
 
 func (f *fakeProvisioner) Destroy(tenantID string) error {
@@ -166,7 +179,11 @@ func newHarnessWithPublicOrigin(t *testing.T, publicOrigin string) *harness {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	prov := &fakeProvisioner{tenant: store.Tenant{Instance: "blitz", Port: 8412, State: store.StateProvisioned}}
+	prov := &fakeProvisioner{
+		tenant:        store.Tenant{Instance: "blitz", Port: 8412, State: store.StateProvisioned},
+		appToken:      appTok,
+		webhookSecret: hookSecret,
+	}
 	units := &fakeUnits{}
 	bridge := newFakeBridge(t)
 	poll := &fakePoller{reports: map[string]health.Report{"blitz": {Reachable: true, Connected: true, OutboundLast24h: 7}}}
@@ -509,24 +526,82 @@ func TestRestartReportsFailure(t *testing.T) {
 	}
 }
 
-// Nothing this API returns is allowed to carry a bearer token. The manager
-// holds one per tenant plus its own; an operator console rendering a response
+// No route that READS state may carry a credential. The manager holds one
+// token per tenant plus its own, and an operator console rendering a response
 // verbatim must not put any of them on a screen or in a log.
-func TestResponsesNeverCarryTokens(t *testing.T) {
+//
+// POST /api/tenants is deliberately excluded and has its own tests below: it
+// discloses the app pair it has just minted, once, and never again. Every
+// other route — including the list route that re-encodes the same tenants —
+// must stay silent.
+func TestReadRoutesNeverCarryTokens(t *testing.T) {
 	h := newHarness(t)
 	h.seed(t, "blitz", "blitz", 8412)
+	// A tenant is created first, so the list route below is re-encoding a
+	// tenant whose credentials the manager has genuinely seen this run.
+	h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
 
 	bodies := []string{
 		h.do(http.MethodGet, "/api/tenants", operatorTok, "").Body.String(),
-		h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`).Body.String(),
 		h.do(http.MethodGet, "/api/tenants/blitz/pair", operatorTok, "").Body.String(),
+		h.do(http.MethodPost, "/api/tenants/blitz/restart", operatorTok, "").Body.String(),
+		h.do(http.MethodDelete, "/api/tenants/blitz?confirm=blitz", operatorTok, "").Body.String(),
 	}
 	for _, b := range bodies {
-		for _, secret := range []string{operatorTok, mgrTok, appTok} {
+		for _, secret := range []string{operatorTok, mgrTok, appTok, hookSecret} {
 			if strings.Contains(b, secret) {
-				t.Fatalf("response leaked a token: %s", b)
+				t.Fatalf("response leaked a credential: %s", b)
 			}
 		}
+	}
+}
+
+// The one authorised disclosure: the 201 hands back the pair this call minted,
+// because nothing else can — the manager keeps no readable copy, and the CRM
+// cannot read another service's .env. Without it there is no way to connect a
+// provisioned bridge to the product at all.
+func TestCreateReturnsTheMintedAppCredentialsOnce(t *testing.T) {
+	h := newHarness(t)
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if got["token"] != appTok {
+		t.Fatalf("token = %v, want the freshly minted app token", got["token"])
+	}
+	if got["webhookSecret"] != hookSecret {
+		t.Fatalf("webhookSecret = %v, want the freshly minted secret", got["webhookSecret"])
+	}
+	// The tenant projection must still be there — the caller needs the port to
+	// address the bridge at all.
+	if got["tenantId"] != "acme" || got["port"] != float64(8412) {
+		t.Fatalf("201 lost the tenant projection: %v", got)
+	}
+}
+
+// A manager provisioning unsigned tenants (no webhook-secret generator) must
+// omit the field rather than send "". An empty string reads as "the secret is
+// blank", and a receiver storing it would then verify every inbound against a
+// key the bridge never had.
+func TestCreateOmitsTheWebhookSecretWhenSigningIsOff(t *testing.T) {
+	h := newHarness(t)
+	h.prov.webhookSecret = ""
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := got["webhookSecret"]; present {
+		t.Fatalf("webhookSecret must be absent, not blank: %s", rec.Body.String())
 	}
 }
 

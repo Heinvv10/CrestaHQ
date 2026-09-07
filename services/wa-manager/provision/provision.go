@@ -143,25 +143,50 @@ func (p *Provisioner) instanceDir(instance string) string {
 	return filepath.Join(p.opts.Root, instance)
 }
 
+// Created is what one successful Create produced: the persisted tenant, plus
+// the app consumer's freshly minted credentials.
+//
+// The credentials are a RETURN VALUE rather than two more columns on
+// store.Tenant on purpose. store.Tenant is the persistence type — it is read
+// back by ListTenants, projected into the operator console and handed to the
+// health poller — and a secret field on it would be one careless re-encode
+// away from being disclosed on every list. Here they exist only for the
+// lifetime of this call's return, which is the one moment they may be handed
+// out.
+//
+// WebhookSecret is empty when Opts.WebhookSecret is nil, which is the legal
+// pre-signing shape; it is not an error.
+//
+// There is deliberately NO way to read these back later — no rotation route,
+// no registry copy. If the consumer that received them loses them, the
+// recovery is destroy-and-reprovision, which costs the customer a re-pair.
+// That is an accepted v1 tradeoff: a route that could re-read a stored token
+// is a far larger hole than an occasional re-pair.
+type Created struct {
+	Tenant        store.Tenant
+	AppToken      string
+	WebhookSecret string
+}
+
 // Create provisions one tenant, or leaves the system exactly as it found it.
 //
 // Order matters: everything that can be refused without side effects is
 // checked BEFORE a port is allocated or a directory is written, so the common
 // rejection costs nothing and needs no unwind.
-func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error) {
+func (p *Provisioner) Create(tenantID, displayName string) (Created, error) {
 	instance, err := InstanceName(tenantID)
 	if err != nil {
-		return store.Tenant{}, err
+		return Created{}, err
 	}
 	appTok, mgrTok := p.opts.AppToken(), p.opts.ManagerToken()
 	if appTok == "" || mgrTok == "" {
-		return store.Tenant{}, errors.New("provision: both the app and manager tokens are required")
+		return Created{}, errors.New("provision: both the app and manager tokens are required")
 	}
 	// The bridge refuses to boot on a duplicate token, so this would produce an
 	// instance that can never start — after handing the app the manager's
 	// admin privileges.
 	if appTok == mgrTok {
-		return store.Tenant{}, errors.New("provision: the app and manager tokens must differ; sharing one would give the app admin")
+		return Created{}, errors.New("provision: the app and manager tokens must differ; sharing one would give the app admin")
 	}
 	// A nil WebhookSecret is the pre-signing shape and stays legal. A non-nil
 	// one returning "" is not: something asked for a secret and got nothing,
@@ -170,17 +195,17 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	var hookSecret string
 	if p.opts.WebhookSecret != nil {
 		if hookSecret = p.opts.WebhookSecret(); hookSecret == "" {
-			return store.Tenant{}, errors.New("provision: the webhook secret generator returned an empty secret; inbound would be unsigned")
+			return Created{}, errors.New("provision: the webhook secret generator returned an empty secret; inbound would be unsigned")
 		}
 		// Same reasoning as the app/manager token check above, one step
 		// further: a secret equal to either bearer token means the generator
 		// is not random, and one leak would compromise both directions.
 		if hookSecret == appTok || hookSecret == mgrTok {
-			return store.Tenant{}, errors.New("provision: the webhook secret matches a bearer token; the generator is not producing independent secrets")
+			return Created{}, errors.New("provision: the webhook secret matches a bearer token; the generator is not producing independent secrets")
 		}
 	}
 	if err := p.checkInstanceFree(tenantID, instance); err != nil {
-		return store.Tenant{}, err
+		return Created{}, err
 	}
 
 	// AllocatePort's INSERT is the mutual-exclusion point for THIS tenant id,
@@ -190,7 +215,7 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	// inserted=true.
 	port, inserted, err := p.st.AllocatePort(tenantID, p.opts.PortBase, p.opts.PortCount)
 	if err != nil {
-		return store.Tenant{}, err
+		return Created{}, err
 	}
 	if !inserted {
 		// Someone else owns this row: a concurrent Create for the same id, or
@@ -199,7 +224,7 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 		// tear down the winner's instance directory, stop its unit and delete
 		// its row while its own Create reported success. That is the defect
 		// this branch exists for, and it is why nothing below may run.
-		return store.Tenant{}, &ConflictError{
+		return Created{}, &ConflictError{
 			Msg: fmt.Sprintf("tenant %q is already being provisioned or already exists; "+
 				"destroy it before re-provisioning", tenantID),
 		}
@@ -208,8 +233,8 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	// From here on the tenant owns a port AND owns its row, so every exit
 	// unwinds — every path below touches only what this call created.
 	enabled, dirCreated := false, false
-	fail := func(err error) (store.Tenant, error) {
-		return store.Tenant{}, errors.Join(err, p.unwind(tenantID, instance, enabled, dirCreated))
+	fail := func(err error) (Created, error) {
+		return Created{}, errors.Join(err, p.unwind(tenantID, instance, enabled, dirCreated))
 	}
 
 	// SetTenantIdentity is the mutual-exclusion point for two DIFFERENT ids
@@ -272,7 +297,14 @@ func (p *Provisioner) Create(tenantID, displayName string) (store.Tenant, error)
 	// line must not undo a working instance.
 	_ = p.st.AppendEvent(tenantID, "provisioned", fmt.Sprintf("instance=%s port=%d", instance, port))
 
-	return p.st.GetTenant(tenantID)
+	t, err := p.st.GetTenant(tenantID)
+	if err != nil {
+		return fail(err)
+	}
+	// The only time these two values leave this package. Neither is stored
+	// anywhere the manager can read back — the `.env` written above is the
+	// bridge's copy, and TokenSource reads only the MANAGER's entry from it.
+	return Created{Tenant: t, AppToken: appTok, WebhookSecret: hookSecret}, nil
 }
 
 // checkInstanceFree refuses a tenant whose instance name is already taken.
