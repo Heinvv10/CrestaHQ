@@ -29,6 +29,10 @@ export type WorkflowTriggerType =
   | "quote.accepted"
   | "quote.paid"
   | "message.received"
+  // A tracked link was clicked by a KNOWN contact — i.e. the visit carried
+  // a per-contact token. A tokenless click has no one to enrol and fires
+  // nothing. See lib/tracked-links/click.ts.
+  | "link.clicked"
   // Payments v1 — a card payment through the sub-account's OWN Stripe was
   // confirmed by Stripe. Sibling of quote.paid (which covers the manual
   // mark-paid path). Fired from lib/server/orders-service.ts.
@@ -70,6 +74,8 @@ export interface WorkflowTrigger {
   filters: ConditionGroup;
   /** Restrict `form.submitted` to one form. Null/absent = any form. */
   formId?: string | null;
+  /** Restrict `link.clicked` to one tracked link. Null/absent = any link. */
+  linkId?: string | null;
   /** Restrict `pipeline.stage.changed` to one target stage. */
   toStage?: string | null;
   /**

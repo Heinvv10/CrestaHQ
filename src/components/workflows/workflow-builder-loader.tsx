@@ -14,8 +14,9 @@ import type { WhatsappTemplateVariable } from "@/types/whatsapp-templates";
 
 /**
  * Client loader for the builder. Fetches the workflow via the member-gated API
- * route, and the sub-account's forms (for the form-trigger picker) via the
- * client SDK. Keeps the page component a thin server shell.
+ * route, and the sub-account's forms (for the form-trigger picker) and tracked
+ * links (for the link-trigger picker) via the client SDK. Keeps the page
+ * component a thin server shell.
  *
  * `readiness` (which send-integrations can actually run) is computed on the
  * SERVER and passed in — env vars, the sub-account's twilioConfig, and the
@@ -33,6 +34,9 @@ export function WorkflowBuilderLoader({
 }) {
   const [initial, setInitial] = useState<BuilderInitial | null>(null);
   const [forms, setForms] = useState<{ id: string; name: string }[]>([]);
+  const [trackedLinks, setTrackedLinks] = useState<
+    { id: string; name: string }[]
+  >([]);
   const [whatsappTemplates, setWhatsappTemplates] = useState<
     WhatsappTemplateOption[]
   >([]);
@@ -68,6 +72,24 @@ export function WorkflowBuilderLoader({
         }
       } catch {
         /* forms are optional — picker just shows "Any form" */
+      }
+      try {
+        const snap = await getDocs(
+          query(
+            collection(getFirebaseDb(), "trackedLinks"),
+            where("subAccountId", "==", saId)
+          )
+        );
+        if (alive) {
+          setTrackedLinks(
+            snap.docs.map((doc) => ({
+              id: doc.id,
+              name: (doc.data().name as string) || "Untitled link",
+            }))
+          );
+        }
+      } catch {
+        /* links are optional — picker just shows "Any tracked link" */
       }
       try {
         const snap = await getDocs(
@@ -118,6 +140,7 @@ export function WorkflowBuilderLoader({
       saId={saId}
       initial={initial}
       forms={forms}
+      trackedLinks={trackedLinks}
       readiness={readiness}
       whatsappTemplates={whatsappTemplates}
     />

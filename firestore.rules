@@ -950,6 +950,24 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Tracked links (GHL "Trigger Links"). Reads from the browser so the
+    // workflow builder's link picker can list them; ALL writes are
+    // server-only. The click counters are asserted by the public /l
+    // redirect via the Admin SDK — a browser must never be able to claim a
+    // click. The `recipients` + `clicks` subcollections are closed in both
+    // directions: the click log is written by that same route and read only
+    // by server code.
+    match /trackedLinks/{linkId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+
     // Social Planner posts. Reads from the browser (subscribeToSocialPosts
     // drives the content calendar); all writes go through admin-SDK API
     // routes (create/schedule/publish/delete), so client writes stay closed.

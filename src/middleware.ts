@@ -244,6 +244,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Apple / Outlook pollers are unauthenticated, so session-cookie auth
   // would block them. The HMAC token in `?t=` is the credential.
   /^\/api\/sub-accounts\/[^/]+\/calendar\.ics$/,
+  // Tracked-link redirect: /l/{token} (per-contact) or /l/{linkId}
+  // (unattributed). Public by definition — the recipient clicking it has
+  // no session. Security is inside the route: an unsigned or forged token
+  // resolves to nothing and 404s, and the destination is re-validated as
+  // http(s) before the 302 so this can't become an open redirect.
+  /^\/l\/[^/]+$/,
   // Public competitor comparison pages (SEO landing pages, e.g.
   // /leadstack-vs-gohighlevel). Slug is path-suffixed with a hyphen
   // rather than a slash so the PUBLIC_PATHS prefix-match logic can't
