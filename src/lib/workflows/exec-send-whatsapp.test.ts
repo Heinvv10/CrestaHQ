@@ -29,6 +29,9 @@ vi.mock("@/lib/comms/whatsapp/readiness", () => ({
 vi.mock("@/lib/comms/whatsapp/template-registrations", () => ({
   isTemplateApprovedFor: () => true,
 }));
+vi.mock("@/lib/server/conversations-service", () => ({
+  upsertConversationForMessage: async () => undefined,
+}));
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
     doc: () => ({
@@ -37,7 +40,9 @@ vi.mock("@/lib/firebase/admin", () => ({
         data: () => templateDoc,
       }),
     }),
-    collection: () => ({ doc: () => ({ id: "x" }) }),
+    collection: () => ({
+      doc: () => ({ id: "x", set: async () => undefined }),
+    }),
   }),
 }));
 
@@ -56,9 +61,16 @@ const contact = (over: Partial<Contact> = {}) =>
 const sub = () =>
   ({ whatsappEnabledByAgency: true }) as unknown as SubAccountDoc;
 
-const ctx = (config: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+const ctx = (
+  config: Record<string, unknown>,
+  over: Record<string, unknown> = {}
+) =>
   ({
-    node: { id: "n1", type: "send_whatsapp", config } as unknown as WorkflowNode,
+    node: {
+      id: "n1",
+      type: "send_whatsapp",
+      config,
+    } as unknown as WorkflowNode,
     contact: contact(),
     subAccount: sub(),
     owner: { displayName: "Hein", email: "h@example.com" },
@@ -74,13 +86,17 @@ describe("execSendWhatsapp", () => {
     dispatchWhatsappSend.mockReset().mockResolvedValue({ ok: true });
     checkWhatsappReadiness
       .mockReset()
-      .mockResolvedValue({ ready: true, provider: "cloud" });
+      .mockResolvedValue({
+        ready: true,
+        provider: "cloud",
+        sender: { phoneNumber: "+27780000000" },
+      });
     templateDoc = undefined;
   });
 
   it("sends the body with merge tags resolved, and no template when none is set", async () => {
     const r = await execSendWhatsapp(
-      ctx({ body: "Hi {{contact.firstName}}, how did it go?" }),
+      ctx({ body: "Hi {{contact.firstName}}, how did it go?" })
     );
     expect(r.log).toBe("ok");
     const arg = dispatchWhatsappSend.mock.calls[0][0];
@@ -108,7 +124,7 @@ describe("execSendWhatsapp", () => {
         body: "hello",
         templateId: "tpl_1",
         manualValues: { "2": "Blitz Fibre" },
-      }),
+      })
     );
 
     const { template } = dispatchWhatsappSend.mock.calls[0][0];
@@ -117,7 +133,7 @@ describe("execSendWhatsapp", () => {
     expect(template.components).toHaveLength(1);
     expect(template.components[0]).toMatchObject({ type: "body" });
     const texts = template.components[0].parameters.map(
-      (p: { text: string }) => p.text,
+      (p: { text: string }) => p.text
     );
     expect(texts).toContain("Thabo");
     expect(texts).toContain("Blitz Fibre");
@@ -134,7 +150,7 @@ describe("execSendWhatsapp", () => {
         body: "hi",
         templateId: "tpl_1",
         manualValues: { "1": "Thanks {{contact.firstName}}" },
-      }),
+      })
     );
     const { template } = dispatchWhatsappSend.mock.calls[0][0];
     expect(template.components[0].parameters[0].text).toBe("Thanks Thabo");
@@ -160,7 +176,7 @@ describe("execSendWhatsapp", () => {
 
   it("skips an opted-out contact before touching the rail", async () => {
     const r = await execSendWhatsapp(
-      ctx({ body: "hi" }, { contact: contact({ whatsappOptedOut: true }) }),
+      ctx({ body: "hi" }, { contact: contact({ whatsappOptedOut: true }) })
     );
     expect(r.log).toBe("skipped:opt_out");
     expect(dispatchWhatsappSend).not.toHaveBeenCalled();

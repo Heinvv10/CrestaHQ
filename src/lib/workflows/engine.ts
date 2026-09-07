@@ -20,6 +20,7 @@ import {
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
+import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { checkQuota, UsageQuotaExceededError } from "@/lib/server/usage-meter";
 import { reconcileEnrolments } from "@/lib/api/enrolment-cap";
 import {
@@ -461,6 +462,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   // The fallback template is optional. A step that only ever fires inside an
   // open window needs none — and needs no Meta approval to ship.
   let template: CloudTemplateRef | null = null;
+  let templateBody = "";
   let tplDoc: WhatsappTemplateDoc | null = null;
   if (cfg.templateId) {
     const tplSnap = await getAdminDb()
@@ -486,6 +488,10 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
         subject,
         manualValues,
       });
+      templateBody = (tplDoc.body ?? "").replace(
+        /\{\{\s*(\d+)\s*\}\}/g,
+        (_match, position: string) => values[Number(position) - 1] ?? "",
+      );
       template = {
         name: tplDoc.name,
         language: tplDoc.language ?? "en",
@@ -526,6 +532,42 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
         log: `error:${res.error ?? "send_failed"}`,
       };
     }
+    // A successful provider call does not write the CRM thread. Use the same
+    // provider message id as the manual composer so the row is addressable.
+    // Keep recording failures distinct: the message has already been sent.
+    const recordedBody = res.sentAs === "template" ? templateBody : body;
+    try {
+      const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
+      const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();
+      await messageRef.set({
+          agencyId: ctx.agencyId,
+          subAccountId: ctx.subAccountId,
+          contactId: contact.id,
+          direction: "outbound",
+          status: "sent",
+          body: recordedBody,
+          from: readiness.sender.phoneNumber,
+          to,
+          twilioMessageSid: res.messageId ?? null,
+          sentByUid: null,
+          error: null,
+          readAt: null,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+    } catch (err) {
+      console.warn("[workflows] WhatsApp message-row write failed", err);
+      return { result: { kind: "next" }, log: "sent:message_record_failed" };
+    }
+    await upsertConversationForMessage({
+      contactId: contact.id,
+      subAccountId: ctx.subAccountId,
+      agencyId: ctx.agencyId,
+      contactName: contact.name ?? "",
+      contactPhone: to,
+      channel: "whatsapp",
+      direction: "outbound",
+      body: recordedBody,
+    });
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {

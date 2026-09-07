@@ -58,7 +58,7 @@ vi.mock("@/lib/firebase/admin", () => ({
       fn: (tx: {
         get: (ref: unknown) => Promise<{ data: () => unknown }>;
         set: (ref: unknown, data: Record<string, unknown>) => void;
-      }) => Promise<T>,
+      }) => Promise<T>
     ): Promise<T> =>
       fn({
         get: async () => ({ data: () => ({ count: enrolmentCount }) }),
@@ -111,7 +111,7 @@ function patch(body: Record<string, unknown>): Promise<Response> {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({ id: "c1" }) },
+    { params: Promise.resolve({ id: "c1" }) }
   ) as unknown as Promise<Response>;
 }
 
@@ -189,7 +189,7 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
     updateThrows = true;
 
     await expect(patch({ tags: ["lead", "new"] })).rejects.toThrow(
-      "firestore unavailable",
+      "firestore unavailable"
     );
     expect(enrolmentCount).toBe(0);
     expect(contactUpdates).toEqual([]);
@@ -257,4 +257,15 @@ describe("PATCH /api/v1/contacts/:id — hourly enrolment cap", () => {
     // The refused reservation was handed straight back.
     expect(enrolmentCount).toBe(50);
   });
+});
+
+it("stores duplicate tags once and emits each added tag once", async () => {
+  const res = await patch({ tags: ["lead", "audit", "audit", "lead"] });
+  expect(res.status).toBe(200);
+  expect(contact!.tags).toEqual(["lead", "audit"]);
+  expect(fireWorkflowTrigger).toHaveBeenCalledWith(
+    expect.objectContaining({
+      context: { addedTags: ["audit"] },
+    })
+  );
 });

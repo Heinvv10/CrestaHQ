@@ -43,7 +43,7 @@ import type { SubAccountDoc } from "@/types";
  * a long-closed window anyway.
  */
 export async function readLastInboundAt(
-  contactId: string,
+  contactId: string
 ): Promise<Date | null> {
   const recent = await getAdminDb()
     .collection(`contacts/${contactId}/whatsappMessages`)
@@ -91,8 +91,13 @@ export interface WhatsappDispatchInput {
 }
 
 export async function dispatchWhatsappSend(
-  input: WhatsappDispatchInput,
-): Promise<WhatsAppSendResult & { provider: WhatsAppProviderId }> {
+  input: WhatsappDispatchInput
+): Promise<
+  WhatsAppSendResult & {
+    provider: WhatsAppProviderId;
+    sentAs?: "text" | "template";
+  }
+> {
   // Through the sender registry, so this dispatcher and the readiness gate in
   // front of it cannot pick different rails for the same workspace.
   const resolved = resolveWhatsappSender(input.subAccount);
@@ -115,10 +120,11 @@ export async function dispatchWhatsappSend(
   // restate it differently. The cloud sender re-derives the same decision
   // internally — deliberately, since it must hold even for a caller that
   // bypasses this dispatcher.
+  const now = new Date();
   const decision = resolveWaSendMode({
     lastInboundAt,
     hasApprovedTemplate: input.template?.approved === true,
-    now: new Date(),
+    now,
     windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
     capabilities,
   });
@@ -154,8 +160,9 @@ export async function dispatchWhatsappSend(
       template: input.template ?? null,
       windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
       provider,
+      now,
     });
-    return { ...r, provider };
+    return { ...r, provider, sentAs: decision.mode };
   }
 
   if (provider === "bridge") {

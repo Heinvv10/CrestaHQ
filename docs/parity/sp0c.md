@@ -9,6 +9,26 @@ four workflow rebuilds, because the one workflow depends on a trigger LeadStack
 does not have and three more published workflows appeared after the export the
 original plan was written from.
 
+## Status update — 2026-09-07 afternoon
+
+Slices 1–3 were merged in PRs #50, #52, and #53. The prior 15:15 handoff
+records their deployment and the live engine-to-handset canary. The four rebuilt
+workflows were inspected in the live UI again for the
+[side-by-side screenshots](evidence/2026-09-07-sp0c/README.md): the audit workflow
+is active and all three campaigns remain draft. Screenshot capture is complete;
+full live acceptance and campaign cutover are not.
+
+PR #56 addresses the three follow-up defects: workflow sends missing from the
+contact thread/inbox, blank-email contacts unable to save, and duplicate tags.
+The reported missing history log was a field-name mismatch: the worker stores
+it in `history[].result`, not `history[].log`. Deployment and live acceptance
+of these fixes are separate from code/CI verification.
+
+The screenshots also expose builder readiness warnings. The bridge free-form
+node is incorrectly evaluated against a template requirement; the audit
+notification warning needs separate operational verification. Keep these gaps
+visible rather than treating reconstructed workflow shapes as complete parity.
+
 ---
 
 ## What is actually in GHL today
@@ -214,12 +234,12 @@ SP0-C-3  API triggers +    ┘        (+ side-by-side screenshots)          (hum
 
 | GHL screen / behaviour | Observed in GHL | CrestaHQ today | Gap | Spec that proves it | Status |
 |---|---|---|---|---|---|
-| Trigger link clicked | `Audit clicked → …`, per-prospect links in `config/links.json` | nothing — no link, shortlink or click tracking | whole subsystem | SP0-C-1 | **planned** |
-| Send-from number picker | `SELECT FROM PHONE NUMBER` on the WhatsApp node | one rail per sub-account, no sender choice | sender registry + node picker | SP0-C-2 | **planned** |
-| Tag applied by an external system enrols a contact | GHL API `POST /contacts/{id}/tags` → workflow | public API writes tags without firing the trigger | trigger firing + enrolment cap | SP0-C-3 | **planned** |
-| Per-contact fields inside a template | `{{contact.cresta_business}}` etc. | closed merge-tag set, no custom fields | merge-tag extension | SP0-C-3 | **planned** |
-| `Audit clicked → Contacted + notify` | published, 2 enrolled | to rebuild | depends on SP0-C-1 | SP0-C-4 | **planned** |
-| Three WA campaigns | published, 28/17/17 enrolled | to rebuild | depends on SP0-C-2, -3 | SP0-C-4 | **planned** |
+| Trigger link clicked | `Audit clicked → …`, per-prospect links in `config/links.json` | tracked links, per-contact tokens and click trigger | code implemented; live click acceptance still separate | SP0-C-1 | **merged #50** |
+| Send-from number picker | `SELECT FROM PHONE NUMBER` on the WhatsApp node | sender registry + template-node sender picker | implemented | SP0-C-2 | **merged #52** |
+| Tag applied by an external system enrols a contact | GHL API `POST /contacts/{id}/tags` → workflow | shared contact service fires triggers with enrolment cap | implemented | SP0-C-3 | **merged #53** |
+| Per-contact fields inside a template | `{{contact.cresta_business}}` etc. | custom-field merge tags supported | implemented | SP0-C-3 | **merged #53** |
+| `Audit clicked → Contacted + notify` | published, 2 enrolled | rebuilt and active; screenshots captured | notification readiness warning unresolved | SP0-C-4 | **built; acceptance pending** |
+| Three WA campaigns | published, 28/17/17 enrolled | rebuilt in draft; screenshots captured | deliberate hold; bridge builder warning | SP0-C-4 | **built; cutover held** |
 | WhatsApp delivered/undelivered branch | both branches terminal | linear send node | deliberate gap, not built | — | **open, accepted** |
 | Live campaign runs off CrestaHQ | `send_batch.py` → GHL | — | cutover | SP0-C-5 | **human-gated** |
 
