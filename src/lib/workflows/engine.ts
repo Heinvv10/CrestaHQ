@@ -21,6 +21,7 @@ import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { checkQuota, UsageQuotaExceededError } from "@/lib/server/usage-meter";
+import { reconcileEnrolments } from "@/lib/api/enrolment-cap";
 import {
   resolveMergeTags,
   type MergeTagSubject,
@@ -95,6 +96,7 @@ function mergeSubject(
       name: ctx.contact.name,
       email: ctx.contact.email,
       phone: ctx.contact.phone,
+      customFields: ctx.contact.customFields ?? null,
     },
     owner: ctx.owner,
     workspace: { name: ctx.subAccount?.name ?? "" },
@@ -133,9 +135,13 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     cfg.body ?? "",
     mergeSubject(ctx, unsubscribeLink)
   );
+  // HTML render: substituted values are escaped (a contact's name or a
+  // custom field set over the public API is untrusted free text), but the
+  // unsubscribe anchor we supply ourselves must stay real markup.
   const htmlInner = resolveMergeTags(
     cfg.body ?? "",
-    mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`)
+    mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`),
+    { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
 
@@ -681,10 +687,12 @@ const execNotify: NodeExecutor = async (ctx) => {
     mergeSubject(ctx, "")
   );
   const text = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
-  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${text.replace(
-    /\r?\n/g,
-    "<br>"
-  )}</body></html>`;
+  // Separate render for HTML — the plain-text one interpolates contact
+  // values raw, which is correct for text and unsafe for markup.
+  const htmlInner = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""), {
+    escape: "html",
+  }).replace(/\r?\n/g, "<br>");
+  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
   try {
     await sendEmail({
       to,
@@ -780,15 +788,27 @@ interface FireInput {
   type: WorkflowTriggerType;
   contactId: string;
   context?: Record<string, unknown>;
+  /**
+   * Public-API key that caused this trigger, when the write came in over
+   * /api/v1/*. Enrolments are counted against the key's hourly cap (see
+   * lib/api/enrolment-cap) so a looping script can't message a whole list.
+   */
+  apiKeyId?: string;
 }
 
 /**
  * Find every ACTIVE workflow matching the trigger + filters and enroll the
  * contact. Server-only; never throws — a workflow problem must not break the
  * action that triggered it.
+ *
+ * When `apiKeyId` is set the caller has already RESERVED one enrolment
+ * against that key's hourly cap, so this reconciles the reservation against
+ * the number of workflows the contact actually entered. See
+ * lib/api/enrolment-cap.
  */
 export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
   const db = getAdminDb();
+  let enrolled = 0;
   try {
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
     if (subSnap.data()?.automationsPaused === true) return;
@@ -845,9 +865,23 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
       if (!(await reentryAllows(wf, contact.id))) continue;
 
       await enroll(wf, contact.id, input.context ?? {});
+      enrolled += 1;
     }
+
   } catch (err) {
     console.error("[workflows] fireWorkflowTrigger failed", err);
+  } finally {
+    // Settle the reservation the route already charged for this request —
+    // on EVERY exit path, including the early returns above and a throw
+    // part-way through the loop, or a request that enrolled nobody would
+    // keep its reservation for the rest of the hour.
+    if (input.apiKeyId) {
+      await reconcileEnrolments({
+        subAccountId: input.subAccountId,
+        keyId: input.apiKeyId,
+        actual: enrolled,
+      });
+    }
   }
 }
 

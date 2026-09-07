@@ -492,6 +492,13 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Per-API-key hourly workflow-enrolment counters (lib/api/enrolment-cap).
+      // The fuse that stops a looping integration from messaging a whole
+      // list. Admin-SDK reads + writes only; nothing client-side reads it.
+      match /apiEnrolments/{bucketId} {
+        allow read, write: if false;
+      }
+
       // API request log — one row per /api/v1/* request (success or
       // failure). Powers the request log viewer at
       // /sa/[id]/dashboard/settings (slice 8). Reads scoped to sub-account

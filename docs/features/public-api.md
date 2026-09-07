@@ -26,6 +26,77 @@ All under `src/lib/api/`:
 - `logs.ts` — append-only request log per key for debug visibility in the dashboard.
 - `serializers/{contacts, deals, tasks, events}.ts` — strict wire-format mappers so internal field renames don't accidentally break API consumers.
 
+## Workflow triggers + the enrolment cap
+
+`POST /v1/contacts` and `PATCH /v1/contacts/:id` write through
+[lib/server/contacts-service.ts](../../src/lib/server/contacts-service.ts) —
+the same chokepoint the dashboard's own contact routes use — so a contact
+created over the API fires `contact.created` and a tag applied over the API
+fires `contact.tag.added`, exactly as the UI does. The tag diff lives in the
+service and nowhere else; the v1 routes never re-implement it. Test-mode
+writes fire no triggers (the `mode === "live"` gate is in the service).
+
+Because a workflow can send WhatsApp / SMS / email to a real person, a
+looping integration script would otherwise message a whole list. Each API key
+therefore carries an hourly **enrolment fuse** of 50
+([lib/api/enrolment-cap.ts](../../src/lib/api/enrolment-cap.ts)), counted in
+hourly buckets at `subAccounts/{id}/apiEnrolments/{keyId}_{YYYY-MM-DDTHH}`
+(same shape as the usage ledger).
+
+**Reserve, then reconcile** — the gate has to be synchronous because the
+spend is not. Enrolment happens inside a fire-and-forget
+`fireWorkflowTrigger`, so a cap that merely READ the counter before writing
+would let a back-to-back loop straight through: every request would read a
+count its own enrolments hadn't incremented yet. So the route AWAITS
+`reserveEnrolment`, which charges 1 in a Firestore transaction and reads the
+result back atomically; if that lands past 50 the request is **refused** with
+`429 workflow_enrolment_cap` plus `Retry-After`, the write is not applied,
+and the reservation is handed straight back so a hammering caller keeps the
+bucket pinned at the limit. Once the trigger settles,
+`reconcileEnrolments` adjusts the bucket by (actual − 1) — a request that
+enrolled nobody gets its reservation back, one that enrolled three ends up
+charged three. Reconciliation is best-effort; a failure misstates the count
+for the rest of the hour but cannot disable the fuse.
+
+**Every reservation has exactly one owner.** That `finally` only covers
+requests that actually reached the trigger, so the routes settle the rest:
+the contact service reports `firedTrigger` (it owns the tag diff, and
+re-deriving it in the route is what this design exists to avoid), and any
+path that did NOT fire — an ordinary PATCH that changed a name, a contact
+that vanished before the write, or a throw between the reservation and the
+write — calls `releaseReservation`. Without that, fifty ordinary PATCHes
+would 429 a key for the rest of the hour over workflows that never ran.
+
+This is a **fuse on a runaway caller, not a hard ceiling on enrolments**:
+reservations are per REQUEST, so a burst is bounded at 50 un-reconciled
+requests, and each of those may enter more than one matching workflow before
+its reconciliation lands. Reservation failures fail open, matching
+`checkQuota` — but only on the infrastructure-error path; an over-budget
+reservation always refuses.
+
+## Merge tags in automations
+
+`{{contact.customFields.<key>}}` resolves any operator-defined contact custom
+field by its stable `key`, everywhere merge tags already work — email and SMS
+bodies, notify/task titles, and WhatsApp template variables. Values were
+validated against the sub-account's field definitions on write, so nothing is
+re-checked at send time; an unknown or unset key renders as empty string, like
+every other unresolved tag.
+
+**Merge-tag values are untrusted, and the HTML email paths escape them.** A
+contact name arrives from a public form and a custom field is free text set
+over the API, so interpolating either raw into an HTML body would let a key
+holder deliver a phishing anchor from the tenant's own verified sender.
+`resolveMergeTags` therefore takes `{ escape: "html" }`, which escapes each
+substituted VALUE (never the finished string, so markup the operator wrote in
+their own template still renders). The three HTML builders — the workflow
+`send_email` and `notify` executors and the broadcast step route — pass it;
+plain-text bodies, subject lines, SMS and WhatsApp template variables
+deliberately do not. `safeTags: ["unsubscribeLink"]` exempts the one value we
+supply as real markup ourselves, which is legally required to render as a
+link. This closes a hole that predates custom fields —
+`{{contact.firstName}}` reached the HTML body raw as well.
+
 ## Webhooks
 
 Outbound webhooks let the sub-account react to platform events (contact created, deal moved, event booked, …) without polling.
