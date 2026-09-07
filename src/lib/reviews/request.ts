@@ -426,6 +426,7 @@ async function buildSubject(
       name: contact.name ?? "",
       email: contact.email ?? "",
       phone: contact.phone ?? "",
+      customFields: contact.customFields ?? null,
     },
     owner,
     workspace: { name: subAccount.name ?? "" },

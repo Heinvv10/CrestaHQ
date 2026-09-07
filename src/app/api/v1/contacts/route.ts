@@ -1,17 +1,20 @@
 import "server-only";
 
-import { FieldValue, type Query } from "firebase-admin/firestore";
+import { type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
-import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import {
+  openEnrolmentGate,
+  releaseReservation,
+} from "@/lib/api/enrolment-cap";
 import {
   parseContactCreate,
   serializeContactForApi,
 } from "@/lib/api/serializers/contacts";
+import { createContactServerSide } from "@/lib/server/contacts-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
-import { GLOBAL_TERRITORY_ID } from "@/types";
 
 /**
  * Public API v1: Contacts collection-level routes.
@@ -29,6 +32,11 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
  * Pagination: `starting_after` is a contact id. The route reads that doc's
  * `createdAt` and uses it as the Firestore cursor. Default limit 20, max
  * 100. Returns `has_more: true` when the next page would have results.
+ *
+ * Writes go through `createContactServerSide` — the same chokepoint the
+ * dashboard uses — so an API create fires `contact.created` (webhook AND
+ * workflow trigger) exactly like a create from the UI. Test-mode writes
+ * fire no triggers; that gate lives in the service.
  */
 
 const DEFAULT_LIMIT = 20;
@@ -104,58 +112,57 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     return apiError(ctx, "invalid_request", "invalid_body", cf.error!);
   }
 
-  const db = getAdminDb();
-  const ref = db.collection("contacts").doc();
-  const now = new Date();
-  await ref.set({
-    name: input.name,
-    email: input.email,
-    phone: input.phone,
-    company: input.company,
-    address: input.address,
-    source: input.source,
-    tags: input.tags,
-    pipelineStage: input.pipelineStage,
-    territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
-    customFields: cf.value,
-    attribution: null,
-    emailOptedOut: false,
-    smsOptedOut: false,
-    countryCode: null,
-    country: null,
-    city: null,
-    lat: null,
-    lng: null,
-    agencyId: ctx.agencyId,
-    subAccountId: ctx.subAccountId,
-    // `createdByUid` carries the API key id (prefixed) so audit trails
-    // can distinguish dashboard creates from API creates. Same column the
-    // dashboard would have used for a Firebase Auth uid — readers don't
-    // need to special-case it.
-    createdByUid: `apikey:${ctx.keyPrefix}`,
-    mode: ctx.mode,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  // Reserve BEFORE the write when this key has budget left — a runaway
+  // script must fail loudly, not create contacts whose automations silently
+  // didn't run. From here on this request OWNS a reservation, and every exit
+  // path below either fires a trigger (whose `finally` settles it) or
+  // releases it explicitly.
+  //
+  // Create has no un-fired path to release: a live-mode create ALWAYS fires
+  // `contact.created`, and live mode is exactly when a reservation is
+  // charged — so the trigger's `finally` always owns it. That invariant is
+  // pinned by a test; PATCH, whose trigger is conditional on a tag diff,
+  // needs the explicit release this route does not.
+  const gate = await openEnrolmentGate(ctx);
+  if (gate.refusal) return gate.refusal;
 
-  // Re-read so the response carries the resolved serverTimestamp values.
-  const created = await ref.get();
-  const wire = serializeContactForApi(created.id, created.data()!, ctx.mode);
-  // Wire timestamp-from-serverTimestamp can land as a Date or Timestamp;
-  // the serializer handles both. Fall back to `now` if the field hasn't
-  // resolved yet (rare — serverTimestamp resolves before .get() returns).
-  if (wire.created_at === new Date(0).toISOString()) {
-    wire.created_at = now.toISOString();
-    wire.updated_at = now.toISOString();
+  let written;
+  try {
+    // Workspace default country for lenient phone normalization — same read
+    // the dashboard create route does, so an API-created contact's phone is
+    // stored in the same shape as a UI-created one.
+    const subSnap = await getAdminDb()
+      .doc(`subAccounts/${ctx.subAccountId}`)
+      .get();
+
+    written = await createContactServerSide({
+      subAccountId: ctx.subAccountId,
+      agencyId: ctx.agencyId,
+      // `createdByUid` carries the API key prefix so audit trails can
+      // distinguish dashboard creates from API creates. Same column the
+      // dashboard would have used for a Firebase Auth uid — readers don't
+      // need to special-case it.
+      createdByUid: `apikey:${ctx.keyPrefix}`,
+      mode: ctx.mode,
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      phoneCountry: (subSnap.data()?.defaultPhoneCountry as string) ?? null,
+      company: input.company,
+      address: input.address,
+      source: input.source,
+      tags: input.tags,
+      pipelineStage: input.pipelineStage,
+      territoryId: input.territoryId,
+      customFields: cf.value,
+      apiKeyId: ctx.keyId,
+    });
+  } catch (err) {
+    // withApiAuth turns this into a 500; without the release the slot would
+    // be held for the rest of the hour by a request that never enrolled.
+    await releaseReservation(gate);
+    throw err;
   }
 
-  void emitWebhookEvent({
-    subAccountId: ctx.subAccountId,
-    agencyId: ctx.agencyId,
-    mode: ctx.mode,
-    type: "contact.created",
-    payload: { contact: wire },
-  });
-
-  return apiOk(ctx, { contact: wire }, { status: 201 });
+  return apiOk(ctx, { contact: written.contact }, { status: 201 });
 });

@@ -59,6 +59,12 @@ export interface CreateContactInput {
   /** Validated custom-field value map (routes validate against live defs). */
   customFields?: Record<string, CustomFieldValue> | null;
   attribution?: ContactAttribution | null;
+  /**
+   * Public-API key id, when the create came in over /api/v1/contacts.
+   * Forwarded to the trigger so enrolments count against that key's hourly
+   * cap (lib/api/enrolment-cap).
+   */
+  apiKeyId?: string;
   /** Optional resolved location (form submit supplies this; UI doesn't). */
   location?: {
     countryCode: string | null;
@@ -72,6 +78,13 @@ export interface CreateContactInput {
 export interface ContactWriteResult {
   id: string;
   contact: ContactApiObject;
+  /**
+   * Whether this write fired a workflow trigger. The tag diff that decides
+   * it lives here and only here, so a caller holding an enrolment
+   * reservation (the public API) can settle it without re-deriving the diff
+   * — see lib/api/enrolment-cap.
+   */
+  firedTrigger: boolean;
 }
 
 /**
@@ -131,16 +144,18 @@ export async function createContactServerSide(
     type: "contact.created",
     payload: { contact },
   });
-  if (input.mode === "live") {
+  const firedTrigger = input.mode === "live";
+  if (firedTrigger) {
     void fireWorkflowTrigger({
       subAccountId: input.subAccountId,
       agencyId: input.agencyId,
       type: "contact.created",
       contactId: ref.id,
+      apiKeyId: input.apiKeyId,
     });
   }
 
-  return { id: ref.id, contact };
+  return { id: ref.id, contact, firedTrigger };
 }
 
 /** Fields that can be patched. All optional; only provided keys are written. */
@@ -153,6 +168,12 @@ export interface UpdateContactPatch {
   source?: string;
   tags?: string[];
   pipelineStage?: string | null;
+  /**
+   * Straight field write, same as the public API has always done. A full
+   * territory MOVE (fanning out to the contact's deals/quotes/tasks/events)
+   * still belongs to the dedicated admin endpoint — see the note below.
+   */
+  territoryId?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue>;
 }
@@ -162,15 +183,22 @@ export interface UpdateContactPatch {
  * webhook payload + return value reflect the merged state. Returns null when
  * the contact doesn't exist.
  *
- * `territoryId` is intentionally NOT handled here — moving a contact's
- * territory fans out to its deals/quotes/tasks/events via a dedicated
- * admin endpoint, so callers route that change separately.
+ * A `territoryId` in the patch is written as a plain field. Moving a
+ * contact's territory *properly* fans out to its deals/quotes/tasks/events
+ * via a dedicated admin endpoint — the dashboard routes that change
+ * separately and never sends `territoryId` here.
  */
 export async function updateContactServerSide(opts: {
   contactId: string;
   patch: UpdateContactPatch;
   /** The contact's mode (from the existing doc); defaults to live. */
   mode?: Mode;
+  /**
+   * Public-API key id, when the update came in over /api/v1/contacts.
+   * Forwarded to the trigger so enrolments count against that key's hourly
+   * cap (lib/api/enrolment-cap).
+   */
+  apiKeyId?: string;
 }): Promise<ContactWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`contacts/${opts.contactId}`);
@@ -197,21 +225,24 @@ export async function updateContactServerSide(opts: {
   });
   // contact.tag.added fires once per update when the patch introduces a new
   // tag (replace-semantics patch → diff against the pre-update tags).
+  let firedTrigger = false;
   if (mode === "live" && opts.patch.tags) {
     const oldTags: string[] = Array.isArray(existing.tags) ? existing.tags : [];
     const added = opts.patch.tags.filter((t) => !oldTags.includes(t));
     if (added.length > 0) {
+      firedTrigger = true;
       void fireWorkflowTrigger({
         subAccountId: existing.subAccountId,
         agencyId: existing.agencyId,
         type: "contact.tag.added",
         contactId: opts.contactId,
         context: { addedTags: added },
+        apiKeyId: opts.apiKeyId,
       });
     }
   }
 
-  return { id: ref.id, contact };
+  return { id: ref.id, contact, firedTrigger };
 }
 
 /**

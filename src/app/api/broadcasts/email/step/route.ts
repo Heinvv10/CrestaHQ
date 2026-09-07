@@ -181,6 +181,7 @@ export async function POST(request: Request) {
       name: contact.name,
       email: contact.email,
       phone: contact.phone,
+      customFields: contact.customFields ?? null,
     },
     owner: { displayName: ownerDisplayName, email: ownerEmail },
     workspace: { name: subAccount?.name ?? "" },
@@ -198,15 +199,18 @@ export async function POST(request: Request) {
 
   // HTML body: identical render as the automation executor — anchor-tag the
   // unsubscribe link, convert newlines to <br>, wrap in a minimal styled
-  // shell. v1 doesn't escape author content because templates are
-  // admin-authored, not user input.
+  // shell. The template BODY is admin-authored and rendered as written; the
+  // merge-tag VALUES substituted into it are not, and are escaped below.
   const htmlAnchor = unsubscribeLink
     ? `<a href="${unsubscribeLink}">Unsubscribe</a>`
     : "";
-  const htmlInner = resolveMergeTags(template.body, {
-    ...baseSubject,
-    unsubscribeLink: htmlAnchor,
-  }).replace(/\r?\n/g, "<br>");
+  // Substituted values are escaped for the HTML render (contact fields are
+  // untrusted free text); the unsubscribe anchor we build ourselves is not.
+  const htmlInner = resolveMergeTags(
+    template.body,
+    { ...baseSubject, unsubscribeLink: htmlAnchor },
+    { escape: "html", safeTags: ["unsubscribeLink"] },
+  ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
 
   // Monthly email quota (Usage Metering v1) — record the row as failed
