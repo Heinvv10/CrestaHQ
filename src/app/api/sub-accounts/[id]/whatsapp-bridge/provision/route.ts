@@ -168,10 +168,28 @@ export async function POST(
   try {
     creds = resolveBridgeCreds(raw, subAccountId);
   } catch {
+    // The only branch here that used to return without logging, which is
+    // exactly the branch a manager too old to return credentials at all falls
+    // into: the tenant is created, the CRM stores nothing, and the journal
+    // says nothing happened. Presence booleans only — these two values are the
+    // credentials themselves and are never written to a log.
+    console.error(
+      `[whatsapp-bridge/provision] manager 201 for ${subAccountId} carried no usable credentials (token=${Boolean(
+        raw.token,
+      )}, webhookSecret=${Boolean(
+        raw.webhookSecret,
+      )}); its tenant is left orphaned`,
+    );
+    // Which of the two the manager omitted is NOT asserted to the admin. This
+    // sentence used to name the webhook secret and send them to configure one,
+    // which is the wrong remedy — and the wrong diagnosis — whenever the token
+    // is the missing half. The remedy that holds for every shape of this
+    // failure is the one given, and the log above carries the detail for
+    // whoever can act on it.
     return NextResponse.json(
       {
         error:
-          "The bridge manager provisioned this workspace without a webhook signing secret, so inbound messages could not be verified, and its credentials can't be recovered. Ask your agency to configure the manager's webhook secret, then disconnect this workspace's bridge and connect again — that erases the WhatsApp session, so the number has to be re-paired.",
+          "The bridge manager created this workspace's bridge but didn't return the credentials it needs, so the bridge can't send or receive and those credentials can't be recovered. Disconnect this workspace's bridge and connect again — that erases the WhatsApp session, so the number has to be re-paired. If it happens again, the bridge manager itself needs attention.",
       },
       { status: 502 },
     );

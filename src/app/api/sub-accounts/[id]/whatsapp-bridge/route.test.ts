@@ -486,19 +486,73 @@ describe("provision", () => {
           )
         : json({ ok: true }),
     );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { status, body } = await read(await provision());
     expect(status).toBe(502);
-    expect(body.error).toContain("webhook signing secret");
+    // The sentence does NOT name which half was missing. It used to name the
+    // webhook secret unconditionally, which is a wrong diagnosis — and a
+    // remedy that cannot work — whenever the token is the absent one.
+    expect(String(body.error)).not.toContain("webhook signing secret");
+    // Named in the LOG instead, by presence, where someone who can act on it
+    // reads it. Silence here is what let a manager that returned no
+    // credentials at all look like a manager that did nothing.
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining("token=true, webhookSecret=false"),
+    );
+    // Neither credential is ever written to a log, only whether it arrived.
+    const logText = logged.mock.calls.flat().join(" ");
+    expect(logText).not.toContain(APP_TOKEN);
+    logged.mockRestore();
     // The manager has already 201'd and the token is in hand but never
     // stored, so this is the same unrecoverable loss as the commit failure
     // below and needs the same remedy. "Provision again" is not one: from
     // here it can only 409.
     expect(String(body.error)).toContain("can't be recovered");
-    expect(String(body.error)).toContain("disconnect");
+    expect(String(body.error).toLowerCase()).toContain("disconnect");
     expect(String(body.error)).not.toContain("provision again");
     expect(writes).toEqual([]);
     // Nothing is torn down automatically: a destroy on a failure path is how
     // a bridge someone is mid-way through pairing gets deleted.
+    expect(calls.some((c) => c.init.method === "DELETE")).toBe(false);
+  });
+
+  it("refuses a 201 that carries NO credentials at all, and says so in the log", async () => {
+    // The shape a manager older than the provisioning seam returns: it creates
+    // the tenant and answers with the plain tenant view, carrying neither
+    // credential. This happened in production on 2026-09-07 — the CRM was
+    // deployed with self-serve provisioning while the manager binary predated
+    // it — and the branch was silent, so the journal showed a tenant appearing
+    // out of nowhere with no matching failure.
+    stubManager((url, init) =>
+      init.method === "POST" && url.endsWith("/api/tenants")
+        ? json(
+            {
+              tenantId: SUB,
+              displayName: "Blitz",
+              instance: "sa-1",
+              port: 33101,
+              state: "provisioned",
+              health: null,
+            },
+            201,
+          )
+        : json({ ok: true }),
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { status, body } = await read(await provision());
+    expect(status).toBe(502);
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining("token=false, webhookSecret=false"),
+    );
+    logged.mockRestore();
+    // Same remedy as every other shape of this failure, and it does not blame
+    // the webhook secret — which is present or absent for reasons this branch
+    // did not determine.
+    expect(String(body.error)).toContain("can't be recovered");
+    expect(String(body.error).toLowerCase()).toContain("disconnect");
+    expect(String(body.error)).not.toContain("webhook signing secret");
+    // Nothing stored and nothing destroyed, exactly as in the unsigned case.
+    expect(writes).toEqual([]);
     expect(calls.some((c) => c.init.method === "DELETE")).toBe(false);
   });
 
