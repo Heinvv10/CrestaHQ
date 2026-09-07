@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
 import { evalConditionGroup, REPLY_TEXT_FIELD } from "./conditions";
 import type { Contact } from "@/types/contacts";
 import type { ConditionGroup } from "@/types/workflows";
@@ -115,8 +115,16 @@ const ifElseCtx = (conditions: ConditionGroup, triggerContext: Record<string, un
   }) as never;
 
 describe("execIfElse — reads the reply off the run", () => {
+  // Imported once in setup rather than inside each test. The engine module
+  // costs ~0.9s to load on an idle box, and under a fully parallel suite that
+  // ate most of the 5s budget of whichever test happened to pay it first —
+  // a timeout that has nothing to do with what these tests assert.
+  let execIfElse: (typeof import("./engine"))["execIfElse"];
+  beforeAll(async () => {
+    ({ execIfElse } = await import("./engine"));
+  });
+
   it("takes the true branch on the answer stored by the resume", async () => {
-    const { execIfElse } = await import("./engine");
     const r = await execIfElse(
       ifElseCtx(group("could be better"), {
         lastReply: { text: "Could be better", channel: "whatsapp" },
@@ -126,7 +134,6 @@ describe("execIfElse — reads the reply off the run", () => {
   });
 
   it("takes the false branch when the run carries a different answer", async () => {
-    const { execIfElse } = await import("./engine");
     const r = await execIfElse(
       ifElseCtx(group("could be better"), {
         lastReply: { text: "Good", channel: "whatsapp" },
@@ -136,7 +143,6 @@ describe("execIfElse — reads the reply off the run", () => {
   });
 
   it("takes the false branch when the run carries no reply at all", async () => {
-    const { execIfElse } = await import("./engine");
     const r = await execIfElse(ifElseCtx(group("good"), {}));
     expect(r.result).toEqual({ kind: "branch", value: false });
   });
