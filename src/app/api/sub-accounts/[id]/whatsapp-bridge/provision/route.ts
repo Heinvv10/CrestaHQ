@@ -16,7 +16,10 @@ import { managerFailureResponse } from "@/lib/comms/whatsapp/manager-failure";
 import { resolveBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
 import { requireWhatsappEnabledByAgency } from "@/lib/comms/whatsapp/bridge-agency-gate";
 import { hasCurrentRiskAck } from "@/lib/comms/whatsapp/bridge-risk-ack";
-import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
+import {
+  WA_BRIDGE_RISK_TEXT_ID,
+  type WhatsappBridgeMeta,
+} from "@/types/whatsapp-bridge";
 
 /**
  * Provision this sub-account its own wa-agent-bridge, without a human on the
@@ -113,16 +116,27 @@ export async function POST(
       console.error(
         `[whatsapp-bridge/provision] manager 409 for ${subAccountId} (tenantExists=${theirs}, probed=${probe.ok}): ${result.error}`,
       );
-      return NextResponse.json(
-        {
-          error: theirs
-            ? "This workspace already has a bridge on the manager. Disconnect it first, then provision again — that erases the WhatsApp session, so the number has to be re-paired."
-            : // No remedy is offered because the admin has none: the name is
-              // held by a workspace they cannot see, let alone disconnect.
-              "This workspace can't be connected right now because its bridge name collides with another workspace. Contact support.",
-        },
-        { status: 409 },
-      );
+      // Three cases, three sentences. The degraded one is its own because the
+      // other two each assert something this branch did NOT determine: the
+      // probe failed and the CRM holds no credentials, so "you already have a
+      // bridge" and "another workspace holds the name" are both guesses. The
+      // collision sentence is the more expensive guess to get wrong — it ends
+      // in "contact support" and withholds Disconnect, which is what actually
+      // recovers the orphan this branch most often really is.
+      let error: string;
+      if (theirs) {
+        error =
+          "This workspace already has a bridge on the manager. Disconnect it first, then provision again — that erases the WhatsApp session, so the number has to be re-paired.";
+      } else if (probe.ok) {
+        // No remedy is offered because the admin has none: the name is held by
+        // a workspace they cannot see, let alone disconnect.
+        error =
+          "This workspace can't be connected right now because its bridge name collides with another workspace. Contact support.";
+      } else {
+        error =
+          "This workspace can't be connected right now, and the bridge manager couldn't be reached to check why — so we can't say whether this workspace already has a bridge or whether another workspace holds its name. Disconnecting this workspace's bridge and connecting again is worth trying: it clears a half-finished connection. It erases the WhatsApp session, so the number has to be re-paired. If that doesn't help, contact support.";
+      }
+      return NextResponse.json({ error }, { status: 409 });
     }
     return managerFailureResponse(result);
   }
@@ -177,8 +191,17 @@ export async function POST(
   // on a failure path is how a bridge someone is mid-way through pairing gets
   // deleted.
   try {
-    await storeBridgeConnection(subAccountId, creds, meta);
-  } catch {
+    // The ack version is passed because this route GATED on it above — see
+    // `hasCurrentRiskAck`. The manual connect route has no such gate and
+    // passes nothing, so its record makes no claim about a warning.
+    await storeBridgeConnection(subAccountId, creds, meta, {
+      riskTextId: WA_BRIDGE_RISK_TEXT_ID,
+    });
+  } catch (err) {
+    console.error(
+      `[whatsapp-bridge/provision] storing minted credentials failed for ${subAccountId}; they are unrecoverable:`,
+      err,
+    );
     return NextResponse.json(
       {
         error:

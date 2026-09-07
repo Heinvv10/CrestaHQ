@@ -117,8 +117,15 @@ export interface WhatsappBridgeConnectionRecord {
   uid: string;
   /** When, from the server's clock — never the browser's. */
   connectedAt: unknown;
-  /** Which version of the warning was in force at the time. */
-  riskTextId: string;
+  /**
+   * Which version of the warning the connector had acknowledged. OPTIONAL, and
+   * written only by a caller that actually gated on an acknowledgement — the
+   * manual connect route has no ack gate at all, and a record naming a warning
+   * version nobody was shown is worse than a record that is silent about it.
+   * This field's whole purpose is a ban dispute, and the wrong direction to be
+   * wrong in there is claiming consent that was never given.
+   */
+  riskTextId?: string;
 }
 
 /** One recorded acknowledgement. Written by the server, never by a client. */

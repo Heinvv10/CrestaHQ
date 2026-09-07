@@ -97,6 +97,12 @@ describe("bridgePollMode", () => {
     // listening — so `/pairing` 502s into `error`, or answers a bridge that is
     // up with no code yet. Polling only in `pairing` meant the normal outcome
     // of pressing the primary recovery control was the QR vanishing for good.
+    //
+    // BOUNDED rather than live: `error` is also what a genuinely broken
+    // deployment answers forever, and an unbounded retry there is every open
+    // settings tab hammering the manager for as long as the tab lives. That is
+    // what these two assertions pin — a `.not.toBe("live")` alongside them
+    // would add nothing, since it passes for "none" too.
     expect(bridgePollMode("error")).toBe("bounded");
     expect(bridgePollMode("nocode")).toBe("bounded");
   });
@@ -105,14 +111,6 @@ describe("bridgePollMode", () => {
     // The scan completes on the customer's phone with nothing to tell this
     // page about it, and the admin is watching the screen while it happens.
     expect(bridgePollMode("pairing")).toBe("live");
-  });
-
-  it("caps the recovery states rather than polling them forever", async () => {
-    // `error` is also what a genuinely broken deployment answers forever, and
-    // an unbounded retry there is every open settings tab hammering the
-    // manager for as long as the tab lives.
-    expect(bridgePollMode("error")).not.toBe("live");
-    expect(bridgePollMode("nocode")).not.toBe("live");
   });
 
   it("sits quiet on every settled answer", async () => {

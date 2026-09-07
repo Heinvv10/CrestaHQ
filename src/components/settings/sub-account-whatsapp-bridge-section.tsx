@@ -51,6 +51,13 @@ export function SubAccountWhatsappBridgeSection() {
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState<BridgeBusy>(null);
   const [qrNonce, setQrNonce] = useState(0);
+  /** Bumped whenever the poll budget is refilled. It is in the polling
+   *  effect's deps because refilling the budget has to RESTART the interval:
+   *  a drained interval clears itself, and re-reading into the same
+   *  `status.kind` re-runs no effect, so without this the refill below sets a
+   *  counter nothing will ever read again — a one-shot fetch dressed up as a
+   *  restart. */
+  const [retryToken, setRetryToken] = useState(0);
 
   const base = `/api/sub-accounts/${subAccountId}/whatsapp-bridge`;
 
@@ -100,13 +107,17 @@ export function SubAccountWhatsappBridgeSection() {
       void refresh();
     }, POLL_MS);
     return () => clearInterval(timer);
-  }, [status.kind, refresh]);
+  }, [status.kind, refresh, retryToken]);
 
-  /** The manual "Try again". An explicit ask refills the budget — the admin
-   *  has told us the wait is worth restarting. */
+  /** Refill the budget and read again. An explicit ask restarts the wait — the
+   *  admin has told us it is worth restarting. `retryToken` is what makes the
+   *  refill real: it re-runs the effect above even when the state that comes
+   *  back is the same one, which is the ordinary case here. Returns the read
+   *  so callers can sequence a toast after it. */
   const retry = useCallback(() => {
     recoveryLeft.current = RECOVERY_POLLS;
-    void refresh();
+    setRetryToken((n) => n + 1);
+    return refresh();
   }, [refresh]);
 
   /** One mutating call. A refusal is raised, never swallowed. */
@@ -143,7 +154,11 @@ export function SubAccountWhatsappBridgeSection() {
     try {
       await post("/restart");
       setQrNonce((n) => n + 1);
-      await refresh();
+      // `retry`, not `refresh`: a bounced bridge is not listening yet, so this
+      // read lands back in `error` or `nocode` — the states the budget bounds
+      // — and the panel's own copy promises the page keeps checking. A plain
+      // refresh from a drained budget makes that promise false.
+      await retry();
       toast.success("Restarting — a new code appears in a few seconds.");
     } catch (err) {
       toast.error(
@@ -215,19 +230,43 @@ export function SubAccountWhatsappBridgeSection() {
         </p>
       )}
 
+      {/* Disconnect belongs here, not only on the settled panels. An orphaned
+          bridge whose process is not listening makes `../pairing` answer 502 —
+          which is exactly why the 409 classifier asks the manager's LIST route
+          instead — so the card lands in `error` rather than `orphaned`, and
+          `error` is therefore the state most likely to be holding an orphan.
+          With only "Try again" it was a dead end for a state Disconnect fully
+          recovers. */}
       {status.kind === "error" && (
         <div className="space-y-3">
           <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-700 dark:text-amber-400">
             {status.message}
           </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={retry}
-          >
-            Try again
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void retry()}
+              disabled={busy !== null}
+            >
+              Try again
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void handleDisconnect()}
+              disabled={busy !== null}
+            >
+              {busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            If this keeps happening, disconnecting and connecting again clears a
+            half-finished connection. It erases the WhatsApp session, so the
+            number has to be paired again.
+          </p>
         </div>
       )}
 

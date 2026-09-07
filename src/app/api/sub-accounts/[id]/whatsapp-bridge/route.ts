@@ -62,7 +62,11 @@ export async function DELETE(
   let fallback;
   try {
     fallback = await clearBridgeConnection(subAccountId);
-  } catch {
+  } catch (err) {
+    console.error(
+      `[whatsapp-bridge] tenant destroyed but the CRM rail could not be cleared for ${subAccountId}; sending stays broken:`,
+      err,
+    );
     return NextResponse.json(
       {
         error:

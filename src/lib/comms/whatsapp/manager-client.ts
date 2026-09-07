@@ -275,7 +275,20 @@ export async function managerHasTenant(
     opts,
   );
   if (!res.ok) return res;
-  const tenants = Array.isArray(res.data?.tenants) ? res.data.tenants : [];
+  // A 200 whose body is not JSON, is null, or carries no `tenants` array is
+  // not an empty fleet. Collapsing it to `[]` would answer "the manager
+  // checked and this tenant is absent" on the strength of a body nobody
+  // parsed, and the caller routes that answer into the branch that offers no
+  // remedy. An unreadable answer is a failed probe.
+  const tenants = res.data?.tenants;
+  if (!Array.isArray(tenants)) {
+    return {
+      ok: false,
+      reason: "unreachable",
+      error:
+        "The bridge manager answered its tenant list in a form this deployment couldn't read.",
+    };
+  }
   return {
     ok: true,
     data: tenants.some(

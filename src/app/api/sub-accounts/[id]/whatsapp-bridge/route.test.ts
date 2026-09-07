@@ -585,6 +585,47 @@ describe("provision", () => {
     expect(writes).toEqual([]);
   });
 
+  it("says the manager couldn't be asked, and names the remedy anyway", async () => {
+    // The probe failed and the CRM holds no credentials, so BOTH confident
+    // sentences would assert something this branch did not determine. The
+    // collision one is the expensive guess: it ends in "contact support" and
+    // withholds Disconnect, which is what recovers the orphan this branch most
+    // often really is.
+    stubManager((url, init) =>
+      init.method === "GET" && url.endsWith("/api/tenants")
+        ? json({ error: "could not list tenants" }, 500)
+        : json({ error: "tenant exists" }, 409),
+    );
+    const { status, body } = await read(await provision());
+    expect(status).toBe(409);
+    expect(String(body.error)).toContain("couldn't be reached");
+    // Neither confident message is borrowed. "Disconnect it first" is the
+    // confident sentence's own phrasing; this one says "we can't say whether
+    // this workspace already has a bridge", so it is matched on the imperative
+    // rather than on the noun phrase both sentences share.
+    expect(String(body.error)).not.toContain("collides with another workspace");
+    expect(String(body.error)).not.toContain("Disconnect it first");
+    // The working remedy is offered rather than withheld.
+    expect(String(body.error)).toContain("Disconnecting");
+    expect(writes).toEqual([]);
+  });
+
+  it("treats an unreadable tenant list as a failed probe, not an absent tenant", async () => {
+    // A 200 whose body carries no `tenants` array is not an empty fleet.
+    // Flattening it to `[]` answers "the manager checked and this tenant is
+    // absent" from a body nobody parsed — and routes the admin into the
+    // no-remedy collision branch on the strength of it.
+    stubManager((url, init) =>
+      init.method === "GET" && url.endsWith("/api/tenants")
+        ? json({ ok: true })
+        : json({ error: "tenant exists" }, 409),
+    );
+    const { status, body } = await read(await provision());
+    expect(status).toBe(409);
+    expect(String(body.error)).toContain("couldn't be reached");
+    expect(String(body.error)).not.toContain("collides with another workspace");
+  });
+
   it("records who connected the number, in a log a disconnect never clears", async () => {
     // The ack gate is per-workspace and PERMANENT: one acknowledgement unlocks
     // provisioning for everyone here forever, so an ack names nobody in
@@ -605,11 +646,73 @@ describe("provision", () => {
 
     // Same batch as the rail switch: a workspace cannot end up connected with
     // nobody named.
-    failCommit = true;
+    //
+    // The failure this closes is the ATOMIC one — commit succeeds, the
+    // follow-up write fails, the workspace is on the bridge rail and the
+    // record naming who put it there is missing. Making the COMMIT throw
+    // cannot see it: a throwing commit also skips any follow-up write, so an
+    // implementation that wrote the record separately passed that assertion
+    // too. `failDocWrite` fails the direct write while the batch commits,
+    // which is exactly the window a non-atomic implementation lives in.
+    failDocWrite = true;
     writes = [];
-    docs.delete(SECRET_PATH);
-    await provision();
+    const { status } = await read(await provision());
+    expect(status).toBe(200);
+    const rail = writes.find((w) => w.path === `subAccounts/${SUB}`);
+    expect(rail?.data?.whatsappProvider).toBe("bridge");
+    const atomic = writes.find((w) => w.path.startsWith(CONNECTIONS_PATH));
+    expect(atomic?.data?.uid).toBe("uid_admin");
+  });
+
+  it("refuses to write a connection record that names nobody", async () => {
+    // An empty uid is a record that looks written and answers nothing — the
+    // wrong direction to fail in for a document whose only purpose is a ban
+    // dispute. Both callers take the uid from the session, so this can only
+    // fire on a wiring mistake, and it should be loud when it does.
+    const { storeBridgeConnection } = await import(
+      "@/lib/comms/whatsapp/bridge-connection"
+    );
+    await expect(
+      storeBridgeConnection(
+        SUB,
+        {
+          baseUrl: "http://127.0.0.1:33101",
+          token: APP_TOKEN,
+          webhookSecret: HOOK_SECRET,
+        },
+        { displayPhoneNumber: null, connectedAt: "SERVER_TS", connectedByUid: null },
+      ),
+    ).rejects.toThrow(/connectedByUid/);
     expect(writes).toEqual([]);
+  });
+
+  it("claims an acknowledged warning version only on the gated path", async () => {
+    // `../provision` gates on `hasCurrentRiskAck`, so its record may name the
+    // version. The MANUAL connect route shares this write and has no ack gate
+    // at all: a record there claiming "they agreed to v1" would assert consent
+    // the admin was never asked for.
+    const { storeBridgeConnection } = await import(
+      "@/lib/comms/whatsapp/bridge-connection"
+    );
+    const creds = {
+      baseUrl: "http://127.0.0.1:33101",
+      token: APP_TOKEN,
+      webhookSecret: HOOK_SECRET,
+    };
+    const meta = {
+      displayPhoneNumber: null,
+      connectedAt: "SERVER_TS",
+      connectedByUid: "uid_admin",
+    };
+    await storeBridgeConnection(SUB, creds, meta);
+    const ungated = writes.find((w) => w.path.startsWith(CONNECTIONS_PATH));
+    expect(ungated?.data?.uid).toBe("uid_admin");
+    expect(ungated?.data).not.toHaveProperty("riskTextId");
+
+    writes = [];
+    await storeBridgeConnection(SUB, creds, meta, { riskTextId: RISK_TEXT_ID });
+    const gated = writes.find((w) => w.path.startsWith(CONNECTIONS_PATH));
+    expect(gated?.data?.riskTextId).toBe(RISK_TEXT_ID);
   });
 
   it("says the credentials are lost when the store write fails after the manager 201'd", async () => {
