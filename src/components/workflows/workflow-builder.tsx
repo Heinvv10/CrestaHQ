@@ -55,6 +55,7 @@ import {
 import { ConditionsEditor } from "./conditions-editor";
 import {
   NodeConfigDialog,
+  type WhatsappSenderOption,
   type WhatsappTemplateOption,
 } from "./node-config-dialog";
 import { TestDialog } from "./test-dialog";
@@ -151,7 +152,7 @@ export interface BuilderReadiness {
   detail: ReadinessDetail;
 }
 
-export type { WhatsappTemplateOption };
+export type { WhatsappSenderOption, WhatsappTemplateOption };
 
 // Provided once at the top of the builder so the recursive step chain can read
 // it without prop-drilling through Chain/Branch.
@@ -177,6 +178,7 @@ export function WorkflowBuilder({
   trackedLinks,
   readiness,
   whatsappTemplates,
+  whatsappSenders,
 }: {
   saId: string;
   initial: BuilderInitial;
@@ -184,6 +186,7 @@ export function WorkflowBuilder({
   trackedLinks: { id: string; name: string }[];
   readiness: BuilderReadiness;
   whatsappTemplates: WhatsappTemplateOption[];
+  whatsappSenders: WhatsappSenderOption[];
 }) {
   const router = useRouter();
   const stages = usePipelineStages();
@@ -432,6 +435,7 @@ export function WorkflowBuilder({
         <NodeConfigDialog
           step={editing}
           whatsappTemplates={whatsappTemplates}
+          whatsappSenders={whatsappSenders}
           onClose={() => setEditing(null)}
           onSave={(config) => editing && saveConfig(editing.id, config)}
         />

@@ -1,5 +1,8 @@
 import { WorkflowBuilderLoader } from "@/components/workflows/workflow-builder-loader";
-import type { BuilderReadiness } from "@/components/workflows/workflow-builder";
+import type {
+  BuilderReadiness,
+  WhatsappSenderOption,
+} from "@/components/workflows/workflow-builder";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
@@ -9,10 +12,11 @@ import {
 } from "@/lib/comms/twilio";
 import type { SubAccountDoc } from "@/types";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import {
-  capabilitiesFor,
-  resolveWhatsAppProviderId,
-} from "@/lib/comms/whatsapp/provider";
+  listWhatsappSenders,
+  resolveWhatsappSender,
+} from "@/lib/comms/whatsapp/resolve-sender";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +63,10 @@ export default async function WorkflowBuilderPage({
   // than one that paints it red. The Twilio-shaped check refused Cloud, whose
   // templates the dispatcher supports.
   const whatsappSender = whatsappSenderConfigured(sub);
-  const whatsappRail = resolveWhatsAppProviderId(sub?.whatsappProvider);
+  // The rail of the sender a step with no `senderId` sends from — the same
+  // resolution the engine runs, so a green node is a node that can send.
+  const resolvedDefault = resolveWhatsappSender(sub);
+  const whatsappRail = resolvedDefault.ok ? resolvedDefault.provider : "twilio";
   const whatsappTemplate =
     capabilitiesFor(whatsappRail).supportsTemplates && !approvedWhatsapp.empty;
 
@@ -78,12 +85,27 @@ export default async function WorkflowBuilderPage({
     },
   };
 
+  // Only STORED senders are selectable. The synthesized one has no persisted
+  // id, so offering it would write a `senderId` that stops resolving the
+  // moment the workspace adds a real sender — where "account default" (an
+  // empty senderId) keeps working through every registry change.
+  const whatsappSenders: WhatsappSenderOption[] = (
+    sub?.whatsappSenders?.length ? listWhatsappSenders(sub) : []
+  ).map((s) => ({
+      id: s.id,
+      label: s.label,
+      phoneNumber: s.phoneNumber,
+      isDefault: s.isDefault === true,
+    }),
+  );
+
   return (
     <div className="mx-auto w-full max-w-5xl">
       <WorkflowBuilderLoader
         saId={subAccountId}
         workflowId={workflowId}
         readiness={readiness}
+        whatsappSenders={whatsappSenders}
       />
     </div>
   );

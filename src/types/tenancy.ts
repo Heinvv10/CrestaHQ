@@ -4,6 +4,7 @@ import type { PaystackConnectionMeta } from "@/types/paystack-connection";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
 import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
+import type { WhatsAppSender } from "@/types/whatsapp-senders";
 
 export type AgencyRole = "owner" | "staff";
 export type SubAccountRole = "admin" | "collaborator";
@@ -529,6 +530,15 @@ export interface SubAccountDoc {
    * See {@link WhatsappBridgeMeta}.
    */
   whatsappBridgeMeta?: WhatsappBridgeMeta | null;
+  /**
+   * The numbers this workspace can send WhatsApp FROM, so a workflow step can
+   * choose one. Absent means the registry has never been touched: a single
+   * sender is then synthesized from `whatsappProvider` and that rail's own
+   * display metadata, so nothing about an existing workspace changes.
+   * Display metadata only — credentials stay in `private/*`.
+   * See {@link WhatsAppSender} and `lib/comms/whatsapp/resolve-sender.ts`.
+   */
+  whatsappSenders?: WhatsAppSender[] | null;
   bookingConfig: BookingConfig | null;
   sendWindow: SendWindow | null;
   /**

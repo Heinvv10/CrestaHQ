@@ -29,6 +29,14 @@ export interface WhatsappTemplateOption {
   variables: WhatsappTemplateVariable[];
 }
 
+/** One of the sub-account's WhatsApp senders, for the send-from picker. */
+export interface WhatsappSenderOption {
+  id: string;
+  label: string;
+  phoneNumber: string;
+  isDefault: boolean;
+}
+
 function deriveWait(seconds: number): { value: number; unit: number } {
   if (seconds && seconds % 86_400 === 0)
     return { value: seconds / 86_400, unit: 86_400 };
@@ -40,11 +48,13 @@ function deriveWait(seconds: number): { value: number; unit: number } {
 export function NodeConfigDialog({
   step,
   whatsappTemplates,
+  whatsappSenders,
   onClose,
   onSave,
 }: {
   step: BuilderStep | null;
   whatsappTemplates: WhatsappTemplateOption[];
+  whatsappSenders: WhatsappSenderOption[];
   onClose: () => void;
   onSave: (config: Cfg) => void;
 }) {
@@ -56,6 +66,8 @@ export function NodeConfigDialog({
 
   if (!step) return null;
   const set = (patch: Cfg) => setCfg((c) => ({ ...c, ...patch }));
+  const defaultSender =
+    whatsappSenders.find((s) => s.isDefault) ?? whatsappSenders[0] ?? null;
   const str = (k: string) => (cfg[k] as string) ?? "";
 
   const wait = deriveWait(Number(cfg.seconds ?? 86_400));
@@ -198,6 +210,33 @@ export function NodeConfigDialog({
                 );
               })()}
             </>
+          )}
+
+          {step.type === "whatsapp_template" && (
+            <Field
+              label="Send from"
+              hint="Leave on the account default unless this step has to go out on a particular number."
+            >
+              <select
+                value={str("senderId")}
+                onChange={(e) => set({ senderId: e.target.value })}
+                className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
+              >
+                {/* Empty value, not the default sender's id: a step that says
+                    "the account default" must follow the default when it
+                    changes, rather than pinning the number it had today. */}
+                <option value="">
+                  Account default
+                  {defaultSender ? ` — ${defaultSender.label}` : ""}
+                </option>
+                {whatsappSenders.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                    {s.phoneNumber ? ` — ${s.phoneNumber}` : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
           )}
 
           {step.type === "whatsapp_template" &&

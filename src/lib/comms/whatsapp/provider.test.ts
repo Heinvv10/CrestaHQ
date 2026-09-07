@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { resolveWhatsAppProviderId, capabilitiesFor } from "./provider";
-import { resolveProviderForSubAccount } from "./resolve-provider";
 
 describe("resolveWhatsAppProviderId", () => {
   it.each([undefined, null, "", "TWILIO", "meta", "garbage"])(
@@ -33,29 +32,6 @@ describe("capabilitiesFor", () => {
     expect(capabilitiesFor("bridge")).toEqual({
       supportsTemplates: false,
       enforcesWindow: false,
-    });
-  });
-});
-
-describe("resolveProviderForSubAccount", () => {
-  it("returns twilio with its capabilities for a legacy sub-account", () => {
-    expect(resolveProviderForSubAccount({})).toEqual({
-      provider: "twilio",
-      capabilities: { supportsTemplates: true, enforcesWindow: true },
-    });
-  });
-
-  it("returns cloud when the workspace has been cut over", () => {
-    expect(
-      resolveProviderForSubAccount({ whatsappProvider: "cloud" }),
-    ).toMatchObject({ provider: "cloud" });
-  });
-
-  it("returns twilio for a null sub-account rather than throwing", () => {
-    // Callers hold a possibly-missing doc. Failing safe to the default rail
-    // beats a crash inside a send path.
-    expect(resolveProviderForSubAccount(null)).toMatchObject({
-      provider: "twilio",
     });
   });
 });

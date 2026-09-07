@@ -10,12 +10,9 @@ import {
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
-import {
-  capabilitiesFor,
-  resolveWhatsAppProviderId,
-} from "@/lib/comms/whatsapp/provider";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import type { SubAccountDoc } from "@/types";
 import type { GoogleReviewConfig } from "@/types/tenancy";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -102,7 +99,11 @@ export async function POST(
         { status: 403 },
       );
     }
-    const rail = resolveWhatsAppProviderId(sub?.whatsappProvider);
+    // One resolution for the whole route — the rail of the sender this
+    // workspace sends on. The approval check below reads the same value, so a
+    // config that saves is a config that can send.
+    const resolvedSender = resolveWhatsappSender(sub);
+    const rail = resolvedSender.ok ? resolvedSender.provider : "twilio";
     // The PURE sender check, deliberately NOT checkWhatsappReadiness: this is a
     // config SAVE, and readiness does a live bridge probe. Refusing to save a
     // configuration because the bridge happens to be unreachable right now
@@ -149,11 +150,10 @@ export async function POST(
       // stale Twilio id while the flat status mirrors the cloud approval, so
       // the old check would accept a template approved on a rail this
       // workspace does not send on.
-      const { provider: waProvider } = resolveProviderForSubAccount(sub);
-      if (!isTemplateApprovedFor(tpl, waProvider)) {
+      if (!isTemplateApprovedFor(tpl, rail)) {
         return NextResponse.json(
           {
-            error: `That WhatsApp template isn't approved on this workspace's ${waProvider} WhatsApp rail — only a template approved there can be used.`,
+            error: `That WhatsApp template isn't approved on this workspace's ${rail} WhatsApp rail — only a template approved there can be used.`,
           },
           { status: 400 },
         );

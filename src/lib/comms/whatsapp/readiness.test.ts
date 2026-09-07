@@ -37,7 +37,11 @@ describe("checkWhatsappReadiness", () => {
     subAccountWhatsappIsConfigured.mockReturnValue(true);
     await expect(
       checkWhatsappReadiness({ subAccountId: "sa_1", subAccount: sub() }),
-    ).resolves.toEqual({ ready: true, provider: "twilio" });
+    ).resolves.toEqual({
+      ready: true,
+      provider: "twilio",
+      sender: expect.objectContaining({ provider: "twilio" }),
+    });
   });
 
   it("does NOT require Twilio credentials on the cloud rail", async () => {
@@ -49,7 +53,11 @@ describe("checkWhatsappReadiness", () => {
       subAccountId: "sa_1",
       subAccount: sub("cloud", null),
     });
-    expect(r).toEqual({ ready: true, provider: "cloud" });
+    expect(r).toEqual({
+      ready: true,
+      provider: "cloud",
+      sender: expect.objectContaining({ provider: "cloud" }),
+    });
     expect(subAccountWhatsappIsConfigured).not.toHaveBeenCalled();
   });
 
@@ -92,7 +100,11 @@ describe("checkWhatsappReadiness", () => {
       subAccountId: "sa_1",
       subAccount: sub("bridge"),
     });
-    expect(r).toEqual({ ready: true, provider: "bridge" });
+    expect(r).toEqual({
+      ready: true,
+      provider: "bridge",
+      sender: expect.objectContaining({ provider: "bridge" }),
+    });
     expect(subAccountWhatsappIsConfigured).not.toHaveBeenCalled();
     expect(whatsappCloudIsConfigured).not.toHaveBeenCalled();
   });

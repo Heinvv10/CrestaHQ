@@ -1,4 +1,7 @@
-import { resolveWhatsAppProviderId } from "./provider";
+import {
+  resolveWhatsappSender,
+  type WhatsappSenderSource,
+} from "./resolve-sender";
 
 /**
  * Does this workspace have a WhatsApp sender configured, on the rail it
@@ -21,17 +24,11 @@ import { resolveWhatsAppProviderId } from "./provider";
  * the sub-account doc, which every active member may already read.
  */
 export function whatsappSenderConfigured(
-  sub:
-    | {
-        whatsappProvider?: string | null;
-        twilioConfig?: { whatsappFromNumber?: string | null } | null;
-        whatsappCloudMeta?: { phoneNumberId?: string | null } | null;
-        whatsappBridgeMeta?: { displayPhoneNumber?: string | null } | null;
-      }
-    | null
-    | undefined,
+  sub: WhatsappSenderSource | null | undefined,
 ): boolean {
-  switch (resolveWhatsAppProviderId(sub?.whatsappProvider)) {
+  const resolved = resolveWhatsappSender(sub);
+  if (!resolved.ok) return false;
+  switch (resolved.provider) {
     case "cloud":
       return !!sub?.whatsappCloudMeta?.phoneNumberId;
     case "bridge":
@@ -42,7 +39,8 @@ export function whatsappSenderConfigured(
 }
 
 /**
- * The sender number to DISPLAY for this workspace, on whichever rail it uses.
+ * The default sender's number to DISPLAY for this workspace, on whichever
+ * rail it uses.
  *
  * Same reasoning as `whatsappSenderConfigured`, applied to the value rather
  * than the boolean: a bridge or Cloud workspace has no
@@ -53,22 +51,8 @@ export function whatsappSenderConfigured(
  * check. Display metadata only — never a credential.
  */
 export function whatsappSenderNumber(
-  sub:
-    | {
-        whatsappProvider?: string | null;
-        twilioConfig?: { whatsappFromNumber?: string | null } | null;
-        whatsappCloudMeta?: { displayPhoneNumber?: string | null } | null;
-        whatsappBridgeMeta?: { displayPhoneNumber?: string | null } | null;
-      }
-    | null
-    | undefined,
+  sub: WhatsappSenderSource | null | undefined,
 ): string {
-  switch (resolveWhatsAppProviderId(sub?.whatsappProvider)) {
-    case "cloud":
-      return sub?.whatsappCloudMeta?.displayPhoneNumber ?? "";
-    case "bridge":
-      return sub?.whatsappBridgeMeta?.displayPhoneNumber ?? "";
-    default:
-      return sub?.twilioConfig?.whatsappFromNumber ?? "";
-  }
+  const resolved = resolveWhatsappSender(sub);
+  return resolved.ok ? resolved.sender.phoneNumber : "";
 }

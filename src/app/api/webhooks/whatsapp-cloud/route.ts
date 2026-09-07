@@ -13,7 +13,7 @@ import {
   parseCloudPhoneNumberId,
   parseCloudStatuses,
 } from "@/lib/comms/whatsapp/cloud-payload";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import type { SubAccountDoc } from "@/types";
@@ -82,9 +82,10 @@ interface ResolvedRoute {
 
 /**
  * Find the sub-account owning this sending number. Returns null when nothing
- * matches, when the agency gate is off, or when the workspace is not actually
- * on the cloud rail — a stale Meta subscription must not resurrect a channel
- * an operator has switched away from.
+ * matches, when the agency gate is off, or when the workspace has no cloud
+ * sender at all — a stale Meta subscription must not resurrect a channel an
+ * operator has removed. Having one but sending from another is fine: replies
+ * still belong to the number they came in on.
  */
 async function resolveRoute(
   phoneNumberId: string,
@@ -106,10 +107,12 @@ async function resolveRoute(
     return null;
   }
 
-  const { provider } = resolveProviderForSubAccount(sa);
-  if (provider !== "cloud") {
+  // Membership, not "is cloud the default sender": a workspace whose default
+  // sender is another rail still owns this number and still has to receive
+  // replies to it.
+  if (!hasWhatsappSenderOnRail(sa, "cloud")) {
     console.warn(
-      `[whatsapp-cloud] inbound for pn=${phoneNumberId} (sa=${id}) but the workspace is on the ${provider} rail — dropping`,
+      `[whatsapp-cloud] inbound for pn=${phoneNumberId} (sa=${id}) but the workspace has no cloud sender — dropping`,
     );
     return null;
   }

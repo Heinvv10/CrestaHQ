@@ -26,9 +26,6 @@ vi.mock("@/lib/comms/whatsapp/send-dispatch", () => ({
 vi.mock("@/lib/comms/whatsapp/readiness", () => ({
   checkWhatsappReadiness: (...a: unknown[]) => checkWhatsappReadiness(...a),
 }));
-vi.mock("@/lib/comms/whatsapp/resolve-provider", () => ({
-  resolveProviderForSubAccount: () => ({ provider: "cloud" }),
-}));
 vi.mock("@/lib/comms/whatsapp/template-registrations", () => ({
   isTemplateApprovedFor: () => true,
 }));
@@ -75,7 +72,9 @@ const ctx = (config: Record<string, unknown>, over: Record<string, unknown> = {}
 describe("execSendWhatsapp", () => {
   beforeEach(() => {
     dispatchWhatsappSend.mockReset().mockResolvedValue({ ok: true });
-    checkWhatsappReadiness.mockReset().mockResolvedValue({ ready: true });
+    checkWhatsappReadiness
+      .mockReset()
+      .mockResolvedValue({ ready: true, provider: "cloud" });
     templateDoc = undefined;
   });
 

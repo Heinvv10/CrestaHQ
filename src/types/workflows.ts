@@ -202,6 +202,12 @@ export interface WhatsappTemplateConfig {
   /** Approved WhatsApp template doc id (subAccounts/{id}/whatsappTemplates). */
   templateId: string;
   /**
+   * Which of the sub-account's WhatsApp senders this step goes out on
+   * (`whatsappSenders[].id`). Empty or absent means the workspace default,
+   * which is what every step built before the sender registry carries.
+   */
+  senderId?: string;
+  /**
    * Operator-set values for the template's MANUAL variables, keyed by position
    * (string keys for JSON). May contain merge tags; resolved at run time.
    * `merge_tag` variables auto-resolve from the contact and aren't stored here.

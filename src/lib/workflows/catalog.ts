@@ -105,7 +105,8 @@ export function defaultConfig(type: WorkflowNodeType): Record<string, unknown> {
     case "send_sms":
       return { body: "" };
     case "whatsapp_template":
-      return { templateId: "", manualValues: {} };
+      // Empty senderId = the sub-account's default sender.
+      return { templateId: "", manualValues: {}, senderId: "" };
     case "send_whatsapp":
       return { body: "", templateId: "", manualValues: {} };
     case "wait":
