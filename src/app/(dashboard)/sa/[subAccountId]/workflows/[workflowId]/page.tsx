@@ -27,19 +27,13 @@ export default async function WorkflowBuilderPage({
 }) {
   const { subAccountId, workflowId } = await params;
 
-  // Resolve which send-integrations can ACTUALLY run, server-side. Every input
-  // is readable here — the deployment env vars, the sub-account's own
-  // twilioConfig, and (for WhatsApp) its approved-template inventory — so a
-  // doomed step is flagged deterministically. This replaces the client's
-  // optimistic, defaults-open probe that left a step unflagged whenever the
-  // probe failed or hadn't resolved. Mirrors exactly what the engine does at
-  // send time (engine.ts execSendSms / execWhatsappTemplate).
+  // Resolve integration configuration server-side. The builder applies the
+  // template requirement only to template-send nodes. Runtime checks still
+  // validate the selected sender, recipient, and any reply-window restrictions.
   const db = getAdminDb();
   const [snap, approvedWhatsapp] = await Promise.all([
     db.doc(`subAccounts/${subAccountId}`).get(),
-    // WhatsApp also needs ≥1 Meta-approved template — with none, every
-    // whatsapp_template node is skipped (no template to send), so the channel
-    // counts as not-ready even when the gate + sender are configured.
+    // Template-send nodes need an approved template; free-form sends do not.
     db
       .collection(`subAccounts/${subAccountId}/whatsappTemplates`)
       .where("status", "==", "approved")

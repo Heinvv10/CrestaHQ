@@ -21,10 +21,9 @@ import type { WhatsappTemplateVariable } from "@/types/whatsapp-templates";
  * links (for the link-trigger picker) via the client SDK. Keeps the page
  * component a thin server shell.
  *
- * `readiness` (which send-integrations can actually run) and the WhatsApp
- * sender list are computed on the SERVER and passed in — env vars, the sub-account's twilioConfig, and the
- * approved-template inventory are all readable there, so doomed steps are
- * flagged deterministically rather than guessed from a defaults-open probe.
+ * Integration configuration and the WhatsApp sender list are computed on the
+ * server. The builder uses each node's requirements to flag missing configuration;
+ * runtime sender and recipient checks still apply when a workflow executes.
  */
 export function WorkflowBuilderLoader({
   saId,

@@ -554,6 +554,8 @@ const REQUIREMENT_WARNING: Record<string, string> = {
   email:
     "Email isn't configured on this deployment, so this step will be skipped when the workflow runs. Add RESEND_API_KEY + EMAIL_FROM to fix it.",
   sms: "SMS can't run for this sub-account, so this step will be skipped. Give this sub-account a dedicated Twilio number in Settings → SMS, or have your agency enable the shared SMS sender. (See the sub/agency indicators below.)",
+  whatsappFreeform:
+    "WhatsApp isn't ready for this sub-account. Ask your agency to enable WhatsApp and connect a sender in Settings → SMS.",
   whatsapp:
     "WhatsApp isn't ready for this sub-account, so this step will be skipped. It needs all three: your agency to enable WhatsApp, a WhatsApp sender configured in Settings → SMS, and at least one Meta-approved template.",
 };
@@ -567,9 +569,11 @@ const REQUIREMENT_WARNING: Record<string, string> = {
 function ReadinessChips({
   requirement,
   detail,
+  requiresWhatsappTemplate,
 }: {
   requirement: NodeRequirement;
   detail: ReadinessDetail;
+  requiresWhatsappTemplate: boolean;
 }) {
   const badges: { code: "SA" | "A"; title: string }[] = [];
 
@@ -602,13 +606,14 @@ function ReadinessChips({
   } else if (
     detail.whatsappGate &&
     detail.whatsappSender &&
-    detail.whatsappTemplate
+    (!requiresWhatsappTemplate || detail.whatsappTemplate)
   ) {
     // WhatsApp is dedicated-only — there's no shared/agency tier.
     badges.push({
       code: "SA",
-      title:
-        "Sub-account sender — WhatsApp is enabled, a sender is configured, and at least one approved template exists.",
+      title: requiresWhatsappTemplate
+        ? "Sub-account sender — WhatsApp is enabled, a sender is configured, and at least one approved template exists."
+        : "Sub-account sender — WhatsApp is enabled and a sender is configured. Free-form sends remain subject to the sender’s reply-window rules.",
     });
   }
 
@@ -646,9 +651,13 @@ function StepCard({
       : requirement === "sms"
         ? !readiness.smsReady
         : requirement === "whatsapp"
-          ? !readiness.whatsappReady
+          ? step.type === "send_whatsapp"
+            ? !(readiness.detail.whatsappGate && readiness.detail.whatsappSender)
+            : !readiness.whatsappReady
           : false;
-  const warning = unmet ? REQUIREMENT_WARNING[requirement!] : null;
+  const warning = unmet
+    ? REQUIREMENT_WARNING[step.type === "send_whatsapp" ? "whatsappFreeform" : requirement!]
+    : null;
 
   const Icon = ICONS[step.type];
   return (
@@ -689,7 +698,11 @@ function StepCard({
           {unmet ? "Won't run — integration not configured" : nodeSummary(step)}
         </div>
         {requirement && (
-          <ReadinessChips requirement={requirement} detail={readiness.detail} />
+          <ReadinessChips
+            requirement={requirement}
+            detail={readiness.detail}
+            requiresWhatsappTemplate={step.type === "whatsapp_template"}
+          />
         )}
       </button>
       <Button
