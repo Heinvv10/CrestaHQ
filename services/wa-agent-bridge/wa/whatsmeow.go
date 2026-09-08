@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 )
 
 // ReplayWindow is how long after connecting the bridge records inbound without
@@ -47,6 +48,12 @@ type Client struct {
 	wac         *whatsmeow.Client
 	connectedAt time.Time
 	loggedOut   bool
+
+	// uploader overrides where attachments are uploaded. Nil in production,
+	// where it falls back to wac. Tests set it to reach the upload-FAILURE
+	// path, which is the one that must return before anything touches the
+	// socket — see mediaUploader.
+	uploader mediaUploader
 
 	onInbound   func(jid, text, msgID string, at time.Time)
 	onLoggedOut func()
@@ -334,7 +341,34 @@ func (c *Client) InReplayWindow() bool {
 	return time.Since(c.connectedAt) < ReplayWindow
 }
 
-func (c *Client) Send(ctx context.Context, jid, text string) (string, error) {
+// upload puts one attachment on WhatsApp's media servers. Every failure it can
+// return — including its own deadline — is wrapped in ErrMediaUpload, because
+// every one of them happens before SendMessage and is therefore definitive.
+func (c *Client) upload(ctx context.Context, media *rails.Media) (whatsmeow.UploadResponse, error) {
+	c.mu.Lock()
+	up := c.uploader
+	if up == nil && c.wac != nil {
+		up = c.wac
+	}
+	c.mu.Unlock()
+	if up == nil {
+		return whatsmeow.UploadResponse{}, fmt.Errorf("%w: no client", ErrMediaUpload)
+	}
+
+	uploadCtx, cancel := context.WithTimeout(ctx, mediaUploadBudget(ctx))
+	defer cancel()
+
+	resp, err := up.Upload(uploadCtx, media.Data, uploadKindFor(media.MimeType))
+	if err != nil {
+		// The mime type and the byte count, never the bytes and never the
+		// filename — a filename is customer data on this rail.
+		return whatsmeow.UploadResponse{}, fmt.Errorf("%w (%s, %d bytes): %w",
+			ErrMediaUpload, media.MimeType, len(media.Data), err)
+	}
+	return resp, nil
+}
+
+func (c *Client) Send(ctx context.Context, jid, text string, media *rails.Media) (string, error) {
 	c.mu.Lock()
 	loggedOut := c.loggedOut
 	connected := !loggedOut && !c.connectedAt.IsZero()
@@ -351,9 +385,28 @@ func (c *Client) Send(ctx context.Context, jid, text string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("wa: bad jid %s: %w", redact.JID(jid), err)
 	}
-	resp, err := c.wac.SendMessage(ctx, target, &waE2E.Message{
-		Conversation: proto.String(text),
-	})
+
+	msg := &waE2E.Message{Conversation: proto.String(text)}
+	if media != nil {
+		// Uploaded before SendMessage rather than alongside it, and a failure
+		// here returns BEFORE anything reaches the socket. That makes an upload
+		// failure a DEFINITIVE rejection one layer up — api.handleSendError
+		// releases the reservation and the cap slot — which is correct only
+		// because no message was dispatched. Do not move this after the send.
+		//
+		// The upload runs on its OWN deadline, deliberately shorter than the
+		// send context's (see mediaUploadBudget). Without that, a slow upload
+		// would exhaust the queue's send timeout instead, and the caller would
+		// be told "ambiguous" — reservation left to expire, cap slot spent
+		// forever — about a message that provably never left this process.
+		up, upErr := c.upload(ctx, media)
+		if upErr != nil {
+			return "", upErr
+		}
+		msg = mediaMessage(up, text, media)
+	}
+
+	resp, err := c.wac.SendMessage(ctx, target, msg)
 	if err != nil {
 		return "", err
 	}

@@ -22,16 +22,28 @@ describe("capabilitiesFor", () => {
       expect(capabilitiesFor(p)).toEqual({
         supportsTemplates: true,
         enforcesWindow: true,
+        supportsMedia: false,
       });
     }
   });
 
-  it("gives the bridge neither", () => {
+  it("gives the bridge neither, and gives it media", () => {
     // Stated, not inferred. The bridge is not a Meta rail: no service window
-    // exists to enforce and no template can be sent.
+    // exists to enforce and no template can be sent. It is also the only rail
+    // that uploads a file directly, which is why media is declared here rather
+    // than derived from a provider-name comparison at the call site.
     expect(capabilitiesFor("bridge")).toEqual({
       supportsTemplates: false,
       enforcesWindow: false,
+      supportsMedia: true,
     });
+  });
+
+  it("declares media support for every rail, so a new one cannot inherit it", () => {
+    // The failure this guards: a fourth rail added with a partial capability
+    // record, defaulting to whatever `provider !== "bridge"` used to produce.
+    for (const p of ["twilio", "cloud", "bridge"] as const) {
+      expect(typeof capabilitiesFor(p).supportsMedia).toBe("boolean");
+    }
   });
 });

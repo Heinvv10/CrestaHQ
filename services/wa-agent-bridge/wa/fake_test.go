@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 )
 
 // Fake is the test transport, and it lives in a _test.go file so it does not
@@ -19,12 +21,17 @@ type Fake struct {
 	inFlight      int
 	maxConcurrent int
 	BlockForever  bool
+	// lastMedia is what the queue handed down on the most recent call. Nil for
+	// a text send, which is the assertion that an attachment survives the hop
+	// rather than being quietly dropped somewhere in the pacing code.
+	lastMedia *rails.Media
 }
 
 func NewFake() *Fake { return &Fake{} }
 
-func (f *Fake) Send(ctx context.Context, jid, text string) (string, error) {
+func (f *Fake) Send(ctx context.Context, jid, text string, media *rails.Media) (string, error) {
 	f.mu.Lock()
+	f.lastMedia = media
 	f.inFlight++
 	if f.inFlight > f.maxConcurrent {
 		f.maxConcurrent = f.inFlight
@@ -51,6 +58,12 @@ func (f *Fake) Send(ctx context.Context, jid, text string) (string, error) {
 }
 
 func (f *Fake) Connected() bool { return !f.BlockForever }
+
+func (f *Fake) LastMedia() *rails.Media {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastMedia
+}
 
 func (f *Fake) Sent() []string {
 	f.mu.Lock()

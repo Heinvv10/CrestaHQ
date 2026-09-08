@@ -28,6 +28,18 @@ export interface WhatsAppProviderCapabilities {
   supportsTemplates: boolean;
   /** Subject to Meta's 24-hour customer-service window. */
   enforcesWindow: boolean;
+  /**
+   * Can carry a file alongside the message. Only the bridge can: it uploads
+   * the bytes to WhatsApp directly, while Twilio and Cloud take media as a
+   * publicly reachable URL through their own APIs, which this seam does not
+   * implement.
+   *
+   * Declared here rather than inferred from `provider === "bridge"` for the
+   * same reason the other two flags are: a fourth rail must be forced to state
+   * what it can do, instead of silently inheriting whichever default the last
+   * comparison happened to produce.
+   */
+  supportsMedia: boolean;
 }
 
 export type WhatsAppProviderId = "twilio" | "cloud" | "bridge";
@@ -36,9 +48,9 @@ export const WHATSAPP_PROVIDER_CAPABILITIES: Record<
   WhatsAppProviderId,
   WhatsAppProviderCapabilities
 > = {
-  twilio: { supportsTemplates: true, enforcesWindow: true },
-  cloud: { supportsTemplates: true, enforcesWindow: true },
-  bridge: { supportsTemplates: false, enforcesWindow: false },
+  twilio: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
+  cloud: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
+  bridge: { supportsTemplates: false, enforcesWindow: false, supportsMedia: true },
 };
 
 /**
@@ -83,6 +95,17 @@ export interface WhatsAppSendResult {
    * matching on a message that is free to change.
    */
   refusedBy?: string;
+  /**
+   * A request-level rejection code the provider named — today the bridge's
+   * `media_too_large`, `media_unsupported_type`, `media_invalid`.
+   *
+   * Deliberately NOT `refusedBy`. A rail refusal is the provider declining a
+   * message on its merits and is rendered as such; this is the request itself
+   * being wrong, which the caller can fix and retry. Carried structurally so a
+   * route can answer 4xx instead of letting a caller error fall through to a
+   * 502 that sends whoever reads it hunting an infrastructure fault.
+   */
+  providerErrorCode?: string;
   /** True when a dry-run/test path short-circuited the real send. */
   simulated?: boolean;
 }

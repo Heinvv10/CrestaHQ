@@ -19,6 +19,11 @@ const checkWhatsappReadiness = vi.fn();
 const dispatchWhatsappSend = vi.fn();
 const getChannelConfig = vi.fn();
 let subAccountDoc: Record<string, unknown> | undefined;
+// What the handler wrote to contacts/{id}/whatsappMessages/{sid}. Captured
+// because the attachment marker on that row is the only record that a file
+// went out at all — the caption alone cannot say.
+let messageRow: Record<string, unknown> | undefined;
+let activityRow: Record<string, unknown> | undefined;
 
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
@@ -47,6 +52,20 @@ vi.mock("@/lib/firebase/admin", () => ({
         data: () => subAccountDoc,
       }),
     }),
+    collection: () => ({
+      doc: () => ({
+        collection: (name: string) => ({
+          add: async (data: Record<string, unknown>) => {
+            if (name === "activities") activityRow = data;
+          },
+          doc: () => ({
+            set: async (data: Record<string, unknown>) => {
+              if (name === "whatsappMessages") messageRow = data;
+            },
+          }),
+        }),
+      }),
+    }),
   }),
 }));
 
@@ -64,6 +83,8 @@ function post(body: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  messageRow = undefined;
+  activityRow = undefined;
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
   requireUid.mockReturnValue({ uid: "u1" });
   requireContactAccessible.mockResolvedValue({
@@ -125,5 +146,94 @@ describe("POST /api/comms/whatsapp/send — rail refusals", () => {
     const res = await post({ contactId: "c1", body: "hi" });
     expect(res.status).toBe(502);
     expect((await res.json()).code).toBeUndefined();
+  });
+});
+
+describe("POST /api/comms/whatsapp/send — attachments", () => {
+  const attachment = {
+    filename: "report.png",
+    contentType: "image/png",
+    dataBase64: "AAEC",
+  };
+
+  it("forwards a well-formed attachment to the dispatcher", async () => {
+    dispatchWhatsappSend.mockResolvedValue({
+      ok: true,
+      provider: "bridge",
+      messageId: "3EB0",
+    });
+
+    const res = await post({ contactId: "c1", body: "here it is", attachment });
+    expect(res.status).toBe(200);
+    expect(dispatchWhatsappSend).toHaveBeenCalledWith(
+      expect.objectContaining({ attachment }),
+    );
+  });
+
+  it("records the filename on the thread row, and never the bytes", async () => {
+    // A thread showing only the caption cannot answer "did the report
+    // actually go?" — the first question asked when a prospect says it never
+    // arrived. The bytes must not be there: the row is read by the UI and is
+    // not a place to park half a megabyte.
+    dispatchWhatsappSend.mockResolvedValue({
+      ok: true,
+      provider: "bridge",
+      messageId: "3EB0",
+    });
+
+    await post({ contactId: "c1", body: "here it is", attachment });
+    expect(messageRow?.attachment).toEqual({
+      filename: "report.png",
+      contentType: "image/png",
+    });
+    expect(JSON.stringify(messageRow)).not.toContain("AAEC");
+    expect(activityRow?.content).toContain("report.png");
+  });
+
+  it("leaves the attachment marker null for a plain text send", async () => {
+    dispatchWhatsappSend.mockResolvedValue({
+      ok: true,
+      provider: "bridge",
+      messageId: "3EB0",
+    });
+
+    await post({ contactId: "c1", body: "hi" });
+    expect(messageRow?.attachment).toBeNull();
+  });
+
+  it("answers 4xx when the bridge rejects the file, not 502", async () => {
+    // 502 says the gateway broke. Nothing broke — the file is too big, and the
+    // operator can send a smaller one. A 5xx also invites proxies and retry
+    // logic to try again, which reproduces the same rejection.
+    dispatchWhatsappSend.mockResolvedValue({
+      ok: false,
+      provider: "bridge",
+      providerErrorCode: "media_too_large",
+      error:
+        "WhatsApp bridge 413: media_too_large: attachment is 9000000 bytes; the limit is 8388608",
+      providerOutcome: "DEFINITELY_REJECTED",
+    });
+
+    const res = await post({ contactId: "c1", body: "here it is", attachment });
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe("media_too_large");
+  });
+
+  it("rejects a half-filled attachment instead of sending an unnamed blob", async () => {
+    for (const partial of [
+      { contentType: "image/png", dataBase64: "AAEC" },
+      { filename: "report.png", dataBase64: "AAEC" },
+      { filename: "report.png", contentType: "image/png" },
+      { filename: " ", contentType: "image/png", dataBase64: "AAEC" },
+    ]) {
+      const res = await post({
+        contactId: "c1",
+        body: "here it is",
+        attachment: partial,
+      });
+      expect(res.status).toBe(400);
+      expect(dispatchWhatsappSend).not.toHaveBeenCalled();
+    }
   });
 });

@@ -181,7 +181,7 @@ restart.**
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/v1/health` | none | For an off-box monitor. Connection state + counters only — never a token, JID or body. `503` when degraded or disconnected. |
-| `POST` | `/v1/send` | bearer | `{"to","text","idempotencyKey"}`. `idempotencyKey` is **required**. |
+| `POST` | `/v1/send` | bearer | `{"to","text","idempotencyKey"}` plus optional `{"media":{"filename","mimeType","dataBase64"}}`. `idempotencyKey` is **required**; every rail applies to a media send exactly as to text. |
 | `POST` | `/v1/allowlist` | bearer (**admin to add**) | `{"jid","remove":bool}` |
 | `GET` | `/v1/allowlist` | bearer (**admin**) | `{"jids":[...],"count":N}` — who has escaped reply-only right now |
 | `POST` | `/v1/kill` | bearer (**admin to lift**) | `{"on":bool}` |

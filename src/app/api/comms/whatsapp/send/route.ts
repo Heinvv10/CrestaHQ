@@ -6,6 +6,7 @@ import {
 } from "@/lib/comms/twilio";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
+import type { BridgeAttachment } from "@/lib/comms/whatsapp/bridge-client";
 import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
@@ -17,7 +18,24 @@ import {
   WA_REFUSAL_STATUS,
 } from "@/lib/comms/whatsapp/refusals";
 
-type Body = { contactId?: string; body?: string };
+type Body = {
+  contactId?: string;
+  body?: string;
+  /**
+   * Optional file to send alongside the text. Bridge rail only — see
+   * `dispatchWhatsappSend`, which refuses one on Twilio and Cloud.
+   *
+   * No size or type check here: the bridge owns both limits, and a second copy
+   * of either in this file would be a second number to keep in step. What this
+   * route does check is SHAPE — a half-filled attachment is a caller bug and
+   * would otherwise reach the bridge as an unnamed or empty file.
+   */
+  attachment?: {
+    filename?: string;
+    contentType?: string;
+    dataBase64?: string;
+  } | null;
+};
 
 /**
  * Send a manual WhatsApp message from a contact profile.
@@ -51,6 +69,23 @@ export async function POST(request: Request) {
       { error: "contactId and body are required" },
       { status: 400 },
     );
+  }
+
+  let attachment: BridgeAttachment | null = null;
+  if (payload.attachment) {
+    const filename = payload.attachment.filename?.trim();
+    const contentType = payload.attachment.contentType?.trim();
+    const dataBase64 = payload.attachment.dataBase64?.trim();
+    if (!filename || !contentType || !dataBase64) {
+      return NextResponse.json(
+        {
+          error:
+            "attachment requires filename, contentType and dataBase64.",
+        },
+        { status: 400 },
+      );
+    }
+    attachment = { filename, contentType, dataBase64 };
   }
 
   const contact = await requireContactAccessible(auth.uid, contactId);
@@ -122,6 +157,7 @@ export async function POST(request: Request) {
       // sendWhatsappFreeFormForSubAccount or the workflow engine instead and
       // is left unmarked, so it keeps the full quiet-hours guard.
       humanReply: true,
+      attachment,
       sendViaTwilio: async () => {
         const r = await sendWhatsappForSubAccount({
           subAccountId: contact.subAccountId,
@@ -142,6 +178,20 @@ export async function POST(request: Request) {
             code: "session_window_closed",
           },
           { status: 409 },
+        );
+      }
+      // A rejected attachment is the request being wrong — too big, wrong
+      // type, malformed — and the operator can fix it and send again. Letting
+      // it fall through to the 502 below would report a caller error as an
+      // infrastructure fault, which is the exact confusion the comment on the
+      // rail-refusal branch below condemns.
+      if (result.providerErrorCode) {
+        return NextResponse.json(
+          {
+            error: result.error ?? "That attachment could not be sent.",
+            code: result.providerErrorCode,
+          },
+          { status: 400 },
         );
       }
       // A rail deliberately refusing is not a bad gateway. 502 was both untrue
@@ -180,6 +230,12 @@ export async function POST(request: Request) {
   }
 
   const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;
+  // The filename, never the bytes. A thread that shows only the caption is a
+  // thread where nobody can tell whether the report actually went — which is
+  // the question an operator asks the moment a prospect says they got nothing.
+  const attachmentMeta = attachment
+    ? { filename: attachment.filename, contentType: attachment.contentType }
+    : null;
 
   try {
     await db
@@ -188,7 +244,9 @@ export async function POST(request: Request) {
       .collection("activities")
       .add({
         type: "whatsapp_sent",
-        content: `WhatsApp: ${preview}`,
+        content: attachmentMeta
+          ? `WhatsApp: ${preview} [${attachmentMeta.filename}]`
+          : `WhatsApp: ${preview}`,
         createdBy: auth.uid,
         meta: { sid },
         createdAt: FieldValue.serverTimestamp(),
@@ -216,6 +274,10 @@ export async function POST(request: Request) {
         from: fromNumber,
         to: contact.phone,
         twilioMessageSid: sid,
+        // Null rather than omitted, so a thread row is the same shape whether
+        // or not a file went with it and a reader never has to guess whether
+        // an absent field means "no attachment" or "written by older code".
+        attachment: attachmentMeta,
         sentByUid: auth.uid,
         error: null,
         readAt: null,
