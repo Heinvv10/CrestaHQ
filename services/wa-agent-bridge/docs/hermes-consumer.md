@@ -118,8 +118,38 @@ Authorization: Bearer <token>
 
 Both `to` and `text` are required, and so is `idempotencyKey` — its absence is
 a 400, not silently accepted, because a client retry with no key is
-indistinguishable from a new message. Request bodies over 64 KiB are rejected
-with 413.
+indistinguishable from a new message. Request bodies over 12 MiB are rejected
+with 413, and `text` over 4096 characters with a 400 (`text_too_long`) — the
+queue paces sends at a per-rune delay while holding the single socket mutex, so
+message length is how long every other send waits.
+
+### Attachments (optional)
+
+```
+{ "to": "<jid>", "text": "<caption>", "idempotencyKey": "...",
+  "media": { "filename": "report.png", "mimeType": "image/png", "dataBase64": "..." } }
+```
+
+`media` is optional; omitting it sends the plain text message it always did.
+When present, `text` becomes the attachment's caption and is still required —
+a bare file from a number the recipient may not have saved is the shape that
+gets reported.
+
+* `mimeType` must be one of `image/png`, `image/jpeg`, `application/pdf`. An
+  allow-list, not a deny-list: this rail sends from a real number we cannot
+  un-ban, so the set of file types worth that risk is named explicitly.
+  `image/*` is sent as an inline image, everything else as a document.
+* The decoded payload must be at most 8 MiB, and `filename` at most 255 bytes.
+* An attachment is validated BEFORE the rails are consulted, so a rejected file
+  spends no idempotency key and no cap budget.
+* An upload failure — including a slow upload hitting its own deadline, which
+  is always set inside the send budget — comes back as `outcome:"failed"`, i.e.
+  DEFINITIVE. Nothing reached the socket, so the key and the cap slot are both
+  released and the send is safe to retry.
+* Every rail applies to a media send exactly as to a text one — reply-only, the
+  allowlist, the per-contact/consecutive/daily caps, quiet hours, the kill
+  switch. No rail reads `media`, so there is nothing to switch off by attaching
+  a file.
 
 Responses:
 
@@ -132,7 +162,11 @@ Responses:
 | 422 | `{ok:false, refusedBy, reason}` | a rail refused for any other reason (`kill_switch`, `consumer_budget`, `reply_only`, `per_contact_cap`, `consecutive_cap`, `daily_cap`, `quiet_hours` (which may be configured per consumer — yours can differ from another consumer's), `internal_error`) | surface `reason`; never retry |
 | 401 | `{error}` | missing bearer token, or a token no registered consumer holds — the FIRST status a mis-registered consumer sees | fix `CONSUMERS`/the token; retrying unchanged never helps |
 | 400 | `{error}` | malformed request (missing `to`/`text`/`idempotencyKey`, or invalid JSON) | fix the request; do not retry unchanged |
-| 413 | `{error}` | body over 64 KiB | fix the request |
+| 400 | `{ok:false, error, code:"media_invalid"}` | `media` is present but unusable — no `filename`, a `filename` over 255 bytes, or `dataBase64` that is not base64 or decodes to nothing | fix the request; do not retry unchanged |
+| 400 | `{ok:false, error, code:"text_too_long"}` | `text` is over 4096 characters | shorten it; do not retry unchanged |
+| 413 | `{ok:false, error, code:"media_too_large"}` | the decoded attachment is over 8 MiB | send a smaller file; do not retry unchanged |
+| 415 | `{ok:false, error, code:"media_unsupported_type"}` | `media.mimeType` is not one this bridge sends | convert the file; do not retry unchanged |
+| 413 | `{error}` | body over 12 MiB | fix the request |
 | 500 | `{ok:false, error, outcome:"not_sent"}` | the reservation itself failed — the idempotency key or the outbound row could not be written (store problem). Nothing was attempted and no cap budget was spent | may retry with the SAME key once the store is healthy |
 | 502 | `{ok:false, error, outcome:"failed"}` | the provider definitively rejected the send; nothing reached WhatsApp | safe to retry (the reservation and its cap budget were both released) |
 | 502 | `{ok:false, error, outcome:"ambiguous"}` | timed out — it may or may not have been delivered | **do not retry** — reuse the same key if you must; the reservation is deliberately left in place to expire, not released, and its cap budget stays spent for the same reason |

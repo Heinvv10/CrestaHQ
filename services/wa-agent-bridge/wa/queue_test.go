@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 )
 
 // TestQueueSerialisesSends is written to the same shape that earlier caught a
@@ -53,7 +55,7 @@ func TestQueueSerialisesSends(t *testing.T) {
 				defer done.Done()
 				ready.Done()
 				<-start // released together, so they actually contend
-				q.Send(context.Background(), jid, "hi")
+				q.Send(context.Background(), jid, "hi", nil)
 			}()
 		}
 		ready.Wait()
@@ -76,7 +78,7 @@ func TestQueueAppliesMinimumGap(t *testing.T) {
 
 	start := time.Now()
 	for i := 0; i < 3; i++ {
-		q.Send(context.Background(), "27821234567@s.whatsapp.net", "hi")
+		q.Send(context.Background(), "27821234567@s.whatsapp.net", "hi", nil)
 	}
 	// Three sends with a 50ms floor means at least two gaps, i.e. ~100ms. The
 	// wait is computed as (gap - elapsed send time), so the true floor sits
@@ -92,7 +94,7 @@ func TestQueueTimesOutRatherThanHanging(t *testing.T) {
 	f.BlockForever = true
 	q := NewQueue(f, QueueOpts{Timeout: 30 * time.Millisecond})
 
-	_, err := q.Send(context.Background(), "27821234567@s.whatsapp.net", "hi")
+	_, err := q.Send(context.Background(), "27821234567@s.whatsapp.net", "hi", nil)
 	if !errors.Is(err, ErrSendTimeout) {
 		t.Fatalf("want ErrSendTimeout, got %v", err)
 	}
@@ -124,7 +126,7 @@ func newStuckTransport() *stuckTransport {
 	}
 }
 
-func (s *stuckTransport) Send(ctx context.Context, _, _ string) (string, error) {
+func (s *stuckTransport) Send(ctx context.Context, _, _ string, _ *rails.Media) (string, error) {
 	s.mu.Lock()
 	s.inFlight++
 	if s.inFlight > s.maxConcurrent {
@@ -179,7 +181,7 @@ func TestQueueHoldsTheLockAcrossATimedOutSend(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := q.Send(context.Background(), "27821234567@s.whatsapp.net", "hi")
+		_, err := q.Send(context.Background(), "27821234567@s.whatsapp.net", "hi", nil)
 		firstDone <- err
 	}()
 
@@ -189,7 +191,7 @@ func TestQueueHoldsTheLockAcrossATimedOutSend(t *testing.T) {
 	secondDone := make(chan struct{})
 	go func() {
 		defer close(secondDone)
-		q.Send(context.Background(), "27831234567@s.whatsapp.net", "hi")
+		q.Send(context.Background(), "27831234567@s.whatsapp.net", "hi", nil)
 	}()
 
 	// With the drain removed, the second send acquires the queue immediately
@@ -225,7 +227,7 @@ func TestQueueDistinguishesCancellationFromTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := q.Send(ctx, "27821234567@s.whatsapp.net", "hi")
+		_, err := q.Send(ctx, "27821234567@s.whatsapp.net", "hi", nil)
 		done <- err
 	}()
 

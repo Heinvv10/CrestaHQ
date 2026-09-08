@@ -20,7 +20,9 @@ import (
 // Sender is the narrow slice of the transport the API needs. Taking the
 // interface rather than *wa.Queue keeps the handlers testable with a stub.
 type Sender interface {
-	Send(ctx context.Context, jid, text string) (string, error)
+	// media is nil for a plain text message; when set, text is its caption.
+	// See wa.Transport, which this is the API-side half of.
+	Send(ctx context.Context, jid, text string, media *rails.Media) (string, error)
 }
 
 // ConnectionState is the narrow slice of the WhatsApp client the health
@@ -96,10 +98,73 @@ type Deps struct {
 // and large enough that one transient write error is not an outage.
 const recordFailureLimit = 3
 
-// maxSendBodyBytes bounds the /v1/send request body. A WhatsApp text message is
-// far smaller; an unbounded read is a free memory-exhaustion lever for anything
-// holding a token.
-const maxSendBodyBytes = 64 << 10
+// maxSendBodyBytes bounds the /v1/send request body.
+//
+// It was 64KiB while every send was text. An attachment arrives base64-encoded
+// inside the same JSON body, which costs 4 bytes on the wire per 3 bytes of
+// file, so this has to clear maxMediaBytes * 4/3 or the cap that reports
+// "attachment too large" would never be reached — the body reader would cut
+// the request off first and the caller would get a bare 413 with no code. The
+// headroom above that is for the JSON envelope and the caption.
+//
+// BE HONEST ABOUT WHAT THIS NOW COSTS. Raising it 192x did not merely relax a
+// limit; it changed the exposure this constant used to describe:
+//
+//   - Peak memory per in-flight send is now ~21MiB, not ~128KiB: the raw body
+//     and the base64-decoded copy are live at the same time.
+//   - Those buffers are held across the queue's pacing wait, which can be tens
+//     of seconds, so concurrent requests ACCUMULATE rather than pass through.
+//   - Nothing here caps concurrency. main.go sets ReadHeaderTimeout and
+//     ReadTimeout, which bound how long a slow body may be held mid-read, but
+//     a caller that sends 12MiB quickly and then waits is bounded by neither.
+//
+// What keeps that acceptable is not this number: it is that the listener binds
+// to loopback or Tailscale and every caller holds a registered token. This is
+// a bound against a buggy consumer, not a hostile one. A hostile token holder
+// is a bigger problem than memory.
+const maxSendBodyBytes = 12 << 20
+
+// maxTextRunes caps the message body, in runes.
+//
+// It exists because maxSendBodyBytes used to be the only thing bounding Text,
+// and raising that to make room for base64 raised this by the same factor. The
+// bound has to be its own constant: the queue paces sends at a per-rune delay
+// (20ms in production) and does it while HOLDING the single socket mutex, so
+// message length converts directly into how long every OTHER send is blocked.
+// At 12MiB of text that is days, on a slot whose cap budget is already spent.
+//
+// 4096 is far above anything this rail legitimately carries — a WhatsApp
+// message a person will read is a few hundred characters — and well under
+// WhatsApp's own limit, so it refuses nothing real. Counted in runes, not
+// bytes, because that is what the pacing counts.
+const maxTextRunes = 4096
+
+// maxMediaFilenameBytes caps the attachment filename.
+//
+// Without it a 3-byte PNG can arrive with an 11MiB name, which passes the size
+// cap (that measures the payload) and is then copied into BOTH FileName and
+// Title on the outgoing message. 255 is the conventional filename limit and is
+// far more than a report needs.
+const maxMediaFilenameBytes = 255
+
+// maxMediaBytes caps ONE decoded attachment.
+//
+// 8MiB is far above the ~500KiB audit reports this exists to carry and far
+// below anything WhatsApp itself would reject, so it bounds memory without
+// being a limit an operator ever has to think about. Enforced on the DECODED
+// length, not the encoded one: base64 is the transport, and a cap measured in
+// transport bytes would move whenever the encoding did.
+const maxMediaBytes = 8 << 20
+
+// allowedMediaMimeTypes is what this bridge will put on the socket, as an
+// allow-list rather than a deny-list. The rail sends from a real, un-bannable-
+// by-us WhatsApp number; the set of file types worth that risk is small and
+// known, and a deny-list would admit every type nobody thought to name.
+var allowedMediaMimeTypes = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"application/pdf": true,
+}
 
 // maxAdminBodyBytes bounds the admin bodies, which are a JID or a boolean. The
 // lever is the same one and the token holders are the same people, so leaving

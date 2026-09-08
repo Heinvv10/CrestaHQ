@@ -27,6 +27,36 @@ type SendRequest struct {
 	// stronger than that consumer's token, which is why it buys a narrow
 	// exemption rather than a general one.
 	HumanReply bool
+	// Media is an optional attachment. Nil is a plain text message and is the
+	// only shape that existed before attachments, so every existing caller and
+	// every existing rail keeps exactly the behaviour it had.
+	//
+	// It rides on the SendRequest rather than beside it so that the value the
+	// rails evaluated is the same value that reaches the socket. A separate
+	// media argument threaded past Engine.EvaluateAndReserve would make an
+	// unevaluated attachment representable, and an attachment is the most
+	// expensive thing this number can send at the wrong person.
+	//
+	// NO rail reads it. That is deliberate: reply-only, the volume caps and
+	// quiet hours all bind on WHO is being messaged and HOW OFTEN, not on what
+	// is in the message, so a media send is refused in precisely the cases a
+	// text send is. A rail that branched on Media would be a rail an attacker
+	// could switch off by attaching a file.
+	Media *Media
+}
+
+// Media is one attachment, already decoded. It carries no whatsmeow types and
+// no io.Reader: the whole payload is in memory by the time it reaches here
+// because the API layer had to decode it to size-check it anyway, and a struct
+// of plain values is what lets the rails package stay dependency-free.
+type Media struct {
+	// Filename is what the recipient sees and what a document message is
+	// titled with. Required whenever Media is set.
+	Filename string
+	// MimeType decides the message shape: image/* is sent as an ImageMessage
+	// so it renders inline, everything else as a DocumentMessage.
+	MimeType string
+	Data     []byte
 }
 
 // RefusalCode is machine-readable so a consumer can render a real reason

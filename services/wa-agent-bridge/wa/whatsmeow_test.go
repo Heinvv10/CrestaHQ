@@ -123,14 +123,14 @@ func TestLoggedOutSurvivesLaterConnected(t *testing.T) {
 	if c.Connected() {
 		t.Fatal("still logged out after a disconnect")
 	}
-	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi"); !errors.Is(err, ErrLoggedOut) {
+	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi", nil); !errors.Is(err, ErrLoggedOut) {
 		t.Fatalf("Send after LoggedOut = %v, want ErrLoggedOut", err)
 	}
 }
 
 func TestSendRefusesWhileDisconnected(t *testing.T) {
 	c := &Client{}
-	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi"); !errors.Is(err, ErrNotConnected) {
+	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi", nil); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("Send while disconnected = %v, want ErrNotConnected", err)
 	}
 }

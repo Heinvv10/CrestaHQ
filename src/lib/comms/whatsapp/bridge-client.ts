@@ -135,6 +135,13 @@ interface BridgeSendResponse {
   refusedBy?: string;
   reason?: string;
   outcome?: string;
+  /**
+   * A rejected attachment names itself — `media_too_large`,
+   * `media_unsupported_type`, `media_invalid`. It is NOT a rail refusal: the
+   * request never reached the rails, so it arrives on `code` rather than
+   * `refusedBy` and must not be rendered as "WhatsApp refused this message".
+   */
+  code?: string;
 }
 
 /**
@@ -168,13 +175,42 @@ function failureDetail(data: BridgeSendResponse | null, raw: string): string {
   if (data?.refusedBy) {
     return data.reason ? `${data.refusedBy}: ${data.reason}` : data.refusedBy;
   }
+  // A rejected attachment carries a code and a plain-English error; the code
+  // is kept in the text so an operator report names the actual problem rather
+  // than a bare status.
+  if (data?.code) {
+    return data.error ? `${data.code}: ${data.error}` : data.code;
+  }
   return data?.error || raw || "unknown error";
+}
+
+/**
+ * An attachment on a bridge send.
+ *
+ * `dataBase64` rather than a Blob or a URL: the bridge's `/v1/send` is a JSON
+ * endpoint whose body already carries the idempotency key and the human-reply
+ * flag, and a second, multipart send path would be a second copy of that
+ * wiring — the one thing the rails design exists to avoid.
+ *
+ * There is no size or type check here. Both live on the bridge, which is the
+ * only place that knows what it will put on the socket, and a copy of either
+ * number in this file is a number that drifts.
+ */
+export interface BridgeAttachment {
+  filename: string;
+  contentType: string;
+  dataBase64: string;
 }
 
 export async function sendWhatsappBridge(opts: {
   creds: WhatsappBridgeSecret;
   to: string;
   message: string;
+  /**
+   * Optional attachment. The bridge is the only rail that carries one; the
+   * dispatcher refuses an attachment on twilio/cloud before reaching here.
+   */
+  media?: BridgeAttachment | null;
   /**
    * Required by the bridge, generated here when absent. A generated key means
    * one dispatch call is one message and nothing more: a caller that wants its
@@ -195,6 +231,18 @@ export async function sendWhatsappBridge(opts: {
     // Sent explicitly rather than omitted when false, so the wire format says
     // what this send claims to be instead of leaving the bridge to infer it.
     humanReply: opts.humanReply === true,
+    // Omitted entirely when absent, so a text send is the exact request this
+    // rail has always made. A `media: null` would be a new field on every
+    // existing send for no gain.
+    ...(opts.media
+      ? {
+          media: {
+            filename: opts.media.filename,
+            mimeType: opts.media.contentType,
+            dataBase64: opts.media.dataBase64,
+          },
+        }
+      : {}),
   };
 
   let res: Response;
@@ -254,6 +302,9 @@ export async function sendWhatsappBridge(opts: {
     // Carried through so a caller can render what to DO about the refusal.
     // The bridge documents these codes as stable API surface for exactly this.
     refusedBy: data?.refusedBy,
+    // Kept separate from refusedBy: a rejected attachment is the request being
+    // wrong, not a rail declining the message. See WhatsAppSendResult.
+    providerErrorCode: data?.code,
   };
 }
 

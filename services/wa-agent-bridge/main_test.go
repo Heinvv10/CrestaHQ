@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -138,5 +139,34 @@ func TestClientHolderConnectedAtIsStableAcrossCalls(t *testing.T) {
 	}
 	if !first.IsZero() {
 		t.Fatalf("with no client set the key must be the zero time, got %v", first)
+	}
+}
+
+// The send body grew from 64KiB to 12MiB, so a connection held open mid-read
+// now holds megabytes rather than kilobytes. These timeouts are the bound on
+// how long that can last, and a zero value is the same as not having them.
+func TestServerBoundsHowLongARequestMayBeHeldOpen(t *testing.T) {
+	srv := newServer(http.NewServeMux())
+
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Fatal("ReadHeaderTimeout is unset; a client can hold a connection open indefinitely before sending headers")
+	}
+	if srv.ReadTimeout <= 0 {
+		t.Fatal("ReadTimeout is unset; a stalled 12MiB body is held for as long as the client likes")
+	}
+	// ReadTimeout covers headers and body together, so it must be the larger
+	// of the two or the header timeout is the only one that ever fires.
+	if srv.ReadTimeout <= srv.ReadHeaderTimeout {
+		t.Fatalf("ReadTimeout %v must exceed ReadHeaderTimeout %v", srv.ReadTimeout, srv.ReadHeaderTimeout)
+	}
+	// A genuine 12MiB upload over a slow link must still fit.
+	if srv.ReadTimeout < 30*time.Second {
+		t.Fatalf("ReadTimeout %v is too tight for a 12MiB body over a slow link", srv.ReadTimeout)
+	}
+	// WriteTimeout stays unset on purpose: a legitimate send spends most of
+	// its life in the queue's pacing delay, so any survivable value is too
+	// large to defend anything. See newServer.
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v; setting it aborts sends that are working", srv.WriteTimeout)
 	}
 }

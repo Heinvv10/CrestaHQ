@@ -71,6 +71,93 @@ function res(status: number, body: unknown) {
 
 describe("sendWhatsappBridge", () => {
 
+  it("puts the attachment on the wire in the bridge's own field names", async () => {
+    // This function composes the actual HTTP body, so a rename or a dropped
+    // field here is invisible to every test one layer up: the dispatcher would
+    // still be handing an attachment down, and the bridge would still send a
+    // bare text message.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, messageId: "3EB0" }), {
+          status: 200,
+        }),
+      );
+    await sendWhatsappBridge({
+      creds,
+      to: "+27821234567",
+      message: "your report",
+      media: {
+        filename: "report.png",
+        contentType: "image/png",
+        dataBase64: "AAEC",
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const sent = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    expect(sent.media).toEqual({
+      filename: "report.png",
+      mimeType: "image/png",
+      dataBase64: "AAEC",
+    });
+  });
+
+  it("omits media entirely for a text send", async () => {
+    // A `media: null` on every existing send would be a new field the bridge
+    // has to tolerate for no gain, and it is the shape most likely to be
+    // mistaken for an empty attachment.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, messageId: "3EB0" }), {
+          status: 200,
+        }),
+      );
+    await sendWhatsappBridge({
+      creds,
+      to: "+27821234567",
+      message: "hi",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const sent = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    expect("media" in sent).toBe(false);
+  });
+
+  it("surfaces a rejected attachment's code, and never as a rail refusal", async () => {
+    // media_too_large is the request being wrong, not a rail refusing on the
+    // message's merits. Reporting it on refusedBy would have the CRM render
+    // "WhatsApp refused this message" for a file the operator can simply
+    // shrink, and would map it to a rail-refusal status.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: false,
+          code: "media_too_large",
+          error: "attachment is 9000000 bytes; the limit is 8388608",
+        }),
+        { status: 413 },
+      ),
+    );
+    const r = await sendWhatsappBridge({
+      creds,
+      to: "+27821234567",
+      message: "your report",
+      media: {
+        filename: "report.png",
+        contentType: "image/png",
+        dataBase64: "AAEC",
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.refusedBy).toBeUndefined();
+    expect(r.error).toContain("media_too_large");
+    expect(r.providerOutcome).toBe("DEFINITELY_REJECTED");
+    // Carried structurally, so the route can answer 4xx instead of letting a
+    // caller error fall through to a generic 502.
+    expect(r.providerErrorCode).toBe("media_too_large");
+  });
+
   it("carries the refusal code structurally, not just inside the error text", async () => {
     // The bridge documents refusedBy as stable API surface precisely so a
     // consumer can render what to DO. Parsing it back out of the message
@@ -93,6 +180,23 @@ describe("sendWhatsappBridge", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.refusedBy).toBe("consecutive_cap");
+  });
+
+  it("leaves providerErrorCode unset for a rail refusal", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: false, refusedBy: "quiet_hours", reason: "21:00" }),
+        { status: 422 },
+      ),
+    );
+    const r = await sendWhatsappBridge({
+      creds,
+      to: "+27821234567",
+      message: "hi",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(r.refusedBy).toBe("quiet_hours");
+    expect(r.providerErrorCode).toBeUndefined();
   });
 
   it("leaves refusedBy unset when the provider named no rail", async () => {

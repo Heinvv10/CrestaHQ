@@ -153,6 +153,76 @@ describe("dispatchWhatsappSend", () => {
     );
   });
 
+  it("passes an attachment through to the bridge sender", async () => {
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    const attachment = {
+      filename: "report.png",
+      contentType: "image/png",
+      dataBase64: "AAEC",
+    };
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge"), attachment }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ media: attachment }),
+    );
+  });
+
+  it("hands the bridge no media when the caller attached nothing", async () => {
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge") }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ media: null }),
+    );
+  });
+
+  it("refuses an attachment on Twilio rather than dropping it", async () => {
+    // Silently sending the caption alone is the worst outcome: the operator is
+    // told the report went, the prospect never receives it, and nothing in the
+    // thread says which happened.
+    const attachment = {
+      filename: "report.png",
+      contentType: "image/png",
+      dataBase64: "AAEC",
+    };
+    const input = baseInput({ attachment });
+    const r = await dispatchWhatsappSend(input);
+    expect(r.ok).toBe(false);
+    expect(r.provider).toBe("twilio");
+    expect(r.providerOutcome).toBe("DEFINITELY_REJECTED");
+    expect(r.error).toContain("bridge");
+    expect(input.sendViaTwilio).not.toHaveBeenCalled();
+  });
+
+  it("refuses an attachment on Cloud rather than dropping it", async () => {
+    getWabaCreds.mockResolvedValue({
+      phoneNumberId: "PN",
+      wabaId: "WA",
+      accessToken: "T",
+    });
+    const r = await dispatchWhatsappSend(
+      baseInput({
+        subAccount: sub("cloud"),
+        attachment: {
+          filename: "report.png",
+          contentType: "image/png",
+          dataBase64: "AAEC",
+        },
+      }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.provider).toBe("cloud");
+    expect(sendWhatsappCloud).not.toHaveBeenCalled();
+  });
+
   it("forwards the window and template to the cloud sender", async () => {
     getWabaCreds.mockResolvedValue({
       phoneNumberId: "PN",

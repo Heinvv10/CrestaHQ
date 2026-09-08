@@ -6,7 +6,7 @@ import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { getWabaCreds } from "./cloud-credentials";
 import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
-import { sendWhatsappBridge } from "./bridge-client";
+import { sendWhatsappBridge, type BridgeAttachment } from "./bridge-client";
 import { resolveWhatsappSender } from "./resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
 import {
@@ -86,6 +86,14 @@ export interface WhatsappDispatchInput {
    * that fails safe: a send wrongly marked human reaches a customer at 03:00.
    */
   humanReply?: boolean;
+  /**
+   * Optional attachment. ONLY the bridge rail carries one — Twilio and Cloud
+   * send media by public URL through their own APIs, which this seam does not
+   * implement. An attachment on either of those is refused below rather than
+   * dropped: a caller that asked for a report to be sent and got back a bare
+   * "ok" with no file is the worst of the three outcomes.
+   */
+  attachment?: BridgeAttachment | null;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
 }
@@ -110,6 +118,19 @@ export async function dispatchWhatsappSend(
     };
   }
   const { provider, capabilities } = resolved;
+
+  // Refused before the window is read and before anything is sent. Placed here
+  // rather than in each rail's branch so a fourth rail cannot be added without
+  // deciding what it does with an attachment — the default is "cannot", which
+  // is the direction that fails loudly.
+  if (input.attachment && !capabilities.supportsMedia) {
+    return {
+      provider,
+      ok: false,
+      error: `The ${provider} rail cannot send attachments; only the WhatsApp bridge rail can.`,
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
 
   const lastInboundAt =
     input.lastInboundAt !== undefined
@@ -186,6 +207,7 @@ export async function dispatchWhatsappSend(
       message: input.body,
       idempotencyKey: input.idempotencyKey,
       humanReply: input.humanReply === true,
+      media: input.attachment ?? null,
     });
     return { ...r, provider };
   }
