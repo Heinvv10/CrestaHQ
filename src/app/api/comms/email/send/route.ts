@@ -7,7 +7,13 @@ import { checkQuota } from "@/lib/server/usage-meter";
 import { recordSend } from "@/lib/comms/usage";
 import type { SubAccountDoc } from "@/types";
 
-type Body = { contactId?: string; subject?: string; body?: string };
+type Body = {
+  contactId?: string;
+  subject?: string;
+  body?: string;
+  inReplyTo?: string;
+  references?: string[];
+};
 
 export async function POST(request: Request) {
   const auth = requireUid(request);
@@ -20,6 +26,36 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    typeof payload.contactId !== "string" ||
+    typeof payload.subject !== "string" ||
+    typeof payload.body !== "string" ||
+    payload.contactId.includes("/") ||
+    payload.subject.length > 998 ||
+    /[\r\n\x00]/.test(payload.subject) ||
+    payload.body.length > 200000 ||
+    (payload.inReplyTo !== undefined &&
+      (typeof payload.inReplyTo !== "string" ||
+        !/^<[^\s<>]+@[^\s<>]+>$/.test(payload.inReplyTo) ||
+        payload.inReplyTo.length > 998)) ||
+    (payload.references !== undefined &&
+      (!Array.isArray(payload.references) ||
+        payload.references.length > 100 ||
+        payload.references.some(
+          (id) =>
+            typeof id !== "string" ||
+            id.length > 998 ||
+            !/^<[^\s<>]+@[^\s<>]+>$/.test(id)
+        )))
+  ) {
+    return NextResponse.json(
+      { error: "Invalid email message or thread headers." },
+      { status: 400 }
+    );
+  }
   const contactId = payload.contactId?.trim();
   const subject = payload.subject?.trim();
   const body = payload.body?.trim();
@@ -27,7 +63,7 @@ export async function POST(request: Request) {
   if (!contactId || !subject || !body) {
     return NextResponse.json(
       { error: "contactId, subject, and body are required" },
-      { status: 400 },
+      { status: 400 }
     );
   }
 
@@ -37,7 +73,7 @@ export async function POST(request: Request) {
   if (!contact.email) {
     return NextResponse.json(
       { error: "This contact has no email address." },
-      { status: 400 },
+      { status: 400 }
     );
   }
 
@@ -53,12 +89,15 @@ export async function POST(request: Request) {
   if (!emailIsConfigured(subAccount)) {
     return NextResponse.json(
       { error: "Email is not configured for this sub-account." },
-      { status: 503 },
+      { status: 503 }
     );
   }
 
-
-  const replyTo = subAccount?.replyToEmail ?? auth.email ?? undefined;
+  const replyTo =
+    subAccount?.replyToEmail ||
+    (subAccount?.emailProvider === "smtp"
+      ? undefined
+      : (auth.email ?? undefined));
 
   // Monthly email quota (Usage Metering v1). Fails open.
   const quota = await checkQuota({
@@ -71,8 +110,14 @@ export async function POST(request: Request) {
   }
 
   let messageId: string;
+  let saved: boolean | undefined;
+  let warning: string | undefined;
   try {
     const result = await sendEmail({
+      contactId,
+      sentByUid: auth.uid,
+      inReplyTo: payload.inReplyTo,
+      references: payload.references,
       to: contact.email,
       subject,
       text: body,
@@ -82,9 +127,10 @@ export async function POST(request: Request) {
       meter: { subAccountId: contact.subAccountId },
     });
     messageId = result.id;
+    saved = result.saved;
+    warning = result.warning;
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to send email";
+    const message = err instanceof Error ? err.message : "Failed to send email";
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
@@ -104,7 +150,17 @@ export async function POST(request: Request) {
     console.warn("[email/send] activity write failed", err);
   }
 
-  await recordSend(auth.uid, "email");
+  try {
+    await recordSend(auth.uid, "email");
+  } catch {
+    console.warn("[email/send] sent; usage bookkeeping failed");
+  }
 
-  return NextResponse.json({ ok: true, id: messageId });
+  return NextResponse.json({
+    ok: true,
+    id: messageId,
+    sent: true,
+    ...(saved !== undefined ? { saved } : {}),
+    ...(warning ? { warning } : {}),
+  });
 }

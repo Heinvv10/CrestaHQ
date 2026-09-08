@@ -63,12 +63,13 @@ export function SendEmailDialog({
           body: body.trim(),
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
+      const data = (await res.json()) as { ok?: boolean; error?: string; warning?: string };
       if (!res.ok || !data.ok) {
         setApiError(data.error ?? "Couldn't send. Try again.");
         return;
       }
-      toast.success(`Email sent to ${contact.email}`);
+      if (data.warning) toast.warning(data.warning);
+      else toast.success(`Email sent to ${contact.email}`);
       onOpenChange(false);
     } catch (err) {
       console.error(err);
@@ -89,8 +90,7 @@ export function SendEmailDialog({
             Send email
           </DialogTitle>
           <DialogDescription>
-            Replies go straight to your inbox — the recipient sees your email
-            address on the Reply-To header.
+            Replies go to your configured reply address or connected sending mailbox.
           </DialogDescription>
         </DialogHeader>
 

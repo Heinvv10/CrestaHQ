@@ -42,6 +42,12 @@ interface ScheduleSpec {
 
 const SCHEDULES: ScheduleSpec[] = [
   {
+    scheduleId: "leadstack-email-sync",
+    path: "/api/cron/email-sync",
+    cron: "*/5 * * * *",
+    description: "Read-only mailbox sync for connected sub-accounts.",
+  },
+  {
     scheduleId: "leadstack-gitpage-heartbeat",
     path: "/api/cron/gitpage-heartbeat",
     cron: "0 3 * * *",
@@ -67,11 +73,11 @@ const SCHEDULES: ScheduleSpec[] = [
     scheduleId: "leadstack-agents-watchdog",
     path: "/api/agents/watchdog/step",
     cron: "0 * * * *",
-    description:
-      "Hourly Inbox Follow-up Watchdog sweep (Labs custom agent).",
+    description: "Hourly Inbox Follow-up Watchdog sweep (Labs custom agent).",
   },
 ];
 
+const SCHEDULE_VERSION = "2026-09-08-email-sync";
 const MARKER_PATH = "system/scheduleRegistration";
 const SKIP_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -107,6 +113,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
       const lastAt = tsToDate(data.registeredAt);
       if (
         lastUrl === baseUrl &&
+        data.scheduleVersion === SCHEDULE_VERSION &&
         lastAt &&
         Date.now() - lastAt.getTime() < SKIP_AGE_MS
       ) {
@@ -135,7 +142,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : "unknown";
       console.warn(
-        `[schedules] failed to register ${s.scheduleId}: ${message}`,
+        `[schedules] failed to register ${s.scheduleId}: ${message}`
       );
       results.push({ id: s.scheduleId, ok: false, error: message });
     }
@@ -149,11 +156,12 @@ export async function ensureSchedulesRegistered(): Promise<void> {
     await markerRef.set(
       {
         baseUrl,
+        scheduleVersion: SCHEDULE_VERSION,
         registeredAt: FieldValue.serverTimestamp(),
         scheduleIds: SCHEDULES.map((s) => s.scheduleId),
         lastResults: results,
       },
-      { merge: true },
+      { merge: true }
     );
   } catch (err) {
     console.warn("[schedules] marker write failed", err);

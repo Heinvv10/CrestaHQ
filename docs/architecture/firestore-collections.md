@@ -60,3 +60,34 @@ password, From email/name and verifiedAt. Admin SDK only; existing
 The parent has `emailProvider` and password-free `smtpConfig` display metadata.
 Admin settings routes verify TLS/auth before atomically switching credentials
 and provider. Disconnect atomically deletes the secret and selects Resend.
+
+### Workspace mailbox and email conversations
+
+`subAccounts/{id}/private/mailboxConnection` stores verified IMAPS credentials,
+folder cursors (UIDVALIDITY and UID), connection version and expiring sync lease.
+The parent `mailboxConfig` contains only safe display metadata and sync status.
+The existing private-document deny rules cover the credentials and cursors.
+
+`contacts/{id}/emailMessages/{sha256(messageId)}` stores plain-text inbound and
+outbound email with subject, addresses, threading headers and attachment metadata.
+Readers inherit the contact's tenant and territory access; all writes are server
+only. Message insertion and the `conversations/{contactId}` index update are one
+transaction, including the mailbox lease/version check for imported messages.
+Historical imports preserve newer conversation previews and do not increment
+unread counts. Imported mail does not enroll workflows or send automated replies.
+
+The QStash `leadstack-email-sync` schedule runs every five minutes and fans out
+bounded work across connected sub-accounts. Disconnecting a mailbox removes its
+secret and prevents in-flight workers from committing further messages, while
+retaining the existing conversation history.
+
+`subAccounts/{id}/private/mailboxOperation` stores a connection-operation generation
+so a pending verification cannot undo a subsequent disconnect. The server-only
+`subAccounts/{id}/emailMessageIndex/{sha256(messageId)}` binds correspondents to the
+contacts chosen for an existing message, preventing Sent-folder imports from
+duplicating an explicitly addressed send when several contacts share an address.
+
+Conversation documents carry the contact's `territoryId`. Contact territory moves
+update linked conversation metadata atomically. Scoped client lists constrain
+territory IDs, backed by the `subAccountId, territoryId` index; rules enforce the
+same visibility for the preview and message body.

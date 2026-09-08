@@ -131,4 +131,41 @@ describe("SMTP transport", () => {
       })
     );
   });
+  it("sends safe thread headers and marks private messages as not archivable", async () => {
+    mocks.sendMail.mockResolvedValue({
+      messageId: "<new@example.com>",
+      accepted: ["to@example.com"],
+    });
+    await sendSmtpEmail(
+      { ...input, verifiedAt: "now" },
+      {
+        to: "to@example.com",
+        subject: "Hi",
+        text: "Body",
+        inReplyTo: "<old@example.com>",
+        references: ["<old@example.com>"],
+        archive: false,
+      }
+    );
+    expect(mocks.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inReplyTo: "<old@example.com>",
+        references: ["<old@example.com>"],
+        headers: { "X-CrestaHQ-Archive": "no" },
+      })
+    );
+  });
+  it.each([
+    { inReplyTo: "<x@example.com>\r\nBcc:evil@example.com" },
+    { references: ["bad"] },
+    { subject: "Hi\r\nBcc: evil@example.com" },
+  ])("rejects header injection before connecting", async (patch) => {
+    await expect(
+      sendSmtpEmail(
+        { ...input, verifiedAt: "now" },
+        { to: "to@example.com", subject: "Hi", text: "Body", ...patch }
+      )
+    ).rejects.toThrow("headers");
+    expect(mocks.createTransport).not.toHaveBeenCalled();
+  });
 });

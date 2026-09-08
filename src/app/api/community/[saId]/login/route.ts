@@ -51,6 +51,7 @@ export async function POST(
       const link = `${appUrl}/api/community/${saId}/login/verify?token=${encodeURIComponent(token)}`;
 
       await sendEmail({
+        archive: false,
         subAccount,
         meter: { subAccountId: saId },
         to: email,

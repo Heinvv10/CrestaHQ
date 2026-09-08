@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Loader2, Send } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { emailReplyFields } from "./email-reply";
+import type { EmailMessageDoc } from "@/types/email";
 import { Textarea } from "@/components/ui/textarea";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { cn } from "@/lib/utils";
@@ -13,6 +16,7 @@ import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 
 const LABEL: Record<ConversationChannel, string> = {
+  email: "Email",
   sms: "SMS",
   whatsapp: "WhatsApp",
   messenger: "Messenger",
@@ -30,7 +34,11 @@ export function ConversationComposer({
   contact,
   availableChannels,
   defaultChannel,
+  emailReply = null,
+  onClearEmailReply,
 }: {
+  emailReply?: EmailMessageDoc | null;
+  onClearEmailReply?: () => void;
   contact: Contact;
   availableChannels: ConversationChannel[];
   defaultChannel: ConversationChannel;
@@ -40,6 +48,11 @@ export function ConversationComposer({
     ? defaultChannel
     : (availableChannels[0] ?? "sms");
   const [channel, setChannel] = useState<ConversationChannel>(initial);
+  const [subject, setSubject] = useState("");
+  useEffect(() => {
+    setSubject(emailReplyFields(emailReply).subject);
+    if (emailReply) setChannel("email");
+  }, [emailReply]);
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -64,7 +77,7 @@ export function ConversationComposer({
 
   if (availableChannels.length === 0) {
     return (
-      <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+      <div className="text-muted-foreground border-t px-4 py-3 text-xs">
         No messaging channel is configured for this sub-account. Connect a
         sender in Settings to reply here.
       </div>
@@ -74,28 +87,39 @@ export function ConversationComposer({
   // Meta (Messenger / Instagram) replies post to a different route, identify
   // the recipient by `metaUserId` (not phone), and have no STOP-style opt-out.
   const isMeta = channel === "messenger" || channel === "instagram";
-  const optedOut = isMeta
-    ? false
-    : channel === "sms"
-      ? !!contact.smsOptedOut
-      : !!contact.whatsappOptedOut;
-  const endpoint = isMeta
-    ? "/api/comms/meta/send"
-    : channel === "sms"
-      ? "/api/comms/sms/send"
-      : "/api/comms/whatsapp/send";
-  const hasIdentity = isMeta ? !!contact.metaUserId : !!contact.phone;
+  const isEmail = channel === "email";
+  const optedOut = isEmail
+    ? !!contact.emailOptedOut
+    : isMeta
+      ? false
+      : channel === "sms"
+        ? !!contact.smsOptedOut
+        : !!contact.whatsappOptedOut;
+  const endpoint = isEmail
+    ? "/api/comms/email/send"
+    : isMeta
+      ? "/api/comms/meta/send"
+      : channel === "sms"
+        ? "/api/comms/sms/send"
+        : "/api/comms/whatsapp/send";
+  const hasIdentity = isEmail
+    ? !!contact.email
+    : isMeta
+      ? !!contact.metaUserId
+      : !!contact.phone;
   const disabled = optedOut || sending || !hasIdentity;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = body.trim();
-    if (!trimmed) return;
+    if (!trimmed || sending || (isEmail && !subject.trim())) return;
     if (!hasIdentity) {
       toast.error(
-        isMeta
-          ? "This contact hasn't messaged via Facebook/Instagram."
-          : "This contact has no phone number.",
+        isEmail
+          ? "This contact has no email address."
+          : isMeta
+            ? "This contact hasn't messaged via Facebook/Instagram."
+            : "This contact has no phone number."
       );
       return;
     }
@@ -112,12 +136,26 @@ export function ConversationComposer({
           contactId: contact.id,
           body: trimmed,
           ...(isMeta ? { channel } : {}),
+          ...(isEmail
+            ? { ...emailReplyFields(emailReply), subject: subject.trim() }
+            : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
+        sent?: boolean;
+        warning?: string;
       };
+      if (isEmail && data.sent && (!res.ok || data.warning || !data.ok)) {
+        setBody("");
+        toast.warning(
+          data.warning ??
+            data.error ??
+            "Email sent, but saving to Conversations failed. Do not resend."
+        );
+        return;
+      }
       if (!res.ok || !data.ok) {
         // Never a bare "Couldn't send.". When the body is not JSON — a proxy
         // error page, a gateway timeout — the status is the only fact we have,
@@ -148,12 +186,36 @@ export function ConversationComposer({
                 "rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
                 channel === ch
                   ? "border-primary bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted",
+                  : "text-muted-foreground hover:bg-muted"
               )}
             >
               {LABEL[ch]}
             </button>
           ))}
+        </div>
+      )}
+      {isEmail && (
+        <div className="mb-2 space-y-2">
+          {emailReply && (
+            <p className="text-muted-foreground text-xs">
+              Replying to {emailReply.subject || "(no subject)"}{" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={onClearEmailReply}
+              >
+                New email
+              </button>
+            </p>
+          )}
+          <Input
+            aria-label="Email subject"
+            placeholder="Subject"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            disabled={disabled}
+            required
+          />
         </div>
       )}
       <Textarea
@@ -163,7 +225,11 @@ export function ConversationComposer({
           optedOut
             ? `Contact opted out of ${LABEL[channel]}`
             : `Reply via ${LABEL[channel]} to ${
-                (isMeta ? contact.name : contact.phone) || "this contact"
+                (isEmail
+                  ? contact.email
+                  : isMeta
+                    ? contact.name
+                    : contact.phone) || "this contact"
               }…`
         }
         rows={2}
@@ -189,7 +255,7 @@ export function ConversationComposer({
         <Button
           type="submit"
           size="sm"
-          disabled={!body.trim() || disabled}
+          disabled={!body.trim() || (isEmail && !subject.trim()) || disabled}
         >
           {sending ? (
             <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

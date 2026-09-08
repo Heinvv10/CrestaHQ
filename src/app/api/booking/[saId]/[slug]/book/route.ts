@@ -627,6 +627,7 @@ export async function POST(
           manageUrl: publicEventUrl,
         });
         await sendEmail({
+          archive: false,
           to: hostContact.email,
           subject: rendered.subject,
           text: rendered.text,

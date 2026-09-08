@@ -21,7 +21,7 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
  */
 export async function PATCH(
   request: Request,
-  ctx: { params: Promise<{ id: string; contactId: string }> },
+  ctx: { params: Promise<{ id: string; contactId: string }> }
 ) {
   const { id: subAccountId, contactId } = await ctx.params;
   const access = await requireSubAccountAdmin(request, subAccountId);
@@ -50,7 +50,7 @@ export async function PATCH(
   if (contactSnap.data()?.subAccountId !== subAccountId) {
     return NextResponse.json(
       { error: "Contact belongs to a different sub-account" },
-      { status: 403 },
+      { status: 403 }
     );
   }
   const fromTerritoryId =
@@ -67,7 +67,7 @@ export async function PATCH(
     if (!tSnap.exists || tSnap.data()?.status !== "active") {
       return NextResponse.json(
         { error: "Territory doesn't exist or is archived." },
-        { status: 400 },
+        { status: 400 }
       );
     }
     toTerritoryName = (tSnap.data()?.name as string | undefined) ?? "Unnamed";
@@ -82,13 +82,13 @@ export async function PATCH(
         .collection(col)
         .where("subAccountId", "==", subAccountId)
         .where("contactId", "==", contactId)
-        .get(),
-    ),
+        .get()
+    )
   );
 
   // Build the full ref list (contact + all children), then commit in
   // 500-op batches.
-  const refs: FirebaseFirestore.DocumentReference[] = [contactRef];
+  const refs: FirebaseFirestore.DocumentReference[] = [];
   for (const snap of childSnaps) {
     for (const d of snap.docs) refs.push(d.ref);
   }
@@ -101,6 +101,33 @@ export async function PATCH(
   };
 
   const stamp = FieldValue.serverTimestamp();
+  // Read both contact and every linked conversation in the same transaction.
+  // Concurrent message creation conflicts with this read and retries against the
+  // new territory, so a private move never leaves a globally visible preview.
+  const movedConversations = await db.runTransaction(async (tx) => {
+    const current = (await tx.get(contactRef)).data();
+    if (
+      !current ||
+      current.subAccountId !== subAccountId ||
+      current.agencyId !== contactSnap.data()?.agencyId
+    )
+      throw new Error("Contact tenant changed during territory move.");
+    const conversations = await tx.get(
+      db
+        .collection("conversations")
+        .where("subAccountId", "==", subAccountId)
+        .where("contactId", "==", contactId)
+    );
+    for (const conversation of conversations.docs) {
+      if (conversation.data().agencyId !== current.agencyId)
+        throw new Error("Conversation tenant mismatch during territory move.");
+    }
+    tx.update(contactRef, { territoryId, updatedAt: stamp });
+    for (const conversation of conversations.docs)
+      tx.update(conversation.ref, { territoryId, updatedAt: stamp });
+    return conversations.docs.length;
+  });
+  counts.conversations = movedConversations;
   for (let i = 0; i < refs.length; i += 500) {
     const batch = db.batch();
     for (const ref of refs.slice(i, i + 500)) {
@@ -126,11 +153,15 @@ export async function PATCH(
     if (counts.deals > 0)
       childParts.push(`${counts.deals} deal${counts.deals === 1 ? "" : "s"}`);
     if (counts.quotes > 0)
-      childParts.push(`${counts.quotes} quote${counts.quotes === 1 ? "" : "s"}`);
+      childParts.push(
+        `${counts.quotes} quote${counts.quotes === 1 ? "" : "s"}`
+      );
     if (counts.tasks > 0)
       childParts.push(`${counts.tasks} task${counts.tasks === 1 ? "" : "s"}`);
     if (counts.events > 0)
-      childParts.push(`${counts.events} event${counts.events === 1 ? "" : "s"}`);
+      childParts.push(
+        `${counts.events} event${counts.events === 1 ? "" : "s"}`
+      );
     const childSuffix =
       childParts.length > 0 ? ` (${childParts.join(", ")})` : "";
     try {

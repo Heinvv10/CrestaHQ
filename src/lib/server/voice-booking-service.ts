@@ -475,6 +475,7 @@ export async function bookVoiceSlot(input: {
           manageUrl: null,
         });
         await sendEmail({
+          archive: false,
           to: hostContact.email,
           subject: rendered.subject,
           text: rendered.text,

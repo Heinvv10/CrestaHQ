@@ -28,6 +28,7 @@ import { WebChatComposer } from "@/components/conversations/web-chat-composer";
 import { ConversationAiControls } from "@/components/conversations/conversation-ai-controls";
 import { ConversationDraftCard } from "@/components/conversations/conversation-draft-card";
 import { ConversationContactPanel } from "@/components/conversations/conversation-contact-panel";
+import type { EmailMessageDoc } from "@/types/email";
 import type { Contact } from "@/types/contacts";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import {
@@ -49,6 +50,7 @@ export default function ConversationDetailPage() {
   const { user, loading: authLoading } = useAuth();
   const { subAccount, subAccountId, saPath } = useSubAccount();
   const { theme, setTheme } = useConversationTheme();
+  const [emailReply, setEmailReply] = useState<EmailMessageDoc | null>(null);
   const [contact, setContact] = useState<Contact | null>(null);
   const [conversation, setConversation] = useState<ConversationDoc | null>(null);
   const [convReady, setConvReady] = useState(false);
@@ -113,6 +115,7 @@ export default function ConversationDetailPage() {
   }, [conversationId]);
 
   const availableChannels: ConversationChannel[] = [];
+  if (subAccount?.emailProvider === "smtp" && subAccount.smtpConfig?.verifiedAt) availableChannels.push("email");
   if (subAccount?.twilioConfig?.enabled) availableChannels.push("sms");
   // Rail-agnostic on purpose: asking a bridge or Cloud workspace for a Twilio
   // number is not a stricter check, it is the wrong one, and it hides the
@@ -152,7 +155,7 @@ export default function ConversationDetailPage() {
     : contact?.name || contact?.phone || "Conversation";
   const subtitle = isWebChat
     ? contact?.phone || contact?.email || "Live web chat"
-    : contact?.phone ?? "";
+    : contact?.email || contact?.phone || "";
 
   const loading = isWebChat ? !convReady : contactLoading || !contact;
 
@@ -275,7 +278,7 @@ export default function ConversationDetailPage() {
           {conversation && (
             <ConversationAiControls conversation={conversation} />
           )}
-          <ConversationThread contactId={conversationId} theme={theme} />
+          <ConversationThread key={conversationId} contactId={conversationId} theme={theme} onEmailReply={availableChannels.includes("email") ? setEmailReply : undefined} />
           {conversation?.pendingDraft && contact && (
             <ConversationDraftCard
               conversationId={conversationId}
@@ -286,6 +289,9 @@ export default function ConversationDetailPage() {
           )}
           {contact && (
             <ConversationComposer
+              key={contact.id}
+              emailReply={emailReply?.contactId === contact.id ? emailReply : null}
+              onClearEmailReply={() => setEmailReply(null)}
               contact={contact}
               availableChannels={availableChannels}
               defaultChannel={conversation?.lastChannel ?? "sms"}

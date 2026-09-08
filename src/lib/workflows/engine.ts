@@ -148,6 +148,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
 
   try {
     const { id: messageId } = await sendEmail({
+      contactId: contact.id,
       to,
       subject: subject || "(no subject)",
       text,
@@ -738,6 +739,7 @@ const execNotify: NodeExecutor = async (ctx) => {
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
   try {
     await sendEmail({
+      archive: false,
       to,
       subject: subject || "Workflow notification",
       text,

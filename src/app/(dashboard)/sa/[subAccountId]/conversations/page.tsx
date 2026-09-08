@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
+import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToConversations } from "@/lib/firestore/conversations";
@@ -10,34 +11,53 @@ import { cn } from "@/lib/utils";
 import { ConversationList } from "@/components/conversations/conversation-list";
 import type { ConversationDoc } from "@/types/conversations";
 
-type Filter = "all" | "unread";
+type Filter = "all" | "unread" | "email";
 
 export default function ConversationsPage() {
   const { user, loading: authLoading } = useAuth();
   const { subAccountId, saPath } = useSubAccount();
+  const territory = useEffectiveTerritoryFilter();
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    if (authLoading || !user || !subAccountId) return;
+    if (authLoading || !user || !subAccountId || !territory.ready) {
+      setConversations([]);
+      return;
+    }
     setLoading(true);
-    const unsub = subscribeToConversations(subAccountId, (list) => {
-      setConversations(list);
-      setLoading(false);
-    });
+    setConversations([]);
+    setLoadError(null);
+    const unsub = subscribeToConversations(
+      subAccountId,
+      (list) => {
+        setConversations(list);
+        setLoading(false);
+      },
+      () => {
+        setConversations([]);
+        setLoading(false);
+        setLoadError(
+          "Could not load conversations. Check your access and try again."
+        );
+      },
+      territory.filter
+    );
     return () => unsub();
-  }, [user, subAccountId, authLoading]);
+  }, [user, subAccountId, authLoading, territory.ready, territory.filter]);
 
   const unreadTotal = conversations.filter(
-    (c) => (c.unreadCount ?? 0) > 0,
+    (c) => (c.unreadCount ?? 0) > 0
   ).length;
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return conversations.filter((c) => {
       if (filter === "unread" && !((c.unreadCount ?? 0) > 0)) return false;
+      if (filter === "email" && !c.channelsSeen.includes("email")) return false;
       if (!q) return true;
       return (
         (c.contactName ?? "").toLowerCase().includes(q) ||
@@ -50,8 +70,8 @@ export default function ConversationsPage() {
     <div className="mx-auto w-full max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Conversations</h1>
-        <p className="text-sm text-muted-foreground">
-          Every SMS, WhatsApp &amp; web chat thread in one place.
+        <p className="text-muted-foreground text-sm">
+          Every email, SMS, WhatsApp &amp; web chat thread in one place.
         </p>
       </div>
 
@@ -65,8 +85,14 @@ export default function ConversationsPage() {
         >
           Unread{unreadTotal > 0 ? ` (${unreadTotal})` : ""}
         </FilterPill>
+        <FilterPill
+          active={filter === "email"}
+          onClick={() => setFilter("email")}
+        >
+          Email
+        </FilterPill>
         <div className="relative ml-auto w-full max-w-xs">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -76,7 +102,8 @@ export default function ConversationsPage() {
         </div>
       </div>
 
-      {loading ? (
+      {loadError && <p className="text-destructive text-sm">{loadError}</p>}
+      {loading || !territory.ready ? (
         <ListSkeleton />
       ) : (
         <ConversationList
@@ -105,7 +132,7 @@ function FilterPill({
         "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
         active
           ? "border-primary bg-primary/10 text-primary"
-          : "text-muted-foreground hover:bg-muted",
+          : "text-muted-foreground hover:bg-muted"
       )}
     >
       {children}
@@ -115,13 +142,13 @@ function FilterPill({
 
 function ListSkeleton() {
   return (
-    <div className="divide-y overflow-hidden rounded-xl border bg-card">
+    <div className="bg-card divide-y overflow-hidden rounded-xl border">
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="flex items-center gap-3 px-4 py-3">
-          <div className="h-9 w-9 animate-pulse rounded-full bg-muted" />
+          <div className="bg-muted h-9 w-9 animate-pulse rounded-full" />
           <div className="flex-1 space-y-2">
-            <div className="h-3 w-40 animate-pulse rounded bg-muted" />
-            <div className="h-3 w-56 animate-pulse rounded bg-muted" />
+            <div className="bg-muted h-3 w-40 animate-pulse rounded" />
+            <div className="bg-muted h-3 w-56 animate-pulse rounded" />
           </div>
         </div>
       ))}
