@@ -220,6 +220,22 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
     expect(json.code).toBe("media_too_large");
   });
 
+  it("does NOT answer 400 for a code that arrived with an ambiguous outcome", async () => {
+    // 400 tells the operator to fix it and send again. That is only safe when
+    // the provider is certain nothing was delivered; on an ambiguous result it
+    // is an invitation to double-message the contact.
+    dispatchWhatsappSend.mockResolvedValue({
+      ok: false,
+      provider: "bridge",
+      providerErrorCode: "media_too_large",
+      error: "WhatsApp bridge 502: media_too_large",
+      providerOutcome: "AMBIGUOUS",
+    });
+
+    const res = await post({ contactId: "c1", body: "here it is", attachment });
+    expect(res.status).not.toBe(400);
+  });
+
   it("rejects a half-filled attachment instead of sending an unnamed blob", async () => {
     for (const partial of [
       { contentType: "image/png", dataBase64: "AAEC" },

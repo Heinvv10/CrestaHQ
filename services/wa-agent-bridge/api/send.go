@@ -136,10 +136,15 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 
 	media, mediaErr := decodeMedia(body.Media)
 	if mediaErr != nil {
-		// The bytes are never logged; the filename and the reason are what an
-		// operator needs to fix the caller.
-		log.Printf("send rejected consumer=%s to=%s media=%q code=%s",
-			consumer.Name, redact.JID(body.To), body.Media.Filename, mediaErr.code)
+		// Neither the bytes NOR the filename: a filename on this rail is
+		// customer data ("audit-for-<company>.pdf"), which is why wa.upload
+		// keeps it out of its error too. Logging it raw here would also have
+		// defeated maxMediaFilenameBytes — the one rejection that exists
+		// BECAUSE a filename can be megabytes long was the one writing it to
+		// the log in full. redact.Body gives the length, which is what the
+		// code alone does not tell an operator.
+		log.Printf("send rejected consumer=%s to=%s filename=%s code=%s",
+			consumer.Name, redact.JID(body.To), redact.Body(body.Media.Filename), mediaErr.code)
 		writeJSON(w, mediaErr.status, map[string]any{
 			"ok": false, "error": mediaErr.msg, "code": mediaErr.code})
 		return

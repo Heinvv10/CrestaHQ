@@ -127,6 +127,33 @@ func listenValidated(cfg config.Config) (net.Listener, error) {
 	return net.Listen("tcp", cfg.ListenAddr)
 }
 
+// newServer wires the HTTP server's timeouts. Split out of main so they can be
+// asserted: a timeout that silently reverts to zero is indistinguishable from
+// one that was never added.
+func newServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler: handler,
+		// Both bound how long a client may hold a connection — and now a
+		// multi-megabyte read buffer — without finishing its request. Their
+		// absence was a pre-existing gap that only started to matter when
+		// /v1/send grew from a 64KiB text body to a 12MiB one carrying an
+		// attachment: a slow or stalled body used to cost kilobytes for as
+		// long as the client cared to hold it, and now costs megabytes.
+		//
+		// ReadTimeout covers headers AND body, so it has to admit a genuine
+		// 12MiB upload from the CRM over a slow link; 60s is generous for that
+		// and still finite, which is the whole point.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		// WriteTimeout is deliberately NOT set. It bounds the time from the
+		// end of the request read to the end of the response write, and a
+		// legitimate send spends most of that window inside the queue's
+		// pacing delay plus its send timeout. Any value large enough not to
+		// kill a real send is too large to be a defence, and a value smaller
+		// than that would abort sends that are working.
+	}
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -207,7 +234,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.ListenAddr, err)
 	}
-	srv := &http.Server{Handler: handler}
+	srv := newServer(handler)
 	go func() {
 		log.Printf("listening on %s", ln.Addr())
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {

@@ -50,8 +50,16 @@ const maxMediaUploadTimeout = 60 * time.Second
 // worse of those two failures must be the one that cannot happen.
 const mediaUploadShare = 2.0 / 3.0
 
-// mediaUploadBudget is how long the upload gets, always strictly less than
+// mediaUploadBudget is how long the upload gets, always STRICTLY less than
 // what the send context has left. See mediaUploadShare.
+//
+// A non-positive result means there is not enough of the send budget left to
+// start an upload at all, and the caller must refuse rather than try. That is
+// not a nicety: clamping to some tiny positive floor instead would, with a
+// nanosecond remaining, hand the upload a deadline EQUAL to the send
+// context's, and the whole invariant here is that the upload's deadline
+// arrives first. A tie is decided by whichever select case Go happens to
+// pick — which is exactly the ambiguity this budget exists to remove.
 func mediaUploadBudget(ctx context.Context) time.Duration {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -60,12 +68,6 @@ func mediaUploadBudget(ctx context.Context) time.Duration {
 	budget := time.Duration(float64(time.Until(deadline)) * mediaUploadShare)
 	if budget > maxMediaUploadTimeout {
 		budget = maxMediaUploadTimeout
-	}
-	if budget <= 0 {
-		// Already out of time. A zero timeout fails immediately, which is the
-		// right answer and keeps this returning a definitive error rather than
-		// letting the queue's deadline arrive first.
-		return time.Nanosecond
 	}
 	return budget
 }

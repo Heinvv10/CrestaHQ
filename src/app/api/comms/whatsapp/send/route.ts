@@ -185,10 +185,23 @@ export async function POST(request: Request) {
       // it fall through to the 502 below would report a caller error as an
       // infrastructure fault, which is the exact confusion the comment on the
       // rail-refusal branch below condemns.
-      if (result.providerErrorCode) {
+      // providerOutcome is required as well as the code. "Your request was
+      // wrong, fix it and send again" is only safe advice when the provider is
+      // certain nothing was delivered — the bridge emits these codes on 4xx
+      // today, but an AMBIGUOUS result carrying one would turn this branch
+      // into an invitation to double-message a real person, which is the one
+      // outcome every rail in this stack exists to prevent.
+      if (
+        result.providerErrorCode &&
+        result.providerOutcome === "DEFINITELY_REJECTED"
+      ) {
         return NextResponse.json(
           {
-            error: result.error ?? "That attachment could not be sent.",
+            // Generic: these codes cover the message body (`text_too_long`)
+            // as well as the file, and telling an operator their attachment
+            // was rejected when they sent no attachment is worse than saying
+            // nothing specific.
+            error: result.error ?? "WhatsApp rejected this message as sent.",
             code: result.providerErrorCode,
           },
           { status: 400 },

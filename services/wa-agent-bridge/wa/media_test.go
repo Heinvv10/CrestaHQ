@@ -184,6 +184,42 @@ func TestUploadDeadlineIsStrictlyInsideTheSendDeadline(t *testing.T) {
 	}
 }
 
+// The branch with no test at all until now: a send context that is already out
+// of time. The upload must be refused outright rather than started with a
+// clamped floor, because a floor produces a deadline EQUAL to the send
+// context's and the tie is resolved by whichever select case Go picks.
+func TestUploadIsRefusedWhenTheSendBudgetIsGone(t *testing.T) {
+	for name, budget := range map[string]time.Duration{
+		"already expired": -time.Second,
+		"one nanosecond":  time.Nanosecond,
+	} {
+		up := &failingUploader{}
+		c := &Client{uploader: up, connectedAt: time.Now()}
+
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		_, err := c.Send(ctx, "27821234567@s.whatsapp.net", "your report",
+			&rails.Media{Filename: "report.png", MimeType: "image/png", Data: []byte("x")})
+		cancel()
+
+		if !errors.Is(err, ErrMediaUpload) {
+			t.Fatalf("%s: Send = %v, want it to wrap ErrMediaUpload", name, err)
+		}
+		if up.calls != 0 {
+			t.Fatalf("%s: an upload was started with no budget for it (calls=%d)", name, up.calls)
+		}
+	}
+}
+
+// The arithmetic behind that refusal, asserted directly: a spent context must
+// yield a non-positive budget, never a clamped positive floor.
+func TestUploadBudgetIsNonPositiveWhenTheContextIsSpent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
+	defer cancel()
+	if got := mediaUploadBudget(ctx); got > 0 {
+		t.Fatalf("mediaUploadBudget(expired) = %v, want <= 0", got)
+	}
+}
+
 // Without a deadline on the send context there is nothing to take a share of,
 // so the upload falls back to its own ceiling rather than running unbounded.
 func TestUploadBudgetFallsBackWhenTheContextHasNoDeadline(t *testing.T) {

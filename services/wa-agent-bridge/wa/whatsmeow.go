@@ -355,7 +355,16 @@ func (c *Client) upload(ctx context.Context, media *rails.Media) (whatsmeow.Uplo
 		return whatsmeow.UploadResponse{}, fmt.Errorf("%w: no client", ErrMediaUpload)
 	}
 
-	uploadCtx, cancel := context.WithTimeout(ctx, mediaUploadBudget(ctx))
+	budget := mediaUploadBudget(ctx)
+	if budget <= 0 {
+		// Not enough of the send budget left to start. Refusing here rather
+		// than starting an upload that cannot finish keeps the failure
+		// DEFINITIVE and keeps the upload's deadline strictly inside the
+		// send's — see mediaUploadBudget.
+		return whatsmeow.UploadResponse{}, fmt.Errorf(
+			"%w: no time left in the send budget", ErrMediaUpload)
+	}
+	uploadCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	resp, err := up.Upload(uploadCtx, media.Data, uploadKindFor(media.MimeType))

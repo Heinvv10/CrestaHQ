@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -309,7 +311,11 @@ func TestSendMediaOverLongFilenameIsRejected(t *testing.T) {
 // retry, or silently shrink the contact's daily allowance.
 func TestMediaSendThatFailsDefinitivelyReleasesKeyAndCapSlot(t *testing.T) {
 	st := store.NewMemory()
-	sender := &stubSender{err: errors.New("wa: media upload failed: connection reset")}
+	// The REAL sentinel, wrapped exactly as wa.Client.upload wraps it. A
+	// lookalike string would leave this test green if ErrMediaUpload were ever
+	// added to the ambiguous branch of handleSendError — which is precisely
+	// the regression this test exists to catch.
+	sender := &stubSender{err: fmt.Errorf("%w (image/png, 10 bytes): connection reset", wa.ErrMediaUpload)}
 	h := newHandler(t, st, sender)
 	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
 
@@ -348,5 +354,36 @@ func TestMediaSendThatTimesOutKeepsKeyAndCapSlot(t *testing.T) {
 	}
 	if _, _, found, _ := st.LookupIdempotency(rails.IdempotencyStorageKey("hermes", "m1")); !found {
 		t.Fatal("a possibly-delivered send must keep its idempotency key")
+	}
+}
+
+// Mirrors TestMessageBodiesAreNeverLogged for the attachment path. A filename
+// on this rail is customer data — "audit-for-<company>.pdf" names a prospect —
+// and this service's logs are not access-controlled.
+func TestFilenamesAreNeverLogged(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	h, st, _ := testHandler(t)
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+	const secret = "audit-for-ap-repair-centre.png"
+
+	// One rejection of each kind that names the filename in its log line.
+	post(h, "/v1/send", "tok-hermes",
+		mediaBodyJSON(knownJID, "report", "k1", secret, "text/html", tinyPNG))
+	post(h, "/v1/send", "tok-hermes",
+		rawMediaBodyJSON(knownJID, "k2", secret, "image/png", "!!!not base64!!!"))
+	post(h, "/v1/send", "tok-hermes",
+		mediaBodyJSON(knownJID, "report", "k3", secret, "application/pdf",
+			bytes.Repeat([]byte{0x41}, maxMediaBytes+1)))
+
+	if strings.Contains(buf.String(), secret) {
+		t.Fatalf("a filename reached the log: %s", buf.String())
+	}
+	// The length still has to be there, or the log cannot tell an operator
+	// whether the filename was the problem.
+	if !strings.Contains(buf.String(), redactedLen(secret)) {
+		t.Fatalf("want the redacted filename length in the log, got: %s", buf.String())
 	}
 }
