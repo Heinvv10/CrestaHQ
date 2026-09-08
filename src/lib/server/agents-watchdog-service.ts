@@ -151,7 +151,7 @@ export async function listWatchdogRuns(
 // The hourly sweep
 // ---------------------------------------------------------------------------
 
-const CHANNEL_COLLECTION: Record<ConversationChannel, string> = {
+const CHANNEL_COLLECTION: Partial<Record<ConversationChannel, string>> = {
   sms: "messages",
   whatsapp: "whatsappMessages",
   messenger: "metaMessages",
@@ -231,6 +231,7 @@ async function loadThreadExcerpt(
   channel: ConversationChannel,
   nowMs: number,
 ): Promise<string> {
+  if (channel === "email") return ""; // Mailbox imports do not enroll automated follow-up.
   const collection = CHANNEL_COLLECTION[channel] ?? "messages";
   const snap = await getAdminDb()
     .collection("contacts")
@@ -336,7 +337,7 @@ async function runWatchdogForSubAccount(
       // its own operator console — so the watchdog only ever considers
       // contact-backed, non-web-chat threads. Every pre-existing conversation
       // has a contactId, so this is a no-op for them.
-      .filter((c) => !!c.contactId && c.lastChannel !== "web-chat")
+      .filter((c) => !!c.contactId && c.lastChannel !== "web-chat" && c.lastChannel !== "email")
       .filter((c) => c.status !== "closed" && c.status !== "snoozed")
       .filter((c) => {
         // Dedupe: skip when we already alerted for the CURRENT last message.

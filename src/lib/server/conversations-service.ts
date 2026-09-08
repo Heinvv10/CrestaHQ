@@ -1,5 +1,6 @@
 import "server-only";
 
+import { GLOBAL_TERRITORY_ID } from "@/types";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
@@ -67,8 +68,25 @@ export interface UpsertConversationInput {
   pauseBot?: boolean;
 }
 
+async function contactTerritory(
+  tx: FirebaseFirestore.Transaction,
+  input: { contactId: string | null; subAccountId: string; agencyId: string }
+): Promise<string | null> {
+  if (!input.contactId) return GLOBAL_TERRITORY_ID;
+  const contact = (
+    await tx.get(getAdminDb().doc(`contacts/${input.contactId}`))
+  ).data();
+  if (
+    !contact ||
+    contact.subAccountId !== input.subAccountId ||
+    contact.agencyId !== input.agencyId
+  )
+    throw new Error("Conversation contact tenant mismatch.");
+  return contact.territoryId ?? null;
+}
+
 export async function upsertConversationForMessage(
-  input: UpsertConversationInput,
+  input: UpsertConversationInput
 ): Promise<void> {
   try {
     const db = getAdminDb();
@@ -87,8 +105,10 @@ export async function upsertConversationForMessage(
 
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
+      const territoryId = await contactTerritory(tx, input);
 
       const patch: Record<string, unknown> = {
+        territoryId,
         contactId: input.contactId,
         subAccountId: input.subAccountId,
         agencyId: input.agencyId,
@@ -201,7 +221,7 @@ export async function upsertConversationForMessage(
  * contact-keyed channels, or `webChatConversationId(sessionId)` for web chat.
  */
 export async function getConversationControls(
-  conversationId: string,
+  conversationId: string
 ): Promise<{ botMode: ConversationBotMode; botPausedUntilMs: number | null }> {
   try {
     const snap = await getAdminDb()
@@ -211,7 +231,10 @@ export async function getConversationControls(
     if (!snap.exists) return { botMode: "auto", botPausedUntilMs: null };
     const d = snap.data() ?? {};
     const botMode = (d.botMode as ConversationBotMode) ?? "auto";
-    const bp = d.botPausedUntil as { toMillis?: () => number } | null | undefined;
+    const bp = d.botPausedUntil as
+      | { toMillis?: () => number }
+      | null
+      | undefined;
     const botPausedUntilMs =
       bp && typeof bp.toMillis === "function" ? bp.toMillis() : null;
     return { botMode, botPausedUntilMs };
@@ -244,11 +267,13 @@ export async function setConversationDraft(input: {
   try {
     const docId = input.conversationKey ?? input.contactId;
     if (!docId) return;
-    await getAdminDb()
-      .collection("conversations")
-      .doc(docId)
-      .set(
+    const db = getAdminDb();
+    await db.runTransaction(async (tx) => {
+      const territoryId = await contactTerritory(tx, input);
+      tx.set(
+        db.doc(`conversations/${docId}`),
         {
+          territoryId,
           contactId: input.contactId,
           subAccountId: input.subAccountId,
           agencyId: input.agencyId,
@@ -269,8 +294,9 @@ export async function setConversationDraft(input: {
           },
           updatedAt: FieldValue.serverTimestamp(),
         },
-        { merge: true },
+        { merge: true }
       );
+    });
   } catch (err) {
     console.warn("[conversations/draft] write failed", err);
   }

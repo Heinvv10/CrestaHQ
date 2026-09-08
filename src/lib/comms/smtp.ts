@@ -200,6 +200,9 @@ export async function verifySmtpConnection(
 export async function sendSmtpEmail(
   connection: SmtpConnection,
   message: {
+    archive?: boolean;
+    inReplyTo?: string;
+    references?: string[];
     to: string;
     subject: string;
     text: string;
@@ -208,6 +211,20 @@ export async function sendSmtpEmail(
     attachments?: { filename: string; content: string; contentType?: string }[];
   }
 ): Promise<{ id: string }> {
+  const ids = [message.inReplyTo, ...(message.references ?? [])].filter(
+    (id): id is string => id !== undefined
+  );
+  if (
+    ids.length > 101 ||
+    ids.some((id) => id.length > 998 || !/^<[^\s<>]+@[^\s<>]+>$/.test(id))
+  )
+    throw new SmtpError("Invalid email thread headers.");
+  if (
+    !validEmail(message.to) ||
+    /[\r\n\x00]/.test(message.subject) ||
+    (message.replyTo && !validEmail(message.replyTo))
+  )
+    throw new SmtpError("Invalid email headers.");
   const client = await transport(validateSmtpInput(connection));
   try {
     const result = await client.sendMail({
@@ -217,6 +234,11 @@ export async function sendSmtpEmail(
       text: message.text,
       html: message.html,
       replyTo: message.replyTo,
+      ...(message.archive === false
+        ? { headers: { "X-CrestaHQ-Archive": "no" } }
+        : {}),
+      inReplyTo: message.inReplyTo,
+      references: message.references,
       attachments: message.attachments?.map((a) => ({
         filename: a.filename,
         content: Buffer.from(a.content, "base64"),

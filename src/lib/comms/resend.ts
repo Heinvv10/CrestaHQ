@@ -1,5 +1,6 @@
 import "server-only";
 
+import { recordEmailMessage } from "@/lib/server/email-conversations";
 import { Resend } from "resend";
 
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
@@ -100,7 +101,18 @@ export async function sendEmail({
   subAccount,
   attachments,
   meter,
+  archive = true,
+  contactId,
+  sentByUid,
+  inReplyTo,
+  references,
 }: {
+  /** False for credentials, login links and internal staff notifications. */
+  archive?: boolean;
+  contactId?: string;
+  sentByUid?: string;
+  inReplyTo?: string;
+  references?: string[];
   to: string;
   subject: string;
   /** Plain-text fallback. Required so clients that don't render HTML still get content. */
@@ -138,7 +150,7 @@ export async function sendEmail({
    * plain text — matches Resend's `attachments` contract.
    */
   attachments?: { filename: string; content: string; contentType?: string }[];
-}): Promise<{ id: string }> {
+}): Promise<{ id: string; saved?: boolean; warning?: string }> {
   const preferredReplyTo = replyTo?.trim() || subAccount?.replyToEmail?.trim();
   if (subAccount?.emailProvider === "smtp") {
     if (!meter?.subAccountId) {
@@ -152,13 +164,51 @@ export async function sendEmail({
       html,
       replyTo: preferredReplyTo || connection.fromEmail,
       attachments,
+      inReplyTo,
+      references,
+      archive,
     });
     void recordUsage({
       subAccountId: meter.subAccountId,
       unit: "emailsSent",
       qty: 1,
     });
-    return result;
+    if (!archive) return result;
+    try {
+      await recordEmailMessage({
+        subAccountId: meter.subAccountId,
+        contactId,
+        sentByUid,
+        direction: "outbound",
+        subject,
+        body: text,
+        from: connection.fromEmail,
+        to: [to],
+        messageId: result.id,
+        inReplyTo,
+        references,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          contentType: a.contentType ?? "application/octet-stream",
+          size: Buffer.from(a.content, "base64").length,
+        })),
+        occurredAt: new Date(),
+        historical: false,
+      });
+      return { ...result, saved: true };
+    } catch {
+      // SMTP acceptance is irreversible. Returning success prevents callers/queues retrying delivery.
+      console.warn(
+        "[email/send] SMTP accepted; conversation persistence failed",
+        { subAccountId: meter.subAccountId, messageId: result.id }
+      );
+      return {
+        ...result,
+        saved: false,
+        warning:
+          "Email was sent, but could not be saved to Conversations. Do not resend. Contact your administrator.",
+      };
+    }
   }
   const resolvedFrom = from ?? process.env.EMAIL_FROM;
   if (!resolvedFrom) {

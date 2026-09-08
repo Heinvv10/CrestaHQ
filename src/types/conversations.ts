@@ -34,6 +34,7 @@ import type { Timestamp, FieldValue } from "firebase/firestore";
  * `subAccounts/{id}/webChatSessions/{sessionId}/messages`, NOT under a contact.
  */
 export type ConversationChannel =
+  | "email"
   | "sms"
   | "whatsapp"
   | "messenger"
@@ -110,6 +111,7 @@ export interface ConversationDoc {
   subAccountId: string;
   agencyId: string;
   /** Denormalized so the list renders without N contact reads. */
+  territoryId?: string | null;
   contactName: string;
   contactPhone: string | null;
   /** Channels this thread has carried, e.g. ["sms","whatsapp"]. */

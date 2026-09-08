@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { subscribeToConversations } from "@/lib/firestore/conversations";
+import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useAuth } from "@/hooks/use-auth";
 
 /**
@@ -15,21 +16,28 @@ import { useAuth } from "@/hooks/use-auth";
  * `memberships[0]`.
  */
 export function useUnreadConversationsCount(
-  subAccountId: string | null,
+  subAccountId: string | null
 ): number {
   const { user } = useAuth();
+  const territory = useEffectiveTerritoryFilter(subAccountId);
   const [count, setCount] = useState(0);
 
   useEffect(() => {
-    if (!user || !subAccountId) {
+    if (!user || !subAccountId || !territory.ready) {
       setCount(0);
       return;
     }
-    const unsub = subscribeToConversations(subAccountId, (rows) => {
-      setCount(rows.filter((c) => (c.unreadCount ?? 0) > 0).length);
-    });
+    setCount(0);
+    const unsub = subscribeToConversations(
+      subAccountId,
+      (rows) => {
+        setCount(rows.filter((c) => (c.unreadCount ?? 0) > 0).length);
+      },
+      () => setCount(0),
+      territory.filter
+    );
     return () => unsub();
-  }, [user, subAccountId]);
+  }, [user, subAccountId, territory.ready, territory.filter]);
 
   return count;
 }

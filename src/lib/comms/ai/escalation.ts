@@ -89,6 +89,7 @@ ${link}
 
 
     const result = await sendEmail({
+        archive: false,
       to: params.to,
       subject,
       text,

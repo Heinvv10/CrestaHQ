@@ -14,6 +14,7 @@ vi.mock("./smtp", () => ({
   sendSmtpEmail: mocks.smtp,
   getSmtpConnection: mocks.credentials,
 }));
+vi.mock("@/lib/server/email-conversations", () => ({recordEmailMessage:vi.fn().mockResolvedValue({contactId:"contact",inserted:true})}));
 vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: mocks.usage }));
 vi.mock("@/lib/landing/resolve-brand", () => ({
   resolveCustomBrand: async () => ({}),

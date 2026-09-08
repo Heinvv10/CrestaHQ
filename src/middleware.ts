@@ -41,6 +41,7 @@ const PUBLIC_PATHS = [
   // Daily recurring-invoice sweep. Public like the other cron routes — the
   // QStash signature is the authentication.
   "/api/cron/recurring-invoices",
+  "/api/cron/email-sync",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",

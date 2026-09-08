@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import type { ConversationDoc, ConversationChannel } from "@/types/conversations";
 
 const CHANNEL_LABEL: Record<ConversationChannel, string> = {
+  email: "Email",
   sms: "SMS",
   whatsapp: "WhatsApp",
   messenger: "Messenger",
@@ -15,6 +16,7 @@ const CHANNEL_LABEL: Record<ConversationChannel, string> = {
 };
 
 const CHANNEL_BADGE: Record<ConversationChannel, string> = {
+  email: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   sms: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
   whatsapp: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
   messenger: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
@@ -41,7 +43,7 @@ export function ConversationList({
         </div>
         <h3 className="text-base font-semibold">No conversations yet</h3>
         <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-          Inbound and outbound SMS, WhatsApp, and web chat messages land here.
+          Inbound and outbound email, SMS, WhatsApp, and web chat messages land here.
           Send a message or wait for a customer to reply.
         </p>
       </div>

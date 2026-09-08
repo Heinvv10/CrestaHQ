@@ -183,10 +183,8 @@ export interface UpdateContactPatch {
  * webhook payload + return value reflect the merged state. Returns null when
  * the contact doesn't exist.
  *
- * A `territoryId` in the patch is written as a plain field. Moving a
- * contact's territory *properly* fans out to its deals/quotes/tasks/events
- * via a dedicated admin endpoint — the dashboard routes that change
- * separately and never sends `territoryId` here.
+ * Territory patches atomically update conversation access alongside the contact.
+ * The dashboard endpoint also cascades to deals/quotes/tasks/events.
  */
 export async function updateContactServerSide(opts: {
   contactId: string;
@@ -215,7 +213,37 @@ export async function updateContactServerSide(opts: {
   // update(), not set(..., {merge: true}): merge recurses into nested maps,
   // which would keep cleared customFields values forever. update() replaces
   // a map field wholesale and behaves identically for the scalar fields.
-  await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
+  const update = { ...patch, updatedAt: FieldValue.serverTimestamp() };
+  if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
+    await db.runTransaction(async (tx) => {
+      const current = (await tx.get(ref)).data();
+      if (
+        !current ||
+        current.subAccountId !== existing.subAccountId ||
+        current.agencyId !== existing.agencyId
+      )
+        throw new Error("Contact tenant changed during territory update.");
+      const conversations = await tx.get(
+        db
+          .collection("conversations")
+          .where("subAccountId", "==", current.subAccountId)
+          .where("contactId", "==", opts.contactId)
+      );
+      for (const conversation of conversations.docs)
+        if (conversation.data().agencyId !== current.agencyId)
+          throw new Error(
+            "Conversation tenant mismatch during territory update."
+          );
+      tx.update(ref, update);
+      for (const conversation of conversations.docs)
+        tx.update(conversation.ref, {
+          territoryId: patch.territoryId ?? null,
+          updatedAt: update.updatedAt,
+        });
+    });
+  } else {
+    await ref.update(update);
+  }
 
   const fresh = await ref.get();
   const contact = serializeContactForApi(fresh.id, fresh.data()!, mode);

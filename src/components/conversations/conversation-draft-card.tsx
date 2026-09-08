@@ -9,6 +9,7 @@ import { discardConversationDraft } from "@/lib/firestore/conversations";
 import type { ConversationChannel, ConversationDraft } from "@/types/conversations";
 
 const LABEL: Record<ConversationChannel, string> = {
+  email: "Email",
   sms: "SMS",
   whatsapp: "WhatsApp",
   messenger: "Messenger",

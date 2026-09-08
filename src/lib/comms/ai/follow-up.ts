@@ -182,6 +182,7 @@ export async function createCaptureFollowUp(
         .join("\n");
 
       await sendEmail({
+        archive: false,
         to,
         subject,
         text,

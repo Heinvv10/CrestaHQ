@@ -223,6 +223,7 @@ export async function POST(request: Request) {
   let error: string | null = null;
   try {
     const result = await sendEmail({
+      contactId,
       to: contact.email,
       subject: subject || "(no subject)",
       text,

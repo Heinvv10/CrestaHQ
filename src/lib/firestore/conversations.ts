@@ -14,6 +14,11 @@ import type {
   ConversationDoc,
 } from "@/types/conversations";
 
+import {
+  territoryQueryPlan,
+  NOOP_UNSUB,
+} from "@/lib/firestore/territory-query";
+
 const CONVERSATIONS = "conversations";
 
 /**
@@ -25,21 +30,31 @@ export function subscribeToConversations(
   subAccountId: string,
   callback: (conversations: ConversationDoc[]) => void,
   onError?: (err: Error) => void,
+  territoryFilter?: string[] | null
 ): Unsubscribe {
+  const plan = territoryQueryPlan(territoryFilter);
+  if (plan.mode === "empty") {
+    callback([]);
+    return NOOP_UNSUB;
+  }
   const q = query(
     collection(getFirebaseDb(), CONVERSATIONS),
     where("subAccountId", "==", subAccountId),
+    ...(plan.mode === "in" ? [plan.constraint] : [])
   );
   return onSnapshot(
     q,
     (snap) => {
-      const rows = snap.docs.map(
-        (d) => ({ id: d.id, ...(d.data() as Omit<ConversationDoc, "id">) }),
+      const rows = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<ConversationDoc, "id">),
+      }));
+      rows.sort(
+        (a, b) => toMillis(b.lastMessageAt) - toMillis(a.lastMessageAt)
       );
-      rows.sort((a, b) => toMillis(b.lastMessageAt) - toMillis(a.lastMessageAt));
       callback(rows);
     },
-    (err) => onError?.(err),
+    (err) => onError?.(err)
   );
 }
 
@@ -47,7 +62,7 @@ export function subscribeToConversations(
 export function subscribeToConversation(
   contactId: string,
   callback: (conversation: ConversationDoc | null) => void,
-  onError?: (err: Error) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   return onSnapshot(
     doc(getFirebaseDb(), CONVERSATIONS, contactId),
@@ -55,10 +70,10 @@ export function subscribeToConversation(
       callback(
         snap.exists()
           ? { id: snap.id, ...(snap.data() as Omit<ConversationDoc, "id">) }
-          : null,
+          : null
       );
     },
-    (err) => onError?.(err),
+    (err) => onError?.(err)
   );
 }
 
@@ -81,7 +96,7 @@ export async function markConversationRead(contactId: string): Promise<void> {
 /** Set the per-conversation AI mode (off / suggest / auto). */
 export async function setConversationBotMode(
   contactId: string,
-  mode: ConversationBotMode,
+  mode: ConversationBotMode
 ): Promise<void> {
   try {
     await updateDoc(doc(getFirebaseDb(), CONVERSATIONS, contactId), {
@@ -107,7 +122,7 @@ export async function resumeBot(contactId: string): Promise<void> {
 
 /** Discard a pending suggest-mode draft without sending it. */
 export async function discardConversationDraft(
-  contactId: string,
+  contactId: string
 ): Promise<void> {
   try {
     await updateDoc(doc(getFirebaseDb(), CONVERSATIONS, contactId), {

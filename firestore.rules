@@ -706,14 +706,16 @@ service cloud.firestore {
     // operator-facing fields (mark-read, status, assignment, bot controls) —
     // never tenancy or denormalized content.
     match /conversations/{conversationId} {
-      allow read: if canAccessSub(
+      allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
-        resource.data.agencyId
+        resource.data.agencyId,
+        resource.data.get("territoryId", null)
       );
       allow create: if false;
-      allow update: if canAccessSub(
+      allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
-        resource.data.agencyId
+        resource.data.agencyId,
+        resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
           ['unreadCount', 'status', 'assigneeUid', 'botMode', 'botPausedUntil', 'pendingDraft', 'updatedAt']
@@ -764,22 +766,29 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId
       );
-      // Updates require territory visibility AND collaborators may not
-      // reassign the territory (admins/owners may).
+      // Updates require territory visibility; territory reassignment uses
+      // the server route so linked conversation previews move atomically.
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
-        && territoryIdUnchangedOrAdmin(
-          resource.data.subAccountId,
-          resource.data.agencyId
-        );
+        // Territory changes must use the server route, which atomically scopes inbox previews.
+        && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null);
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId
       );
 
+      // Email message bodies are server-owned and inherit contact territory visibility.
+      match /emailMessages/{messageId} {
+        allow read: if canSeeScopedDoc(
+          get(/databases/$(database)/documents/contacts/$(contactId)).data.subAccountId,
+          get(/databases/$(database)/documents/contacts/$(contactId)).data.agencyId,
+          get(/databases/$(database)/documents/contacts/$(contactId)).data.get("territoryId", null)
+        );
+        allow write: if false;
+      }
       match /notes/{noteId} {
         allow read, write: if canAccessSub(
           get(/databases/$(database)/documents/contacts/$(contactId)).data.subAccountId,
