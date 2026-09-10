@@ -9,9 +9,9 @@ import {
 } from "@/lib/auth/require-tenancy";
 import {
   slugifyFieldKey,
+  validateCustomFieldCapacity,
   validateFieldDefInput,
 } from "@/lib/custom-fields/validation";
-import { MAX_CUSTOM_FIELDS_PER_ENTITY } from "@/types/custom-fields";
 import type { CustomFieldDef } from "@/types/custom-fields";
 
 /**
@@ -86,13 +86,9 @@ export async function POST(
     (d) => d.data() as Omit<CustomFieldDef, "id">,
   );
   const sameEntity = existing.filter((f) => f.entity === data.entity);
-  if (sameEntity.length >= MAX_CUSTOM_FIELDS_PER_ENTITY) {
-    return NextResponse.json(
-      {
-        error: `At most ${MAX_CUSTOM_FIELDS_PER_ENTITY} custom fields per ${data.entity}.`,
-      },
-      { status: 400 },
-    );
+  const capacity = validateCustomFieldCapacity(sameEntity.length, data.entity);
+  if (!capacity.ok) {
+    return NextResponse.json({ error: capacity.error }, { status: 400 });
   }
 
   // Unique snake_case key within (sub-account, entity).
