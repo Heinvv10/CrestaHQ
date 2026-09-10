@@ -192,13 +192,22 @@ wrong entity's fields loaded — all turn it red.
 
 **Gaps 1 and 2** are `POST /api/v1/contacts/upsert`
 ([public-api.md](public-api.md#upsert-by-phone)). The phone is the identity.
-A per-phone claim doc is read and written in the same transaction as the
-contact, so concurrent calls in different phone formats still leave one
-contact. More than one existing contact on a phone is refused (409), never
-guessed at (Hein, 2026-09-10). Custom fields merge per key; tags go through
+The phone query runs inside the write transaction on every call, with a
+never-persisted per-phone lock doc forcing concurrent calls to contend, so
+calls in different phone formats still leave one contact. More than one
+existing contact on a phone is refused (409), never guessed at (Hein,
+2026-09-10) — including a duplicate another path creates later. Custom fields merge per key; tags go through
 `tags_add` / `tags_remove` against the current tags. The trigger tag is
-**add-only**: a phone that already carries it does not re-enrol (Hein,
-2026-09-10), so a returning customer's second install is not asked.
+**add-only**: a phone that already carries it does not fire the trigger
+again (Hein, 2026-09-10), so a returning customer's second install is not
+asked. On its own that is only half the guarantee — a `contact.tag.added`
+workflow starts on ANY new tag, so a later unrelated tag on a contact that
+still carries the trigger tag re-enrols it through a `has_tag` filter. Gap 4's
+per-tag trigger filter closes that.
+
+Existing Velocity contacts imported with un-normalised phones will not match,
+so the first upsert for them creates a second contact. FibreFlow's own
+`UNIQUE (dr_number, phone_e164)` still stops a second message.
 `src/app/api/v1/contacts/upsert/route.test.ts` drives the real `withApiAuth`,
 service and engine: the same phone twice is one contact and one enrolment,
 with and without an `Idempotency-Key`. Thirteen mutants all turn it red.

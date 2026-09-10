@@ -124,11 +124,18 @@ describe("upsert by phone", () => {
   });
 
   it("two concurrent calls, in two phone formats, create one contact", async () => {
-    await Promise.all([upsert(CANDIDATE), upsert({ ...CANDIDATE, phone: "082 123 4567" })]);
+    // A test key on purpose: live mode first runs enrolment-cap
+    // transactions that contend on one bucket and stagger the two calls, so
+    // their upsert transactions would never overlap. Here the two paths are
+    // identical step for step, so both read before either commits — the
+    // race the phone lock exists to settle.
+    await Promise.all([
+      upsert(CANDIDATE, { key: testKey }),
+      upsert({ ...CANDIDATE, phone: "082 123 4567" }, { key: testKey }),
+    ]);
 
     expect(contacts()).toHaveLength(1);
     expect(contacts()[0].phone).toBe(E164);
-    expect(runs()).toHaveLength(1);
   });
 
   it("replays an Idempotency-Key without re-executing, and refuses the key on another body", async () => {
@@ -160,24 +167,34 @@ describe("upsert by phone", () => {
     expect(c.customFields).toEqual({
       install_address: "14 Acacia Street, Lawley", keep: "x", dr_number: "DR1734562",
     });
-    expect(mem.read(`subAccounts/sa1/contactPhoneIndex/live_${E164}`)?.contactId).toBe("c_existing");
     expect(runs()).toHaveLength(1);
+    // The lock doc is touched, never kept: no phone outlives its contact.
+    expect(mem.list("subAccounts/sa1/contactPhoneIndex")).toHaveLength(0);
   });
 
-  it("ignores a claim whose contact has since moved to another phone", async () => {
-    mem.seed(`subAccounts/sa1/contactPhoneIndex/live_${E164}`, { contactId: "c_moved" });
-    mem.seed("contacts/c_moved", {
-      subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Moved", phone: "+27829999999",
-      tags: [],
+  it("does not fire for a tag another writer adds right after this request commits", async () => {
+    mem.seed("contacts/c_existing", {
+      subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Thandi", phone: E164, tags: [],
+    });
+    const commit = mem.db.runTransaction;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      const result = await commit(fn);
+      // Right after the upsert's own commit (the enrolment-cap transactions
+      // pass through untouched), an operator tags the contact.
+      const c = mem.read("contacts/c_existing");
+      if (c?.customFields && !(c.tags as string[]).includes(TAG)) {
+        mem.seed("contacts/c_existing", { ...c, tags: [TAG] });
+      }
+      return result;
     });
 
-    const res = await upsert(CANDIDATE);
+    const res = await upsert({ phone: E164, custom_fields: { dr_number: "DR1" } });
 
-    expect(res.status).toBe(201);
-    expect(mem.read("contacts/c_moved")?.tags).toEqual([]);
-    expect(mem.read(`subAccounts/sa1/contactPhoneIndex/live_${E164}`)?.contactId).toBe(
-      res.json.contact.id,
-    );
+    expect(res.status).toBe(200);
+    expect(mem.read("contacts/c_existing")?.tags).toEqual([TAG]);
+    expect(runs()).toHaveLength(0);
+    expect(bucket()).toBe(0);
+    vi.restoreAllMocks();
   });
 
   it("clears a custom field sent as null and keeps the ones not sent", async () => {
@@ -207,10 +224,25 @@ describe("refusals write nothing and enrol nobody", () => {
     expect(bucket()).toBe(0);
   });
 
+  it("still refuses once another path has duplicated a contact it created", async () => {
+    const first = await upsert(CANDIDATE);
+    mem.seed("contacts/c_dashboard_dup", {
+      subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Dup", phone: E164, tags: [],
+    });
+
+    const res = await upsert({ phone: E164, custom_fields: { dr_number: "DR2" } });
+
+    expect(res.status).toBe(409);
+    expect(mem.read(`contacts/${first.json.contact.id}`)?.customFields).toMatchObject({
+      dr_number: "DR1734562",
+    });
+  });
+
   it.each([
     ["an unknown custom field key", { ...CANDIDATE, custom_fields: { dr_nuber: "DR1" } }],
     ["a whole-array `tags` replace", { ...CANDIDATE, tags: [TAG] }],
     ["an invalid phone", { ...CANDIDATE, phone: "not a phone" }],
+    ["a pipeline_stage it would otherwise drop", { ...CANDIDATE, pipeline_stage: "won" }],
     ["a create with no name", { ...CANDIDATE, name: undefined }],
   ])("refuses %s", async (_label, body) => {
     const res = await upsert(body);

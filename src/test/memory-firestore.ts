@@ -11,13 +11,14 @@ import { FieldValue } from "firebase-admin/firestore";
  * applies the FieldValue transforms the code writes, and yields between
  * operations so two concurrent requests genuinely interleave.
  *
- * Transactions run one at a time — the serializable guarantee Firestore
- * gives. Code that reads and writes OUTSIDE a transaction therefore races
- * here exactly as it would in production, which is the point. Not modelled:
- * a non-transactional write forcing a concurrent transaction to retry.
+ * Transactions run concurrently and commit atomically: every doc a
+ * transaction read (directly, or as a query result) must be unchanged at
+ * commit, or the body re-runs — as Firestore retries on contention. Queries
+ * get NO phantom protection: a doc inserted after a transaction's query does
+ * not conflict with it. Code that relies on a query alone to prevent a
+ * duplicate therefore races here; contending on a doc it read does not.
  *
- * Deliberately small: add an operator when a test needs it, not before.
- */
+ * Deliberately small: add an operator when a test needs it, not before. */
 
 type Data = Record<string, unknown>;
 type WhereOp = "==" | "in" | "array-contains";
@@ -25,20 +26,12 @@ type WhereOp = "==" | "in" | "array-contains";
 const DELETE = Symbol("delete");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function transformOf(v: unknown): string | null {
-  return v instanceof FieldValue
-    ? (v as unknown as { methodName: string }).methodName
-    : null;
-}
+const transformOf = (v: unknown): string | null =>
+  v instanceof FieldValue ? (v as unknown as { methodName: string }).methodName : null;
 
 function isPlainObject(v: unknown): v is Data {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    !Array.isArray(v) &&
-    !(v instanceof Date) &&
-    !(v instanceof FieldValue)
-  );
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  return !(v instanceof Date) && !(v instanceof FieldValue);
 }
 
 function resolveValue(current: unknown, v: unknown): unknown {
@@ -115,18 +108,21 @@ function matches(data: Data, field: string, op: WhereOp, value: unknown): boolea
 export interface MemoryDocSnapshot {
   id: string;
   exists: boolean;
+  /** Write count at read time; a transaction's conflict check compares it. */
+  version: number;
   ref: MemoryDocRef;
   data: () => Data | undefined;
 }
 
+type Write<A extends unknown[]> = (...args: A) => Promise<void>;
 export interface MemoryDocRef {
   id: string;
   path: string;
   get: () => Promise<MemoryDocSnapshot>;
-  set: (data: Data, opts?: { merge?: boolean }) => Promise<void>;
-  update: (patch: Data) => Promise<void>;
-  create: (data: Data) => Promise<void>;
-  delete: () => Promise<void>;
+  set: Write<[Data, { merge?: boolean }?]>;
+  update: Write<[Data]>;
+  create: Write<[Data]>;
+  delete: Write<[]>;
   collection: (name: string) => MemoryQuery & { doc: (id?: string) => MemoryDocRef };
 }
 
@@ -138,24 +134,24 @@ export interface MemoryQuery {
 }
 
 type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
-interface MemoryTx {
+interface MemoryTx extends Record<"set" | "update" | "create", TxWrite> {
   get: (target: MemoryDocRef | MemoryQuery) => Promise<unknown>;
-  set: TxWrite;
-  update: TxWrite;
-  create: TxWrite;
   delete: (ref: MemoryDocRef) => MemoryTx;
 }
 
 export function createMemoryFirestore() {
   const store = new Map<string, Data>();
   let autoId = 0;
-  let txQueue: Promise<unknown> = Promise.resolve();
+  const versions = new Map<string, number>();
+  const bump = (path: string) => versions.set(path, (versions.get(path) ?? 0) + 1);
+  const remove = (path: string) => void (store.delete(path), bump(path));
 
   const snapshot = (path: string): MemoryDocSnapshot => {
     const data = store.get(path);
     return {
       id: path.split("/").pop()!,
       exists: data !== undefined,
+      version: versions.get(path) ?? 0,
       ref: docRef(path),
       data: () => (data === undefined ? undefined : structuredClone(data)),
     };
@@ -165,6 +161,7 @@ export function createMemoryFirestore() {
     const next = merge ? structuredClone(store.get(path) ?? {}) : {};
     mergeInto(next, data);
     store.set(path, next);
+    bump(path);
   };
 
   const writeUpdate = (path: string, patch: Data) => {
@@ -177,6 +174,7 @@ export function createMemoryFirestore() {
     const next = structuredClone(current);
     for (const [k, v] of Object.entries(patch)) setPath(next, k.split("."), v);
     store.set(path, next);
+    bump(path);
   };
 
   const writeCreate = (path: string, data: Data) => {
@@ -188,11 +186,11 @@ export function createMemoryFirestore() {
     return {
       id: path.split("/").pop()!,
       path,
-      get: () => tick().then(() => snapshot(path)),
+      get: () => { const snap = snapshot(path); return tick().then(() => snap); },
       set: (data, opts) => tick().then(() => writeSet(path, data, opts?.merge === true)),
       update: (patch) => tick().then(() => writeUpdate(path, patch)),
       create: (data) => tick().then(() => writeCreate(path, data)),
-      delete: () => tick().then(() => void store.delete(path)),
+      delete: () => tick().then(() => remove(path)),
       collection: (name) => collectionRef(`${path}/${name}`),
     };
   }
@@ -208,8 +206,9 @@ export function createMemoryFirestore() {
       where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max),
       orderBy: (f, dir = "asc") => query(inScope, filters, [f, dir], max),
       limit: (n) => query(inScope, filters, order, n),
-      get: async () => {
-        await tick();
+      // Reads observe the store when ISSUED and resolve a tick later, so two
+      // concurrent transactions can both read before either commits.
+      get: () => {
         let paths = [...store.keys()].filter((p) => {
           if (!inScope(p.slice(0, p.lastIndexOf("/")))) return false;
           const data = store.get(p)!;
@@ -224,7 +223,7 @@ export function createMemoryFirestore() {
         }
         if (max !== null) paths = paths.slice(0, max);
         const docs = paths.map(snapshot);
-        return { empty: docs.length === 0, size: docs.length, docs };
+        return tick().then(() => ({ empty: docs.length === 0, size: docs.length, docs }));
       },
     };
   }
@@ -240,53 +239,53 @@ export function createMemoryFirestore() {
     collection: (path: string) => collectionRef(path),
     collectionGroup: (name: string) =>
       query((parent) => parent.split("/").pop() === name, [], null, null),
-    runTransaction: <T>(fn: (tx: MemoryTx) => Promise<T>): Promise<T> => {
-      const run = async () => {
+    runTransaction: async <T>(fn: (tx: MemoryTx) => Promise<T>): Promise<T> => {
+      for (let attempt = 1; ; attempt++) {
+        const reads = new Map<string, number>();
         const writes: Array<() => void> = [];
+        const note = (snap: MemoryDocSnapshot) => reads.set(snap.ref.path, snap.version);
+        const queue = (w: () => void) => (writes.push(w), tx);
         const tx: MemoryTx = {
-          get: (target) => target.get(),
-          set: (ref, data, opts) => {
-            writes.push(() => writeSet(ref.path, data, opts?.merge === true));
-            return tx;
+          get: async (target) => {
+            const r = (await target.get()) as MemoryDocSnapshot | { docs: MemoryDocSnapshot[] };
+            if ("docs" in r) r.docs.forEach(note);
+            else note(r);
+            return r;
           },
-          update: (ref, patch) => {
-            writes.push(() => writeUpdate(ref.path, patch));
-            return tx;
-          },
-          create: (ref, data) => {
-            writes.push(() => writeCreate(ref.path, data));
-            return tx;
-          },
-          delete: (ref) => {
-            writes.push(() => store.delete(ref.path));
-            return tx;
-          },
+          set: (ref, data, opts) => queue(() => writeSet(ref.path, data, opts?.merge === true)),
+          update: (ref, patch) => queue(() => writeUpdate(ref.path, patch)),
+          create: (ref, data) => queue(() => writeCreate(ref.path, data)),
+          delete: (ref) => queue(() => remove(ref.path)),
         };
         const result = await fn(tx);
-        // All-or-nothing, like a real commit: validate every write against a
-        // scratch copy first, so a failing create leaves nothing applied.
-        const before = new Map(store);
+        // Synchronous from here to the return, so nothing interleaves
+        // between the conflict check and the apply.
+        if ([...reads].some(([p, v]) => (versions.get(p) ?? 0) !== v)) {
+          if (attempt < 5) continue;
+          throw Object.assign(new Error("10 ABORTED: contention"), { code: 10 });
+        }
+        const [before, beforeVersions] = [new Map(store), new Map(versions)];
         try {
           for (const w of writes) w();
         } catch (err) {
+          // All-or-nothing: a failing create leaves nothing applied.
           store.clear();
+          versions.clear();
           for (const [k, v] of before) store.set(k, v);
+          for (const [k, v] of beforeVersions) versions.set(k, v);
           throw err;
         }
         return result;
-      };
-      const next = txQueue.then(run, run);
-      txQueue = next.catch(() => undefined);
-      return next;
+      }
     },
   };
 
   return {
     db,
     /** Empty the store — call from beforeEach. */
-    clear: () => store.clear(),
+    clear: () => (store.clear(), versions.clear()),
     /** Put a doc in place without going through the code under test. */
-    seed: (path: string, data: Data) => store.set(path, structuredClone(data)),
+    seed: (path: string, data: Data) => void (store.set(path, structuredClone(data)), bump(path)),
     /** Current doc data, or undefined. */
     read: (path: string) => {
       const d = store.get(path);

@@ -91,16 +91,24 @@ Velocity export is the first caller.
   enforced only on create.
 - `tags_add` / `tags_remove` apply to the contact's CURRENT tags inside the
   write transaction, so a tag an operator added a moment ago survives.
-  `tags` (whole-array replace) is refused on this route.
+  `tags` (whole-array replace) is refused on this route, as are
+  `pipeline_stage` and `territory_id` (set those with PATCH) — refused
+  rather than silently dropped.
 - 201 created · 200 updated · **409 `ambiguous_phone`** when more than one
   contact already holds the phone — nothing is written and the ids are named.
 - `Idempotency-Key` is honoured as on every v1 POST.
 
-Race safety comes from a claim doc per phone
-(`subAccounts/{id}/contactPhoneIndex/{mode}_{e164}`) read and written in the
-same transaction as the contact. Matching is on the stored E.164 phone; a
-contact whose phone was stored un-normalised (some legacy imports) will not
-match and gets a new contact.
+Race safety: the phone query runs inside the write transaction on every
+call, and the transaction also reads and then writes a delete to a lock doc
+per phone (`subAccounts/{id}/contactPhoneIndex/{mode}_{e164}`, never
+persisted), so two concurrent calls contend and one re-runs onto the other's
+contact. Because the query runs every time, a duplicate created later by
+another path is still refused with 409.
+
+**Matching is on the stored E.164 phone and `mode`.** Paths that store the
+phone as typed — v1 form submissions, v1 PATCH, the bulk importer — and the
+voice-booking path, which writes no `mode`, produce contacts the upsert will
+not find; its first call for that person creates a second contact.
 
 A create fires `contact.created` and, when it adds tags, `contact.tag.added`
 through the same tag diff as a PATCH. So the request reserves one enrolment

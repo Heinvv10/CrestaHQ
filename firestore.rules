@@ -511,8 +511,8 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
-      // Phone claims for the v1 contact upsert (lib/server/contact-upsert).
-      // Holds phone numbers; Admin-SDK only, inside the upsert transaction.
+      // Lock path for the v1 contact upsert (lib/server/contact-upsert):
+      // read and delete-written inside its transaction, never persisted.
       match /contactPhoneIndex/{claimId} {
         allow read, write: if false;
       }

@@ -19,21 +19,26 @@ import type { CustomFieldValue } from "@/types/custom-fields";
  * with the same phone must never create a second contact.
  *
  * Firestore has no unique constraint, so a query-then-create would let two
- * concurrent calls both see "no such contact" and both create one. The
- * find-or-create therefore runs in ONE transaction that reads a claim doc
- * keyed by the phone (`subAccounts/{id}/contactPhoneIndex/{mode}_{e164}`)
- * and writes the contact and the claim together. Two racing transactions
- * contend on the claim doc, so the loser retries and finds the winner's
- * contact.
+ * concurrent calls both see "no such contact" and both create one — and a
+ * query inside a transaction is not relied on to stop that (no phantom
+ * protection is assumed). So every transaction also READS and then WRITES
+ * one lock doc per phone (`subAccounts/{id}/contactPhoneIndex/{mode}_{e164}`).
+ * Two racing transactions both read it, so the second to commit conflicts
+ * and re-runs, and its re-run query finds the first one's contact.
  *
- * The claim is a lock and a cache, never trusted on its own: it is re-verified
- * against the contact it names (same tenant, same mode, same phone), and a
- * stale one — contact deleted, or its phone since edited — falls through to a
- * query. Contacts created elsewhere (dashboard, forms, imports) have no
- * claim; the query finds them, and the first upsert writes one.
+ * The lock write is a DELETE: a write is what creates the contention, and a
+ * delete persists nothing, so no phone number outlives its contact in a
+ * side collection and there is no stale pointer to reconcile. Do not
+ * "optimise" the read or the delete away — together they ARE the race fix.
  *
- * Matching is on the stored E.164 phone. A contact whose phone was stored
- * un-normalised (some legacy imports) will not match, and gets a new contact.
+ * The query runs on every call and is the only source of truth, so a
+ * duplicate created later by another path (dashboard, form, import) is still
+ * caught by the ambiguity refusal below.
+ *
+ * Matching is on the stored E.164 phone and mode. Contacts written by paths
+ * that store the phone as typed — v1 form submissions, v1 PATCH, the bulk
+ * importer — or with no `mode` (voice booking) will not match, and the first
+ * upsert creates a second contact for that person.
  *
  * More than one existing contact on the phone is refused, never guessed at:
  * writing install details onto the wrong household member is worse than a
@@ -102,53 +107,35 @@ export async function upsertContactByPhone(
   const claimRef = db.doc(
     `subAccounts/${input.subAccountId}/contactPhoneIndex/${input.mode}_${input.phone}`,
   );
-  const owns = (d: FirebaseFirestore.DocumentData | undefined) =>
-    !!d &&
-    d.subAccountId === input.subAccountId &&
-    d.mode === input.mode &&
-    d.phone === input.phone;
-
   const written = await db.runTransaction(async (tx) => {
-    const claim = await tx.get(claimRef);
-    let target: FirebaseFirestore.DocumentSnapshot | null = null;
-    const claimedId = claim.data()?.contactId as string | undefined;
-    if (claimedId) {
-      const snap = await tx.get(db.doc(`contacts/${claimedId}`));
-      if (snap.exists && owns(snap.data())) target = snap;
+    await tx.get(claimRef); // the lock — see the header
+    const matches = await tx.get(
+      db
+        .collection("contacts")
+        .where("subAccountId", "==", input.subAccountId)
+        .where("mode", "==", input.mode)
+        .where("phone", "==", input.phone)
+        .limit(10),
+    );
+    if (matches.size > 1) {
+      return { kind: "ambiguous" as const, contactIds: matches.docs.map((d) => d.id) };
     }
-    if (!target) {
-      const matches = await tx.get(
-        db
-          .collection("contacts")
-          .where("subAccountId", "==", input.subAccountId)
-          .where("mode", "==", input.mode)
-          .where("phone", "==", input.phone)
-          .limit(10),
-      );
-      if (matches.size > 1) {
-        return { kind: "ambiguous" as const, contactIds: matches.docs.map((d) => d.id) };
-      }
-      target = matches.docs[0] ?? null;
-    }
+    const target = matches.docs[0] ?? null;
+    tx.delete(claimRef);
 
     const tags = nextTags(target?.data()?.tags, input.tagsAdd, input.tagsRemove);
     const customFields = mergeCustomFields(target?.data()?.customFields, input.customFields);
-    const claimDoc = {
-      contactId: "",
-      subAccountId: input.subAccountId,
-      mode: input.mode,
-      updatedAt: FieldValue.serverTimestamp(),
-    };
-
     if (target) {
-      tx.update(target.ref, {
-        ...input.fields,
-        tags,
-        customFields,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      if (claimedId !== target.id) tx.set(claimRef, { ...claimDoc, contactId: target.id });
-      return { kind: "updated" as const, id: target.id, beforeTags: target.data()?.tags };
+      const update = { ...input.fields, tags, customFields };
+      tx.update(target.ref, { ...update, updatedAt: FieldValue.serverTimestamp() });
+      return {
+        kind: "updated" as const,
+        id: target.id,
+        beforeTags: target.data()?.tags,
+        // What THIS transaction wrote — never a re-read, which could carry
+        // another writer's tag and fire a trigger this request did not cause.
+        after: { ...target.data(), ...update },
+      };
     }
 
     const name = input.fields.name ?? "";
@@ -172,7 +159,6 @@ export async function upsertContactByPhone(
       customFields,
     });
     tx.set(ref, doc);
-    tx.set(claimRef, { ...claimDoc, contactId: ref.id });
     return { kind: "created" as const, id: ref.id, doc };
   });
 
@@ -202,8 +188,11 @@ export async function upsertContactByPhone(
     };
   }
 
-  const fresh = await db.doc(`contacts/${written.id}`).get();
-  const contact = serializeContactForApi(written.id, fresh.data()!, input.mode);
+  const contact = serializeContactForApi(
+    written.id,
+    { ...written.after, updatedAt: new Date() },
+    input.mode,
+  );
   void emitWebhookEvent({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
@@ -211,7 +200,7 @@ export async function upsertContactByPhone(
     type: "contact.updated",
     payload: { contact },
   });
-  const tagTrigger = tagFire(written.beforeTags, contact.tags);
+  const tagTrigger = tagFire(written.beforeTags, written.after.tags);
   return {
     kind: "updated",
     id: written.id,
