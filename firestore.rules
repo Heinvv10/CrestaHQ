@@ -511,6 +511,12 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Lock path for the v1 contact upsert (lib/server/contact-upsert):
+      // read and delete-written inside its transaction, never persisted.
+      match /contactPhoneIndex/{claimId} {
+        allow read, write: if false;
+      }
+
       // API request log — one row per /api/v1/* request (success or
       // failure). Powers the request log viewer at
       // /sa/[id]/dashboard/settings (slice 8). Reads scoped to sub-account

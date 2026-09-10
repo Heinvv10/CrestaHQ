@@ -203,7 +203,7 @@ function asString(v: unknown, max: number): string | null {
   return t;
 }
 
-function asTags(v: unknown): string[] | null {
+export function asTags(v: unknown): string[] | null {
   if (v === undefined || v === null) return [];
   if (!Array.isArray(v)) return null;
   if (v.length > MAX_TAGS) return null;
