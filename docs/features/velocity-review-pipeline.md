@@ -229,6 +229,17 @@ response alone, never awaiting the engine; nine mutants all turn it red.
 hour and FibreFlow's 09:00 run sends 100–212. The pilot (~5/day) fits. Pacing
 or a configurable cap is decided at cutover (Hein, 2026-09-10).
 
+**Also before cutover — unverified on real Firestore:** the upsert's race fix
+reads a per-phone lock doc and writes a *delete* to it, which is never
+persisted. Whether two Admin-SDK transactions deleting a doc that never
+existed actually contend (blind review put it at ~70–80%) has not been
+probed; the in-memory fake assumes they do. If they don't, two concurrent
+creates for one phone make two contacts and two review asks — after which
+every call returns 409, so it fails loud. The pilot's sequential ~5/day
+cannot hit it. Settle it with a two-transaction probe on a non-production
+Firestore project; the fallback is `tx.set` on a doc keyed by a hash of
+sub-account, mode and phone.
+
 **5b is not built.** The template draft says an empty variable must refuse
 the send rather than ship a blank. Today `execWhatsappTemplate` sends
 whatever renders. Meta Cloud rejects an empty parameter anyway, but Twilio's
