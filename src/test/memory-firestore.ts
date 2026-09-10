@@ -43,7 +43,9 @@ function isPlainObject(v: unknown): v is Data {
 
 function resolveValue(current: unknown, v: unknown): unknown {
   const t = transformOf(v);
-  if (t === null) return v;
+  // Copy, as Firestore serializes at call time: a caller mutating its array
+  // after set() must not reach into the stored doc.
+  if (t === null) return Array.isArray(v) ? structuredClone(v) : v;
   const arr = Array.isArray(current) ? current : [];
   const elements = (v as unknown as { elements?: unknown[] }).elements ?? [];
   switch (t) {
@@ -77,13 +79,15 @@ function setPath(target: Data, path: string[], value: unknown): void {
   setPath(target[head] as Data, rest, value);
 }
 
+/** Deep-copies nested maps as it goes, resolving any transforms inside them. */
 function mergeInto(target: Data, patch: Data): void {
   for (const [k, v] of Object.entries(patch)) {
-    if (isPlainObject(v) && isPlainObject(target[k])) {
-      mergeInto(target[k] as Data, v);
-    } else {
+    if (!isPlainObject(v)) {
       setPath(target, [k], v);
+      continue;
     }
+    if (!isPlainObject(target[k])) target[k] = {};
+    mergeInto(target[k] as Data, v);
   }
 }
 
@@ -133,11 +137,12 @@ export interface MemoryQuery {
   get: () => Promise<{ empty: boolean; size: number; docs: MemoryDocSnapshot[] }>;
 }
 
+type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
 interface MemoryTx {
   get: (target: MemoryDocRef | MemoryQuery) => Promise<unknown>;
-  set: (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
-  update: (ref: MemoryDocRef, patch: Data) => MemoryTx;
-  create: (ref: MemoryDocRef, data: Data) => MemoryTx;
+  set: TxWrite;
+  update: TxWrite;
+  create: TxWrite;
   delete: (ref: MemoryDocRef) => MemoryTx;
 }
 
@@ -175,9 +180,7 @@ export function createMemoryFirestore() {
   };
 
   const writeCreate = (path: string, data: Data) => {
-    if (store.has(path)) {
-      throw Object.assign(new Error(`6 ALREADY_EXISTS: ${path}`), { code: 6 });
-    }
+    if (store.has(path)) throw Object.assign(new Error(`6 ALREADY_EXISTS: ${path}`), { code: 6 });
     writeSet(path, data, false);
   };
 
@@ -185,26 +188,11 @@ export function createMemoryFirestore() {
     return {
       id: path.split("/").pop()!,
       path,
-      get: async () => {
-        await tick();
-        return snapshot(path);
-      },
-      set: async (data, opts) => {
-        await tick();
-        writeSet(path, data, opts?.merge === true);
-      },
-      update: async (patch) => {
-        await tick();
-        writeUpdate(path, patch);
-      },
-      create: async (data) => {
-        await tick();
-        writeCreate(path, data);
-      },
-      delete: async () => {
-        await tick();
-        store.delete(path);
-      },
+      get: () => tick().then(() => snapshot(path)),
+      set: (data, opts) => tick().then(() => writeSet(path, data, opts?.merge === true)),
+      update: (patch) => tick().then(() => writeUpdate(path, patch)),
+      create: (data) => tick().then(() => writeCreate(path, data)),
+      delete: () => tick().then(() => void store.delete(path)),
       collection: (name) => collectionRef(`${path}/${name}`),
     };
   }
@@ -229,10 +217,8 @@ export function createMemoryFirestore() {
         });
         if (order) {
           const [f, dir] = order;
-          const key = (p: string) => {
-            const v = getPath(store.get(p)!, f);
-            return v instanceof Date ? v.getTime() : (v as number | string);
-          };
+          const key = (p: string, v = getPath(store.get(p)!, f)) =>
+            v instanceof Date ? v.getTime() : (v as number | string);
           paths.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
           if (dir === "desc") paths.reverse();
         }

@@ -161,8 +161,9 @@ describe("PATCH /api/v1/contacts/:id — a tag enrols a real workflow run", () =
   it("does not enrol when the added tag is not the one the workflow filters on", async () => {
     // A different tag fires contact.tag.added, but this workflow's filter
     // wants TRIGGER_TAG, which the contact does not carry.
-    await patch({ tags: ["customer", "newsletter"] });
+    const res = await patch({ tags: ["customer", "newsletter"] });
 
+    expect(res.status).toBe(200);
     expect(runs()).toHaveLength(0);
     expect(published).toHaveLength(0);
     // The reservation was handed back when nobody enrolled.
