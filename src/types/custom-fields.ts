@@ -88,4 +88,4 @@ export const CUSTOM_FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
 
 /** Max custom fields per entity per sub-account — generous, but bounded so the
  *  inline value map + forms stay sane. */
-export const MAX_CUSTOM_FIELDS_PER_ENTITY = 50;
+export const MAX_CUSTOM_FIELDS_PER_ENTITY = 100;
