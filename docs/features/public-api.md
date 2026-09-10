@@ -110,6 +110,19 @@ phone as typed — v1 form submissions, v1 PATCH, the bulk importer — and the
 voice-booking path, which writes no `mode`, produce contacts the upsert will
 not find; its first call for that person creates a second contact.
 
+**The response answers "did the tag enrol?" itself.** When `tags_add` is sent
+the route awaits the `contact.tag.added` trigger before responding — runs
+written, first step handed to QStash — and returns an `enrolment` block:
+`{ status: "enrolled" | "not_enrolled", reason, runs: [{ workflow_id,
+run_id, status }], skipped: [{ workflow_id, reason }] }`. `reason` is null
+when enrolled, else one of `test_mode`, `tag_already_present`,
+`automations_paused`, `no_matching_workflow`, `filters_not_met`,
+`reentry_blocked`, `run_failed`, `error`. Null when no tags were added. There
+is no acknowledgement tag and nothing to poll — the GHL two-tag handshake
+existed only because GHL cannot enrol synchronously. A `contact.created`
+workflow still runs on a create but is not part of this answer. An
+`Idempotency-Key` replay returns the original run ids.
+
 A create fires `contact.created` and, when it adds tags, `contact.tag.added`
 through the same tag diff as a PATCH. So the request reserves one enrolment
 slot per trigger it can fire, before any write, and releases the unused ones.

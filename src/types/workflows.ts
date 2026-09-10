@@ -84,6 +84,11 @@ export interface WorkflowTrigger {
   /** Restrict `pipeline.stage.changed` to one target stage. */
   toStage?: string | null;
   /**
+   * Restrict `contact.tag.added` to one tag: the workflow starts only when
+   * THIS tag is among the tags the write added. Null/absent = any new tag.
+   */
+  tag?: string | null;
+  /**
    * Restrict `message.received` to one inbox channel
    * (sms | whatsapp | messenger | instagram). Null/absent = any channel.
    */

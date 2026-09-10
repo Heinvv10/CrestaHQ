@@ -841,6 +841,24 @@ interface FireInput {
   apiKeyId?: string;
 }
 
+/** Why a matching-type workflow did not take the contact. */
+export type EnrolSkipReason =
+  | "trigger_mismatch"
+  | "filters_not_met"
+  | "reentry_blocked"
+  | "no_start_node";
+
+/**
+ * What one trigger did. Callers that fire and forget ignore it; a caller that
+ * owes its client an answer (the v1 contact upsert) awaits it. `reason` is
+ * set when nothing was even considered.
+ */
+export interface TriggerOutcome {
+  enrolled: Array<{ workflowId: string; runId: string; status: "running" | "failed" }>;
+  skipped: Array<{ workflowId: string; reason: EnrolSkipReason }>;
+  reason: "automations_paused" | "no_active_workflow" | "contact_not_found" | "error" | null;
+}
+
 /**
  * Find every ACTIVE workflow matching the trigger + filters and enroll the
  * contact. Server-only; never throws — a workflow problem must not break the
@@ -851,12 +869,17 @@ interface FireInput {
  * the number of workflows the contact actually entered. See
  * lib/api/enrolment-cap.
  */
-export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
+export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutcome> {
   const db = getAdminDb();
+  const outcome: TriggerOutcome = { enrolled: [], skipped: [], reason: null };
+  const settle = (reason: TriggerOutcome["reason"]) => {
+    outcome.reason = reason;
+    return outcome;
+  };
   let enrolled = 0;
   try {
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
-    if (subSnap.data()?.automationsPaused === true) return;
+    if (subSnap.data()?.automationsPaused === true) return settle("automations_paused");
 
     const matches = await db
       .collection("workflows")
@@ -864,10 +887,10 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
       .where("status", "==", "active")
       .where("trigger.type", "==", input.type)
       .get();
-    if (matches.empty) return;
+    if (matches.empty) return settle("no_active_workflow");
 
     const contactSnap = await db.doc(`contacts/${input.contactId}`).get();
-    if (!contactSnap.exists) return;
+    if (!contactSnap.exists) return settle("contact_not_found");
     const contact = {
       id: contactSnap.id,
       ...(contactSnap.data() as Omit<Contact, "id">),
@@ -875,7 +898,13 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
 
     for (const doc of matches.docs) {
       const wf = { id: doc.id, ...(doc.data() as Omit<WorkflowDoc, "id">) };
-      if (!wf.startNodeId) continue;
+      const skip = (reason: EnrolSkipReason) => {
+        outcome.skipped.push({ workflowId: wf.id, reason });
+      };
+      if (!wf.startNodeId) {
+        skip("no_start_node");
+        continue;
+      }
 
       // Trigger-specific narrowing.
       if (
@@ -883,6 +912,7 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.formId &&
         wf.trigger.formId !== input.context?.formId
       ) {
+        skip("trigger_mismatch");
         continue;
       }
       if (
@@ -890,6 +920,7 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.toStage &&
         wf.trigger.toStage !== input.context?.toStage
       ) {
+        skip("trigger_mismatch");
         continue;
       }
       if (
@@ -897,6 +928,7 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.linkId &&
         wf.trigger.linkId !== input.context?.linkId
       ) {
+        skip("trigger_mismatch");
         continue;
       }
       if (
@@ -904,17 +936,38 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.channel &&
         wf.trigger.channel !== input.context?.channel
       ) {
+        skip("trigger_mismatch");
         continue;
       }
-      if (!evalConditionGroup(wf.trigger.filters, contact)) continue;
-      if (!(await reentryAllows(wf, contact.id))) continue;
+      // A `contact.tag.added` workflow may name the one tag it starts on.
+      // Without it the workflow starts on ANY new tag, and a has_tag filter
+      // alone cannot tell "this tag was just added" from "this contact
+      // already had it when some other tag arrived".
+      if (
+        wf.trigger.type === "contact.tag.added" &&
+        wf.trigger.tag &&
+        !(input.context?.addedTags as string[] | undefined)?.includes(wf.trigger.tag)
+      ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      if (!evalConditionGroup(wf.trigger.filters, contact)) {
+        skip("filters_not_met");
+        continue;
+      }
+      if (!(await reentryAllows(wf, contact.id))) {
+        skip("reentry_blocked");
+        continue;
+      }
 
-      await enroll(wf, contact.id, input.context ?? {});
+      const run = await enroll(wf, contact.id, input.context ?? {});
+      outcome.enrolled.push({ workflowId: wf.id, ...run });
       enrolled += 1;
     }
-
+    return outcome;
   } catch (err) {
     console.error("[workflows] fireWorkflowTrigger failed", err);
+    return settle("error");
   } finally {
     // Settle the reservation the route already charged for this request —
     // on EVERY exit path, including the early returns above and a throw
@@ -965,7 +1018,7 @@ async function enroll(
   wf: WorkflowDoc,
   contactId: string,
   context: Record<string, unknown>
-): Promise<void> {
+): Promise<{ runId: string; status: "running" | "failed" }> {
   const db = getAdminDb();
   const runRef = db.collection("workflowRuns").doc();
   await runRef.set({
@@ -989,18 +1042,20 @@ async function enroll(
 
   if (!qstashIsConfigured()) {
     await runRef.update({ status: "failed" });
-    return;
+    return { runId: runRef.id, status: "failed" };
   }
-  await scheduleNode(runRef, wf.startNodeId!, 0);
+  const scheduled = await scheduleNode(runRef, wf.startNodeId!, 0);
+  return { runId: runRef.id, status: scheduled ? "running" : "failed" };
 }
 
 /* ------------------------------ Run worker ----------------------------- */
 
+/** Returns false when the step could not be published (run marked failed). */
 async function scheduleNode(
   runRef: FirebaseFirestore.DocumentReference,
   nodeId: string,
   delaySeconds: number
-): Promise<void> {
+): Promise<boolean> {
   const res = await publishCallback({
     pathname: STEP_PATH,
     body: { runId: runRef.id, nodeId },
@@ -1012,7 +1067,7 @@ async function scheduleNode(
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return;
+    return false;
   }
   await runRef.update({
     currentNodeId: nodeId,
@@ -1020,6 +1075,7 @@ async function scheduleNode(
     qstashMessageId: res.messageId,
     updatedAt: FieldValue.serverTimestamp(),
   });
+  return true;
 }
 
 async function completeRun(

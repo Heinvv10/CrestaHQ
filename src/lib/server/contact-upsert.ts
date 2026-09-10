@@ -13,6 +13,7 @@ import {
   fireTagsAdded,
 } from "@/lib/server/contacts-service";
 import type { CustomFieldValue } from "@/types/custom-fields";
+import type { TriggerOutcome } from "@/lib/workflows/engine";
 
 /**
  * Upsert a contact by phone — the phone is the identity, and a second call
@@ -69,13 +70,18 @@ export interface UpsertContactInput {
   tagsRemove: string[];
 }
 
+export interface FiredTrigger {
+  type: "contact.created" | "contact.tag.added";
+  outcome: Promise<TriggerOutcome>;
+}
+
 export type UpsertOutcome =
   | {
       kind: "created" | "updated";
       id: string;
       contact: ContactApiObject;
       /** Workflow triggers this write fired, in firing order. */
-      triggers: Promise<void>[];
+      triggers: FiredTrigger[];
     }
   | { kind: "ambiguous"; contactIds: string[] }
   | { kind: "refused"; error: string };
@@ -180,12 +186,10 @@ export async function upsertContactByPhone(
   if (written.kind === "created") {
     const { contact, trigger } = announceContactCreated(input, written.id, written.doc);
     const tagTrigger = tagFire([], written.doc.tags);
-    return {
-      kind: "created",
-      id: written.id,
-      contact,
-      triggers: [trigger, tagTrigger].filter((t): t is Promise<void> => t !== null),
-    };
+    const triggers: FiredTrigger[] = [];
+    if (trigger) triggers.push({ type: "contact.created", outcome: trigger });
+    if (tagTrigger) triggers.push({ type: "contact.tag.added", outcome: tagTrigger });
+    return { kind: "created", id: written.id, contact, triggers };
   }
 
   const contact = serializeContactForApi(
@@ -205,6 +209,6 @@ export async function upsertContactByPhone(
     kind: "updated",
     id: written.id,
     contact,
-    triggers: tagTrigger ? [tagTrigger] : [],
+    triggers: tagTrigger ? [{ type: "contact.tag.added", outcome: tagTrigger }] : [],
   };
 }
