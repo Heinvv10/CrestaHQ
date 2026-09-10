@@ -120,7 +120,9 @@ when enrolled, else one of `test_mode`, `tag_already_present`,
 `reentry_blocked`, `run_failed`, `error`. Null when no tags were added. There
 is no acknowledgement tag and nothing to poll — the GHL two-tag handshake
 existed only because GHL cannot enrol synchronously. A `contact.created`
-workflow still runs on a create but is not part of this answer. An
+workflow still runs on a create but is not part of this answer. `status`
+is `enrolled` when ANY `contact.tag.added` workflow started — a caller
+waiting on one particular workflow should look for its id in `runs[]`. An
 `Idempotency-Key` replay returns the original run ids.
 
 A create fires `contact.created` and, when it adds tags, `contact.tag.added`

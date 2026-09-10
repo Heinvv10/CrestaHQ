@@ -247,6 +247,56 @@ behaviour is unverified, and the change would alter every tenant's template
 step, including the live Cresta campaigns. It needs a deliberate decision,
 not a drive-by.
 
+## What the FibreFlow client (gap 8) must do
+
+The `enrolment` block is exact about what happened, but three things in it
+are the caller's to handle (blind review of #68):
+
+1. **Match the workflow, not just the status.** `status: "enrolled"` means
+   *some* `contact.tag.added` workflow started. If the sub-account ever has a
+   second, untagged one, `enrolled` can come back while the review workflow
+   sat in `skipped[]`. Record a review ask as sent only when `runs[]` holds
+   the review workflow's id with `status: "running"`.
+2. **Always send an `Idempotency-Key`** (e.g. `{dr_number}:{phone_e164}`).
+   A replay within 24h returns the original answer, run ids included. A
+   retry WITHOUT the key after `run_failed` answers `tag_already_present`,
+   because the tag is already on the contact. That reads like success, but it
+   is a review ask that never happened. Treat `run_failed` as a
+   permanent failure for a human, not something to retry blind.
+3. **Give the call a generous timeout.** The response waits for the first
+   step to be handed to QStash, whose client has no timeout of its own and
+   retries with backoff. If FibreFlow gives up first there is no double
+   send — the tag was committed first — but the answer can be lost: a keyed
+   retry after the first call finished gets the original answer from the
+   cache, while one that arrives while it is still running gets
+   `tag_already_present`.
+
+Also `tag_already_present` is reported only when the trigger tag was
+*already* there. Sending an extra new tag alongside it produces
+`no_matching_workflow` instead, so send the trigger tag alone.
+
+## Before a pilot send is possible
+
+The receiving surface (gaps 1–5) is built. None of the remaining items is
+LeadStack API work:
+
+- **Gaps 6–7** — quick-reply Yes/No buttons on the Cloud template and a
+  workflow branch on the button payload. Out of scope here; needs its own
+  grill. Without them the funnel can send the experience check but cannot
+  route the answer.
+- **Gap 8** — FibreFlow: destination column, the LeadStack client above,
+  and deleting the four ack-poll ledger states.
+- **Long-lead, human** — Velocity's Meta Business Manager verification, a
+  WABA and dedicated number, display-name approval, the template submitted
+  and its category recorded (below).
+- **Operator setup in the Velocity sub-account** — contact custom fields
+  `install_address`, `install_date`, `dr_number`; the template mapped to
+  them; a workflow on `contact.tag.added` with **trigger tag set to
+  `velocity-review-ready`** and the review steps; an API key with the
+  agency's API access switched on.
+- **Gap 5b** (optional) — refuse a template send with an empty variable.
+- **The first send is a human gate** — own handset first, per Validation.
+
 ## Long-lead items — start these first
 
 1. **Verify Velocity Fibre's Meta Business Manager**, create the WABA, provision
