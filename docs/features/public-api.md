@@ -74,6 +74,38 @@ its reconciliation lands. Reservation failures fail open, matching
 `checkQuota` — but only on the infrastructure-error path; an over-budget
 reservation always refuses.
 
+## Upsert by phone
+
+`POST /v1/contacts/upsert` creates or updates a contact using the phone as
+its identity: two calls with the same phone, even concurrently and in
+different formats (`082 123 4567`, `+27821234567`), leave one contact. Built
+for integrations that push the same person repeatedly — FibreFlow's daily
+Velocity export is the first caller.
+
+- `phone` is required and normalised to E.164 with the workspace's default
+  country; an unparseable phone is a 400 `invalid_phone`.
+- `name`, `email`, `company`, `address`, `source`: only keys sent are written.
+  `name` is required when the call creates the contact.
+- `custom_fields` **merges** per key; `null` or `""` clears a key, and an
+  unknown key is refused rather than dropped. Required custom fields are
+  enforced only on create.
+- `tags_add` / `tags_remove` apply to the contact's CURRENT tags inside the
+  write transaction, so a tag an operator added a moment ago survives.
+  `tags` (whole-array replace) is refused on this route.
+- 201 created · 200 updated · **409 `ambiguous_phone`** when more than one
+  contact already holds the phone — nothing is written and the ids are named.
+- `Idempotency-Key` is honoured as on every v1 POST.
+
+Race safety comes from a claim doc per phone
+(`subAccounts/{id}/contactPhoneIndex/{mode}_{e164}`) read and written in the
+same transaction as the contact. Matching is on the stored E.164 phone; a
+contact whose phone was stored un-normalised (some legacy imports) will not
+match and gets a new contact.
+
+A create fires `contact.created` and, when it adds tags, `contact.tag.added`
+through the same tag diff as a PATCH. So the request reserves one enrolment
+slot per trigger it can fire, before any write, and releases the unused ones.
+
 ## Merge tags in automations
 
 `{{contact.customFields.<key>}}` resolves any operator-defined contact custom

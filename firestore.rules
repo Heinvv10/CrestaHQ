@@ -511,6 +511,12 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Phone claims for the v1 contact upsert (lib/server/contact-upsert).
+      // Holds phone numbers; Admin-SDK only, inside the upsert transaction.
+      match /contactPhoneIndex/{claimId} {
+        allow read, write: if false;
+      }
+
       // API request log — one row per /api/v1/* request (success or
       // failure). Powers the request log viewer at
       // /sa/[id]/dashboard/settings (slice 8). Reads scoped to sub-account

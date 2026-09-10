@@ -151,8 +151,8 @@ bridge" inside one sub-account is out of scope.
 
 | # | Gap | Where | Status |
 |---|---|---|---|
-| 1 | Upsert-contact-by-phone (search + create-or-update) | `src/app/api/v1/contacts/` | open |
-| 2 | Add/remove tags without whole-array replace | v1 contacts | open |
+| 1 | Upsert-contact-by-phone (search + create-or-update) | `POST /api/v1/contacts/upsert` | **closed** — see below |
+| 2 | Add/remove tags without whole-array replace | `tags_add` / `tags_remove` on the upsert | **closed** — see below |
 | 3 | v1 writes must fire `contact.tag.added` | `src/app/api/v1/contacts/[id]/route.ts` | **closed** — see below |
 | 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | new v1 route | open |
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
@@ -189,6 +189,23 @@ executor, asserting the four parameters Meta would receive. Seven mutants —
 the custom-field branch removed, any key accepted, keys not passed by either
 route, custom fields dropped from the send subject, the resolver blanked, the
 wrong entity's fields loaded — all turn it red.
+
+**Gaps 1 and 2** are `POST /api/v1/contacts/upsert`
+([public-api.md](public-api.md#upsert-by-phone)). The phone is the identity.
+A per-phone claim doc is read and written in the same transaction as the
+contact, so concurrent calls in different phone formats still leave one
+contact. More than one existing contact on a phone is refused (409), never
+guessed at (Hein, 2026-09-10). Custom fields merge per key; tags go through
+`tags_add` / `tags_remove` against the current tags. The trigger tag is
+**add-only**: a phone that already carries it does not re-enrol (Hein,
+2026-09-10), so a returning customer's second install is not asked.
+`src/app/api/v1/contacts/upsert/route.test.ts` drives the real `withApiAuth`,
+service and engine: the same phone twice is one contact and one enrolment,
+with and without an `Idempotency-Key`. Thirteen mutants all turn it red.
+
+**Cutover blocker, not a pilot blocker:** the per-key enrolment fuse is 50 per
+hour and FibreFlow's 09:00 run sends 100–212. The pilot (~5/day) fits. Pacing
+or a configurable cap is decided at cutover (Hein, 2026-09-10).
 
 **5b is not built.** The template draft says an empty variable must refuse
 the send rather than ship a blank. Today `execWhatsappTemplate` sends

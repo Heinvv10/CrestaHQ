@@ -197,21 +197,21 @@ export function createMemoryFirestore() {
     };
   }
 
+  /** `inScope` picks the docs by parent collection path — one path, or a group. */
   function query(
-    collectionPath: string,
+    inScope: (parentPath: string) => boolean,
     filters: Array<[string, WhereOp, unknown]>,
     order: [string, "asc" | "desc"] | null,
     max: number | null,
   ): MemoryQuery {
     return {
-      where: (f, op, v) => query(collectionPath, [...filters, [f, op, v]], order, max),
-      orderBy: (f, dir = "asc") => query(collectionPath, filters, [f, dir], max),
-      limit: (n) => query(collectionPath, filters, order, n),
+      where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max),
+      orderBy: (f, dir = "asc") => query(inScope, filters, [f, dir], max),
+      limit: (n) => query(inScope, filters, order, n),
       get: async () => {
         await tick();
         let paths = [...store.keys()].filter((p) => {
-          const parent = p.slice(0, p.lastIndexOf("/"));
-          if (parent !== collectionPath) return false;
+          if (!inScope(p.slice(0, p.lastIndexOf("/")))) return false;
           const data = store.get(p)!;
           return filters.every(([f, op, v]) => matches(data, f, op, v));
         });
@@ -230,7 +230,7 @@ export function createMemoryFirestore() {
   }
 
   function collectionRef(path: string) {
-    return Object.assign(query(path, [], null, null), {
+    return Object.assign(query((parent) => parent === path, [], null, null), {
       doc: (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`),
     });
   }
@@ -238,6 +238,8 @@ export function createMemoryFirestore() {
   const db = {
     doc: (path: string) => docRef(path),
     collection: (path: string) => collectionRef(path),
+    collectionGroup: (name: string) =>
+      query((parent) => parent.split("/").pop() === name, [], null, null),
     runTransaction: <T>(fn: (tx: MemoryTx) => Promise<T>): Promise<T> => {
       const run = async () => {
         const writes: Array<() => void> = [];
@@ -291,9 +293,8 @@ export function createMemoryFirestore() {
       return d === undefined ? undefined : structuredClone(d);
     },
     /** Every doc directly under a collection path, as `{ id, ...data }`. */
-    list: (collectionPath: string): Array<Data & { id: string }> =>
-      [...store.entries()]
-        .filter(([p]) => p.slice(0, p.lastIndexOf("/")) === collectionPath)
+    list: (path: string): Array<Data & { id: string }> =>
+      [...store.entries()].filter(([p]) => p.slice(0, p.lastIndexOf("/")) === path)
         .map(([p, d]) => ({ id: p.split("/").pop()!, ...structuredClone(d) })),
   };
 }

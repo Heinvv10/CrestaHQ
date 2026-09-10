@@ -95,11 +95,21 @@ export interface ContactWriteResult {
 export async function createContactServerSide(
   input: CreateContactInput
 ): Promise<ContactWriteResult> {
-  const db = getAdminDb();
-  const ref = db.collection("contacts").doc();
-  const loc = input.location ?? null;
+  const ref = getAdminDb().collection("contacts").doc();
+  const doc = buildContactDoc(input);
+  await ref.set(doc);
+  const { contact, trigger } = announceContactCreated(input, ref.id, doc);
+  return { id: ref.id, contact, firedTrigger: trigger !== null };
+}
 
-  const doc = {
+/**
+ * The document a new contact is written as. Shared with the phone upsert
+ * (lib/server/contact-upsert), which writes it inside a transaction, so a
+ * contact created either way has the same shape.
+ */
+export function buildContactDoc(input: CreateContactInput) {
+  const loc = input.location ?? null;
+  return {
     name: input.name,
     email: input.email,
     phone: normalizePhoneLenient(input.phone, input.phoneCountry),
@@ -125,14 +135,27 @@ export async function createContactServerSide(
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
-  await ref.set(doc);
+}
 
+type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId">;
+
+/**
+ * Everything a newly written contact announces: the `contact.created`
+ * webhook and, in live mode, the workflow trigger. Returns the trigger's
+ * promise (null when none fired) so a caller that must know the outcome can
+ * await it; every other caller discards it.
+ */
+export function announceContactCreated(
+  input: Announcer,
+  id: string,
+  doc: ReturnType<typeof buildContactDoc>,
+): { contact: ContactApiObject; trigger: Promise<void> | null } {
   // Serialize from the in-memory doc with a JS `now` for the timestamps
   // (the serverTimestamp sentinels aren't readable without a re-read, and a
   // sub-millisecond drift on created_at is immaterial to subscribers).
   const now = new Date();
   const contact = serializeContactForApi(
-    ref.id,
+    id,
     { ...doc, createdAt: now, updatedAt: now },
     input.mode
   );
@@ -144,18 +167,17 @@ export async function createContactServerSide(
     type: "contact.created",
     payload: { contact },
   });
-  const firedTrigger = input.mode === "live";
-  if (firedTrigger) {
-    void fireWorkflowTrigger({
-      subAccountId: input.subAccountId,
-      agencyId: input.agencyId,
-      type: "contact.created",
-      contactId: ref.id,
-      apiKeyId: input.apiKeyId,
-    });
-  }
-
-  return { id: ref.id, contact, firedTrigger };
+  const trigger =
+    input.mode === "live"
+      ? fireWorkflowTrigger({
+          subAccountId: input.subAccountId,
+          agencyId: input.agencyId,
+          type: "contact.created",
+          contactId: id,
+          apiKeyId: input.apiKeyId,
+        })
+      : null;
+  return { contact, trigger };
 }
 
 /** Fields that can be patched. All optional; only provided keys are written. */
@@ -255,26 +277,50 @@ export async function updateContactServerSide(opts: {
     type: "contact.updated",
     payload: { contact },
   });
-  // contact.tag.added fires once per update when the patch introduces a new
-  // tag (replace-semantics patch → diff against the pre-update tags).
-  let firedTrigger = false;
-  if (mode === "live" && patch.tags) {
-    const oldTags: string[] = Array.isArray(existing.tags) ? existing.tags : [];
-    const added = patch.tags.filter((t) => !oldTags.includes(t));
-    if (added.length > 0) {
-      firedTrigger = true;
-      void fireWorkflowTrigger({
+  // Replace-semantics patch → diff against the pre-update tags.
+  const trigger = patch.tags
+    ? fireTagsAdded({
         subAccountId: existing.subAccountId,
         agencyId: existing.agencyId,
-        type: "contact.tag.added",
         contactId: opts.contactId,
-        context: { addedTags: added },
+        mode,
+        before: existing.tags,
+        after: patch.tags,
         apiKeyId: opts.apiKeyId,
-      });
-    }
-  }
+      })
+    : null;
 
-  return { id: ref.id, contact, firedTrigger };
+  return { id: ref.id, contact, firedTrigger: trigger !== null };
+}
+
+/**
+ * THE tag diff — the only place that decides whether a write added a tag.
+ * Fires `contact.tag.added` once, with only the tags `after` introduces over
+ * `before`, and only in live mode. Returns the trigger's promise, or null
+ * when nothing fired. Used by the update path above and the phone upsert.
+ */
+export function fireTagsAdded(opts: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  mode: Mode;
+  /** Tags before the write — anything non-array reads as none. */
+  before: unknown;
+  after: string[];
+  apiKeyId?: string;
+}): Promise<void> | null {
+  if (opts.mode !== "live") return null;
+  const oldTags: string[] = Array.isArray(opts.before) ? opts.before : [];
+  const added = opts.after.filter((t) => !oldTags.includes(t));
+  if (added.length === 0) return null;
+  return fireWorkflowTrigger({
+    subAccountId: opts.subAccountId,
+    agencyId: opts.agencyId,
+    type: "contact.tag.added",
+    contactId: opts.contactId,
+    context: { addedTags: added },
+    apiKeyId: opts.apiKeyId,
+  });
 }
 
 /**
