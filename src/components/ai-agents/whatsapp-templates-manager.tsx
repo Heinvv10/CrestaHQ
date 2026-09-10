@@ -19,11 +19,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { parseBodyPositions } from "@/lib/comms/whatsapp/template-validation";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import type { CustomFieldDef } from "@/types/custom-fields";
 import {
   WHATSAPP_STARTER_TEMPLATES,
   type WhatsappStarterTemplate,
 } from "@/lib/comms/whatsapp/starter-templates";
 import {
+  WHATSAPP_CUSTOM_FIELD_TAG_PREFIX,
   WHATSAPP_VARIABLE_MERGE_TAGS,
   type WhatsappTemplateCategory,
   type WhatsappTemplateDoc,
@@ -99,6 +102,16 @@ export function WhatsappTemplatesManager() {
     );
     return () => unsub();
   }, [subAccountId, isAdmin, agencyEnabled]);
+
+  // Contact custom fields are mappable too (contact.customFields.<key>) —
+  // an install address or job reference lives there, not on the contact.
+  const [contactFields, setContactFields] = useState<CustomFieldDef[]>([]);
+  useEffect(() => {
+    if (!builderOpen) return;
+    return subscribeToCustomFields(subAccountId, "contact", setContactFields, () =>
+      toast.error("Couldn't load contact custom fields for the variable picker."),
+    );
+  }, [subAccountId, builderOpen]);
 
   const positions = useMemo(() => parseBodyPositions(body), [body]);
 
@@ -407,6 +420,18 @@ export function WhatsappTemplatesManager() {
                           {t.description}
                         </option>
                       ))}
+                      {contactFields.length > 0 ? (
+                        <optgroup label="Contact custom fields">
+                          {contactFields.map((f) => (
+                            <option
+                              key={f.id}
+                              value={`${WHATSAPP_CUSTOM_FIELD_TAG_PREFIX}${f.key}`}
+                            >
+                              {f.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
                     </select>
                     <Input
                       value={vf.sampleValue}
