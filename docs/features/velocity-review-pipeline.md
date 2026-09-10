@@ -149,16 +149,28 @@ bridge" inside one sub-account is out of scope.
 
 ## Gaps to build
 
-| # | Gap | Where |
-|---|---|---|
-| 1 | Upsert-contact-by-phone (search + create-or-update) | `src/app/api/v1/contacts/` |
-| 2 | Add/remove tags without whole-array replace | v1 contacts |
-| 3 | v1 writes must fire `contact.tag.added` — today only `contacts-service.ts` does, and the v1 route bypasses it | `src/app/api/v1/contacts/[id]/route.ts:95` |
-| 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | new v1 route |
-| 5 | Install context as contact custom fields, resolvable as template variables — merge tags resolve contact scalars only, not custom fields | `src/lib/automations/merge-tags.ts:65` |
-| 6 | Quick-reply buttons on Cloud templates | `src/lib/comms/whatsapp/cloud-templates.ts` |
-| 7 | Workflow branch on button payload | `src/lib/workflows/engine.ts`, `src/types/workflows.ts` |
-| 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` |
+| # | Gap | Where | Status |
+|---|---|---|---|
+| 1 | Upsert-contact-by-phone (search + create-or-update) | `src/app/api/v1/contacts/` | open |
+| 2 | Add/remove tags without whole-array replace | v1 contacts | open |
+| 3 | v1 writes must fire `contact.tag.added` | `src/app/api/v1/contacts/[id]/route.ts` | **closed** — see below |
+| 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | new v1 route | open |
+| 5 | Install context as contact custom fields, resolvable as template variables — merge tags resolve contact scalars only, not custom fields | `src/lib/automations/merge-tags.ts` | open |
+| 6 | Quick-reply buttons on Cloud templates | `src/lib/comms/whatsapp/cloud-templates.ts` | out of scope — needs its own grill |
+| 7 | Workflow branch on button payload | `src/lib/workflows/engine.ts`, `src/types/workflows.ts` | out of scope — needs its own grill |
+| 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
+
+**Gap 3 was already fixed when this plan was written.** PR #53 (merged
+2026-09-07) routed both v1 contact writes through `contacts-service.ts`, so an
+API tag add fires `contact.tag.added` exactly as the dashboard does. What was
+missing was proof: `route.test.ts` mocks `fireWorkflowTrigger`, so it showed
+the trigger was *called*, not that anyone was *enrolled*.
+`src/app/api/v1/contacts/[id]/route.enrols.test.ts` now drives the PATCH
+through the real service and the real engine over an in-memory Firestore that
+honours query filters (`src/test/memory-firestore.ts`), and asserts a
+`workflowRuns` doc for the `contact.tag.added` workflow. Seven mutants —
+removing the fire, the wrong trigger type, test mode forced on, no `enroll`,
+no filter evaluation, no live-mode gate, no tag diff — all turn it red.
 
 ## Long-lead items — start these first
 
