@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { sanitiseVariables } from "@/lib/comms/whatsapp/template-validation";
+import { loadContactCustomFieldKeys } from "@/lib/custom-fields/load-defs";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateCategory } from "@/types/whatsapp-templates";
 
@@ -96,7 +97,11 @@ export async function POST(
       { status: 400 },
     );
   }
-  const sanitised = sanitiseVariables(body.variables ?? [], templateBody);
+  const sanitised = sanitiseVariables(
+    body.variables ?? [],
+    templateBody,
+    await loadContactCustomFieldKeys(subAccountId),
+  );
   if ("error" in sanitised) {
     return NextResponse.json({ error: sanitised.error }, { status: 400 });
   }

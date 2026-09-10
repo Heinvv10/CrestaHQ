@@ -23,6 +23,8 @@ export function parseBodyPositions(body: string): number[] {
 export function sanitiseVariables(
   raw: unknown,
   body: string,
+  /** The sub-account's contact custom-field keys — see isWhatsappMergeTag. */
+  contactCustomFieldKeys: ReadonlySet<string> = new Set(),
 ): { variables: WhatsappTemplateVariable[] } | { error: string } {
   if (!Array.isArray(raw)) return { error: "variables must be an array" };
   const positions = parseBodyPositions(body);
@@ -53,7 +55,7 @@ export function sanitiseVariables(
     let mergeTag: string | null = null;
     if (source === "merge_tag") {
       mergeTag = typeof r.mergeTag === "string" ? r.mergeTag.trim() : "";
-      if (!mergeTag || !isWhatsappMergeTag(mergeTag)) {
+      if (!mergeTag || !isWhatsappMergeTag(mergeTag, contactCustomFieldKeys)) {
         return { error: `Variable {{${position}}} maps to an unknown merge tag.` };
       }
     }

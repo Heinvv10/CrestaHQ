@@ -155,7 +155,8 @@ bridge" inside one sub-account is out of scope.
 | 2 | Add/remove tags without whole-array replace | v1 contacts | open |
 | 3 | v1 writes must fire `contact.tag.added` | `src/app/api/v1/contacts/[id]/route.ts` | **closed** — see below |
 | 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | new v1 route | open |
-| 5 | Install context as contact custom fields, resolvable as template variables — merge tags resolve contact scalars only, not custom fields | `src/lib/automations/merge-tags.ts` | open |
+| 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
+| 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
 | 6 | Quick-reply buttons on Cloud templates | `src/lib/comms/whatsapp/cloud-templates.ts` | out of scope — needs its own grill |
 | 7 | Workflow branch on button payload | `src/lib/workflows/engine.ts`, `src/types/workflows.ts` | out of scope — needs its own grill |
 | 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
@@ -171,6 +172,30 @@ honours query filters (`src/test/memory-firestore.ts`), and asserts a
 `workflowRuns` doc for the `contact.tag.added` workflow. Seven mutants —
 removing the fire, the wrong trigger type, test mode forced on, no `enroll`,
 no filter evaluation, no live-mode gate, no tag diff — all turn it red.
+
+**Gap 5 was half done.** The resolver has rendered
+`{{contact.customFields.<key>}}` since PR #53, and both WhatsApp executors
+pass the contact's custom fields in. But a template *variable* could never map
+to one: `isWhatsappMergeTag` allowed seven fixed contact scalars, so the
+Velocity install template was refused at save, and the builder's picker had
+no custom-field options anyway. Both now accept `contact.customFields.<key>`
+for a key the sub-account actually defines — a typo is refused at save rather
+than rendering blank into every send. The builder lists the sub-account's
+contact custom fields under their own heading.
+`src/lib/workflows/custom-field-template-variables.test.ts` saves the draft
+template (first name, install address, install date, DR reference) through
+the real create route and sends it through the real `whatsapp_template`
+executor, asserting the four parameters Meta would receive. Seven mutants —
+the custom-field branch removed, any key accepted, keys not passed by either
+route, custom fields dropped from the send subject, the resolver blanked, the
+wrong entity's fields loaded — all turn it red.
+
+**5b is not built.** The template draft says an empty variable must refuse
+the send rather than ship a blank. Today `execWhatsappTemplate` sends
+whatever renders. Meta Cloud rejects an empty parameter anyway, but Twilio's
+behaviour is unverified, and the change would alter every tenant's template
+step, including the live Cresta campaigns. It needs a deliberate decision,
+not a drive-by.
 
 ## Long-lead items — start these first
 
