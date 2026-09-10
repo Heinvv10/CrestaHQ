@@ -360,6 +360,26 @@ export function WorkflowBuilder({
             </select>
           )}
 
+          {trigger.type === "contact.tag.added" && (
+            <>
+              <Input
+                value={trigger.tag ?? ""}
+                onChange={(e) =>
+                  setTrigger({ ...trigger, tag: e.target.value || null })
+                }
+                onBlur={(e) =>
+                  setTrigger({ ...trigger, tag: e.target.value.trim() || null })
+                }
+                placeholder="Any tag"
+                className="mt-2 h-9"
+              />
+              <p className="text-muted-foreground mt-1.5 text-xs">
+                Start only when this exact tag is added. Leave blank to start
+                on any new tag.
+              </p>
+            </>
+          )}
+
           {trigger.type === "pipeline.stage.changed" && (
             <select
               value={trigger.toStage ?? ""}

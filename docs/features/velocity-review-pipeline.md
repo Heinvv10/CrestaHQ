@@ -154,7 +154,7 @@ bridge" inside one sub-account is out of scope.
 | 1 | Upsert-contact-by-phone (search + create-or-update) | `POST /api/v1/contacts/upsert` | **closed** — see below |
 | 2 | Add/remove tags without whole-array replace | `tags_add` / `tags_remove` on the upsert | **closed** — see below |
 | 3 | v1 writes must fire `contact.tag.added` | `src/app/api/v1/contacts/[id]/route.ts` | **closed** — see below |
-| 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | new v1 route | open |
+| 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | `POST /api/v1/contacts/upsert` → `enrolment` | **closed** — see below |
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
 | 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
 | 6 | Quick-reply buttons on Cloud templates | `src/lib/comms/whatsapp/cloud-templates.ts` | out of scope — needs its own grill |
@@ -212,9 +212,33 @@ so the first upsert for them creates a second contact. FibreFlow's own
 service and engine: the same phone twice is one contact and one enrolment,
 with and without an `Idempotency-Key`. Thirteen mutants all turn it red.
 
+**Gap 4** is the same endpoint: when `tags_add` is sent, the response carries
+`enrolment` — the run id the tag started, or the one reason it did not
+(`tag_already_present`, `no_matching_workflow`, `filters_not_met`,
+`reentry_blocked`, `run_failed`, `automations_paused`, `test_mode`, `error`),
+decided before the response is written. `fireWorkflowTrigger` now returns
+that outcome instead of nothing. No ack tag, no polling. Per Hein's decision
+of 2026-09-10, `contact.tag.added` gained a per-tag filter (`trigger.tag`,
+engine + builder): the Velocity workflow must name
+`velocity-review-ready`, or any later tag on a reviewed contact would start
+the review again. `apiAccessEnabledByAgency` (403) and test mode are honoured.
+`src/app/api/v1/contacts/upsert/route.enrolment.test.ts` asserts from the
+response alone, never awaiting the engine; nine mutants all turn it red.
+
 **Cutover blocker, not a pilot blocker:** the per-key enrolment fuse is 50 per
 hour and FibreFlow's 09:00 run sends 100–212. The pilot (~5/day) fits. Pacing
 or a configurable cap is decided at cutover (Hein, 2026-09-10).
+
+**Also before cutover — unverified on real Firestore:** the upsert's race fix
+reads a per-phone lock doc and writes a *delete* to it, which is never
+persisted. Whether two Admin-SDK transactions deleting a doc that never
+existed actually contend (blind review put it at ~70–80%) has not been
+probed; the in-memory fake assumes they do. If they don't, two concurrent
+creates for one phone make two contacts and two review asks — after which
+every call returns 409, so it fails loud. The pilot's sequential ~5/day
+cannot hit it. Settle it with a two-transaction probe on a non-production
+Firestore project; the fallback is `tx.set` on a doc keyed by a hash of
+sub-account, mode and phone.
 
 **5b is not built.** The template draft says an empty variable must refuse
 the send rather than ship a blank. Today `execWhatsappTemplate` sends

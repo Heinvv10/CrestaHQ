@@ -13,6 +13,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { upsertContactByPhone } from "@/lib/server/contact-upsert";
+import { describeEnrolment } from "@/lib/api/serializers/enrolment";
 import type { CustomFieldValue } from "@/types/custom-fields";
 
 /**
@@ -30,6 +31,11 @@ import type { CustomFieldValue } from "@/types/custom-fields";
  *
  * 201 when the contact was created, 200 when updated, 409 `ambiguous_phone`
  * when more than one contact already holds the phone (nothing is written).
+ *
+ * When `tags_add` is sent, the response carries `enrolment` — the run ids the
+ * tag started, or the one reason it started none — decided before the
+ * response is written. There is nothing to poll and no acknowledgement tag.
+ * Null when no tags were added.
  * `Idempotency-Key` is honoured by withApiAuth like every v1 POST.
  *
  * Enrolment fuse: a create fires `contact.created` AND, if it adds tags,
@@ -155,9 +161,19 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
   if (outcome.kind === "refused") {
     return apiError(ctx, "invalid_request", "invalid_body", outcome.error);
   }
+  // Awaited, not polled: the enrolment is finished (runs written, first
+  // step handed to QStash) before the response goes out.
+  const tagTrigger = outcome.triggers.find((t) => t.type === "contact.tag.added");
+  const enrolment =
+    tagsAdd.length > 0
+      ? describeEnrolment({
+          mode: ctx.mode,
+          tagTrigger: tagTrigger ? await tagTrigger.outcome : null,
+        })
+      : null;
   return apiOk(
     ctx,
-    { contact: outcome.contact, created: outcome.kind === "created" },
+    { contact: outcome.contact, created: outcome.kind === "created", enrolment },
     { status: outcome.kind === "created" ? 201 : 200 },
   );
 });

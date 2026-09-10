@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
-import { fireWorkflowTrigger } from "@/lib/workflows/engine";
+import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
 import {
   serializeContactForApi,
   type ContactApiObject,
@@ -149,7 +149,7 @@ export function announceContactCreated(
   input: Announcer,
   id: string,
   doc: ReturnType<typeof buildContactDoc>,
-): { contact: ContactApiObject; trigger: Promise<void> | null } {
+): { contact: ContactApiObject; trigger: Promise<TriggerOutcome> | null } {
   // Serialize from the in-memory doc with a JS `now` for the timestamps
   // (the serverTimestamp sentinels aren't readable without a re-read, and a
   // sub-millisecond drift on created_at is immaterial to subscribers).
@@ -308,7 +308,7 @@ export function fireTagsAdded(opts: {
   before: unknown;
   after: string[];
   apiKeyId?: string;
-}): Promise<void> | null {
+}): Promise<TriggerOutcome> | null {
   if (opts.mode !== "live") return null;
   const oldTags: string[] = Array.isArray(opts.before) ? opts.before : [];
   const added = opts.after.filter((t) => !oldTags.includes(t));
