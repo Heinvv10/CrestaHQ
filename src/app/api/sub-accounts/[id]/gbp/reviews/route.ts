@@ -66,7 +66,7 @@ export async function GET(
   const active = locationName
     ? reviewSnap.docs
         .slice(0, REVIEW_CAP)
-        .map((d) => ({ ...(d.data() as Record<string, unknown>), docId: d.id }))
+        .map((d): Record<string, unknown> => ({ ...d.data(), docId: d.id }))
         .filter((d) => d.state === "active" && d.locationName === locationName && withinRetention(d.lastSeenAt, now))
     : [];
   const reviews = applyReviewFilters(active, parsed.filters).map(publicReview);
