@@ -15,7 +15,8 @@ export type InboundChannel =
   | "whatsapp"
   | "email"
   | "messenger"
-  | "instagram";
+  | "instagram"
+  | "webchat";
 
 const RECEIVED_TYPE: Record<InboundChannel, ActivityType> = {
   sms: "sms_received",
@@ -23,6 +24,7 @@ const RECEIVED_TYPE: Record<InboundChannel, ActivityType> = {
   email: "email_received",
   messenger: "messenger_received",
   instagram: "instagram_received",
+  webchat: "webchat_received",
 };
 
 const CHANNEL_LABEL: Record<InboundChannel, string> = {
@@ -31,6 +33,7 @@ const CHANNEL_LABEL: Record<InboundChannel, string> = {
   email: "Email",
   messenger: "Messenger",
   instagram: "Instagram",
+  webchat: "Web chat",
 };
 
 /** First 140 characters, single-line, with an ellipsis when cut. */
@@ -66,8 +69,11 @@ export async function writeInboundMessageActivity(
       .collection("contacts")
       .doc(input.contactId)
       .collection("activities");
+    // Email Message-IDs may contain "/", which a Firestore doc id cannot.
     const ref = input.messageId
-      ? activities.doc(`inbound_${input.channel}_${input.messageId}`)
+      ? activities.doc(
+          `inbound_${input.channel}_${input.messageId.replace(/\//g, "_")}`
+        )
       : activities.doc();
     await ref.set(
       {
@@ -97,6 +103,8 @@ export async function writeTaskCreatedActivity(
     createdByUid: string;
     agencyId: string;
     subAccountId: string;
+    /** Present when a workflow step minted the task. */
+    workflow?: { workflowId: string; runId: string } | null;
   }
 ): Promise<void> {
   try {
@@ -113,6 +121,7 @@ export async function writeTaskCreatedActivity(
         meta: {
           taskId: input.taskId,
           dueAt: input.dueAt ? input.dueAt.toISOString() : null,
+          ...(input.workflow ?? {}),
         },
         createdAt: FieldValue.serverTimestamp(),
       });

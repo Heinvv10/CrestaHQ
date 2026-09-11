@@ -89,3 +89,13 @@ it("never throws — a broken db logs and the webhook still acks", async () => {
   expect(warn).toHaveBeenCalled();
   warn.mockRestore();
 });
+
+it("keeps a slash-bearing email Message-ID a valid single doc id", async () => {
+  const db = fakeDb();
+  await writeInboundMessageActivity(db, {
+    ...base,
+    channel: "email",
+    messageId: "<a/b@example.com>",
+  });
+  expect([...docs.keys()]).toEqual(["inbound_email_<a_b@example.com>"]);
+});
