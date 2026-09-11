@@ -8,8 +8,12 @@ import { vi } from "vitest";
  * route calls something. Firestore and Firebase Auth are faked underneath it
  * instead, so the real membership lookup runs against real fake documents.
  *
- * Writes are RECORDED (never applied) so a test can assert both what landed
- * and — for the refused paths — that nothing landed at all.
+ * Writes are RECORDED so a test can assert both what landed and — for the
+ * refused paths — that nothing landed at all. They are also APPLIED to
+ * `state.docs`, with Firestore's real semantics where they bite: `set(…,
+ * {merge:true})` deep-merges nested maps (so a stale `reconnectRequired`
+ * survives a merge that doesn't overwrite it), `update` replaces top-level
+ * fields and fails on a missing doc.
  */
 
 export const SUB = "sa_1";
@@ -18,7 +22,7 @@ export const SECRET_PATH = `subAccounts/${SUB}/private/googleConnection`;
 export const SUB_PATH = `subAccounts/${SUB}`;
 
 export interface Write {
-  op: "set" | "delete";
+  op: "set" | "delete" | "update" | "add";
   path: string;
   data?: Record<string, unknown>;
 }
@@ -29,24 +33,89 @@ export const state = {
   writes: [] as Write[],
 };
 
+function isPlain(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+}
+
+function deepMerge(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    out[k] = isPlain(v) && isPlain(base[k]) ? deepMerge(base[k], v) : v;
+  }
+  return out;
+}
+
 function docRef(path: string) {
   return {
     __path: path,
+    path,
     get: async () => ({
       exists: state.docs.has(path),
       data: () => state.docs.get(path),
     }),
-    set: async (data: Record<string, unknown>) => {
+    set: async (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
       state.writes.push({ op: "set", path, data });
+      const cur = state.docs.get(path);
+      state.docs.set(path, opts?.merge && cur ? deepMerge(cur, data) : { ...data });
+    },
+    update: async (data: Record<string, unknown>) => {
+      const cur = state.docs.get(path);
+      if (!cur) throw new Error(`NOT_FOUND: no document to update at ${path}`);
+      if (Object.keys(data).some((k) => k.includes("."))) {
+        throw new Error("harness: dotted update paths are not modelled");
+      }
+      state.writes.push({ op: "update", path, data });
+      state.docs.set(path, { ...cur, ...data });
     },
     delete: async () => {
       state.writes.push({ op: "delete", path });
+      state.docs.delete(path);
     },
   };
 }
 
+let autoId = 0;
+
+function collectionRef(path: string) {
+  return {
+    add: async (data: Record<string, unknown>) => {
+      const id = `auto_${++autoId}`;
+      const docPath = `${path}/${id}`;
+      state.writes.push({ op: "add", path: docPath, data });
+      state.docs.set(docPath, { ...data });
+      return { id, path: docPath };
+    },
+  };
+}
+
+type Ref = ReturnType<typeof docRef>;
+
+/**
+ * Reads go straight through; writes are buffered and applied when the
+ * callback resolves — so a transaction that throws writes nothing.
+ */
+async function runTransaction<T>(
+  fn: (tx: {
+    get: (ref: Ref) => ReturnType<Ref["get"]>;
+    set: (ref: Ref, data: Record<string, unknown>, opts?: { merge?: boolean }) => void;
+    update: (ref: Ref, data: Record<string, unknown>) => void;
+  }) => Promise<T>,
+): Promise<T> {
+  const pending: Array<() => Promise<void>> = [];
+  const result = await fn({
+    get: (ref) => ref.get(),
+    set: (ref, data, opts) => void pending.push(() => ref.set(data, opts)),
+    update: (ref, data) => void pending.push(() => ref.update(data)),
+  });
+  for (const apply of pending) await apply();
+  return result;
+}
+
 export const adminMock = () => ({
-  getAdminDb: () => ({ doc: docRef }),
+  getAdminDb: () => ({ doc: docRef, collection: collectionRef, runTransaction }),
   getAdminAuth: () => ({
     getUser: async (uid: string) => ({
       customClaims: state.claims.get(uid) ?? {},
