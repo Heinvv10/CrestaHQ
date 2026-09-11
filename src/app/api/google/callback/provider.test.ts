@@ -88,6 +88,24 @@ describe("fake mode", () => {
     expect(googleAppConfigured()).toBe(false);
   });
 
+  it("is NOT configured when the fake is requested but refused — even with Google creds", () => {
+    fakeMode();
+    process.env.GOOGLE_CLIENT_ID = "id";
+    process.env.GOOGLE_CLIENT_SECRET = "secret";
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    expect(googleAppConfigured()).toBe(false);
+  });
+
+  it("connect reports not_configured, rather than a 500, when the fake is refused", async () => {
+    fakeMode();
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    const res = await CONNECT(
+      request(`http://127.0.0.1:3100/api/sub-accounts/${SUB}/google/connect`),
+      { params: Promise.resolve({ id: SUB }) },
+    );
+    expect(res.headers.get("location")).toContain("google=not_configured");
+  });
+
   it("connect skips Google and lands on the callback with a fake code", async () => {
     fakeMode();
     const res = await CONNECT(

@@ -1,6 +1,7 @@
 import "server-only";
 
 import crypto from "node:crypto";
+import { fakeProviderAllowed } from "@/lib/gbp/provider/mode";
 
 /**
  * Pure helpers for the Business Profile OAuth connection: the scope, the
@@ -41,12 +42,13 @@ export function googleRedirectUri(): string | null {
 }
 
 /**
- * True when the deployment has Google OAuth client credentials — or runs the
- * fake provider, which needs none. Whether the fake is actually ALLOWED here
- * is decided (loudly) by `getGbpProviderFor` in lib/gbp/provider/select.ts.
+ * True when Google is usable on this deployment: OAuth client credentials in
+ * real-Google mode, or an ALLOWED fake provider (which needs none). A fake
+ * that is requested but refused is "not configured" — never a silent fall
+ * back to Google, and never a 500 the admin cannot act on.
  */
 export function googleAppConfigured(): boolean {
-  if (process.env.GBP_PROVIDER === "fake") return true;
+  if (process.env.GBP_PROVIDER === "fake") return fakeProviderAllowed();
   return !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 }
 

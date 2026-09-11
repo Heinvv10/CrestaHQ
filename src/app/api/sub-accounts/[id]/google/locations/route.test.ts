@@ -73,6 +73,12 @@ describe("states", () => {
     expect([status, body.code]).toEqual([503, "not_configured"]);
   });
 
+  it("reports not_configured, not a 500, when the fake is requested but refused", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    const { status, body } = await list();
+    expect([status, body.code]).toEqual([503, "not_configured"]);
+  });
+
   it("reports not_connected without a connection", async () => {
     state.docs.set(SUB_PATH, { agencyId: "ag_1", googleEnabledByAgency: true });
     const { status, body } = await list();
