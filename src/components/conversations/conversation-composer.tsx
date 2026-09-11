@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { cn } from "@/lib/utils";
 import { DEFAULT_REVIEW_SMS_TEMPLATE } from "@/lib/reviews/constants";
+import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 
@@ -62,10 +63,12 @@ export function ConversationComposer({
   // approved template because the customer's recent inbound keeps the 24h window
   // open (the send route 409s if it has closed).
   const reviewCfg = subAccount?.googleReviewConfig ?? null;
-  const reviewConfigured = !!reviewCfg?.reviewUrl;
+  // The configured link only, through the canonical seam — never a listing's proposal.
+  const reviewUrl = resolveReviewUrl(subAccount).configured;
+  const reviewConfigured = !!reviewUrl;
 
   function insertReviewMessage() {
-    if (!reviewCfg?.reviewUrl) return;
+    if (!reviewCfg || !reviewUrl) return;
     const firstName = (contact.name ?? "").trim().split(/\s+/)[0] ?? "";
     const msg = (reviewCfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE)
       .replace(/\{\{\s*firstName\s*\}\}/g, firstName)

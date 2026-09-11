@@ -20,7 +20,8 @@ export function ReviewUrlCard() {
   const [error, setError] = useState<string | null>(null);
   const { configured, proposed, state } = resolveReviewUrl(subAccount);
 
-  if (!isAdmin || state === "none") return null;
+  // Admins only, and not while the agency gate is off (the adopt route refuses then).
+  if (!isAdmin || subAccount?.googleEnabledByAgency !== true || state === "none") return null;
   if (state === "matches") {
     return (
       <p className="mt-3 text-xs text-muted-foreground" data-testid="gbp-reviewurl-matches">

@@ -51,7 +51,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
     const now = new Date();
     if (sub.googleReviewConfig) {
-      tx.update(subRef, { "googleReviewConfig.reviewUrl": proposed, "googleReviewConfig.updatedAt": now });
+      tx.update(subRef, { "googleReviewConfig.reviewUrl": proposed, "googleReviewConfig.updatedAt": now, updatedAt: now });
     } else {
       const cfg: GoogleReviewConfig = {
         enabled: false,
@@ -64,7 +64,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
         triggerOnDealCompleted: false,
         updatedAt: now,
       };
-      tx.set(subRef, { googleReviewConfig: cfg }, { merge: true });
+      tx.set(subRef, { googleReviewConfig: cfg, updatedAt: now }, { merge: true });
     }
     tx.set(db.collection(`subAccounts/${id}/gbpEvents`).doc(), {
       type: "review_url_adopted", agencyId: sub.agencyId, subAccountId: id, createdByUid: access.uid,

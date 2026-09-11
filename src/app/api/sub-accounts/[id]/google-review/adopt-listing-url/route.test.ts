@@ -85,6 +85,17 @@ describe("adopting the listing's link", () => {
   });
 });
 
+describe("the sub-account's updatedAt", () => {
+  it("is bumped when a config is created and when an existing one is changed", async () => {
+    await adopt({ expectedCurrentUrl: null });
+    expect(mem.read(SUB)?.updatedAt).toBeInstanceOf(Date);
+    patchSub({ updatedAt: null });
+    withProposal("https://review.fixture.example/another-listing");
+    expect((await adopt({ expectedCurrentUrl: LISTING_URL })).status).toBe(200);
+    expect(mem.read(SUB)?.updatedAt).toBeInstanceOf(Date);
+  });
+});
+
 describe("compare-and-set — never a silent overwrite", () => {
   it("409 changed when the configured URL is not the one the admin saw — nothing written", async () => {
     withConfig({ reviewUrl: "https://g.page/r/changed-meanwhile/review" });

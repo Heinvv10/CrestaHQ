@@ -23,8 +23,9 @@ let root: Root;
 let adoptResult: { status: number; body: unknown };
 const fetchMock = vi.fn();
 
-function seed(reviewUrl: string | null, newReviewUri: string | null) {
+function seed(reviewUrl: string | null, newReviewUri: string | null, gateOn = true) {
   ctx.subAccount = {
+    googleEnabledByAgency: gateOn,
     googleListing: { locationName: "locations/l1", newReviewUri },
     ...(reviewUrl ? { googleReviewConfig: { reviewUrl } } : {}),
   };
@@ -126,5 +127,13 @@ describe("adopting", () => {
     expect(error).toContain("changed");
     expect(error).toContain("https://g.page/r/someone-else/review");
     expect(byId("gbp-reviewurl-done")).toBeNull();
+  });
+});
+
+describe("agency gate", () => {
+  it("is hidden while the agency gate is off — the adopt route would refuse anyway", async () => {
+    seed(EXISTING, LISTING, false);
+    await render();
+    expect(container.innerHTML).toBe("");
   });
 });
