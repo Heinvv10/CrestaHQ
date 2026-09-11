@@ -18,6 +18,7 @@ import { SA, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
 import { storeDb } from "@/test/gbp-sync-store";
 import { KEY, attemptPath, attempts, callReply, calls, docIdOf, reviewPath, sha256 } from "@/test/gbp-reply-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { releaseLock } from "@/lib/gbp/reply-attempts";
 import { DELETE, POST } from "./route";
 
 const ORIGINAL = { ...process.env };
@@ -117,6 +118,12 @@ describe("the per-review in-flight lock", () => {
     expect((await post("A reply on r7.", K2, R7)).status).toBe(200);
   });
 
+  it("releasing a lock never clears another key's lock on the same review", async () => {
+    lockReview("fake-r6", K2, 30_000);
+    await releaseLock(SA, R6, KEY);
+    expect((mem.read(reviewPath("fake-r6")) as { replyInFlight?: { key?: string } }).replyInFlight?.key).toBe(lockOf(K2));
+  });
+
   it("a pending DELETE on a review blocks a POST on it — 409 in_progress, zero calls", async () => {
     lockReview("fake-r7", "some-other-delete-lock", 60_000);
     expect(await post("Edited text.", K2, R7)).toMatchObject({ status: 409, body: { code: "in_progress" } });
@@ -137,6 +144,18 @@ describe("the review vanishing between the lookup and the claim", () => {
     expect((await post("First text.", KEY)).status).toBe(404);
     expect(calls()).toEqual([]);
     expect(attempts()).toEqual([]);
+  });
+});
+
+describe("the review vanishing between the lookup and a DELETE claim", () => {
+  it("404s honestly (not a 500), zero delete calls", async () => {
+    const real = storeDb.runTransaction;
+    vi.spyOn(storeDb, "runTransaction").mockImplementationOnce((async (fn: Parameters<typeof real>[0]) => {
+      await mem.db.doc(reviewPath("fake-r7")).delete();
+      return real(fn);
+    }) as typeof real);
+    expect(await del()).toMatchObject({ status: 404, body: { code: "not_found" } });
+    expect(calls()).toEqual([]);
   });
 });
 

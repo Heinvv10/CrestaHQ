@@ -100,7 +100,7 @@ export async function claimAttempt(
   });
 }
 
-export type DeleteClaim = { kind: "new"; key: string } | { kind: "in_progress" };
+export type DeleteClaim = { kind: "new"; key: string } | { kind: "in_progress" } | { kind: "gone" };
 
 /**
  * DELETE takes the same per-review lock as a reply POST — it has no
@@ -116,7 +116,9 @@ export async function claimDeleteLock(sa: string, target: AttemptTarget, now: Da
   const live = (at: unknown) => now.getTime() - (toMillis(at) ?? 0) < PENDING_MS;
   return db.runTransaction(async (tx): Promise<DeleteClaim> => {
     const data = (await tx.get(reviewRef)).data();
-    const lock = data?.replyInFlight as { key?: unknown; at?: unknown } | null | undefined;
+    // Removed by a sync or retention since the route looked it up: nothing to lock or delete.
+    if (!data) return { kind: "gone" };
+    const lock = data.replyInFlight as { key?: unknown; at?: unknown } | null | undefined;
     if (lock && !holds(lock, key) && live(lock.at)) return { kind: "in_progress" };
     tx.update(reviewRef, { replyInFlight: { key: attemptId(key), at: now } });
     return { kind: "new", key };

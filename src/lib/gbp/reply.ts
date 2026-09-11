@@ -125,6 +125,7 @@ export async function postReply(
 /** API only in v1 (v1 makes deletion optional): there is no delete button. */
 export async function deleteReplyFor(subAccountId: string, target: ReplyTarget, actorUid: string): Promise<NextResponse> {
   const claim = await claimDeleteLock(subAccountId, target, new Date());
+  if (claim.kind === "gone") return gbpRefusal(404, "not_found", "Review not found.");
   if (claim.kind === "in_progress") {
     return gbpRefusal(409, "in_progress", "This review has a reply change in progress — try again in a moment.");
   }
