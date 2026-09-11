@@ -158,9 +158,11 @@ held by three things, none of which parses env files:
    commented or not; production never needs these names (the default is
    Google) — or if any deploy-shell variable is named `GBP_PROVIDER*` /
    `GBP_FAKE_*`. No parsing, no expansion, so no dotenv spelling can slip past
-   it. It also requires `NEXT_PUBLIC_APP_URL` to be mentioned on exactly one
-   line, in `.env.production` only (`.env.example`, which Next never loads, is
-   exempt), so the deploy script's `sed` and Next cannot read different values.
+   it. It also refuses when `NEXT_PUBLIC_APP_URL` is DEFINED more than once in
+   `.env.production` or defined in any other env file (`.env.example`, which
+   Next never loads, is exempt; comment lines never count, and a lone CR breaks
+   a line as in dotenv), so the deploy script's `sed` and Next cannot read
+   different values.
    Unreadable files fail closed. `GBP_SYNC_SCHEDULE_ENABLED` is allowed.
 3. **Post-build deploy check** (`scripts/gbp-deploy-check.mjs post`, in
    `deploy-velo.sh`'s "Verifying NEXT_PUBLIC_APP_URL was inlined" step): the
