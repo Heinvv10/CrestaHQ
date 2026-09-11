@@ -23,9 +23,7 @@ export type WorkflowTriggerType =
   | "contact.tag.added"
   | "form.submitted"
   | "pipeline.stage.changed"
-  // Deal lifecycle — fired from lib/server/deals-service.ts at the same
-  // points the deal.created / deal.won / deal.lost webhooks go out. Won and
-  // lost are the stage's `terminal` flag on the deal's pipeline.
+  // Deal lifecycle (lib/server/deals-service.ts); won/lost = stage `terminal`.
   | "deal.created"
   | "deal.won"
   | "deal.lost"
@@ -87,10 +85,7 @@ export interface WorkflowTrigger {
   formId?: string | null;
   /** Restrict `link.clicked` to one tracked link. Null/absent = any link. */
   linkId?: string | null;
-  /**
-   * Restrict `pipeline.stage.changed` / `deal.*` to one pipeline. Null or
-   * absent = any pipeline (every pre-multi-pipeline doc).
-   */
+  /** Restrict the deal triggers to one pipeline. Null/absent = any. */
   pipelineId?: string | null;
   /** Restrict `pipeline.stage.changed` to one target stage. */
   toStage?: string | null;
@@ -276,12 +271,7 @@ export interface TagConfig {
 }
 export interface MoveStageConfig {
   stage: string;
-  /**
-   * Pipeline the stage belongs to — builder-side scoping of the stage list.
-   * Absent = the default pipeline. The step writes `contact.pipelineStage`
-   * (a contact attribute), so the engine reads only `stage`.
-   */
-  pipelineId?: string;
+  pipelineId?: string; // builder scoping only; the step writes contact.pipelineStage
 }
 export interface UpdateFieldConfig {
   field: string;

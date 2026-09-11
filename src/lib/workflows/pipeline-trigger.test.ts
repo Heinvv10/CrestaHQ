@@ -72,6 +72,9 @@ const fire = (type: WorkflowDoc["trigger"]["type"], context: Record<string, unkn
   fireWorkflowTrigger({ agencyId: "ag1", subAccountId: "sa1", type, contactId: "c1", context });
 
 beforeEach(() => {
+  // Fresh state per test: the workflow list AND the enrolment log. A test
+  // that forgot to set `workflows` must see none, not the previous test's.
+  workflows = [];
   enrolledWorkflowIds.length = 0;
 });
 

@@ -160,14 +160,20 @@ test("a second pipeline, a deal in it, and a pinned stage-change trigger", async
     // Wait for enroll() to settle its publish outcome (failed on loopback, or
     // a message id) so the cleanup below doesn't race the engine's own
     // status write on the run doc.
+    // The Upstash publish (which fails on loopback, after its own retries)
+    // can take a while on a loaded box — hence the longer budget. The poll
+    // value names the state so a red run says WHICH half did not happen.
     await expect
       .poll(
         async () => {
           const run = (await firstEnrolment(sa, workflowId!))?.data();
-          if (!run || (run.status !== "failed" && run.qstashMessageId === null)) return null;
+          if (!run) return "no-run";
+          if (run.status !== "failed" && run.qstashMessageId === null) {
+            return `unsettled:${run.status as string}`;
+          }
           return run.contactId;
         },
-        { timeout: 30_000 },
+        { timeout: 60_000 },
       )
       .toBe(contactId);
   } finally {
