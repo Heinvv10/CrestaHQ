@@ -273,6 +273,17 @@ describe("races with a newer grant (reconnect during a refresh)", () => {
     expect(await getValidAccessToken(SUB)).toBe("ya29.OtherProcess");
     expect(secret()).toMatchObject({ accessToken: "ya29.OtherProcess", refreshToken: "1//0gRotatedR2" });
   });
+
+  it("keeps THEIR refresh token when the other writer's fresh secret carries a different one", async () => {
+    seedSecret();
+    stubSequence({
+      body: { ...FRESH, refresh_token: "1//0gOurRotation" },
+      // A reconnect (a different grant) landed while our refresh was in flight.
+      onCall: () => state.docs.set(SECRET_PATH, NEWER_GRANT(true)),
+    });
+    expect(await getValidAccessToken(SUB)).toBe("ya29.NewerGrantAccess");
+    expect(secret()).toMatchObject({ refreshToken: "1//0gNewerGrant", accessToken: "ya29.NewerGrantAccess" });
+  });
 });
 
 describe("fake mode fence", () => {
