@@ -41,6 +41,17 @@ const nextConfig: NextConfig = {
           { key: "Content-Type", value: "application/javascript; charset=utf-8" },
         ],
       },
+      {
+        // Google reviews embed script — the same pattern as /widget.js. This
+        // is static code; the DATA it fetches (/api/public/gbp/feed/…) has
+        // its own per-widget origin allow-list and never answers `*`.
+        source: "/embed/gbp-reviews.js",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=300, s-maxage=300" },
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+        ],
+      },
     ];
   },
 };
