@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import {
+  DealStageError,
   deleteDealServerSide,
   updateDealServerSide,
   type UpdateDealPatch,
@@ -11,8 +12,10 @@ import {
 import { maybeSendReviewRequest } from "@/lib/reviews/request";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
-import { PIPELINE_STAGES, DEAL_PRIORITIES } from "@/types/deals";
-import type { DealPriority, PipelineStageId } from "@/types/deals";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
+import { DEAL_PRIORITIES } from "@/types/deals";
+import type { DealPriority } from "@/types/deals";
 
 /**
  * Dashboard-facing single-deal routes:
@@ -24,7 +27,6 @@ import type { DealPriority, PipelineStageId } from "@/types/deals";
  * Kanban drag) so the matching webhooks fire from the shared service.
  */
 
-const VALID_STAGES = new Set(PIPELINE_STAGES.map((s) => s.id));
 const VALID_PRIORITIES = new Set(DEAL_PRIORITIES.map((p) => p.id));
 
 export async function PATCH(
@@ -67,11 +69,32 @@ export async function PATCH(
     patch.territoryId =
       typeof body.territoryId === "string" ? body.territoryId : null;
   }
+  // A pipeline move must name the landing stage; a stage move is checked
+  // against the deal's own pipeline (absent = default).
+  if (body.pipelineId !== undefined) {
+    if (typeof body.pipelineId !== "string" || !body.pipelineId) {
+      return NextResponse.json({ error: "Invalid pipelineId" }, { status: 400 });
+    }
+    if (typeof body.stageId !== "string") {
+      return NextResponse.json(
+        { error: "stageId is required when changing pipelineId" },
+        { status: 400 },
+      );
+    }
+    patch.pipelineId = body.pipelineId;
+  }
   if (body.stageId !== undefined) {
-    if (!VALID_STAGES.has(body.stageId as PipelineStageId)) {
+    const pipeline = await loadPipeline(
+      data.subAccountId as string,
+      patch.pipelineId ?? dealPipelineId(data),
+    );
+    if (!pipeline) {
+      return NextResponse.json({ error: "Invalid pipelineId" }, { status: 400 });
+    }
+    if (typeof body.stageId !== "string" || !findStage(pipeline, body.stageId)) {
       return NextResponse.json({ error: "Invalid stageId" }, { status: 400 });
     }
-    patch.stageId = body.stageId as PipelineStageId;
+    patch.stageId = body.stageId;
   }
   if (body.lostReason === null || typeof body.lostReason === "string") {
     patch.lostReason =
@@ -87,12 +110,20 @@ export async function PATCH(
     patch.customFields = cf.value;
   }
 
-  const result = await updateDealServerSide({
-    dealId: id,
-    patch,
-    userId: access.uid,
-    mode: (data.mode as "live" | "test") ?? "live",
-  });
+  let result;
+  try {
+    result = await updateDealServerSide({
+      dealId: id,
+      patch,
+      userId: access.uid,
+      mode: (data.mode as "live" | "test") ?? "live",
+    });
+  } catch (err) {
+    if (err instanceof DealStageError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
+  }
   if (!result) {
     return NextResponse.json({ error: "Deal not found" }, { status: 404 });
   }
@@ -101,8 +132,7 @@ export async function PATCH(
   // Fire-and-forget; the dispatcher re-checks the sub-account's review config
   // (enabled + triggerOnDealCompleted + cooldown) before sending anything.
   const becameCompleted = patch.completed === true && data.completed !== true;
-  const effectiveStage = patch.stageId ?? (data.stageId as PipelineStageId);
-  if (becameCompleted && effectiveStage === "won") {
+  if (becameCompleted && result.stageTerminal === "won") {
     void maybeSendReviewRequest({
       subAccountId: data.subAccountId as string,
       agencyId: data.agencyId as string,

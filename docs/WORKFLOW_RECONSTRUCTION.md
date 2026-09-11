@@ -168,10 +168,11 @@ GHL importer supports deals — but they should not be imported:
   Issue" stage) with `monetaryValue: 0`. They are support tickets, not deals.
 - Vortex's 8 split across Billboard Sales (4, all Won) and Campaign Delivery (4).
 
-CrestaHQ has one canonical 6-stage sales pipeline (`src/types/deals.ts:18`);
-`pipelineStages` overrides labels and order only, so multiple boards cannot be
-represented. Importing would put 86 zero-value support tickets into the sales
-pipeline and corrupt won-revenue and funnel reporting.
+At the time of this audit CrestaHQ had one canonical 6-stage sales pipeline;
+multiple pipelines have since landed (`subAccounts/{id}/pipelines`), but the GHL
+importer still targets the default pipeline's canonical stage ids. Importing
+would put 86 zero-value support tickets into the sales pipeline and corrupt
+won-revenue and funnel reporting.
 
 If the Service Issues board matters operationally, model it as tasks or as a tagged
 contact segment, not as deals.

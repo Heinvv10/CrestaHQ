@@ -1,20 +1,15 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import {
-  Download,
-  Mail,
-  PhoneOutgoing,
-  Search,
-  Upload,
-  Users,
-} from "lucide-react";
+import { Download, Mail, PhoneOutgoing, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToContacts } from "@/lib/firestore/contacts";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
+import { useSmartLists } from "@/hooks/use-smart-lists";
+import { applyFilters } from "@/lib/contacts/filter";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { serializeCsv, downloadCsv } from "@/lib/csv";
 import { toDate } from "@/lib/format";
@@ -25,20 +20,37 @@ import { AddContactModal } from "@/components/contacts/add-contact-modal";
 import { ImportContactsDialog } from "@/components/contacts/import-contacts-dialog";
 import { BulkEmailDialog } from "@/components/contacts/bulk-email-dialog";
 import { BulkCallDialog } from "@/components/contacts/bulk-call-dialog";
+import { ContactFiltersPanel } from "@/components/contacts/contact-filters-panel";
+import { SmartListTabs } from "@/components/contacts/smart-list-tabs";
+import {
+  EmptyState,
+  TableSkeleton,
+} from "@/components/contacts/contacts-empty-states";
 import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 
 /**
  * Reads ?import=1 from the URL, opens the import dialog, then strips the
- * param so closing the dialog doesn't get fought by the next render.
+ * param so closing the dialog doesn't get fought by the next render. Also
+ * mirrors ?list=<id> (the selected smart list) into page state so a tab is
+ * deep-linkable.
  *
  * Lifted into its own component so we can wrap it in <Suspense> —
  * useSearchParams() bails out of static rendering otherwise.
  */
-function ImportQueryWatcher({ onOpen }: { onOpen: () => void }) {
+function QueryWatcher({
+  onOpen,
+  onList,
+}: {
+  onOpen: () => void;
+  onList: (id: string | null) => void;
+}) {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
+  useEffect(() => {
+    onList(searchParams.get("list"));
+  }, [searchParams, onList]);
   useEffect(() => {
     if (searchParams.get("import") !== "1") return;
     onOpen();
@@ -67,6 +79,18 @@ export default function ContactsPage() {
   const [bulkCallOpen, setBulkCallOpen] = useState(false);
   const outboundVoiceOn = subAccount?.outboundVoiceEnabledByAgency === true;
   const openImport = useCallback(() => setImportOpen(true), []);
+  const {
+    filters,
+    setFilters,
+    lists,
+    activeListId,
+    setActiveListId,
+    selectList,
+    saveList,
+    renameList,
+    deleteList,
+  } = useSmartLists({ agencyId, subAccountId, uid: user?.uid ?? null });
+  const visible = useMemo(() => applyFilters(contacts, filters), [contacts, filters]);
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
@@ -102,12 +126,13 @@ export default function ContactsPage() {
   }, [scopingOn, subAccountId]);
 
   function handleExport() {
-    if (contacts.length === 0) {
+    if (visible.length === 0) {
       toast.error("No contacts to export.");
       return;
     }
     const headers = ["name", "email", "phone", "company", "source", "tags", "pipelineStage", "createdAt"];
-    const rows = contacts.map((c) => ({
+    // Export what the current tab + filters show, not the whole workspace.
+    const rows = visible.map((c) => ({
       name: c.name,
       email: c.email,
       phone: c.phone,
@@ -126,7 +151,7 @@ export default function ContactsPage() {
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6">
       <Suspense fallback={null}>
-        <ImportQueryWatcher onOpen={openImport} />
+        <QueryWatcher onOpen={openImport} onList={setActiveListId} />
       </Suspense>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -164,7 +189,7 @@ export default function ContactsPage() {
           <Button
             variant="outline"
             onClick={handleExport}
-            disabled={contacts.length === 0}
+            disabled={visible.length === 0}
           >
             <Download className="mr-1 h-4 w-4" />
             Export
@@ -173,23 +198,42 @@ export default function ContactsPage() {
         </div>
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name, email, or company"
-          className="pl-8"
-        />
+      <SmartListTabs
+        lists={lists}
+        activeId={activeListId}
+        onSelect={selectList}
+        canSave={(filters.all?.length ?? 0) > 0}
+        onSave={saveList}
+        onRename={renameList}
+        onDelete={deleteList}
+      />
+
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="relative w-full max-w-sm">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, email, phone, or company"
+            className="pl-8"
+          />
+        </div>
+        <ContactFiltersPanel value={filters} onChange={setFilters} />
       </div>
 
       {loading ? (
         <TableSkeleton />
       ) : contacts.length === 0 ? (
         <EmptyState onImport={() => setImportOpen(true)} />
+      ) : visible.length === 0 ? (
+        <div className="rounded-xl border bg-card p-12 text-center">
+          <p className="text-sm text-muted-foreground">
+            No contacts match the current filters.
+          </p>
+        </div>
       ) : (
         <ContactsTable
-          contacts={contacts}
+          contacts={visible}
           search={search}
           territories={territories}
         />
@@ -208,46 +252,6 @@ export default function ContactsPage() {
           contacts={contacts}
         />
       )}
-    </div>
-  );
-}
-
-function TableSkeleton() {
-  return (
-    <div className="overflow-hidden rounded-xl border bg-card">
-      <div className="border-b bg-muted/40 px-4 py-3">
-        <div className="h-3 w-24 animate-pulse rounded bg-muted" />
-      </div>
-      <div className="divide-y">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="flex items-center gap-4 px-4 py-4">
-            <div className="h-4 w-40 animate-pulse rounded bg-muted" />
-            <div className="h-4 w-48 animate-pulse rounded bg-muted" />
-            <div className="ml-auto h-5 w-16 animate-pulse rounded-full bg-muted" />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EmptyState({ onImport }: { onImport: () => void }) {
-  return (
-    <div className="rounded-xl border border-dashed bg-card/50 p-12 text-center">
-      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-        <Users className="h-6 w-6 text-primary" />
-      </div>
-      <h3 className="text-base font-semibold">No contacts yet</h3>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Add your first lead or import a CSV from your old CRM.
-      </p>
-      <div className="mt-6 flex justify-center gap-2">
-        <AddContactModal />
-        <Button variant="outline" onClick={onImport}>
-          <Upload className="mr-1 h-4 w-4" />
-          Import CSV
-        </Button>
-      </div>
     </div>
   );
 }

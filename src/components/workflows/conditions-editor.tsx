@@ -22,11 +22,14 @@ export function ConditionsEditor({
   value,
   onChange,
   allowReplyField = false,
+  emptyHint = "No conditions — runs for everyone (trigger) / always takes the “yes” path (if/else).",
 }: {
   value: ConditionGroup;
   onChange: (g: ConditionGroup) => void;
   /** Set on an if_else; leave false for trigger filters. */
   allowReplyField?: boolean;
+  /** Copy shown when the group is empty; the default is workflow wording. */
+  emptyHint?: string;
 }) {
   const all = value?.all ?? [];
   const match = value?.match === "any" ? "any" : "all";
@@ -38,10 +41,7 @@ export function ConditionsEditor({
   return (
     <div className="space-y-2">
       {all.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          No conditions — runs for everyone (trigger) / always takes the “yes”
-          path (if/else).
-        </p>
+        <p className="text-xs text-muted-foreground">{emptyHint}</p>
       )}
       {all.length > 1 && (
         <div className="flex items-center gap-2 text-xs">

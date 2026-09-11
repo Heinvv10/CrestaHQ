@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import { NODE_LABELS } from "@/lib/workflows/catalog";
 import { ConditionsEditor } from "./conditions-editor";
 import type { BuilderStep } from "@/lib/workflows/builder-tree";
@@ -62,7 +62,6 @@ export function NodeConfigDialog({
   onSave: (config: Cfg) => void;
 }) {
   const [cfg, setCfg] = useState<Cfg>({});
-  const stages = usePipelineStages();
   useEffect(() => {
     if (step) setCfg({ ...step.config });
   }, [step]);
@@ -410,17 +409,16 @@ export function NodeConfigDialog({
 
           {step.type === "move_stage" && (
             <Field label="Move contact to stage">
-              <select
-                value={str("stage") || "new"}
-                onChange={(e) => set({ stage: e.target.value })}
-                className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
-              >
-                {stages.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
+              <PipelineTriggerConfig
+                pipelineId={str("pipelineId") || null}
+                stageId={str("stage") || null}
+                withStage
+                stagePlaceholder="Pick a stage"
+                stageLabel={(l) => l}
+                onChange={(n) =>
+                  set({ pipelineId: n.pipelineId ?? "", stage: n.stageId ?? "" })
+                }
+              />
             </Field>
           )}
 

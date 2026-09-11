@@ -24,7 +24,8 @@ import {
   type DealPriority,
   type PipelineStageId,
 } from "@/types/deals";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
+import { PipelineStagePicker } from "@/components/pipeline/pipeline-stage-picker";
 import type { Contact } from "@/types/contacts";
 import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
 import { GLOBAL_TERRITORY_ID, type TerritoryDoc } from "@/types";
@@ -46,7 +47,7 @@ export function EditDealDialog({
 }: EditDealDialogProps) {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
-  const stages = usePipelineStages();
+  const { byId } = usePipelines();
   // Changing the contact re-homes the deal's territory, which is an
   // admin-only action when scoping is on. Collaborators see it read-only.
   const canEditContact = !scopingOn || isAdmin;
@@ -54,6 +55,7 @@ export function EditDealDialog({
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
   const [currency, setCurrency] = useState("USD");
+  const [pipelineId, setPipelineId] = useState("");
   const [stageId, setStageId] = useState<PipelineStageId>("new");
   const [priority, setPriority] = useState<DealPriority>("medium");
   const [contactId, setContactId] = useState("");
@@ -69,6 +71,7 @@ export function EditDealDialog({
       setTitle(deal.title);
       setValue(deal.value ? String(deal.value) : "");
       setCurrency(deal.currency || "USD");
+      setPipelineId(byId(deal.pipelineId).id);
       setStageId(deal.stageId);
       setPriority(deal.priority ?? "medium");
       setContactId(deal.contactId);
@@ -77,7 +80,7 @@ export function EditDealDialog({
       );
       setErrors({});
     }
-  }, [open, deal]);
+  }, [open, deal, byId]);
 
   // Live custom-field definitions for deals (only while the sheet is open).
   useEffect(() => {
@@ -135,6 +138,7 @@ export function EditDealDialog({
         currency,
         priority,
         stageId,
+        pipelineId,
         customFields: cf.value,
       };
       // Only admins (or scoping-off) may re-home the contact. When they do,
@@ -250,21 +254,15 @@ export function EditDealDialog({
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-deal-stage">Stage</Label>
-            <select
-              id="edit-deal-stage"
-              value={stageId}
-              onChange={(e) => setStageId(e.target.value as PipelineStageId)}
-              className="flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
-            >
-              {stages.map((s) => (
-                <option key={s.id} value={s.id} className="bg-background text-foreground">
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <PipelineStagePicker
+            idPrefix="edit-deal"
+            pipelineId={pipelineId}
+            stageId={stageId}
+            onChange={(n) => {
+              setPipelineId(n.pipelineId);
+              setStageId(n.stageId);
+            }}
+          />
 
           <div className="space-y-1.5">
             <Label htmlFor="edit-deal-priority">Priority</Label>

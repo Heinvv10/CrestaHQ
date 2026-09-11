@@ -89,4 +89,29 @@ describe("ContactForm", () => {
       expect.objectContaining({ tags: ["lead", "audit", "Audit"] })
     );
   });
+
+  it("saves a nameless WhatsApp contact that has a phone", async () => {
+    await render({ id: "c1", name: "", phone: "+27821234567", email: "" });
+    await save();
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "", phone: "+27821234567" })
+    );
+  });
+
+  it("refuses a contact with no name, phone or email", async () => {
+    await render({ id: "c1", name: "  ", phone: "", email: "" });
+    await save();
+    expect(submit).not.toHaveBeenCalled();
+    expect(
+      container.querySelector("#c-name")!.getAttribute("aria-invalid")
+    ).toBe("true");
+    expect(container.textContent).toContain("Enter a name, phone or email");
+  });
+
+  it("does not mark the name as unconditionally required", async () => {
+    await render({ id: "c1", name: "", phone: "+27821234567" });
+    expect(
+      container.querySelector('label[for="c-name"]')!.textContent
+    ).not.toContain("*");
+  });
 });

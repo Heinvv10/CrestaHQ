@@ -50,6 +50,10 @@ function sanitizeNodes(
   for (const [id, node] of Object.entries(nodes ?? {})) {
     if (node.type === "whatsapp_template") {
       out[id] = { ...node, config: { ...node.config, templateId: null } };
+    } else if (node.type === "move_stage" && node.config.pipelineId) {
+      // Pipeline ids are per sub-account; the target has its own set. Leave
+      // the stage (default-pipeline ids are shared) and drop the scoping.
+      out[id] = { ...node, config: { ...node.config, pipelineId: null } };
     } else {
       out[id] = node;
     }
@@ -174,7 +178,10 @@ export async function applySnapshot(
     const config = dropSourceId(workflow);
 
     // Remap the trigger's source form id to the imported form, else null it.
+    // A pipeline id names a doc under the SOURCE sub-account — null it like
+    // an unmapped form (absent = any pipeline; the operator re-pins it).
     const trigger = { ...config.trigger };
+    if (trigger.pipelineId) trigger.pipelineId = null;
     if (trigger.formId) {
       const mapped = formIdMap.get(trigger.formId);
       if (mapped) {

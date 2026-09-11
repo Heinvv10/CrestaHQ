@@ -16,7 +16,8 @@
 #     sudo). $SYSTEMCTL is overridable if that ever changes.
 #   - Refuses any GBP fake-provider setting: any mention of GBP_PROVIDER /
 #     GBP_FAKE_ in an env file before building, and a loopback app URL inlined
-#     into the built fake-provider check after building.
+#     into the built fake-provider check after building. The same guard
+#     refuses the WhatsApp settings fake (WHATSAPP_SETTINGS_PROVIDER / WHATSAPP_FAKE_).
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.

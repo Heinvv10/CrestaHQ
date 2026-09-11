@@ -38,6 +38,7 @@ import type { Deal } from "@/types/deals";
 import type { Task } from "@/types/tasks";
 import type { CalendarEvent } from "@/types/events";
 import type { LeadForm } from "@/types/forms";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 type Result =
   | {
@@ -191,7 +192,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         out.push({
           kind: "contact",
           id: c.id,
-          title: c.name || c.email || "Unnamed",
+          title: contactDisplayName(c),
           subtitle: c.company || c.email || "",
           href: `${linkPrefix}/contacts/${c.id}`,
         });
@@ -230,7 +231,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         out.push({
           kind: "contact",
           id: c.id,
-          title: c.name || c.email || "Unnamed",
+          title: contactDisplayName(c),
           subtitle: [c.email, c.company].filter(Boolean).join(" · "),
           href: `${linkPrefix}/contacts/${c.id}`,
         });

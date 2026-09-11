@@ -898,6 +898,13 @@ const REGISTRY: Partial<Record<WorkflowNodeType, NodeExecutor>> = {
 
 /* ----------------------------- Dispatch -------------------------------- */
 
+const DEAL_TRIGGERS = new Set<WorkflowTriggerType>([
+  "pipeline.stage.changed",
+  "deal.created",
+  "deal.won",
+  "deal.lost",
+]);
+
 interface FireInput {
   subAccountId: string;
   agencyId: string;
@@ -990,6 +997,16 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         wf.trigger.type === "pipeline.stage.changed" &&
         wf.trigger.toStage &&
         wf.trigger.toStage !== input.context?.toStage
+      ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      // Deal triggers may be pinned to one pipeline. Unset = any pipeline,
+      // which is what every workflow saved before pipelines existed means.
+      if (
+        DEAL_TRIGGERS.has(wf.trigger.type) &&
+        wf.trigger.pipelineId &&
+        wf.trigger.pipelineId !== input.context?.pipelineId
       ) {
         skip("trigger_mismatch");
         continue;

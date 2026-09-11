@@ -5,9 +5,9 @@ import { cn } from "@/lib/utils";
 import {
   DEAL_PRIORITIES,
   type DealPriority,
+  type PipelineStage,
   type PipelineStageId,
 } from "@/types/deals";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
 import type { TerritoryDoc } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,6 +78,8 @@ interface PipelineFiltersProps {
    * (collaborators are already filtered server-side).
    */
   showTerritoryFilters?: boolean;
+  /** Stages of the pipeline the board is showing. */
+  stages: PipelineStage[];
 }
 
 export function PipelineFilters({
@@ -86,8 +88,8 @@ export function PipelineFilters({
   availableCountries,
   availableTerritories = [],
   showTerritoryFilters = false,
+  stages,
 }: PipelineFiltersProps) {
-  const stages = usePipelineStages();
   const toggleStage = (id: PipelineStageId) => {
     const next = filters.stages.includes(id)
       ? filters.stages.filter((s) => s !== id)

@@ -34,7 +34,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import {
   ADDABLE_TYPES,
   NODE_LABELS,
@@ -72,6 +72,9 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "contact.created",
   "contact.tag.added",
   "pipeline.stage.changed",
+  "deal.created",
+  "deal.won",
+  "deal.lost",
   "booking.created",
   "booking.cancelled",
   "booking.rescheduled",
@@ -189,7 +192,6 @@ export function WorkflowBuilder({
   whatsappSenders: WhatsappSenderOption[];
 }) {
   const router = useRouter();
-  const stages = usePipelineStages();
   const [name, setName] = useState(initial.name);
   const [status, setStatus] = useState<WorkflowStatus>(initial.status);
   const [trigger, setTrigger] = useState<WorkflowTrigger>(initial.trigger);
@@ -380,21 +382,18 @@ export function WorkflowBuilder({
             </>
           )}
 
-          {trigger.type === "pipeline.stage.changed" && (
-            <select
-              value={trigger.toStage ?? ""}
-              onChange={(e) =>
-                setTrigger({ ...trigger, toStage: e.target.value || null })
+          {(trigger.type === "pipeline.stage.changed" ||
+            trigger.type === "deal.created" ||
+            trigger.type === "deal.won" ||
+            trigger.type === "deal.lost") && (
+            <PipelineTriggerConfig
+              pipelineId={trigger.pipelineId}
+              stageId={trigger.toStage}
+              withStage={trigger.type === "pipeline.stage.changed"}
+              onChange={(n) =>
+                setTrigger({ ...trigger, pipelineId: n.pipelineId, toStage: n.stageId })
               }
-              className="border-input bg-background mt-2 h-9 w-full rounded-md border px-2 text-sm"
-            >
-              <option value="">Any stage</option>
-              {stages.map((s) => (
-                <option key={s.id} value={s.id}>
-                  Moved to {s.label}
-                </option>
-              ))}
-            </select>
+            />
           )}
 
           {trigger.type === "message.received" && (
