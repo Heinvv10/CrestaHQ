@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { NextRequest } from "next/server";
-import { loginRedirectUrl } from "./middleware";
+import { isPublicPath, loginRedirectUrl } from "./middleware";
 
 /**
  * Regression test for the logged-out redirect.
@@ -81,5 +81,16 @@ describe("loginRedirectUrl", () => {
     );
     expect(url.origin).toBe("http://localhost:4300");
     expect(url.pathname).toBe("/login");
+  });
+});
+
+describe("isPublicPath — the GBP sync routes", () => {
+  it("lets QStash reach the signed cron (the signature is its auth)", () => {
+    expect(isPublicPath("/api/cron/gbp-sync")).toBe(true);
+  });
+
+  it("keeps Sync now and the reviews read behind a session", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/gbp/sync")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/gbp/reviews")).toBe(false);
   });
 });

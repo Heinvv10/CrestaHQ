@@ -7,6 +7,7 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { findAccessibleLocation } from "@/lib/gbp/discovery";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { withGbpAccess } from "@/lib/gbp/access";
+import { clearGbpCache } from "@/lib/gbp/sync/store";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
 
@@ -79,9 +80,9 @@ export async function PUT(
   const { account, location } = match;
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${id}`);
-  await db.runTransaction(async (tx) => {
+  const previous = await db.runTransaction(async (tx) => {
     const snap = await tx.get(subRef);
-    const previous = snap.data()?.googleListing?.locationName ?? null;
+    const previous: string | null = snap.data()?.googleListing?.locationName ?? null;
     tx.update(subRef, {
       googleListing: {
         accountName: account.name,
@@ -107,7 +108,10 @@ export async function PUT(
       locationName: location.name,
       previousLocationName: previous,
     });
+    return previous;
   });
+  // The cache only ever holds the current listing: a different one starts empty.
+  if (previous !== location.name) await clearGbpCache(id);
 
   return NextResponse.json({ ok: true });
 }

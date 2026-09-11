@@ -140,6 +140,15 @@ export function createFakeGbpProvider(
 
     async listReviews(accessToken, { accountName, locationName }, pageToken) {
       const scenario = await authed(accessToken, "listReviews");
+      const failing = scenario.failReviewsPage;
+      if (failing && failing.pageToken === (pageToken ?? null)) {
+        if (failing.times !== undefined) {
+          if (failing.times <= 1) delete scenario.failReviewsPage;
+          else failing.times -= 1;
+          await store.set(bound, scenario);
+        }
+        throw new GbpProviderError(failing.kind);
+      }
       const owned = scenario.locations[accountName] ?? [];
       if (!owned.some((l) => l.name === locationName)) {
         throw new GbpProviderError("not_found", { status: 404 });

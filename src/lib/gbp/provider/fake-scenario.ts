@@ -36,6 +36,12 @@ export interface FakeScenario {
   >;
   /** Fail the next call of `op` once with `kind`, then clear. */
   failNext?: { op: FakeOp; kind: GbpProviderErrorKind };
+  /**
+   * Fail `listReviews` for ONE page (`pageToken`, null = the first page) with
+   * `kind` — `times` more calls, then clear; forever when `times` is absent.
+   * What a sync that fails halfway through a pass looks like.
+   */
+  failReviewsPage?: { pageToken: string | null; kind: GbpProviderErrorKind; times?: number };
 }
 
 export interface FakeScenarioStore {

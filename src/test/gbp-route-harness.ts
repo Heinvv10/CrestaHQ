@@ -47,3 +47,25 @@ export function setScenario(mutate: (s: FakeScenario) => void, sub = "sa_1") {
 
 /** Every string that would betray a credential in a browser payload. */
 export const TOKEN_MARKERS = /fake-refresh|fake-access|refreshToken|accessToken|ya29\.|1\/\/0g/;
+
+/** A synced review cache (reviews, summary, sync state) on `sub`. */
+export function seedSyncedCache(sub = "sa_1") {
+  for (const id of ["r1", "r2"]) {
+    state.docs.set(`subAccounts/${sub}/gbpReviews/${id}`, { subAccountId: sub, reviewId: id, comment: "cached" });
+  }
+  state.docs.set(`subAccounts/${sub}/private/gbpSyncState`, { lease: null, pass: { passId: "p", pageToken: "3" } });
+  state.docs.set(`subAccounts/${sub}`, {
+    ...state.docs.get(`subAccounts/${sub}`),
+    gbpSummary: { locationName: LOC_A, averageRating: 4, totalReviewCount: 2, health: "ok" },
+  });
+}
+
+/** What is left of that cache. */
+export function cacheLeft(sub = "sa_1") {
+  return {
+    reviews: [...state.docs.keys()].filter((p) => p.startsWith(`subAccounts/${sub}/gbpReviews/`)).length,
+    summary: state.docs.get(`subAccounts/${sub}`)?.gbpSummary ?? null,
+    syncState: state.docs.has(`subAccounts/${sub}/private/gbpSyncState`),
+  };
+}
+export const CLEARED = { reviews: 0, summary: null, syncState: false };

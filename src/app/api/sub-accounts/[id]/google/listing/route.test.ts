@@ -14,14 +14,17 @@ vi.mock("firebase-admin/firestore", async () =>
   (await import("@/test/google-oauth-harness")).firestoreMock(),
 );
 
-import { SUB, SUB_PATH, request, resetHarness, state } from "@/test/google-oauth-harness";
+import { OTHER_SUB, SUB, SUB_PATH, request, resetHarness, state } from "@/test/google-oauth-harness";
 import {
   DEFAULT_ACCOUNT,
   LOC_A,
   LOC_NORTH,
   TOKEN_MARKERS,
+  CLEARED,
+  cacheLeft,
   enableFakeMode,
   seedConnection,
+  seedSyncedCache,
   setScenario,
 } from "@/test/gbp-route-harness";
 import { DELETE, PUT } from "./route";
@@ -185,6 +188,20 @@ describe("PUT selection", () => {
     expect(listing()?.locationName).toBe(LOC_NORTH);
   });
 
+  it("selecting a DIFFERENT listing drops the old listing's review cache", async () => {
+    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
+    seedSyncedCache();
+    expect((await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_NORTH })).status).toBe(200);
+    expect(cacheLeft()).toEqual(CLEARED);
+  });
+
+  it("re-selecting the SAME listing keeps its cache", async () => {
+    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
+    seedSyncedCache();
+    expect((await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A })).status).toBe(200);
+    expect(cacheLeft()).toMatchObject({ reviews: 2, syncState: true });
+  });
+
   it("reports not_connected without a connection", async () => {
     state.docs.set(SUB_PATH, { agencyId: "ag_1", googleEnabledByAgency: true });
     const res = await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_NORTH });
@@ -218,6 +235,14 @@ describe("DELETE", () => {
         previousLocationName: LOC_NORTH,
       },
     ]);
+  });
+
+  it("clears the review cache, summary and sync state — and only this sub-account's", async () => {
+    seedSyncedCache();
+    seedSyncedCache(OTHER_SUB);
+    await del();
+    expect(cacheLeft()).toEqual(CLEARED);
+    expect(cacheLeft(OTHER_SUB)).toMatchObject({ reviews: 2, syncState: true });
   });
 
   it("writes no event when there was nothing to clear", async () => {

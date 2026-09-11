@@ -4,12 +4,15 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GoogleListing } from "@/types/google";
 import { findAccessibleLocation } from "./discovery";
+import { clearGbpCache } from "./sync/store";
 import type { GbpProvider } from "./provider/types";
 
 /**
  * Clearing the selected Business Profile listing, always with an audit trail.
  * The clear and its `gbpEvents` entry commit in ONE transaction, and nothing
- * is logged when there was no listing to clear.
+ * is logged when there was no listing to clear. Every clear — admin, disconnect,
+ * reconnect re-verification — also drops the synced review cache, summary and
+ * sync state (`clearGbpCache`): the cache only ever holds the current listing.
  */
 
 export type ListingClearedReason =
@@ -33,16 +36,16 @@ export async function clearListing(
 ): Promise<void> {
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${subAccountId}`);
-  await db.runTransaction(async (tx) => {
+  const cleared = await db.runTransaction(async (tx) => {
     const sub = (await tx.get(subRef)).data() ?? {};
     const previous: string | null = sub.googleListing?.locationName ?? null;
-    if (opts.onlyIf !== undefined && previous !== opts.onlyIf) return;
+    if (opts.onlyIf !== undefined && previous !== opts.onlyIf) return false;
     tx.set(
       subRef,
       { ...opts.alsoSet, googleListing: null, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
-    if (!previous) return;
+    if (!previous) return true;
     tx.set(db.collection(`subAccounts/${subAccountId}/gbpEvents`).doc(), {
       type: "listing_cleared",
       reason,
@@ -53,7 +56,10 @@ export async function clearListing(
       locationName: null,
       previousLocationName: previous,
     });
+    return true;
   });
+  // A declined onlyIf means a NEWER listing is selected: its cache stays.
+  if (cleared) await clearGbpCache(subAccountId);
 }
 
 /**
