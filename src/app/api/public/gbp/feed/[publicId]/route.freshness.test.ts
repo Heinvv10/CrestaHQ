@@ -125,9 +125,9 @@ describe("leakage: an explicit allow-list, never a spread", () => {
       reviewName: "accounts/123/locations/456/reviews/789", reviewId: "fake-review-789",
       reviewer: { displayName: "Pat", profilePhotoUrl: "https://lh3.googleusercontent.com/a/pat", isAnonymous: false, email: "pat@example.com", uid: "uid_x" },
       starRating: 2, comment: "Plain words.", createTime: new Date("2026-09-01T00:00:00Z"), updateTime: new Date("2026-09-02T00:00:00Z"),
-      reply: { comment: "Sorry, Pat.", updateTime: "2026-09-03T00:00:00Z", authorEmail: "owner@example.com", token: "ya29.secret" },
+      reply: { comment: "Sorry, Pat.", updateTime: "2026-09-03T00:00:00Z", authorEmail: "owner@example.com", token: "reply-SECRET" },
       state: "active", firstSeenAt: new Date(), lastSeenAt: new Date(), removedAt: null,
-      passId: "pass-SECRET", contentHash: "hash-SECRET", accessToken: "ya29.token-SECRET", refreshToken: "1//0g-SECRET",
+      passId: "pass-SECRET", contentHash: "hash-SECRET", accessToken: "stored-access-SECRET", refreshToken: "stored-refresh-SECRET",
       errorKind: "internal-SECRET", placeId: "ChIJ-SECRET",
     });
     const sub = mem.read(`subAccounts/${SA}`)!;
