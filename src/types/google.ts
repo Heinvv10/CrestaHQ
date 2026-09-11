@@ -70,6 +70,21 @@ export interface GoogleListing {
   selectedByUid: string;
 }
 
+/**
+ * The public reviews widget — `SubAccountDoc.gbpWidgetMeta`. Member-readable:
+ * `publicId` is public by nature (it is in the embed snippet). The
+ * authoritative, server-only config is `gbpWidgets/{publicId}`.
+ */
+export interface GbpWidgetMeta {
+  publicId: string;
+  enabled: boolean;
+  /** Normalised `scheme://host[:port]`; https only, except loopback http for dev. */
+  allowedOrigins: string[];
+  /** 1–50. There is deliberately NO rating filter. */
+  maxReviews: number;
+  updatedAt: Date;
+}
+
 /** Path of the locked secret doc. One place so no caller can typo it open. */
 export function googleConnectionSecretPath(subAccountId: string): string {
   return `subAccounts/${subAccountId}/private/googleConnection`;

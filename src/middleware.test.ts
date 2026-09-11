@@ -95,3 +95,21 @@ describe("isPublicPath — the GBP sync routes", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/gbp/reviews")).toBe(false);
   });
 });
+
+describe("isPublicPath — the GBP public reviews feed", () => {
+  it("lets any website reach the feed without a session (the opaque id is the credential)", () => {
+    expect(isPublicPath("/api/public/gbp/feed/AbCdEfGhIjKlMnOpQrStUvWxYz012345")).toBe(true);
+    expect(isPublicPath("/embed/gbp-reviews.js")).toBe(true);
+  });
+
+  it("opens exactly one path segment — nothing under or beside it", () => {
+    expect(isPublicPath("/api/public/gbp/feed")).toBe(false);
+    expect(isPublicPath("/api/public/gbp/feed/id/extra")).toBe(false);
+    expect(isPublicPath("/api/public/gbp/other")).toBe(false);
+  });
+
+  it("keeps the widget admin routes behind a session", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/gbp/widget")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/gbp/widget/rotate")).toBe(false);
+  });
+});
