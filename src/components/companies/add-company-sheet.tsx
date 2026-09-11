@@ -21,9 +21,13 @@ export function AddCompanySheet() {
   const { subAccountId, agencyId } = useSubAccount();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  // The client-SDK write needs the Firebase user, which resolves a beat after
+  // the page paints. Keep the trigger disabled until then rather than
+  // swallowing the click.
+  const ready = !!user && !!agencyId;
 
   async function handleCreate(data: CompanyFormData) {
-    if (!user || !agencyId) return;
+    if (!user || !agencyId) throw new Error("auth not ready");
     await createCompany({ agencyId, subAccountId }, user.uid, data);
     toast.success("Company added");
     setOpen(false);
@@ -31,7 +35,7 @@ export function AddCompanySheet() {
 
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
+      <Button onClick={() => setOpen(true)} disabled={!ready}>
         <Plus className="mr-1 h-4 w-4" />
         Add Company
       </Button>

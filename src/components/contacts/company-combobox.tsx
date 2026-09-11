@@ -50,7 +50,9 @@ export function CompanyCombobox({ id, value, onChange }: Props) {
   const exact = companies.some(
     (c) => c.name.toLowerCase() === typed.toLowerCase(),
   );
-  const showCreate = typed.length > 0 && !exact && !value.companyId;
+  // Inline create is a client-SDK write, so it needs the resolved user.
+  const showCreate =
+    typed.length > 0 && !exact && !value.companyId && !!user && !!agencyId;
 
   function pick(c: Pick<Company, "id" | "name">) {
     onChange({ companyId: c.id, company: c.name });
