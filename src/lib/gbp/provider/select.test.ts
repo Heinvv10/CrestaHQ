@@ -112,3 +112,13 @@ describe("loopback semantics shared with the deploy guard", () => {
     },
   );
 });
+
+describe("the app allow-list is narrow (the deploy guard's block-list is the wide one)", () => {
+  it.each(["http://0.0.0.0:4300", "http://[::]:4300", "http://127.0.0.2:3100", "http://foo.localhost:3100"])(
+    "refuses fake mode on %s",
+    (url) => {
+      process.env.NEXT_PUBLIC_APP_URL = url;
+      expect(() => gbpProviderMode()).toThrow(GbpFakeRefusedError);
+    },
+  );
+});

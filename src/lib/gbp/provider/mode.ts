@@ -1,6 +1,6 @@
 import "server-only";
 
-import { isLoopbackUrl } from "./loopback.mjs";
+import { isAppLoopbackUrl } from "./loopback.mjs";
 
 /**
  * Which GBP provider this deployment runs — decided from server env alone.
@@ -26,8 +26,9 @@ function appUrl(): string | undefined {
 /** "google" or "fake"; throws GbpFakeRefusedError when fake is requested but unsafe. */
 export function gbpProviderMode(): "google" | "fake" {
   if (process.env.GBP_PROVIDER !== "fake") return "google";
-  // The same loopback rule the deploy guard applies (loopback.mjs).
-  if (!isLoopbackUrl(appUrl())) {
+  // The narrow APP allow-list (loopback.mjs); the deploy guard blocks a
+  // superset of it.
+  if (!isAppLoopbackUrl(appUrl())) {
     throw new GbpFakeRefusedError("NEXT_PUBLIC_APP_URL is not a loopback host");
   }
   if (
