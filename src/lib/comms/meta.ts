@@ -149,13 +149,15 @@ export function verifyMetaState(
 /**
  * Verify the `X-Hub-Signature-256` header Meta sends on every webhook POST.
  * HMAC-SHA256 of the RAW body keyed by the app secret, formatted `sha256=…`.
- * Returns false (reject) when no app secret is configured.
+ * Returns false (reject) when no app secret is configured. `secret` defaults
+ * to this deployment's Messenger/IG app; the WhatsApp Cloud webhook may pass
+ * another app's secret.
  */
 export function verifyMetaSignature(
   rawBody: string,
   header: string | null,
+  secret: string = process.env.META_APP_SECRET ?? "",
 ): boolean {
-  const secret = process.env.META_APP_SECRET ?? "";
   if (!header || !secret) return false;
   const expected =
     "sha256=" +
