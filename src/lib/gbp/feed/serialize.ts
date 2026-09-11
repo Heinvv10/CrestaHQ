@@ -44,13 +44,11 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 export function feedReview(id: string, d: Record<string, unknown>): FeedReview {
   const reviewer = (d.reviewer ?? null) as Record<string, unknown> | null;
   const reply = (d.reply ?? null) as Record<string, unknown> | null;
+  const anonymous = reviewer?.isAnonymous === true;
   return {
     id,
-    author: {
-      name: str(reviewer?.displayName) ?? "",
-      photoUrl: str(reviewer?.profilePhotoUrl),
-      anonymous: reviewer?.isAnonymous === true,
-    },
+    // An anonymous reviewer gets no photo, whatever Google sent.
+    author: { name: str(reviewer?.displayName) ?? "", photoUrl: anonymous ? null : str(reviewer?.profilePhotoUrl), anonymous },
     rating: Number(d.starRating),
     text: str(d.comment),
     createdAt: iso(d.createTime) ?? "",

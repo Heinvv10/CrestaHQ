@@ -117,6 +117,15 @@ describe("unavailable: nothing served", () => {
 });
 
 describe("leakage: an explicit allow-list, never a spread", () => {
+  it("serves no photo for an anonymous reviewer, even if one is stored", async () => {
+    const d = mem.list(`subAccounts/${SA}/gbpReviews`)[0];
+    mem.seed(`subAccounts/${SA}/gbpReviews/${d.id}`, {
+      ...d, reviewer: { displayName: "", profilePhotoUrl: "https://lh3.googleusercontent.com/a/anon", isAnonymous: true },
+    });
+    const served = (await read()).reviews.find((r) => r.id === d.id)!;
+    expect(served.author).toEqual({ name: "", photoUrl: null, anonymous: true });
+  });
+
   it("serves none of the internal fields, whatever the stored docs carry", async () => {
     // Replace the cache with ONE review stuffed with every internal field.
     for (const d of mem.list(`subAccounts/${SA}/gbpReviews`)) mem.seed(`subAccounts/${SA}/gbpReviews/${d.id}`, { state: "removed" });
@@ -133,7 +142,11 @@ describe("leakage: an explicit allow-list, never a spread", () => {
     const sub = mem.read(`subAccounts/${SA}`)!;
     mem.seed(`subAccounts/${SA}`, {
       ...sub,
-      googleListing: { ...(sub.googleListing as object), placeId: "ChIJ-SECRET", accountName: "accounts/123", selectedByUid: "uid_admin" },
+      googleListing: {
+        ...(sub.googleListing as object), placeId: "ChIJ-SECRET", accountName: "accounts/123", selectedByUid: "uid_admin",
+        // Google's real write-review link carries the Place ID in its query — served as-is, it is Google's public link.
+        newReviewUri: "https://search.google.com/local/writereview?placeid=ChIJfixture0000000000",
+      },
       gbpSummary: { ...(sub.gbpSummary as object), lastErrorKind: "internal-SECRET", lastReconciliation: "full" },
       googleConnectionMeta: { ...(sub.googleConnectionMeta as object), email: "owner@example.com" },
     });
@@ -150,7 +163,9 @@ describe("leakage: an explicit allow-list, never a spread", () => {
         reply: { text: "Sorry, Pat.", updatedAt: "2026-09-03T00:00:00.000Z" },
       },
     ]);
-    const text = JSON.stringify(body);
+    expect(body.listing?.writeReviewUri).toBe("https://search.google.com/local/writereview?placeid=ChIJfixture0000000000");
+    // Everything but that one public Google link is scanned.
+    const text = JSON.stringify({ ...body, listing: { ...body.listing, writeReviewUri: null } });
     for (const marker of [
       "accounts/", "locations/", SA, "ag_1", "@", "fake-", "token", "uid_", "SECRET", "ChIJ", "passId", "contentHash",
       "reviewName", "placeId", "errorKind", "lease", "pageToken",

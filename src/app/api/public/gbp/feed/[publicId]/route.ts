@@ -2,9 +2,9 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
-import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { buildFeed, resolveFeedTarget, type FeedTarget } from "@/lib/gbp/feed/build";
-import { checkFeedRateLimit } from "@/lib/gbp/feed/rate-limit";
+import { checkFeedRateLimit, feedClientKey } from "@/lib/gbp/feed/rate-limit";
+import { PUBLIC_ID_RE } from "@/lib/gbp/feed/widget-store";
 
 /**
  * GET /api/public/gbp/feed/[publicId] (+ OPTIONS) — the public reviews feed a
@@ -14,24 +14,27 @@ import { checkFeedRateLimit } from "@/lib/gbp/feed/rate-limit";
  * on a public path a caller can send its own. The only credential is the
  * opaque publicId; the only authority is the widget's config.
  *
- *   429 rate_limited        120/min per IP + publicId, Retry-After, no-store
- *   404 not_found           malformed / unknown / disabled / gate off — ONE body
+ *   404 not_found           malformed (checked first: never a limiter key, never a
+ *                           Firestore path) / unknown / disabled / archived / gate off — ONE body
+ *   429 rate_limited        300/min per client, 120/min per client + publicId; Retry-After, no-store
  *   403 origin_not_allowed  an Origin not on the allow-list; no CORS grant
  *   200 / 304               ACAO echoes an allowed Origin (never *), Vary: Origin,
- *                           public 5-min cache, strong ETag over the body minus generatedAt
+ *                           public 60s cache, strong ETag over the body minus generatedAt;
+ *                           If-None-Match compared weakly (W/ stripped) and `*` honoured
  */
 
 export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ publicId: string }> };
 
-const CACHE = "public, max-age=300, stale-while-revalidate=600";
+const CACHE = "public, max-age=60";
 const refuse = (status: number, error: string, headers: Record<string, string> = {}) =>
   NextResponse.json({ error }, { status, headers: { "Cache-Control": "no-store", ...headers } });
 
-/** Rate limit, resolve, then the origin allow-list — shared by GET and OPTIONS. */
+/** Shape, rate limit, resolve, then the origin allow-list — shared by GET and OPTIONS. */
 async function admit(request: Request, publicId: string): Promise<{ target: FeedTarget; cors: Record<string, string> } | NextResponse> {
-  const limit = checkFeedRateLimit(clientIpFrom(request), publicId);
+  if (!PUBLIC_ID_RE.test(publicId)) return refuse(404, "not_found");
+  const limit = checkFeedRateLimit(feedClientKey(request), publicId);
   if (!limit.ok) return refuse(429, "rate_limited", { "Retry-After": String(limit.retryAfterSec) });
   const target = await resolveFeedTarget(publicId);
   if (!target) return refuse(404, "not_found");
@@ -54,7 +57,8 @@ export async function GET(request: Request, ctx: Ctx) {
   const headers = { ...admitted.cors, "Cache-Control": CACHE, ETag: etag };
 
   const ifNoneMatch = request.headers.get("if-none-match");
-  if (ifNoneMatch?.split(",").some((tag) => tag.trim() === etag)) {
+  const matches = (tag: string) => tag === "*" || tag.replace(/^W\//, "") === etag;
+  if (ifNoneMatch?.split(",").some((tag) => matches(tag.trim()))) {
     return new NextResponse(null, { status: 304, headers });
   }
   return NextResponse.json(body, { headers });

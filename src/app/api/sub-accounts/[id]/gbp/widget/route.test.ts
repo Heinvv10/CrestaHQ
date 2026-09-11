@@ -243,6 +243,15 @@ describe("rotate", () => {
     expect(meta()).toMatchObject({ publicId: fresh.publicId });
   });
 
+  it("credits the caller as creator when the old doc has none", async () => {
+    const old = (await put(CONFIG)).body.widget as Json;
+    mem.seed(`gbpWidgets/${old.publicId}`, { ...mem.read(`gbpWidgets/${old.publicId}`)!, createdByUid: null });
+    mem.seed(`subAccounts/${SA}/subAccountMembers/uid_admin2`, { status: "active", role: "admin", subAccountRole: "admin" });
+    claims.set("uid_admin2", { status: "active", agencyId: AGENCY, agencyRole: null });
+    await rotate("uid_admin2");
+    expect(widgetDocs()[0].createdByUid).toBe("uid_admin2");
+  });
+
   it("is a 404 when there is no widget to rotate", async () => {
     const { status, body } = await rotate();
     expect(status).toBe(404);

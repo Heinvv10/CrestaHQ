@@ -6,7 +6,7 @@ import { withinRetention } from "@/lib/gbp/sync/reconcile";
 import { reviewsCollection, toMillis, type GbpSummary } from "@/lib/gbp/sync/types";
 import type { SubAccountDoc } from "@/types";
 import { FEED_SOURCE, feedListing, feedReview, type FeedBody, type FeedStatus } from "./serialize";
-import { PUBLIC_ID_RE, widgetPath, type GbpWidgetDoc } from "./widget-store";
+import { widgetPath, type GbpWidgetDoc } from "./widget-store";
 
 /**
  * Resolving a public widget id and building its feed body.
@@ -32,25 +32,53 @@ export const FEED_UNAVAILABLE_AFTER_MS = 7 * 24 * 3600_000;
  */
 const SCAN_CAP = 200;
 
+/**
+ * The review scan — and ONLY the scan — is memoised per widget + listing for
+ * 60s (in memory, per instance), so a busy page costs one query a minute.
+ * The widget doc and the sub-account are read on every request, which is why
+ * revoke, rotate, disable, gate off and origin changes act at once. A review
+ * synced meanwhile reaches the feed within the minute.
+ */
+export const SCAN_MEMO_MS = 60_000;
+const MAX_MEMO = 1_000;
+type Scan = Array<{ id: string; data: Record<string, unknown> }>;
+const memo = new Map<string, { at: number; scan: Scan }>();
+
+async function reviewScan(publicId: string, subAccountId: string, locationName: string, now: number): Promise<Scan> {
+  const key = `${publicId}|${locationName}`;
+  const hit = memo.get(key);
+  if (hit && now - hit.at < SCAN_MEMO_MS) return hit.scan;
+  const snap = await getAdminDb().collection(reviewsCollection(subAccountId)).orderBy("createTime", "desc").limit(SCAN_CAP).get();
+  const scan = snap.docs.map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }));
+  memo.delete(key);
+  memo.set(key, { at: now, scan });
+  while (memo.size > MAX_MEMO) memo.delete(memo.keys().next().value!);
+  return scan;
+}
+
 type Sub = SubAccountDoc & { gbpSummary?: GbpSummary | null };
 export interface FeedTarget {
+  publicId: string;
   widget: GbpWidgetDoc;
   sub: Sub;
 }
 
-/** Null (→ the one 404) for a malformed, unknown or disabled id, or the agency gate off. */
+/**
+ * Null (→ the one 404) for an unknown or disabled id, an archived
+ * sub-account, or the agency gate off. The route has already refused a
+ * malformed id, so none reaches Firestore as a path.
+ */
 export async function resolveFeedTarget(publicId: string): Promise<FeedTarget | null> {
-  if (!PUBLIC_ID_RE.test(publicId)) return null;
   const db = getAdminDb();
   const widget = (await db.doc(widgetPath(publicId)).get()).data() as GbpWidgetDoc | undefined;
   if (!widget || widget.enabled !== true) return null;
   const sub = (await db.doc(`subAccounts/${widget.subAccountId}`).get()).data() as Sub | undefined;
   // The same rule as googleGateOn (opt-in: unset reads as off) on the doc we already hold.
-  if (sub?.googleEnabledByAgency !== true) return null;
-  return { widget, sub };
+  if (sub?.googleEnabledByAgency !== true || sub.status === "archived") return null;
+  return { publicId, widget, sub };
 }
 
-export async function buildFeed({ widget, sub }: FeedTarget, now: Date): Promise<FeedBody> {
+export async function buildFeed({ publicId, widget, sub }: FeedTarget, now: Date): Promise<FeedBody> {
   const listing = sub.googleListing ?? null;
   const summary = listing && sub.gbpSummary?.locationName === listing.locationName ? sub.gbpSummary : null;
   const last = toMillis(summary?.lastSuccessfulSyncAt);
@@ -61,13 +89,7 @@ export async function buildFeed({ widget, sub }: FeedTarget, now: Date): Promise
   let reviews: FeedBody["reviews"] = [];
   let rating: FeedBody["rating"] = null;
   if (!unavailable) {
-    const snap = await getAdminDb()
-      .collection(reviewsCollection(widget.subAccountId))
-      .orderBy("createTime", "desc")
-      .limit(SCAN_CAP)
-      .get();
-    reviews = snap.docs
-      .map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }))
+    reviews = (await reviewScan(publicId, widget.subAccountId, listing.locationName, now.getTime()))
       .filter(({ data }) => data.state === "active" && data.locationName === listing.locationName && withinRetention(data.lastSeenAt, now))
       .map(({ id, data }) => ({ id, data, at: toMillis(data.createTime) ?? 0 }))
       .sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))

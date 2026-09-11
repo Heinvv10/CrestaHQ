@@ -21,7 +21,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (!(await googleGateOn(id))) {
     return gbpRefusal(403, "gate_off", "This feature is locked by your agency.");
   }
-  const meta = await rotateWidget(id);
+  const meta = await rotateWidget(id, access.uid);
   if (!meta) return gbpRefusal(404, "no_widget", "There is no widget to rotate.");
   return NextResponse.json({ widget: publicWidget(meta) });
 }

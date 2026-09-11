@@ -12,7 +12,7 @@ import { EVIL, VELO, createWidget, feed, freshIp, preflight } from "@/test/gbp-f
 import { syncListing } from "@/lib/gbp/sync/run";
 
 const ORIGINAL = { ...process.env };
-const CACHE = "public, max-age=300, stale-while-revalidate=600";
+const CACHE = "public, max-age=60";
 let ip: string;
 let id: string;
 
@@ -24,6 +24,7 @@ beforeEach(async () => {
   id = await createWidget({ enabled: true, allowedOrigins: [VELO, "http://127.0.0.1:4401"], maxReviews: 12 });
 });
 afterEach(() => {
+  vi.useRealTimers();
   process.env = { ...ORIGINAL };
   vi.restoreAllMocks();
 });
@@ -72,7 +73,7 @@ describe("CORS: an allow-list, never *", () => {
 });
 
 describe("cache headers and ETag", () => {
-  it("is publicly cacheable for 5 minutes with a strong ETag", async () => {
+  it("is publicly cacheable for 60s (no stale-while-revalidate) with a strong ETag", async () => {
     const res = await feed(id, { "x-forwarded-for": ip });
     expect(res.headers.get("cache-control")).toBe(CACHE);
     expect(res.headers.get("etag")).toMatch(/^"[0-9a-f]{64}"$/);
@@ -100,9 +101,13 @@ describe("cache headers and ETag", () => {
     expect(listed.status).toBe(304);
     const other = await feed(id, { "x-forwarded-for": ip, "if-none-match": '"nope"' });
     expect(other.status).toBe(200);
+    // Weak comparison, as RFC 9110 asks of If-None-Match: a compressing proxy may weaken the tag.
+    expect((await feed(id, { "x-forwarded-for": ip, "if-none-match": `W/${etag}` })).status).toBe(304);
+    expect((await feed(id, { "x-forwarded-for": ip, "if-none-match": "*" })).status).toBe(304);
   });
 
   it("changes the ETag and the body when a review changes at Google and is synced — no site rebuild", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const before = await feed(id, { "x-forwarded-for": ip });
     const etag = before.headers.get("etag")!;
     setScenario(SA, (s) => {
@@ -111,6 +116,8 @@ describe("cache headers and ETag", () => {
       r.updateTime = "2026-09-10T09:00:00Z";
     });
     await syncListing(SA, { trigger: "scheduled" });
+    // Past the feed's 60s review-scan memo.
+    vi.setSystemTime(Date.now() + 61_000);
     const after = await feed(id, { "x-forwarded-for": ip, "if-none-match": etag });
     expect(after.status).toBe(200);
     expect(after.headers.get("etag")).not.toBe(etag);
@@ -120,6 +127,19 @@ describe("cache headers and ETag", () => {
 });
 
 describe("rate limit: 120 a minute per IP and widget", () => {
+  it("keys on cf-connecting-ip, so a rotating X-Forwarded-For does not reset the budget", async () => {
+    const cf = `cf-${ip}`;
+    for (let i = 0; i < 120; i++) {
+      expect((await feed(id, { "cf-connecting-ip": cf, "x-forwarded-for": `203.0.113.${i}` })).status).toBe(200);
+    }
+    expect((await feed(id, { "cf-connecting-ip": cf, "x-forwarded-for": "203.0.113.250" })).status).toBe(429);
+  });
+
+  it("checks the id's shape BEFORE the limiter: junk ids spend no budget", async () => {
+    for (let i = 0; i < 400; i++) expect((await feed(`junk-${i}`, { "x-forwarded-for": ip })).status).toBe(404);
+    expect((await feed(id, { "x-forwarded-for": ip })).status).toBe(200);
+  });
+
   it("429s the 121st request with Retry-After and no-store, without touching other IPs or widgets", async () => {
     for (let i = 0; i < 120; i++) expect((await feed(id, { "x-forwarded-for": ip })).status).toBe(200);
     const limited = await feed(id, { "x-forwarded-for": ip, origin: VELO });

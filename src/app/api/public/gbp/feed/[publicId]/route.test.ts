@@ -177,6 +177,14 @@ describe("unknown, malformed, disabled and revoked ids are the SAME 404", () => 
     expect((await feed(id, { "x-forwarded-for": ip })).status).toBe(200);
   });
 
+  it("an archived sub-account counts as disabled", async () => {
+    const id = await createWidget();
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, status: "archived" });
+    const res = await feed(id, { "x-forwarded-for": ip });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('{"error":"not_found"}');
+  });
+
   it("the agency gate off counts as disabled", async () => {
     const id = await createWidget();
     mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, googleEnabledByAgency: false });

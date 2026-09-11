@@ -84,7 +84,7 @@ export async function saveWidget(subAccountId: string, byUid: string, config: Wi
 }
 
 /** New publicId, same config; the old id stops resolving at once. Null when there is no widget. */
-export async function rotateWidget(subAccountId: string): Promise<GbpWidgetMeta | null> {
+export async function rotateWidget(subAccountId: string, byUid: string): Promise<GbpWidgetMeta | null> {
   const db = getAdminDb();
   return db.runTransaction(async (tx) => {
     const sub = (await tx.get(subRef(subAccountId))).data() ?? {};
@@ -103,7 +103,7 @@ export async function rotateWidget(subAccountId: string): Promise<GbpWidgetMeta 
     tx.set(db.doc(widgetPath(next.publicId)), {
       agencyId: sub.agencyId,
       subAccountId,
-      createdByUid: old?.createdByUid ?? null,
+      createdByUid: old?.createdByUid ?? byUid,
       enabled: meta.enabled,
       allowedOrigins: meta.allowedOrigins,
       maxReviews: meta.maxReviews,
