@@ -13,6 +13,7 @@ describe("flagForDisplayNumber", () => {
   it("prefers the longest prefix — +77 is Kazakhstan inside Russia's +7", () => {
     expect(flagForDisplayNumber("+7 495 123 4567")).toBe("🇷🇺");
     expect(flagForDisplayNumber("+7 701 123 4567")).toBe("🇰🇿");
+    expect(flagForDisplayNumber("+7 601 123 4567")).toBe("🇰🇿"); // +7 6xx is Kazakhstan too
   });
 
   it("prefers the longest prefix — +971 is the UAE, not +9-anything", () => {

@@ -66,3 +66,14 @@ describe("POST", () => {
     expect(scenario()?.links).toEqual([]);
   });
 });
+
+describe("the body is not read before the caller is known", () => {
+  it("an unauthenticated POST with an invalid message gets 401, a member 403 — never a validation message", async () => {
+    const bad = { prefilledMessage: "x".repeat(141) };
+    expect((await call(POST, { id: SUB }, { uid: null, method: "POST", body: bad })).status).toBe(401);
+    const { status, body } = await json(call(POST, { id: SUB }, { uid: "uid_member", method: "POST", body: bad }));
+    expect(status).toBe(403);
+    expect(String(body.error)).not.toContain("prefilledMessage");
+    expect(scenario()).toBeUndefined();
+  });
+});

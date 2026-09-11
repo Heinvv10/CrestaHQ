@@ -148,6 +148,7 @@ export function ProfileTab({
                 type="file"
                 accept="image/jpeg,image/png"
                 className="hidden"
+                disabled={uploading}
                 onChange={handlePhoto}
                 data-testid="wa-profile-photo-input"
               />
