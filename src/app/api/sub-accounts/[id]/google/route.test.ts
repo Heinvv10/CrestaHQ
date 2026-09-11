@@ -196,12 +196,15 @@ describe("disconnect", () => {
     process.env.GBP_PROVIDER = "fake";
     process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
     process.env.GBP_FAKE_AGENCY_ID = "ag_1";
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn.mockClear(); // earlier tests in this file share the spy
     const res = await disconnect();
     expect(res.status).toBe(200);
     expect(state.docs.has(SECRET_PATH)).toBe(false);
     expect(state.docs.get(SUB_PATH)?.googleConnectionMeta).toBeNull();
     expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    // Revoke was skipped, not attempted-and-failed.
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("revoke failed");
     delete process.env.GBP_PROVIDER;
     delete process.env.GBP_FAKE_AGENCY_ID;
   });
