@@ -496,6 +496,14 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Deal pipelines (stages embedded). Server-only: the dashboard reads
+      // them through GET /api/sub-accounts/[id]/pipelines (which also seeds
+      // the default), and every write goes through those Admin-SDK routes.
+      // Same shape as importMappings below — nothing here for the client.
+      match /pipelines/{pipelineId} {
+        allow read, write: if false;
+      }
+
       // Folders that group custom fields (GHL-style). Same model as
       // customFields: member-read, all writes through
       // /api/sub-accounts/[id]/custom-field-folders.
@@ -505,6 +513,38 @@ service cloud.firestore {
           get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
         );
         allow write: if false;
+      }
+
+      // Saved smart lists (contacts-list filters). Member-writable like
+      // contact notes — a list is a view, not customer data — with the
+      // tenant keys pinned on create and locked on update.
+      match /smartLists/{listId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        // Shape is validated here because the page reads `filters.all` on
+        // every render for every member — one malformed doc would break the
+        // contacts list for the whole workspace.
+        allow create: if request.resource.data.subAccountId == subAccountId
+          && request.resource.data.agencyId
+            == get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+          && request.resource.data.name is string
+          && request.resource.data.filters.all is list
+          && canAccessSub(
+            request.resource.data.subAccountId,
+            request.resource.data.agencyId
+          );
+        allow update: if canAccessSub(
+          resource.data.subAccountId,
+          resource.data.agencyId
+        ) && tenantFieldsLockedOnUpdate()
+          && request.resource.data.name is string
+          && request.resource.data.filters.all is list;
+        allow delete: if canAccessSub(
+          resource.data.subAccountId,
+          resource.data.agencyId
+        );
       }
 
       // Import id-mappings (source-system id ↔ LeadStack id). Internal only —
@@ -915,29 +955,19 @@ service cloud.firestore {
     }
 
     match /deals/{dealId} {
-      // Same territory-scoping pattern as contacts above.
+      // Same territory-scoping pattern as contacts above for reads. Every
+      // write goes through the Admin-SDK routes (/api/deals, /api/v1/deals,
+      // the form submit, quotes lifecycle, AI Suite) so the service can
+      // validate stageId against the deal's pipeline and fire the matching
+      // webhooks + workflow triggers — a client write would bypass all of
+      // that. The old client writers in src/lib/firestore/deals.ts have no
+      // callers.
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
-      allow create: if canAccessSub(
-        request.resource.data.subAccountId,
-        request.resource.data.agencyId
-      );
-      allow update: if canSeeScopedDoc(
-        resource.data.subAccountId,
-        resource.data.agencyId,
-        resource.data.get("territoryId", null)
-      ) && tenantFieldsLockedOnUpdate()
-        && territoryIdUnchangedOrAdmin(
-          resource.data.subAccountId,
-          resource.data.agencyId
-        );
-      allow delete: if canAdminSub(
-        resource.data.subAccountId,
-        resource.data.agencyId
-      );
+      allow create, update, delete: if false;
     }
 
     match /tasks/{taskId} {

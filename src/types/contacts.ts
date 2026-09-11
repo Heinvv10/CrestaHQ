@@ -1,4 +1,5 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
+import type { ConditionGroup } from "@/types/workflows";
 
 /**
  * How a Contact entered the CRM. Stored as a free-form string on the doc
@@ -268,6 +269,23 @@ export interface Note {
   content: string;
   createdBy: string;
   createdAt: Timestamp | FieldValue | null;
+}
+
+/**
+ * Saved filter over the contacts list, stored at
+ * `subAccounts/{subAccountId}/smartLists/{id}`. `filters` is the same
+ * ConditionGroup a workflow trigger uses, evaluated client-side over the
+ * live contact array by `lib/contacts/filter.ts::applyFilters`.
+ */
+export interface SmartListDoc {
+  id: string;
+  name: string;
+  filters: ConditionGroup;
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
 }
 
 export interface ActivityItem {

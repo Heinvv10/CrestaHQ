@@ -7,6 +7,8 @@ import { FunnelChart } from "@/components/reports/charts";
 import { SourceBadge, sourceLabel } from "@/components/contacts/source-badge";
 import type { Contact } from "@/types/contacts";
 import type { Deal } from "@/types/deals";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
+import { dealOutcome } from "@/lib/pipelines/stages";
 import { cn } from "@/lib/utils";
 
 /**
@@ -61,6 +63,8 @@ export function AttributionReport({
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Won by each deal's OWN pipeline's terminal stage, not the literal id.
+  const { pipelines } = usePipelines();
   const { rows, totals } = useMemo(() => {
     const inRange = (value: Contact["createdAt"]) => {
       if (!rangeDays) return true;
@@ -105,7 +109,8 @@ export function AttributionReport({
       const { sourceKey, campaignKey } = keysFor(contactById.get(d.contactId));
       const createdInRange = inRange(d.createdAt);
       const wonInRange =
-        d.stageId === "won" && inRange(d.stageChangedAt ?? d.createdAt);
+        dealOutcome(d, pipelines) === "won" &&
+        inRange(d.stageChangedAt ?? d.createdAt);
       if (!createdInRange && !wonInRange) continue;
       const { row, campaign } = bucket(sourceKey, campaignKey);
       if (createdInRange) {
@@ -151,7 +156,7 @@ export function AttributionReport({
     );
 
     return { rows, totals };
-  }, [contacts, deals, rangeDays, rangeCutoff]);
+  }, [contacts, deals, rangeDays, rangeCutoff, pipelines]);
 
   const revenueBars = rows
     .filter((r) => r.wonValue > 0)

@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
+  DealStageError,
   emitDealCreatedById,
   updateDealServerSide,
 } from "@/lib/server/deals-service";
@@ -184,7 +185,8 @@ export async function applyDealOutcomeForAcceptedQuote(
       const moved = await updateDealServerSide({
         dealId: linkedDealId,
         patch: {
-          stageId: "won",
+          // The linked deal may live in any pipeline; land on ITS won stage.
+          terminal: "won",
           value: totals.total,
           currency: quote.currency,
         },
@@ -200,6 +202,14 @@ export async function applyDealOutcomeForAcceptedQuote(
         `[quotes/lifecycle] linked deal ${linkedDealId} missing at accept — falling back to auto-create`,
       );
     } catch (err) {
+      if (err instanceof DealStageError && err.code === "no_terminal_stage") {
+        // The linked deal exists but its pipeline has no Won stage. Minting a
+        // second, default-pipeline deal would double-count the quote.
+        console.warn(
+          `[quotes/lifecycle] linked deal ${linkedDealId} not moved: ${err.message}`,
+        );
+        return;
+      }
       console.error("[quotes/lifecycle] linked-deal move failed", err);
       // Fall through to the auto-create fallback below.
     }

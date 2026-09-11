@@ -23,6 +23,10 @@ export type WorkflowTriggerType =
   | "contact.tag.added"
   | "form.submitted"
   | "pipeline.stage.changed"
+  // Deal lifecycle (lib/server/deals-service.ts); won/lost = stage `terminal`.
+  | "deal.created"
+  | "deal.won"
+  | "deal.lost"
   | "booking.created"
   | "booking.cancelled"
   | "booking.rescheduled"
@@ -81,6 +85,8 @@ export interface WorkflowTrigger {
   formId?: string | null;
   /** Restrict `link.clicked` to one tracked link. Null/absent = any link. */
   linkId?: string | null;
+  /** Restrict the deal triggers to one pipeline. Null/absent = any. */
+  pipelineId?: string | null;
   /** Restrict `pipeline.stage.changed` to one target stage. */
   toStage?: string | null;
   /**
@@ -265,6 +271,7 @@ export interface TagConfig {
 }
 export interface MoveStageConfig {
   stage: string;
+  pipelineId?: string; // builder scoping only; the step writes contact.pipelineStage
 }
 export interface UpdateFieldConfig {
   field: string;

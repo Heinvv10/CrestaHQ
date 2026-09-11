@@ -29,6 +29,8 @@ interface DealCardProps {
    * the button only renders below md (drag remains the desktop pattern).
    */
   onMoveRequest?: () => void;
+  /** The deal sits in its pipeline's Won stage — shows the "Completed" tick. */
+  won?: boolean;
 }
 
 export function DealCard({
@@ -43,6 +45,7 @@ export function DealCard({
   style,
   onEdit,
   onMoveRequest,
+  won,
 }: DealCardProps) {
   const { saPath, subAccount } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
@@ -93,6 +96,7 @@ export function DealCard({
     <div
       ref={setNodeRef}
       style={style}
+      data-deal-card={deal.id}
       className={cn(
         "group relative rounded-lg border bg-card p-3 text-sm shadow-sm transition-all",
         "before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-r-full before:bg-gradient-to-b before:from-indigo-500 before:via-violet-500 before:to-pink-500 before:opacity-0 before:transition-opacity",
@@ -176,7 +180,7 @@ export function DealCard({
         </button>
       )}
 
-      {deal.stageId === "won" && (
+      {won && (
         <button
           type="button"
           onPointerDown={(e) => e.stopPropagation()}

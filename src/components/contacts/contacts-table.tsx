@@ -16,6 +16,7 @@ import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 import { SourceBadge } from "@/components/contacts/source-badge";
 import { formatContactDate } from "@/lib/format";
+import { matchesSearch } from "@/lib/contacts/filter";
 import { cn } from "@/lib/utils";
 import { useSubAccount } from "@/context/sub-account-context";
 import { contactDisplayName } from "@/lib/contacts/display-name";
@@ -148,17 +149,10 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
     [saPath, showTerritoryCol, territoryById],
   );
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return contacts;
-    return contacts.filter((c) => {
-      return (
-        c.name?.toLowerCase().includes(q) ||
-        c.email?.toLowerCase().includes(q) ||
-        c.company?.toLowerCase().includes(q)
-      );
-    });
-  }, [contacts, search]);
+  const filtered = useMemo(
+    () => contacts.filter((c) => matchesSearch(c, search)),
+    [contacts, search],
+  );
 
   const table = useReactTable({
     data: filtered,
