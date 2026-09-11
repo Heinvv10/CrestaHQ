@@ -56,7 +56,9 @@ export async function DELETE(
   await secretRef.delete();
   // The listing belongs to the connection it was picked through; clearing it
   // is audited (reason "disconnected") in the same write as the meta.
-  await clearListing(id, access.uid, "disconnected", { googleConnectionMeta: null });
+  await clearListing(id, access.uid, "disconnected", {
+    alsoSet: { googleConnectionMeta: null },
+  });
 
   return NextResponse.json({ ok: true });
 }

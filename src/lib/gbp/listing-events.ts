@@ -21,17 +21,25 @@ export async function clearListing(
   subAccountId: string,
   byUid: string,
   reason: ListingClearedReason,
-  /** Other fields to clear in the same write (disconnect clears the meta too). */
-  alsoSet: Record<string, unknown> = {},
+  opts: {
+    /** Other fields to clear in the same write (disconnect clears the meta too). */
+    alsoSet?: Record<string, unknown>;
+    /**
+     * Clear ONLY if the stored listing is still this location — the one that
+     * was checked. A newer selection made meanwhile is left alone.
+     */
+    onlyIf?: string;
+  } = {},
 ): Promise<void> {
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${subAccountId}`);
   await db.runTransaction(async (tx) => {
     const sub = (await tx.get(subRef)).data() ?? {};
     const previous: string | null = sub.googleListing?.locationName ?? null;
+    if (opts.onlyIf !== undefined && previous !== opts.onlyIf) return;
     tx.set(
       subRef,
-      { ...alsoSet, googleListing: null, updatedAt: FieldValue.serverTimestamp() },
+      { ...opts.alsoSet, googleListing: null, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
     if (!previous) return;
@@ -72,5 +80,9 @@ export async function reverifyListingAfterReconnect(
     return;
   }
   // "unknown" = the walk was truncated: absence is not proven, keep it.
-  if (match === null) await clearListing(subAccountId, byUid, "not_accessible_after_reconnect");
+  if (match === null) {
+    await clearListing(subAccountId, byUid, "not_accessible_after_reconnect", {
+      onlyIf: listing.locationName,
+    });
+  }
 }
