@@ -17,6 +17,8 @@ export interface TaskApiObject {
   deal_id: string | null;
   event_id: string | null;
   territory_id: string | null;
+  /** Sub-account member uid the record is assigned to; read-only over the public API. */
+  assigned_to_uid: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +54,7 @@ export function serializeTaskForApi(
     deal_id: (data.dealId as string | null) ?? null,
     event_id: (data.eventId as string | null) ?? null,
     territory_id: (data.territoryId as string | null) ?? null,
+    assigned_to_uid: (data.assignedToUid as string | null) ?? null,
     created_at: tsToIso(data.createdAt),
     updated_at: tsToIso(data.updatedAt),
   };

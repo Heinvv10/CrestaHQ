@@ -58,6 +58,17 @@ service cloud.firestore {
         && request.resource.data.agencyId == resource.data.agencyId;
     }
 
+    // `assignedToUid` (contacts / tasks "owner") may be cleared, or point at
+    // an ACTIVE row in the sub-account's member subcollection — the same
+    // test the server's isAssignableMember() makes. A uid outside the
+    // roster, or a removed member, is refused: an assignee the picker
+    // cannot show is an assignee nobody can ever filter for.
+    function assigneeIsMemberOrNull(saId) {
+      return request.resource.data.get("assignedToUid", null) == null
+        || (request.resource.data.assignedToUid is string
+          && get(/databases/$(database)/documents/subAccounts/$(saId)/subAccountMembers/$(request.resource.data.assignedToUid)).data.status == "active");
+    }
+
     // A contact's `companyId` must be absent/null or point at a company in
     // the SAME sub-account. Without this a member of tenant B could link
     // their contact to tenant A's company, and tenant A's server-side
@@ -868,7 +879,8 @@ service cloud.firestore {
       allow create: if canAccessSub(
         request.resource.data.subAccountId,
         request.resource.data.agencyId
-      ) && companyLinkInTenant();
+      ) && companyLinkInTenant()
+        && assigneeIsMemberOrNull(request.resource.data.subAccountId);
       // Updates require territory visibility; territory reassignment uses
       // the server route so linked conversation previews move atomically.
       allow update: if canSeeScopedDoc(
@@ -876,6 +888,7 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
+        && assigneeIsMemberOrNull(resource.data.subAccountId)
         // Territory changes must use the server route, which atomically scopes inbox previews.
         && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null)
         && companyLinkInTenant();
@@ -982,12 +995,13 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      ) && assigneeIsMemberOrNull(request.resource.data.subAccountId);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
+        && assigneeIsMemberOrNull(resource.data.subAccountId)
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId

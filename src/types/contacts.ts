@@ -76,6 +76,11 @@ export interface Contact {
    *  their region. Empty string when not provided. */
   address: string;
   source: ContactSource;
+  /**
+   * Sub-account member this record is assigned to (GHL "owner"). `null` /
+   * absent = unassigned. Validated against `subAccountMembers` on write.
+   */
+  assignedToUid?: string | null;
   tags: string[];
   pipelineStage: string | null;
   attribution: ContactAttribution | null;
@@ -182,6 +187,7 @@ export type ContactFormData = Pick<
 > & {
   companyId?: string | null;
   territoryId?: string | null;
+  assignedToUid?: string | null;
   customFields?: Record<
     string,
     import("./custom-fields").CustomFieldValue

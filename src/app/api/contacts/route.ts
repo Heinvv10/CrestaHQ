@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { resolveCompanyLink } from "@/lib/server/companies-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
@@ -70,6 +71,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: cf.error }, { status: 400 });
   }
 
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    !(await isAssignableMember(subAccountId, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
   // A linked company must belong to this sub-account; its name overrides
   // the free-text `company` so the two never disagree.
   let company = str(body.company);
@@ -100,6 +111,7 @@ export async function POST(request: Request) {
     source: str(body.source),
     tags: strArray(body.tags),
     territoryId: typeof body.territoryId === "string" ? body.territoryId : null,
+    assignedToUid: assignedToUid ?? null,
     customFields: cf.value,
   });
 

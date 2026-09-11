@@ -9,6 +9,7 @@ import {
   updateDealServerSide,
   type UpdateDealPatch,
 } from "@/lib/server/deals-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { maybeSendReviewRequest } from "@/lib/reviews/request";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
@@ -101,6 +102,20 @@ export async function PATCH(
       typeof body.lostReason === "string" ? body.lostReason : null;
   }
   if (typeof body.completed === "boolean") patch.completed = body.completed;
+  // Validate only a CHANGED assignee: the edit dialog echoes the stored uid,
+  // and a member removed since must not lock every other field's edit.
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    assignedToUid !== ((data.assignedToUid as string | null) ?? null) &&
+    !(await isAssignableMember(data.subAccountId as string, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
+  if (assignedToUid !== undefined) patch.assignedToUid = assignedToUid;
   if (body.customFields !== undefined) {
     const defs = await loadCustomFieldDefs(data.subAccountId as string, "deal");
     const cf = validateCustomFieldValues(body.customFields, defs);

@@ -3,6 +3,7 @@
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { CONDITION_OPS, REPLY_TEXT_FIELD } from "@/lib/workflows/catalog";
 import type { Condition, ConditionGroup, ConditionOp } from "@/types/workflows";
 
@@ -14,6 +15,7 @@ const COMMON_FIELDS = [
   "source",
   "pipelineStage",
   "tags",
+  "assignedToUid",
 ];
 
 const NO_VALUE_OPS: ConditionOp[] = ["is_set", "not_set"];
@@ -78,14 +80,23 @@ export function ConditionsEditor({
               </option>
             ))}
           </select>
-          {!NO_VALUE_OPS.includes(c.op) && (
-            <Input
-              value={c.value ?? ""}
-              placeholder="value"
-              onChange={(e) => update(i, { value: e.target.value })}
-              className="h-8 flex-1"
-            />
-          )}
+          {!NO_VALUE_OPS.includes(c.op) &&
+            (c.field === "assignedToUid" ? (
+              // The stored value is a uid; pick it by member name.
+              <AssigneeSelect
+                id={`cond-assignee-${i}`}
+                value={c.value ?? null}
+                onChange={(uid) => update(i, { value: uid ?? "" })}
+                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-sm"
+              />
+            ) : (
+              <Input
+                value={c.value ?? ""}
+                placeholder="value"
+                onChange={(e) => update(i, { value: e.target.value })}
+                className="h-8 flex-1"
+              />
+            ))}
           <Button
             type="button"
             variant="ghost"

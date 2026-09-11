@@ -76,6 +76,13 @@ describe("applyFilters", () => {
     expect(ids(applyFilters(fixture, { all: [{ field: "customFields.plan", op: "not_set" }] }))).toEqual(["a", "b"]);
   });
 
+  it("filters by assignedToUid (equals / is_set / not_set)", () => {
+    const assigned = [contact({ id: "x", assignedToUid: "m1" }), contact({ id: "y", assignedToUid: null }), contact({ id: "z" })];
+    expect(ids(applyFilters(assigned, { all: [{ field: "assignedToUid", op: "equals", value: "m1" }] }))).toEqual(["x"]);
+    expect(ids(applyFilters(assigned, { all: [{ field: "assignedToUid", op: "is_set" }] }))).toEqual(["x"]);
+    expect(ids(applyFilters(assigned, { all: [{ field: "assignedToUid", op: "not_set" }] }))).toEqual(["y", "z"]);
+  });
+
   it("tolerates a malformed group with no `all` array", () => {
     expect(applyFilters(fixture, { all: undefined as unknown as never })).toBe(fixture);
   });

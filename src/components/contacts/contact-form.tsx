@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useSubAccount } from "@/context/sub-account-context";
 import { TerritorySelectField } from "@/components/settings/territory-select-field";
@@ -69,6 +70,9 @@ export function ContactForm({
   const [territoryId, setTerritoryId] = useState<string | null>(
     initial?.territoryId ?? null
   );
+  const [assignedToUid, setAssignedToUid] = useState<string | null>(
+    initial?.assignedToUid ?? null
+  );
 
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
   const cfFolders = useCustomFieldFolders(subAccountId, "contact");
@@ -130,6 +134,7 @@ export function ContactForm({
         address: address.trim(),
         source,
         tags,
+        assignedToUid,
         customFields: cf.value,
       };
       // Only include territoryId when scoping is on AND (creating OR
@@ -239,6 +244,15 @@ export function ContactForm({
         <p className="text-muted-foreground text-xs">
           Separate tags with commas
         </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="c-assignee">Assigned to</Label>
+        <AssigneeSelect
+          id="c-assignee"
+          value={assignedToUid}
+          onChange={setAssignedToUid}
+        />
       </div>
 
       {/* Renders nothing when territory scoping is off. */}

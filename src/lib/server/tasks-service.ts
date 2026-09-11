@@ -46,6 +46,7 @@ export interface CreateTaskInput {
   contactId: string | null;
   dealId: string | null;
   eventId: string | null;
+  assignedToUid?: string | null;
   /** Set by the workflow engine so the `task_created` timeline row links
    *  back to the run that minted the task. */
   workflow?: { workflowId: string; runId: string };
@@ -74,6 +75,7 @@ export async function createTaskServerSide(
     contactId: input.contactId,
     dealId: input.dealId,
     eventId: input.eventId,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,

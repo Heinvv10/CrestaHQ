@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { PipelineStagePicker } from "@/components/pipeline/pipeline-stage-picker";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
@@ -62,6 +63,7 @@ export function NewDealDialog({
     defaultStageId ?? byId(defaultPipelineId).stages[0]?.id ?? "",
   );
   const [priority, setPriority] = useState<DealPriority>("medium");
+  const [assignedToUid, setAssignedToUid] = useState<string | null>(null);
   const [contactId, setContactId] = useState(defaultContactId ?? "");
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
   const cfFolders = useCustomFieldFolders(subAccountId, "deal");
@@ -156,6 +158,7 @@ export function NewDealDialog({
       // inherits it. No separate picker; reassignment happens by
       // re-tagging the contact.
       territoryId: selectedContact?.territoryId ?? null,
+      assignedToUid,
       customFields: cf.value,
     };
     setSaving(true);
@@ -294,6 +297,11 @@ export function NewDealDialog({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="deal-assignee">Assigned to</Label>
+              <AssigneeSelect id="deal-assignee" value={assignedToUid} onChange={setAssignedToUid} />
             </div>
 
             <div className="space-y-1.5">

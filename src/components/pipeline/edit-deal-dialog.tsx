@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { useSubAccount } from "@/context/sub-account-context";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
@@ -58,6 +59,7 @@ export function EditDealDialog({
   const [pipelineId, setPipelineId] = useState("");
   const [stageId, setStageId] = useState<PipelineStageId>("new");
   const [priority, setPriority] = useState<DealPriority>("medium");
+  const [assignedToUid, setAssignedToUid] = useState<string | null>(null);
   const [contactId, setContactId] = useState("");
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
   const cfFolders = useCustomFieldFolders(subAccountId, "deal");
@@ -74,6 +76,7 @@ export function EditDealDialog({
       setPipelineId(byId(deal.pipelineId).id);
       setStageId(deal.stageId);
       setPriority(deal.priority ?? "medium");
+      setAssignedToUid(deal.assignedToUid ?? null);
       setContactId(deal.contactId);
       setCfValues(
         (deal.customFields ?? {}) as Record<string, CustomFieldValue>,
@@ -138,6 +141,7 @@ export function EditDealDialog({
         currency,
         priority,
         stageId,
+        assignedToUid,
         pipelineId,
         customFields: cf.value,
       };
@@ -278,6 +282,11 @@ export function EditDealDialog({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-deal-assignee">Assigned to</Label>
+            <AssigneeSelect id="edit-deal-assignee" value={assignedToUid} onChange={setAssignedToUid} />
           </div>
 
           <div className="space-y-1.5">

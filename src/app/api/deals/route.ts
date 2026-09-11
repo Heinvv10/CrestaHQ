@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createDealServerSide } from "@/lib/server/deals-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { loadPipeline } from "@/lib/pipelines/server";
@@ -81,6 +82,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: cf.error }, { status: 400 });
   }
 
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    !(await isAssignableMember(subAccountId, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
+
   const { id, deal } = await createDealServerSide({
     subAccountId,
     agencyId,
@@ -94,6 +106,7 @@ export async function POST(request: Request) {
     pipelineId: pipeline.id,
     priority,
     territoryId: typeof body.territoryId === "string" ? body.territoryId : null,
+    assignedToUid: assignedToUid ?? null,
     customFields: cf.value,
   });
 

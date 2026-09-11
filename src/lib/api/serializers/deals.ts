@@ -35,6 +35,8 @@ export interface DealApiObject {
   contact_id: string | null;
   lost_reason: string | null;
   territory_id: string | null;
+  /** Sub-account member uid the record is assigned to; read-only over the public API. */
+  assigned_to_uid: string | null;
   custom_fields: Record<string, CustomFieldValue> | null;
   created_at: string;
   updated_at: string;
@@ -81,6 +83,7 @@ export function serializeDealForApi(
     contact_id: (data.contactId as string | null) ?? null,
     lost_reason: (data.lostReason as string | null) ?? null,
     territory_id: (data.territoryId as string | null) ?? null,
+    assigned_to_uid: (data.assignedToUid as string | null) ?? null,
     custom_fields: customFieldsForApi(data.customFields),
     created_at: tsToIso(data.createdAt),
     updated_at: tsToIso(data.updatedAt),
