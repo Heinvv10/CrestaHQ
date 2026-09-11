@@ -17,12 +17,12 @@
 | `system/heartbeat` | server-only | Instance id + last-heartbeat timestamp (gitpage status checks) |
 | `system/gitpageStatus` | active members read | Cached gitpage subscription state; drives the activate-banner UI |
 | `invites/{auto}` | agency owner / sub-account admin | Typed invites (carry `subAccountId` + `subAccountRole`) |
-| `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid` |
+| `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid`; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `contacts/{id}/notes/{id}` | inherits | Free-text notes |
 | `contacts/{id}/activities/{id}` | inherits | Typed events |
-| `deals/{id}` | sub-account | One contact → many deals |
+| `deals/{id}` | sub-account | One contact → many deals; optional `assignedToUid` (validated by the deals API) |
 | `events/{id}` | sub-account | Calendar events |
-| `tasks/{id}` | sub-account | Todos |
+| `tasks/{id}` | sub-account | Todos; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `forms/{id}` | sub-account | Form config |
 | `forms/{id}/submissions/{id}` | sub-account read, server-write | Inbound submissions; route stamps tenancy from the form doc |
 | `usage/{subAccountId}/users/{uid}` | self/owner read | Email + SMS quotas |

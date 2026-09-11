@@ -58,6 +58,16 @@ service cloud.firestore {
         && request.resource.data.agencyId == resource.data.agencyId;
     }
 
+    // `assignedToUid` (contacts / tasks "owner") may be cleared, or point at
+    // a row in the sub-account's member subcollection. A uid outside the
+    // roster is refused: an assignee the picker cannot show is an assignee
+    // nobody can ever filter for.
+    function assigneeIsMemberOrNull(saId) {
+      return request.resource.data.get("assignedToUid", null) == null
+        || (request.resource.data.assignedToUid is string
+          && exists(/databases/$(database)/documents/subAccounts/$(saId)/subAccountMembers/$(request.resource.data.assignedToUid)));
+    }
+
     // ---------- territory scoping (opt-in per sub-account) ----------
     // When the sub-account's `territoryScopingEnabled` field is true,
     // collaborators only see deals/contacts whose `territoryId` is in
@@ -822,6 +832,7 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
+        && assigneeIsMemberOrNull(resource.data.subAccountId)
         // Territory changes must use the server route, which atomically scopes inbox previews.
         && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null);
       allow delete: if canAdminSub(
@@ -937,12 +948,13 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      ) && assigneeIsMemberOrNull(request.resource.data.subAccountId);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
+        && assigneeIsMemberOrNull(resource.data.subAccountId)
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
