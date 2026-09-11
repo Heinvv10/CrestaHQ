@@ -7,6 +7,8 @@ Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`). Never B
 
 Definition of done per row: Playwright spec (mutation-proven, blocking CI) + blind review APPROVED + shown in the browser on #1000 with a screenshot under `docs/parity/evidence/sp1/`.
 
+> **Evidence caveat:** the frames under `evidence/sp1/` come from a LOCAL standalone build of `main` driven on the E2E fixture tenant — not from crm.crestahq.com. The app has not been deployed; #1000 screenshots follow the next production deploy.
+
 ---
 
 ## Ledger
@@ -40,7 +42,7 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 | D2 | **Custom fields grouped in folders** ("General Info", custom folders), collapsible | Flat "Details" card, ordered by `order` (`CustomFieldDef` has no folder) | Folders: `folder` on def + settings UI to create/rename/assign + grouped render in detail + form | (f) #90 | `custom-field-folders.spec.ts` | **merged 6f984d5** |
 | D3 | **Activity** tab: every event (messages in/out, notes, tasks, appointments, opportunity moves, workflow enrolments/steps, form submits) | `activity-timeline.tsx` merges `notes` + `activities`; types cover pipeline_moved, task_completed, form_submitted, email/sms/wa/messenger/ig sent, automation_*, voice, quote, booking, order, webinar | **Inbound** messages are not activities (they live in `messages`/`whatsappMessages`/`emailMessages`); `task_created` missing; `deal_created`/`deal_won`/`deal_lost` only via pipeline_moved; workflow entries not linked to the run | (e) #96 | `contact-timeline.spec.ts` | **merged 7ee08ae** |
 | D4 | Tasks sub-tab on contact | `contact-tasks.tsx` | — | — | — | parity |
-| D5 | Opportunities on contact | `contact-deals.tsx` | needs pipeline name once multi-pipeline lands | (c) #93 | — | merged |
+| D5 | Opportunities on contact | `contact-deals.tsx` | shows the pipeline name when >1 pipeline (#93) | (c) #93 | — | merged |
 | D6 | Company link | `company` is a free-text string | See Companies | (d) #92 | — | merged |
 
 ### Companies (GHL "Businesses")
