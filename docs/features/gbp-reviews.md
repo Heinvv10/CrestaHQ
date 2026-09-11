@@ -160,8 +160,8 @@ held by three things, none of which parses env files:
    `GBP_FAKE_*`. No parsing, no expansion, so no dotenv spelling can slip past
    it. It also refuses when `NEXT_PUBLIC_APP_URL` is DEFINED more than once in
    `.env.production` or defined in any other env file (`.env.example`, which
-   Next never loads, is exempt; comment lines never count, and a lone CR breaks
-   a line as in dotenv), so the deploy script's `sed` and Next cannot read
+   Next never loads, is exempt; comment lines never count, and a lone CR, U+2028
+   or U+2029 breaks a line as in dotenv), so the deploy script's `sed` and Next cannot read
    different values.
    Unreadable files fail closed. `GBP_SYNC_SCHEDULE_ENABLED` is allowed.
 3. **Post-build deploy check** (`scripts/gbp-deploy-check.mjs post`, in
@@ -195,6 +195,9 @@ inlined URL, so the app fence plus the post-build check still hold.
   Expected: `1: clean …`, `2: ok — one definition`, `3: done` with nothing
   between. A comment naming `NEXT_PUBLIC_APP_URL` (the production file has one
   copied from `.env.example`) is fine; a comment naming `GBP_PROVIDER` is not.
+  This block is a convenience for the owner; the deploy's pre-check is the
+  authority (grep splits lines only on LF, so a definition hidden behind a lone
+  CR can read `ok` here and still be refused by the deploy — the safe direction).
 
 ```bash
 sudo -u velo bash -s <<'CHECK'
@@ -211,6 +214,7 @@ case $rc in 0|1) if [ "$n" = 1 ]; then echo "2: ok — one definition"; else ech
 
 # 3. No NEXT_PUBLIC_APP_URL definition in any other .env* file (.env.example is exempt).
 for f in "$D"/.env*; do
+  [ -d "$f" ] && continue   # the pre-check skips directories too
   case "${f##*/}" in .env.production|.env.example) continue;; esac
   grep -qE "$DEF" "$f"
   case $? in 0) echo "3: REMOVE the NEXT_PUBLIC_APP_URL definition from $f";; 1) ;; *) echo "3: CHECK FAILED — could not read $f";; esac

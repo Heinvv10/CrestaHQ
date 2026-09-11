@@ -85,9 +85,10 @@ export function mentionsFakeKeys(dir, shellEnv) {
     // .env.production); Next takes the LAST definition and lets .env.local /
     // .env.production.local win. Allow ONE definition, in one file, so the two
     // readings cannot differ. Comments never count (the production file keeps
-    // one copied from .env.example); a lone CR breaks a line, as in dotenv.
+    // one copied from .env.example); a lone CR, U+2028 and U+2029 break a line,
+    // as they do for dotenv's multiline regex.
     if (TEMPLATES.has(name)) continue;
-    const definitions = text.split(/\r\n?|\n/).filter((l) => APP_URL_DEFINITION.test(l)).length;
+    const definitions = text.split(/\r\n?|[\n\u2028\u2029]/).filter((l) => APP_URL_DEFINITION.test(l)).length;
     if (name === ".env.production" && definitions > 1) {
       problems.push(`${name}: NEXT_PUBLIC_APP_URL is defined ${definitions} times — exactly one allowed`);
     } else if (name !== ".env.production" && definitions > 0) {

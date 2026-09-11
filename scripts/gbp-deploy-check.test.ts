@@ -81,6 +81,13 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(tmp({ ".env.production": text }), {}).join()).toContain("NEXT_PUBLIC_APP_URL");
   });
 
+  it("treats U+2028 / U+2029 as line breaks, like dotenv (a second definition behind a comment)", () => {
+    for (const sep of ["\u2028", "\u2029"]) {
+      const text = `NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n# note${sep}NEXT_PUBLIC_APP_URL=https://evil.example\n`;
+      expect(mentionsFakeKeys(tmp({ ".env.production": text }), {}).join()).toContain("NEXT_PUBLIC_APP_URL");
+    }
+  });
+
   it("allows the real production shape: a comment copied from .env.example plus ONE definition", () => {
     const prod =
       "# Base URL of the app — NEXT_PUBLIC_APP_URL is inlined at build time\n" +
