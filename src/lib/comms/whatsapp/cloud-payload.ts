@@ -56,7 +56,12 @@ export interface CloudInbound {
   text: string;
   providerMessageId: string;
   profileName: string;
+  /** The tapped button's payload (quick reply) or id (interactive reply);
+   *  null for anything that was not a button tap. */
+  buttonPayload: string | null;
 }
+
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 /**
  * Pulls the first inbound customer message.
@@ -65,6 +70,12 @@ export interface CloudInbound {
  * real message, and even a caption-less one opens the 24-hour service window,
  * which is the fact the send path depends on. So the body may be empty, but
  * the message is never silently discarded.
+ *
+ * A button tap is a reply: its text becomes the body, so a workflow waiting
+ * on a reply can branch on `reply.text` exactly as it does on typed text.
+ * Meta sends two shapes — `type: "button"` for a template quick reply
+ * (`button.text` / `button.payload`) and `type: "interactive"` for a reply to
+ * an in-window interactive message (`button_reply.title` / `button_reply.id`).
  */
 export function parseCloudInbound(payload: unknown): CloudInbound | null {
   const value = firstValue(payload);
@@ -84,17 +95,26 @@ export function parseCloudInbound(payload: unknown): CloudInbound | null {
     typeof profile?.name === "string" ? profile.name.trim() : "";
 
   let text = "";
+  let buttonPayload: string | null = null;
+  const kind = str(message.type);
   const body = asObject(message.text)?.body;
   if (typeof body === "string") {
     text = body;
+  } else if (kind === "button") {
+    const button = asObject(message.button);
+    text = str(button?.text);
+    buttonPayload = str(button?.payload) || null;
+  } else if (kind === "interactive") {
+    const reply = asObject(asObject(message.interactive)?.button_reply);
+    text = str(reply?.title);
+    buttonPayload = str(reply?.id) || null;
   } else {
     // Media types nest an optional caption under their own type key.
-    const kind = typeof message.type === "string" ? message.type : "";
     const caption = asObject(message[kind])?.caption;
     if (typeof caption === "string") text = caption;
   }
 
-  return { fromPhone, text, providerMessageId, profileName };
+  return { fromPhone, text, providerMessageId, profileName, buttonPayload };
 }
 
 export interface CloudStatus {

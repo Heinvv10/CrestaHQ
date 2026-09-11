@@ -216,6 +216,7 @@ export async function POST(request: Request) {
           to: phoneNumberId,
           provider: "cloud",
           providerMessageId: inbound.providerMessageId,
+          ...(inbound.buttonPayload ? { buttonPayload: inbound.buttonPayload } : {}),
           twilioMessageSid: null,
           sentByUid: null,
           error: null,

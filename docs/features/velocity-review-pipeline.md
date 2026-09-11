@@ -157,7 +157,7 @@ bridge" inside one sub-account is out of scope.
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
 | 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
 | 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | planned — see [Buttons](#buttons-gaps-67) |
-| 7 | Button taps reach the workflow branch | inbound webhooks → `reply.text` | planned — see [Buttons](#buttons-gaps-67) |
+| 7 | Button taps reach the workflow branch | inbound webhooks → `reply.text` | **closed** for Cloud + Twilio (build-order PR 1); bridge taps with build-order PR 7 |
 | 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
 
 **Gap 3 was already fixed when this plan was written.** PR #53 (merged
@@ -324,7 +324,17 @@ has — `wait_for_reply` (replied / timed out) and an `if_else` on `reply.text`
 | 7 | Bridge Go service: send buttons, parse taps | handset test |
 
 PR 1 alone makes gap 7 work for any Cloud or Twilio template that already has
-buttons. Each PR: provider-documented payload fixtures, mutation-tested,
+buttons. **Done:** Cloud's `type: "button"` (`button.text` / `.payload`) and
+`type: "interactive"` (`button_reply.title` / `.id`), and Twilio's
+`ButtonText` / `ButtonPayload`, now reach the wait as `reply.text`, with the
+payload stored on the message. `src/lib/workflows/button-tap-branch.test.ts`
+posts real webhooks through the real routes, conversations service and
+engine, then runs the `if_else` step and asserts the branch. Every tap shape
+is proven on its Yes case, because a dropped tap would also land on No.
+One interaction to know: a button labelled exactly `Yes` or `Stop` counts as
+an opt-in or opt-out keyword, as typed text does. "Yes, all good" does not —
+the keyword check reads the first word, and "Yes," with its comma is not
+"YES". Each PR: provider-documented payload fixtures, mutation-tested,
 blind review, `pnpm ci:check`. The pilot's end-to-end (own handset, tap Yes
 and No, link on both branches) stays a human gate.
 
