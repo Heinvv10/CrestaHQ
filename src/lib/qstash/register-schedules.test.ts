@@ -18,6 +18,8 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("QSTASH_TOKEN", "test");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
+  // Hermetic: a developer shell that sourced .env.local may enable GBP sync.
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
   mock.get.mockResolvedValue({
     exists: true,
     data: () => ({
@@ -34,7 +36,68 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-08-email-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-11-gbp-retention" }),
+    { merge: true }
+  );
+});
+
+it("always registers the daily GBP retention housekeeping — flag or no flag", async () => {
+  for (const flag of ["", "1"]) {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("QSTASH_TOKEN", "test");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
+    vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", flag);
+    mock.create.mockReset();
+    mock.get.mockResolvedValue({ exists: false, data: () => ({}) });
+    await ensureSchedulesRegistered();
+    expect(mock.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: "leadstack-gbp-retention",
+        cron: "30 4 * * *",
+        destination: "https://app.example.com/api/cron/gbp-retention",
+      })
+    );
+  }
+});
+
+function freshMarker(extra: Record<string, unknown> = {}) {
+  mock.create.mockReset();
+  mock.set.mockReset();
+  mock.get.mockResolvedValue({
+    exists: true,
+    data: () => ({ baseUrl: "https://app.example.com", registeredAt: new Date(), ...extra }),
+  });
+}
+
+function productionEnv() {
+  vi.stubEnv("NODE_ENV", "production");
+  vi.stubEnv("QSTASH_TOKEN", "test");
+  vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
+}
+
+it("does NOT register the GBP sync schedule unless the deployment opts in", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
+  freshMarker();
+  await ensureSchedulesRegistered();
+  expect(mock.create).not.toHaveBeenCalledWith(expect.objectContaining({ scheduleId: "leadstack-gbp-sync" }));
+});
+
+it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even over a fresh marker", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "1");
+  // A marker fresh from before the flag was turned on must not suppress it.
+  freshMarker({ scheduleVersion: "2026-09-11-gbp-retention" });
+  await ensureSchedulesRegistered();
+  expect(mock.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      scheduleId: "leadstack-gbp-sync",
+      cron: "0 */6 * * *",
+      destination: "https://app.example.com/api/cron/gbp-sync",
+    })
+  );
+  expect(mock.set).toHaveBeenCalledWith(
+    expect.objectContaining({ scheduleVersion: "2026-09-11-gbp-retention+gbp-sync" }),
     { merge: true }
   );
 });

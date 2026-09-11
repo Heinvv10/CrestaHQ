@@ -8,6 +8,7 @@ vi.mock("firebase-admin/firestore", async () =>
 );
 
 import { SUB, SUB_PATH, resetHarness, state } from "@/test/google-oauth-harness";
+import { CLEARED, cacheLeft, seedSyncedCache } from "@/test/gbp-route-harness";
 import { clearListing, reverifyListingAfterReconnect } from "./listing-events";
 import type { GbpProvider } from "./provider/types";
 
@@ -33,6 +34,20 @@ describe("clearListing onlyIf", () => {
     await clearListing(SUB, "uid_admin", "not_accessible_after_reconnect", { onlyIf: "locations/new" });
     expect(state.docs.get(SUB_PATH)?.googleListing).toBeNull();
     expect(state.writes.filter((w) => w.path.includes("/gbpEvents/"))).toHaveLength(1);
+  });
+});
+
+describe("clearListing and the review cache", () => {
+  it("a declined onlyIf keeps the NEWER listing's review cache", async () => {
+    seedSyncedCache();
+    await clearListing(SUB, "uid_admin", "not_accessible_after_reconnect", { onlyIf: "locations/old" });
+    expect(cacheLeft()).toMatchObject({ reviews: 2, syncState: true });
+  });
+
+  it("an onlyIf that clears takes the cache with it", async () => {
+    seedSyncedCache();
+    await clearListing(SUB, "uid_admin", "not_accessible_after_reconnect", { onlyIf: "locations/new" });
+    expect(cacheLeft()).toEqual(CLEARED);
   });
 });
 

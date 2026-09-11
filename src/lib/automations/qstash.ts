@@ -125,16 +125,19 @@ export async function publishSocialPost(
 
 /**
  * Verify an inbound QStash callback's signature. Returns true if the body
- * matches the Upstash-Signature header.
+ * matches the Upstash-Signature header. With `url`, the signature must also
+ * have been minted for exactly that destination (the JWT `sub`), so a signed
+ * call meant for another route cannot be replayed here.
  */
 export async function verifyQStashSignature(
   signature: string,
   body: string,
+  url?: string,
 ): Promise<boolean> {
   const receiver = getReceiver();
   if (!receiver) return false;
   try {
-    return await receiver.verify({ signature, body });
+    return await receiver.verify(url ? { signature, body, url } : { signature, body });
   } catch {
     return false;
   }

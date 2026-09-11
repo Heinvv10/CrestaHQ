@@ -25,7 +25,7 @@ import {
   state,
 } from "@/test/google-oauth-harness";
 import { verifyGoogleState } from "@/lib/google/oauth";
-import { TOKEN_MARKERS } from "@/test/gbp-route-harness";
+import { CLEARED, TOKEN_MARKERS, cacheLeft, seedSyncedCache } from "@/test/gbp-route-harness";
 import { GET as CONNECT } from "./connect/route";
 import { DELETE } from "./route";
 
@@ -146,6 +146,15 @@ describe("disconnect", () => {
           updatedAt: "SERVER_TS",
         },
       },
+      // The listing's synced review cache goes with it: take the lease,
+      // delete, drop the summary, then the sync state (and lease) last.
+      {
+        op: "set",
+        path: `${SUB_PATH}/private/gbpSyncState`,
+        data: { lease: { runId: "clearing", until: expect.any(Number) }, pass: null, anomalyStreak: null },
+      },
+      { op: "set", path: SUB_PATH, data: { gbpSummary: null } },
+      { op: "delete", path: `${SUB_PATH}/private/gbpSyncState` },
     ]);
   });
 
@@ -171,12 +180,18 @@ describe("disconnect", () => {
     expect(state.docs.get(SUB_PATH)?.googleListing).toBeNull();
   });
 
+  it("clears the review cache, summary and sync state", async () => {
+    seedSyncedCache();
+    await disconnect();
+    expect(cacheLeft()).toEqual(CLEARED);
+  });
+
   it("still clears local state when the revoke fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 400 })));
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = await disconnect();
     expect(res.status).toBe(200);
-    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set"]);
+    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set", "set", "set", "delete"]);
   });
 
   it("refuses in fake mode for a sub-account outside the fixture agency, touching nothing", async () => {
@@ -261,6 +276,6 @@ describe("disconnect", () => {
   it("works while the agency gate is off, so a connection is never stranded", async () => {
     state.docs.set(SUB_PATH, { agencyId: "ag_1", googleEnabledByAgency: false });
     expect((await disconnect()).status).toBe(200);
-    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set"]);
+    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set", "set", "set", "delete"]);
   });
 });

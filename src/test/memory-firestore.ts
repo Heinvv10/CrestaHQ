@@ -11,7 +11,7 @@ import { FieldValue } from "firebase-admin/firestore";
  * it, not before. */
 
 type Data = Record<string, unknown>;
-type WhereOp = "==" | "in" | "array-contains";
+type WhereOp = "==" | "!=" | "in" | "array-contains";
 
 const DELETE = Symbol("delete");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -103,6 +103,8 @@ function matches(data: Data, field: string, op: WhereOp, value: unknown): boolea
       return Array.isArray(value) && value.includes(actual);
     case "array-contains":
       return Array.isArray(actual) && actual.includes(value);
+    case "!=": // Firestore: a missing field never matches an inequality
+      return actual !== undefined && actual !== value;
   }
 }
 

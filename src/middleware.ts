@@ -42,6 +42,11 @@ const PUBLIC_PATHS = [
   // QStash signature is the authentication.
   "/api/cron/recurring-invoices",
   "/api/cron/email-sync",
+  // 6-hourly Google Business Profile review sync. Public like the other cron
+  // routes — the QStash signature, verified inside the route, is the auth.
+  "/api/cron/gbp-sync",
+  // Daily GBP review-cache retention (always on). Same auth: the signature.
+  "/api/cron/gbp-retention",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",
@@ -260,7 +265,7 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   /^\/leadstack-vs-[a-z0-9-]+$/,
 ];
 
-function isPublicPath(pathname: string): boolean {
+export function isPublicPath(pathname: string): boolean {
   if (
     PUBLIC_PATHS.some(
       (path) => pathname === path || pathname.startsWith(`${path}/`)

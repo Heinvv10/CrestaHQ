@@ -138,6 +138,36 @@ describe("scenario controls", () => {
     expect((await fake.listAccounts(tokens.accessToken)).items).toHaveLength(1);
   });
 
+  it("fails one reviews page a set number of times, leaving the other pages alone", async () => {
+    const { fake, store, tokens } = await connected();
+    await store.set(SA, {
+      ...defaultFakeScenario(),
+      failReviewsPage: { pageToken: "3", kind: "transient", times: 2 },
+    });
+    const ref = { accountName: "accounts/e2e-fixture-group", locationName: "locations/e2e-velo-gqeberha" };
+    expect((await fake.listReviews(tokens.accessToken, ref)).reviews).toHaveLength(3);
+    expect(await kindOf(fake.listReviews(tokens.accessToken, ref, "3"))).toBe("transient");
+    expect(await kindOf(fake.listReviews(tokens.accessToken, ref, "3"))).toBe("transient");
+    expect((await fake.listReviews(tokens.accessToken, ref, "3")).reviews).toHaveLength(3);
+    expect((await store.get(SA))?.failReviewsPage).toBeUndefined();
+  });
+
+  it("can report other rating/count values (or none) on later reviews pages", async () => {
+    const { fake, store, tokens } = await connected();
+    await store.set(SA, { ...defaultFakeScenario(), laterPages: { averageRating: null, totalReviewCount: null } });
+    const ref = { accountName: "accounts/e2e-fixture-group", locationName: "locations/e2e-velo-gqeberha" };
+    expect(await fake.listReviews(tokens.accessToken, ref)).toMatchObject({ averageRating: 3.6, totalReviewCount: 7 });
+    expect(await fake.listReviews(tokens.accessToken, ref, "3")).toMatchObject({ averageRating: null, totalReviewCount: null });
+  });
+
+  it("fails the FIRST reviews page when pageToken is null, and forever without times", async () => {
+    const { fake, store, tokens } = await connected();
+    await store.set(SA, { ...defaultFakeScenario(), failReviewsPage: { pageToken: null, kind: "permission_denied" } });
+    const ref = { accountName: "accounts/e2e-fixture-group", locationName: "locations/e2e-velo-gqeberha" };
+    for (let i = 0; i < 4; i++) expect(await kindOf(fake.listReviews(tokens.accessToken, ref))).toBe("permission_denied");
+    expect((await fake.listReviews(tokens.accessToken, ref, "3")).reviews).toHaveLength(3);
+  });
+
   it("persists a reply and its deletion", async () => {
     const { fake, tokens } = await connected();
     const accountName = (await fake.listAccounts(tokens.accessToken)).items[0].name;

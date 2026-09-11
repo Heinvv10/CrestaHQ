@@ -64,6 +64,19 @@ parent carries display data only: `googleConnectionMeta` (incl.
 display-only). `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
 append-only audit log (`listing_selected`, `listing_cleared` with a `reason`; tenant-anchored with `agencyId`,
 `subAccountId`, `createdByUid`); no client rule, so default deny. No new index.
+
+Review sync (all written by the sync core only, Admin SDK; no client rule, so
+default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`
+caches the CURRENT listing's reviews (tenant-anchored; `state` active/removed
+tombstones; deleted after 30 days unseen); `subAccounts/{id}/gbpSyncRuns/{runId}`
+is an append-only run record (created once per run, kinds and counts only);
+`private/gbpSyncState` holds the run lease, the pass cursor (with the
+pass's rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
+cooldown. Sub-accounts that hold a cache but can no longer sync (gate off,
+disconnected, no listing) get retention-only passes from the sweep. The member-readable
+`gbpSummary` field on the parent carries rating, count, freshness and health
+kinds. Selecting another listing, clearing it or disconnecting deletes the
+reviews, the sync state and the summary.
 See [gbp-reviews.md](../features/gbp-reviews.md).
 
 ### Workspace SMTP connection

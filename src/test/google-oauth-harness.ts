@@ -81,8 +81,17 @@ function docRef(path: string) {
 
 let autoId = 0;
 
+/** Docs directly under a collection path — what the GBP cache clear reads. */
+function listUnder(path: string) {
+  const docs = [...state.docs.keys()]
+    .filter((p) => p.slice(0, p.lastIndexOf("/")) === path)
+    .map((p) => ({ id: p.split("/").pop()!, ref: docRef(p), data: () => state.docs.get(p) }));
+  return { empty: docs.length === 0, size: docs.length, docs };
+}
+
 function collectionRef(path: string) {
   return {
+    get: async () => listUnder(path),
     doc: () => docRef(`${path}/auto_${++autoId}`),
     add: async (data: Record<string, unknown>) => {
       const id = `auto_${++autoId}`;
@@ -117,8 +126,22 @@ async function runTransaction<T>(
   return result;
 }
 
+/** Buffered like a transaction: nothing lands unless commit() runs. */
+function batch() {
+  const pending: Array<() => Promise<void>> = [];
+  const b = {
+    set: (ref: Ref, data: Record<string, unknown>, opts?: { merge?: boolean }) =>
+      (pending.push(() => ref.set(data, opts)), b),
+    delete: (ref: Ref) => (pending.push(() => ref.delete()), b),
+    commit: async () => {
+      for (const apply of pending) await apply();
+    },
+  };
+  return b;
+}
+
 export const adminMock = () => ({
-  getAdminDb: () => ({ doc: docRef, collection: collectionRef, runTransaction }),
+  getAdminDb: () => ({ doc: docRef, collection: collectionRef, runTransaction, batch }),
   getAdminAuth: () => ({
     getUser: async (uid: string) => ({
       customClaims: state.claims.get(uid) ?? {},

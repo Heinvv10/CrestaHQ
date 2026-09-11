@@ -25,7 +25,15 @@ import {
   stubTokenEndpoint,
 } from "@/test/google-oauth-harness";
 import { googleAppConfigured, signGoogleState } from "@/lib/google/oauth";
-import { DEFAULT_ACCOUNT, LOC_NORTH, TOKEN_MARKERS, setScenario } from "@/test/gbp-route-harness";
+import {
+  CLEARED,
+  DEFAULT_ACCOUNT,
+  LOC_NORTH,
+  TOKEN_MARKERS,
+  cacheLeft,
+  seedSyncedCache,
+  setScenario,
+} from "@/test/gbp-route-harness";
 import { GET as CONNECT } from "../../sub-accounts/[id]/google/connect/route";
 import { GET as CALLBACK } from "./route";
 
@@ -221,6 +229,20 @@ describe("reconnect re-verifies the selected listing", () => {
     await callback(SUB, "uid_admin", `fake-code:${SUB}`);
     expect(state.docs.get(SUB_PATH)?.googleListing).toMatchObject({ locationName: LOC_NORTH });
     expect(events()).toEqual([]);
+  });
+
+  it("a listing cleared on reconnect takes its review cache with it", async () => {
+    seedListing("locations/not-under-this-google-account");
+    seedSyncedCache();
+    await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(cacheLeft()).toEqual(CLEARED);
+  });
+
+  it("a listing KEPT on reconnect keeps its review cache", async () => {
+    seedListing(LOC_NORTH);
+    seedSyncedCache();
+    await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(cacheLeft()).toMatchObject({ reviews: 2, syncState: true });
   });
 
   it("keeps the listing, and still connects, when the re-verify itself fails", async () => {
