@@ -18,6 +18,7 @@ import { SourceBadge } from "@/components/contacts/source-badge";
 import { formatContactDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSubAccount } from "@/context/sub-account-context";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface Props {
   contacts: Contact[];
@@ -54,7 +55,7 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
             href={saPath(`/contacts/${row.original.id}`)}
             className="font-medium text-foreground hover:text-primary hover:underline"
           >
-            {row.original.name || "Unnamed"}
+            {contactDisplayName(row.original)}
           </Link>
         ),
       },
@@ -256,7 +257,7 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{c.name || "Unnamed"}</p>
+                  <p className="truncate font-medium">{contactDisplayName(c)}</p>
                   {c.email && (
                     <p className="mt-1 flex items-center gap-1.5 truncate text-sm text-muted-foreground">
                       <Mail className="h-3.5 w-3.5 shrink-0" />

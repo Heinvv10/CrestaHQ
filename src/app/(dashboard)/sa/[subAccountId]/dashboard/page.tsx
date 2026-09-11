@@ -34,6 +34,7 @@ import type { LeadForm } from "@/types/forms";
 import { Button } from "@/components/ui/button";
 import { NewDealDialog } from "@/components/pipeline/new-deal-dialog";
 import { LeadsMap } from "@/components/dashboard/leads-map";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -434,7 +435,7 @@ export default function DashboardPage() {
                             </span>
                             <div className="min-w-0 flex-1">
                               <p className="truncate font-medium">
-                                {c.name || "Unnamed"}
+                                {contactDisplayName(c)}
                               </p>
                               <p className="truncate text-xs text-muted-foreground">
                                 {c.email || c.company || "—"}
