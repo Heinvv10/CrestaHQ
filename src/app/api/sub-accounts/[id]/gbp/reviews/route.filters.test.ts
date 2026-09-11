@@ -93,6 +93,7 @@ describe("validation", () => {
     ["rating=4.5", "rating"],
     ["replied=maybe", "replied"],
     ["from=yesterday", "from"],
+    ["from=Aug 21 2026", "from"],
     ["to=2026-13-40", "to"],
     ["to=2026-02-31", "to"],
     ["sort=random", "sort"],

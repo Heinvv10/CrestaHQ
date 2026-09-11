@@ -42,8 +42,8 @@ export function ReplyComposer({
     setOpen(true);
   };
 
+  // Reachable only from the submit button, which is disabled while pending or blank.
   const submit = async () => {
-    if (pending || !text.trim()) return;
     const comment = text;
     if (lastSent.current !== null && lastSent.current !== comment) key.current = newKey();
     lastSent.current = comment;

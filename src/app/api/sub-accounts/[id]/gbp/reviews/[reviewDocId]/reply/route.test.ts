@@ -78,6 +78,12 @@ describe("who may post", () => {
     expect(r).toMatchObject({ status: 403, body: { code: "gate_off" } });
     expectUntouched();
   });
+
+  it("answers gate_off before looking at the review — even for an id that does not exist", async () => {
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, { ...sub, googleEnabledByAgency: false });
+    expect(await post("uid_admin", SA, "0".repeat(40))).toMatchObject({ status: 403, body: { code: "gate_off" } });
+  });
 });
 
 describe("which review", () => {
@@ -90,6 +96,13 @@ describe("which review", () => {
   it("404s a cached review of another listing", async () => {
     mem.seed(reviewPath("fake-r6"), { ...mem.read(reviewPath("fake-r6"))!, locationName: "locations/some-other" });
     expect((await post("uid_admin", SA, R6)).status).toBe(404);
+    expect(calls()).toEqual([]);
+  });
+
+  it("404s an id that smuggles a path — even onto an active-looking nested doc — zero calls", async () => {
+    const smuggled = `${R6}/nested/doc`;
+    mem.seed(`subAccounts/${SA}/gbpReviews/${smuggled}`, { ...mem.read(reviewPath("fake-r6"))! });
+    expect((await post("uid_admin", SA, smuggled)).status).toBe(404);
     expect(calls()).toEqual([]);
   });
 
