@@ -21,8 +21,10 @@ import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-
  * disconnect, clearing must always be possible).
  *
  * PUT trusts only the two resource names: the server re-fetches the pair
- * through the provider and refuses (400 unknown_location) unless THIS
- * connection can see it. Every display field written comes from that
+ * through the provider and refuses unless THIS connection can see it —
+ * 400 unknown_location when the full walk proves it is not there, 400
+ * unverifiable_truncated when the 20-page walk stopped before finding it
+ * (unproven either way, so still refused). Every display field written comes from that
  * re-fetch, never from the request. Each selection or clear appends an audit
  * event to `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
  */
