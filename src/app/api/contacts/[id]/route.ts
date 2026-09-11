@@ -133,9 +133,12 @@ export async function PATCH(
     patch.pipelineStage =
       typeof body.pipelineStage === "string" ? body.pipelineStage : null;
   }
+  // Validate only a CHANGED assignee: the edit form echoes the stored uid,
+  // and a member removed since must not lock every other field's edit.
   const assignedToUid = parseAssignedToUid(body);
   if (
     typeof assignedToUid === "string" &&
+    assignedToUid !== (data.assignedToUid ?? null) &&
     !(await isAssignableMember(data.subAccountId, assignedToUid))
   ) {
     return NextResponse.json(

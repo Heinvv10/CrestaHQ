@@ -79,9 +79,12 @@ export async function PATCH(
       typeof body.lostReason === "string" ? body.lostReason : null;
   }
   if (typeof body.completed === "boolean") patch.completed = body.completed;
+  // Validate only a CHANGED assignee: the edit dialog echoes the stored uid,
+  // and a member removed since must not lock every other field's edit.
   const assignedToUid = parseAssignedToUid(body);
   if (
     typeof assignedToUid === "string" &&
+    assignedToUid !== ((data.assignedToUid as string | null) ?? null) &&
     !(await isAssignableMember(data.subAccountId as string, assignedToUid))
   ) {
     return NextResponse.json(

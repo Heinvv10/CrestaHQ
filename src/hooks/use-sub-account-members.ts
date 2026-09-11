@@ -1,16 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import type { AssignableMember } from "@/types";
 
 /**
  * The assignee roster for the current sub-account, from
- * GET /api/sub-accounts/[id]/members. Fetched once per mount — memberships
- * change rarely and every picker re-mounts with its dialog.
+ * GET /api/sub-accounts/[id]/members. The last successful roster per
+ * sub-account is kept for the session so a failed refetch (offline, 5xx)
+ * still shows names; the failure itself is toasted rather than swallowed —
+ * a picker that silently offers only "Unassigned" reads as "nobody else
+ * exists".
  */
+const lastKnown = new Map<string, AssignableMember[]>();
+
 export function useSubAccountMembers(subAccountId: string | null | undefined) {
-  const [members, setMembers] = useState<AssignableMember[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [members, setMembers] = useState<AssignableMember[]>(
+    () => (subAccountId && lastKnown.get(subAccountId)) || [],
+  );
 
   useEffect(() => {
     if (!subAccountId) return;
@@ -21,15 +28,16 @@ export function useSubAccountMembers(subAccountId: string | null | undefined) {
         return (await res.json()) as { members: AssignableMember[] };
       })
       .then((b) => {
+        lastKnown.set(subAccountId, b.members);
         if (!cancelled) setMembers(b.members);
       })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "failed");
+      .catch(() => {
+        if (!cancelled) toast.error("Couldn't load the team list.");
       });
     return () => {
       cancelled = true;
     };
   }, [subAccountId]);
 
-  return { members, error };
+  return { members };
 }

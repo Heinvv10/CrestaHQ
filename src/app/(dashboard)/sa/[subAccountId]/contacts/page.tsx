@@ -11,6 +11,7 @@ import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { useSmartLists } from "@/hooks/use-smart-lists";
 import { applyFilters, matchesSearch } from "@/lib/contacts/filter";
 import { useContactSelection } from "@/hooks/use-contact-selection";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { serializeCsv, downloadCsv } from "@/lib/csv";
 import { toDate } from "@/lib/format";
@@ -99,6 +100,7 @@ export default function ContactsPage() {
   );
   const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
   const selection = useContactSelection(visibleIds);
+  const { members } = useSubAccountMembers(subAccountId);
   const selectedContacts = useMemo(
     () => visible.filter((c) => selection.selected.has(c.id)),
     [visible, selection.selected],
@@ -144,7 +146,7 @@ export default function ContactsPage() {
       toast.error("No contacts to export.");
       return;
     }
-    const headers = ["name", "email", "phone", "company", "source", "tags", "pipelineStage", "createdAt"];
+    const headers = ["name", "email", "phone", "company", "source", "tags", "pipelineStage", "assignedTo", "createdAt"];
     // Export what the current tab + filters show, not the whole workspace.
     const rows = source.map((c) => ({
       name: c.name,
@@ -154,6 +156,10 @@ export default function ContactsPage() {
       source: c.source,
       tags: c.tags ?? [],
       pipelineStage: c.pipelineStage ?? "",
+      // Member name, not uid — a uid means nothing outside this workspace.
+      assignedTo: c.assignedToUid
+        ? (members.find((m) => m.uid === c.assignedToUid)?.displayName ?? "")
+        : "",
       createdAt: toDate(c.createdAt)?.toISOString() ?? "",
     }));
     const csv = serializeCsv(headers, rows);
@@ -261,6 +267,7 @@ export default function ContactsPage() {
           onToggle={selection.toggle}
           onToggleAll={selection.allSelected ? selection.clear : selection.selectAll}
           allSelected={selection.allSelected}
+          someSelected={selection.selected.size > 0}
           territories={territories}
         />
       )}

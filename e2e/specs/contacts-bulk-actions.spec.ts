@@ -118,15 +118,19 @@ test("select-all on a filtered list, bulk tag, assign and delete", async ({
       timeout: 30_000,
     });
 
-    // --- bulk delete -----------------------------------------------------
+    // --- filter by assignee, then bulk delete ----------------------------
+    // The assignee filter is the seam here: if it ignored `assignedToUid`
+    // the third (unassigned) contact would be selected and deleted too.
     await page.goto(`/sa/${env.E2E_SUBACCOUNT_ID}/contacts`);
     await expect(row(names[0])).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "Filters" }).click();
     await panel.getByRole("button", { name: "Add condition" }).click();
-    await panel.getByPlaceholder("field").fill("tags");
-    await panel.locator("select").last().selectOption("has_tag");
-    await panel.getByPlaceholder("value").fill(filterTag);
+    await panel.getByPlaceholder("field").fill("assignedToUid");
+    await panel.locator("select").first().selectOption("equals");
+    await panel.locator("#cond-assignee-0").selectOption(ownerUid);
     await expect(row(names[2])).toHaveCount(0);
+    await expect(row(names[0])).toBeVisible();
+    await expect(row(names[1])).toBeVisible();
     await page.getByRole("checkbox", { name: "Select all" }).click();
     await expect(bar).toContainText("2 selected");
     await bar.getByRole("button", { name: "Delete" }).click();

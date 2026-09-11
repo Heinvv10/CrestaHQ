@@ -29,6 +29,8 @@ interface Props {
   onToggle: (id: string) => void;
   onToggleAll: () => void;
   allSelected: boolean;
+  /** Some, not all, visible rows selected — header shows indeterminate. */
+  someSelected: boolean;
   /**
    * Optional — when the sub-account has territory scoping on, the
    * page passes the active territory list so the table can render a
@@ -43,6 +45,7 @@ export function ContactsTable({
   onToggle,
   onToggleAll,
   allSelected,
+  someSelected,
   territories = [],
 }: Props) {
   const { subAccount, saPath } = useSubAccount();
@@ -66,6 +69,7 @@ export function ContactsTable({
           <Checkbox
             aria-label="Select all"
             checked={allSelected}
+            indeterminate={someSelected && !allSelected}
             onCheckedChange={onToggleAll}
           />
         ),
@@ -176,7 +180,7 @@ export function ContactsTable({
         ),
       },
     ],
-    [saPath, showTerritoryCol, territoryById, selected, allSelected, onToggle, onToggleAll],
+    [saPath, showTerritoryCol, territoryById, selected, allSelected, someSelected, onToggle, onToggleAll],
   );
 
   const table = useReactTable({

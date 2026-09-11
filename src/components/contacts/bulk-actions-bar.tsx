@@ -89,20 +89,21 @@ export function BulkActionsBar({
     const body = (await res.json().catch(() => ({}))) as {
       error?: string;
       deleted?: number;
-      blocked?: { id: string }[];
+      blocked?: { id: string; blockers: { label: string }[] }[];
     };
     if (!res.ok) {
       toast.error(body.error ?? "Bulk action failed.");
       return null;
     }
     if (action.type === "delete") {
-      const blocked = body.blocked?.map((b) => b.id) ?? [];
+      const blocked = body.blocked ?? [];
+      const linked = [...new Set(blocked.flatMap((b) => b.blockers.map((x) => x.label)))];
       toast.success(
         blocked.length > 0
-          ? `Deleted ${body.deleted}. ${blocked.length} skipped — still linked to deals, tasks or quotes.`
+          ? `Deleted ${body.deleted}. ${blocked.length} skipped — still linked to: ${linked.join(", ")}. They stay selected.`
           : `Deleted ${body.deleted} contact${body.deleted === 1 ? "" : "s"}`,
       );
-      return blocked;
+      return blocked.map((b) => b.id);
     }
     toast.success(`Updated ${count} contact${count === 1 ? "" : "s"}`);
     return [];
