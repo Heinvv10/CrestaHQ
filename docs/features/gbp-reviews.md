@@ -43,7 +43,7 @@ relative to `src/` unless they start with `e2e/`.
 | 17 | Idempotency | partial | sync: deterministic doc id + content hash + one lease per sub-account (`sync/run.test.ts` › repeated sync creates and updates nothing; `sync/run-failures.test.ts` › overlapping runs; E2E 2 rerun `created:0`). Reply idempotency PR 4 |
 | 18 | Sync run / audit history | proven (fixtures) | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; append-only `subAccounts/{id}/gbpSyncRuns` — one per run, created at its end, kinds and counts only (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts` last 10; E2E 2 / 3 / 6) |
 | 19 | Reviews inbox UI | partial | read-only list, newest first, byte-exact with replies (`components/gbp/reviews-section.test.ts`, E2E 2); filters + reply composer PR 4 |
-| 20 | Sync health UI | proven (fixtures) | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Sync health (PR 2): `gbp-health-<health>` badge, stale / partial / reconnect / error banners, "Last synced … · Syncs every 6 hours", health re-derived per request (`lib/gbp/sync/health.test.ts`, `components/gbp/reviews-section.test.ts`, `…/gbp/reviews/route.test.ts`; E2E 6 shows the reconnect banner over cached reviews) |
+| 20 | Sync health UI | proven (fixtures) | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Sync health (PR 2): `gbp-health-<health>` badge, stale / partial (outage-guard wording for `skipped_anomaly`) / reconnect / sync-pending / error banners, "Last synced …" plus the truthful schedule line, recent syncs, health re-derived per request from the live connection (`lib/gbp/sync/health.test.ts`, `components/gbp/reviews-section.test.ts`, `…/gbp/reviews/route.test.ts`; E2E 6 shows the reconnect banner over cached reviews) |
 | 21 | Public feed API | absent | PR 3 |
 | 22 | Widget configuration | absent | PR 3 |
 | 23 | CORS / domain controls | absent | PR 3 |
@@ -271,9 +271,9 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
 | `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused) |
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
-| `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
-| `GET /api/sub-accounts/[id]/gbp/reviews` | any member, gated | `{summary, reviews, runs}` — active reviews of the current listing newest first (cap 500), summary with health derived now, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/` |
-| `POST /api/cron/gbp-sync` | QStash signature | the 6-hourly sweep; `{processed, byStatus}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
+| `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
+| `GET /api/sub-accounts/[id]/gbp/reviews` | any member, gated | `{summary, reviews, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/` |
+| `POST /api/cron/gbp-sync` | QStash signature bound to this URL | the 6-hourly sweep; `{processed, byStatus, retained, stoppedOnRateLimit}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
 `not_connected` / `reconnect_required`, 400 `invalid_body` / `unknown_location` /
@@ -313,8 +313,8 @@ Admin SDK, and the new subcollections fall under default deny.
 |---|---|---|
 | `subAccounts/{id}/gbpReviews/{docId}` | sync only | `docId = sha256(review.name).hex[:40]` (deterministic → idempotent). `agencyId, subAccountId, createdByUid` (= `googleListing.selectedByUid`), `locationName, reviewName, reviewId, reviewer, starRating, comment` (byte-exact or null), `createTime, updateTime, reply, state` (`active`/`removed`), `firstSeenAt, lastSeenAt, removedAt, passId, contentHash` (sha256 of rating, comment, updateTime, reply) |
 | `subAccounts/{id}/gbpSyncRuns/{runId}` | sync only, `create()` once at the end of a run — never updated | `agencyId, subAccountId, createdByUid, trigger, actorUid, startedAt, finishedAt, locationName, status, pagesFetched, reviewsSeen, created, updated, unchanged, removed, purged, reconciliation, resumedFromCursor, errorKind, skipReason`. No provider body, token or review text |
-| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | `{lease: {runId, until}, pass: {passId, pageToken, pagesDone, startedAt}}` |
-| `subAccounts/{id}.gbpSummary` | sync only (member-readable) | `locationName, averageRating, totalReviewCount, lastSuccessfulSyncAt, lastRunAt, lastRunStatus, lastErrorKind, health` — kinds only |
+| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | `lease {runId, until}`, `pass {passId, pageToken, pagesDone, startedAt, averageRating, totalReviewCount}`, `retentionPurgedAt`, `anomalyStreak {removals, count}`, `lastManualAt` (Sync-now cooldown) |
+| `subAccounts/{id}.gbpSummary` | sync only (member-readable) | `locationName, averageRating, totalReviewCount, lastSuccessfulSyncAt, lastRunAt, lastRunStatus, lastErrorKind, lastReconciliation, health` — kinds only |
 
 The review collection only ever holds the **current** listing (see "Data
 written"), which is why a query on `createTime` alone serves the page.
@@ -326,87 +326,137 @@ One core, `lib/gbp/sync/run.ts`; Sync now and the cron differ only in `trigger`
 
 1. **Fence first.** `getGbpProviderFor` — in fake mode a sub-account outside
    the fixture agency throws before anything is read or written.
-2. **Preconditions.** Gate off, not connected, no listing → `skipped` with that
-   `skipReason`, provider never called. A connection already flagged
-   reconnect-required → `skipped reconnect_required` (retention still runs).
-3. **Lease** in a transaction on `private/gbpSyncState`, TTL 5 min; a live
-   lease → `skipped already_running`. Every later write of the run — each
-   page, tombstones, the summary — is a transaction that re-checks the lease
-   is still this run's (`commitGuarded`), so a run whose cache was cleared
-   under it stops with `failed lease_lost`. Released in `finally`, only if
-   still ours.
+2. **Classify.** Gate off, not connected, no listing → `skipped` with that
+   `skipReason`, provider never called (a retention-only pass still runs if
+   the sub-account holds a cache — see Retention). A connection already
+   flagged reconnect-required → `skipped reconnect_required` (retention runs).
+3. **Lease** in a transaction on `private/gbpSyncState`, TTL 5 min, that ALSO
+   re-reads the sub-account: if the listing, the connection, the reconnect
+   flag or the gate no longer match what step 2 read → `skipped
+   listing_changed`, nothing written; a live lease → `skipped
+   already_running`. Every later write of the run — each page, tombstones,
+   the summary — is a transaction that re-checks the lease is still this
+   run's (`commitGuarded`), so a run whose cache was cleared under it stops
+   with `failed lease_lost`; each page commit renews the lease. Released in
+   `finally`, only if still ours.
 4. **Retention** (below), on every run that holds the lease.
-5. **Pass.** Resume the stored pass from its cursor if it is < 24h old, else a
-   new pass from page 1. Up to `maxPages` (20 × 50 = 1000 reviews) per run.
-   Every page call goes through `withGbpAccess` (401 → one refresh → one retry;
-   `invalid_grant` flags reconnect) inside a retry for `transient` /
+5. **Pass.** Resume the stored pass from its cursor if it is < 7 days old,
+   else a new pass from page 1. Up to `maxPages` (20 × 50 = 1000 reviews) per
+   run. Every page call goes through `withGbpAccess` (401 → one refresh → one
+   retry; `invalid_grant` flags reconnect) inside a retry for `transient` /
    `rate_limited`: 3 attempts, 1s then 2s, or Google's `Retry-After` when
-   longer, capped at 10s. Each page is upserted with its cursor in the same
+   longer — but a `Retry-After` over 10s is not retried: the run stops with
+   its cursor kept and the sweep starts no further tenant (the quota is
+   project-wide). Each page is upserted with its cursor in the same
    transaction: new → full doc (`created`); hash changed → content fields
-   (`updated`); same → only `lastSeenAt`/`passId` (`unchanged`). A resumed
-   cursor Google rejects (`not_found` / `malformed` on the first resumed page)
-   restarts the pass from page 1 once, same pass id.
-6. **Outcome.** All pages → reconcile. `maxPages` hit → `partial`, cursor kept,
-   `reconciliation:"deferred"`. A page failing after retries → `partial` if a
-   page landed this run, else `failed`. `revoked` / `insufficient_scope` →
-   `reconnect_required`. Cached data is never deleted because a run failed.
-7. **Summary** (rating/count/`lastSuccessfulSyncAt` only on success) and
-   finally the append-only run record.
+   (`updated`); same → only `lastSeenAt`/`passId` (`unchanged`). The pass
+   keeps the first non-null `averageRating` / `totalReviewCount` Google
+   reported in it (a later page's null never overwrites them). A resumed
+   cursor Google rejects (`not_found` / `malformed` on the first resumed
+   page) restarts the pass from page 1 once, same pass id.
+6. **Outcome.** All pages → reconcile (below). `maxPages` hit → `partial`,
+   cursor kept, `reconciliation:"deferred"`. A page failing after retries →
+   `partial` if a page landed this run, else `failed`. `revoked` /
+   `insufficient_scope` → `reconnect_required`. A non-provider failure →
+   `failed internal`, and the summary still records it. Cached data is never
+   deleted because a run failed.
+7. **Summary** (rating/count/`lastSuccessfulSyncAt` only on success, from the
+   pass) and finally the append-only run record.
 
 ### Reconciliation and the anomaly rule
 
-Only after a **full** pass: every active review whose `passId` is not this
-pass was removed at Google → **tombstone** (`state:"removed"`, `removedAt`;
-`comment`, `reviewer`, `reply`, `contentHash` set to null; ids kept). A
-review that comes back is restored as an `update`. **Anomaly guard:** if the
-pass saw 0 reviews while Google reports `totalReviewCount > 0`, or it would
-remove more than half of ≥10 active reviews, nothing is removed —
-`reconciliation:"skipped_anomaly"`, status `partial`.
+Only after a **complete** pass, and only if the pass is **authoritative**: it
+saw at least as many distinct reviews as Google's `totalReviewCount` for the
+pass. Then every active review whose `passId` is not this pass was removed at
+Google → **tombstone** (`state:"removed"`, `removedAt`; `comment`,
+`reviewer`, `reply`, `starRating`, `contentHash` set to null; ids kept). A
+review that comes back is restored as an `update`.
 
-Known limit: Google pages by `updateTime desc`. A pass spread over several
-runs (listings over 1000 reviews) can miss a review that was edited — and so
-moved to page 1 — between runs; it is tombstoned and restored on the next
-full pass. Single-run passes (≤1000 reviews) are not affected.
+- **Not authoritative → `deferred`, status `success`, nothing removed.**
+  Google pages by `updateTime desc`, so a pass that spans runs (after a
+  mid-pass failure or on a listing over 1000 reviews) can miss a review
+  edited in between — it moved to an already-fetched page. Such a pass sees
+  fewer reviews than Google's count, so it removes nothing; with no count
+  reported it removes nothing either. A review genuinely removed while every
+  pass is non-authoritative stops being re-seen and leaves under the 30-day
+  rule (and is not served past it).
+- **Anomaly guard:** removing more than half of ≥10 active reviews looks like
+  an outage → nothing removed, `reconciliation:"skipped_anomaly"`, status
+  `partial`. The same planned removal count on the **third consecutive**
+  complete pass is applied (`full_after_anomaly`); a different count restarts
+  the streak.
 
 ### Retention — Google's 30-day rule
 
 The GBP content policy (https://developers.google.com/my-business/content/policies)
 says content "…stored temporarily for no more than 30 calendar days…". So:
 
-- a review not re-seen for 30 days is **deleted** (not tombstoned);
-- if `lastSuccessfulSyncAt` is older than 30 days, every run — failed and
-  reconnect-required ones included — deletes **all** cached review content
-  and the summary's rating/count, and the summary reads
-  `health:"error"`, `lastErrorKind:"retention_expired"` until a sync succeeds.
+- a review not re-seen for 30 days (or with no `lastSeenAt`) is **deleted**,
+  not tombstoned;
+- if nothing has succeeded for 30 days — counted from the later of
+  `lastSuccessfulSyncAt` and the last full purge (`retentionPurgedAt`) — the
+  run deletes **all** cached review content and the summary's rating/count
+  **once**, records `retentionPurgedAt`, and the summary reads
+  `health:"error"`, `lastErrorKind:"retention_expired"`. The purge restarts
+  the clock, so later runs resume the new pass and a listing too big for one
+  run can finish it.
+- **Caches that can no longer sync** (gate off, disconnected, no listing) get
+  a retention-only pass from the sweep — no provider call, under the lease.
+  Once expired, their reviews and summary are deleted and they leave the
+  sweep.
+- **At read time** the reviews route never serves a review not re-seen for 30
+  days, and serves no rating/count once the last success is older than 30
+  days — whether or not a run has purged them (`withinRetention`, the same
+  predicate PR 3's feed must use).
 
-Both rules: `lib/gbp/sync/reconcile.ts` `planRetention`,
-`sync/retention.test.ts` (injected clock). Gap: the sweep selects gated
-sub-accounts only, so a sub-account whose agency switched the gate off keeps
-its cache until the gate is back on (the reviews route refuses it meanwhile —
-nothing is served). Needs a decision if that matters.
+Rules: `lib/gbp/sync/reconcile.ts` (`planRetention`, `retentionBasis`,
+`withinRetention`); `sync/retention.test.ts`, `sync/sweep.test.ts`,
+`…/gbp/reviews/route.retention.test.ts`.
 
 ### Cadence and freshness
 
-The cron runs **every 6 hours**; nothing is real-time and the UI says so
-("Last synced 2 hours ago (11 Sep 2026, 10:00) · Syncs every 6 hours").
-Health is derived **at read time** by `deriveHealth(summary, now)`
-(`lib/gbp/sync/health.ts`): `ok` after a recent success; `stale` once the last
-success is older than 12h (two missed runs) or the last run failed within 30
-days of it; `partial`; `reconnect_required`; `error` (no success in 30 days,
+With the schedule on, the cron runs **every 6 hours**; nothing is real-time.
+The page states only what is true: "Syncs automatically every 6 hours" when
+the deployment has `GBP_SYNC_SCHEDULE_ENABLED=1`, otherwise "Automatic sync is
+not scheduled on this deployment — use Sync now" (`scheduled` in the reviews
+response). Health is derived **at read time** by `deriveHealth(summary, now,
+liveConnection)` (`lib/gbp/sync/health.ts`): `reconnect_required` whenever the
+connection is flagged; `sync_pending` when the last run needed a reconnect and
+the connection has since been reconnected; `ok` after a recent success;
+`stale` once the last success is older than 12h (two missed runs) or the last
+run failed within 30 days of it; `partial`; `error` (no success in 30 days,
 retention expired, or failing with no success at all); `never_synced`.
 
-### Sweep and schedule
+Sync now is limited to one per minute per sub-account (409 `too_soon`).
+
+### Sweep, capacity and schedule
 
 `POST /api/cron/gbp-sync` (QStash-signed, like `recurring-invoices`; in
-`PUBLIC_PATHS`) → `lib/gbp/sync/sweep.ts`: `where googleEnabledByAgency == true`
-(fake mode: also `where agencyId == GBP_FAKE_AGENCY_ID` — equality only, no
-composite index), filtered to connected + listing, never-run first then oldest
-`gbpSummary.lastRunAt`, at most 25 per call, 3 at a time. Each sub-account is
-isolated: a throw becomes that tenant's `failed` run. 500 only when the sweep
-cannot start, so QStash retries.
+`PUBLIC_PATHS`; the signature must have been minted for
+`${NEXT_PUBLIC_APP_URL}/api/cron/gbp-sync`, so another route's signed call
+cannot be replayed here) → `lib/gbp/sync/sweep.ts`:
 
-The schedule is deliberately **not** in `register-schedules.ts` — that would
-create a production schedule on the next deploy. **Owner checklist** (not run):
+- **Sync:** `where googleEnabledByAgency == true`, filtered to connected +
+  listing, never-run first then oldest `gbpSummary.lastRunAt`, **at most 25
+  per call, 3 at a time**; the first `rate_limited` result stops new tenants.
+- **Retention only:** `where gbpSummary.lastRunAt != null` (single-field
+  inequality — no composite index) filtered to sub-accounts that cannot sync.
+- Fake mode: ONE query `where agencyId == GBP_FAKE_AGENCY_ID` feeds both.
+- Each sub-account is isolated: a throw becomes that tenant's `failed` run and
+  advances its `lastRunAt`. 500 only when the sweep cannot start, so QStash
+  retries.
+
+**Capacity:** 25 tenants per invocation × 4 invocations a day = 100 tenant
+syncs a day. Beyond ~25 connected listings each is synced less often than every
+6 hours (and reads `stale` after 12h), until the cap is raised or the sweep
+continues itself.
+
+**Owner checklist** (not run): set `GBP_SYNC_SCHEDULE_ENABLED=1` in the
+production env, then an approved after-hours deploy (`bash
+scripts/deploy-velo.sh`) — the next cold start registers `leadstack-gbp-sync`
+(`0 */6 * * *`) with the other schedules. The destination is
+`${NEXT_PUBLIC_APP_URL}/api/cron/gbp-sync`, which is also the URL the
+signature is checked against. Alternative, by hand:
 
 ```bash
 # Upstash REST: POST /v2/schedules/{destination}, headers Upstash-Cron +
@@ -435,7 +485,9 @@ reconnect screen) the synced reviews (`reviews-section.tsx`): `gbp-summary`
 `-partial` / `-reconnect` ("Google access was revoked — reconnect to resume
 syncing. Showing cached reviews from <date>.") / `-error`, and
 `gbp-review-<reviewId>` newest first (comment verbatim in `whitespace-pre-wrap`,
-owner reply below) or `gbp-reviews-empty`. Each is rendered by
+owner reply below) or `gbp-reviews-empty`, `gbp-banner-pending` (reconnected,
+sync pending), `gbp-reviews-truncated` (the 500-record cap was hit),
+`gbp-reviews-load-error`, and `gbp-runs` (recent syncs). Each is rendered by
 `components/gbp/reviews-section.test.ts`.
 Every state above has a jsdom test in `components/gbp/google-business-panel.test.ts`
 (the disconnected → Connect → callback round trip itself is E2E-only, in

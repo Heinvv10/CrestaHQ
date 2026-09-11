@@ -208,9 +208,16 @@ Run through this with the client's real details before calling it done:
   newest by `finishedAt`. `reconnect_required` → the client must reconnect
   Google on that page; `rate_limited`/`transient` → wait for the next run;
   `skipped already_running` → another run holds the 5-minute lease.
-- **Schedule:** the `leadstack-gbp-sync` QStash schedule (every 6h) is created
-  by hand — command in [docs/features/gbp-reviews.md](docs/features/gbp-reviews.md).
-  No schedule → only Sync now runs.
+- **Schedule:** the `leadstack-gbp-sync` QStash schedule (every 6h) is
+  registered at cold start only when the deployment sets
+  `GBP_SYNC_SCHEDULE_ENABLED=1` (the page then says "Syncs automatically
+  every 6 hours"; without it, "Automatic sync is not scheduled"). Manual
+  alternative in [docs/features/gbp-reviews.md](docs/features/gbp-reviews.md).
+  Capacity: 25 tenants per sweep; a `rate_limited` tenant stops the sweep
+  starting more until the next run.
+- **Sync now** answers `too_soon` within a minute of the last one.
+- `skipped listing_changed` → the listing/connection/gate changed as the run
+  started; nothing was written, the next run picks up the new state.
 
 ---
 

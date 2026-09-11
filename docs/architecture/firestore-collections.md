@@ -70,7 +70,10 @@ default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.n
 caches the CURRENT listing's reviews (tenant-anchored; `state` active/removed
 tombstones; deleted after 30 days unseen); `subAccounts/{id}/gbpSyncRuns/{runId}`
 is an append-only run record (created once per run, kinds and counts only);
-`private/gbpSyncState` holds the run lease and pass cursor. The member-readable
+`private/gbpSyncState` holds the run lease, the pass cursor (with the
+pass's rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
+cooldown. Sub-accounts that hold a cache but can no longer sync (gate off,
+disconnected, no listing) get retention-only passes from the sweep. The member-readable
 `gbpSummary` field on the parent carries rating, count, freshness and health
 kinds. Selecting another listing, clearing it or disconnecting deletes the
 reviews, the sync state and the summary.
