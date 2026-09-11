@@ -66,8 +66,12 @@ export const googleGbpProvider: GbpProvider = {
     assertName(locationName, LOCATION_NAME_RE, "location");
     // Business Information names a location `locations/{l}`; v4 nests it under
     // its account: `accounts/{a}/locations/{l}/reviews`.
-    let qs = "pageSize=50&orderBy=updateTime%20desc";
-    if (pageToken) qs += `&pageToken=${encodeURIComponent(pageToken)}`;
+    // URLSearchParams writes the space as "+"; emit the documented "%20".
+    // Safe: a literal "+" inside a page token is encoded as "%2B".
+    const qs = withPage(
+      new URLSearchParams({ pageSize: "50", orderBy: "updateTime desc" }),
+      pageToken,
+    ).replace(/\+/g, "%20");
     return parseReviews(
       await fetchJson(`${V4}/${accountName}/${locationName}/reviews?${qs}`, {
         headers: bearer(accessToken),

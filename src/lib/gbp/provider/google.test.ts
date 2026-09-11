@@ -122,6 +122,15 @@ describe("listReviews", () => {
     expect(page.nextPageToken).toBe("n2");
   });
 
+  it("encodes a page token safely, keeping a literal + distinct from the orderBy space", async () => {
+    const spy = stub({ body: {} });
+    await g.listReviews(TOKEN, { accountName: "accounts/111", locationName: "locations/222" }, "a+b/c=");
+    expect(spy.mock.calls[0][0]).toBe(
+      "https://mybusiness.googleapis.com/v4/accounts/111/locations/222/reviews" +
+        "?pageSize=50&orderBy=updateTime%20desc&pageToken=a%2Bb%2Fc%3D",
+    );
+  });
+
   it("maps a review with the comment byte-exact and the reply attached", async () => {
     stub({ body: { reviews: [REVIEW], averageRating: 4, totalReviewCount: 1 } });
     const [r] = (await g.listReviews(TOKEN, { accountName: "accounts/111", locationName: "locations/222" })).reviews;
