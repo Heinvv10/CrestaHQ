@@ -59,13 +59,14 @@ service cloud.firestore {
     }
 
     // `assignedToUid` (contacts / tasks "owner") may be cleared, or point at
-    // a row in the sub-account's member subcollection. A uid outside the
-    // roster is refused: an assignee the picker cannot show is an assignee
-    // nobody can ever filter for.
+    // an ACTIVE row in the sub-account's member subcollection — the same
+    // test the server's isAssignableMember() makes. A uid outside the
+    // roster, or a removed member, is refused: an assignee the picker
+    // cannot show is an assignee nobody can ever filter for.
     function assigneeIsMemberOrNull(saId) {
       return request.resource.data.get("assignedToUid", null) == null
         || (request.resource.data.assignedToUid is string
-          && exists(/databases/$(database)/documents/subAccounts/$(saId)/subAccountMembers/$(request.resource.data.assignedToUid)));
+          && get(/databases/$(database)/documents/subAccounts/$(saId)/subAccountMembers/$(request.resource.data.assignedToUid)).data.status == "active");
     }
 
     // ---------- territory scoping (opt-in per sub-account) ----------
@@ -824,7 +825,7 @@ service cloud.firestore {
       allow create: if canAccessSub(
         request.resource.data.subAccountId,
         request.resource.data.agencyId
-      );
+      ) && assigneeIsMemberOrNull(request.resource.data.subAccountId);
       // Updates require territory visibility; territory reassignment uses
       // the server route so linked conversation previews move atomically.
       allow update: if canSeeScopedDoc(
