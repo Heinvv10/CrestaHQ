@@ -61,7 +61,8 @@ export async function PUT(
   } catch (err) {
     return gbpErrorResponse(err, id, "gbp/listing");
   }
-  if (!match) {
+  // "unknown" (walk truncated) cannot prove access either: refuse.
+  if (!match || match === "unknown") {
     return gbpRefusal(400, "unknown_location", "That listing isn't available to this Google connection.");
   }
 

@@ -68,17 +68,22 @@ export async function discoverLocations(
  * The (account, location) pair IF this connection can actually see it — the
  * server's own re-fetch, so a client can never select a listing it was not
  * shown, nor pair a real location with the wrong account.
+ *
+ * `null` = the full walk ran and the pair is not there. `"unknown"` = it was
+ * not found but the walk hit the page bound, so absence is NOT proven — a
+ * caller must neither clear a listing nor accept a selection on that basis.
  */
 export async function findAccessibleLocation(
   provider: GbpProvider,
   accessToken: string,
   accountName: string,
   locationName: string,
-): Promise<{ account: GbpAccount; location: GbpLocation } | null> {
+): Promise<{ account: GbpAccount; location: GbpLocation } | null | "unknown"> {
   const accounts = await walk((p) => provider.listAccounts(accessToken, p));
   const account = accounts.items.find((a) => a.name === accountName);
-  if (!account) return null;
+  if (!account) return accounts.truncated ? "unknown" : null;
   const locations = await walk((p) => provider.listLocations(accessToken, accountName, p));
   const location = locations.items.find((l) => l.name === locationName);
-  return location ? { account, location } : null;
+  if (!location) return locations.truncated ? "unknown" : null;
+  return { account, location };
 }

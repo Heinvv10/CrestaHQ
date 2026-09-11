@@ -201,6 +201,28 @@ describe("reconnect re-verifies the selected listing", () => {
     ]);
   });
 
+  it("keeps a listing it could not reach because the account walk was truncated", async () => {
+    setScenario((s) => {
+      for (let i = 0; i < 70; i++) s.accounts.unshift({ name: `accounts/filler-${i}`, accountName: `F${i}`, type: "PERSONAL" });
+    });
+    seedListing(LOC_NORTH); // its account is now past the 20-page bound
+    await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(state.docs.get(SUB_PATH)?.googleListing).toMatchObject({ locationName: LOC_NORTH });
+    expect(events()).toEqual([]);
+  });
+
+  it("keeps a listing it could not reach because the location walk was truncated", async () => {
+    setScenario((s) => {
+      const base = s.locations[DEFAULT_ACCOUNT][0];
+      const filler = Array.from({ length: 70 }, (_, i) => ({ ...base, name: `locations/filler-${i}` }));
+      s.locations[DEFAULT_ACCOUNT] = [...filler, ...s.locations[DEFAULT_ACCOUNT]];
+    });
+    seedListing(LOC_NORTH);
+    await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(state.docs.get(SUB_PATH)?.googleListing).toMatchObject({ locationName: LOC_NORTH });
+    expect(events()).toEqual([]);
+  });
+
   it("keeps the listing, and still connects, when the re-verify itself fails", async () => {
     seedListing("locations/not-under-this-google-account");
     setScenario((s) => (s.failNext = { op: "listAccounts", kind: "transient" }));

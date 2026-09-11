@@ -109,6 +109,15 @@ describe("PUT validation", () => {
     expect(state.writes).toEqual([]);
   });
 
+  it("refuses a pair it cannot verify because the walk was truncated", async () => {
+    setScenario((s) => {
+      for (let i = 0; i < 70; i++) s.accounts.unshift({ name: `accounts/filler-${i}`, accountName: `F${i}`, type: "PERSONAL" });
+    });
+    const res = await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_NORTH });
+    expect([res.status, res.body.code]).toEqual([400, "unknown_location"]);
+    expect(state.writes).toEqual([]);
+  });
+
   it("refuses a real location paired with the wrong account", async () => {
     setScenario((s) => {
       s.accounts.push({ name: "accounts/other", accountName: "Other", type: "PERSONAL" });

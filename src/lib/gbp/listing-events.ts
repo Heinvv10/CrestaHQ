@@ -51,9 +51,10 @@ export async function clearListing(
 /**
  * After a (re)connect, the Google identity may differ from the one the listing
  * was picked through. Re-check the stored listing with the NEW token: clear it
- * (audited) if this grant cannot see it. If the check itself fails, keep the
- * listing — a transient Google error must neither fail the connect nor throw
- * away a good selection.
+ * (audited) if this grant provably cannot see it. If the check fails, or the
+ * walk was truncated before finding it, keep the listing — a transient Google
+ * error or a huge account must neither fail the connect nor throw away a good
+ * selection.
  */
 export async function reverifyListingAfterReconnect(
   subAccountId: string,
@@ -70,5 +71,6 @@ export async function reverifyListingAfterReconnect(
     console.warn(`[google/callback] listing re-verify failed, keeping it sa=${subAccountId}`, reason);
     return;
   }
-  if (!match) await clearListing(subAccountId, byUid, "not_accessible_after_reconnect");
+  // "unknown" = the walk was truncated: absence is not proven, keep it.
+  if (match === null) await clearListing(subAccountId, byUid, "not_accessible_after_reconnect");
 }
