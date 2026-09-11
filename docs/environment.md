@@ -222,7 +222,7 @@ Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth c
 | `GBP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
 | `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
 
-`scripts/deploy-velo.sh` refuses to deploy when any env file in the deploy dir (or the deploy shell) sets `GBP_PROVIDER=fake` or a `GBP_FAKE_*` variable, or sets a loopback `NEXT_PUBLIC_APP_URL` (`scripts/gbp-fake-guard.sh`).
+`scripts/deploy-velo.sh` refuses to deploy when the deploy dir's env files — loaded exactly as Next loads them — or the deploy shell set `GBP_PROVIDER=fake` or any `GBP_FAKE_*` variable, or a loopback / unparseable `NEXT_PUBLIC_APP_URL` (`scripts/gbp-fake-guard.mjs`). It does not read systemd `Environment=` lines; the app-side fence covers those.
 
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |

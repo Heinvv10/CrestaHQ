@@ -47,7 +47,7 @@ relative to `src/` unless they start with `e2e/`.
 | 23 | CORS / domain controls | absent | PR 3 |
 | 24 | No-JS / degraded website fallback | absent | PR 3 |
 | 25 | Review-request compatibility | partial | untouched by PR 1 — `lib/reviews/*.test.ts`, `app/api/sub-accounts/[id]/google-review/route.test.ts` stay green; the listing stores `newReviewUri` for the URL-reconciliation seam in PR 4 |
-| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy guard `scripts/gbp-fake-guard.sh`; runbook + rollout in PR 4 |
+| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy guard `scripts/gbp-fake-guard.mjs` (`scripts/gbp-fake-guard.test.ts`); runbook + rollout in PR 4 |
 
 ## Provider boundary
 
@@ -138,13 +138,26 @@ held by two independent layers:
 
 1. **App** (`provider/select.ts`, `provider/mode.ts`): loopback app URL +
    prod-build opt-in + fixture-agency fence, each clause mutation-proven.
-2. **Deploy** (`scripts/gbp-fake-guard.sh`, sourced by `deploy-velo.sh`
-   before any gate or build): refuses when `.env`, `.env.production`,
-   `.env.local`, `.env.production.local` or the deploy shell sets
-   `GBP_PROVIDER=fake` or any `GBP_FAKE_*`, or sets a loopback
-   `NEXT_PUBLIC_APP_URL`. Reports variable names only. Proven against 14
-   temp env files, with each branch mutation-proven (the repo has no shell
-   test runner).
+2. **Deploy** (`scripts/gbp-fake-guard.mjs`, run by `deploy-velo.sh` after
+   `pnpm install` and before any gate or build): loads the deploy dir's env
+   files through Next's own `@next/env` in production mode
+   (`.env.production.local`, `.env.local`, `.env.production`, `.env`), so any
+   dotenv spelling Next accepts is seen. It refuses when the merged env
+   (deploy shell over files, Next's precedence) **or any single file** sets
+   `GBP_PROVIDER` to `fake` (trimmed, any case), sets any `GBP_FAKE_*`, or sets
+   a `NEXT_PUBLIC_APP_URL` that does not parse or whose host is loopback. The
+   loopback rule is `src/lib/gbp/provider/loopback.mjs`, the same module the
+   app fence uses: `localhost` / `*.localhost`, `127.0.0.0/8` in any IPv4
+   spelling WHATWG normalises (`127.1`, hex, decimal, octal), `[::1]` in any
+   spelling, IPv4-mapped `::ffff:127.x`, `0.0.0.0` and `[::]`. It fails closed
+   on an unreadable env file, and prints names only. Covered by
+   `scripts/gbp-fake-guard.test.ts` over real env files on disk (every bypass
+   the security review listed, plus the canonical forms), each branch
+   mutation-proven.
+
+   **Not read:** systemd `Environment=` / `EnvironmentFile=` lines on the
+   `crestahq` unit. A fake setting there is stopped only by the app-side fence
+   (layer 1), which does not depend on this guard.
 
 ## OAuth state and token lifecycle
 
@@ -164,7 +177,9 @@ token rotated underneath it. A rotated refresh token is persisted. It also lands
 but the secret still holds the token we used. `revoked` (`invalid_grant`) or a
 missing `business.manage` scope sets `googleConnectionMeta.reconnectRequired` +
 `reconnectReason` — **only if the secret still holds the failed grant**
-(otherwise a newer grant exists and is used instead, refreshed at most once) —
+(otherwise a newer grant exists and is used instead, refreshed at most once;
+if that fails too, the error is `transient`, not `revoked`, since nothing was
+flagged) —
 and keeps the secret so disconnect can still revoke.
 
 **Data calls** go through `withGbpAccess(subAccountId, fn)` (`lib/gbp/access.ts`).
@@ -181,7 +196,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/sub-accounts/[id]/google/connect[?return=gbp]` | admin, gated | redirects to Google (or the fake callback) |
-| `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`) if not visible, kept if the check itself fails |
+| `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`, and only if the stored listing is still the one checked) when provably not visible; kept if the check fails or the 20-page walk was truncated before finding it |
 | `GET /api/sub-accounts/[id]/google/status` | any member | `{configured}` — deployment-level boolean only |
 | `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke; clears meta **and** `googleListing` (audited `disconnected`) |
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
@@ -212,12 +227,15 @@ No Firestore rules or indexes change in PR 1.
 
 `/sa/[id]/ai-agents/google-business` (`components/gbp/`), one state per
 `data-testid`: `gbp-state-gate-locked` (admins can still disconnect a live
-connection), `gbp-state-not-admin`, `gbp-state-not-configured`,
+connection), `gbp-state-not-admin`, `gbp-state-not-configured` (likewise keeps
+Disconnect for an existing connection),
 `gbp-state-disconnected`, `gbp-state-reconnect`, `gbp-state-pick` (options
 `gbp-location-option-<n>`, button `gbp-select-listing`; Cancel in every picker
 state when changing), `gbp-state-selected` (Change listing / Stop managing this
 listing). Destructive actions use an inline confirm — never `confirm()`/`alert()`.
-Every state is covered by `components/gbp/google-business-panel.test.ts`.
+Every state above has a jsdom test in `components/gbp/google-business-panel.test.ts`
+(the disconnected → Connect → callback round trip itself is E2E-only, in
+`e2e/specs/gbp-connect-select.spec.ts`).
 
 Not done, deliberately: a single-use nonce store for the OAuth state. v2 asked
 for expiry + uid binding (done); Google's authorisation codes are single-use.

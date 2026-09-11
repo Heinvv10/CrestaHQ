@@ -108,6 +108,13 @@ describe("gate locked", () => {
 });
 
 describe("states", () => {
+  it("offers an admin Connect when nothing is connected on a configured deployment", async () => {
+    await render();
+    expect(byId("gbp-state-disconnected")).not.toBeNull();
+    expect(byId("gbp-connect")?.textContent).toContain("Connect Google Business Profile");
+    expect(calls("GET", "/api/sub-accounts/sa1/google/locations")).toHaveLength(0);
+  });
+
   it("shows a read-only notice to non-admins", async () => {
     ctx.isAdmin = false;
     ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: LISTING };
