@@ -13,6 +13,10 @@
  *     once in .env.production, or defined in any other env file (.env.example,
  *     which Next never loads, excepted; comments never count), so
  *     deploy-velo.sh's sed and Next read the same value.
+ *     And a POSITIVE check: TRUST_CF_CONNECTING_IP must be defined, as exactly
+ *     `1`, in a production env file — and nowhere as anything else. velo is
+ *     reachable only through the cloudflared tunnel, and without it the public
+ *     reviews feed's rate limiter keys on headers a visitor controls.
  *     Fails closed on an unreadable file.
  *
  *   node scripts/gbp-deploy-check.mjs post <deploy-dir> <app-url>
@@ -101,6 +105,44 @@ export function mentionsFakeKeys(dir, shellEnv) {
   return problems;
 }
 
+const TRUST_DEFINITION = /^\s*(?:export\s+)?TRUST_CF_CONNECTING_IP\s*[=:]\s*(.*?)\s*$/;
+
+/**
+ * (a) PRE-BUILD, positive: TRUST_CF_CONNECTING_IP=1 is set, and never set to
+ * anything else (Next lets a later file win). Quotes around the 1 are allowed.
+ * @param {string} dir  the deploy checkout
+ * @returns {string[]} problems; empty = clean
+ */
+export function trustsCfConnectingIp(dir) {
+  let names;
+  try {
+    names = fs.readdirSync(dir).filter((n) => n.startsWith(".env") && !TEMPLATES.has(n));
+  } catch {
+    return [`cannot list ${dir}`];
+  }
+  const problems = [];
+  let good = 0;
+  for (const name of names) {
+    let text;
+    try {
+      if (fs.statSync(path.join(dir, name)).isDirectory()) continue;
+      text = fs.readFileSync(path.join(dir, name), "utf8");
+    } catch {
+      continue; // mentionsFakeKeys already refuses an unreadable env file
+    }
+    for (const line of text.split(/\r\n?|[\n\u2028\u2029]/)) {
+      const m = TRUST_DEFINITION.exec(line);
+      if (!m) continue;
+      if (/^(1|"1"|'1')$/.test(m[1])) good += 1;
+      else problems.push(`${name}: TRUST_CF_CONNECTING_IP must be exactly 1`);
+    }
+  }
+  if (good === 0 && problems.length === 0) {
+    problems.push("TRUST_CF_CONNECTING_IP=1 is not set in the production env — the reviews feed's rate limiter would key on headers visitors control");
+  }
+  return problems;
+}
+
 /**
  * (b) POST-BUILD.
  * @param {string} appUrl  NEXT_PUBLIC_APP_URL as the build inlined it
@@ -171,7 +213,7 @@ if (isMain) {
   const [mode, dir, appUrl] = process.argv.slice(2);
   let problems;
   try {
-    if (mode === "pre" && dir) problems = mentionsFakeKeys(path.resolve(dir), process.env);
+    if (mode === "pre" && dir) problems = [...mentionsFakeKeys(path.resolve(dir), process.env), ...trustsCfConnectingIp(path.resolve(dir))];
     else if (mode === "post" && dir && appUrl !== undefined) problems = inlinedUrlIsSafe(appUrl, serverJs(path.resolve(dir)));
     else {
       console.error("usage: gbp-deploy-check.mjs pre <dir> | post <dir> <app-url>");
@@ -182,7 +224,7 @@ if (isMain) {
   }
   if (problems.length > 0) {
     for (const p of problems) console.error(`refused: ${p}`);
-    console.error("The GBP fake provider is dev/CI only — it must not reach a production deploy.");
+    console.error("GBP deploy check refused. The fake provider is dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
     process.exit(1);
   }
   console.log(`GBP deploy check (${mode}): clean`);

@@ -606,11 +606,6 @@ request with no `Origin` header (a server, `curl`) gets the full body — the
 feed holds only public Google review content, and the publicId is the only
 thing standing between it and anyone who has the snippet.
 
-**Owner checklist** (not run): set `TRUST_CF_CONNECTING_IP=1` in the velo
-production env — the app is only reachable through the cloudflared tunnel;
-buyer copies on Vercel must not set it. Without it the limiter keys on
-`x-real-ip` / `X-Forwarded-For`, which a caller can vary.
-
 ```json
 { "version": 1,
   "status": "ok" | "stale" | "unavailable",
@@ -659,6 +654,14 @@ buyer copies on Vercel must not set it. Without it the limiter keys on
 | `unavailable` | no listing, never synced, the summary belongs to another listing, or the last success is more than **7 days** old (this also covers Google's 30-day retention) | `rating: null`, `reviews: []`, `freshness.stale: true` |
 
 Nothing is ever presented as live.
+
+**Owner checklist** (not run): set `TRUST_CF_CONNECTING_IP=1` in
+`/home/velo/crestahq-config/.env.production` **before the next deploy** —
+`scripts/deploy-velo.sh` now refuses without it (`gbp-deploy-check.mjs pre`).
+velo is only reachable through the cloudflared tunnel, so Cloudflare's
+`cf-connecting-ip` is the real client; buyer copies on Vercel must not set it.
+Without it the limiter keys on `x-real-ip` / `X-Forwarded-For`, which a
+visitor behind Cloudflare controls.
 
 ### Embed contract — `/embed/gbp-reviews.js`
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { inlinedUrlIsSafe, mentionsFakeKeys } from "./gbp-deploy-check.mjs";
+import { inlinedUrlIsSafe, mentionsFakeKeys, trustsCfConnectingIp } from "./gbp-deploy-check.mjs";
 
 /**
  * The deploy-time checks for the dev/CI-only fake provider. No env parsing:
@@ -25,7 +25,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-const CLEAN = "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\nGOOGLE_CLIENT_ID=x\n";
+const CLEAN = "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\nGOOGLE_CLIENT_ID=x\nTRUST_CF_CONNECTING_IP=1\n";
 
 describe("(a) pre-build: the names alone refuse the deploy", () => {
   it.each([
@@ -92,8 +92,10 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     const prod =
       "# Base URL of the app — NEXT_PUBLIC_APP_URL is inlined at build time\n" +
       "# NEXT_PUBLIC_APP_URL=http://localhost:3000\n" +
-      "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n";
-    expect(mentionsFakeKeys(tmp({ ".env.production": prod, ".env": "# NEXT_PUBLIC_APP_URL is set in .env.production\n" }), {})).toEqual([]);
+      "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\nTRUST_CF_CONNECTING_IP=1\n";
+    const dir = tmp({ ".env.production": prod, ".env": "# NEXT_PUBLIC_APP_URL is set in .env.production\n" });
+    expect(mentionsFakeKeys(dir, {})).toEqual([]);
+    expect(trustsCfConnectingIp(dir)).toEqual([]);
   });
 
   it.each([".env", ".env.local", ".env.production.local", ".env.staging"])(
@@ -114,6 +116,41 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
     expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_/);
+  });
+});
+
+describe("(a) pre-build, positive: TRUST_CF_CONNECTING_IP=1 must be set", () => {
+  it("refuses when it is missing", () => {
+    const res = trustsCfConnectingIp(tmp({ ".env.production": "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n" }));
+    expect(res.join()).toContain("TRUST_CF_CONNECTING_IP=1 is not set");
+  });
+
+  it.each(["TRUST_CF_CONNECTING_IP=1", 'TRUST_CF_CONNECTING_IP="1"', "export TRUST_CF_CONNECTING_IP = 1"])("allows %s", (line) => {
+    expect(trustsCfConnectingIp(tmp({ ".env.production": `NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n${line}\n` }))).toEqual([]);
+  });
+
+  it.each(["true", "yes", "0", "", "1 # trust"])("refuses TRUST_CF_CONNECTING_IP=%s", (value) => {
+    const res = trustsCfConnectingIp(tmp({ ".env.production": `TRUST_CF_CONNECTING_IP=${value}\n` }));
+    expect(res.join()).toContain("must be exactly 1");
+  });
+
+  it("refuses a later env file that sets it to anything else (Next lets it win)", () => {
+    const res = trustsCfConnectingIp(tmp({ ".env.production": CLEAN, ".env.production.local": "TRUST_CF_CONNECTING_IP=0\n" }));
+    expect(res.join()).toContain(".env.production.local");
+  });
+
+  it("does not count a commented-out line or the .env.example template", () => {
+    const dir = tmp({ ".env.production": "# TRUST_CF_CONNECTING_IP=1\n", ".env.example": "TRUST_CF_CONNECTING_IP=1\n" });
+    expect(trustsCfConnectingIp(dir).join()).toContain("is not set");
+  });
+
+  it("the CLI refuses a deploy without it (exit 1)", () => {
+    const res = spawnSync(process.execPath, [path.join(__dirname, "gbp-deploy-check.mjs"), "pre", tmp({ ".env.production": "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n" })], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "" } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("TRUST_CF_CONNECTING_IP=1 is not set");
   });
 });
 

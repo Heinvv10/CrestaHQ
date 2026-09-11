@@ -107,7 +107,7 @@ echo "$before -> $after"
 # the NEXT_PUBLIC_APP_URL verification below. See docs/features/gbp-reviews.md.
 say "Checking for GBP fake-provider settings"
 node scripts/gbp-deploy-check.mjs pre "$DEPLOY_DIR" \
-  || die "GBP fake-provider settings found (see above). They are dev/CI only — remove them from $DEPLOY_DIR."
+  || die "GBP deploy check refused (see above): remove any fake-provider settings, and set TRUST_CF_CONNECTING_IP=1 in $DEPLOY_DIR/.env.production."
 
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
