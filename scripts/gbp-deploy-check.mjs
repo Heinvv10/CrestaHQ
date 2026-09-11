@@ -9,9 +9,10 @@
  *     the deploy dir contains `GBP_PROVIDER` or `GBP_FAKE_` anywhere — any
  *     line, commented or not; production never needs these names (the default
  *     is Google) — or if any deploy-shell variable is NAMED `GBP_PROVIDER*` or
- *     `GBP_FAKE_*`. Also refuses unless NEXT_PUBLIC_APP_URL is mentioned on
- *     exactly one line, in .env.production only (.env.example, which Next never
- *     loads, excepted), so deploy-velo.sh's sed and Next read the same value.
+ *     `GBP_FAKE_*`. Also refuses if NEXT_PUBLIC_APP_URL is DEFINED more than
+ *     once in .env.production, or defined in any other env file (.env.example,
+ *     which Next never loads, excepted; comments never count), so
+ *     deploy-velo.sh's sed and Next read the same value.
  *     Fails closed on an unreadable file.
  *
  *   node scripts/gbp-deploy-check.mjs post <deploy-dir> <app-url>
@@ -48,6 +49,8 @@ const INLINED_LITERAL = new RegExp(
     CHECK_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
   "g",
 );
+/** A dotenv DEFINITION of the app URL (`KEY=`, `KEY:`, optional export/spaces). */
+const APP_URL_DEFINITION = /^\s*(export\s+)?NEXT_PUBLIC_APP_URL\s*[=:]/;
 /** Env files Next never loads; a template may name any key. */
 const TEMPLATES = new Set([".env.example"]);
 
@@ -78,14 +81,15 @@ export function mentionsFakeKeys(dir, shellEnv) {
     if (FAKE_NAME.test(text)) problems.push(`${name}: mentions GBP_PROVIDER or GBP_FAKE_*`);
     // deploy-velo.sh reads NEXT_PUBLIC_APP_URL with sed (first line of
     // .env.production); Next takes the LAST definition and lets .env.local /
-    // .env.production.local win. Allow exactly one line, in one file, so the
-    // two readings cannot differ.
+    // .env.production.local win. Allow ONE definition, in one file, so the two
+    // readings cannot differ. Comments never count (the production file keeps
+    // one copied from .env.example); a lone CR breaks a line, as in dotenv.
     if (TEMPLATES.has(name)) continue;
-    const appUrlLines = text.split(/\r?\n/).filter((l) => l.includes("NEXT_PUBLIC_APP_URL")).length;
-    if (name === ".env.production" && appUrlLines > 1) {
-      problems.push(`${name}: NEXT_PUBLIC_APP_URL appears on ${appUrlLines} lines — exactly one allowed`);
-    } else if (name !== ".env.production" && appUrlLines > 0) {
-      problems.push(`${name}: NEXT_PUBLIC_APP_URL must be set only in .env.production`);
+    const definitions = text.split(/\r\n?|\n/).filter((l) => APP_URL_DEFINITION.test(l)).length;
+    if (name === ".env.production" && definitions > 1) {
+      problems.push(`${name}: NEXT_PUBLIC_APP_URL is defined ${definitions} times — exactly one allowed`);
+    } else if (name !== ".env.production" && definitions > 0) {
+      problems.push(`${name}: NEXT_PUBLIC_APP_URL must be defined only in .env.production`);
     }
   }
   for (const key of Object.keys(shellEnv)) {

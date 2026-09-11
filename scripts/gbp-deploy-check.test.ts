@@ -73,12 +73,24 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
   it("refuses NEXT_PUBLIC_APP_URL defined twice in .env.production (sed takes the first, Next the last)", () => {
     const dup = "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\nNEXT_PUBLIC_APP_URL=https://crm.crestahq.com@127.0.0.1:4300\n";
     expect(mentionsFakeKeys(tmp({ ".env.production": dup }), {}).join()).toContain("NEXT_PUBLIC_APP_URL");
-    // Any mention counts, commented or not — no parsing.
-    expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}# NEXT_PUBLIC_APP_URL=x\n` }), {})).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}export NEXT_PUBLIC_APP_URL : http://x\n` }), {})).not.toEqual([]);
+  });
+
+  it("treats a lone CR as a line break, like dotenv (a hidden second definition)", () => {
+    const text = "a=1\rNEXT_PUBLIC_APP_URL=https://crm.crestahq.com@127.0.0.1:4300\nNEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n";
+    expect(mentionsFakeKeys(tmp({ ".env.production": text }), {}).join()).toContain("NEXT_PUBLIC_APP_URL");
+  });
+
+  it("allows the real production shape: a comment copied from .env.example plus ONE definition", () => {
+    const prod =
+      "# Base URL of the app — NEXT_PUBLIC_APP_URL is inlined at build time\n" +
+      "# NEXT_PUBLIC_APP_URL=http://localhost:3000\n" +
+      "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n";
+    expect(mentionsFakeKeys(tmp({ ".env.production": prod, ".env": "# NEXT_PUBLIC_APP_URL is set in .env.production\n" }), {})).toEqual([]);
   });
 
   it.each([".env", ".env.local", ".env.production.local", ".env.staging"])(
-    "refuses NEXT_PUBLIC_APP_URL in a second env file — %s",
+    "refuses a NEXT_PUBLIC_APP_URL DEFINITION in a second env file — %s",
     (file) => {
       expect(
         mentionsFakeKeys(tmp({ ".env.production": CLEAN, [file]: "NEXT_PUBLIC_APP_URL=http://127.0.0.1:4300\n" }), {}).join(),
