@@ -112,7 +112,10 @@ async function refreshAndStore(
     const newer = await markReconnectRequiredIf(subAccountId, kind, {
       refreshToken: read.refreshToken,
     });
-    if (!newer || retried) throw err;
+    if (!newer) throw err;
+    // A newer grant exists (so nothing was flagged) but it failed too, or kept
+    // changing: a race, not a broken connection — report it as retryable.
+    if (retried) throw new GbpProviderError("transient");
     return fresh(newer) ? newer.accessToken : refreshAndStore(subAccountId, newer, true);
   };
 

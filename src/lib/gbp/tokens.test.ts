@@ -251,7 +251,10 @@ describe("races with a newer grant (reconnect during a refresh)", () => {
       { body: { error: "invalid_grant" }, status: 400, onCall: () => state.docs.set(SECRET_PATH, third) },
     );
     const err = await getValidAccessToken(SUB).catch((e: unknown) => e);
-    expect((err as GbpProviderError).kind).toBe("revoked");
+    // Not "revoked": a newer grant exists and nothing was flagged, so telling
+    // the admin to reconnect would be wrong. It is a retryable race.
+    expect((err as GbpProviderError).kind).toBe("transient");
+    expect(meta().reconnectRequired).toBeUndefined();
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
