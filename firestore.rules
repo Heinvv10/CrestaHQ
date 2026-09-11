@@ -473,6 +473,31 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Saved smart lists (contacts-list filters). Member-writable like
+      // contact notes — a list is a view, not customer data — with the
+      // tenant keys pinned on create and locked on update.
+      match /smartLists/{listId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow create: if request.resource.data.subAccountId == subAccountId
+          && request.resource.data.agencyId
+            == get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+          && canAccessSub(
+            request.resource.data.subAccountId,
+            request.resource.data.agencyId
+          );
+        allow update: if canAccessSub(
+          resource.data.subAccountId,
+          resource.data.agencyId
+        ) && tenantFieldsLockedOnUpdate();
+        allow delete: if canAccessSub(
+          resource.data.subAccountId,
+          resource.data.agencyId
+        );
+      }
+
       // Import id-mappings (source-system id ↔ LeadStack id). Internal only —
       // written + read by the admin-SDK import routes; no client access.
       match /importMappings/{refId} {
