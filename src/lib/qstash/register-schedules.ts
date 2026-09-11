@@ -132,8 +132,9 @@ export async function ensureSchedulesRegistered(): Promise<void> {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
   if (!baseUrl) return;
   // Skip in non-production runtimes where re-registering across hot reloads
-  // would just churn QStash. Local production builds (`pnpm build && pnpm
-  // start`) still register so buyers can test the full flow locally.
+  // would just churn QStash. A local production build on a loopback URL never
+  // gets here: instrumentation.ts skips it (QStash refuses loopback
+  // destinations anyway), so test locally through a tunnel URL.
   if (process.env.NODE_ENV !== "production") return;
 
   const db = getAdminDb();
