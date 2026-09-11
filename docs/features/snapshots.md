@@ -45,7 +45,7 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   `/agency/sub-accounts`, plus the picker on the new-sub-account page.
 - **No new env vars, no rules deploy** — snapshots are server-only (default-deny).
 
-**Not carried yet**: pipelines (`subAccounts/{id}/pipelines` — a copied workflow whose `trigger.pipelineId` names a non-default pipeline will not fire in the target), booking pages,
+**Not carried yet**: pipelines (`subAccounts/{id}/pipelines`). Apply therefore nulls a workflow's `trigger.pipelineId` and any `move_stage` step's `config.pipelineId` — like an unmapped `formId` — so a copied workflow fires on any pipeline (stage ids kept; the default pipeline's are shared) until the operator re-pins it. Also not carried: booking pages,
 per-channel AI config (the `aiAgent/{channelId}` docs — the persona travels, the
 channel toggles do not, deliberately: a new workspace must not start replying to
 customers before the operator reviews the imported persona).

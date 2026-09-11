@@ -11,7 +11,9 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { doc, onSnapshot } from "firebase/firestore";
+import { toast } from "sonner";
 import { getFirebaseDb } from "@/lib/firebase/client";
+import { fetchPipelines } from "@/lib/pipelines/client";
 import { syntheticDefaultPipeline } from "@/lib/pipelines/stages";
 import { useAuth } from "@/hooks/use-auth";
 import type { SubAccountDoc, SubAccountRole } from "@/types";
@@ -72,12 +74,13 @@ export function SubAccountProvider({
   const refreshPipelines = useCallback(async () => {
     if (!subAccountId) return;
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/pipelines`);
-      if (!res.ok) return;
-      const data = (await res.json()) as { pipelines?: PipelineDoc[] };
-      setPipelineDocs(data.pipelines ?? []);
-    } catch {
-      // Keep whatever we had; the synthesized default covers a cold start.
+      setPipelineDocs(await fetchPipelines(subAccountId));
+    } catch (err) {
+      // Keep the last-known list (or the synthesized default on a cold
+      // start) and say so — silently showing only the default would make
+      // every other pipeline's deals vanish from the board.
+      console.error("[sub-account] pipelines load failed", err);
+      toast.error("Couldn't load pipelines — showing what was last loaded.");
     }
   }, [subAccountId]);
 

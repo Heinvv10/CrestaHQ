@@ -25,7 +25,8 @@ import { PaymentsReport } from "@/components/reports/payments-report";
 import { subscribeToOrders } from "@/lib/firestore/orders";
 import type { Order } from "@/types/orders";
 import { type Deal } from "@/types/deals";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { usePipelines, usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { dealOutcome } from "@/lib/pipelines/stages";
 import type { Contact } from "@/types/contacts";
 import { cn } from "@/lib/utils";
 
@@ -133,11 +134,13 @@ export default function ReportsPage() {
 
   // KPIs
   const newLeads = inRange.contactsIn.length;
+  // Won / lost / open by each deal's OWN pipeline's terminal stages.
+  const { pipelines } = usePipelines();
   const openDeals = inRange.dealsIn.filter(
-    (d) => d.stageId !== "won" && d.stageId !== "lost",
+    (d) => dealOutcome(d, pipelines) === "open",
   );
-  const wonDeals = inRange.dealsIn.filter((d) => d.stageId === "won");
-  const lostDeals = inRange.dealsIn.filter((d) => d.stageId === "lost");
+  const wonDeals = inRange.dealsIn.filter((d) => dealOutcome(d, pipelines) === "won");
+  const lostDeals = inRange.dealsIn.filter((d) => dealOutcome(d, pipelines) === "lost");
   const openValue = openDeals.reduce((s, d) => s + (d.value || 0), 0);
   const wonValue = wonDeals.reduce((s, d) => s + (d.value || 0), 0);
   const avgDeal =
@@ -150,7 +153,8 @@ export default function ReportsPage() {
       : 0;
 
   // Pipeline funnel (all deals, current state — not filtered, since the
-  // funnel is a "right now" view, not a historical one)
+  // funnel is a "right now" view, not a historical one). Default pipeline
+  // only; deals in other pipelines have stage ids that never match a row.
   const stages = usePipelineStages();
   const funnelData = useMemo(() => {
     const counts = new Map<string, number>();

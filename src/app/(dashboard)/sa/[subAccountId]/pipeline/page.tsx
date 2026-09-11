@@ -198,7 +198,11 @@ export default function PipelinePage() {
             <select
               aria-label="Pipeline"
               value={pipeline.id}
-              onChange={(e) => setPipelineId(e.target.value)}
+              onChange={(e) => {
+                setPipelineId(e.target.value);
+                // Stage ids don't carry across pipelines.
+                setFilters((f) => ({ ...f, stages: [] }));
+              }}
               className="flex h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
             >
               {pipelines.map((p) => (

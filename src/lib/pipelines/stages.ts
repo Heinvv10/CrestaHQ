@@ -145,3 +145,19 @@ export function validateStages(raw: unknown): Validation<PipelineStage[]> {
   }
   return { ok: true, value: out };
 }
+
+export type DealOutcome = "open" | "won" | "lost";
+
+/**
+ * Whether a deal is open, won or lost — by the `terminal` flag of its stage
+ * on ITS pipeline (absent `pipelineId` = default), never by the literal
+ * ids "won"/"lost", which only the default pipeline uses. A deal whose
+ * pipeline or stage can't be found counts as open.
+ */
+export function dealOutcome(
+  deal: { pipelineId?: string; stageId: string },
+  pipelines: Pick<PipelineDoc, "id" | "stages">[],
+): DealOutcome {
+  const pipeline = pipelines.find((p) => p.id === dealPipelineId(deal));
+  return (pipeline && findStage(pipeline, deal.stageId)?.terminal) ?? "open";
+}

@@ -31,6 +31,10 @@ export async function ensureDefaultPipeline(
 ): Promise<PipelineDoc | null> {
   const db = getAdminDb();
   const ref = pipelinesCol(subAccountId).doc(DEFAULT_PIPELINE_ID);
+  // Plain read on the hot path; the transaction only runs on the one first
+  // load that has to seed.
+  const seeded = await ref.get();
+  if (seeded.exists) return toDoc(seeded.id, seeded.data()!);
   const subRef = db.doc(`subAccounts/${subAccountId}`);
   return db.runTransaction(async (tx) => {
     const existing = await tx.get(ref);
