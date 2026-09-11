@@ -29,6 +29,7 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3777";
   process.env.GOOGLE_CLIENT_ID = "client-id.apps.googleusercontent.com";
   process.env.GOOGLE_CLIENT_SECRET = "client-secret";
+  delete process.env.GBP_PROVIDER;
 });
 
 afterEach(() => {

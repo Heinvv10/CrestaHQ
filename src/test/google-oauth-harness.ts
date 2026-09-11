@@ -172,6 +172,11 @@ export function resetHarness(opts: { gateOn?: boolean } = {}) {
   ]);
   process.env.AUTOMATIONS_TOKEN_SECRET = "test-state-secret";
   process.env.NEXT_PUBLIC_APP_URL = "http://app.local";
+  // Real-Google mode unless a test opts into the fake. A developer shell that
+  // exported a local .env (GBP_PROVIDER=fake) must not change these results.
+  delete process.env.GBP_PROVIDER;
+  delete process.env.GBP_FAKE_AGENCY_ID;
+  delete process.env.GBP_FAKE_ALLOW_PROD_BUILD;
   process.env.GOOGLE_CLIENT_ID = "client-id.apps.googleusercontent.com";
   process.env.GOOGLE_CLIENT_SECRET = "client-secret";
 }
