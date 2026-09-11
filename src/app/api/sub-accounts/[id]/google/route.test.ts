@@ -25,6 +25,7 @@ import {
   state,
 } from "@/test/google-oauth-harness";
 import { verifyGoogleState } from "@/lib/google/oauth";
+import { TOKEN_MARKERS } from "@/test/gbp-route-harness";
 import { GET as CONNECT } from "./connect/route";
 import { DELETE } from "./route";
 
@@ -127,6 +128,7 @@ describe("disconnect", () => {
   it("revokes at Google, deletes the secret, and clears the meta", async () => {
     const res = await disconnect();
     expect(res.status).toBe(200);
+    expect(await res.text()).not.toMatch(TOKEN_MARKERS);
     const fetchSpy = fetch as unknown as ReturnType<typeof vi.fn>;
     expect(fetchSpy.mock.calls[0][0]).toBe("https://oauth2.googleapis.com/revoke");
     expect((fetchSpy.mock.calls[0][1].body as URLSearchParams).get("token")).toBe(

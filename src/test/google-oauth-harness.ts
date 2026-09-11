@@ -81,6 +81,7 @@ let autoId = 0;
 
 function collectionRef(path: string) {
   return {
+    doc: () => docRef(`${path}/auto_${++autoId}`),
     add: async (data: Record<string, unknown>) => {
       const id = `auto_${++autoId}`;
       const docPath = `${path}/${id}`;

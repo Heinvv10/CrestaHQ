@@ -25,6 +25,7 @@ import {
   stubTokenEndpoint,
 } from "@/test/google-oauth-harness";
 import { googleAppConfigured, signGoogleState } from "@/lib/google/oauth";
+import { TOKEN_MARKERS } from "@/test/gbp-route-harness";
 import { GET as CONNECT } from "../../sub-accounts/[id]/google/connect/route";
 import { GET as CALLBACK } from "./route";
 
@@ -102,6 +103,8 @@ describe("fake mode", () => {
     fakeMode();
     const res = await callback(SUB, "uid_admin", `fake-code:${SUB}`);
     expect(res.headers.get("location")).toContain("google=connected");
+    expect(res.headers.get("location")).not.toMatch(TOKEN_MARKERS);
+    expect(await res.text()).not.toMatch(TOKEN_MARKERS);
     expect(state.docs.get(SECRET_PATH)).toMatchObject({
       refreshToken: expect.stringMatching(/^fake-refresh:/),
       accessToken: expect.stringMatching(/^fake-access:/),

@@ -1,0 +1,116 @@
+import "server-only";
+
+import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { findAccessibleLocation } from "@/lib/gbp/discovery";
+import { getGbpProviderFor } from "@/lib/gbp/provider/select";
+import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
+import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
+import { getValidAccessToken } from "@/lib/gbp/tokens";
+
+/**
+ * Choose (PUT) or clear (DELETE) the Business Profile listing this
+ * sub-account manages.
+ *
+ *   PUT    /api/sub-accounts/[id]/google/listing   { accountName, locationName }
+ *   DELETE /api/sub-accounts/[id]/google/listing
+ *
+ * Sub-account admin only. PUT is agency-gated; DELETE is not (like
+ * disconnect, clearing must always be possible).
+ *
+ * PUT trusts only the two resource names: the server re-fetches the pair
+ * through the provider and refuses (400 unknown_location) unless THIS
+ * connection can see it. Every display field written comes from that
+ * re-fetch, never from the request. Each selection appends an audit event to
+ * `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
+ */
+
+export async function PUT(
+  request: Request,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const { id } = await ctx.params;
+  const access = await requireSubAccountAdmin(request, id);
+  if (access instanceof NextResponse) return access;
+
+  const pre = await gbpPreconditions(id);
+  if (pre instanceof NextResponse) return pre;
+
+  const body = (await request.json().catch(() => null)) as {
+    accountName?: unknown;
+    locationName?: unknown;
+  } | null;
+  const accountName = body?.accountName;
+  const locationName = body?.locationName;
+  if (
+    typeof accountName !== "string" ||
+    typeof locationName !== "string" ||
+    !ACCOUNT_NAME_RE.test(accountName) ||
+    !LOCATION_NAME_RE.test(locationName)
+  ) {
+    return gbpRefusal(400, "invalid_body", "accountName and locationName are required.");
+  }
+
+  let match: Awaited<ReturnType<typeof findAccessibleLocation>>;
+  try {
+    const accessToken = await getValidAccessToken(id);
+    const provider = await getGbpProviderFor(id);
+    match = await findAccessibleLocation(provider, accessToken, accountName, locationName);
+  } catch (err) {
+    return gbpErrorResponse(err, id, "gbp/listing");
+  }
+  if (!match) {
+    return gbpRefusal(400, "unknown_location", "That listing isn't available to this Google connection.");
+  }
+
+  const { account, location } = match;
+  const db = getAdminDb();
+  const subRef = db.doc(`subAccounts/${id}`);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(subRef);
+    const previous = snap.data()?.googleListing?.locationName ?? null;
+    tx.update(subRef, {
+      googleListing: {
+        accountName: account.name,
+        accountDisplayName: account.accountName,
+        locationName: location.name,
+        title: location.title,
+        address: location.address,
+        websiteUri: location.websiteUri,
+        placeId: location.placeId,
+        mapsUri: location.mapsUri,
+        newReviewUri: location.newReviewUri,
+        selectedAt: FieldValue.serverTimestamp(),
+        selectedByUid: access.uid,
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection(`subAccounts/${id}/gbpEvents`).doc(), {
+      type: "listing_selected",
+      agencyId: pre.sub.agencyId,
+      subAccountId: id,
+      createdByUid: access.uid,
+      at: FieldValue.serverTimestamp(),
+      locationName: location.name,
+      previousLocationName: previous,
+    });
+  });
+
+  return NextResponse.json({ ok: true });
+}
+
+export async function DELETE(
+  request: Request,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const { id } = await ctx.params;
+  const access = await requireSubAccountAdmin(request, id);
+  if (access instanceof NextResponse) return access;
+
+  await getAdminDb()
+    .doc(`subAccounts/${id}`)
+    .update({ googleListing: null, updatedAt: FieldValue.serverTimestamp() });
+  return NextResponse.json({ ok: true });
+}
