@@ -54,7 +54,7 @@ relative to `src/` unless they start with `e2e/`.
 | 23 | CORS / domain controls | proven (fixtures) | `lib/gbp/feed/origins.ts` (normalised `scheme://host[:port]`, https only except loopback http, no path / wildcard / credentials, ≤10); ACAO echoes an allowed Origin only, 403 otherwise — `route.http.test.ts`, E2E 4 (`https://evil.example` → 403, no ACAO); browser proof below |
 | 24 | No-JS / degraded website fallback | proven (fixtures) | `public/embed/gbp-reviews.js` keeps the site's static content on any failure (`lib/gbp/feed/embed-script.test.ts`); example page `gbp-reviews/example/index.html`; browser proof `proof/pr3-01…07` (feed down, JavaScript off, origin removed) |
 | 25 | Review-request compatibility | proven (fixtures) | one seam, `lib/reviews/canonical-url.ts` (`canonical-url.test.ts`, 4 states); senders read `configured` only (`lib/reviews/request-canonical-url.test.ts`); the listing's link is adopted only by the explicit compare-and-set `POST …/google-review/adopt-listing-url` (`…/adopt-listing-url/route.test.ts` — CAS success, `changed` writes nothing, a sync never changes the URL); proposal card `components/gbp/review-url-card.test.ts`; `/r/[token]` link fix `app/r/[token]/page.test.ts`; quote-paid seam `lib/server/quotes-service.review-request.test.ts`; existing suites green (`lib/reviews/*.test.ts`, `…/google-review/route.test.ts`); E2E 7 `e2e/specs/gbp-review-request.spec.ts` |
-| 26 | Documentation / environment / runbook | implemented | this file (capability matrix, provider / OAuth / identifier and Firestore models, cadence, feed contract, degraded states, policy, review-request compatibility, security, setup, env, schedule, local tests, rollout / rollback, owner checklist); `docs/environment.md`; `docs/architecture/firestore-collections.md` + `feature-gates.md`; RUNBOOK GBP section; deploy guard `scripts/gbp-fake-guard.mjs` (`scripts/gbp-fake-guard.test.ts`) |
+| 26 | Documentation / environment / runbook | implemented | this file (capability matrix, provider / OAuth / identifier and Firestore models, cadence, feed contract, degraded states, policy, review-request compatibility, security, setup, env, schedule, local tests, rollout / rollback, owner checklist); `docs/environment.md`; `docs/architecture/firestore-collections.md` + `feature-gates.md`; RUNBOOK GBP section; deploy guard `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`) |
 
 ## Provider boundary
 
@@ -1095,22 +1095,33 @@ signed-in account's chrome, which is not fixture data.
 
 ## Owner-approval checklist (none of these were run)
 
+The deploy dir's `/home/velo/crestahq/.env.production` is a symlink to
+`/home/velo/crestahq-config/.env.production` — the real file every step below
+edits; both paths name the same file.
+
 1. **Firestore rules / indexes** — `firebase deploy --only firestore:rules,firestore:indexes`.
    **Not required for this stack:** PR 1–4 change no rules and no indexes
    (default-deny collections, single-field queries). Re-check once PR 2's
    final version is rebased under this one.
-2. **Schedule** — add `GBP_SYNC_SCHEDULE_ENABLED=1` to
-   `/home/velo/crestahq/.env.production` (the deploy dir's env file the
-   script reads — see `DEPLOY_DIR` in `scripts/deploy-velo.sh`) and do the
-   approved deploy (item 3); the next cold start registers
-   `leadstack-gbp-sync` (`0 */6 * * *`). Or, without a deploy, run the exact
-   curl under "Sweep, capacity and schedule" above.
+2. **Env vars** — in `/home/velo/crestahq-config/.env.production`:
+   - `GBP_SYNC_SCHEDULE_ENABLED=1` — enables the sync schedule below.
+   - `TRUST_CF_CONNECTING_IP=1` — required before this deploy; `gbp-deploy-check.mjs pre`
+     refuses the deploy without it (see "Embed contract" above for why).
+   Then do the approved deploy (item 3).
 3. **Production deploy** — `bash scripts/deploy-velo.sh` on velo-server from
    the deploy checkout, after hours only (never 08:00–17:00 SAST Mon–Fri),
-   after the PR 1 velo check block (the deploy's `scripts/gbp-fake-guard.mjs`
-   refuses any fake-provider setting).
-4. **v4 approval** — `gcloud services list --available --project crestahq-app | grep mybusiness.googleapis.com`.
-5. **Live proof, Hein present** — on a named TEST sub-account (not Blitz or
+   after the PR 1 velo check block above (the deploy's `scripts/gbp-deploy-check.mjs`
+   refuses a fake-provider setting or a missing `TRUST_CF_CONNECTING_IP`).
+4. **Verify the schedules registered** — the next cold start after this
+   deploy registers `leadstack-gbp-sync` (`0 */6 * * *`, only when
+   `GBP_SYNC_SCHEDULE_ENABLED=1`) and, unconditionally, `leadstack-gbp-retention`
+   (`30 4 * * *` daily, registered regardless of that flag). Confirm both exist:
+   `curl -s "${QSTASH_URL:-https://qstash.upstash.io}/v2/schedules" -H "Authorization: Bearer $QSTASH_TOKEN" | jq '.[].scheduleId'`
+   should list `leadstack-gbp-sync` and `leadstack-gbp-retention`. Without a
+   deploy, register the sync schedule by running the exact curl under "Sweep,
+   capacity and schedule" above instead.
+5. **v4 approval** — `gcloud services list --available --project crestahq-app | grep mybusiness.googleapis.com`.
+6. **Live proof, Hein present** — on a named TEST sub-account (not Blitz or
    Velocity's live sub-account), exact sequence:
    1. Agency → Manage dialog for the TEST sub-account → enable the Google
       Business gate → Save.
@@ -1127,12 +1138,18 @@ signed-in account's chrome, which is not fixture data.
    8. If it must come down: `curl -X DELETE
       https://crm.crestahq.com/api/sub-accounts/<TEST_SUB_ACCOUNT_ID>/gbp/reviews/<reviewDocId>/reply
       -H "Cookie: <session cookie>"` (or delete it in Google's own UI).
-6. **Velocity website cutover** (separately approved) — on Velocity's
-   sub-account's dashboard widget card, add the live site's real origin
-   (`scheme://host[:port]`, no path — confirm the exact domain with Hein
-   before this step) via **its** Save (the PUT body accepts only `enabled`,
-   `allowedOrigins`, `maxReviews`:
-   `curl -X PUT https://crm.crestahq.com/api/sub-accounts/<VELOCITY_SUB_ACCOUNT_ID>/gbp/widget -H "Content-Type: application/json" -H "Cookie: <session cookie>" -d '{"enabled":true,"allowedOrigins":["https://<velocity-site-host>"],"maxReviews":12}'`),
+7. **Rollout note — `/r/[token]` fix is a live, customer-facing change.** PR 4
+   fixed a pre-existing bug (`src/app/r/[token]/page.tsx` reading the wrong
+   field) that meant the Google review button never showed on the public
+   feedback page. Once deployed, that button will start appearing on feedback
+   links customers **already received** before this fix — needs Hein's
+   explicit OK before this deploy, separately from the rest of PR 4.
+8. **Velocity website cutover** (separately approved) — on Velocity's
+   sub-account's dashboard widget card, add the live site's real origin,
+   `https://www.velocityfibre.co.za` (from the v1 spec, E2E 4 — no path), via
+   **its** Save (the PUT body accepts only `enabled`, `allowedOrigins`,
+   `maxReviews`:
+   `curl -X PUT https://crm.crestahq.com/api/sub-accounts/<VELOCITY_SUB_ACCOUNT_ID>/gbp/widget -H "Content-Type: application/json" -H "Cookie: <session cookie>" -d '{"enabled":true,"allowedOrigins":["https://www.velocityfibre.co.za"],"maxReviews":12}'`),
    then paste the printed snippet (real `PUBLIC_ID`, `https://crm.crestahq.com`
    feed host — see "Embed contract" above) onto the Velocity site.
 
