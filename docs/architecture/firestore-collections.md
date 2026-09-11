@@ -54,6 +54,18 @@
 
 
 
+### Google Business Profile
+`subAccounts/{id}/private/googleConnection` holds the OAuth refresh/access
+tokens; `private/gbpFakeScenario` holds the dev/CI fake provider's scenario.
+Both are Admin SDK only under the existing `private/{docId}` deny rule. The
+parent carries display data only: `googleConnectionMeta` (incl.
+`reconnectRequired` / `reconnectReason`) and `googleListing` (the selected
+`accounts/…` + `locations/…` pair plus title/address/links — Place ID is
+display-only). `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
+append-only audit log (`listing_selected`, tenant-anchored with `agencyId`,
+`subAccountId`, `createdByUid`); no client rule, so default deny. No new index.
+See [gbp-reviews.md](../features/gbp-reviews.md).
+
 ### Workspace SMTP connection
 `subAccounts/{id}/private/smtpConnection` stores host, port, TLS mode, username,
 password, From email/name and verifiedAt. Admin SDK only; existing
