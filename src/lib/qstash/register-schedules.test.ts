@@ -18,6 +18,8 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("QSTASH_TOKEN", "test");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
+  // Hermetic: a developer shell that sourced .env.local may enable GBP sync.
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
   mock.get.mockResolvedValue({
     exists: true,
     data: () => ({
