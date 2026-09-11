@@ -69,6 +69,49 @@ describe("parseCloudInbound", () => {
       text: "Happy & connected",
       providerMessageId: "wamid.ABC",
       profileName: "Hein",
+      buttonPayload: null,
+    });
+  });
+
+  // Shapes as Meta documents them for the two kinds of button reply.
+  const withMessage = (message: Record<string, unknown>) => ({
+    entry: [{ changes: [{ value: {
+      metadata: { phone_number_id: "PN1" },
+      messages: [{ from: "27821234567", id: "wamid.TAP", ...message }],
+    } }] }],
+  });
+
+  it("reads a template quick-reply tap as a reply with its button text", () => {
+    const tap = withMessage({
+      type: "button",
+      context: { from: "27784356159", id: "wamid.TEMPLATE" },
+      button: { text: "Yes, all good", payload: "yes_all_good" },
+    });
+    expect(parseCloudInbound(tap)).toMatchObject({
+      text: "Yes, all good",
+      buttonPayload: "yes_all_good",
+      providerMessageId: "wamid.TAP",
+    });
+  });
+
+  it("reads an interactive button reply by its title, keeping the id", () => {
+    const tap = withMessage({
+      type: "interactive",
+      interactive: {
+        type: "button_reply",
+        button_reply: { id: "no_problem", title: "No, there's a problem" },
+      },
+    });
+    expect(parseCloudInbound(tap)).toMatchObject({
+      text: "No, there's a problem",
+      buttonPayload: "no_problem",
+    });
+  });
+
+  it("keeps a malformed tap as an empty reply rather than dropping it", () => {
+    expect(parseCloudInbound(withMessage({ type: "button", button: 7 }))).toMatchObject({
+      text: "",
+      buttonPayload: null,
     });
   });
 

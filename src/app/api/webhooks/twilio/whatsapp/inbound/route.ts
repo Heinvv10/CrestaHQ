@@ -115,7 +115,14 @@ export async function POST(request: Request) {
 
   const fromRaw = (params["From"] as string | undefined) ?? "";
   const toRaw = (params["To"] as string | undefined) ?? "";
-  const bodyRaw = (params["Body"] as string | undefined) ?? "";
+  // A quick-reply tap is a reply: its button text is the body, so a workflow
+  // waiting on a reply can branch on it. Twilio carries it as ButtonText
+  // (and, as far as we know, in Body too — Body wins when both are set).
+  const bodyRaw =
+    (params["Body"] as string | undefined) ||
+    (params["ButtonText"] as string | undefined) ||
+    "";
+  const buttonPayload = (params["ButtonPayload"] as string | undefined) || null;
   const messageSid = (params["MessageSid"] as string | undefined) ?? "";
   // Strip the `whatsapp:` prefix for our own routing + storage.
   const from = normalisePhone(stripWhatsappPrefix(fromRaw));
@@ -227,6 +234,7 @@ export async function POST(request: Request) {
             from,
             to,
             twilioMessageSid: messageSid || null,
+            ...(buttonPayload ? { buttonPayload } : {}),
             sentByUid: null,
             error: null,
             readAt: null,

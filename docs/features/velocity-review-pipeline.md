@@ -117,11 +117,10 @@ after a problem is resolved rather than before; timing; and objective
 eligibility rules (incomplete install, open snag, failed QA) — written down, and
 never predicted sentiment.
 
-**Engine work this needs** (the one non-pipeline piece): quick-reply button
-support on Cloud templates, and a branch on the returned button payload.
-LeadStack today has neither — workflow conditions read contact fields only
-(`src/types/workflows.ts:50`) and `wait_for_reply` distinguishes only replied
-from timed out.
+**Engine work this needs** (the one non-pipeline piece): template buttons, and
+button taps reaching the workflow. The branch itself already exists — an
+`if_else` after `wait_for_reply` can test `reply.text`. Grilled on 2026-09-11;
+see [Buttons (gaps 6–7)](#buttons-gaps-67).
 
 ### 7. Tag trigger, synchronous result — no ack polling
 
@@ -157,8 +156,8 @@ bridge" inside one sub-account is out of scope.
 | 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | `POST /api/v1/contacts/upsert` → `enrolment` | **closed** — see below |
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
 | 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
-| 6 | Quick-reply buttons on Cloud templates | `src/lib/comms/whatsapp/cloud-templates.ts` | out of scope — needs its own grill |
-| 7 | Workflow branch on button payload | `src/lib/workflows/engine.ts`, `src/types/workflows.ts` | out of scope — needs its own grill |
+| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | planned — see [Buttons](#buttons-gaps-67) |
+| 7 | Button taps reach the workflow branch | inbound webhooks → `reply.text` | **closed** for Cloud + Twilio (build-order PR 1); bridge taps with build-order PR 7 |
 | 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
 
 **Gap 3 was already fixed when this plan was written.** PR #53 (merged
@@ -247,6 +246,98 @@ behaviour is unverified, and the change would alter every tenant's template
 step, including the live Cresta campaigns. It needs a deliberate decision,
 not a drive-by.
 
+## Buttons (gaps 6–7)
+
+Grilled with Hein on 2026-09-11. **Design concept: a button tap is a reply.**
+The workflow tells Yes, No, free text and silence apart with what it already
+has — `wait_for_reply` (replied / timed out) and an `if_else` on `reply.text`
+(`branch-on-reply.test.ts`). No button-aware node is built.
+
+### What exists and what does not (surveyed before the grill)
+
+- **Works:** the wait, its no-reply path, `reply.text` conditions in the
+  builder, and the 24h window rule that sends free-form inside the window
+  (`send-mode.ts`).
+- **Dropped today:** a button tap on every rail. `parseCloudInbound` ignores
+  `type: "button"` / `"interactive"`, the Twilio route reads only `Body`, and
+  the bridge has no handling — a tap resumes the run with `reply.text = ""`.
+- **Missing:** buttons on the template doc, a BUTTONS component on submission
+  to Meta, Twilio quick-reply / call-to-action content types, buttons in the
+  builder, and any bridge template at all.
+
+### Decisions
+
+1. **Branch on the button's text**, through the existing `reply.text`
+   condition. Meta locks button text once a template is approved, so a label
+   change is a new template and a deliberate workflow edit. The payload is
+   stored on the message too, so a payload match stays possible without
+   re-parsing. A customer who *types* the label lands on the same branch —
+   the right outcome.
+2. **All three rails.** Cloud and Twilio carry buttons; so does the bridge,
+   gated on a handset test (below).
+3. **Buttons live on the template — on every rail.** The bridge gains
+   templates: the same doc, its `registrations.bridge` approved instantly.
+   On the bridge a template is a **saved message, never a way around
+   reply-only** (decision 5): the Go service still refuses a cold send, and
+   the builder says so.
+4. **Wait 24 hours** before the no-reply path — the window a tap opens — so
+   the no-reply path only fires once free-form sending has closed anyway. A
+   tap arriving later goes to the inbox with an "after timeout" marker for
+   staff; nothing resumes the finished run.
+5. **Quick-reply and URL buttons, at most 3 per template**, so one
+   definition works on every rail. Not built: list messages, call buttons,
+   per-send payload overrides.
+6. **The review link sits behind a URL button, sent as an in-window
+   interactive message — never a paid template.** A review-link template is
+   very likely MARKETING (the template draft says so). The customer's tap
+   opens the window, and inside it Cloud sends a free-form `cta_url`
+   interactive with no approval and no template charge; Twilio uses an
+   in-session call-to-action; the bridge renders its own. Only the
+   quick-reply experience check is ever submitted to Meta. If the window is
+   closed when the link would go, the send **refuses** rather than falling
+   back to a template.
+
+### Gates and dependencies
+
+- **Bridge buttons may not render.** WhatsApp is believed to have stopped
+  displaying button messages from non-Business-API clients (medium
+  confidence). Before any bridge button code: one test message to Hein's own
+  handset. If it does not render, the bridge falls back to numbered replies
+  ("Reply 1 … 2 …"), which `reply.text` already handles.
+- **Bridge templates need 1.2b.** The CRM's `bridge` send arm is still a stub
+  (`send-dispatch.ts:130`).
+- **Twilio in-session call-to-action without approval** is medium confidence
+  — verify against Twilio's docs before PR 4.
+- The experience check with buttons must still come back **utility** from
+  Meta (submission checklist).
+
+### Build order
+
+| PR | Scope | Depends on |
+|---|---|---|
+| 1 | Tap parsing, Cloud + Twilio: the tapped button's text becomes the message body (so `reply.text`), payload stored on the message | — |
+| 2 | Template buttons on Cloud: the type, BUTTONS on submission to Meta, the builder editor | — |
+| 3 | In-window interactive send on Cloud — quick replies and the URL button — via `resolveWaSendMode` | 2 |
+| 4 | Twilio quick-reply and call-to-action content types | 2, the in-session check |
+| 5 | Late-tap inbox marker | 1 |
+| 6 | Bridge templates, CRM side | 1.2b |
+| 7 | Bridge Go service: send buttons, parse taps | handset test |
+
+PR 1 alone makes gap 7 work for any Cloud or Twilio template that already has
+buttons. **Done:** Cloud's `type: "button"` (`button.text` / `.payload`) and
+`type: "interactive"` (`button_reply.title` / `.id`), and Twilio's
+`ButtonText` / `ButtonPayload`, now reach the wait as `reply.text`, with the
+payload stored on the message. `src/lib/workflows/button-tap-branch.test.ts`
+posts real webhooks through the real routes, conversations service and
+engine, then runs the `if_else` step and asserts the branch. Every tap shape
+is proven on its Yes case, because a dropped tap would also land on No.
+One interaction to know: a button labelled exactly `Yes` or `Stop` counts as
+an opt-in or opt-out keyword, as typed text does. "Yes, all good" does not —
+the keyword check reads the first word, and "Yes," with its comma is not
+"YES". Each PR: provider-documented payload fixtures, mutation-tested,
+blind review, `pnpm ci:check`. The pilot's end-to-end (own handset, tap Yes
+and No, link on both branches) stays a human gate.
+
 ## What the FibreFlow client (gap 8) must do
 
 The `enrolment` block is exact about what happened, but three things in it
@@ -280,10 +371,9 @@ Also `tag_already_present` is reported only when the trigger tag was
 The receiving surface (gaps 1–5) is built. None of the remaining items is
 LeadStack API work:
 
-- **Gaps 6–7** — quick-reply Yes/No buttons on the Cloud template and a
-  workflow branch on the button payload. Out of scope here; needs its own
-  grill. Without them the funnel can send the experience check but cannot
-  route the answer.
+- **Gaps 6–7** — buttons and taps; planned in [Buttons](#buttons-gaps-67).
+  Without PRs 1–3 there the funnel can send the experience check but cannot
+  route the answer or send the tidy link.
 - **Gap 8** — FibreFlow: destination column, the LeadStack client above,
   and deleting the four ack-poll ledger states.
 - **Long-lead, human** — Velocity's Meta Business Manager verification, a
