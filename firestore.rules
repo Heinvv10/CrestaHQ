@@ -865,29 +865,19 @@ service cloud.firestore {
     }
 
     match /deals/{dealId} {
-      // Same territory-scoping pattern as contacts above.
+      // Same territory-scoping pattern as contacts above for reads. Every
+      // write goes through the Admin-SDK routes (/api/deals, /api/v1/deals,
+      // the form submit, quotes lifecycle, AI Suite) so the service can
+      // validate stageId against the deal's pipeline and fire the matching
+      // webhooks + workflow triggers — a client write would bypass all of
+      // that. The old client writers in src/lib/firestore/deals.ts have no
+      // callers.
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
-      allow create: if canAccessSub(
-        request.resource.data.subAccountId,
-        request.resource.data.agencyId
-      );
-      allow update: if canSeeScopedDoc(
-        resource.data.subAccountId,
-        resource.data.agencyId,
-        resource.data.get("territoryId", null)
-      ) && tenantFieldsLockedOnUpdate()
-        && territoryIdUnchangedOrAdmin(
-          resource.data.subAccountId,
-          resource.data.agencyId
-        );
-      allow delete: if canAdminSub(
-        resource.data.subAccountId,
-        resource.data.agencyId
-      );
+      allow create, update, delete: if false;
     }
 
     match /tasks/{taskId} {
