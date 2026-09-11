@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrestaHQ Google reviews embed — integration example</title>
+  <!--
+    A standalone static page, as a customer's website would be. Serve it from
+    a SECOND origin, e.g.:
+        cd docs/features/gbp-reviews/example && python3 -m http.server 4401
+    then open http://127.0.0.1:4401/?id=<publicId>   (optionally &api=<app URL>)
+    and allow http://127.0.0.1:4401 in the widget's allowed websites.
+    Contract: docs/features/gbp-reviews.md › Embed.
+  -->
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 48rem; padding: 1.5rem 1rem; line-height: 1.5; color: #1f2937; }
+    h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+    .note { font-size: .875rem; color: #4b5563; }
+    .demo { border: 1px dashed #9ca3af; border-radius: .5rem; padding: 1rem; margin: .5rem 0; }
+    code, pre { font-size: .8rem; } pre { background: #f3f4f6; padding: .75rem; overflow-x: auto; border-radius: .375rem; }
+    #states li { font-family: ui-monospace, monospace; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <h1>Google reviews on a static website</h1>
+  <p class="note">
+    Each box below is the embed contract: a container with the widget id and the
+    CrestaHQ app URL, holding the site's own static fallback. The script replaces
+    the fallback only when the feed answers <code>ok</code> or <code>stale</code>.
+  </p>
+  <noscript>
+    <p><strong>JavaScript is off:</strong> each box shows its static fallback content, exactly as written in the page.</p>
+  </noscript>
+
+  <h2>1. Live data (loading → ok, or stale with a "Last updated" label)</h2>
+  <div class="demo">
+    <div id="live" data-crestahq-reviews="" data-api="http://127.0.0.1:3100">
+      <!-- Static fallback: shown as-is with JavaScript off or when the feed is unavailable. -->
+      <p>Rated highly on Google — <a href="https://www.google.com/maps">read our reviews</a>.</p>
+    </div>
+  </div>
+  <p class="note">
+    Manual controls: the ‹ › buttons (Tab to them) and the arrow keys on the focused carousel.
+    Auto-advance (every 8&nbsp;s, paused on hover or focus) runs only when your system does not
+    ask for reduced motion. Reduced motion right now: <strong id="motion">unknown</strong>.
+  </p>
+
+  <h2>2. Feed down (the API is unreachable) — the fallback stays</h2>
+  <div class="demo">
+    <div id="down" data-crestahq-reviews="" data-api="http://127.0.0.1:4409">
+      <p>Rated highly on Google — <a href="https://www.google.com/maps">read our reviews</a>.</p>
+    </div>
+  </div>
+
+  <h2>Live state of each box</h2>
+  <ul id="states"></ul>
+
+  <h2>The snippet</h2>
+  <pre id="snippet"></pre>
+
+  <script>
+    // Tiny helper for this example only: take ?id= and ?api= from the URL,
+    // stamp them on the containers, then load the embed script from the app.
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var id = params.get("id") || "";
+      var api = (params.get("api") || "http://127.0.0.1:3100").replace(/\/+$/, "");
+      document.getElementById("live").setAttribute("data-crestahq-reviews", id);
+      document.getElementById("live").setAttribute("data-api", api);
+      document.getElementById("down").setAttribute("data-crestahq-reviews", id);
+
+      var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      document.getElementById("motion").textContent = reduce ? "yes — no auto-advance" : "no — auto-advance on";
+
+      document.getElementById("snippet").textContent =
+        '<div data-crestahq-reviews="' + (id || "PUBLIC_ID") + '" data-api="' + api + '">\n' +
+        "  <!-- static fallback -->\n" +
+        '  <p>Rated highly on Google — <a href="https://www.google.com/maps">read our reviews</a>.</p>\n' +
+        "</div>\n" +
+        '<script src="' + api + '/embed/gbp-reviews.js" defer></' + "script>";
+
+      var list = document.getElementById("states");
+      function paint() {
+        list.textContent = "";
+        ["live", "down"].forEach(function (name) {
+          var li = document.createElement("li");
+          li.textContent = name + ": data-state=" + (document.getElementById(name).getAttribute("data-state") || "(none)");
+          list.appendChild(li);
+        });
+      }
+      paint();
+      new MutationObserver(paint).observe(document.body, { attributes: true, subtree: true, attributeFilter: ["data-state"] });
+
+      var s = document.createElement("script");
+      s.src = api + "/embed/gbp-reviews.js";
+      s.defer = true;
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>
