@@ -45,6 +45,7 @@ beforeEach(() => {
     "GET /api/sub-accounts/sa1/google/locations": () => json({ accounts: [], truncated: false }),
     "DELETE /api/sub-accounts/sa1/google": () => json({ ok: true }),
     "DELETE /api/sub-accounts/sa1/google/listing": () => json({ ok: true }),
+    "GET /api/sub-accounts/sa1/gbp/reviews": () => json({ summary: null, reviews: [], runs: [] }),
   };
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     const handler = routes[`${init?.method ?? "GET"} ${url}`];
@@ -121,6 +122,21 @@ describe("states", () => {
     await render();
     expect(byId("gbp-state-not-admin")?.textContent).toContain("Fixture Fibre — North");
     expect(container.querySelectorAll("button")).toHaveLength(0);
+    // They can still read the synced reviews — without Sync now.
+    expect(byId("gbp-summary")).not.toBeNull();
+    expect(byId("gbp-sync-now")).toBeNull();
+  });
+
+  it("keeps the cached reviews visible, labelled, on the reconnect screen", async () => {
+    ctx.subAccount = {
+      googleEnabledByAgency: true,
+      googleConnectionMeta: { ...CONNECTED, reconnectRequired: true, reconnectReason: "revoked" },
+      googleListing: LISTING,
+    };
+    await render();
+    expect(byId("gbp-state-reconnect")).not.toBeNull();
+    expect(byId("gbp-banner-reconnect")).not.toBeNull();
+    expect(byId("gbp-sync-now")).toBeNull();
   });
 
   it("shows not-configured when the deployment has no usable Google provider", async () => {
@@ -172,6 +188,13 @@ describe("states", () => {
 describe("selected listing", () => {
   beforeEach(() => {
     ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: LISTING };
+  });
+
+  it("shows the synced reviews with Sync now for an admin", async () => {
+    await render();
+    expect(byId("gbp-state-selected")?.querySelector('[data-testid="gbp-summary"]')).not.toBeNull();
+    expect(byId("gbp-sync-now")).not.toBeNull();
+    expect(byId("gbp-reviews-empty")).not.toBeNull();
   });
 
   it("re-opens the picker on Change listing, and Cancel returns", async () => {

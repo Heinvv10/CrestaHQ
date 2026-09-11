@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { GoogleListing } from "@/types/google";
 import { InlineConfirm } from "./inline-confirm";
 import { ListingPicker } from "./listing-picker";
+import { ReviewsSection } from "./reviews-section";
 import { useGoogleStatusToast } from "./use-google-status-toast";
 
 /**
@@ -142,6 +143,10 @@ export function GoogleBusinessPanel() {
           Only sub-account admins can connect Google or change the listing.
         </p>
         {listing && <div className="mt-3"><ListingSummary listing={listing} /></div>}
+        {/* Members may read the synced reviews; only admins sync. */}
+        {listing && meta?.connected && (
+          <ReviewsSection subAccountId={subAccountId} canSync={false} reconnect={!!meta.reconnectRequired} />
+        )}
       </Shell>
     );
   }
@@ -200,6 +205,8 @@ export function GoogleBusinessPanel() {
         <Button type="button" size="sm" className="mt-3" onClick={connect} data-testid="gbp-reconnect">
           Reconnect
         </Button>
+        {/* Cached reviews stay visible — labelled as such — until reconnected. */}
+        {listing && <ReviewsSection subAccountId={subAccountId} canSync={false} reconnect />}
       </Shell>
     );
   }
@@ -234,6 +241,7 @@ export function GoogleBusinessPanel() {
           testId="gbp-clear-listing"
         />
       </div>
+      <ReviewsSection subAccountId={subAccountId} canSync reconnect={false} />
     </Shell>
   );
 }
