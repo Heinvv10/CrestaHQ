@@ -9,6 +9,7 @@ import {
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
+import { isHttpsUrl } from "@/lib/reviews/review-url";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
@@ -36,14 +37,6 @@ interface PostBody {
   cooldownDays?: number;
   triggerOnQuotePaid?: boolean;
   triggerOnDealCompleted?: boolean;
-}
-
-function isHttpsUrl(s: string): boolean {
-  try {
-    return new URL(s).protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 export async function POST(
