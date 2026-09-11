@@ -5,7 +5,7 @@ import type { SubAccountDoc } from "@/types";
 import { GbpFakeRefusedError, gbpProviderMode } from "../provider/select";
 import { recordFailedRun } from "./record";
 import type { Sleep } from "./retry";
-import { skipReasonFor, syncListing } from "./run";
+import { retainListing, skipReasonFor, syncListing } from "./run";
 import { toMillis, type GbpSummary } from "./types";
 
 /**
@@ -48,7 +48,7 @@ const eligible = (sub: Sub) => {
 };
 const hasCache = (sub: Sub) => toMillis(sub.gbpSummary?.lastRunAt) !== null;
 
-async function candidates(): Promise<{ sync: Candidate[]; retain: Candidate[] }> {
+async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }> {
   // Throws GbpFakeRefusedError on a misconfigured fake: the sweep cannot
   // start, the route answers 500, QStash retries — loudly.
   const fake = gbpProviderMode() === "fake";
@@ -65,8 +65,7 @@ async function candidates(): Promise<{ sync: Candidate[]; retain: Candidate[] }>
     .filter(({ sub }) => eligible(sub))
     .sort((a, b) => (toMillis(a.sub.gbpSummary?.lastRunAt) ?? -1) - (toMillis(b.sub.gbpSummary?.lastRunAt) ?? -1))
     .slice(0, SWEEP_CAP);
-  const retain = cached.filter(({ sub }) => !eligible(sub) && hasCache(sub));
-  return { sync, retain };
+  return { sync, cached: cached.filter(({ sub }) => hasCache(sub)) };
 }
 
 async function pool(items: Candidate[], work: (c: Candidate) => Promise<void>, stop: () => boolean) {
@@ -77,14 +76,32 @@ async function pool(items: Candidate[], work: (c: Candidate) => Promise<void>, s
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
 }
 
+/** Retention-only passes (`retainListing`, no provider calls), each tenant isolated. */
+async function retainAll(list: Candidate[]): Promise<number> {
+  let retained = 0;
+  await pool(list, async (c) => {
+    try {
+      await retainListing(c.id);
+      retained += 1;
+    } catch (err) {
+      console.error(`[cron/gbp-retention] retention threw sa=${c.id}: ${err instanceof Error ? err.name : typeof err}`);
+    }
+  }, () => false);
+  return retained;
+}
+
 /**
- * `syncTenants: false` (the schedule is off) runs ONLY the retention half —
- * no provider calls — so a cache still never outlives Google's 30 days.
+ * Daily housekeeping (POST /api/cron/gbp-retention, and the sync cron while
+ * the sync schedule is off): a retention-only pass for EVERY sub-account
+ * holding a cache — sync-eligible or not. Never reaches the provider.
  */
-export async function runGbpSyncSweep(opts: { sleep?: Sleep; syncTenants?: boolean } = {}): Promise<SweepResult> {
-  const found = await candidates();
-  const sync = opts.syncTenants === false ? [] : found.sync;
-  const { retain } = found;
+export async function runGbpRetentionSweep(): Promise<{ retained: number }> {
+  const { cached } = await candidates();
+  return { retained: await retainAll(cached) };
+}
+
+export async function runGbpSyncSweep(opts: { sleep?: Sleep } = {}): Promise<SweepResult> {
+  const { sync, cached } = await candidates();
   const byStatus: Record<string, number> = {};
   const count = (k: string) => (byStatus[k] = (byStatus[k] ?? 0) + 1);
   let processed = 0;
@@ -114,7 +131,8 @@ export async function runGbpSyncSweep(opts: { sleep?: Sleep; syncTenants?: boole
     count(status);
     if (errorKind === "rate_limited") rateLimited = true;
   }), () => rateLimited);
-  // No provider calls, so no quota to protect: always runs.
-  await pool(retain, (c) => one(c, () => void (retained += 1)), () => false);
+  // Caches that cannot sync: retention only (no provider calls, no quota to
+  // protect — always runs). Eligible tenants get retention inside their sync.
+  retained = await retainAll(cached.filter(({ sub }) => !eligible(sub)));
   return { processed, byStatus, retained, stoppedOnRateLimit: rateLimited };
 }

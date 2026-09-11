@@ -85,8 +85,9 @@ describe("loginRedirectUrl", () => {
 });
 
 describe("isPublicPath — the GBP sync routes", () => {
-  it("lets QStash reach the signed cron (the signature is its auth)", () => {
+  it("lets QStash reach the signed crons (the signature is their auth)", () => {
     expect(isPublicPath("/api/cron/gbp-sync")).toBe(true);
+    expect(isPublicPath("/api/cron/gbp-retention")).toBe(true);
   });
 
   it("keeps Sync now and the reviews read behind a session", () => {

@@ -46,7 +46,7 @@ export function planReconcile(
   if (!singleRun) return { reconciliation: "deferred", remove: [], misses: [], streak };
   const active = [...cache].filter(([, c]) => c.state === "active");
   const seen = active.filter(([, c]) => c.passId === passId).length;
-  const unseen = active.filter(([, c]) => c.passId !== passId).map(([id, c]) => [id, c.missedPasses + 1] as [string, number]);
+  const unseen = active.filter(([, c]) => c.passId !== passId).map(([id, c]) => [id, (c.missedPasses ?? 0) + 1] as [string, number]);
   const due = unseen.filter(([, n]) => n >= MISSES_TO_REMOVE).map(([id]) => id);
   const keep = (ids: string[]) => unseen.filter(([id]) => !ids.includes(id));
   const anomaly =

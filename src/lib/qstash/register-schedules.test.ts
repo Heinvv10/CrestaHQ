@@ -36,9 +36,28 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-08-email-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-11-gbp-retention" }),
     { merge: true }
   );
+});
+
+it("always registers the daily GBP retention housekeeping — flag or no flag", async () => {
+  for (const flag of ["", "1"]) {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("QSTASH_TOKEN", "test");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
+    vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", flag);
+    mock.create.mockReset();
+    mock.get.mockResolvedValue({ exists: false, data: () => ({}) });
+    await ensureSchedulesRegistered();
+    expect(mock.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: "leadstack-gbp-retention",
+        cron: "30 4 * * *",
+        destination: "https://app.example.com/api/cron/gbp-retention",
+      })
+    );
+  }
 });
 
 function freshMarker(extra: Record<string, unknown> = {}) {
@@ -68,7 +87,7 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
   productionEnv();
   vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "1");
   // A marker fresh from before the flag was turned on must not suppress it.
-  freshMarker({ scheduleVersion: "2026-09-08-email-sync" });
+  freshMarker({ scheduleVersion: "2026-09-11-gbp-retention" });
   await ensureSchedulesRegistered();
   expect(mock.create).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -78,7 +97,7 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-08-email-sync+gbp-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-11-gbp-retention+gbp-sync" }),
     { merge: true }
   );
 });

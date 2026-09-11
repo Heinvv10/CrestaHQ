@@ -90,7 +90,10 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
   const stateRef = db.doc(syncStatePath(sa));
   const subRef = db.doc(`subAccounts/${sa}`);
   const prev = previousSummary(sub);
-  const syncs = rec.skipReason === null || rec.skipReason === "reconnect_required";
+  const retainOnly = rec.skipReason === "retention_only";
+  const syncs = !retainOnly && (rec.skipReason === null || rec.skipReason === "reconnect_required");
+  const cls = skipReasonFor(sub);
+  const canSync = cls === null || cls === "reconnect_required";
 
   const cache = await loadCache(sa);
   const retention = planRetention(cache, prev, state.retentionPurgedAt, now);
@@ -103,12 +106,17 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     const reset = { retentionPurgedAt: now.getTime(), pass: null, anomalyStreak: null };
     purge.push((tx) => tx.set(stateRef, reset, { merge: true }));
   }
-  // A cache that can no longer sync drops its (Google-sourced) summary once
-  // it holds no reviews — after an expiry purge, or when a never-successful
-  // one has nothing left that could ever expire — and so leaves the sweep's
-  // retention list.
-  if (!syncs && cache.size === 0) {
+  if (!syncs && !canSync && cache.size === 0) {
+    // A cache that can no longer sync drops its (Google-sourced) summary
+    // once it holds no reviews — after an expiry purge, or when a
+    // never-successful one has nothing left that could ever expire — and so
+    // leaves the sweep's retention list.
     purge.push((tx) => tx.set(subRef, { gbpSummary: null }, { merge: true }));
+  } else if (retainOnly && retention.expired) {
+    // Housekeeping on a tenant that CAN sync: the expired rating/count go
+    // too, and the summary says why (health error, retention_expired).
+    const summary = nextSummary(rec, prev, { expired: true, rating: null }, now);
+    purge.push((tx) => tx.set(subRef, { gbpSummary: summary }, { merge: true }));
   }
   await commitGuarded(sa, rec.runId, purge);
   if (!syncs) return;
@@ -163,17 +171,10 @@ async function recordInternalFailure(rec: SyncRunRecord, sub: SubWithSummary, no
   }
 }
 
-export async function syncListing(subAccountId: string, opts: SyncOptions): Promise<SyncRunRecord> {
-  const now = opts.now ?? new Date();
-  // The fence FIRST: in fake mode this throws for a sub-account outside the
-  // fixture agency before anything of ours is read or written.
-  await getGbpProviderFor(subAccountId);
-
-  const db = getAdminDb();
-  const sub = ((await db.doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubWithSummary;
+function newRecord(subAccountId: string, sub: SubWithSummary, opts: SyncOptions, now: Date): SyncRunRecord {
   const listing = sub.googleListing ?? null;
-  const rec: SyncRunRecord = {
-    runId: db.collection(runsCollection(subAccountId)).doc().id,
+  return {
+    runId: getAdminDb().collection(runsCollection(subAccountId)).doc().id,
     agencyId: sub.agencyId,
     subAccountId,
     createdByUid: listing?.selectedByUid ?? opts.actorUid ?? null,
@@ -189,38 +190,70 @@ export async function syncListing(subAccountId: string, opts: SyncOptions): Prom
     errorKind: null,
     skipReason: skipReasonFor(sub),
   };
+}
 
+/**
+ * Take the lease (refused if the sub-account no longer classifies as `cls`),
+ * run, release. The run continues from the sub-account read INSIDE the lease.
+ */
+async function underLease(rec: SyncRunRecord, cls: SkipReason | null, opts: SyncOptions, now: Date, syncs: boolean) {
+  const sa = rec.subAccountId;
+  const lease = await acquireLease(sa, rec.runId, now, {
+    locationName: rec.locationName,
+    skipReason: cls,
+    classify: skipReasonFor,
+  });
+  if (!lease.ok) {
+    rec.skipReason = lease.reason;
+    return;
+  }
+  try {
+    await runLeased(rec, lease.sub as SubWithSummary, lease.state, opts, now);
+  } catch (err) {
+    rec.status = "failed";
+    rec.errorKind = err instanceof LeaseLostError ? "lease_lost" : "internal";
+    const reason = err instanceof Error ? err.name : typeof err;
+    console.error(`[gbp/sync] sa=${sa} run=${rec.runId} ${rec.errorKind}: ${reason}`);
+    if (syncs && rec.errorKind === "internal") await recordInternalFailure(rec, lease.sub as SubWithSummary, now);
+  } finally {
+    await releaseLease(sa, rec.runId);
+  }
+}
+
+async function finish(rec: SyncRunRecord, opts: { now?: Date }, now: Date): Promise<SyncRunRecord> {
+  rec.finishedAt = opts.now ? now : new Date();
+  await getAdminDb().doc(`${runsCollection(rec.subAccountId)}/${rec.runId}`).create({ ...rec });
+  return rec;
+}
+
+export async function syncListing(subAccountId: string, opts: SyncOptions): Promise<SyncRunRecord> {
+  const now = opts.now ?? new Date();
+  // The fence FIRST: in fake mode this throws for a sub-account outside the
+  // fixture agency before anything of ours is read or written.
+  await getGbpProviderFor(subAccountId);
+
+  const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubWithSummary;
+  const rec = newRecord(subAccountId, sub, opts, now);
   // Syncable, reconnect-flagged (retention still runs), or holding a cache
   // that can no longer sync (retention only) → take the lease.
   const syncs = rec.skipReason === null || rec.skipReason === "reconnect_required";
-  if (syncs || sub.gbpSummary) {
-    const lease = await acquireLease(subAccountId, rec.runId, now, {
-      locationName: rec.locationName,
-      skipReason: rec.skipReason,
-      classify: skipReasonFor,
-    });
-    if (!lease.ok) {
-      rec.skipReason = lease.reason;
-    } else {
-      try {
-        // The sub-account as read inside the lease: the summary it continues
-        // from (and the retention clock) cannot be a stale pre-lease read.
-        await runLeased(rec, lease.sub as SubWithSummary, lease.state, opts, now);
-      } catch (err) {
-        rec.status = "failed";
-        rec.errorKind = err instanceof LeaseLostError ? "lease_lost" : "internal";
-        const reason = err instanceof Error ? err.name : typeof err;
-        console.error(`[gbp/sync] sa=${subAccountId} run=${rec.runId} ${rec.errorKind}: ${reason}`);
-        if (syncs && rec.errorKind === "internal") {
-          await recordInternalFailure(rec, lease.sub as SubWithSummary, now);
-        }
-      } finally {
-        await releaseLease(subAccountId, rec.runId);
-      }
-    }
-  }
+  if (syncs || sub.gbpSummary) await underLease(rec, rec.skipReason, opts, now, syncs);
+  return finish(rec, opts, now);
+}
 
-  rec.finishedAt = opts.now ? now : new Date();
-  await db.doc(`${runsCollection(subAccountId)}/${rec.runId}`).create({ ...rec });
-  return rec;
+/**
+ * Retention ONLY — Google's 30-day rule for one sub-account's cache, sync-
+ * eligible or not, under the same lease as a sync. Never reaches the
+ * provider (not even getGbpProviderFor): the daily housekeeping cron, and the
+ * sync cron while the sync schedule is off. Callers pick tenants from
+ * fenced queries (sweep.ts), so fake mode still never touches a real tenant.
+ */
+export async function retainListing(subAccountId: string, opts: { now?: Date } = {}): Promise<SyncRunRecord> {
+  const now = opts.now ?? new Date();
+  const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubWithSummary;
+  const rec = newRecord(subAccountId, sub, { trigger: "scheduled" }, now);
+  const cls = rec.skipReason;
+  rec.skipReason = "retention_only";
+  if (sub.gbpSummary) await underLease(rec, cls, { trigger: "scheduled" }, now, false);
+  return finish(rec, opts, now);
 }

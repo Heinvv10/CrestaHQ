@@ -72,6 +72,19 @@ describe("switching the gate off", () => {
     expect(mem.read(`subAccounts/${SA}/private/googleConnection`)).toBeTruthy();
   });
 
+  it("a failing cache clear does not fail the gate write; the retention sweep is the backstop", async () => {
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    vi.spyOn(storeDb, "batch").mockImplementationOnce(() => {
+      throw new Error("14 UNAVAILABLE");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await patch({ googleEnabled: false })).toBe(200);
+    expect(gate()).toBe(false);
+    const logged = errors.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("[feature-gates] GBP cache clear failed");
+    expect(logged).not.toContain("UNAVAILABLE"); // the kind, never the message
+  });
+
   it("switching it ON keeps the cache", async () => {
     expect(await patch({ googleEnabled: true })).toBe(200);
     expect(reviews()).toHaveLength(7);

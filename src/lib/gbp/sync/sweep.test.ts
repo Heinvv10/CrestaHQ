@@ -166,7 +166,7 @@ describe("retention-only pass for caches that can no longer sync", () => {
     expect(reviews(SA)).toHaveLength(0);
     expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toBeNull();
     expect(mem.read(fakeScenarioPath(SA))?.failNext).toBeDefined();
-    expect(runs(SA).find((r) => r.skipReason === "gate_off")).toMatchObject({ status: "skipped", purged: 7 });
+    expect(runs(SA).find((r) => r.skipReason === "retention_only")).toMatchObject({ status: "skipped", purged: 7 });
     // Out of the query now: the next sweep leaves it alone.
     expect((await runGbpSyncSweep({ sleep: noSleep })).retained).toBe(0);
   });

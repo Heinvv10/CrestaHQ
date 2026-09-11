@@ -129,6 +129,16 @@ export async function applyFeatureGates(
   // 30-day storage rule must not wait for a sweep. After the gate write, so a
   // sync starting meanwhile is refused by its lease check. The connection and
   // listing stay — re-enabling resumes with a fresh sync.
-  if (gates.googleEnabledByAgency === false) await clearGbpCache(subAccountId);
+  // A failed clear does not fail the gate (already written): the daily
+  // retention sweep is the backstop, and re-saving the gate retries safely.
+  if (gates.googleEnabledByAgency === false) {
+    try {
+      await clearGbpCache(subAccountId);
+    } catch (err) {
+      console.error(
+        `[feature-gates] GBP cache clear failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`,
+      );
+    }
+  }
   return result;
 }

@@ -208,6 +208,11 @@ Run through this with the client's real details before calling it done:
   newest by `finishedAt`. `reconnect_required` → the client must reconnect
   Google on that page; `rate_limited`/`transient` → wait for the next run;
   `skipped already_running` → another run holds the 5-minute lease.
+- **Retention (always on):** `leadstack-gbp-retention` runs daily at 04:30
+  UTC for every sub-account holding a cache — Firestore only, no Google
+  calls — deleting content past Google's 30-day limit. It is registered with
+  the other schedules on every deployment; check it in the QStash schedules
+  list if review content ever looks older than 30 days.
 - **Schedule:** the `leadstack-gbp-sync` QStash schedule (every 6h) is
   registered at cold start only when the deployment sets
   `GBP_SYNC_SCHEDULE_ENABLED=1` (the page then says "Syncs automatically

@@ -19,7 +19,9 @@ export type SkipReason =
   | "reconnect_required"
   | "already_running"
   /** The listing / connection / gate changed between the run's read and its lease. */
-  | "listing_changed";
+  | "listing_changed"
+  /** Housekeeping: Google's 30-day rule only, no provider call (retainListing). */
+  | "retention_only";
 /**
  * `full` = a complete pass that ran in ONE run: it counted a miss for every
  * active review it did not see and tombstoned those missed twice in a row.

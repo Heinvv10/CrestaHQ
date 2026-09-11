@@ -273,6 +273,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
 | `GET /api/sub-accounts/[id]/gbp/reviews` | any member, gated | `{summary, reviews, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/` |
+| `POST /api/cron/gbp-retention` | QStash signature bound to this URL | the always-on daily retention housekeeping: a retention-only pass (no provider calls) for every sub-account holding a cache; `{retained}`; 500 only when the sweep cannot start |
 | `POST /api/cron/gbp-sync` | QStash signature bound to this URL | the 6-hourly sweep; `{processed, byStatus, retained, stoppedOnRateLimit}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
@@ -384,6 +385,12 @@ a live review — `sync/two-miss.test.ts` › the deletion-shift race).
 - **So a review removed at Google disappears after two complete passes —
   about 12 hours with the 6-hourly schedule** (or two Sync-now presses a
   minute apart).
+- **Residual risk (documented, accepted):** a LIVE review can still be
+  tombstoned if it goes unseen in two consecutive complete single-run passes
+  for two independent reasons — e.g. a deletion shifts Google's pages past it
+  in one pass and another shift does the same in the next. That needs two
+  separate mid-pass events aligned on the same review; the review is restored
+  (as an `update`) the next time a pass sees it.
 - **Big listings:** a listing that cannot finish a pass in one run (more than
   `maxPages × 50` = 1000 reviews) never counts misses. A review removed at
   Google stays cached — and served — until it has not been re-seen for 30
@@ -412,11 +419,20 @@ says content "…stored temporarily for no more than 30 calendar days…". So:
   `health:"error"`, `lastErrorKind:"retention_expired"`. The purge restarts
   the clock, so later runs resume the new pass and a listing too big for one
   run can finish it.
+- **Always-on housekeeping:** a daily `leadstack-gbp-retention` schedule
+  (registered unconditionally, like api-cleanup) runs a retention-only pass
+  — Firestore only, never the provider — for EVERY sub-account holding a
+  cache, sync-eligible or not. `GBP_SYNC_SCHEDULE_ENABLED` controls only the
+  Google sync; with it off, the sync cron (if a schedule is left) does the
+  same retention pass and syncs nobody. So no configuration can leave review
+  content stored past 30 days.
 - **Switching the agency gate off** deletes the cache at once, on every
   path that can do it — the Manage dialog (`PATCH …/feature-gates`) and the
   Workspace Assistant's `set_feature_gate` both go through
   `applyFeatureGates`, which calls `clearGbpCache` — as do clearing/changing
-  the listing and disconnecting. Any other cache that can no longer sync gets a
+  the listing and disconnecting. If that clear fails, the gate change still
+  succeeds (logged by kind); the daily retention pass is the backstop and
+  re-saving the gate retries the clear safely. Any other cache that can no longer sync gets a
   retention-only pass from the sweep — no provider call, under the lease;
   its reviews go under the 30-day rules, and once it holds none (after an
   expiry purge, or never successful) its summary is deleted too and it
@@ -474,7 +490,11 @@ syncs a day. Beyond ~25 connected listings each is synced less often than every
 6 hours (and reads `stale` after 12h), until the cap is raised or the sweep
 continues itself.
 
-**Owner checklist** (not run): set `GBP_SYNC_SCHEDULE_ENABLED=1` in the
+**Owner checklist** (not run): the next production deploy registers
+`leadstack-gbp-retention` — daily at 04:30 UTC, Firestore-only, no Google
+calls, unconditionally (Google's 30-day storage limit) — verify it in the
+QStash schedules list after the deploy. Then, for the Google sync: set
+`GBP_SYNC_SCHEDULE_ENABLED=1` in the
 production env, then an approved after-hours deploy (`bash
 scripts/deploy-velo.sh`) — the next cold start registers `leadstack-gbp-sync`
 (`0 */6 * * *`) with the other schedules. **This is a policy prerequisite**

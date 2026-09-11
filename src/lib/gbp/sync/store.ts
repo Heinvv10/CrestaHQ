@@ -36,7 +36,8 @@ export interface CachedReview {
   passId: string;
   lastSeenAt: number | null;
   contentHash: string | null;
-  missedPasses: number;
+  /** Stored misses; read only for reviews a pass did NOT see (absent = 0). */
+  missedPasses?: number;
 }
 
 export async function loadCache(subAccountId: string): Promise<Map<string, CachedReview>> {

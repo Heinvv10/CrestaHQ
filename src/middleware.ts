@@ -45,6 +45,8 @@ const PUBLIC_PATHS = [
   // 6-hourly Google Business Profile review sync. Public like the other cron
   // routes — the QStash signature, verified inside the route, is the auth.
   "/api/cron/gbp-sync",
+  // Daily GBP review-cache retention (always on). Same auth: the signature.
+  "/api/cron/gbp-retention",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",

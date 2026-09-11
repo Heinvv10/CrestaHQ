@@ -86,6 +86,20 @@ describe("with the schedule off (GBP_SYNC_SCHEDULE_ENABLED !== \"1\")", () => {
     expect(runs()).toHaveLength(0);
   });
 
+  it("…and retention covers SYNC-ELIGIBLE tenants too (a leftover schedule behaves like the retention cron)", async () => {
+    await cron(); // flag on: sync SA and OTHER_SA
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: new Date(Date.now() - 31 * 24 * 3600_000) },
+    });
+    delete process.env.GBP_SYNC_SCHEDULE_ENABLED;
+    const res = await cron();
+    expect(await res.json()).toMatchObject({ skipped: "not_scheduled", processed: 0, retained: 2 });
+    expect(reviews(SA)).toHaveLength(0);
+    expect(reviews(OTHER_SA)).toHaveLength(7);
+  });
+
   it("…but still runs the retention-only half (no provider calls)", async () => {
     await cron(); // flag on: sync SA and OTHER_SA
     const DAY = 24 * 3600_000;
@@ -97,7 +111,8 @@ describe("with the schedule off (GBP_SYNC_SCHEDULE_ENABLED !== \"1\")", () => {
     });
     delete process.env.GBP_SYNC_SCHEDULE_ENABLED;
     const res = await cron();
-    expect(await res.json()).toMatchObject({ skipped: "not_scheduled", processed: 0, retained: 1 });
+    // Both caches get retention (SA gate-off + expired; OTHER_SA eligible, fresh).
+    expect(await res.json()).toMatchObject({ skipped: "not_scheduled", processed: 0, retained: 2 });
     expect(reviews(SA)).toHaveLength(0);
     expect(reviews(OTHER_SA)).toHaveLength(7);
   });

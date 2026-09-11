@@ -62,6 +62,15 @@ const SCHEDULES: ScheduleSpec[] = [
       "Daily sweep of expired apiRequestLogs / apiIdempotency / webhookEvents.",
   },
   {
+    // Always on, unlike the GBP sync below: Google's 30-day storage limit
+    // must not depend on whether the sync is scheduled. Firestore only.
+    scheduleId: "leadstack-gbp-retention",
+    path: "/api/cron/gbp-retention",
+    cron: "30 4 * * *",
+    description:
+      "Daily GBP review-cache retention (Google's 30-day storage limit); no Google API calls.",
+  },
+  {
     scheduleId: "leadstack-recurring-invoices",
     path: "/api/cron/recurring-invoices",
     // 05:00 UTC — after api-cleanup, and early enough that a schedule due
@@ -78,7 +87,7 @@ const SCHEDULES: ScheduleSpec[] = [
   },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-08-email-sync";
+const BASE_SCHEDULE_VERSION = "2026-09-11-gbp-retention";
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment
