@@ -14,6 +14,8 @@
 #     is cleared automatically.
 #   - Runs as a systemd USER service (velo has Linger=yes, no passwordless
 #     sudo). $SYSTEMCTL is overridable if that ever changes.
+#   - Refuses any GBP fake-provider setting (GBP_PROVIDER=fake, GBP_FAKE_*,
+#     or a loopback NEXT_PUBLIC_APP_URL) before building anything.
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.
@@ -96,6 +98,16 @@ git reset --hard --quiet "origin/$BRANCH"
 after=$(git rev-parse --short HEAD)
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
+
+# ── Refuse the dev/CI-only fake Google Business Profile provider ───────────
+# Every env file Next may read at build or run time. Checked BEFORE any gate or
+# build so a misconfigured deploy dir never produces an artifact at all. See
+# scripts/gbp-fake-guard.sh and docs/features/gbp-reviews.md.
+say "Checking for the GBP fake provider"
+# shellcheck source=scripts/gbp-fake-guard.sh
+. "$(dirname "$0")/gbp-fake-guard.sh"
+gbp_fake_guard .env .env.production .env.local .env.production.local \
+  || die "GBP fake-provider settings found (see above). They are dev/CI only — remove them from $DEPLOY_DIR."
 
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
