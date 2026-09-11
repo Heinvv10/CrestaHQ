@@ -360,7 +360,16 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
               icon={<Building2 className="h-4 w-4 text-muted-foreground" />}
               label="Company"
             >
-              <span className="text-foreground">{contact.company}</span>
+              {contact.companyId ? (
+                <Link
+                  href={saPath(`/companies/${contact.companyId}`)}
+                  className="text-foreground hover:text-primary hover:underline"
+                >
+                  {contact.company}
+                </Link>
+              ) : (
+                <span className="text-foreground">{contact.company}</span>
+              )}
             </Row>
           )}
           <Row

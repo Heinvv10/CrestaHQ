@@ -9,6 +9,10 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useSubAccount } from "@/context/sub-account-context";
 import { TerritorySelectField } from "@/components/settings/territory-select-field";
+import {
+  CompanyCombobox,
+  type CompanyValue,
+} from "@/components/contacts/company-combobox";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
@@ -50,7 +54,10 @@ export function ContactForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [email, setEmail] = useState(initial?.email ?? "");
   const [phone, setPhone] = useState(initial?.phone ?? "");
-  const [company, setCompany] = useState(initial?.company ?? "");
+  const [company, setCompany] = useState<CompanyValue>({
+    companyId: initial?.companyId ?? null,
+    company: initial?.company ?? "",
+  });
   const [address, setAddress] = useState(initial?.address ?? "");
   const [source, setSource] = useState<ContactSource>(initial?.source ?? "");
   const [tagsInput, setTagsInput] = useState((initial?.tags ?? []).join(", "));
@@ -109,7 +116,8 @@ export function ContactForm({
         name: name.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        company: company.trim(),
+        company: company.company.trim(),
+        companyId: company.companyId,
         address: address.trim(),
         source,
         tags,
@@ -175,11 +183,10 @@ export function ContactForm({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="c-company">Company</Label>
-          <Input
+          <CompanyCombobox
             id="c-company"
             value={company}
-            onChange={(e) => setCompany(e.target.value)}
-            placeholder="Acme Inc."
+            onChange={setCompany}
           />
         </div>
       </div>

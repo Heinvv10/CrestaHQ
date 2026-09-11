@@ -8,6 +8,7 @@ import {
   updateContactServerSide,
   type UpdateContactPatch,
 } from "@/lib/server/contacts-service";
+import { resolveCompanyLink } from "@/lib/server/companies-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { normalizePhoneLenient } from "@/lib/contacts/phone";
@@ -116,6 +117,18 @@ export async function PATCH(
     }
   }
   if (typeof body.company === "string") patch.company = str(body.company);
+  // Linking a company pins `company` to its name; `null` unlinks and keeps
+  // whatever free text was sent (or already stored).
+  if (typeof body.companyId === "string" && body.companyId) {
+    const link = await resolveCompanyLink(db, data.subAccountId, body.companyId);
+    if (!link.ok) {
+      return NextResponse.json({ error: link.error }, { status: 400 });
+    }
+    patch.companyId = link.companyId;
+    patch.company = link.company;
+  } else if (body.companyId === null) {
+    patch.companyId = null;
+  }
   if (typeof body.address === "string") patch.address = str(body.address);
   if (typeof body.source === "string") patch.source = str(body.source);
   if (Array.isArray(body.tags)) {

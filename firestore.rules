@@ -758,6 +758,32 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---------- companies (GHL "Businesses") ----------
+    // Sub-account scoped organisations that contacts link to via
+    // `contacts.companyId`. Members read/create/update (same as contacts);
+    // companies carry no territory, so reads are not territory-scoped.
+    // Delete is server-only-ish: admins may, but the dashboard routes it
+    // through DELETE /api/companies/[id] so linked contacts are unlinked
+    // in the same batch.
+    match /companies/{companyId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow create: if canAccessSub(
+        request.resource.data.subAccountId,
+        request.resource.data.agencyId
+      );
+      allow update: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      ) && tenantFieldsLockedOnUpdate();
+      allow delete: if canAdminSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+    }
+
     match /contacts/{contactId} {
       // Reads honor territory scoping when enabled — collaborators only
       // see contacts whose `territoryId` is in their assigned list (or

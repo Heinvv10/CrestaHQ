@@ -62,6 +62,12 @@ export interface Contact {
   email: string;
   phone: string;
   company: string;
+  /**
+   * Linked `companies/{id}` doc, or null/absent for legacy free-text
+   * `company` values. On link the server copies the company's name into
+   * `company` so every existing reader of the string keeps working.
+   */
+  companyId?: string | null;
   /** Free-form billing/postal address. Surfaced under "Billed to" on
    *  quotes + invoices (snapshotted onto the doc at contact pick time
    *  so historical docs aren't mutated when the contact's address
@@ -173,6 +179,7 @@ export type ContactFormData = Pick<
   Contact,
   "name" | "email" | "phone" | "company" | "address" | "source" | "tags"
 > & {
+  companyId?: string | null;
   territoryId?: string | null;
   customFields?: Record<
     string,

@@ -51,6 +51,8 @@ export interface CreateContactInput {
    */
   phoneCountry?: string | null;
   company: string;
+  /** Linked `companies/{id}` (routes verify tenancy via resolveCompanyLink). */
+  companyId?: string | null;
   address: string;
   source: string;
   tags: string[];
@@ -114,6 +116,7 @@ export function buildContactDoc(input: CreateContactInput) {
     email: input.email,
     phone: normalizePhoneLenient(input.phone, input.phoneCountry),
     company: input.company,
+    companyId: input.companyId ?? null,
     address: input.address,
     source: input.source,
     tags: [...new Set(input.tags)],
@@ -186,6 +189,7 @@ export interface UpdateContactPatch {
   email?: string;
   phone?: string;
   company?: string;
+  companyId?: string | null;
   address?: string;
   source?: string;
   tags?: string[];

@@ -20,6 +20,7 @@
 | `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid` |
 | `contacts/{id}/notes/{id}` | inherits | Free-text notes |
 | `contacts/{id}/activities/{id}` | inherits | Typed events |
+| `companies/{id}` | sub-account | GHL "Businesses". `{name, phone, email, website, address}` + tenancy keys. Members read/create/update via the client SDK; delete is admin-only and goes through `DELETE /api/companies/[id]`, which nulls `companyId` on every linked contact in the same batch. A contact links via `contacts.companyId`; on link the server copies the company's `name` into the legacy free-text `contacts.company`, so CSV export, quotes and webhooks read the string unchanged. Free-text values with no link keep `companyId: null`. |
 | `deals/{id}` | sub-account | One contact → many deals |
 | `events/{id}` | sub-account | Calendar events |
 | `tasks/{id}` | sub-account | Todos |

@@ -49,5 +49,6 @@ export default async function globalTeardown(): Promise<void> {
   ]) {
     await purge("workflowRuns", subAccountId);
     await purge("contacts", subAccountId);
+    await purge("companies", subAccountId);
   }
 }
