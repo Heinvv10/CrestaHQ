@@ -156,7 +156,7 @@ bridge" inside one sub-account is out of scope.
 | 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | `POST /api/v1/contacts/upsert` → `enrolment` | **closed** — see below |
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
 | 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
-| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | planned — see [Buttons](#buttons-gaps-67) |
+| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | **Cloud done** (build-order PR 2); Twilio PR 4; bridge PRs 6–7 |
 | 7 | Button taps reach the workflow branch | inbound webhooks → `reply.text` | **closed** for Cloud + Twilio (build-order PR 1); bridge taps with build-order PR 7 |
 | 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
 
@@ -334,7 +334,16 @@ is proven on its Yes case, because a dropped tap would also land on No.
 One interaction to know: a button labelled exactly `Yes` or `Stop` counts as
 an opt-in or opt-out keyword, as typed text does. "Yes, all good" does not —
 the keyword check reads the first word, and "Yes," with its comma is not
-"YES". Each PR: provider-documented payload fixtures, mutation-tested,
+"YES".
+
+**PR 2 done:** templates carry up to 3 buttons (quick replies, then links),
+edited in the builder and submitted to Meta as a `BUTTONS` component. A quick
+reply starting with an opt-out word ("Cancel my booking") is refused at save,
+from the same keyword list every WhatsApp inbound route now shares. A
+buttoned template cannot be submitted on Twilio until PR 4 — Twilio would
+approve it without its buttons.
+
+Each PR: provider-documented payload fixtures, mutation-tested,
 blind review, `pnpm ci:check`. The pilot's end-to-end (own handset, tap Yes
 and No, link on both branches) stays a human gate.
 
@@ -383,7 +392,17 @@ LeadStack API work:
   `install_address`, `install_date`, `dr_number`; the template mapped to
   them; a workflow on `contact.tag.added` with **trigger tag set to
   `velocity-review-ready`** and the review steps; an API key with the
-  agency's API access switched on.
+  agency's API access switched on. The experience-check template carries the
+  two quick replies, "Yes, all good" and "No, there's a problem", and the
+  workflow's `if_else` tests `reply.text` equals "Yes, all good". The
+  experience check must be a **`whatsapp_template` step** (always sends the
+  template), not a `send_whatsapp` step with the template as its fallback:
+  inside an open window that step sends its plain-text body instead, with no
+  buttons to tap (until build-order PR 3 renders them in-window).
+- **The sub-account's WhatsApp AI agent must be OFF.** The AI auto-reply does
+  not know a contact is waiting in a workflow, so it would answer a tap —
+  "Yes, all good" — alongside the workflow's own message. (Pre-existing for
+  typed replies too; noticed while reviewing buttons PR 1.)
 - **Gap 5b** (optional) — refuse a template send with an empty variable.
 - **The first send is a human gate** — own handset first, per Validation.
 

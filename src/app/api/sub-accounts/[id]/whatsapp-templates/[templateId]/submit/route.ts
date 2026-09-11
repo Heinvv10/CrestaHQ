@@ -97,6 +97,18 @@ export async function POST(
       { status: 400 },
     );
   }
+  // Twilio button content types are not built yet (buttons PR 4). Submitting
+  // there would create the template WITHOUT its buttons, and Meta would
+  // approve a message whose Yes/No the customer can never tap.
+  if (provider === "twilio" && (tpl.buttons?.length ?? 0) > 0) {
+    return NextResponse.json(
+      {
+        error:
+          "Templates with buttons can only be submitted on the Cloud rail for now. Remove the buttons, or submit from a Cloud sender.",
+      },
+      { status: 400 },
+    );
+  }
   if (!SUBMITTABLE.includes(tpl.status)) {
     return NextResponse.json(
       { error: `A ${tpl.status} template can't be submitted again.` },
@@ -128,6 +140,7 @@ export async function POST(
         category: tpl.category,
         body: tpl.body,
         variables: tpl.variables,
+        buttons: tpl.buttons ?? [],
       });
       externalId = created.id;
     } else {

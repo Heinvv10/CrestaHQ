@@ -4,7 +4,10 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { sanitiseVariables } from "@/lib/comms/whatsapp/template-validation";
+import {
+  sanitiseButtons,
+  sanitiseVariables,
+} from "@/lib/comms/whatsapp/template-validation";
 import { loadContactCustomFieldKeys } from "@/lib/custom-fields/load-defs";
 import type {
   WhatsappTemplateCategory,
@@ -33,6 +36,7 @@ interface PatchBody {
   language?: string;
   body?: string;
   variables?: unknown;
+  buttons?: unknown;
 }
 
 export async function PATCH(
@@ -107,6 +111,18 @@ export async function PATCH(
       return NextResponse.json({ error: sanitised.error }, { status: 400 });
     }
     updates.variables = sanitised.variables;
+  }
+  // Re-validated when the category changes too: buttons already on a draft
+  // must not ride along into a category Meta refuses them on.
+  if (body.buttons !== undefined || typeof body.category === "string") {
+    const buttons = sanitiseButtons(
+      body.buttons ?? existing.buttons,
+      (updates.category as string | undefined) ?? existing.category,
+    );
+    if ("error" in buttons) {
+      return NextResponse.json({ error: buttons.error }, { status: 400 });
+    }
+    updates.buttons = buttons.buttons;
   }
 
   await ref.update(updates);

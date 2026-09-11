@@ -3,6 +3,7 @@ import "server-only";
 import type {
   WhatsappTemplateCategory,
   WhatsappTemplateStatus,
+  WhatsappTemplateButton,
   WhatsappTemplateVariable,
 } from "@/types/whatsapp-templates";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
@@ -53,11 +54,14 @@ function describeGraphError(raw: string, accessToken: string): string {
   }
 }
 
-export interface MetaTemplateComponent {
-  type: "BODY";
-  text: string;
-  example?: { body_text: string[][] };
-}
+export type MetaTemplateComponent =
+  | { type: "BODY"; text: string; example?: { body_text: string[][] } }
+  | {
+      type: "BUTTONS";
+      buttons: Array<
+        { type: "QUICK_REPLY"; text: string } | { type: "URL"; text: string; url: string }
+      >;
+    };
 
 /**
  * Our stored template → Meta's component shape.
@@ -74,13 +78,27 @@ export interface MetaTemplateComponent {
 export function buildMetaTemplateComponents(
   body: string,
   variables: WhatsappTemplateVariable[],
+  buttons: WhatsappTemplateButton[] = [],
 ): MetaTemplateComponent[] {
   const ordered = [...variables].sort((a, b) => a.position - b.position);
   const component: MetaTemplateComponent = { type: "BODY", text: body };
   if (ordered.length > 0) {
     component.example = { body_text: [ordered.map((v) => v.sampleValue)] };
   }
-  return [component];
+  if (buttons.length === 0) return [component];
+  // Static buttons only: a quick reply carries its text, a URL a fixed link.
+  // Neither needs a button parameter at send time.
+  return [
+    component,
+    {
+      type: "BUTTONS",
+      buttons: buttons.map((b) =>
+        b.type === "url"
+          ? { type: "URL", text: b.text, url: b.url }
+          : { type: "QUICK_REPLY", text: b.text },
+      ),
+    },
+  ];
 }
 
 /**
@@ -114,6 +132,7 @@ export async function createCloudTemplate(
     category: WhatsappTemplateCategory;
     body: string;
     variables: WhatsappTemplateVariable[];
+    buttons?: WhatsappTemplateButton[];
   },
 ): Promise<{ id: string; status: WhatsappTemplateStatus }> {
   const url = `https://graph.facebook.com/${graphVersion()}/${creds.wabaId}/message_templates`;
@@ -127,7 +146,7 @@ export async function createCloudTemplate(
       name: input.name,
       language: input.language,
       category: input.category,
-      components: buildMetaTemplateComponents(input.body, input.variables),
+      components: buildMetaTemplateComponents(input.body, input.variables, input.buttons),
     }),
     signal: AbortSignal.timeout(15_000),
   });
