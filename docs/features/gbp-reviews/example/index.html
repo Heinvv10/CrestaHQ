@@ -36,7 +36,7 @@
   <div class="demo">
     <div id="live" data-crestahq-reviews="" data-api="http://127.0.0.1:3100">
       <!-- Static fallback: shown as-is with JavaScript off or when the feed is unavailable. -->
-      <p>Rated highly on Google — <a href="https://www.google.com/maps">read our reviews</a>.</p>
+      <p><a href="https://www.google.com/maps">Read our reviews on Google</a></p>
     </div>
   </div>
   <p class="note">
@@ -48,7 +48,7 @@
   <h2>2. Feed down (the API is unreachable) — the fallback stays</h2>
   <div class="demo">
     <div id="down" data-crestahq-reviews="" data-api="http://127.0.0.1:4409">
-      <p>Rated highly on Google — <a href="https://www.google.com/maps">read our reviews</a>.</p>
+      <p><a href="https://www.google.com/maps">Read our reviews on Google</a></p>
     </div>
   </div>
 
@@ -75,7 +75,7 @@
       document.getElementById("snippet").textContent =
         '<div data-crestahq-reviews="' + (id || "PUBLIC_ID") + '" data-api="' + api + '">\n' +
         "  <!-- static fallback -->\n" +
-        '  <p>Rated highly on Google — <a href="https://www.google.com/maps">read our reviews</a>.</p>\n' +
+        '  <p><a href="https://www.google.com/maps">Read our reviews on Google</a></p>\n' +
         "</div>\n" +
         '<script src="' + api + '/embed/gbp-reviews.js" defer></' + "script>";
 

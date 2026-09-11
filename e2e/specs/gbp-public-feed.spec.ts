@@ -24,6 +24,8 @@ import {
 test.skip(!!process.env.PLAYWRIGHT_BASE_URL, "needs GBP_PROVIDER=fake, which a deployed target refuses by design");
 
 gbpLifecycle(test);
+// The edited review is awaited past the feed's 60s review-scan memo.
+test.setTimeout(240_000);
 
 const VELO = "https://www.velocityfibre.co.za";
 const APP = "http://127.0.0.1:3100";
@@ -71,6 +73,12 @@ test("the public feed serves an allowed site, refuses others, leaks nothing and 
   expect(ok.headers()["access-control-allow-origin"]).toBe(VELO);
   // Next adds its own Vary values; ours must be among them.
   expect(ok.headers()["vary"].split(",").map((v) => v.trim())).toContain("Origin");
+  expect(ok.headers()["cache-control"]).toBe("public, max-age=60");
+  // A conditional request with the current ETag is a 304 from the real server, CORS intact.
+  const notModified = await request.get(feedPath(meta.publicId), { headers: { Origin: VELO, "If-None-Match": ok.headers()["etag"] } });
+  expect(notModified.status()).toBe(304);
+  expect(notModified.headers()["access-control-allow-origin"]).toBe(VELO);
+  expect(notModified.headers()["etag"]).toBe(ok.headers()["etag"]);
   const body = await ok.json();
   expect(body).toMatchObject({
     version: 1,
@@ -95,7 +103,8 @@ test("the public feed serves an allowed site, refuses others, leaks nothing and 
     expect(text, marker).not.toContain(marker);
   }
 
-  // --- A review edited at Google reaches the feed after a sync: new body, new ETag.
+  // --- A review edited at Google reaches the feed after a sync — within the
+  // feed's 60s review-scan memo — with a new ETag.
   const etag = ok.headers()["etag"];
   const edited = publicScenario();
   Object.assign(edited.reviews["locations/e2e-velo-gqeberha"].reviews[0], {
@@ -104,15 +113,19 @@ test("the public feed serves an allowed site, refuses others, leaks nothing and 
   });
   await setScenario(edited);
   await runCron(request);
+  await expect
+    .poll(async () => (await (await request.get(feedPath(meta.publicId))).json()).reviews[0].text, { timeout: 90_000, intervals: [5_000] })
+    .toBe("Fixture review: edited at Google after the first sync.");
   const after = await request.get(feedPath(meta.publicId), { headers: { Origin: VELO, "If-None-Match": etag } });
   expect(after.status()).toBe(200);
   expect(after.headers()["etag"]).not.toBe(etag);
-  expect((await after.json()).reviews[0].text).toBe("Fixture review: edited at Google after the first sync.");
 
   // --- The embed script, on a page of an allowed origin, renders the live data.
   sitePage =
     `<!doctype html><title>site</title><div id="w" data-crestahq-reviews="${meta.publicId}" data-api="${APP}"><p id="fallback">Rated on Google</p></div>` +
     `<script src="${APP}/embed/gbp-reviews.js" defer></script>`;
+  // Reduced motion, so auto-advance cannot move the carousel under the assertions.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${EXAMPLE}/`);
   const widget = page.locator("#w");
   await expect(widget).toHaveAttribute("data-state", "ok", { timeout: 30_000 });

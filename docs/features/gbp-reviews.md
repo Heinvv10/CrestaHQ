@@ -561,7 +561,8 @@ served like `/widget.js` (`next.config.ts`).
   `allowedOrigins`, `maxReviews`; anything else — `minRating` included — is a
   400 `invalid_body`, never silently ignored.
 - **Rotate** (`POST …/gbp/widget/rotate`) issues a new id with the same
-  config and deletes the old doc — the old id 404s at once. **Revoke**
+  config and deletes the old doc — the old id 404s on the server at once
+  (a cached copy may live up to a minute, see below). **Revoke**
   (`DELETE …/gbp/widget`) deletes the doc and clears the meta; it stays
   **ungated**, like disconnect, so a widget can always be taken down.
 - **Disconnect and listing clears** leave the widget config alone and the feed
@@ -569,7 +570,15 @@ served like `/widget.js` (`next.config.ts`).
   `unavailable` with `listing: null`, and resumes by itself once a listing is
   selected and synced again. (The widget belongs to the sub-account, so a
   newly selected listing is what it then shows.)
-- **Agency gate off** makes the feed answer the same 404 as a disabled widget.
+- **Agency gate off**, or an **archived** sub-account, makes the feed answer
+  the same 404 as a disabled widget.
+- **How fast changes land:** the widget doc and the sub-account are read on
+  every feed request, so revoke, rotate, disable, gate off and an origin
+  removal act on the server at once; only the review scan is memoised (60 s
+  per widget + listing, in memory). With `Cache-Control: public, max-age=60`
+  a browser or proxy may keep a copy for up to a minute — so config changes
+  and new syncs reach visitors within about a minute (the dashboard card says
+  so).
 
 ### Feed contract v1 — `GET /api/public/gbp/feed/{publicId}`
 
@@ -579,17 +588,23 @@ caller can send its own. Order: rate limit → resolve → origin → body.
 
 | Status | When | Body | Headers |
 |---|---|---|---|
-| 429 | more than 120 requests a minute for this IP + publicId (in-memory, per instance) | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
-| 404 | malformed id (never reaches Firestore), unknown, disabled, rotated away, revoked, agency gate off | `{"error":"not_found"}` — byte-identical for all | `Cache-Control: no-store` |
+| 404 | malformed id — checked FIRST, so it never becomes a limiter key or a Firestore path | `{"error":"not_found"}` | `Cache-Control: no-store` |
+| 429 | more than 300 requests a minute from one client, or 120 for one client + publicId (in-memory, per instance; oldest keys evicted, never a wholesale reset). The client is `cf-connecting-ip`, else `x-real-ip`, else the left-most `X-Forwarded-For` | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
+| 404 | unknown, disabled, rotated away, revoked, archived sub-account, agency gate off | `{"error":"not_found"}` — byte-identical to the malformed-id 404 | `Cache-Control: no-store` |
 | 403 | an `Origin` header not in `allowedOrigins` (incl. `null`) | `{"error":"origin_not_allowed"}` | no `Access-Control-Allow-Origin`, `no-store` |
-| 200 | otherwise | the body below | `Access-Control-Allow-Origin: <that origin>` only when an allowed Origin was sent (never `*`), `Vary: Origin`, `Cache-Control: public, max-age=300, stale-while-revalidate=600`, strong `ETag` |
-| 304 | `If-None-Match` lists the current ETag | empty | same as 200 |
+| 200 | otherwise | the body below | `Access-Control-Allow-Origin: <that origin>` only when an allowed Origin was sent (never `*`), `Vary: Origin`, `Cache-Control: public, max-age=60` (no stale-while-revalidate), strong `ETag` |
+| 304 | `If-None-Match` lists the current ETag (compared weakly — a `W/` prefix is ignored) or is `*` | empty | same as 200 |
 
 `OPTIONS` answers a preflight the same way (204 with ACAO +
 `Access-Control-Allow-Methods: GET, OPTIONS` for an allowed origin). Other
 methods are 405. The ETag is the sha256 of the body **without**
 `generatedAt`, so it is stable between syncs and changes with any review,
 reply, rating or freshness change.
+
+**The origin allow-list is browser-level protection, not access control.** A
+request with no `Origin` header (a server, `curl`) gets the full body — the
+feed holds only public Google review content, and the publicId is the only
+thing standing between it and anyone who has the snippet.
 
 ```json
 { "version": 1,
@@ -606,7 +621,11 @@ reply, rating or freshness change.
 ```
 
 - `listing` is null only when the sub-account no longer has a listing (then
-  `unavailable`). `writeReviewUri` is Google's `newReviewUri`.
+  `unavailable`). `writeReviewUri` is Google's `newReviewUri`, served as
+  Google gives it — Google's write-review link
+  (`https://search.google.com/local/writereview?placeid=…`) carries the
+  listing's Place ID in its query. That is Google's own public link; the Place
+  ID is never served anywhere else.
 - `reviews`: `state == "active"` of the current listing, not past the sync's
   own read-time 30-day predicate (`withinRetention`), newest first by
   `createTime`, ties by `id`, first `maxReviews`. **Every rating** — there is no
@@ -614,7 +633,7 @@ reply, rating or freshness change.
   `starRating >= 4` filter turns the feed tests red). `text` is Google's
   comment byte-exact, including the "(Translated by Google) … (Original) …"
   block. Anonymous reviewers keep Google's (empty) name with
-  `anonymous: true`. The newest 200 cache records are scanned per request (one
+  `anonymous: true` and never get a photo (`photoUrl: null`). The newest 200 cache records are scanned per request (one
   single-field query, no composite index); in a cache full of tombstones the
   feed may hold fewer than `maxReviews` — never an invented one.
 - `rating` comes only from the last successful sync's summary, and only when
@@ -622,7 +641,8 @@ reply, rating or freshness change.
   null`, `reviews: []`).
 - **Never included** — an explicit allow-list serializer
   (`lib/gbp/feed/serialize.ts`), never a spread: review / account / location
-  resource names, Place ID, agency / sub-account ids, uids, emails, passId,
+  resource names, the Place ID as a field (it appears only inside Google's
+  `writeReviewUri`, above), agency / sub-account ids, uids, emails, passId,
   contentHash, tokens, run diagnostics, error kinds.
 
 **Freshness** (constants in `lib/gbp/feed/build.ts` and PR 2's `sync/types.ts`):
@@ -643,26 +663,37 @@ for the Velocity site (the dashboard card prints this with the real id):
 ```html
 <div data-crestahq-reviews="PUBLIC_ID" data-api="https://crm.crestahq.com">
   <!-- static fallback: rendered as-is with JS off or when the feed fails -->
-  <p>Rated 4.8 on Google — <a href="https://maps.google.com/?cid=…">read our reviews</a></p>
+  <p><a href="https://maps.google.com/?cid=…">Read our reviews on Google</a></p>
 </div>
 <script src="https://crm.crestahq.com/embed/gbp-reviews.js" defer></script>
 ```
 
 - `data-state="loading"` while fetching — the fallback stays visible; the
   request carries no cookies (`credentials: "omit"`).
-- `ok` / `stale` → the fallback is replaced by: listing title, average + count,
-  "Reviews from Google" linking to `mapsUri`, "Last updated <date>" when stale,
-  and a carousel. `data-state` is then `ok` or `stale`.
+- `ok` / `stale` → the fallback is replaced by: listing title, average
+  (rounded to one decimal) + count, "Reviews from Google" linking to
+  `mapsUri`, "Last updated <date>" when stale, and a carousel. `data-state` is
+  then `ok` or `stale`. With a count but no reviews in the served window (e.g.
+  all older than 30 days) only the header and attribution show — never "no
+  reviews" under a count that says otherwise.
 - `unavailable`, any non-2xx, a network error, a body that is not JSON or an
   unknown `version` → the fallback is left untouched, `data-state="fallback"`.
 - Feed data reaches the page through `textContent` only (never `innerHTML`);
   only `http(s)` links from the feed are made clickable.
 - Carousel: labelled `‹` / `›` `<button>`s ("Previous review" / "Next
   review"), arrow keys on the focusable region, `aria-roledescription`
-  carousel / slide. Auto-advance only when `prefers-reduced-motion` is not
-  `reduce`, every 8 s, paused while hovered or focused; per the WAI carousel
-  pattern `aria-live` is `off` while it rotates on its own and `polite`
-  otherwise.
+  carousel / slide.
+- Motion (WCAG 2.2.2): auto-advance only while `prefers-reduced-motion` is
+  not `reduce` — watched live, so turning it on stops rotation, and turning it
+  off restarts it only if the visitor never interacted; every 8 s; paused
+  while hovered or focused; a labelled pause/play button ("Pause automatic
+  rotation" / "Start automatic rotation"); any use of prev/next or the arrow
+  keys stops rotation for good. The timer clears itself once the widget has
+  left the page. Per the WAI carousel pattern `aria-live` is `off` while it
+  rotates on its own and `polite` otherwise.
+- **Limitation:** containers are found once, when the script runs. A
+  container added to the page later (e.g. by a client-side router) keeps its
+  static fallback.
 - CSS is injected once, namespaced `.chq-reviews…`; the site can override it.
 
 Integration example (loading, live, stale label, feed-down fallback, no-JS
@@ -675,23 +706,20 @@ http.server 4401`), allow `http://127.0.0.1:4401` on the widget, open
 
 ### Browser proof (PR 3)
 
-`proof/pr3-*.png`, fixture data only, the production build on 127.0.0.1:3100
-and the example page on 127.0.0.1:4401 (Playwright-driven Chromium, plus one
-chrome-devtools MCP capture):
+`proof/pr3-*`, fixture data only: the production build on 127.0.0.1:3100 and
+the example page served from a second origin, 127.0.0.1:4401, driven in
+Chromium by a Playwright proof script (one recorded video per flow, converted
+to GIF with ffmpeg). Re-run after review fix round 1, so every image shows the
+current embed (pause/play button, neutral fallback copy).
 
-| File | Shows |
-|---|---|
-| `pr3-00-dashboard-widget-card.png` | the dashboard card: origins, snippet with the real id, feed URL, Rotate / Revoke |
-| `pr3-01-live-and-feed-down.png` | live data on an allowed second origin; box 2 (unreachable API) keeps its fallback |
-| `pr3-02-auto-advance-then-manual-next.png` | auto-advanced to 2/7 after 8 s, then ‹ › by hand to 3/7 |
-| `pr3-03-reduced-motion-keyboard.png` | `prefers-reduced-motion: reduce`: still 1/7 after 9 s, arrow key → 2/7 |
-| `pr3-04-javascript-off.png` | JavaScript disabled: the `<noscript>` note and the static fallbacks |
-| `pr3-05-origin-removed-fallback.png` | the origin removed from the widget: the browser is refused (console: no `Access-Control-Allow-Origin`), the fallback stays |
-| `pr3-06-stale-after-revoke.png` | after a revoked-grant sync: cached reviews with "Last updated Sep 11, 2026" |
-| `pr3-07-devtools-stale-manual-next.png` | chrome-devtools MCP: the stale feed, driven by hand (the translated review verbatim) |
-
-(`pr3-01`'s feed-down box pointed at port 9, which Chrome blocks as unsafe;
-the example now uses an unused port, 4409 — the same fallback path.)
+| Flow | GIF | Screenshot |
+|---|---|---|
+| Dashboard card (origins, snippet with the real id, feed URL, Rotate / Revoke) → live data on the allowed 4401 origin; the unreachable-API box keeps its fallback | `pr3-flow1-widget-card-to-live.gif` | `pr3-00-dashboard-widget-card.png`, `pr3-01-live-and-feed-down.png` |
+| Auto-advance after 8 s → Pause (label flips, nothing moves for 9 s) → Play → manual Next, after which rotation stays stopped | `pr3-flow2-autoadvance-pause-play-next.gif` | `pr3-02-autoadvance-pause-play-next.png` |
+| `prefers-reduced-motion: reduce`: no toggle, still 1/7 after 9 s, arrow keys move it | `pr3-flow3-reduced-motion-keyboard.gif` | `pr3-03-reduced-motion-keyboard.png` |
+| JavaScript disabled: the `<noscript>` note and the static fallbacks | `pr3-flow4-javascript-off.gif` | `pr3-04-javascript-off.png` |
+| The origin removed from the widget: the browser is refused (console: no `Access-Control-Allow-Origin`), the fallback stays | `pr3-flow5-origin-removed-fallback.gif` | `pr3-05-origin-removed-fallback.png` |
+| After a revoked-grant sync: the cached reviews with "Last updated <date>" | `pr3-flow6-stale-after-revoke.gif` | `pr3-06-stale-after-revoke.png` |
 
 ### Google policy and attribution
 
