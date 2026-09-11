@@ -175,6 +175,36 @@ describe("an existing widget", () => {
     expect(writeText).toHaveBeenCalledWith(snippet);
   });
 
+  it("tells the admin that changes reach visitors within about a minute", async () => {
+    await render();
+    expect(byId("gbp-widget-card")?.textContent).toContain("within about a minute");
+  });
+
+  it("puts only an http(s) Maps link in the snippet, normalised and HTML-escaped", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: META, googleListing: { mapsUri: 'https://maps.google.com/?q="<b>&x' } };
+    await render();
+    const snippet = byId("gbp-widget-snippet")!.textContent ?? "";
+    // URL serialisation percent-encodes " < > in the query; & is escaped for HTML.
+    expect(snippet).toContain('href="https://maps.google.com/?q=%22%3Cb%3E&amp;x"');
+    expect(snippet).not.toContain('"<b>');
+  });
+
+  it("HTML-escapes every value it pastes into the snippet", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://crm.example.test/a"<b>&c';
+    await render();
+    const snippet = byId("gbp-widget-snippet")!.textContent ?? "";
+    expect(snippet).toContain('data-api="https://crm.example.test/a&quot;&lt;b&gt;&amp;c"');
+    expect(snippet).not.toContain('a"<b>');
+  });
+
+  it("falls back to the generic Maps link for a non-http(s) mapsUri", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: META, googleListing: { mapsUri: "javascript:alert(1)" } };
+    await render();
+    const snippet = byId("gbp-widget-snippet")!.textContent ?? "";
+    expect(snippet).not.toContain("javascript:");
+    expect(snippet).toContain('href="https://www.google.com/maps"');
+  });
+
   it("says when the widget is switched off", async () => {
     ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, enabled: false } };
     await render();

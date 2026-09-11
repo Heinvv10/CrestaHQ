@@ -34,11 +34,24 @@ type Refusal = { error?: string; code?: string; details?: Array<{ value: string;
 
 const appUrl = () => (process.env.NEXT_PUBLIC_APP_URL || window.location.origin).replace(/\/+$/, "");
 
+/** For text pasted into someone else's HTML: attribute-safe. */
+const escapeHtml = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function httpUrl(v: string | null | undefined): string | null {
+  try {
+    const u = new URL(v ?? "");
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function snippetFor(publicId: string, mapsUri: string | null | undefined): string {
-  const app = appUrl();
-  const link = mapsUri || "https://www.google.com/maps";
+  const app = escapeHtml(appUrl());
+  const id = escapeHtml(publicId);
+  const link = escapeHtml(httpUrl(mapsUri) ?? "https://www.google.com/maps");
   return [
-    `<div data-crestahq-reviews="${publicId}" data-api="${app}">`,
+    `<div data-crestahq-reviews="${id}" data-api="${app}">`,
     `  <!-- Static fallback: shown as-is when JavaScript is off or the feed is unavailable. -->`,
     `  <p><a href="${link}">Read our reviews on Google</a></p>`,
     `</div>`,
@@ -66,6 +79,7 @@ function Card({ children }: { children: React.ReactNode }) {
           <h2 className="text-base font-semibold">Reviews on your website</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             A public feed of this listing&apos;s Google reviews — every rating, newest first — for an allowed website to embed.
+            Changes here and new syncs reach visitors within about a minute.
           </p>
         </div>
       </header>
