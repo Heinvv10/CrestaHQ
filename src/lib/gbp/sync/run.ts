@@ -104,9 +104,10 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     purge.push((tx) => tx.set(stateRef, reset, { merge: true }));
   }
   // A cache that can no longer sync drops its (Google-sourced) summary once
-  // expired — or when it is empty and never succeeded, since nothing would
-  // ever expire it — and so leaves the sweep's retention list.
-  if (!syncs && (retention.expired || (cache.size === 0 && !prev?.lastSuccessfulSyncAt))) {
+  // it holds no reviews — after an expiry purge, or when a never-successful
+  // one has nothing left that could ever expire — and so leaves the sweep's
+  // retention list.
+  if (!syncs && cache.size === 0) {
     purge.push((tx) => tx.set(subRef, { gbpSummary: null }, { merge: true }));
   }
   await commitGuarded(sa, rec.runId, purge);

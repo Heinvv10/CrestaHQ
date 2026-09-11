@@ -126,6 +126,16 @@ describe("a resumed pass never tombstones a live review (H3)", () => {
     expect(activeReviews().find((r) => r.reviewId === "fake-r1")).toBeDefined();
   });
 
+  it("a single-run pass that sees NO reviews and no count (Google omits it at 0) removes them all", async () => {
+    await sync();
+    setScenario(SA, (s) => {
+      s.reviews[LOC_A].reviews = [];
+      s.reviews[LOC_A].totalReviewCount = null;
+    });
+    expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 7 });
+    expect(activeReviews()).toHaveLength(0);
+  });
+
   it("a single-run complete pass removes a review Google removed — with no count reported", async () => {
     await sync();
     setScenario(SA, (s) => {

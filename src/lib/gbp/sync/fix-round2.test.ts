@@ -78,6 +78,22 @@ describe("clearGbpCache holds the lease while it deletes (M4)", () => {
   });
 });
 
+describe("only a cache that can no longer sync drops its summary when empty", () => {
+  it("a SYNCING run over an empty cache (a 0-review listing) that dies keeps its summary", async () => {
+    setScenario(SA, (s) => void ((s.reviews["locations/e2e-velo-gqeberha"].reviews = []), (s.reviews["locations/e2e-velo-gqeberha"].totalReviewCount = 0)));
+    await sync();
+    expect(summaryOf()).toMatchObject({ lastRunStatus: "success", totalReviewCount: 0 });
+    const real = storeDb.doc.bind(storeDb);
+    vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+      // The run loses its lease while fetching its first page.
+      if (path.endsWith("/private/gbpFakeScenario")) void real(`subAccounts/${SA}/private/gbpSyncState`).delete();
+      return real(path);
+    });
+    expect(await sync({ now: new Date(NOW.getTime() + 3600_000) })).toMatchObject({ errorKind: "lease_lost" });
+    expect(summaryOf()).toMatchObject({ lastRunStatus: "success", totalReviewCount: 0 });
+  });
+});
+
 describe("the previous summary is read inside the lease (L5)", () => {
   it("a summary aged past 30 days between the run's read and its lease is honoured", async () => {
     await sync();

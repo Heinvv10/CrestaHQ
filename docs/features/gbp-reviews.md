@@ -410,8 +410,9 @@ says content "…stored temporarily for no more than 30 calendar days…". So:
   (`PATCH …/feature-gates` → `clearGbpCache`), as do clearing/changing the
   listing and disconnecting. Any other cache that can no longer sync gets a
   retention-only pass from the sweep — no provider call, under the lease;
-  once expired (or empty and never successful) its reviews and summary are
-  deleted and it leaves the sweep.
+  its reviews go under the 30-day rules, and once it holds none (after an
+  expiry purge, or never successful) its summary is deleted too and it
+  leaves the sweep.
 - **Every summary writer** (a run, an internal-failure record, the sweep's
   failure record) drops rating/count once the last success is older than 30
   days — nothing re-stores them.
