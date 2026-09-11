@@ -216,3 +216,18 @@ describe("selected listing", () => {
     expect(calls("DELETE", "/api/sub-accounts/sa1/google/listing")).toHaveLength(1);
   });
 });
+
+describe("review-request link on the selected listing", () => {
+  it("proposes the listing's review link next to the listing, applying nothing", async () => {
+    ctx.subAccount = {
+      googleEnabledByAgency: true,
+      googleConnectionMeta: CONNECTED,
+      googleListing: { ...LISTING, newReviewUri: "https://review.fixture.example/l1" },
+      googleReviewConfig: { reviewUrl: "https://g.page/r/existing/review" },
+    };
+    await render();
+    const card = byId("gbp-state-selected")?.querySelector('[data-testid="gbp-reviewurl-proposal"]');
+    expect(card?.getAttribute("data-state")).toBe("differs");
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("adopt-listing-url"))).toBe(false);
+  });
+});

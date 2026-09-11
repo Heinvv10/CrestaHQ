@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { GoogleListing } from "@/types/google";
 import { InlineConfirm } from "./inline-confirm";
 import { ListingPicker } from "./listing-picker";
+import { ReviewUrlCard } from "./review-url-card";
 import { ReviewsSection } from "./reviews-section";
 import { useGoogleStatusToast } from "./use-google-status-toast";
 
@@ -229,6 +230,7 @@ export function GoogleBusinessPanel() {
         <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> Managing this listing
       </p>
       <ListingSummary listing={listing} />
+      <ReviewUrlCard />
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" variant="outline" onClick={() => setChanging(true)} data-testid="gbp-change-listing">
           Change listing
