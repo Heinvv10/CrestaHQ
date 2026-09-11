@@ -194,6 +194,29 @@ describe("DELETE", () => {
     expect(listing()).toBeNull();
   });
 
+  it("audits the clear with who did it and what was cleared", async () => {
+    await del();
+    expect(events().filter((e) => e.type === "listing_cleared")).toEqual([
+      {
+        type: "listing_cleared",
+        reason: "admin_cleared",
+        agencyId: "ag_1",
+        subAccountId: SUB,
+        createdByUid: "uid_admin",
+        at: "SERVER_TS",
+        locationName: null,
+        previousLocationName: LOC_NORTH,
+      },
+    ]);
+  });
+
+  it("writes no event when there was nothing to clear", async () => {
+    await del();
+    const before = events().length;
+    await del();
+    expect(events().length).toBe(before);
+  });
+
   it.each([
     ["a non-member", "uid_other_admin"],
     ["a collaborator", "uid_collab"],

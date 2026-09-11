@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { findAccessibleLocation } from "@/lib/gbp/discovery";
+import { clearListing } from "@/lib/gbp/listing-events";
 import { withGbpAccess } from "@/lib/gbp/access";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
@@ -22,8 +23,8 @@ import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-
  * PUT trusts only the two resource names: the server re-fetches the pair
  * through the provider and refuses (400 unknown_location) unless THIS
  * connection can see it. Every display field written comes from that
- * re-fetch, never from the request. Each selection appends an audit event to
- * `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
+ * re-fetch, never from the request. Each selection or clear appends an audit
+ * event to `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
  */
 
 export async function PUT(
@@ -108,8 +109,6 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
 
-  await getAdminDb()
-    .doc(`subAccounts/${id}`)
-    .update({ googleListing: null, updatedAt: FieldValue.serverTimestamp() });
+  await clearListing(id, access.uid, "admin_cleared");
   return NextResponse.json({ ok: true });
 }

@@ -149,6 +149,28 @@ describe("disconnect", () => {
     ]);
   });
 
+  it("audits the listing it clears on disconnect", async () => {
+    state.docs.set(SUB_PATH, {
+      ...state.docs.get(SUB_PATH),
+      googleListing: { locationName: "locations/l1", accountName: "accounts/a1" },
+    });
+    await disconnect();
+    const events = [...state.docs.entries()]
+      .filter(([p]) => p.startsWith(`${SUB_PATH}/gbpEvents/`))
+      .map(([, d]) => d);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "listing_cleared",
+        reason: "disconnected",
+        agencyId: "ag_1",
+        subAccountId: SUB,
+        createdByUid: "uid_admin",
+        previousLocationName: "locations/l1",
+      }),
+    ]);
+    expect(state.docs.get(SUB_PATH)?.googleListing).toBeNull();
+  });
+
   it("still clears local state when the revoke fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 400 })));
     vi.spyOn(console, "warn").mockImplementation(() => {});

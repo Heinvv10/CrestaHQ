@@ -1,9 +1,9 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { clearListing } from "@/lib/gbp/listing-events";
 import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
   googleConnectionSecretPath,
@@ -48,19 +48,15 @@ export async function DELETE(
     try {
       await provider.revoke(secret.refreshToken);
     } catch (err) {
-      console.warn(`[google/disconnect] revoke failed sa=${id}`, err);
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+      console.warn(`[google/disconnect] revoke failed sa=${id}`, reason);
     }
   }
 
   await secretRef.delete();
-  await db.doc(`subAccounts/${id}`).set(
-    {
-      googleConnectionMeta: null,
-      googleListing: null,
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true },
-  );
+  // The listing belongs to the connection it was picked through; clearing it
+  // is audited (reason "disconnected") in the same write as the meta.
+  await clearListing(id, access.uid, "disconnected", { googleConnectionMeta: null });
 
   return NextResponse.json({ ok: true });
 }
