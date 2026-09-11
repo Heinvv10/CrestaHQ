@@ -481,9 +481,14 @@ service cloud.firestore {
           subAccountId,
           get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
         );
+        // Shape is validated here because the page reads `filters.all` on
+        // every render for every member — one malformed doc would break the
+        // contacts list for the whole workspace.
         allow create: if request.resource.data.subAccountId == subAccountId
           && request.resource.data.agencyId
             == get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+          && request.resource.data.name is string
+          && request.resource.data.filters.all is list
           && canAccessSub(
             request.resource.data.subAccountId,
             request.resource.data.agencyId
@@ -491,7 +496,9 @@ service cloud.firestore {
         allow update: if canAccessSub(
           resource.data.subAccountId,
           resource.data.agencyId
-        ) && tenantFieldsLockedOnUpdate();
+        ) && tenantFieldsLockedOnUpdate()
+          && request.resource.data.name is string
+          && request.resource.data.filters.all is list;
         allow delete: if canAccessSub(
           resource.data.subAccountId,
           resource.data.agencyId
