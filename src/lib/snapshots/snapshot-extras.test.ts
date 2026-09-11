@@ -144,6 +144,7 @@ describe("captureSnapshot — AI persona", () => {
               key: "install_date",
               label: "Install date",
               type: "date",
+              folderId: "folder_src",
               subAccountId: "sa_src",
               agencyId: "ag_1",
               createdByUid: "u_1",
@@ -159,6 +160,8 @@ describe("captureSnapshot — AI persona", () => {
     expect(field.sourceId).toBe("cf1");
     expect(field).not.toHaveProperty("subAccountId");
     expect(field).not.toHaveProperty("agencyId");
+    // Folders do not travel; a copied folderId would dangle on the target.
+    expect(field).not.toHaveProperty("folderId");
   });
 });
 
