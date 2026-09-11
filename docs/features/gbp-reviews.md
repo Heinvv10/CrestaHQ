@@ -186,16 +186,37 @@ inlined URL, so the app fence plus the post-build check still hold.
 
 ### Owner-approval checklist (PR 1)
 
-- [ ] **Before the first deploy after this merges**, confirm the production env
-  file carries none of the fake-provider names — the pre-build check refuses
-  even a commented-out line — and defines the app URL exactly once:
-  ```bash
-  grep -nE 'GBP_PROVIDER|GBP_FAKE_' /home/velo/crestahq-config/.env.production \
-    && echo "REMOVE the lines above before deploying" || echo "clean: no GBP_PROVIDER / GBP_FAKE_ text"
-  grep -c 'NEXT_PUBLIC_APP_URL' /home/velo/crestahq-config/.env.production   # must print 1
-  # every .env* file the deploy dir holds: only .env.production (and the .env.example template) may name the app URL
-  grep -l 'NEXT_PUBLIC_APP_URL' /home/velo/crestahq/.env*
-  ```
+- [ ] **Before the first deploy after this merges**, run this on velo-server
+  (as `velo`, so every `.env*` the pre-check scans is listed and read with the
+  deploy's own permissions). Each step branches on grep's exit code, so an
+  unreadable file prints `CHECK FAILED` instead of passing as clean (block below).
+  Expected: `1: clean …`, `2: ok — one definition`, `3: done` with nothing
+  between. A comment naming `NEXT_PUBLIC_APP_URL` (the production file has one
+  copied from `.env.example`) is fine; a comment naming `GBP_PROVIDER` is not.
+
+```bash
+sudo -u velo bash -s <<'CHECK'
+D=/home/velo/crestahq   # the deploy dir the pre-check scans (every .env* in it)
+DEF='^[[:space:]]*(export[[:space:]]+)?NEXT_PUBLIC_APP_URL[[:space:]]*[=:]'
+
+# 1. No GBP_PROVIDER / GBP_FAKE_ text in ANY .env* file — comments count, the pre-check refuses them too.
+grep -nE 'GBP_PROVIDER|GBP_FAKE_' "$D"/.env*
+case $? in 0) echo "1: REMOVE these lines before deploying";; 1) echo "1: clean — no GBP_PROVIDER / GBP_FAKE_ text";; *) echo "1: CHECK FAILED — could not read";; esac
+
+# 2. Exactly one NEXT_PUBLIC_APP_URL DEFINITION in .env.production (comment lines don't count).
+n=$(grep -cE "$DEF" "$D/.env.production"); rc=$?
+case $rc in 0|1) if [ "$n" = 1 ]; then echo "2: ok — one definition"; else echo "2: FIX — $n definitions, exactly one required"; fi;; *) echo "2: CHECK FAILED — could not read $D/.env.production";; esac
+
+# 3. No NEXT_PUBLIC_APP_URL definition in any other .env* file (.env.example is exempt).
+for f in "$D"/.env*; do
+  case "${f##*/}" in .env.production|.env.example) continue;; esac
+  grep -qE "$DEF" "$f"
+  case $? in 0) echo "3: REMOVE the NEXT_PUBLIC_APP_URL definition from $f";; 1) ;; *) echo "3: CHECK FAILED — could not read $f";; esac
+done
+echo "3: done"
+CHECK
+```
+
 - [ ] Sign off the v2 §5 deviation above (fake allowed in the production BUILD
   for CI only, held by the app fence and both deploy checks).
 
