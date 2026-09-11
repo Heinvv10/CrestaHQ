@@ -12,6 +12,9 @@ vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: null }) }));
 vi.mock("@/lib/firestore/custom-fields", () => ({
   subscribeToCustomFields: () => () => {},
 }));
+vi.mock("@/lib/firestore/custom-field-folders", () => ({
+  subscribeToCustomFieldFolders: () => () => {},
+}));
 
 let container: HTMLDivElement;
 let root: Root;

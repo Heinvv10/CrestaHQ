@@ -16,6 +16,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import {
   DEAL_PRIORITIES,
@@ -59,6 +60,7 @@ export function EditDealDialog({
   const [priority, setPriority] = useState<DealPriority>("medium");
   const [contactId, setContactId] = useState("");
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
+  const cfFolders = useCustomFieldFolders(subAccountId, "deal");
   const [cfValues, setCfValues] = useState<Record<string, CustomFieldValue>>({});
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -321,6 +323,7 @@ export function EditDealDialog({
               <CustomFieldInputs
                 idPrefix="edit-deal-cf"
                 defs={cfDefs}
+                folders={cfFolders}
                 values={cfValues}
                 onChange={setCfValues}
               />

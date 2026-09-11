@@ -19,6 +19,7 @@ import { CustomFieldInputs } from "@/components/custom-fields/custom-field-input
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
 import { GLOBAL_TERRITORY_ID, type TerritoryDoc } from "@/types";
@@ -63,6 +64,7 @@ export function NewDealDialog({
   const [priority, setPriority] = useState<DealPriority>("medium");
   const [contactId, setContactId] = useState(defaultContactId ?? "");
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
+  const cfFolders = useCustomFieldFolders(subAccountId, "deal");
   const [cfValues, setCfValues] = useState<Record<string, CustomFieldValue>>({});
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -331,6 +333,7 @@ export function NewDealDialog({
                 <CustomFieldInputs
                   idPrefix="deal-cf"
                   defs={cfDefs}
+                  folders={cfFolders}
                   values={cfValues}
                   onChange={setCfValues}
                 />
