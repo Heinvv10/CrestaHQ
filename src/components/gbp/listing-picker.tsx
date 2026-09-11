@@ -32,12 +32,20 @@ type Load =
   | { kind: "error"; code: string }
   | { kind: "ready"; accounts: PickerAccount[]; truncated: boolean };
 
+/** One line per refusal code the locations route can return. */
 const ERROR_TEXT: Record<string, string> = {
   not_configured: "Not configured on this deployment.",
   reconnect_required: "Google no longer accepts this connection. Reconnect to continue.",
   not_connected: "Google Business Profile is not connected.",
   gate_off: "This feature is locked by your agency.",
+  auth_expired: "Google rejected this connection's credentials. Try again, or reconnect if it keeps happening.",
+  revoked: "Google no longer accepts this connection. Reconnect to continue.",
+  insufficient_scope: "The Business Profile permission was not granted. Reconnect and leave it ticked.",
+  permission_denied: "This Google account doesn't have permission to manage these listings.",
+  not_found: "Google couldn't find that Business Profile account any more.",
   rate_limited: "Google is rate-limiting requests. Try again in a minute.",
+  transient: "Google is temporarily unavailable. Try again shortly.",
+  malformed: "Google sent an unexpected response. Try again shortly.",
 };
 
 export function ListingPicker({
@@ -93,11 +101,21 @@ export function ListingPicker({
     }
   }
 
+  // "Change listing" must always have a way back, whatever state loads.
+  const cancel = onClose && (
+    <Button type="button" size="sm" variant="outline" onClick={onClose}>
+      Cancel
+    </Button>
+  );
+
   if (load.kind === "loading") {
     return (
-      <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="gbp-picker-loading">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading your Business Profile listings…
-      </p>
+      <div className="space-y-3">
+        <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="gbp-picker-loading">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading your Business Profile listings…
+        </p>
+        {cancel}
+      </div>
     );
   }
 
@@ -107,9 +125,12 @@ export function ListingPicker({
         <p className="text-sm text-destructive">
           {ERROR_TEXT[load.code] ?? `Couldn't load listings from Google (${load.code}).`}
         </p>
-        <Button type="button" size="sm" variant="outline" onClick={() => void fetchLocations()}>
-          Try again
-        </Button>
+        <div className="flex gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={() => void fetchLocations()}>
+            Try again
+          </Button>
+          {cancel}
+        </div>
       </div>
     );
   }
@@ -117,9 +138,12 @@ export function ListingPicker({
   const options = load.accounts.flatMap((a) => a.locations.map((l) => ({ account: a, location: l })));
   if (options.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground" data-testid="gbp-picker-empty">
-        This Google account doesn&apos;t manage any Business Profile locations.
-      </p>
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground" data-testid="gbp-picker-empty">
+          This Google account doesn&apos;t manage any Business Profile locations.
+        </p>
+        {cancel}
+      </div>
     );
   }
 
@@ -168,11 +192,7 @@ export function ListingPicker({
           {saving && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
           Select listing
         </Button>
-        {onClose && (
-          <Button type="button" size="sm" variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
-        )}
+        {cancel}
       </div>
     </div>
   );

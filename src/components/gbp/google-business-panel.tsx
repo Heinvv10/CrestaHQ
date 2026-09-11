@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, Loader2, Lock, MapPin } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import type { GoogleListing } from "@/types/google";
+import { InlineConfirm } from "./inline-confirm";
 import { ListingPicker } from "./listing-picker";
 import { useGoogleStatusToast } from "./use-google-status-toast";
 
@@ -50,12 +52,47 @@ function ListingSummary({ listing }: { listing: GoogleListing }) {
   );
 }
 
+/** A mutating call whose outcome is a toast; the live doc updates the view. */
+async function send(url: string, method: string, okText: string): Promise<void> {
+  const res = await fetch(url, { method }).catch(() => null);
+  const data = (await res?.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+  if (res?.ok && data?.ok) toast.success(okText);
+  else toast.error(data?.error ?? "That didn't work. Please try again.");
+}
+
+type Configured = "loading" | "yes" | "no" | "unknown";
+
+/** Is Google usable on this deployment? Asked once per sub-account. */
+function useGoogleConfigured(subAccountId: string, ask: boolean): Configured {
+  const [state, setState] = useState<{ id: string; value: Configured } | null>(null);
+  useEffect(() => {
+    if (!ask) return;
+    let live = true;
+    void (async () => {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/google/status`).catch(() => null);
+      const data = (await res?.json().catch(() => null)) as { configured?: boolean } | null;
+      // Unknown (network/server trouble) does not block the page: the connect
+      // route still refuses with ?google=not_configured if it has to.
+      const value: Configured =
+        typeof data?.configured === "boolean" ? (data.configured ? "yes" : "no") : "unknown";
+      if (live) setState({ id: subAccountId, value });
+    })();
+    return () => {
+      live = false;
+    };
+  }, [subAccountId, ask]);
+  return state?.id === subAccountId ? state.value : "loading";
+}
+
 export function GoogleBusinessPanel() {
   const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const [changing, setChanging] = useState(false);
   useGoogleStatusToast();
+  const gateOn = subAccount?.googleEnabledByAgency === true;
+  const configured = useGoogleConfigured(subAccountId, !loading && gateOn && isAdmin);
+  const api = `/api/sub-accounts/${subAccountId}/google`;
 
-  const connectHref = `/api/sub-accounts/${subAccountId}/google/connect?return=gbp`;
+  const connectHref = `${api}/connect?return=gbp`;
   // Full-page navigation: the OAuth redirect chain needs a real page load.
   const connect = () => {
     window.location.href = connectHref;
@@ -69,12 +106,24 @@ export function GoogleBusinessPanel() {
     );
   }
 
-  if (subAccount?.googleEnabledByAgency !== true) {
+  if (!gateOn) {
     return (
       <Shell testId="gbp-state-gate-locked">
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <Lock className="h-4 w-4" /> This feature is locked by your agency.
         </p>
+        {/* Disconnect stays available with the gate off (the API allows it),
+            so a connection is never stranded. */}
+        {isAdmin && subAccount?.googleConnectionMeta?.connected && (
+          <div className="mt-3">
+            <InlineConfirm
+              label="Disconnect Google"
+              confirmLabel="Yes, disconnect"
+              prompt="Revoke access at Google and remove this connection?"
+              onConfirm={() => send(api, "DELETE", "Google Business Profile disconnected.")}
+            />
+          </div>
+        )}
       </Shell>
     );
   }
@@ -89,6 +138,26 @@ export function GoogleBusinessPanel() {
           Only sub-account admins can connect Google or change the listing.
         </p>
         {listing && <div className="mt-3"><ListingSummary listing={listing} /></div>}
+      </Shell>
+    );
+  }
+
+  if (configured === "loading") {
+    return (
+      <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="gbp-state-loading">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+      </p>
+    );
+  }
+
+  if (configured === "no") {
+    return (
+      <Shell testId="gbp-state-not-configured">
+        <p className="text-sm font-medium">Not configured on this deployment</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Google Business Profile needs the deployment&apos;s Google OAuth client
+          (set up by whoever runs this app). Nothing is connected until then.
+        </p>
       </Shell>
     );
   }
@@ -144,9 +213,18 @@ export function GoogleBusinessPanel() {
         <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> Managing this listing
       </p>
       <ListingSummary listing={listing} />
-      <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => setChanging(true)} data-testid="gbp-change-listing">
-        Change listing
-      </Button>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="outline" onClick={() => setChanging(true)} data-testid="gbp-change-listing">
+          Change listing
+        </Button>
+        <InlineConfirm
+          label="Stop managing this listing"
+          confirmLabel="Yes, stop managing"
+          prompt="Clear the selected listing? Google stays connected."
+          onConfirm={() => send(`${api}/listing`, "DELETE", "Listing cleared.")}
+          testId="gbp-clear-listing"
+        />
+      </div>
     </Shell>
   );
 }
