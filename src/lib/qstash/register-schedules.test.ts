@@ -36,7 +36,7 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-11-gbp-retention" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-11-whatsapp-quality" }),
     { merge: true }
   );
 });
@@ -97,7 +97,21 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-11-gbp-retention+gbp-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-11-whatsapp-quality+gbp-sync" }),
     { merge: true }
+  );
+});
+
+it("registers the hourly WhatsApp quality poll (SP15) with the base schedules", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
+  freshMarker({ scheduleVersion: "2026-09-11-gbp-retention" }); // pre-SP15 marker must not suppress it
+  await ensureSchedulesRegistered();
+  expect(mock.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      scheduleId: "leadstack-whatsapp-quality",
+      cron: "15 * * * *",
+      destination: "https://app.example.com/api/cron/whatsapp-quality",
+    })
   );
 });
