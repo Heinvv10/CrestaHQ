@@ -320,8 +320,8 @@ export interface UpdateDealPatch {
   stageId?: PipelineStageId;
   /**
    * Move to the pipeline's Won / Lost stage without knowing its id — for
-   * callers that only know the outcome (quote accepted ⇒ won). Ignored when
-   * `stageId` is set.
+   * callers that only know the outcome (quote accepted ⇒ won). Takes
+   * precedence over `stageId` when both are set.
    */
   terminal?: "won" | "lost";
   /**

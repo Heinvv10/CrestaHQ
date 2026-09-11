@@ -1716,12 +1716,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         },
         stage: {
           type: "string",
-          enum: STAGE_IDS,
-          description: "The stage to move the deal to.",
+          description: `A stage id of the deal's own pipeline (the default pipeline's are ${STAGE_IDS.join(", ")}; other pipelines define their own). Its Won / Lost stages close the deal.`,
         },
         lostReason: {
           type: "string",
-          description: "Short reason, only when moving to 'lost'.",
+          description: "Short reason, only when moving to the pipeline's Lost stage.",
         },
       },
       required: ["dealId", "dealTitle", "stage"],
