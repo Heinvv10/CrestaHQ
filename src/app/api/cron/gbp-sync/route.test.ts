@@ -54,7 +54,11 @@ describe("signature", () => {
   });
 
   it("401s a forged signature and sweeps nothing", async () => {
-    const forged = signQStashBody(URL_, "{}").replace(/.$/, (c) => (c === "A" ? "B" : "A"));
+    // Flip the FIRST char of the HMAC segment: all six of its bits count
+    // (the last char carries two ignored padding bits, so flipping it can
+    // leave the signature valid).
+    const [h, p, sig] = signQStashBody(URL_, "{}").split(".");
+    const forged = `${h}.${p}.${sig[0] === "A" ? "B" : "A"}${sig.slice(1)}`;
     expect((await cron({ signature: forged })).status).toBe(401);
     expect(runs()).toHaveLength(0);
   });
