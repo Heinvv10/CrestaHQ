@@ -83,3 +83,13 @@ describe("PUT", () => {
     expect((await call(PUT, { id: SUB }, { method: "PUT", body: FORM })).status).toBe(400);
   });
 });
+
+describe("the body is not read before the caller is known", () => {
+  it("an unauthenticated PUT with an invalid body gets 401, and a member 403 — never a validation message", async () => {
+    const bad = { ...FORM, vertical: "PLUMBING" };
+    expect((await call(PUT, { id: SUB }, { uid: null, method: "PUT", body: bad })).status).toBe(401);
+    const { status, body } = await json(call(PUT, { id: SUB }, { uid: "uid_member", method: "PUT", body: bad }));
+    expect(status).toBe(403);
+    expect(String(body.error)).not.toContain("vertical");
+  });
+});

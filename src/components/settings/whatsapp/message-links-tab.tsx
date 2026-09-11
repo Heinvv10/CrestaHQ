@@ -37,7 +37,7 @@ function LinkRow({ link, isAdmin, onDelete }: { link: WaMessageLink; isAdmin: bo
         <Button type="button" size="sm" variant="outline" onClick={copy} data-testid={`wa-link-copy-${link.code}`}>Copy</Button>
         {link.qrImageUrl && (
           <Button type="button" size="sm" variant="outline" onClick={() => setShowQr((v) => !v)} data-testid={`wa-link-qr-${link.code}`}>
-            {showQr ? "Hide QR" : "QR"}
+            {showQr ? "Hide QR" : "Show QR"}
           </Button>
         )}
         {isAdmin && (

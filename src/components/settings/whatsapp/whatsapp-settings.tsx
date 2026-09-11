@@ -64,6 +64,11 @@ export function WhatsappSettings() {
       <p className="text-sm text-muted-foreground">
         The business profile, quality rating and message links of this workspace&apos;s WhatsApp Cloud number.
       </p>
+      {!loading && subAccount && !isAdmin && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="wa-settings-view-only">
+          View only — ask a workspace admin to edit.
+        </p>
+      )}
     </div>
   );
 

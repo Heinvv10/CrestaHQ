@@ -50,7 +50,7 @@ const FAKE_VAR_NAME = /^(GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATS
  * anchor the post-build scan finds it by. Neither may be a substring of the
  * other, or one check's occurrences would be counted for both.
  */
-const CHECKS = [
+export const CHECKS = [
   { label: "GBP", message: "NEXT_PUBLIC_APP_URL is not a loopback host" },
   { label: "WhatsApp", message: "NEXT_PUBLIC_APP_URL is not loopback (WhatsApp fake)" },
 ];

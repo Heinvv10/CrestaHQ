@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { inlinedUrlIsSafe, mentionsFakeKeys, trustsCfConnectingIp } from "./gbp-deploy-check.mjs";
+import { CHECKS, inlinedUrlIsSafe, mentionsFakeKeys, trustsCfConnectingIp } from "./gbp-deploy-check.mjs";
 
 /**
  * The deploy-time checks for the dev/CI-only fake providers (GBP, and the
@@ -177,6 +177,16 @@ const server = (url: string, waUrl = url) => [
 ];
 
 describe("(b) post-build: the inlined app URL", () => {
+  it("counts each fence separately: neither check message contains the other", () => {
+    // If one were a substring of the other, its occurrences would be counted
+    // for both and a build missing one fence could pass.
+    expect(CHECKS.length).toBeGreaterThanOrEqual(2);
+    for (const a of CHECKS) for (const b of CHECKS) if (a !== b) expect(a.message.includes(b.message)).toBe(false);
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "a.js", text: MODE_CODE("https://crm.crestahq.com") }]).join()).toContain("WhatsApp fake-provider check was not found");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") }]).join()).toContain("GBP fake-provider check was not found");
+  });
+
+
   it("allows the public production URL", () => {
     expect(inlinedUrlIsSafe("https://crm.crestahq.com", server("https://crm.crestahq.com"))).toEqual([]);
   });

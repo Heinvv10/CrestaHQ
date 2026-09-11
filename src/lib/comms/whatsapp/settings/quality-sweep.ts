@@ -71,7 +71,7 @@ async function candidates(): Promise<Candidate[]> {
     .filter(({ sub }) => sub.whatsappProvider === "cloud" && !!sub.whatsappCloudMeta?.phoneNumberId);
 }
 
-async function pollOne(c: Candidate, now: Date): Promise<"drop" | "recovered" | null> {
+async function pollOne(c: Candidate, now: Date, deliver: boolean): Promise<"drop" | "recovered" | null> {
   const meta = c.sub.whatsappCloudMeta!;
   const provider = await getWhatsappSettingsProviderFor(c.id);
   const next = await provider.getPhoneStatus();
@@ -88,6 +88,7 @@ async function pollOne(c: Candidate, now: Date): Promise<"drop" | "recovered" | 
       phoneNumberId: meta.phoneNumberId!,
       displayPhoneNumber: next.displayPhoneNumber ?? meta.displayPhoneNumber,
       now,
+      deliver,
     });
   } else if (alert === "recovered") {
     await resolveOpenAlerts(c.id, now);
@@ -100,10 +101,13 @@ export async function runWhatsappQualitySweep(
 ): Promise<QualitySweepResult> {
   const now = opts.now ?? new Date();
   const list = await candidates();
+  // Fake mode (dev/CI against production Firestore): the alert doc is written,
+  // but no push or email ever leaves the box for a fixture drop.
+  const deliver = whatsappSettingsProviderMode() !== "fake";
   const result: QualitySweepResult = { processed: 0, alerted: 0, recovered: 0, failed: 0 };
   for (const c of list) {
     try {
-      const alert = await pollOne(c, now);
+      const alert = await pollOne(c, now, deliver);
       result.processed += 1;
       if (alert === "drop") result.alerted += 1;
       if (alert === "recovered") result.recovered += 1;

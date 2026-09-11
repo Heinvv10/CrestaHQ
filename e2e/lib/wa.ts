@@ -115,7 +115,7 @@ export function waLifecycle(test: { beforeAll: (fn: () => Promise<void>) => void
         verifiedName: FAKE_NAME,
         connectedAt: new Date(),
         connectedByUid: "e2e",
-        quality: null,
+        // No `quality`: the first poll of the run writes the first reading.
       },
     });
     await setWaScenario(defaultWaScenario());

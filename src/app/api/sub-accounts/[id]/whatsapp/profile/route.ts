@@ -33,13 +33,15 @@ export async function PUT(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id } = await ctx.params;
-  const body = await readJson(request);
-  if (body instanceof NextResponse) return body;
-  const validated = validateProfileInput(body);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
-  }
+  // The body is read only once the caller is an admin of a gated workspace:
+  // nobody unauthenticated gets validation strings, or a buffered body.
   return withWhatsappSettings(request, id, "admin", async ({ provider }) => {
+    const body = await readJson(request);
+    if (body instanceof NextResponse) return body;
+    const validated = validateProfileInput(body);
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error }, { status: 400 });
+    }
     await provider.updateProfile(validated.value);
     return NextResponse.json({ ok: true, profile: await provider.getProfile() });
   });

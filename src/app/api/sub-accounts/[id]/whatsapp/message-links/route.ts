@@ -32,13 +32,14 @@ export async function POST(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id } = await ctx.params;
-  const body = await readJson(request);
-  if (body instanceof NextResponse) return body;
-  const validated = validatePrefilledMessage((body as { prefilledMessage?: unknown } | null)?.prefilledMessage);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
-  }
-  return withWhatsappSettings(request, id, "admin", async ({ provider }) =>
-    NextResponse.json({ link: await provider.createMessageLink(validated.value) }, { status: 201 }),
-  );
+  // Body read only after tenancy + gate, so an unauthenticated caller learns nothing.
+  return withWhatsappSettings(request, id, "admin", async ({ provider }) => {
+    const body = await readJson(request);
+    if (body instanceof NextResponse) return body;
+    const validated = validatePrefilledMessage((body as { prefilledMessage?: unknown } | null)?.prefilledMessage);
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error }, { status: 400 });
+    }
+    return NextResponse.json({ link: await provider.createMessageLink(validated.value) }, { status: 201 });
+  });
 }

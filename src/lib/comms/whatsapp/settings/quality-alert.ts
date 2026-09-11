@@ -2,6 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
+import { pushIsConfigured } from "@/lib/push/config";
 import { sendPushForEvent } from "@/lib/push/send";
 import type { SubAccountDoc } from "@/types";
 import type { WaQualityRating, WhatsappQualityAlertDoc } from "@/types/whatsapp-cloud";
@@ -11,7 +12,11 @@ import type { WaQualityRating, WhatsappQualityAlertDoc } from "@/types/whatsapp-
  * to the sub-account, and an email to the agency owner — the same owner
  * resolution as usage-meter.ts's `notifyOwner` (ownerUid → users/{uid}.email,
  * else the agency's supportEmail). Each channel fails on its own and is
- * logged; none of them can fail the sweep.
+ * logged; none of them can fail the sweep. A channel that is NOT configured
+ * warns rather than skipping silently — production once had neither VAPID
+ * keys nor an email sender on its only live Cloud tenant, and an alert that
+ * is "sent" nowhere is not an alert. In fake mode (`deliver: false`) nothing
+ * leaves the box: the alert doc is the whole proof.
  */
 
 const LABEL: Record<WaQualityRating, string> = {
@@ -33,10 +38,12 @@ export interface DropInput {
   phoneNumberId: string;
   displayPhoneNumber: string | null;
   now: Date;
+  /** False in fake mode: write the doc, send nothing. */
+  deliver: boolean;
 }
 
 export async function recordQualityDrop(input: DropInput): Promise<void> {
-  const { subAccountId, sub, from, to, phoneNumberId, displayPhoneNumber, now } = input;
+  const { subAccountId, sub, from, to, phoneNumberId, displayPhoneNumber, now, deliver } = input;
   const doc: WhatsappQualityAlertDoc = {
     agencyId: sub.agencyId,
     subAccountId,
@@ -50,8 +57,15 @@ export async function recordQualityDrop(input: DropInput): Promise<void> {
   };
   await getAdminDb().collection(alertsCollection(subAccountId)).doc().set(doc);
 
+  if (!deliver) {
+    console.warn(`[whatsapp-quality] fake mode: push/email suppressed sa=${subAccountId}`);
+    return;
+  }
   const number = displayPhoneNumber ?? phoneNumberId;
   const settingsUrl = `/sa/${subAccountId}/dashboard/settings/whatsapp`;
+  if (!pushIsConfigured()) {
+    console.warn(`[whatsapp-quality] push not configured, alert not delivered sa=${subAccountId}`);
+  }
   void sendPushForEvent({
     subAccountId,
     agencyId: sub.agencyId,
@@ -69,7 +83,10 @@ async function emailOwner(
   d: { from: WaQualityRating; to: WaQualityRating; number: string; settingsUrl: string },
 ): Promise<void> {
   try {
-    if (!emailIsConfigured(sub)) return;
+    if (!emailIsConfigured(sub)) {
+      console.warn(`[whatsapp-quality] email not configured, alert not delivered sa=${subAccountId}`);
+      return;
+    }
     const db = getAdminDb();
     const agencySnap = await db.doc(`agencies/${sub.agencyId}`).get();
     const ownerUid = agencySnap.data()?.ownerUid as string | undefined;

@@ -45,20 +45,6 @@ export class FirestoreWaScenarioStore implements WaFakeScenarioStore {
   }
 }
 
-/** Used by unit tests. */
-export class InMemoryWaScenarioStore implements WaFakeScenarioStore {
-  private readonly data = new Map<string, WaFakeScenario>();
-
-  async get(subAccountId: string): Promise<WaFakeScenario | null> {
-    const s = this.data.get(subAccountId);
-    return s ? structuredClone(s) : null;
-  }
-
-  async set(subAccountId: string, scenario: WaFakeScenario): Promise<void> {
-    this.data.set(subAccountId, structuredClone(scenario));
-  }
-}
-
 /** A connected, healthy fixture number with an empty profile and no links. */
 export function defaultWaFakeScenario(): WaFakeScenario {
   return {

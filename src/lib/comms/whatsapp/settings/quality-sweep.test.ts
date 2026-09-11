@@ -11,9 +11,11 @@ const edges = vi.hoisted(() => ({
   sendEmail: vi.fn(async (_input: Record<string, unknown>) => ({ id: "email_1" })),
   emailIsConfigured: vi.fn(() => true),
   sendPushForEvent: vi.fn(async () => {}),
+  pushIsConfigured: vi.fn(() => true),
 }));
 vi.mock("@/lib/comms/resend", () => ({ sendEmail: edges.sendEmail, emailIsConfigured: edges.emailIsConfigured }));
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: edges.sendPushForEvent }));
+vi.mock("@/lib/push/config", () => ({ pushIsConfigured: edges.pushIsConfigured }));
 
 import { mem } from "@/test/gbp-sync-store";
 import type { StoredQuality } from "@/types/whatsapp-cloud";
@@ -111,6 +113,25 @@ function scenario(id: string, rating: WaQualityRating, extra: Partial<WaFakeScen
 }
 const quality = (id: string) => (mem.read(`subAccounts/${id}`)?.whatsappCloudMeta as { quality?: StoredQuality }).quality;
 const alerts = (id: string) => mem.list(alertsCollection(id));
+let warned: string[];
+
+/**
+ * Real-Meta mode for the tenants given: each gets its own secret, and a
+ * stubbed fetch answers the phone-number node with that tenant's rating.
+ */
+function graphMode(ratings: Record<string, WaQualityRating>) {
+  delete process.env.WHATSAPP_SETTINGS_PROVIDER;
+  for (const id of Object.keys(ratings)) {
+    mem.seed(whatsappCloudSecretPath(id), { phoneNumberId: `pn_${id}`, wabaId: "w", accessToken: `tok_${id}` });
+  }
+  const spy = vi.fn(async (url: string, _init?: RequestInit) => {
+    const id = Object.keys(ratings).find((k) => url.includes(`/pn_${k}?`));
+    const body = { display_phone_number: "+27 60 000 0000", quality_rating: id ? ratings[id] : "GREEN", name_status: "APPROVED", status: "CONNECTED" };
+    return new Response(JSON.stringify(body), { status: 200 });
+  });
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
 
 beforeEach(() => {
   mem.clear();
@@ -124,7 +145,11 @@ beforeEach(() => {
   (process.env as Record<string, string>).NODE_ENV = "test";
   mem.seed(`agencies/${AGENCY}`, { ownerUid: "uid_owner", supportEmail: "support@fixture.example" });
   mem.seed("users/uid_owner", { email: "owner@fixture.example" });
-  vi.spyOn(console, "warn").mockImplementation(() => {});
+  warned = [];
+  edges.pushIsConfigured.mockReset().mockReturnValue(true);
+  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    warned.push(args.map(String).join(" "));
+  });
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -161,9 +186,9 @@ describe("runWhatsappQualitySweep", () => {
     expect(quality("sa_no_phone")).toBeUndefined();
   });
 
-  it("a drop from GREEN writes a tenant-anchored alert, pushes, and emails the agency owner", async () => {
+  it("a drop from GREEN writes a tenant-anchored alert, pushes, and emails the agency owner (real mode)", async () => {
     seedSub("sa_a", { quality: stored("GREEN") });
-    scenario("sa_a", "YELLOW");
+    graphMode({ sa_a: "YELLOW" });
     const result = await runWhatsappQualitySweep({ now: NOW });
     expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0 });
     expect(quality("sa_a")).toMatchObject({ rating: "YELLOW", checkedAt: NOW, changedAt: NOW });
@@ -193,32 +218,49 @@ describe("runWhatsappQualitySweep", () => {
     expect(mail).toMatchObject({ to: "owner@fixture.example", meter: { subAccountId: "sa_a" }, archive: false });
     expect(String(mail.subject)).toContain("Yellow");
     expect(String(mail.text)).toContain("/sa/sa_a/dashboard/settings/whatsapp");
+    expect(warned.filter((w) => w.includes("not configured"))).toEqual([]);
   });
 
-  it("falls back to the agency's supportEmail when the owner has no email, and skips mail when email isn't configured", async () => {
-    mem.seed("users/uid_owner", {});
-    seedSub("sa_a", { quality: stored("GREEN") });
-    scenario("sa_a", "RED");
-    await runWhatsappQualitySweep({ now: NOW });
-    expect(edges.sendEmail.mock.calls[0][0]).toMatchObject({ to: "support@fixture.example" });
-
-    edges.sendEmail.mockClear();
-    edges.emailIsConfigured.mockReturnValue(false);
-    seedSub("sa_b", { quality: stored("GREEN") });
-    scenario("sa_b", "RED");
-    const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result.alerted).toBe(1); // sa_b (sa_a is already RED)
-    expect(edges.sendEmail).not.toHaveBeenCalled();
-    expect(alerts("sa_b")).toHaveLength(1); // the alert doc does not depend on mail
-  });
-
-  it("an email failure is logged and does not fail the tenant", async () => {
-    edges.sendEmail.mockRejectedValueOnce(new Error("smtp down"));
+  it("in FAKE mode a drop writes the alert doc but never pushes or emails — and says so", async () => {
     seedSub("sa_a", { quality: stored("GREEN") });
     scenario("sa_a", "YELLOW");
     const result = await runWhatsappQualitySweep({ now: NOW });
     expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0 });
     expect(alerts("sa_a")).toHaveLength(1);
+    expect(edges.sendPushForEvent).not.toHaveBeenCalled();
+    expect(edges.sendEmail).not.toHaveBeenCalled();
+    expect(warned).toContain("[whatsapp-quality] fake mode: push/email suppressed sa=sa_a");
+  });
+
+  it("warns when push or email is not configured, so an undelivered alert is visible in the logs", async () => {
+    edges.pushIsConfigured.mockReturnValue(false);
+    edges.emailIsConfigured.mockReturnValue(false);
+    seedSub("sa_a", { quality: stored("GREEN") });
+    graphMode({ sa_a: "RED" });
+    const result = await runWhatsappQualitySweep({ now: NOW });
+    expect(result.alerted).toBe(1);
+    expect(alerts("sa_a")).toHaveLength(1); // the alert doc does not depend on either channel
+    expect(edges.sendEmail).not.toHaveBeenCalled();
+    expect(warned).toContain("[whatsapp-quality] push not configured, alert not delivered sa=sa_a");
+    expect(warned).toContain("[whatsapp-quality] email not configured, alert not delivered sa=sa_a");
+  });
+
+  it("falls back to the agency's supportEmail when the owner has no email", async () => {
+    mem.seed("users/uid_owner", {});
+    seedSub("sa_a", { quality: stored("GREEN") });
+    graphMode({ sa_a: "RED" });
+    await runWhatsappQualitySweep({ now: NOW });
+    expect(edges.sendEmail.mock.calls[0][0]).toMatchObject({ to: "support@fixture.example" });
+  });
+
+  it("an email failure is logged and does not fail the tenant", async () => {
+    edges.sendEmail.mockRejectedValueOnce(new Error("smtp down"));
+    seedSub("sa_a", { quality: stored("GREEN") });
+    graphMode({ sa_a: "YELLOW" });
+    const result = await runWhatsappQualitySweep({ now: NOW });
+    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0 });
+    expect(alerts("sa_a")).toHaveLength(1);
+    expect(warned.some((w) => w.includes("owner alert failed"))).toBe(true);
   });
 
   it("YELLOW → RED and YELLOW → YELLOW alert nothing but update the reading", async () => {

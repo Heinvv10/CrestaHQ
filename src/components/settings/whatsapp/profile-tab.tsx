@@ -130,7 +130,7 @@ export function ProfileTab({
   }
 
   return (
-    <div className="grid gap-6 md:grid-cols-[1fr_320px]">
+    <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       <form onSubmit={handleSave} className="space-y-4 rounded-2xl border bg-card p-5" data-testid="wa-profile-form">
         <div className="flex items-center gap-4">
           {form.profilePictureUrl ? (
@@ -143,25 +143,32 @@ export function ProfileTab({
           )}
           {isAdmin && (
             <div>
-              <Label htmlFor="wa-profile-photo">Profile photo</Label>
               <input
-                id="wa-profile-photo"
                 ref={fileRef}
                 type="file"
                 accept="image/jpeg,image/png"
-                className="mt-1 block text-xs"
-                disabled={uploading}
+                className="hidden"
                 onChange={handlePhoto}
                 data-testid="wa-profile-photo-input"
               />
-              <p className="mt-1 text-[11px] text-muted-foreground">JPEG or PNG, up to 5 MB.{uploading ? " Uploading…" : ""}</p>
+              <Button type="button" variant="outline" size="sm" disabled={uploading} onClick={() => fileRef.current?.click()} data-testid="wa-profile-photo-button">
+                {uploading ? (<><Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />Uploading…</>) : "Upload photo"}
+              </Button>
+              <p className="mt-1 text-[11px] text-muted-foreground">JPEG or PNG, up to 5 MB.</p>
             </div>
           )}
         </div>
 
         <div>
           <Label htmlFor="wa-profile-display-name">Display name</Label>
-          <Input id="wa-profile-display-name" value={phone.verifiedName ?? ""} readOnly data-testid="wa-profile-display-name" />
+          <Input
+            id="wa-profile-display-name"
+            value={phone.verifiedName ?? ""}
+            readOnly
+            aria-readonly="true"
+            className="bg-muted/50 text-muted-foreground"
+            data-testid="wa-profile-display-name"
+          />
           <p className="mt-1 text-xs text-muted-foreground" data-testid="wa-name-status">
             Set by Meta. Name status: {phone.nameStatus ?? "unknown"}
           </p>

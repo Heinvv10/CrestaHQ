@@ -73,3 +73,15 @@ describe("POST", () => {
     expect(scenario()).toBeUndefined();
   });
 });
+
+describe("the body is not read before the caller is known", () => {
+  it("an unauthenticated POST with a body that would fail validation gets 401, not 400", async () => {
+    const svg = new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>");
+    const res = await call(POST, { id: SUB }, { uid: null, method: "POST", raw: form(svg, "image/png") });
+    expect(res.status).toBe(401);
+    // A member with a bad body is refused on role, not on the body.
+    const member = await call(POST, { id: SUB }, { uid: "uid_member", method: "POST", raw: form(svg, "image/png") });
+    expect(member.status).toBe(403);
+    expect(scenario()).toBeUndefined();
+  });
+});
