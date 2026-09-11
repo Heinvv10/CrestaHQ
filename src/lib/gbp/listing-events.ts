@@ -2,6 +2,9 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import type { GoogleListing } from "@/types/google";
+import { findAccessibleLocation } from "./discovery";
+import type { GbpProvider } from "./provider/types";
 
 /**
  * Clearing the selected Business Profile listing, always with an audit trail.
@@ -43,4 +46,29 @@ export async function clearListing(
       previousLocationName: previous,
     });
   });
+}
+
+/**
+ * After a (re)connect, the Google identity may differ from the one the listing
+ * was picked through. Re-check the stored listing with the NEW token: clear it
+ * (audited) if this grant cannot see it. If the check itself fails, keep the
+ * listing — a transient Google error must neither fail the connect nor throw
+ * away a good selection.
+ */
+export async function reverifyListingAfterReconnect(
+  subAccountId: string,
+  byUid: string,
+  provider: GbpProvider,
+  accessToken: string,
+  listing: Pick<GoogleListing, "accountName" | "locationName">,
+): Promise<void> {
+  let match: Awaited<ReturnType<typeof findAccessibleLocation>>;
+  try {
+    match = await findAccessibleLocation(provider, accessToken, listing.accountName, listing.locationName);
+  } catch (err) {
+    const reason = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+    console.warn(`[google/callback] listing re-verify failed, keeping it sa=${subAccountId}`, reason);
+    return;
+  }
+  if (!match) await clearListing(subAccountId, byUid, "not_accessible_after_reconnect");
 }

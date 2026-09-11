@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
+import { reverifyListingAfterReconnect } from "@/lib/gbp/listing-events";
 import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
   GOOGLE_SCOPE,
@@ -17,6 +18,7 @@ import {
   googleConnectionSecretPath,
   type GoogleConnectionMeta,
   type GoogleConnectionSecret,
+  type GoogleListing,
 } from "@/types/google";
 
 /**
@@ -139,13 +141,18 @@ export async function GET(request: Request) {
     };
 
     const db = getAdminDb();
+    const subRef = db.doc(`subAccounts/${id}`);
+    const listing = (await subRef.get()).data()?.googleListing as GoogleListing | null | undefined;
     await db.doc(googleConnectionSecretPath(id)).set(secret);
-    await db
-      .doc(`subAccounts/${id}`)
-      .set(
-        { googleConnectionMeta: meta, updatedAt: FieldValue.serverTimestamp() },
-        { merge: true },
-      );
+    await subRef.set(
+      { googleConnectionMeta: meta, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+    // A reconnect may be a DIFFERENT Google identity: the old listing must
+    // still be visible to this grant, or it is cleared (and audited).
+    if (listing?.locationName) {
+      await reverifyListingAfterReconnect(id, access.uid, provider, tokens.accessToken, listing);
+    }
 
     return finish("connected");
   } catch (err) {

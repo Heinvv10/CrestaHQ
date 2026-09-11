@@ -25,7 +25,7 @@ import {
   stubTokenEndpoint,
 } from "@/test/google-oauth-harness";
 import { googleAppConfigured, signGoogleState } from "@/lib/google/oauth";
-import { TOKEN_MARKERS } from "@/test/gbp-route-harness";
+import { DEFAULT_ACCOUNT, LOC_NORTH, TOKEN_MARKERS, setScenario } from "@/test/gbp-route-harness";
 import { GET as CONNECT } from "../../sub-accounts/[id]/google/connect/route";
 import { GET as CALLBACK } from "./route";
 
@@ -161,5 +161,54 @@ describe("fake mode", () => {
       ),
     ).rejects.toThrow("GBP fake provider refused");
     expect(state.writes).toEqual([]);
+  });
+});
+
+describe("reconnect re-verifies the selected listing", () => {
+  const seedListing = (locationName: string) =>
+    state.docs.set(SUB_PATH, {
+      ...state.docs.get(SUB_PATH),
+      googleListing: { accountName: DEFAULT_ACCOUNT, locationName, title: "Old" },
+    });
+  const events = () =>
+    [...state.docs.entries()].filter(([p]) => p.startsWith(`${SUB_PATH}/gbpEvents/`)).map(([, d]) => d);
+
+  beforeEach(() => {
+    fakeMode();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  it("keeps a listing the new grant can still see", async () => {
+    seedListing(LOC_NORTH);
+    const res = await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(res.headers.get("location")).toContain("google=connected");
+    expect(state.docs.get(SUB_PATH)?.googleListing).toMatchObject({ locationName: LOC_NORTH });
+    expect(events()).toEqual([]);
+  });
+
+  it("clears, and audits, a listing the new grant cannot see", async () => {
+    seedListing("locations/not-under-this-google-account");
+    const res = await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(res.headers.get("location")).toContain("google=connected");
+    expect(state.docs.get(SUB_PATH)?.googleListing).toBeNull();
+    expect(events()).toEqual([
+      expect.objectContaining({
+        type: "listing_cleared",
+        reason: "not_accessible_after_reconnect",
+        createdByUid: "uid_admin",
+        previousLocationName: "locations/not-under-this-google-account",
+      }),
+    ]);
+  });
+
+  it("keeps the listing, and still connects, when the re-verify itself fails", async () => {
+    seedListing("locations/not-under-this-google-account");
+    setScenario((s) => (s.failNext = { op: "listAccounts", kind: "transient" }));
+    const res = await callback(SUB, "uid_admin", `fake-code:${SUB}`);
+    expect(res.headers.get("location")).toContain("google=connected");
+    expect(state.docs.get(SUB_PATH)?.googleListing).toMatchObject({
+      locationName: "locations/not-under-this-google-account",
+    });
+    expect(state.docs.has(SECRET_PATH)).toBe(true);
   });
 });
