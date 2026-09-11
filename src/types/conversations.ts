@@ -139,6 +139,8 @@ export interface ConversationDoc {
    * upsert, cleared when a human replies.
    */
   lateButtonTap?: { text: string; at: Timestamp | FieldValue | null } | null;
+  /** When a HUMAN last replied (the operator-reply path). */
+  lastHumanReplyAt?: Timestamp | FieldValue | null;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }

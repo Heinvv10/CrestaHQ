@@ -265,10 +265,31 @@ describe("a tap nothing is waiting for is flagged for a human", () => {
       contactName: "Thandi Mokoena", contactPhone: PHONE,
       channel: "whatsapp", direction: "outbound", body: "On it, Thandi.", pauseBot: true,
     });
+    // Let the clock move, so "the human replied after the TAP" and "after the
+    // flag write" are distinguishable instants.
+    await new Promise((r) => setTimeout(r, 5));
     release();
     await settled();
 
     expect(flag()).toBeNull();
+  });
+
+  it("still raises the flag if only an automated reply landed while the resume settled", async () => {
+    finishRun();
+    let release!: () => void;
+    resumeGate = new Promise<void>((r) => (release = r));
+
+    await cloudTap({ type: "button", button: { text: YES, payload: "yes_all_good" } });
+    // An AI or workflow send — outbound, but no human handled the tap.
+    await upsertConversationForMessage({
+      contactId: "c1", subAccountId: "sa1", agencyId: "ag1",
+      contactName: "Thandi Mokoena", contactPhone: PHONE,
+      channel: "whatsapp", direction: "outbound", body: "Thanks for your message!",
+    });
+    release();
+    await settled();
+
+    expect(flag()).toMatchObject({ text: YES });
   });
 
   it("clears the flag when a human replies", async () => {

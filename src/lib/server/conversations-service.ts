@@ -70,6 +70,12 @@ export interface UpsertConversationInput {
   buttonTap?: boolean;
 }
 
+function toMillis(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  const ts = v as { toMillis?: () => number } | null | undefined;
+  return typeof ts?.toMillis === "function" ? ts.toMillis() : null;
+}
+
 async function contactTerritory(
   tx: FirebaseFirestore.Transaction,
   input: { contactId: string | null; subAccountId: string; agencyId: string }
@@ -90,6 +96,9 @@ async function contactTerritory(
 export async function upsertConversationForMessage(
   input: UpsertConversationInput
 ): Promise<void> {
+  // When this message arrived — a late-tap flag must not land over a human
+  // reply made after it (see below).
+  const receivedAt = Date.now();
   try {
     const db = getAdminDb();
     // Doc id: an explicit conversationKey (web chat's session key) wins;
@@ -143,6 +152,7 @@ export async function upsertConversationForMessage(
         patch.unreadCount = 0;
         patch.pendingDraft = null;
         patch.lateButtonTap = null;
+        patch.lastHumanReplyAt = FieldValue.serverTimestamp();
       }
 
       if (!snap.exists) {
@@ -207,17 +217,18 @@ export async function upsertConversationForMessage(
       // flag is raised.
       //
       // The flag lands after the fire-and-forget resume settles, so a human
-      // may already have replied (and cleared it). This tap's upsert left the
-      // thread's last message inbound; if it is outbound now, the thread was
-      // answered after the tap and the flag is not raised. (Not covered: a
-      // reply AND a newer inbound message both landing before the resume
-      // settles.)
+      // may already have replied (and cleared it). The write is skipped when a
+      // HUMAN replied after this message arrived — `lastHumanReplyAt`, set only
+      // on the operator-reply path. An AI or workflow send in that window does
+      // not suppress it: an automated reply is not a human handling the tap.
       void Promise.resolve(resumed)
         .then(async (n) => {
           if (!input.buttonTap || n !== 0) return;
           await db.runTransaction(async (tx) => {
             const current = (await tx.get(ref)).data();
-            if (!current || current.lastDirection === "outbound") return;
+            if (!current) return;
+            const humanAt = toMillis(current.lastHumanReplyAt);
+            if (humanAt !== null && humanAt >= receivedAt) return;
             tx.update(ref, {
               lateButtonTap: { text: preview, at: FieldValue.serverTimestamp() },
             });
