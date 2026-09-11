@@ -20,7 +20,10 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
  * The fingerprint includes the Twilio account the resource lives on, so a
  * tenant that moves accounts gets a fresh one instead of a sid the new account
  * has never seen. A resource deleted in the Twilio console is NOT detected:
- * sends fail until the template is edited (which changes the fingerprint).
+ * sends fail, loudly in the run log, until the cache is cleared — delete the
+ * doc's `twilioSessionContent` field, or duplicate the template and repoint
+ * the step. Editing is no remedy for a pending/approved template: those are
+ * locked (the edit route answers 409).
  *
  * Its body keeps the template's {{1}} placeholders; each send passes the
  * contact's values as contentVariables. Every in-window send that reads the

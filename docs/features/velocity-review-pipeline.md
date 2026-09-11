@@ -369,8 +369,10 @@ One resource per template, created on first in-window use and cached on the
 doc (`twilioSessionContent`), keyed by a fingerprint of the Twilio account,
 body, language, samples and buttons, so an edited draft or a moved account
 gets a new one; each send passes the contact's values as `contentVariables`.
-A resource deleted in the Twilio console is not detected — sends fail until
-the template is edited. An in-window button send with a **blank variable is
+A resource deleted in the Twilio console is not detected — sends fail (loudly,
+in the run log) until the cache is cleared: delete the template doc's
+`twilioSessionContent` field, or duplicate the template and repoint the step.
+Editing does not help a pending or approved template; those are locked. An in-window button send with a **blank variable is
 refused** on both rails: Cloud would send "Thank you !", and Twilio may fill
 in the template's sample value — a stranger's name
 (`lib/comms/whatsapp/twilio-session-content.ts`). Twilio's unapproved
