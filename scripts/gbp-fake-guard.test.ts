@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { guardDeployDir } from "./gbp-fake-guard.mjs";
 
@@ -12,6 +12,16 @@ import { guardDeployDir } from "./gbp-fake-guard.mjs";
  * dotenv spelling that reaches the app also reaches the guard. Each case below
  * is a real env file on disk.
  */
+
+// @next/env snapshots the process env on its FIRST load and lets it win over
+// file values — right for a deploy (the shell's env really applies), but a
+// developer shell that exported a local .env would leak into every fixture.
+// Start the worker from a neutral env; the shell case is passed explicitly.
+beforeAll(() => {
+  for (const key of Object.keys(process.env)) {
+    if (/^GBP_/i.test(key) || key === "NEXT_PUBLIC_APP_URL") delete process.env[key];
+  }
+});
 
 const dirs: string[] = [];
 function deployDir(files: Record<string, string>): string {
