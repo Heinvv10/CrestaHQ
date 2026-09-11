@@ -4,14 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { inlinedUrlIsSafe, mentionsFakeKeys, trustsCfConnectingIp } from "./gbp-deploy-check.mjs";
+import { CHECKS, inlinedUrlIsSafe, mentionsFakeKeys, trustsCfConnectingIp } from "./gbp-deploy-check.mjs";
 
 /**
- * The deploy-time checks for the dev/CI-only fake provider. No env parsing:
- *  (a) PRE-BUILD: any `.env*` file that so much as MENTIONS GBP_PROVIDER or
- *      GBP_FAKE_ (or a shell variable NAMED so) refuses the deploy;
- *  (b) POST-BUILD: the app URL INLINED into the built fake-mode code must be a
- *      public host — that literal is what the app fence checks at runtime.
+ * The deploy-time checks for the dev/CI-only fake providers (GBP, and the
+ * WhatsApp settings fake with the same fence). No env parsing:
+ *  (a) PRE-BUILD: any `.env*` file that so much as MENTIONS GBP_PROVIDER,
+ *      GBP_FAKE_, WHATSAPP_SETTINGS_PROVIDER or WHATSAPP_FAKE_ (or a shell
+ *      variable NAMED so) refuses the deploy;
+ *  (b) POST-BUILD: the app URL INLINED into BOTH built fake-mode checks must be
+ *      a public host — that literal is what each app fence checks at runtime.
  */
 
 const dirs: string[] = [];
@@ -40,6 +42,10 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     ["google, even — production never needs the name", "GBP_PROVIDER=google"],
     ["any GBP_FAKE_*", "GBP_FAKE_AGENCY_ID=abc"],
     ["GBP_FAKE_* with colon", "GBP_FAKE_ALLOW_PROD_BUILD: 1"],
+    ["the WhatsApp settings fake", "WHATSAPP_SETTINGS_PROVIDER=fake"],
+    ["WhatsApp graph, even — production never needs the name", "WHATSAPP_SETTINGS_PROVIDER=graph"],
+    ["any WHATSAPP_FAKE_*", "WHATSAPP_FAKE_AGENCY_ID=abc"],
+    ["WHATSAPP_FAKE_* commented out", "# WHATSAPP_FAKE_ALLOW_PROD_BUILD=1"],
   ])("%s", (_label, line) => {
     expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}${line}\n` }), {}).join()).toContain(".env.production");
   });
@@ -55,6 +61,8 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GBP_PROVIDER: "google" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GBP_PROVIDER_OVERRIDE: "x" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GBP_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { WHATSAPP_SETTINGS_PROVIDER: "graph" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { WHATSAPP_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
   });
 
   it("fails closed on an unreadable env file", () => {
@@ -64,10 +72,10 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(dir, {}).join()).toContain("unreadable");
   });
 
-  it("allows a clean production env, PR 2's GBP_SYNC_SCHEDULE_ENABLED, and shell GBP_MODE alone", () => {
-    const dir = tmp({ ".env.production": `${CLEAN}GBP_SYNC_SCHEDULE_ENABLED=1\n`, ".env": "X=1\n" });
+  it("allows a clean production env, PR 2's GBP_SYNC_SCHEDULE_ENABLED, WHATSAPP_GRAPH_VERSION, and shell GBP_MODE alone", () => {
+    const dir = tmp({ ".env.production": `${CLEAN}GBP_SYNC_SCHEDULE_ENABLED=1\nWHATSAPP_GRAPH_VERSION=v23.0\n`, ".env": "X=1\n" });
     fs.mkdirSync(path.join(dir, ".env.d")); // a directory is not an env file Next loads
-    expect(mentionsFakeKeys(dir, { GBP_SYNC_SCHEDULE_ENABLED: "1", GBP_MODE: "fake" })).toEqual([]);
+    expect(mentionsFakeKeys(dir, { GBP_SYNC_SCHEDULE_ENABLED: "1", GBP_MODE: "fake", WHATSAPP_GRAPH_VERSION: "v23.0" })).toEqual([]);
   });
 
   it("refuses NEXT_PUBLIC_APP_URL defined twice in .env.production (sed takes the first, Next the last)", () => {
@@ -115,7 +123,7 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
 
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
-    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_/);
+    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_/);
   });
 });
 
@@ -159,9 +167,26 @@ const MODE_CODE = (url: string) =>
   `class n extends Error{constructor(e){super(\`GBP fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.GBP_PROVIDER)return"google";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")}`;
 const INLINED_FN_SHAPE = (url: string) =>
   `function n(){if("fake"!==process.env.GBP_PROVIDER)return"google";if(!function(e){let r;try{r=new URL(String(e??"").trim()).hostname}catch{return!1}return t.includes(r)}(${JSON.stringify(url)}))throw new r("NEXT_PUBLIC_APP_URL is not a loopback host")}`;
-const server = (url: string) => [{ path: "chunks/a.js", text: MODE_CODE(url) }, { path: "chunks/b.js", text: "unrelated" }];
+/** The WhatsApp settings fence (settings/mode.ts), minified the same way. */
+const WA_MODE_CODE = (url: string) =>
+  `class n extends Error{constructor(e){super(\`WhatsApp fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.WHATSAPP_SETTINGS_PROVIDER)return"graph";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (WhatsApp fake)")}`;
+const server = (url: string, waUrl = url) => [
+  { path: "chunks/a.js", text: MODE_CODE(url) },
+  { path: "chunks/b.js", text: "unrelated" },
+  { path: "chunks/wa.js", text: WA_MODE_CODE(waUrl) },
+];
 
 describe("(b) post-build: the inlined app URL", () => {
+  it("counts each fence separately: neither check message contains the other", () => {
+    // If one were a substring of the other, its occurrences would be counted
+    // for both and a build missing one fence could pass.
+    expect(CHECKS.length).toBeGreaterThanOrEqual(2);
+    for (const a of CHECKS) for (const b of CHECKS) if (a !== b) expect(a.message.includes(b.message)).toBe(false);
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "a.js", text: MODE_CODE("https://crm.crestahq.com") }]).join()).toContain("WhatsApp fake-provider check was not found");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") }]).join()).toContain("GBP fake-provider check was not found");
+  });
+
+
   it("allows the public production URL", () => {
     expect(inlinedUrlIsSafe("https://crm.crestahq.com", server("https://crm.crestahq.com"))).toEqual([]);
   });
@@ -181,7 +206,28 @@ describe("(b) post-build: the inlined app URL", () => {
   });
 
   it("reads the inlined-function shape too", () => {
-    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: INLINED_FN_SHAPE("https://crm.crestahq.com") }])).toEqual([]);
+    expect(
+      inlinedUrlIsSafe("https://crm.crestahq.com", [
+        { path: "c.js", text: INLINED_FN_SHAPE("https://crm.crestahq.com") },
+        { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("refuses when only the WhatsApp check carries a loopback literal", () => {
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", server("https://crm.crestahq.com", "http://127.0.0.1:3100")).join()).toContain(
+      "WhatsApp fake-provider check is not NEXT_PUBLIC_APP_URL",
+    );
+  });
+
+  it("refuses when the WhatsApp check is missing from the build (nothing proven for it)", () => {
+    const gbpOnly = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/wa.js");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", gbpOnly).join()).toContain("WhatsApp fake-provider check was not found");
+  });
+
+  it("refuses when the GBP check is missing even though the WhatsApp one is present", () => {
+    const waOnly = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/a.js");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", waOnly).join()).toContain("GBP fake-provider check was not found");
   });
 
   it.each([
@@ -207,7 +253,12 @@ describe("(b) post-build: the inlined app URL", () => {
   it("decodes the literal as a string (escaped slashes still match), and fails closed on an escape it cannot decode", () => {
     const withLiteral = (lit: string) =>
       `if(!(0,t.isAppLoopbackUrl)(${lit}))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")`;
-    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: withLiteral(String.raw`"https:\/\/crm.crestahq.com"`) }])).toEqual([]);
+    expect(
+      inlinedUrlIsSafe("https://crm.crestahq.com", [
+        { path: "c.js", text: withLiteral(String.raw`"https:\/\/crm.crestahq.com"`) },
+        { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
+      ]),
+    ).toEqual([]);
     expect(
       inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: withLiteral(String.raw`"https:\x2f\x2fcrm.crestahq.com"`) }]).join(),
     ).toContain("could not read");
@@ -258,6 +309,7 @@ describe("CLI", () => {
     const dir = tmp();
     fs.mkdirSync(path.join(dir, ".next/server/chunks"), { recursive: true });
     fs.writeFileSync(path.join(dir, ".next/server/chunks/x.js"), MODE_CODE("https://crm.crestahq.com"));
+    fs.writeFileSync(path.join(dir, ".next/server/chunks/wa.js"), WA_MODE_CODE("https://crm.crestahq.com"));
     expect(run("post", dir, "https://crm.crestahq.com").status).toBe(0);
     expect(run("post", dir, "http://127.0.0.1:3100").status).toBe(1);
   });

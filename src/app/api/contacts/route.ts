@@ -7,6 +7,10 @@ import { createContactServerSide } from "@/lib/server/contacts-service";
 import { resolveCompanyLink } from "@/lib/server/companies-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 
 /**
  * Dashboard-facing contact creation. The "Add contact" modal used to write
@@ -49,11 +53,9 @@ export async function POST(request: Request) {
 
   const name = str(body.name, 200);
   const email = str(body.email);
-  if (!name && !email) {
-    return NextResponse.json(
-      { error: "Provide at least a name or an email." },
-      { status: 400 },
-    );
+  const phone = str(body.phone);
+  if (!hasContactIdentity({ name, email, phone })) {
+    return NextResponse.json({ error: CONTACT_IDENTITY_ERROR }, { status: 400 });
   }
 
   // The sub-account doc is the source of truth for which agency to stamp.
@@ -90,7 +92,7 @@ export async function POST(request: Request) {
     mode: "live",
     name,
     email,
-    phone: str(body.phone),
+    phone,
     phoneCountry: (subSnap.data()?.defaultPhoneCountry as string) ?? null,
     company,
     companyId,

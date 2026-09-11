@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 /**
- * gbp-deploy-check.mjs — keep the dev/CI-only GBP fake provider out of a
- * production deploy. Two checks, neither of which parses or expands env files
- * (three earlier designs that emulated Next's env loader each had a bypass):
+ * gbp-deploy-check.mjs — keep the dev/CI-only fake providers (GBP, and the
+ * WhatsApp settings fake that mirrors its fence) out of a production deploy.
+ * Two checks, neither of which parses or expands env files (three earlier
+ * designs that emulated Next's env loader each had a bypass):
  *
  *   node scripts/gbp-deploy-check.mjs pre  <deploy-dir>
  *     Before any gate or build. Refuses if the RAW TEXT of any `.env*` file in
- *     the deploy dir contains `GBP_PROVIDER` or `GBP_FAKE_` anywhere — any
- *     line, commented or not; production never needs these names (the default
- *     is Google) — or if any deploy-shell variable is NAMED `GBP_PROVIDER*` or
- *     `GBP_FAKE_*`. Also refuses if NEXT_PUBLIC_APP_URL is DEFINED more than
+ *     the deploy dir contains `GBP_PROVIDER`, `GBP_FAKE_`,
+ *     `WHATSAPP_SETTINGS_PROVIDER` or `WHATSAPP_FAKE_` anywhere — any line,
+ *     commented or not; production never needs these names (the defaults are
+ *     Google and Meta) — or if any deploy-shell variable is NAMED so.
+ *     Also refuses if NEXT_PUBLIC_APP_URL is DEFINED more than
  *     once in .env.production, or defined in any other env file (.env.example,
  *     which Next never loads, excepted; comments never count), so
  *     deploy-velo.sh's sed and Next read the same value.
@@ -20,12 +22,14 @@
  *     Fails closed on an unreadable file.
  *
  *   node scripts/gbp-deploy-check.mjs post <deploy-dir> <app-url>
- *     After the build. The app fence (src/lib/gbp/provider/mode.ts) allows the
- *     fake only when the app URL INLINED INTO THE BUILD is loopback, so this is
- *     the authoritative check: in every built server chunk carrying that check,
- *     the string literal passed to it is extracted and must EQUAL <app-url>
- *     exactly, parse, and have a host off the wide loopback block-list. A check
- *     whose literal cannot be read, or no check at all, refuses (fail closed).
+ *     After the build. Each app fence (src/lib/gbp/provider/mode.ts and
+ *     src/lib/comms/whatsapp/settings/mode.ts) allows its fake only when the
+ *     app URL INLINED INTO THE BUILD is loopback, so this is the authoritative
+ *     check: in every built server chunk carrying either check, the string
+ *     literal passed to it is extracted and must EQUAL <app-url> exactly,
+ *     parse, and have a host off the wide loopback block-list. A check whose
+ *     literal cannot be read, or EITHER check absent from the build, refuses
+ *     (fail closed).
  *
  * Not covered: systemd `Environment=` lines on the unit. They cannot change
  * the inlined URL, so the app fence plus the post-build check still hold.
@@ -39,22 +43,31 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isLoopbackHostname } from "../src/lib/gbp/provider/loopback.mjs";
 
-const FAKE_NAME = /GBP_PROVIDER|GBP_FAKE_/;
-const FAKE_VAR_NAME = /^(GBP_PROVIDER|GBP_FAKE_)/;
-/** The refusal message thrown by mode.ts's app-loopback check — its anchor. */
-const CHECK_MESSAGE = "NEXT_PUBLIC_APP_URL is not a loopback host";
+const FAKE_NAME = /GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_/;
+const FAKE_VAR_NAME = /^(GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_)/;
 /**
- * The literal the build passed to that check: `…("<url>"))throw new X("<CHECK_MESSAGE>")`.
+ * The refusal message each mode.ts throws from its app-loopback check — the
+ * anchor the post-build scan finds it by. Neither may be a substring of the
+ * other, or one check's occurrences would be counted for both.
+ */
+export const CHECKS = [
+  { label: "GBP", message: "NEXT_PUBLIC_APP_URL is not a loopback host" },
+  { label: "WhatsApp", message: "NEXT_PUBLIC_APP_URL is not loopback (WhatsApp fake)" },
+];
+/**
+ * The literal the build passed to a check: `…("<url>"))throw new X("<message>")`.
  * Matches both shapes the minifier has produced (`(0,t.isAppLoopbackUrl)("…")`
  * and an inlined `function(e){…}("…")`). Captures a double-quoted JS string.
  * Real builds double-quote both the literal and the message; any other quoting
  * does not match and fails closed ("could not read").
+ * @param {string} message
  */
-const INLINED_LITERAL = new RegExp(
-  String.raw`\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*\)\s*throw\s+new\s+[\w$]+\(\s*"` +
-    CHECK_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-  "g",
-);
+const inlinedLiteral = (message) =>
+  new RegExp(
+    String.raw`\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*\)\s*throw\s+new\s+[\w$]+\(\s*"` +
+      message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    "g",
+  );
 /** A dotenv DEFINITION of the app URL (`KEY=`, `KEY:`, optional export/spaces). */
 const APP_URL_DEFINITION = /^\s*(export\s+)?NEXT_PUBLIC_APP_URL\s*[=:]/;
 /** Env files Next never loads; a template may name any key. */
@@ -84,7 +97,9 @@ export function mentionsFakeKeys(dir, shellEnv) {
       problems.push(`${name}: unreadable env file`);
       continue;
     }
-    if (FAKE_NAME.test(text)) problems.push(`${name}: mentions GBP_PROVIDER or GBP_FAKE_*`);
+    if (FAKE_NAME.test(text)) {
+      problems.push(`${name}: mentions GBP_PROVIDER / GBP_FAKE_* / WHATSAPP_SETTINGS_PROVIDER / WHATSAPP_FAKE_*`);
+    }
     // deploy-velo.sh reads NEXT_PUBLIC_APP_URL with sed (first line of
     // .env.production); Next takes the LAST definition and lets .env.local /
     // .env.production.local win. Allow ONE definition, in one file, so the two
@@ -159,37 +174,40 @@ export function inlinedUrlIsSafe(appUrl, serverFiles) {
   if (isLoopbackHostname(host)) return ["NEXT_PUBLIC_APP_URL is a loopback address"];
 
   const problems = [];
-  let checks = 0;
-  for (const file of serverFiles) {
-    const expected = file.text.split(CHECK_MESSAGE).length - 1;
-    if (expected === 0) continue;
-    const literals = [...file.text.matchAll(INLINED_LITERAL)].map((m) => m[1]);
-    // Every occurrence of the check must yield its literal; otherwise the build
-    // passes something we cannot read (e.g. a runtime env lookup) — refuse.
-    if (literals.length !== expected) {
-      problems.push(`${file.path}: could not read the URL literal passed to the fake-provider check`);
-      continue;
-    }
-    for (const raw of literals) {
-      checks += 1;
-      let literal;
-      try {
-        literal = JSON.parse(raw);
-      } catch {
-        problems.push(`${file.path}: could not read the URL literal passed to the fake-provider check`);
+  for (const { label, message } of CHECKS) {
+    const re = inlinedLiteral(message);
+    let checks = 0;
+    for (const file of serverFiles) {
+      const expected = file.text.split(message).length - 1;
+      if (expected === 0) continue;
+      const literals = [...file.text.matchAll(re)].map((m) => m[1]);
+      // Every occurrence of the check must yield its literal; otherwise the build
+      // passes something we cannot read (e.g. a runtime env lookup) — refuse.
+      if (literals.length !== expected) {
+        problems.push(`${file.path}: could not read the URL literal passed to the ${label} fake-provider check`);
         continue;
       }
-      // EXACT equality: a substring match let `https://crm.crestahq.com@127.0.0.1:4300`
-      // (userinfo → loopback host) pass for `https://crm.crestahq.com`.
-      // (Equal to an appUrl already shown to parse and be off the loopback
-      // block-list, so the literal is too — no second host check needed.)
-      if (literal !== appUrl) {
-        problems.push(`${file.path}: the URL inlined into the fake-provider check is not NEXT_PUBLIC_APP_URL`);
+      for (const raw of literals) {
+        checks += 1;
+        let literal;
+        try {
+          literal = JSON.parse(raw);
+        } catch {
+          problems.push(`${file.path}: could not read the URL literal passed to the ${label} fake-provider check`);
+          continue;
+        }
+        // EXACT equality: a substring match let `https://crm.crestahq.com@127.0.0.1:4300`
+        // (userinfo → loopback host) pass for `https://crm.crestahq.com`.
+        // (Equal to an appUrl already shown to parse and be off the loopback
+        // block-list, so the literal is too — no second host check needed.)
+        if (literal !== appUrl) {
+          problems.push(`${file.path}: the URL inlined into the ${label} fake-provider check is not NEXT_PUBLIC_APP_URL`);
+        }
       }
     }
-  }
-  if (checks === 0 && problems.length === 0) {
-    return ["the fake-provider check was not found in the built server code — nothing proven"];
+    if (checks === 0) {
+      problems.push(`the ${label} fake-provider check was not found in the built server code — nothing proven`);
+    }
   }
   return problems;
 }
@@ -224,7 +242,7 @@ if (isMain) {
   }
   if (problems.length > 0) {
     for (const p of problems) console.error(`refused: ${p}`);
-    console.error("GBP deploy check refused. The fake provider is dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
+    console.error("GBP deploy check refused. The fake providers (GBP, WhatsApp settings) are dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
     process.exit(1);
   }
   console.log(`GBP deploy check (${mode}): clean`);

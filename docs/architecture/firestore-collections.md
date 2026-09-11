@@ -55,6 +55,19 @@
 
 
 
+### WhatsApp Cloud settings (SP15)
+`whatsappCloudMeta.quality` on the parent (member-readable) holds the hourly
+poll's last reading of the phone-number node: `{ rating (GREEN | YELLOW | RED |
+UNKNOWN), nameStatus, status, checkedAt, changedAt }` — `changedAt` moves only
+when `rating` changes. `subAccounts/{id}/whatsappQualityAlerts/{autoId}` is one
+doc per drop from GREEN (`agencyId`, `subAccountId`, `createdByUid: "system"`,
+`from`, `to`, `phoneNumberId`, `displayPhoneNumber`, `createdAt`, `resolvedAt`
+null until the rating is next seen GREEN); member-readable, server-only write,
+queried only by `resolvedAt == null` inside one sub-account, so no composite
+index. `private/whatsappFakeScenario` holds the dev/CI fake settings provider's
+scenario (Admin SDK only under the `private/{docId}` deny rule). The business
+profile and message links are NOT cached — Meta is the source of truth.
+
 ### Google Business Profile
 `subAccounts/{id}/private/googleConnection` holds the OAuth refresh/access
 tokens; `private/gbpFakeScenario` holds the dev/CI fake provider's scenario.

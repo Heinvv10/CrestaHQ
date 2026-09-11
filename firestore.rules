@@ -383,6 +383,17 @@ service cloud.firestore {
         }
       }
 
+      // WhatsApp Cloud quality alerts (SP15). Written by the hourly quality
+      // sweep via the Admin SDK on a drop from GREEN; members can READ so the
+      // settings page can show the open alert. Client writes blocked.
+      match /whatsappQualityAlerts/{alertId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
       // Voice agent end-of-call summary docs. Created by the Vapi
       // /api/webhooks/vapi/* routes via the Admin SDK (Bearer-token
       // gated). Sub-account members can READ so a future operator

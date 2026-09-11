@@ -7,6 +7,7 @@ import type {
   WhatsappTemplateVariable,
 } from "@/types/whatsapp-templates";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
+import { describeGraphError } from "./graph-error";
 
 /**
  * Template management against the Meta Graph API — the `cloud` rail's
@@ -21,12 +22,6 @@ function graphVersion(): string {
   return process.env.WHATSAPP_GRAPH_VERSION ?? "v23.0";
 }
 
-/** Meta echoes tokens back in some auth errors, and these messages are shown
- *  to operators and written to logs. */
-function redact(text: string, accessToken: string): string {
-  return accessToken ? text.split(accessToken).join("[redacted]") : text;
-}
-
 export class CloudTemplateError extends Error {
   constructor(
     message: string,
@@ -34,23 +29,6 @@ export class CloudTemplateError extends Error {
   ) {
     super(message);
     this.name = "CloudTemplateError";
-  }
-}
-
-/** Pull Meta's human-readable reason out of a Graph error body. */
-function describeGraphError(raw: string, accessToken: string): string {
-  const safe = redact(raw, accessToken);
-  try {
-    const parsed = JSON.parse(safe) as {
-      error?: { message?: string; error_user_msg?: string };
-    };
-    return (
-      parsed.error?.error_user_msg ??
-      parsed.error?.message ??
-      safe.slice(0, 300)
-    );
-  } catch {
-    return safe.slice(0, 300);
   }
 }
 

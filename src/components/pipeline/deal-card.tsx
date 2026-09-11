@@ -9,6 +9,7 @@ import { formatCurrency, daysSince } from "@/lib/format";
 import { getPriority, type Deal } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
 import { useSubAccount } from "@/context/sub-account-context";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface DealCardProps {
   deal: Deal;
@@ -143,7 +144,7 @@ export function DealCard({
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            {contact.name || contact.email || "Contact"}
+            {contactDisplayName(contact, "Contact")}
           </Link>
         ) : (
           <span className="min-w-0 flex-1 truncate text-xs italic text-muted-foreground/60">
