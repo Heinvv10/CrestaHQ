@@ -3,7 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { createContentTemplate } from "./templates-api";
+import { createContentTemplate, WhatsappContentError } from "./templates-api";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 /**
@@ -17,17 +17,26 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
  * of everything Twilio holds (body, language, variable samples, buttons), so
  * an edited draft gets a fresh resource instead of sending the old text.
  *
+ * The fingerprint includes the Twilio account the resource lives on, so a
+ * tenant that moves accounts gets a fresh one instead of a sid the new account
+ * has never seen. A resource deleted in the Twilio console is NOT detected:
+ * sends fail until the template is edited (which changes the fingerprint).
+ *
  * Its body keeps the template's {{1}} placeholders; each send passes the
- * contact's values as contentVariables. Two concurrent first sends may each
- * create one — the loser is an unused resource, never a wrong message.
+ * contact's values as contentVariables. Every in-window send that reads the
+ * doc before the first write lands creates its own resource — the extras are
+ * unused, never a wrong message.
  */
 
-export function sessionContentFingerprint(tpl: WhatsappTemplateDoc): string {
+export function sessionContentFingerprint(
+  tpl: WhatsappTemplateDoc,
+  accountSid: string,
+): string {
   const samples = [...(tpl.variables ?? [])]
     .sort((a, b) => a.position - b.position)
     .map((v) => [v.position, v.sampleValue]);
   return createHash("sha256")
-    .update(JSON.stringify([tpl.body, tpl.language ?? "en", samples, tpl.buttons ?? []]))
+    .update(JSON.stringify([accountSid, tpl.body, tpl.language ?? "en", samples, tpl.buttons ?? []]))
     .digest("hex");
 }
 
@@ -38,21 +47,30 @@ export async function ensureTwilioSessionContent(input: {
   accountSid: string;
   authToken: string;
 }): Promise<string> {
-  const fingerprint = sessionContentFingerprint(input.template);
+  const fingerprint = sessionContentFingerprint(input.template, input.accountSid);
   const cached = input.template.twilioSessionContent;
   if (cached?.sid && cached.fingerprint === fingerprint) return cached.sid;
 
   const variables: Record<string, string> = {};
   for (const v of input.template.variables ?? []) variables[String(v.position)] = v.sampleValue;
-  const { contentSid } = await createContentTemplate({
-    accountSid: input.accountSid,
-    authToken: input.authToken,
-    friendlyName: `session_${input.templateId}_${fingerprint.slice(0, 10)}`,
-    language: input.template.language ?? "en",
-    body: input.template.body,
-    variables,
-    buttons: input.template.buttons ?? [],
-  });
+  let contentSid: string;
+  try {
+    ({ contentSid } = await createContentTemplate({
+      accountSid: input.accountSid,
+      authToken: input.authToken,
+      friendlyName: `session_${input.templateId}_${fingerprint.slice(0, 10)}`,
+      language: input.template.language ?? "en",
+      body: input.template.body,
+      variables,
+      buttons: input.template.buttons ?? [],
+    }));
+  } catch (err) {
+    // Keep Twilio's own reason — the bare message tells an operator nothing.
+    if (err instanceof WhatsappContentError) {
+      throw new Error(`${err.message} (${err.status}): ${(err.body ?? "").slice(0, 200)}`);
+    }
+    throw err;
+  }
   await getAdminDb()
     .doc(`subAccounts/${input.subAccountId}/whatsappTemplates/${input.templateId}`)
     .update({

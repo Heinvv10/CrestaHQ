@@ -63,7 +63,9 @@ function seedTemplate(id: string, over: Record<string, unknown>) {
   mem.seed(`subAccounts/sa1/whatsappTemplates/${id}`, {
     name: id, displayName: id, language: "en", status: "draft",
     body: "Thank you {{1}}! If you have a moment, a quick Google review would mean a lot.",
-    variables: [{ position: 1, label: "Name", sampleValue: "Thandi", source: "merge_tag", mergeTag: "contact.firstName" }],
+    // The SAMPLE differs from the contact's name, so a send of samples instead
+    // of the contact's values cannot pass.
+    variables: [{ position: 1, label: "Name", sampleValue: "Sam", source: "merge_tag", mergeTag: "contact.firstName" }],
     ...over,
   });
 }
@@ -80,6 +82,7 @@ const run = (
   templateId: string | null,
   subAccount: SubAccountDoc = CLOUD,
   body = "Thanks! Review us: https://g.page/r/velocity/review",
+  contactName = "Thandi Mokoena",
 ) =>
   execSendWhatsapp({
     node: {
@@ -87,7 +90,7 @@ const run = (
       config: { body, templateId },
     } as unknown as WorkflowNode,
     contact: {
-      id: "c1", name: "Thandi Mokoena", phone: "+27821234567", whatsappOptedOut: false,
+      id: "c1", name: contactName, phone: "+27821234567", whatsappOptedOut: false,
     } as unknown as Contact,
     subAccount,
     owner: { displayName: "Hein", email: "h@example.com" },
@@ -228,6 +231,7 @@ describe("Twilio in the window: an unapproved Content resource, cached per templ
 
     expect(out.log).toBe("ok");
     expect(twilioContent).toHaveLength(1);
+    expect(twilioContent[0].variables).toEqual({ "1": "Sam" });
     expect(twilioContent[0].types).toEqual({
       "twilio/call-to-action": {
         body: "Thank you {{1}}! If you have a moment, a quick Google review would mean a lot.",
@@ -270,6 +274,24 @@ describe("Twilio in the window: an unapproved Content resource, cached per templ
     );
   });
 
+  it("creates a fresh resource when the tenant's Twilio account changes", async () => {
+    seedTemplate("review_link", { buttons: [REVIEW] });
+    lastInbound(1);
+    await run("review_link", TWILIO);
+
+    const moved = {
+      ...TWILIO,
+      twilioConfig: { ...(TWILIO as unknown as { twilioConfig: object }).twilioConfig, accountSid: "AC2" },
+    } as unknown as SubAccountDoc;
+    mem.seed("subAccounts/sa1", moved as unknown as Record<string, unknown>);
+    await run("review_link", moved);
+
+    expect(twilioContent).toHaveLength(2);
+    expect(sendWhatsappTemplateForSubAccount).toHaveBeenLastCalledWith(
+      expect.objectContaining({ contentSid: "HXS2" }),
+    );
+  });
+
   it("refuses buttons outside the in-session rules before creating anything", async () => {
     seedTemplate("mixed", { buttons: [{ type: "quick_reply", text: "Yes" }, REVIEW] });
     lastInbound(1);
@@ -280,6 +302,39 @@ describe("Twilio in the window: an unapproved Content resource, cached per templ
     expect(twilioContent).toHaveLength(0);
     expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
   });
+});
+
+it.each([
+  ["Cloud", CLOUD],
+  ["Twilio", TWILIO],
+])("refuses an in-window button send with a blank variable on %s", async (_rail, sub) => {
+  mem.seed("subAccounts/sa1", sub as unknown as Record<string, unknown>);
+  seedTemplate("review_link", { buttons: [REVIEW] });
+  lastInbound(1);
+
+  const out = await run("review_link", sub, "fallback", "");
+
+  expect(out.log).toBe("error:WA_TEMPLATE_VARIABLE_EMPTY");
+  expect(graph).toHaveLength(0);
+  expect(twilioContent).toHaveLength(0);
+  expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
+});
+
+it("a Cloud workspace with a leftover Twilio config still sends via Meta", async () => {
+  const cloudWithTwilio = {
+    ...CLOUD,
+    twilioConfig: (TWILIO as unknown as { twilioConfig: object }).twilioConfig,
+  } as unknown as SubAccountDoc;
+  mem.seed("subAccounts/sa1", cloudWithTwilio as unknown as Record<string, unknown>);
+  seedTemplate("review_link", { buttons: [REVIEW] });
+  lastInbound(1);
+
+  const out = await run("review_link", cloudWithTwilio);
+
+  expect(out.log).toBe("ok");
+  expect(graph[0]).toMatchObject({ type: "interactive" });
+  expect(twilioContent).toHaveLength(0);
+  expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
 });
 
 it("the bridge refuses in-window buttons instead of sending the text bare", async () => {

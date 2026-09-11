@@ -366,9 +366,13 @@ templates, marked "in-window only".
 **PR 4b done:** on Twilio the same step sends a template's buttons in-session
 as an unapproved Content resource — Twilio sends buttons only by ContentSid.
 One resource per template, created on first in-window use and cached on the
-doc (`twilioSessionContent`), keyed by a fingerprint of its body, language,
-samples and buttons, so an edited draft gets a new one; each send passes the
-contact's values as `contentVariables`
+doc (`twilioSessionContent`), keyed by a fingerprint of the Twilio account,
+body, language, samples and buttons, so an edited draft or a moved account
+gets a new one; each send passes the contact's values as `contentVariables`.
+A resource deleted in the Twilio console is not detected — sends fail until
+the template is edited. An in-window button send with a **blank variable is
+refused** on both rails: Cloud would send "Thank you !", and Twilio may fill
+in the template's sample value — a stranger's name
 (`lib/comms/whatsapp/twilio-session-content.ts`). Twilio's unapproved
 in-session limits match the Cloud in-window rules, so the same check guards
 both. Only the bridge still refuses in-window buttons.

@@ -506,7 +506,13 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // by the dispatcher once the window is known: outside it an approved
     // template goes as itself, whatever its buttons.
     if (tplDoc.buttons?.length) {
-      inWindowButtons = interactiveFromButtons(templateBody, tplDoc.buttons);
+      // An in-window button message with a blank variable is refused: Cloud
+      // would send "Thank you !", and Twilio may substitute the template's
+      // SAMPLE value — a stranger's name — to a real customer. (Out-of-window
+      // template sends are unchanged; that rule is gap 5b.)
+      inWindowButtons = values.some((v) => !v.trim())
+        ? { ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY" }
+        : interactiveFromButtons(templateBody, tplDoc.buttons);
     }
     // Approval is per rail, as in execWhatsappTemplate: a template cleared on
     // Twilio has never been seen by our own WABA. The rail is the one

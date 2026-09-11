@@ -92,7 +92,11 @@ export interface WhatsappTemplateDoc {
   /** The unapproved Twilio Content resource its buttons go with in-session,
    *  keyed by a fingerprint of what Twilio holds — see
    *  lib/comms/whatsapp/twilio-session-content.ts. */
-  twilioSessionContent?: { sid: string; fingerprint: string } | null;
+  twilioSessionContent?: {
+    sid: string;
+    fingerprint: string;
+    createdAt?: Timestamp | FieldValue | null;
+  } | null;
   /** Twilio Content resource id (HX…). Null until submitted. The send path
    *  references this; the approval-poll keys off it.
    *
