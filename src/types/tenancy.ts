@@ -893,7 +893,9 @@ export interface AgencyMemberDoc {
  */
 export interface AssignableMember {
   uid: string;
+  /** Display name, or the email when none is set, or the uid. */
   displayName: string;
+  /** Empty unless the member has no display name (then it IS the label). */
   email: string;
   role: string;
 }

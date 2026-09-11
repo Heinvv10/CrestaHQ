@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { isAssignableMember } from "@/lib/server/assignee";
+import { checkBulkRateLimit } from "@/lib/contacts/bulk-rate-limit";
 import { fireTagsAdded } from "@/lib/server/contacts-service";
 import {
   deleteContactServerSide,
@@ -83,6 +84,15 @@ export async function POST(request: Request) {
 
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
+  // Counted after auth, per user, so an unauthenticated flood cannot lock
+  // a real member out and a real member's loop is what gets dampened.
+  const limit = checkBulkRateLimit(access.uid);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: "Too many bulk actions. Try again shortly." },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+    );
+  }
   const isAdmin =
     access.subAccountRole === "admin" || access.subAccountRole === "agencyOwner";
   if (action.type === "delete" && !isAdmin) {

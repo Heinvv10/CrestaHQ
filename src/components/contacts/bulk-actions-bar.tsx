@@ -29,6 +29,8 @@ interface Props {
   allContacts: Contact[];
   canDelete: boolean;
   onClear: () => void;
+  /** Narrow the selection to these ids (the contacts a delete skipped). */
+  onKeepOnly: (ids: string[]) => void;
   onExport: () => void;
 }
 
@@ -48,6 +50,7 @@ export function BulkActionsBar({
   allContacts,
   canDelete,
   onClear,
+  onKeepOnly,
   onExport,
 }: Props) {
   const { subAccountId } = useSubAccount();
@@ -72,7 +75,8 @@ export function BulkActionsBar({
     if (!busy) setPending(null);
   };
 
-  async function run(action: BulkAction): Promise<boolean> {
+  /** Resolves to the ids a delete left behind (blocked), or null on failure. */
+  async function run(action: BulkAction): Promise<string[] | null> {
     const res = await fetch("/api/contacts/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -89,19 +93,19 @@ export function BulkActionsBar({
     };
     if (!res.ok) {
       toast.error(body.error ?? "Bulk action failed.");
-      return false;
+      return null;
     }
     if (action.type === "delete") {
-      const blocked = body.blocked?.length ?? 0;
+      const blocked = body.blocked?.map((b) => b.id) ?? [];
       toast.success(
-        blocked > 0
-          ? `Deleted ${body.deleted}. ${blocked} skipped — still linked to deals, tasks or quotes.`
+        blocked.length > 0
+          ? `Deleted ${body.deleted}. ${blocked.length} skipped — still linked to deals, tasks or quotes.`
           : `Deleted ${body.deleted} contact${body.deleted === 1 ? "" : "s"}`,
       );
-    } else {
-      toast.success(`Updated ${count} contact${count === 1 ? "" : "s"}`);
+      return blocked;
     }
-    return true;
+    toast.success(`Updated ${count} contact${count === 1 ? "" : "s"}`);
+    return [];
   }
 
   async function submit(e: FormEvent) {
@@ -109,25 +113,27 @@ export function BulkActionsBar({
     if (!pending) return;
     setBusy(true);
     try {
-      let ok = true;
+      let left: string[] | null = [];
       if (pending.kind === "add_tag" || pending.kind === "remove_tag") {
         const list = [...new Set(tags.split(",").map((t) => t.trim()).filter(Boolean))];
         if (list.length === 0) return;
         // One request per tag: the route takes a single tag so its trigger
         // diff stays per-tag, exactly like the single-contact path.
         for (const tag of list) {
-          ok = await run({ type: pending.kind, tag });
-          if (!ok) break;
+          left = await run({ type: pending.kind, tag });
+          if (left === null) break;
         }
       } else if (pending.kind === "assign") {
-        ok = await run({ type: "assign", assignedToUid: assignee });
+        left = await run({ type: "assign", assignedToUid: assignee });
       } else {
-        ok = await run({ type: "delete" });
+        left = await run({ type: "delete" });
       }
-      if (ok) {
-        setPending(null);
-        onClear();
-      }
+      if (left === null) return;
+      setPending(null);
+      // A partial delete leaves the skipped contacts selected so the
+      // operator can see which ones, and act on them.
+      if (left.length > 0) onKeepOnly(left);
+      else onClear();
     } finally {
       setBusy(false);
     }

@@ -12,7 +12,8 @@ import type { AssignableMember } from "@/types";
  * deals and tasks need every name, but the client-SDK rule on
  * `subAccountMembers` only lets admins list the collection (collaborators
  * read their own row). Returns the display fields only — never
- * `assignedTerritoryIds` or the membership audit fields.
+ * `assignedTerritoryIds` or the membership audit fields — and a member's
+ * email only when they have no display name to show instead.
  */
 export async function GET(
   request: Request,
@@ -29,10 +30,13 @@ export async function GET(
   const members: AssignableMember[] = snap.docs
     .map((d) => {
       const m = d.data();
+      const displayName = ((m.displayName as string) ?? "").trim();
+      // Email is exposed ONLY as the label fallback for a member who never
+      // set a display name; otherwise collaborators don't need it.
       return {
         uid: d.id,
-        displayName: (m.displayName as string) || (m.email as string) || d.id,
-        email: (m.email as string) ?? "",
+        displayName: displayName || (m.email as string) || d.id,
+        email: displayName ? "" : ((m.email as string) ?? ""),
         role: (m.role as string) ?? "collaborator",
       };
     })

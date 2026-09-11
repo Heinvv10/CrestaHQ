@@ -240,6 +240,7 @@ export default function ContactsPage() {
         allContacts={contacts}
         canDelete={isAdmin}
         onClear={selection.clear}
+        onKeepOnly={selection.keepOnly}
         onExport={handleExport}
       />
 

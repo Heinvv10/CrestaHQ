@@ -65,6 +65,18 @@ it("toggles single rows and clears", async () => {
   }
 });
 
+it("keepOnly narrows the selection to the given ids (never adds)", async () => {
+  const m = mount(["a", "b", "c"]);
+  await m.render();
+  try {
+    await act(async () => m.hook.selectAll());
+    await act(async () => m.hook.keepOnly(["b", "zzz"]));
+    expect([...m.hook.selected]).toEqual(["b"]);
+  } finally {
+    await m.unmount();
+  }
+});
+
 it("drops rows that a filter change hides, keeps the ones still visible", async () => {
   const m = mount(["a", "b", "c"]);
   await m.render();

@@ -35,11 +35,15 @@ export function useContactSelection(visibleIds: string[]) {
     [visibleKey],
   );
   const clear = useCallback(() => setSelected(new Set()), []);
+  const keepOnly = useCallback(
+    (ids: string[]) => setSelected((prev) => new Set(ids.filter((id) => prev.has(id)))),
+    [],
+  );
 
   const allSelected = useMemo(
     () => visibleIds.length > 0 && visibleIds.every((id) => selected.has(id)),
     [visibleIds, selected],
   );
 
-  return { selected, toggle, selectAll, clear, allSelected };
+  return { selected, toggle, selectAll, clear, keepOnly, allSelected };
 }

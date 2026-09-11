@@ -29,6 +29,10 @@ const fake = vi.hoisted(() => ({
   trigger: vi.fn(),
   deleteContact: vi.fn(),
   webhook: vi.fn(),
+  limit: { ok: true, retryAfterSec: 0 },
+}));
+vi.mock("@/lib/contacts/bulk-rate-limit", () => ({
+  checkBulkRateLimit: () => fake.limit,
 }));
 
 vi.mock("@/lib/firebase/admin", () => ({
@@ -121,6 +125,20 @@ beforeEach(() => {
   fake.trigger.mockReset();
   fake.deleteContact.mockReset().mockResolvedValue({ status: "deleted" });
   fake.webhook.mockReset();
+  fake.limit = { ok: true, retryAfterSec: 0 };
+});
+
+it("returns 429 with Retry-After once the per-user limiter trips, writing nothing", async () => {
+  seed("a");
+  fake.limit = { ok: false, retryAfterSec: 42 };
+  const res = await post({
+    subAccountId: "sa",
+    ids: ["a"],
+    action: { type: "add_tag", tag: "vip" },
+  });
+  expect(res.status).toBe(429);
+  expect(res.headers.get("Retry-After")).toBe("42");
+  expect(fake.batches).toHaveLength(0);
 });
 
 describe("tenancy", () => {
