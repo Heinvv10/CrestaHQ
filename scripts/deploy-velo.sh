@@ -155,14 +155,13 @@ node scripts/gbp-deploy-check.mjs post "$DEPLOY_DIR" "$APP_URL" \
   || die "the built app could run the GBP fake provider (see above) — refusing to restart $SERVICE"
 
 # Next's standalone output ships server.js + a minimal node_modules, but NOT
-# the static assets or /public — those must be copied in beside it.
+# the static assets, /public, or instrumentation.js — see the script.
 say "Assembling standalone bundle"
-cp -r .next/static .next/standalone/.next/static
-[ -d public ] && cp -r public .next/standalone/public
-[ -f .next/standalone/server.js ] || die "standalone server.js missing — is output:'standalone' still set in next.config.ts?"
+node scripts/assemble-standalone.mjs || die "standalone bundle is incomplete (see above)"
 
 # ── Only now touch the running service ──────────────────────────────────────
 say "Restarting $SERVICE"
+restarted_at="$(date +%s)"
 $SYSTEMCTL restart "$SERVICE" || die "restart $SERVICE"
 
 say "Health check"
@@ -177,5 +176,16 @@ if [ "$ok" -ne 1 ]; then
   journalctl --user -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
   die "health check never returned 200 on $HEALTH_URL"
 fi
+
+# instrumentation.ts register() fails by never running: the server answers
+# 200 either way. Its one log line is the only proof it ran.
+say "Verifying instrumentation ran"
+ran=0
+for i in $(seq 1 10); do
+  if journalctl --user -u "$SERVICE" --since "@$restarted_at" -o cat --no-pager 2>/dev/null \
+      | grep -qF "[instrumentation] register() ran"; then ran=1; break; fi
+  sleep 1
+done
+[ "$ran" -eq 1 ] || die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
 
 say "Deployed $after to $SERVICE on port $PORT"
