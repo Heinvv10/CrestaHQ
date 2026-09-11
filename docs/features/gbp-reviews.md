@@ -137,20 +137,28 @@ Google flow. This is a documented deviation that needs Hein's sign-off. It is
 held by two independent layers:
 
 1. **App** (`provider/select.ts`, `provider/mode.ts`): loopback app URL +
-   prod-build opt-in + fixture-agency fence, each clause mutation-proven.
+   prod-build opt-in + fixture-agency fence, each clause mutation-proven. The
+   loopback clause is the NARROW allow-list `isAppLoopbackUrl` in
+   `provider/loopback.mjs`: the hostname, after WHATWG normalisation, must be
+   exactly `127.0.0.1`, `localhost` or `[::1]` (`0.0.0.0`, `127.0.0.2`,
+   `*.localhost` are refused — `select.test.ts`).
 2. **Deploy** (`scripts/gbp-fake-guard.mjs`, run by `deploy-velo.sh` after
    `pnpm install` and before any gate or build): loads the deploy dir's env
    files through Next's own `@next/env` in production mode
    (`.env.production.local`, `.env.local`, `.env.production`, `.env`), so any
-   dotenv spelling Next accepts is seen. It refuses when the merged env
-   (deploy shell over files, Next's precedence) **or any single file** sets
-   `GBP_PROVIDER` to `fake` (trimmed, any case), sets any `GBP_FAKE_*`, or sets
-   a `NEXT_PUBLIC_APP_URL` that does not parse or whose host is loopback. The
-   loopback rule is `src/lib/gbp/provider/loopback.mjs`, the same module the
-   app fence uses: `localhost` / `*.localhost`, `127.0.0.0/8` in any IPv4
-   spelling WHATWG normalises (`127.1`, hex, decimal, octal), `[::1]` in any
-   spelling, IPv4-mapped `::ffff:127.x`, `0.0.0.0` and `[::]`. It fails closed
-   on an unreadable env file, and prints names only. Covered by
+   dotenv spelling Next accepts is seen. The load runs in a **child process
+   with every `GBP_*` key and `NEXT_PUBLIC_APP_URL` stripped**, because
+   `@next/env` lets the process env win: in-process, a shell
+   `GBP_PROVIDER=google` would hide a file's `GBP_PROVIDER=fake`. It refuses
+   when the merged env (deploy shell over files, Next's precedence) **or any
+   single file, on its own value,** sets `GBP_PROVIDER` to `fake` (trimmed, any
+   case), sets any `GBP_FAKE_*`, or sets a `NEXT_PUBLIC_APP_URL` that does not
+   parse or whose host is on the WIDE block-list `isLoopbackHostname` in
+   `provider/loopback.mjs`: `localhost` / `*.localhost`, `127.0.0.0/8` in any
+   IPv4 spelling WHATWG normalises (`127.1`, hex, decimal, octal), `[::1]` in
+   any spelling, IPv4-mapped `::ffff:127.x`, `0.0.0.0` and `[::]`. A test
+   asserts every host the app allows is on this block-list. It fails closed on
+   an unreadable env file or a loader that cannot run, and prints names only. Covered by
    `scripts/gbp-fake-guard.test.ts` over real env files on disk (every bypass
    the security review listed, plus the canonical forms), each branch
    mutation-proven.
@@ -198,13 +206,14 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `GET /api/sub-accounts/[id]/google/connect[?return=gbp]` | admin, gated | redirects to Google (or the fake callback) |
 | `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`, and only if the stored listing is still the one checked) when provably not visible; kept if the check fails or the 20-page walk was truncated before finding it |
 | `GET /api/sub-accounts/[id]/google/status` | any member | `{configured}` — deployment-level boolean only |
-| `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke; clears meta **and** `googleListing` (audited `disconnected`) |
+| `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke (skipped when the deployment's fake is refused — nothing to revoke with); clears meta **and** `googleListing` (audited `disconnected`) |
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
-| `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch or 400 `unknown_location` |
+| `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused) |
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
-`not_connected` / `reconnect_required`, 400 `invalid_body` / `unknown_location`,
+`not_connected` / `reconnect_required`, 400 `invalid_body` / `unknown_location` /
+`unverifiable_truncated`,
 502 `<provider kind>`. No response carries a token (every route test scans the
 body for token markers).
 

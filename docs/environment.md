@@ -218,7 +218,7 @@ Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth c
 
 | Var | Purpose |
 |---|---|
-| `GBP_PROVIDER` | `fake` swaps Google for the deterministic fake provider ([gbp-reviews.md](features/gbp-reviews.md)). Unset/anything else = real Google. Honoured only when `NEXT_PUBLIC_APP_URL` is loopback (`127.0.0.1`/`localhost`/`[::1]`); otherwise every Google route refuses loudly (`GbpFakeRefusedError`) rather than falling back. |
+| `GBP_PROVIDER` | `fake` swaps Google for the deterministic fake provider ([gbp-reviews.md](features/gbp-reviews.md)). Unset/anything else = real Google. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]` (not `0.0.0.0`, `127.0.0.2` or `*.localhost`); otherwise every Google route refuses loudly (`GbpFakeRefusedError`) rather than falling back. |
 | `GBP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
 | `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
 
