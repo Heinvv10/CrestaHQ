@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
@@ -68,6 +68,17 @@ test.afterAll(async () => {
   });
 });
 
+/** Resolve when the OAuth callback answers with a redirect carrying `status`. */
+async function expectCallback(page: Page, status: string): Promise<void> {
+  const res = await page.waitForResponse((r) => new URL(r.url()).pathname === "/api/google/callback", {
+    timeout: 30_000,
+  });
+  expect(res.status()).toBe(307);
+  const location = new URL(res.headers()["location"] ?? "", res.url());
+  expect(location.pathname).toMatch(/\/ai-agents\/google-business$/);
+  expect(location.searchParams.get("google")).toBe(status);
+}
+
 test("an admin connects Google and selects the intended one of two similar listings", async ({
   page,
 }) => {
@@ -77,8 +88,12 @@ test("an admin connects Google and selects the intended one of two similar listi
   await page.goto(`/sa/${sa}/ai-agents/google-business`);
   await expect(page.getByTestId("gbp-state-disconnected")).toBeVisible({ timeout: 30_000 });
 
+  // The real callback route must answer with a redirect carrying
+  // google=connected — not merely land somewhere on this page.
+  const connected = expectCallback(page, "connected");
   await page.getByTestId("gbp-connect").click();
-  await page.waitForURL(new RegExp(`/sa/${sa}/ai-agents/google-business`), { timeout: 30_000 });
+  await connected;
+  await expect(page.getByText("Google Business Profile connected.")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("gbp-state-pick")).toBeVisible({ timeout: 30_000 });
 
   // Both similarly named listings, each with its distinguishing address.
@@ -107,6 +122,23 @@ test("an admin connects Google and selects the intended one of two similar listi
   expect(JSON.stringify(sub.googleListing)).not.toMatch(TOKEN_MARKERS);
   expect(sub.googleConnectionMeta?.connected).toBe(true);
   expect(sub.googleListing?.locationName).toBe(NORTH);
+
+  // --- Reconnect: a refused grant shows guidance, and reconnecting clears it
+  // while re-verifying (and here keeping) the selected listing.
+  await assertFixtureSubAccount(sa, FIXTURE_PRIMARY_NAME);
+  await primaryRef().set(
+    { googleConnectionMeta: { reconnectRequired: true, reconnectReason: "revoked" } },
+    { merge: true },
+  );
+  await expect(page.getByTestId("gbp-state-reconnect")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("gbp-state-reconnect")).toContainText("revoked or expired");
+  const reconnected = expectCallback(page, "connected");
+  await page.getByTestId("gbp-reconnect").click();
+  await reconnected;
+  await expect(page.getByTestId("gbp-state-selected")).toBeVisible({ timeout: 30_000 });
+  const after = (await primaryRef().get()).data() ?? {};
+  expect(after.googleConnectionMeta?.reconnectRequired).toBe(false);
+  expect(after.googleListing?.locationName).toBe(NORTH);
 
   // --- Audit: the selection is recorded, tenant-anchored, with who did it.
   const ownerUid = (await adminDb().doc(`agencies/${env.E2E_AGENCY_ID}`).get()).data()?.ownerUid;
