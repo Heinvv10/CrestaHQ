@@ -20,54 +20,54 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
 | C1 | Contacts list: name, phone, email, created, last activity, tags; columns manager | Table: Name, Email, Phone, Company, Source, Territory (conditional), Added. Sort on Name/Added only. Live `onSnapshot`, no pagination (`contacts/page.tsx`, `contacts-table.tsx`) | Tags column missing; no columns manager (defer — not in scope list) | — | — | out of scope |
-| C2 | Quick search (name/email/phone) | Search box, client-side substring on name/email/company. **Phone not searched** | phone search | (a) #91 | `contacts-smart-lists.spec.ts` | approved, CI pending |
-| C3 | **Filters** panel: AND/OR condition builder over tag, source, date added, pipeline stage, custom fields, DND, assigned user… | None. Only the search box | Filter builder | (a) #91 | same | approved, CI pending |
-| C4 | **Smart Lists**: save a filter set as a named tab; per-user + shared; rename/delete; "All" is the default list | None | Saved smart lists | (a) #91 | same | approved, CI pending |
-| C5 | Row checkboxes, select-all-on-page / select-all-matching | No row-selection model in the table | Selection | (b) | `contacts-bulk-actions.spec.ts` | todo |
-| C6 | Bulk: add/remove tag | None (bulk email/call dialogs exist but use their own audience filter, not selection) | Bulk tag | (b) | same | todo |
-| C7 | Bulk: assign to user (owner) | **No `assignedTo` on Contact at all** (`src/types/contacts.ts`) | Add `assignedToUid` + bulk assign + single-contact assign in form | (b) | same | todo |
-| C8 | Bulk: delete (with confirm) | None | Bulk delete | (b) | same | todo |
-| C9 | Bulk: export CSV of selection | Export button dumps *all loaded* contacts | Export selection (falls back to all when nothing selected) | (b) | same | todo |
+| C2 | Quick search (name/email/phone) | Search box, client-side substring on name/email/company. **Phone not searched** | phone search | (a) #91 | `contacts-smart-lists.spec.ts` | merged |
+| C3 | **Filters** panel: AND/OR condition builder over tag, source, date added, pipeline stage, custom fields, DND, assigned user… | None. Only the search box | Filter builder | (a) #91 | same | merged |
+| C4 | **Smart Lists**: save a filter set as a named tab; per-user + shared; rename/delete; "All" is the default list | None | Saved smart lists | (a) #91 | same | **merged 8846b2c** |
+| C5 | Row checkboxes, select-all-on-page / select-all-matching | No row-selection model in the table | Selection | (b) #97 | `contacts-bulk-actions.spec.ts` | approved, CI pending |
+| C6 | Bulk: add/remove tag | None (bulk email/call dialogs exist but use their own audience filter, not selection) | Bulk tag | (b) #97 | same | approved, CI pending |
+| C7 | Bulk: assign to user (owner) | **No `assignedTo` on Contact at all** (`src/types/contacts.ts`) | Add `assignedToUid` + bulk assign + single-contact assign in form | (b) #97 | same | approved, CI pending |
+| C8 | Bulk: delete (with confirm) | None | Bulk delete | (b) #97 | same | approved, CI pending |
+| C9 | Bulk: export CSV of selection | Export button dumps *all loaded* contacts | Export selection (falls back to all when nothing selected) | (b) #97 | same | approved, CI pending |
 | C10 | Bulk: send email / SMS / add to workflow / pipeline change | Bulk email + bulk AI call exist (audience filter) | Not in scope list; keep existing | — | — | out of scope |
 | C11 | Import CSV with mapping | Exists (`import-contacts-dialog.tsx`) | — | — | — | parity |
-| C12 | ⚠ Contact can exist with phone only, name optional (shows phone as title) | Create/edit with **no email works** (proven in browser 2026-09-11: created "SP1 NoEmail Probe" with phone only, edited company, deleted). **Name is required** — WhatsApp-inbound contacts arrive nameless ("Unnamed"), so the first edit forces the operator to invent a name | Make name optional when phone or email is present; title falls back to phone | (g) #89 | `contact-nameless-edit.spec.ts` | approved, CI pending |
+| C12 | ⚠ Contact can exist with phone only, name optional (shows phone as title) | Create/edit with **no email works** (proven in browser 2026-09-11: created "SP1 NoEmail Probe" with phone only, edited company, deleted). **Name is required** — WhatsApp-inbound contacts arrive nameless ("Unnamed"), so the first edit forces the operator to invent a name | Make name optional when phone or email is present; title falls back to phone | (g) #89 | `contact-nameless-edit.spec.ts` | merged |
 
 ### Contact detail
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| D1 | Header: name, tags, owner, DND, source | Name, Email/SMS/Review/Edit/Delete actions, phone, company, source, tags | Owner (needs C7) | (b) | bulk spec asserts owner shown | todo |
+| D1 | Header: name, tags, owner, DND, source | Name, Email/SMS/Review/Edit/Delete actions, phone, company, source, tags | Owner (needs C7) | (b) #97 | bulk spec asserts owner shown | approved, CI pending |
 | D2 | **Custom fields grouped in folders** ("General Info", custom folders), collapsible | Flat "Details" card, ordered by `order` (`CustomFieldDef` has no folder) | Folders: `folder` on def + settings UI to create/rename/assign + grouped render in detail + form | (f) #90 | `custom-field-folders.spec.ts` | **merged 6f984d5** |
-| D3 | **Activity** tab: every event (messages in/out, notes, tasks, appointments, opportunity moves, workflow enrolments/steps, form submits) | `activity-timeline.tsx` merges `notes` + `activities`; types cover pipeline_moved, task_completed, form_submitted, email/sms/wa/messenger/ig sent, automation_*, voice, quote, booking, order, webinar | **Inbound** messages are not activities (they live in `messages`/`whatsappMessages`/`emailMessages`); `task_created` missing; `deal_created`/`deal_won`/`deal_lost` only via pipeline_moved; workflow entries not linked to the run | (e) | `contact-timeline.spec.ts` | todo |
+| D3 | **Activity** tab: every event (messages in/out, notes, tasks, appointments, opportunity moves, workflow enrolments/steps, form submits) | `activity-timeline.tsx` merges `notes` + `activities`; types cover pipeline_moved, task_completed, form_submitted, email/sms/wa/messenger/ig sent, automation_*, voice, quote, booking, order, webinar | **Inbound** messages are not activities (they live in `messages`/`whatsappMessages`/`emailMessages`); `task_created` missing; `deal_created`/`deal_won`/`deal_lost` only via pipeline_moved; workflow entries not linked to the run | (e) #96 | `contact-timeline.spec.ts` | **merged 7ee08ae** |
 | D4 | Tasks sub-tab on contact | `contact-tasks.tsx` | — | — | — | parity |
-| D5 | Opportunities on contact | `contact-deals.tsx` | needs pipeline name once multi-pipeline lands | (c) #93 | — | approved, CI pending |
-| D6 | Company link | `company` is a free-text string | See Companies | (d) #92 | — | approved, CI pending |
+| D5 | Opportunities on contact | `contact-deals.tsx` | needs pipeline name once multi-pipeline lands | (c) #93 | — | merged |
+| D6 | Company link | `company` is a free-text string | See Companies | (d) #92 | — | merged |
 
 ### Companies (GHL "Businesses")
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| B1 | Companies list (name, phone, website, address, #contacts) | Nothing | `companies` collection + list page `/sa/[id]/companies` | (d) #92 | `companies.spec.ts` | approved, CI pending |
-| B2 | Company detail with linked contacts | Nothing | Detail page listing contacts where `companyId == id` | (d) #92 | same | approved, CI pending |
-| B3 | Contact → company picker (create inline) | Free text | `companyId` on Contact; form picker with create-new; keep `company` string in sync for CSV/quotes | (d) #92 | same | approved, CI pending |
+| B1 | Companies list (name, phone, website, address, #contacts) | Nothing | `companies` collection + list page `/sa/[id]/companies` | (d) #92 | `companies.spec.ts` | merged |
+| B2 | Company detail with linked contacts | Nothing | Detail page listing contacts where `companyId == id` | (d) #92 | same | merged |
+| B3 | Contact → company picker (create inline) | Free text | `companyId` on Contact; form picker with create-new; keep `company` string in sync for CSV/quotes | (d) #92 | same | merged |
 
 ### Opportunities / Pipeline
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| O1 | **Multiple pipelines** per sub-account, each with its own stages; pipeline switcher on the board | One fixed 6-stage pipeline (`PIPELINE_STAGES`), label/order overrides on the sub-account doc | `pipelines` collection (stages embedded), `pipelineId` on Deal, switcher, default pipeline migration | (c) #93 | `pipelines.spec.ts` | approved, CI pending |
-| O2 | Pipeline settings: create/rename/delete pipeline, add/rename/reorder/delete stages | Stage label/order only, in settings | Full CRUD | (c) #93 | same | approved, CI pending |
-| O3 | ⚠ Stage-level automation: stage change fires workflow trigger "Pipeline Stage Changed" (filter by pipeline + stage); "Opportunity Created"; "Opportunity Status Changed" (won/lost) | `pipeline.stage.changed` fires from `deals-service.ts:336-341` with `toStage`; no created/won/lost triggers; trigger filter has no pipeline dimension | Add `pipelineId`/`fromStage` to context; new triggers `deal.created`, `deal.won`, `deal.lost`; trigger filter by pipeline | (c) #93 | same + workflow enrol assertion | approved, CI pending |
+| O1 | **Multiple pipelines** per sub-account, each with its own stages; pipeline switcher on the board | One fixed 6-stage pipeline (`PIPELINE_STAGES`), label/order overrides on the sub-account doc | `pipelines` collection (stages embedded), `pipelineId` on Deal, switcher, default pipeline migration | (c) #93 | `pipelines.spec.ts` | merged |
+| O2 | Pipeline settings: create/rename/delete pipeline, add/rename/reorder/delete stages | Stage label/order only, in settings | Full CRUD | (c) #93 | same | merged |
+| O3 | ⚠ Stage-level automation: stage change fires workflow trigger "Pipeline Stage Changed" (filter by pipeline + stage); "Opportunity Created"; "Opportunity Status Changed" (won/lost) | `pipeline.stage.changed` fires from `deals-service.ts:336-341` with `toStage`; no created/won/lost triggers; trigger filter has no pipeline dimension | Add `pipelineId`/`fromStage` to context; new triggers `deal.created`, `deal.won`, `deal.lost`; trigger filter by pipeline | (c) #93 | same + workflow enrol assertion | merged |
 | O4 | Board + list view, filters (owner, stage, value, date) | Board only; filters: stage, priority, value range, country | List view out of scope | — | — | out of scope |
 | O5 | Won/Lost with lost reason | `lostReason`, terminal stages | — | — | — | parity |
-| O6 | Opportunity owner | No `assignedTo` on Deal | `assignedToUid` on Deal (same PR as contacts) | (b) | — | todo |
+| O6 | Opportunity owner | No `assignedTo` on Deal | `assignedToUid` on Deal (same PR as contacts) | (b) #97 | — | approved, CI pending |
 
 ### Tasks
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| T1 | Tasks list across contacts; filters: assignee, status, due | Today/Overdue/Upcoming/Done/All tabs (`TaskFilter`) | Assignee filter (needs T2) | (b) | `tasks-assign.spec.ts` | todo |
-| T2 | Assign task to user | **No `assignedTo` on Task** | `assignedToUid` on Task + dialog picker + filter | (b) | same | todo |
+| T1 | Tasks list across contacts; filters: assignee, status, due | Today/Overdue/Upcoming/Done/All tabs (`TaskFilter`) | Assignee filter (needs T2) | (b) #97 | `tasks-assign.spec.ts` | approved, CI pending |
+| T2 | Assign task to user | **No `assignedTo` on Task** | `assignedToUid` on Task + dialog picker + filter | (b) #97 | same | approved, CI pending |
 | T3 | Link task to contact / opportunity | `contactId`, `dealId` | — | — | — | parity |
 | T4 | Bulk complete / delete | None | Not in scope list | — | — | out of scope |
 
@@ -87,10 +87,10 @@ Each PR is greenfield-or-additive, on tenant-scoped docs carrying `agencyId`/`su
 |---|---|---|---|
 | #87 | agency-owner claims fallback (unblocks owner-login specs) — **merged** | — | — |
 | (a) #91 | Smart lists: filter model + builder UI + saved lists (`subAccounts/{id}/smartLists`) + phone search | C2 C3 C4 | #87 (merged) |
-| (b) | Selection + bulk tag/assign/delete/export; `assignedToUid` on Contact/Deal/Task; task assignee filter | C5–C9 D1 O6 T1 T2 | (a) (filter → selection) |
+| (b) #97 | Selection + bulk tag/assign/delete/export; `assignedToUid` on Contact/Deal/Task; task assignee filter; assignee field in the smart-list filter builder | C5–C9 D1 O6 T1 T2 | (a) (filter → selection) |
 | (c) #93 | Multiple pipelines + stage CRUD + `pipelineId` on Deal + triggers `deal.created/won/lost` + pipeline dimension on `pipeline.stage.changed` | O1 O2 O3 D5 | — (parallel with a/b) |
 | (d) #92 | Companies collection, list/detail pages, contact picker | B1–B3 D6 | — |
-| (e) | Timeline: inbound message activities, `task_created`, `deal_*`, run links | D3 | (c) for deal events |
+| (e) #96 | Timeline: inbound message activities (all rails incl. web-chat), `task_created`, `automation_started/completed/failed`, run links, filter chips | D3 | — |
 | (f) #90 | Custom-field folders | D2 F1 | — (merged) |
 | (g) #89 | Nameless contact edit | C12 | — |
 
@@ -148,4 +148,4 @@ Decisions and residuals surfaced by the blind review teams — the code is the s
 - **Smart lists** store a `ConditionGroup`; the evaluator moved to `src/lib/contacts/conditions.ts` (isomorphic) and `src/lib/workflows/conditions.ts` re-exports it. Export uses the visible (filtered) set; bulk email/call keep their own audience picker — PR (b).
 - **Snapshots** strip `folderId` on capture and null `trigger.pipelineId` / `move_stage.config.pipelineId` on apply.
 - **Gate fragility under load** (four parallel builders on one runner): vitest `hookTimeout` 10s and one `toHaveCount` on 5s tripped on three PRs — raised to 30s in #95. The shared E2E fixture tenant is purged by any concurrent CI/local Playwright run; builders serialised on port 3100.
-- **Browser evidence** for (a) is in `evidence/sp1/a-smart-lists/` (local standalone build of #91 driven through the E2E harness on the fixture tenant — the Chrome session's login is origin-bound to crm.crestahq.com). Screenshots on #1000 follow the next deploy.
+- **Browser evidence:** `evidence/sp1/<letter>-*/` — frames extracted from Playwright traces of the real specs run against a local standalone build of `main` (7ee08ae) on the E2E fixture tenant; `a-smart-lists/` was captured earlier on #91's build (local standalone build of #91 driven through the E2E harness on the fixture tenant — the Chrome session's login is origin-bound to crm.crestahq.com). Screenshots on #1000 itself follow the next production deploy (this goal forbade deploying).
