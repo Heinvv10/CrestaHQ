@@ -67,20 +67,23 @@ export async function markReconnectRequiredIf(
   });
 }
 
-/** Unconditional flag. Interim: only route-support still uses it. */
-export async function markReconnectRequired(
+/**
+ * Google rejected `accessToken` (401) although we believed it valid — the
+ * grant was probably revoked at Google. Expire it so the next
+ * getValidAccessToken refreshes; only if the secret still holds THAT token,
+ * so a newer token another writer stored is never thrown away.
+ */
+export async function invalidateAccessToken(
   subAccountId: string,
-  reason: GoogleReconnectReason,
+  accessToken: string,
 ): Promise<void> {
-  await getAdminDb()
-    .doc(`subAccounts/${subAccountId}`)
-    .set(
-      {
-        googleConnectionMeta: { reconnectRequired: true, reconnectReason: reason },
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
+  const db = getAdminDb();
+  const ref = db.doc(googleConnectionSecretPath(subAccountId));
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.exists ? (snap.data() as GoogleConnectionSecret) : null;
+    if (current?.accessToken === accessToken) tx.update(ref, { accessTokenExpiresAt: 0 });
+  });
 }
 
 async function readSecret(subAccountId: string): Promise<GoogleConnectionSecret> {

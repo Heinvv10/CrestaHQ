@@ -6,7 +6,7 @@ import { googleGateOn } from "@/lib/google/gate";
 import { googleAppConfigured } from "@/lib/google/oauth";
 import type { SubAccountDoc } from "@/types";
 import { GbpProviderError } from "./provider/types";
-import { GbpNotConnectedError, markReconnectRequired } from "./tokens";
+import { GbpNotConnectedError } from "./tokens";
 
 /**
  * Shared preconditions and error mapping for the GBP routes that talk to
@@ -59,9 +59,8 @@ export async function gbpErrorResponse(
 
   console.warn(`[${route}] provider error sa=${subAccountId} kind=${err.kind} status=${err.status ?? "-"}`);
   if (err.kind === "revoked" || err.kind === "insufficient_scope") {
-    // A refresh failure was already flagged by tokens.ts; a DATA call can
-    // also report insufficient scope, so flag here too (idempotent merge).
-    await markReconnectRequired(subAccountId, err.kind);
+    // Already flagged where it was detected (tokens.ts / withGbpAccess), and
+    // only if the failed credential was still the stored one.
     return gbpRefusal(409, "reconnect_required", "Reconnect Google Business Profile.");
   }
   return gbpRefusal(502, err.kind, "Google request failed");

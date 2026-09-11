@@ -21,7 +21,12 @@ import {
 } from "@/test/google-oauth-harness";
 import { GbpFakeRefusedError } from "./provider/select";
 import { GbpProviderError } from "./provider/types";
-import { GbpNotConnectedError, getValidAccessToken } from "./tokens";
+import {
+  GbpNotConnectedError,
+  getValidAccessToken,
+  invalidateAccessToken,
+  markReconnectRequiredIf,
+} from "./tokens";
 
 const SCOPE = "https://www.googleapis.com/auth/business.manage";
 const ORIGINAL = { ...process.env };
@@ -193,6 +198,29 @@ const NEWER_GRANT = (fresh: boolean) => ({
   accessToken: "ya29.NewerGrantAccess",
   accessTokenExpiresAt: Date.now() + (fresh ? 3_000_000 : -1000),
   scopes: [SCOPE],
+});
+
+describe("invalidateAccessToken", () => {
+  it("expires the cached token only if the secret still holds that token", async () => {
+    seedSecret({ accessTokenExpiresAt: Date.now() + 3_000_000 });
+    await invalidateAccessToken(SUB, "ya29.SomeoneElses");
+    expect(secret().accessTokenExpiresAt as number).toBeGreaterThan(Date.now());
+    await invalidateAccessToken(SUB, "ya29.StoredAccess");
+    expect(secret().accessTokenExpiresAt).toBe(0);
+    expect(secret().refreshToken).toBe("1//0gStoredRefresh");
+  });
+});
+
+describe("markReconnectRequiredIf by access token", () => {
+  it("flags only when the refused access token is still the stored one", async () => {
+    seedSecret({ accessTokenExpiresAt: Date.now() + 3_000_000 });
+    expect(await markReconnectRequiredIf(SUB, "insufficient_scope", { accessToken: "ya29.Old" })).toMatchObject({
+      accessToken: "ya29.StoredAccess",
+    });
+    expect(meta().reconnectRequired).toBeUndefined();
+    expect(await markReconnectRequiredIf(SUB, "insufficient_scope", { accessToken: "ya29.StoredAccess" })).toBeNull();
+    expect(meta()).toMatchObject({ reconnectRequired: true, reconnectReason: "insufficient_scope" });
+  });
 });
 
 describe("races with a newer grant (reconnect during a refresh)", () => {

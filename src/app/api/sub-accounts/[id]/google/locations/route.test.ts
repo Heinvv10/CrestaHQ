@@ -94,6 +94,30 @@ describe("states", () => {
     expect(state.docs.get(`subAccounts/${SUB}/private/gbpFakeScenario`)?.failNext).toBeDefined();
   });
 
+  it("detects a grant revoked while the cached access token is still FRESH", async () => {
+    // The common real case: the owner removes access at Google; our cached
+    // token has most of its hour left. The data call 401s; one forced refresh
+    // then hits invalid_grant → reconnect_required, flagged — not a 502 loop.
+    seedConnection();
+    setScenario((s) => (s.revoked = true));
+    const { status, body } = await list();
+    expect([status, body.code]).toEqual([409, "reconnect_required"]);
+    expect(state.docs.get(SUB_PATH)?.googleConnectionMeta).toMatchObject({
+      reconnectRequired: true,
+      reconnectReason: "revoked",
+    });
+  });
+
+  it("recovers from one 401 by refreshing and retrying once", async () => {
+    seedConnection();
+    setScenario((s) => (s.failNext = { op: "listAccounts", kind: "auth_expired" }));
+    const { status } = await list();
+    expect(status).toBe(200);
+    const secret = state.docs.get(`subAccounts/${SUB}/private/googleConnection`);
+    expect(secret?.accessToken).not.toBe("fake-access:sa_1:900");
+    expect(secret?.accessTokenExpiresAt as number).toBeGreaterThan(Date.now() + 3_000_000);
+  });
+
   it("flags and reports reconnect_required when the refresh is revoked", async () => {
     seedConnection({ expired: true });
     setScenario((s) => (s.revoked = true));

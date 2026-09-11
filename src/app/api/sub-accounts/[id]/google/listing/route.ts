@@ -5,10 +5,9 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { findAccessibleLocation } from "@/lib/gbp/discovery";
-import { getGbpProviderFor } from "@/lib/gbp/provider/select";
+import { withGbpAccess } from "@/lib/gbp/access";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
-import { getValidAccessToken } from "@/lib/gbp/tokens";
 
 /**
  * Choose (PUT) or clear (DELETE) the Business Profile listing this
@@ -55,9 +54,9 @@ export async function PUT(
 
   let match: Awaited<ReturnType<typeof findAccessibleLocation>>;
   try {
-    const accessToken = await getValidAccessToken(id);
-    const provider = await getGbpProviderFor(id);
-    match = await findAccessibleLocation(provider, accessToken, accountName, locationName);
+    match = await withGbpAccess(id, (provider, accessToken) =>
+      findAccessibleLocation(provider, accessToken, accountName, locationName),
+    );
   } catch (err) {
     return gbpErrorResponse(err, id, "gbp/listing");
   }
