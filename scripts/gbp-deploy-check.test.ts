@@ -147,7 +147,7 @@ describe("(a) pre-build, positive: TRUST_CF_CONNECTING_IP=1 must be set", () => 
   it("the CLI refuses a deploy without it (exit 1)", () => {
     const res = spawnSync(process.execPath, [path.join(__dirname, "gbp-deploy-check.mjs"), "pre", tmp({ ".env.production": "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\n" })], {
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "" } as NodeJS.ProcessEnv,
+      env: { PATH: process.env.PATH ?? "" } as unknown as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(1);
     expect(res.stderr).toContain("TRUST_CF_CONNECTING_IP=1 is not set");
