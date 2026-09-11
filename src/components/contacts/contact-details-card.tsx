@@ -4,8 +4,14 @@ import { useEffect, useState } from "react";
 import { ListChecks } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
+import { groupFieldsByFolder } from "@/lib/custom-fields/folders";
 import type { Contact } from "@/types/contacts";
-import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
+import {
+  GENERAL_FOLDER_NAME,
+  type CustomFieldDef,
+  type CustomFieldValue,
+} from "@/types/custom-fields";
 
 /**
  * Read-only display surface for contact custom fields. Values were
@@ -14,7 +20,9 @@ import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
  *
  * Every definition renders, not just filled ones: a blank row (em-dash)
  * is a prompt to go and get the value. The card hides entirely in
- * workspaces that define no contact fields.
+ * workspaces that define no contact fields. Fields in a folder render under
+ * a collapsible folder heading; General fields sit at the top under
+ * "General" (GHL's "General Info").
  */
 
 function formatValue(
@@ -30,6 +38,7 @@ function formatValue(
 export function ContactDetailsCard({ contact }: { contact: Contact }) {
   const { subAccountId } = useSubAccount();
   const [defs, setDefs] = useState<CustomFieldDef[]>([]);
+  const folders = useCustomFieldFolders(subAccountId, "contact");
 
   useEffect(() => {
     if (!subAccountId) return;
@@ -48,11 +57,37 @@ export function ContactDetailsCard({ contact }: { contact: Contact }) {
     string,
     CustomFieldValue
   >;
-  const rows = defs.map((d) => ({
-    def: d,
-    display: formatValue(d, values[d.key]),
-  }));
-  const filled = rows.filter((r) => r.display !== null).length;
+  const display = (d: CustomFieldDef) => formatValue(d, values[d.key]);
+  const filled = defs.filter((d) => display(d) !== null).length;
+  const groups = groupFieldsByFolder(defs, folders).filter(
+    (g) => g.fields.length > 0,
+  );
+
+  const rows = (fields: CustomFieldDef[]) => (
+    <dl className="space-y-2 text-sm">
+      {fields.map((def) => {
+        const v = display(def);
+        return (
+          <div
+            key={def.key}
+            className="flex items-baseline justify-between gap-3"
+          >
+            <dt className="shrink-0 text-muted-foreground">{def.label}</dt>
+            <dd
+              className={
+                v === null
+                  ? "text-muted-foreground/60"
+                  : "min-w-0 truncate text-right font-medium"
+              }
+              title={v ?? undefined}
+            >
+              {v ?? "—"}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
 
   return (
     <div className="rounded-xl border bg-card p-4">
@@ -67,26 +102,20 @@ export function ContactDetailsCard({ contact }: { contact: Contact }) {
           {filled}/{defs.length} filled
         </span>
       </div>
-      <dl className="space-y-2 text-sm">
-        {rows.map(({ def, display }) => (
-          <div
-            key={def.key}
-            className="flex items-baseline justify-between gap-3"
+      <div className="space-y-3">
+        {groups.map(({ folder, fields }) => (
+          <details
+            key={folder?.id ?? "general"}
+            open
+            className="rounded-lg border p-3"
           >
-            <dt className="shrink-0 text-muted-foreground">{def.label}</dt>
-            <dd
-              className={
-                display === null
-                  ? "text-muted-foreground/60"
-                  : "min-w-0 truncate text-right font-medium"
-              }
-              title={display ?? undefined}
-            >
-              {display ?? "—"}
-            </dd>
-          </div>
+            <summary className="cursor-pointer text-xs font-medium">
+              {folder?.name ?? GENERAL_FOLDER_NAME}
+            </summary>
+            <div className="mt-2">{rows(fields)}</div>
+          </details>
         ))}
-      </dl>
+      </div>
     </div>
   );
 }
