@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   CircleDot,
   MapPinned,
+  UserRound,
   MessageSquare,
   PhoneOutgoing,
   Star,
@@ -45,6 +46,7 @@ import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { formatContactDate } from "@/lib/format";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { useSubAccount } from "@/context/sub-account-context";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import type { Contact, ContactFormData } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 
@@ -90,6 +92,12 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
     );
     return () => unsub();
   }, [scopingOn, subAccountId]);
+
+  const { members } = useSubAccountMembers(subAccountId);
+  const assigneeName = contact.assignedToUid
+    ? (members.find((m) => m.uid === contact.assignedToUid)?.displayName ??
+      "Former member")
+    : null;
 
   const territoryName = (() => {
     if (!contact.territoryId) return null;
@@ -368,6 +376,14 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
             label="Source"
           >
             <SourceBadge source={contact.source} />
+          </Row>
+          <Row
+            icon={<UserRound className="h-4 w-4 text-muted-foreground" />}
+            label="Assigned to"
+          >
+            <span className="text-foreground" data-testid="contact-assignee">
+              {assigneeName ?? "Unassigned"}
+            </span>
           </Row>
           <Row
             icon={<Tag className="h-4 w-4 text-muted-foreground" />}

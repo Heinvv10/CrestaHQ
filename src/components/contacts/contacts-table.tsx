@@ -11,18 +11,24 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { ArrowUpDown, ArrowUp, ArrowDown, Mail, Phone, Building2 } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 import { SourceBadge } from "@/components/contacts/source-badge";
+import { ContactCardList } from "@/components/contacts/contact-card-list";
+import { Checkbox } from "@/components/ui/checkbox";
 import { formatContactDate } from "@/lib/format";
-import { matchesSearch } from "@/lib/contacts/filter";
 import { cn } from "@/lib/utils";
 import { useSubAccount } from "@/context/sub-account-context";
 
 interface Props {
+  /** Already filtered by the page (search + smart list). */
   contacts: Contact[];
-  search: string;
+  /** Row selection, owned by the page (hooks/use-contact-selection). */
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  onToggleAll: () => void;
+  allSelected: boolean;
   /**
    * Optional — when the sub-account has territory scoping on, the
    * page passes the active territory list so the table can render a
@@ -31,7 +37,14 @@ interface Props {
   territories?: TerritoryDoc[];
 }
 
-export function ContactsTable({ contacts, search, territories = [] }: Props) {
+export function ContactsTable({
+  contacts,
+  selected,
+  onToggle,
+  onToggleAll,
+  allSelected,
+  territories = [],
+}: Props) {
   const { subAccount, saPath } = useSubAccount();
   const showTerritoryCol = subAccount?.territoryScopingEnabled === true;
   const [sorting, setSorting] = useState<SortingState>([
@@ -46,6 +59,24 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
 
   const columns = useMemo<ColumnDef<Contact>[]>(
     () => [
+      {
+        id: "select",
+        enableSorting: false,
+        header: () => (
+          <Checkbox
+            aria-label="Select all"
+            checked={allSelected}
+            onCheckedChange={onToggleAll}
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            aria-label={`Select ${row.original.name || "Unnamed"}`}
+            checked={selected.has(row.original.id)}
+            onCheckedChange={() => onToggle(row.original.id)}
+          />
+        ),
+      },
       {
         accessorKey: "name",
         header: "Name",
@@ -145,16 +176,11 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
         ),
       },
     ],
-    [saPath, showTerritoryCol, territoryById],
-  );
-
-  const filtered = useMemo(
-    () => contacts.filter((c) => matchesSearch(c, search)),
-    [contacts, search],
+    [saPath, showTerritoryCol, territoryById, selected, allSelected, onToggle, onToggleAll],
   );
 
   const table = useReactTable({
-    data: filtered,
+    data: contacts,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -165,16 +191,6 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
 
   if (contacts.length === 0) {
     return null;
-  }
-
-  if (filtered.length === 0) {
-    return (
-      <div className="rounded-xl border bg-card p-12 text-center">
-        <p className="text-sm text-muted-foreground">
-          No contacts match &ldquo;{search}&rdquo;.
-        </p>
-      </div>
-    );
   }
 
   return (
@@ -238,44 +254,11 @@ export function ContactsTable({ contacts, search, territories = [] }: Props) {
         </table>
       </div>
 
-      {/* Mobile card list */}
-      <div className="space-y-3 md:hidden">
-        {table.getRowModel().rows.map((row) => {
-          const c = row.original;
-          return (
-            <Link
-              key={c.id}
-              href={saPath(`/contacts/${c.id}`)}
-              className="block select-none rounded-xl border bg-card p-4 transition-all hover:bg-muted/30 active:scale-[0.99] active:bg-muted/40"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{c.name || "Unnamed"}</p>
-                  {c.email && (
-                    <p className="mt-1 flex items-center gap-1.5 truncate text-sm text-muted-foreground">
-                      <Mail className="h-3.5 w-3.5 shrink-0" />
-                      {c.email}
-                    </p>
-                  )}
-                  {c.phone && (
-                    <p className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-muted-foreground">
-                      <Phone className="h-3.5 w-3.5 shrink-0" />
-                      {c.phone}
-                    </p>
-                  )}
-                  {c.company && (
-                    <p className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-muted-foreground">
-                      <Building2 className="h-3.5 w-3.5 shrink-0" />
-                      {c.company}
-                    </p>
-                  )}
-                </div>
-                <SourceBadge source={c.source} />
-              </div>
-            </Link>
-          );
-        })}
-      </div>
+      <ContactCardList
+        contacts={table.getRowModel().rows.map((r) => r.original)}
+        selected={selected}
+        onToggle={onToggle}
+      />
     </>
   );
 }

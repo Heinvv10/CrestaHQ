@@ -56,6 +56,8 @@ export interface CreateContactInput {
   tags: string[];
   pipelineStage?: string | null;
   territoryId?: string | null;
+  /** Member uid (validated by the route) or null. */
+  assignedToUid?: string | null;
   /** Validated custom-field value map (routes validate against live defs). */
   customFields?: Record<string, CustomFieldValue> | null;
   attribution?: ContactAttribution | null;
@@ -128,6 +130,7 @@ export function buildContactDoc(input: CreateContactInput) {
     lat: loc?.lat ?? null,
     lng: loc?.lng ?? null,
     territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,
@@ -196,6 +199,8 @@ export interface UpdateContactPatch {
    * still belongs to the dedicated admin endpoint — see the note below.
    */
   territoryId?: string | null;
+  /** Member uid (validated by the route) or null to unassign. */
+  assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue>;
 }

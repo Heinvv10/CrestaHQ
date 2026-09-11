@@ -129,6 +129,12 @@ export interface Deal {
   createdByUid: string;
   lostReason: string | null;
   /**
+   * Sub-account member this deal is assigned to (GHL "opportunity owner").
+   * `null` / absent = unassigned. Validated against `subAccountMembers` by
+   * the deals API on write.
+   */
+  assignedToUid?: string | null;
+  /**
    * Set when the operator ticks "Completed" on a Won deal card — marks the
    * job/work as actually delivered (distinct from the deal being Won). Drives
    * the optional Google review-request trigger (`triggerOnDealCompleted`).
@@ -163,5 +169,6 @@ export type DealFormData = {
   stageId: PipelineStageId;
   priority: DealPriority;
   territoryId?: string | null;
+  assignedToUid?: string | null;
   customFields?: Record<string, import("./custom-fields").CustomFieldValue> | null;
 };

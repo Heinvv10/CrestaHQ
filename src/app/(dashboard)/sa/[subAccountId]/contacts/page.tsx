@@ -9,7 +9,8 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToContacts } from "@/lib/firestore/contacts";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { useSmartLists } from "@/hooks/use-smart-lists";
-import { applyFilters } from "@/lib/contacts/filter";
+import { applyFilters, matchesSearch } from "@/lib/contacts/filter";
+import { useContactSelection } from "@/hooks/use-contact-selection";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { serializeCsv, downloadCsv } from "@/lib/csv";
 import { toDate } from "@/lib/format";
@@ -22,6 +23,7 @@ import { BulkEmailDialog } from "@/components/contacts/bulk-email-dialog";
 import { BulkCallDialog } from "@/components/contacts/bulk-call-dialog";
 import { ContactFiltersPanel } from "@/components/contacts/contact-filters-panel";
 import { SmartListTabs } from "@/components/contacts/smart-list-tabs";
+import { BulkActionsBar } from "@/components/contacts/bulk-actions-bar";
 import {
   EmptyState,
   TableSkeleton,
@@ -66,7 +68,7 @@ function QueryWatcher({
 
 export default function ContactsPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, subAccount } = useSubAccount();
+  const { subAccountId, agencyId, subAccount, isAdmin } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
@@ -90,7 +92,17 @@ export default function ContactsPage() {
     renameList,
     deleteList,
   } = useSmartLists({ agencyId, subAccountId, uid: user?.uid ?? null });
-  const visible = useMemo(() => applyFilters(contacts, filters), [contacts, filters]);
+  // What the table shows: smart-list filters, then the quick search.
+  const visible = useMemo(
+    () => applyFilters(contacts, filters).filter((c) => matchesSearch(c, search)),
+    [contacts, filters, search],
+  );
+  const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
+  const selection = useContactSelection(visibleIds);
+  const selectedContacts = useMemo(
+    () => visible.filter((c) => selection.selected.has(c.id)),
+    [visible, selection.selected],
+  );
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
@@ -126,13 +138,15 @@ export default function ContactsPage() {
   }, [scopingOn, subAccountId]);
 
   function handleExport() {
-    if (visible.length === 0) {
+    // The selection when there is one, otherwise everything on screen.
+    const source = selectedContacts.length > 0 ? selectedContacts : visible;
+    if (source.length === 0) {
       toast.error("No contacts to export.");
       return;
     }
     const headers = ["name", "email", "phone", "company", "source", "tags", "pipelineStage", "createdAt"];
     // Export what the current tab + filters show, not the whole workspace.
-    const rows = visible.map((c) => ({
+    const rows = source.map((c) => ({
       name: c.name,
       email: c.email,
       phone: c.phone,
@@ -221,6 +235,14 @@ export default function ContactsPage() {
         <ContactFiltersPanel value={filters} onChange={setFilters} />
       </div>
 
+      <BulkActionsBar
+        contacts={selectedContacts}
+        allContacts={contacts}
+        canDelete={isAdmin}
+        onClear={selection.clear}
+        onExport={handleExport}
+      />
+
       {loading ? (
         <TableSkeleton />
       ) : contacts.length === 0 ? (
@@ -228,13 +250,16 @@ export default function ContactsPage() {
       ) : visible.length === 0 ? (
         <div className="rounded-xl border bg-card p-12 text-center">
           <p className="text-sm text-muted-foreground">
-            No contacts match the current filters.
+            No contacts match the current search or filters.
           </p>
         </div>
       ) : (
         <ContactsTable
           contacts={visible}
-          search={search}
+          selected={selection.selected}
+          onToggle={selection.toggle}
+          onToggleAll={selection.allSelected ? selection.clear : selection.selectAll}
+          allSelected={selection.allSelected}
           territories={territories}
         />
       )}

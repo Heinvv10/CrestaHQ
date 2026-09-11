@@ -145,6 +145,7 @@ export interface CreateDealInput {
   stageId: PipelineStageId;
   priority: DealPriority;
   territoryId?: string | null;
+  assignedToUid?: string | null;
   customFields?: Record<string, CustomFieldValue> | null;
 }
 
@@ -170,6 +171,7 @@ export async function createDealServerSide(
     lostReason: null,
     customFields: input.customFields ?? {},
     territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,
@@ -224,6 +226,8 @@ export interface UpdateDealPatch {
   lostReason?: string | null;
   /** "Completed" tick on a Won deal card. Stamps/clears `completedAt`. */
   completed?: boolean;
+  /** Member uid (validated by the route) or null to unassign. */
+  assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue> | null;
 }
@@ -267,6 +271,7 @@ export async function updateDealServerSide(opts: {
   if (patch.priority !== undefined) write.priority = patch.priority;
   if (patch.contactId !== undefined) write.contactId = patch.contactId;
   if (patch.territoryId !== undefined) write.territoryId = patch.territoryId;
+  if (patch.assignedToUid !== undefined) write.assignedToUid = patch.assignedToUid;
   if (patch.customFields !== undefined) write.customFields = patch.customFields;
   if (patch.completed !== undefined) {
     write.completed = patch.completed;

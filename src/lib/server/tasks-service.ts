@@ -45,6 +45,7 @@ export interface CreateTaskInput {
   contactId: string | null;
   dealId: string | null;
   eventId: string | null;
+  assignedToUid?: string | null;
 }
 
 export interface TaskWriteResult {
@@ -69,6 +70,7 @@ export async function createTaskServerSide(
     contactId: input.contactId,
     dealId: input.dealId,
     eventId: input.eventId,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,

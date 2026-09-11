@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 
@@ -67,6 +68,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: cf.error }, { status: 400 });
   }
 
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    !(await isAssignableMember(subAccountId, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
+
   const { id, contact } = await createContactServerSide({
     subAccountId,
     agencyId,
@@ -83,6 +95,7 @@ export async function POST(request: Request) {
     source: str(body.source),
     tags: strArray(body.tags),
     territoryId: typeof body.territoryId === "string" ? body.territoryId : null,
+    assignedToUid: assignedToUid ?? null,
     customFields: cf.value,
   });
 

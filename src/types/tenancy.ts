@@ -887,6 +887,17 @@ export interface AgencyMemberDoc {
   addedByUid: string;
 }
 
+/**
+ * The display slice of a member row that GET /api/sub-accounts/[id]/members
+ * returns to every active member for the "Assigned to" pickers.
+ */
+export interface AssignableMember {
+  uid: string;
+  displayName: string;
+  email: string;
+  role: string;
+}
+
 export interface SubAccountMemberDoc {
   uid: string;
   subAccountId: string;
