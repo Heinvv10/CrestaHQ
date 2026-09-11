@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { GbpHealth } from "@/lib/gbp/sync/types";
 import { absoluteTime, relativeTime } from "./format-time";
 import { RecentSyncs } from "./recent-syncs";
+import { FIELD_LABEL, NO_FILTERS, ReviewFilters, filterQuery, type FilterValue } from "./review-filters";
 import { ReviewItem, type ReviewView } from "./review-item";
 import { describeRun, type RunView } from "./run-text";
 import { HealthBadge, HealthBanner } from "./sync-health";
@@ -29,6 +30,8 @@ interface Ready {
   state: "ready";
   summary: SummaryView | null;
   reviews: ReviewView[];
+  /** Active reviews before the filters. */
+  available: number;
   runs: RunView[];
   scheduled: boolean;
   truncated: boolean;
@@ -49,18 +52,27 @@ export function ReviewsSection({
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [syncing, setSyncing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [filters, setFilters] = useState<FilterValue>(NO_FILTERS);
+  const [filterError, setFilterError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const res = await fetch(`${base}/reviews`).catch(() => null);
-    const data = (await res?.json().catch(() => null)) as Partial<Omit<Ready, "state">> | null;
+    const res = await fetch(`${base}/reviews${filterQuery(filters)}`).catch(() => null);
+    const data = (await res?.json().catch(() => null)) as (Partial<Omit<Ready, "state">> & { code?: string; field?: string }) | null;
+    if (res?.status === 400 && data?.code === "invalid_filter") {
+      // Keep what is on screen; say which filter the server refused.
+      setFilterError(`Check the ${FIELD_LABEL[data.field ?? ""] ?? "filter"} filter.`);
+      return;
+    }
+    setFilterError(null);
     if (!res?.ok || !data || !Array.isArray(data.reviews)) setLoad({ state: "error" });
     else {
       setLoad({
         state: "ready", summary: data.summary ?? null, reviews: data.reviews, runs: data.runs ?? [],
+        available: typeof data.available === "number" ? data.available : data.reviews.length,
         scheduled: data.scheduled === true, truncated: data.truncated === true,
       });
     }
-  }, [base]);
+  }, [base, filters]);
 
   useEffect(() => {
     void refresh();
@@ -134,10 +146,23 @@ export function ReviewsSection({
         </p>
       )}
 
+      {load.available > 0 && (
+        <ReviewFilters value={filters} onChange={setFilters} shown={load.reviews.length} available={load.available} />
+      )}
+      {filterError && (
+        <p className="text-xs text-red-600" data-testid="gbp-filter-error" role="alert">{filterError}</p>
+      )}
+
       {load.reviews.length === 0 ? (
-        <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="gbp-reviews-empty">
-          No reviews to show yet.
-        </p>
+        load.available > 0 ? (
+          <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="gbp-reviews-empty-filtered">
+            No reviews match these filters.
+          </p>
+        ) : (
+          <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="gbp-reviews-empty">
+            No reviews to show yet.
+          </p>
+        )
       ) : (
         <ul className="space-y-3" data-testid="gbp-reviews">
           {load.reviews.map((r) => <ReviewItem key={r.reviewId} review={r} />)}
