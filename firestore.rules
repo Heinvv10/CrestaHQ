@@ -473,6 +473,14 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Deal pipelines (stages embedded). Server-only: the dashboard reads
+      // them through GET /api/sub-accounts/[id]/pipelines (which also seeds
+      // the default), and every write goes through those Admin-SDK routes.
+      // Same shape as importMappings below — nothing here for the client.
+      match /pipelines/{pipelineId} {
+        allow read, write: if false;
+      }
+
       // Import id-mappings (source-system id ↔ LeadStack id). Internal only —
       // written + read by the admin-SDK import routes; no client access.
       match /importMappings/{refId} {

@@ -20,7 +20,8 @@
 | `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid` |
 | `contacts/{id}/notes/{id}` | inherits | Free-text notes |
 | `contacts/{id}/activities/{id}` | inherits | Typed events |
-| `deals/{id}` | sub-account | One contact → many deals |
+| `deals/{id}` | sub-account | One contact → many deals. `pipelineId` names the pipeline; absent = `default` (every pre-multi-pipeline doc) |
+| `subAccounts/{id}/pipelines/{pipelineId}` | server-only | Deal pipelines with stages embedded (`{ id, label, tone, terminal? }[]`; `terminal` = `won`/`lost` drives `deal.won`/`deal.lost`). `pipelines/default` is seeded lazily on first read from the canonical six stages + the legacy `subAccounts/{id}.pipelineStages` label/order overrides, keeping the SAME stage ids. Read via `GET /api/sub-accounts/[id]/pipelines`; written only by those Admin-SDK routes. Deleting a stage / pipeline that still holds deals is refused (409) |
 | `events/{id}` | sub-account | Calendar events |
 | `tasks/{id}` | sub-account | Todos |
 | `forms/{id}` | sub-account | Form config |

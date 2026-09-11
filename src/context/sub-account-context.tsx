@@ -2,16 +2,20 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
 import { doc, onSnapshot } from "firebase/firestore";
 import { getFirebaseDb } from "@/lib/firebase/client";
+import { syntheticDefaultPipeline } from "@/lib/pipelines/stages";
 import { useAuth } from "@/hooks/use-auth";
 import type { SubAccountDoc, SubAccountRole } from "@/types";
+import type { PipelineDoc } from "@/types/deals";
 
 export interface SubAccountContextValue {
   subAccountId: string;
@@ -24,6 +28,15 @@ export interface SubAccountContextValue {
   myRole: SubAccountRole | null;
   isAdmin: boolean;
   agencyId: string | null;
+  /**
+   * The sub-account's deal pipelines, default first, read once per mount
+   * through the Admin-SDK route (the subcollection is server-only at the
+   * rules level). Until that read lands this holds a synthesized default
+   * built from the legacy stage overrides, so consumers always have one to
+   * render. Call `refreshPipelines()` after a pipeline write.
+   */
+  pipelines: PipelineDoc[];
+  refreshPipelines: () => Promise<void>;
   /**
    * Prefix a relative dashboard path with the active sub-account segment,
    * e.g. saPath("/contacts") -> "/sa/abc123/contacts". Use this for every
@@ -54,6 +67,38 @@ export function SubAccountProvider({
   } = useAuth();
   const [subAccount, setSubAccount] = useState<SubAccountDoc | null>(null);
   const [subLoading, setSubLoading] = useState(true);
+  const [pipelineDocs, setPipelineDocs] = useState<PipelineDoc[]>([]);
+
+  const refreshPipelines = useCallback(async () => {
+    if (!subAccountId) return;
+    try {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/pipelines`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { pipelines?: PipelineDoc[] };
+      setPipelineDocs(data.pipelines ?? []);
+    } catch {
+      // Keep whatever we had; the synthesized default covers a cold start.
+    }
+  }, [subAccountId]);
+
+  useEffect(() => {
+    if (!user || !subAccountId) {
+      setPipelineDocs([]);
+      return;
+    }
+    void refreshPipelines();
+  }, [user, subAccountId, refreshPipelines]);
+
+  const pipelines = useMemo(
+    () =>
+      pipelineDocs.some((p) => p.isDefault)
+        ? pipelineDocs
+        : [
+            syntheticDefaultPipeline(subAccountId, subAccount?.pipelineStages),
+            ...pipelineDocs,
+          ],
+    [pipelineDocs, subAccountId, subAccount?.pipelineStages],
+  );
 
   useEffect(() => {
     if (!user || !subAccountId) {
@@ -125,6 +170,8 @@ export function SubAccountProvider({
     myRole,
     isAdmin,
     agencyId: subAccount?.agencyId ?? claimAgencyId,
+    pipelines,
+    refreshPipelines,
     saPath: (path: string) => {
       if (!path.startsWith("/")) return path;
       return `/sa/${subAccountId}${path}`;

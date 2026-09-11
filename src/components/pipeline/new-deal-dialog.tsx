@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PipelineStagePicker } from "@/components/pipeline/pipeline-stage-picker";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -27,12 +28,14 @@ import {
   type DealPriority,
   type PipelineStageId,
 } from "@/types/deals";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
 import type { Contact } from "@/types/contacts";
 
 interface NewDealDialogProps {
   contacts: Contact[];
   defaultContactId?: string;
+  /** Pipeline the board is showing; absent = the default pipeline. */
+  defaultPipelineId?: string;
   defaultStageId?: PipelineStageId;
   trigger?: React.ReactNode;
 }
@@ -40,19 +43,23 @@ interface NewDealDialogProps {
 export function NewDealDialog({
   contacts,
   defaultContactId,
-  defaultStageId = "new",
+  defaultPipelineId,
+  defaultStageId,
   trigger,
 }: NewDealDialogProps) {
   const { subAccountId, subAccount } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
-  const stages = usePipelineStages();
+  const { byId } = usePipelines();
   const [open, setOpen] = useState(false);
   const [territories, setTerritories] = useState<TerritoryDoc[]>([]);
 
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
   const [currency, setCurrency] = useState("USD");
-  const [stageId, setStageId] = useState<PipelineStageId>(defaultStageId);
+  const [pipelineId, setPipelineId] = useState(byId(defaultPipelineId).id);
+  const [stageId, setStageId] = useState<PipelineStageId>(
+    defaultStageId ?? byId(defaultPipelineId).stages[0]?.id ?? "",
+  );
   const [priority, setPriority] = useState<DealPriority>("medium");
   const [contactId, setContactId] = useState(defaultContactId ?? "");
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
@@ -65,13 +72,15 @@ export function NewDealDialog({
       setTitle("");
       setValue("");
       setCurrency("USD");
-      setStageId(defaultStageId);
+      const p = byId(defaultPipelineId);
+      setPipelineId(p.id);
+      setStageId(defaultStageId ?? p.stages[0]?.id ?? "");
       setPriority("medium");
       setContactId(defaultContactId ?? "");
       setCfValues({});
       setErrors({});
     }
-  }, [open, defaultContactId, defaultStageId]);
+  }, [open, defaultContactId, defaultPipelineId, defaultStageId, byId]);
 
   // Live custom-field definitions for deals (only while the sheet is open).
   useEffect(() => {
@@ -139,6 +148,7 @@ export function NewDealDialog({
       currency,
       contactId,
       stageId,
+      pipelineId,
       priority,
       // Territory is owned by the contact (the account) — the deal
       // inherits it. No separate picker; reassignment happens by
@@ -258,21 +268,15 @@ export function NewDealDialog({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="deal-stage">Stage</Label>
-              <select
-                id="deal-stage"
-                value={stageId}
-                onChange={(e) => setStageId(e.target.value as PipelineStageId)}
-                className="flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
-              >
-                {stages.map((s) => (
-                  <option key={s.id} value={s.id} className="bg-background text-foreground">
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <PipelineStagePicker
+              idPrefix="deal"
+              pipelineId={pipelineId}
+              stageId={stageId}
+              onChange={(n) => {
+                setPipelineId(n.pipelineId);
+                setStageId(n.stageId);
+              }}
+            />
 
             <div className="space-y-1.5">
               <Label htmlFor="deal-priority">Priority</Label>

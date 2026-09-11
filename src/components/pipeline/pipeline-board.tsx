@@ -19,18 +19,20 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/format";
 import {
   type Deal,
+  type PipelineDoc,
   type PipelineStage,
   type PipelineStageId,
 } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
 import { GLOBAL_TERRITORY_ID, type TerritoryDoc } from "@/types";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
 import { DealCard } from "@/components/pipeline/deal-card";
 import { EditDealDialog } from "@/components/pipeline/edit-deal-dialog";
 import { LostReasonDialog } from "@/components/pipeline/lost-reason-dialog";
 import { MoveStageSheet } from "@/components/pipeline/move-stage-sheet";
 
 interface PipelineBoardProps {
+  /** The pipeline being shown; `deals` are already filtered to it. */
+  pipeline: PipelineDoc;
   deals: Deal[];
   contacts: Contact[];
   territories: TerritoryDoc[];
@@ -61,7 +63,7 @@ function territoryName(
   return byId.get(id) ?? (id === GLOBAL_TERRITORY_ID ? "Global" : undefined);
 }
 
-const STAGE_ACCENT: Record<PipelineStageId, string> = {
+const STAGE_ACCENT: Record<string, string> = {
   new: "from-slate-400 to-slate-500",
   contacted: "from-blue-400 to-blue-500",
   qualified: "from-indigo-400 to-indigo-500",
@@ -70,7 +72,14 @@ const STAGE_ACCENT: Record<PipelineStageId, string> = {
   lost: "from-rose-400 to-rose-500",
 };
 
+function accentFor(stage: PipelineStage): string {
+  if (stage.terminal === "won") return STAGE_ACCENT.won;
+  if (stage.terminal === "lost") return STAGE_ACCENT.lost;
+  return STAGE_ACCENT[stage.id] ?? "from-slate-400 to-slate-500";
+}
+
 export function PipelineBoard({
+  pipeline,
   deals,
   contacts,
   territories,
@@ -87,9 +96,8 @@ export function PipelineBoard({
     return map;
   }, [territories]);
 
-  // Configured stages (label/order overrides applied; ids + terminals
-  // unchanged). Falls back to the canonical stages when none are set.
-  const stages = usePipelineStages();
+  const stages = pipeline.stages;
+  const lostStageId = stages.find((s) => s.terminal === "lost")?.id;
 
   const dealsByStage = useMemo(() => {
     const grouped = new Map<PipelineStageId, Deal[]>();
@@ -97,7 +105,8 @@ export function PipelineBoard({
     for (const d of deals) {
       const stage = grouped.get(d.stageId as PipelineStageId);
       if (stage) stage.push(d);
-      else grouped.get("new")?.push(d);
+      // Unknown stage (deleted from the pipeline) — park it in the first column.
+      else grouped.get(stages[0]?.id ?? "")?.push(d);
     }
     return grouped;
   }, [deals, stages]);
@@ -131,7 +140,7 @@ export function PipelineBoard({
     if (!stages.some((s) => s.id === nextStageId)) return;
     if (nextStageId === deal.stageId) return;
 
-    if (nextStageId === "lost") {
+    if (nextStageId === lostStageId) {
       setPendingLost(deal);
       return;
     }
@@ -147,11 +156,11 @@ export function PipelineBoard({
   }
 
   async function confirmLost(reason: string) {
-    if (!pendingLost) return;
+    if (!pendingLost || !lostStageId) return;
     try {
-      await patchDealStage(pendingLost.id, "lost", reason);
+      await patchDealStage(pendingLost.id, lostStageId, reason);
       toast.success(
-        `Moved to ${stages.find((s) => s.id === "lost")?.label ?? "Lost"}`,
+        `Moved to ${stages.find((s) => s.id === lostStageId)?.label ?? "Lost"}`,
       );
     } catch (err) {
       console.error(err);
@@ -207,7 +216,7 @@ export function PipelineBoard({
         onMove={async (stageId) => {
           if (!movingDeal) return;
           setMovingDealId(null);
-          if (stageId === "lost") {
+          if (stageId === lostStageId) {
             // Same lost-reason gate the drag path goes through.
             setPendingLost(movingDeal);
             return;
@@ -262,7 +271,7 @@ function Column({
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   const total = deals.reduce((sum, d) => sum + (d.value || 0), 0);
   const currency = deals[0]?.currency ?? "USD";
-  const accent = STAGE_ACCENT[stage.id];
+  const accent = accentFor(stage);
 
   return (
     <div
@@ -303,6 +312,7 @@ function Column({
               contact={contactById.get(deal.contactId)}
               territoryName={territoryName(deal.territoryId, territoryNameById)}
               dragging={activeId === deal.id}
+              won={stage.terminal === "won"}
               onEdit={() => onEditDeal(deal.id)}
               onMoveRequest={() => onMoveDeal(deal.id)}
             />
@@ -318,6 +328,7 @@ function DraggableDeal({
   contact,
   territoryName,
   dragging,
+  won,
   onEdit,
   onMoveRequest,
 }: {
@@ -325,6 +336,7 @@ function DraggableDeal({
   contact: Contact | undefined;
   territoryName?: string;
   dragging: boolean;
+  won: boolean;
   onEdit: () => void;
   onMoveRequest: () => void;
 }) {
@@ -340,6 +352,7 @@ function DraggableDeal({
       contact={contact}
       territoryName={territoryName}
       dragging={dragging}
+      won={won}
       setNodeRef={setNodeRef}
       style={style}
       listeners={listeners as unknown as React.HTMLAttributes<HTMLElement>}

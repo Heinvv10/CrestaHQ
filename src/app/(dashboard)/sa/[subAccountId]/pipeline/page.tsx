@@ -10,6 +10,8 @@ import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { formatCurrency } from "@/lib/format";
+import { dealPipelineId } from "@/lib/pipelines/stages";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
 import { PIPELINE_STAGES, type Deal } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
@@ -34,6 +36,10 @@ export default function PipelinePage() {
   const [territories, setTerritories] = useState<TerritoryDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<PipelineFilterState>(EMPTY_FILTERS);
+  // Which pipeline the board shows. Absent `pipelineId` on a deal = default.
+  const { pipelines, byId } = usePipelines();
+  const [pipelineId, setPipelineId] = useState<string | null>(null);
+  const pipeline = byId(pipelineId);
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
@@ -130,6 +136,7 @@ export default function PipelinePage() {
   // "won within the current filter".
   const filteredDeals = useMemo(() => {
     return deals.filter((d) => {
+      if (dealPipelineId(d) !== pipeline.id) return false;
       if (filters.stages.length > 0 && !filters.stages.includes(d.stageId)) {
         return false;
       }
@@ -153,21 +160,23 @@ export default function PipelinePage() {
       }
       return true;
     });
-  }, [deals, filters, contactsById]);
+  }, [deals, filters, contactsById, pipeline.id]);
 
+  const wonStageId = pipeline.stages.find((s) => s.terminal === "won")?.id;
+  const lostStageId = pipeline.stages.find((s) => s.terminal === "lost")?.id;
   const openDeals = useMemo(
     () =>
       filteredDeals.filter(
-        (d) => d.stageId !== "won" && d.stageId !== "lost",
+        (d) => d.stageId !== wonStageId && d.stageId !== lostStageId,
       ),
-    [filteredDeals],
+    [filteredDeals, wonStageId, lostStageId],
   );
   const wonTotal = useMemo(
     () =>
       filteredDeals
-        .filter((d) => d.stageId === "won")
+        .filter((d) => d.stageId === wonStageId)
         .reduce((sum, d) => sum + (d.value || 0), 0),
-    [filteredDeals],
+    [filteredDeals, wonStageId],
   );
   const openTotal = useMemo(
     () => openDeals.reduce((sum, d) => sum + (d.value || 0), 0),
@@ -184,13 +193,30 @@ export default function PipelinePage() {
             Drag deals across stages. Your team sees every move in real time.
           </p>
         </div>
-        <NewDealDialog contacts={contacts} />
+        <div className="flex items-center gap-2">
+          {pipelines.length > 1 && (
+            <select
+              aria-label="Pipeline"
+              value={pipeline.id}
+              onChange={(e) => setPipelineId(e.target.value)}
+              className="flex h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
+            >
+              {pipelines.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <NewDealDialog contacts={contacts} defaultPipelineId={pipeline.id} />
+        </div>
       </div>
 
       {!loading && deals.length > 0 && (
         <PipelineFilters
           filters={filters}
           onChange={setFilters}
+          stages={pipeline.stages}
           availableCountries={availableCountries}
           availableTerritories={territories}
           showTerritoryFilters={scopingOn && isAdmin}
@@ -232,6 +258,7 @@ export default function PipelinePage() {
         </div>
       ) : (
         <PipelineBoard
+          pipeline={pipeline}
           deals={filteredDeals}
           contacts={contacts}
           territories={territories}

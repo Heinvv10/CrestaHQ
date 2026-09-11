@@ -133,6 +133,8 @@ export interface MemoryQuery {
   where: (field: string, op: WhereOp, value: unknown) => MemoryQuery;
   orderBy: (field: string, dir?: "asc" | "desc") => MemoryQuery;
   limit: (n: number) => MemoryQuery;
+  /** Projection is ignored — full docs come back, which is a superset. */
+  select: (...fields: string[]) => MemoryQuery;
   get: () => Promise<{ empty: boolean; size: number; docs: MemoryDocSnapshot[] }>;
 }
 
@@ -209,6 +211,7 @@ export function createMemoryFirestore() {
       where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max),
       orderBy: (f, dir = "asc") => query(inScope, filters, [f, dir], max),
       limit: (n) => query(inScope, filters, order, n),
+      select: () => query(inScope, filters, order, max),
       // Reads observe the store when ISSUED and resolve a tick later, so two
       // concurrent transactions can both read before either commits.
       get: () => {
@@ -232,8 +235,14 @@ export function createMemoryFirestore() {
   }
 
   function collectionRef(path: string) {
+    const doc = (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`);
     return Object.assign(query((parent) => parent === path, [], null, null), {
-      doc: (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`),
+      doc,
+      add: async (data: Data) => {
+        const ref = doc();
+        await ref.set(data);
+        return ref;
+      },
     });
   }
 
