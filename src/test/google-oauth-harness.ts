@@ -31,6 +31,8 @@ export const state = {
   docs: new Map<string, Record<string, unknown>>(),
   claims: new Map<string, Record<string, unknown>>(),
   writes: [] as Write[],
+  /** Every document path read, so a test can prove a path was never touched. */
+  reads: [] as string[],
 };
 
 function isPlain(v: unknown): v is Record<string, unknown> {
@@ -53,7 +55,7 @@ function docRef(path: string) {
     __path: path,
     path,
     get: async () => ({
-      exists: state.docs.has(path),
+      exists: (state.reads.push(path), state.docs.has(path)),
       data: () => state.docs.get(path),
     }),
     set: async (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
@@ -131,6 +133,7 @@ export const firestoreMock = () => ({
 /** Fresh docs: an admin, a plain member, and an admin of a DIFFERENT sub. */
 export function resetHarness(opts: { gateOn?: boolean } = {}) {
   state.writes = [];
+  state.reads = [];
   state.docs = new Map<string, Record<string, unknown>>([
     [
       SUB_PATH,

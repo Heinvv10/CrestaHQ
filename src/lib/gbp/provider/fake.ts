@@ -14,9 +14,14 @@ import { GbpProviderError, type GbpPage, type GbpProvider, type GbpReview } from
  * Reachable only through `getGbpProviderFor` in select.ts, which refuses it
  * outside loopback dev/CI and outside the fixture agency.
  *
- * Tokens encode the sub-account (`fake-refresh:{sa}:{n}` /
- * `fake-access:{sa}:{n}`) so every data call can find its scenario without a
- * side channel. Lists page in threes so callers must really paginate.
+ * Each instance is BOUND to the one sub-account select.ts fenced. Codes and
+ * tokens still encode a sub-account (`fake-code:{sa}`, `fake-refresh:{sa}:{n}`,
+ * `fake-access:{sa}:{n}`), but one naming any other sub-account is refused
+ * like Google refuses a foreign credential — and the scenario store is only
+ * ever read or written for the bound id. Without the binding, a valid state
+ * for the fixture plus `code=fake-code:<real tenant>` would have pointed the
+ * fixture's tokens (and every later scenario write) at the real tenant.
+ * Lists page in threes so callers must really paginate.
  */
 
 const PAGE = 3;
@@ -38,27 +43,34 @@ function asPage<T>(items: T[], pageToken?: string): GbpPage<T> {
   return { items: slice, nextPageToken: next };
 }
 
-export function createFakeGbpProvider(store: FakeScenarioStore): GbpProvider {
-  let counter = 0;
+/** Token counter shared by every instance so tokens stay unique per process. */
+let counter = 0;
 
-  async function load(subAccountId: string): Promise<FakeScenario> {
-    return (await store.get(subAccountId)) ?? defaultFakeScenario();
+export function createFakeGbpProvider(
+  store: FakeScenarioStore,
+  bound: string,
+): GbpProvider {
+  /** True only when `value` matches `re` AND names the bound sub-account. */
+  const mine = (re: RegExp, value: string) => re.exec(value)?.[1] === bound;
+
+  async function load(): Promise<FakeScenario> {
+    return (await store.get(bound)) ?? defaultFakeScenario();
   }
 
   /** Throw the scripted failure for `op` once, persisting that it was used. */
-  async function consume(subAccountId: string, scenario: FakeScenario, op: FakeOp) {
+  async function consume(scenario: FakeScenario, op: FakeOp) {
     if (scenario.failNext?.op !== op) return;
     const { kind } = scenario.failNext;
     delete scenario.failNext;
-    await store.set(subAccountId, scenario);
+    await store.set(bound, scenario);
     throw new GbpProviderError(kind);
   }
 
-  function mint(subAccountId: string, withRefresh: boolean): GoogleTokens {
+  function mint(withRefresh: boolean): GoogleTokens {
     counter += 1;
     return {
-      accessToken: `fake-access:${subAccountId}:${counter}`,
-      refreshToken: withRefresh ? `fake-refresh:${subAccountId}:${counter}` : null,
+      accessToken: `fake-access:${bound}:${counter}`,
+      refreshToken: withRefresh ? `fake-refresh:${bound}:${counter}` : null,
       expiresAt: Date.now() + 3600_000,
       scopes: [GOOGLE_SCOPE],
     };
@@ -66,14 +78,14 @@ export function createFakeGbpProvider(store: FakeScenarioStore): GbpProvider {
 
   /** Resolve an access token to its scenario, like Google resolving a bearer. */
   async function authed(accessToken: string, op: FakeOp) {
-    const m = ACCESS_RE.exec(accessToken);
-    if (!m) throw new GbpProviderError("auth_expired", { status: 401 });
-    const subAccountId = m[1];
-    const scenario = await load(subAccountId);
-    await consume(subAccountId, scenario, op);
+    if (!mine(ACCESS_RE, accessToken)) {
+      throw new GbpProviderError("auth_expired", { status: 401 });
+    }
+    const scenario = await load();
+    await consume(scenario, op);
     // Revoking a grant at Google kills its access tokens too.
     if (scenario.revoked) throw new GbpProviderError("auth_expired", { status: 401 });
-    return { subAccountId, scenario };
+    return scenario;
   }
 
   function findReview(scenario: FakeScenario, reviewName: string): GbpReview {
@@ -85,41 +97,41 @@ export function createFakeGbpProvider(store: FakeScenarioStore): GbpProvider {
   }
 
   return {
-    authorizeUrl({ redirectUri, state, subAccountId }) {
+    authorizeUrl({ redirectUri, state }) {
       const url = new URL(redirectUri);
-      url.searchParams.set("code", `fake-code:${subAccountId}`);
+      url.searchParams.set("code", `fake-code:${bound}`);
       url.searchParams.set("state", state);
       return url.toString();
     },
 
     async exchangeCode(code) {
-      const m = CODE_RE.exec(code);
-      if (!m) throw new GbpProviderError("revoked", { status: 400 });
-      await consume(m[1], await load(m[1]), "exchangeCode");
-      return mint(m[1], true);
+      if (!mine(CODE_RE, code)) throw new GbpProviderError("revoked", { status: 400 });
+      await consume(await load(), "exchangeCode");
+      return mint(true);
     },
 
     async refresh(refreshToken) {
-      const m = REFRESH_RE.exec(refreshToken);
-      if (!m) throw new GbpProviderError("revoked", { status: 400 });
-      const scenario = await load(m[1]);
-      await consume(m[1], scenario, "refresh");
+      if (!mine(REFRESH_RE, refreshToken)) throw new GbpProviderError("revoked", { status: 400 });
+      const scenario = await load();
+      await consume(scenario, "refresh");
       if (scenario.revoked) throw new GbpProviderError("revoked", { status: 400 });
-      return mint(m[1], !!scenario.rotateRefreshToken);
+      return mint(!!scenario.rotateRefreshToken);
     },
 
     async revoke(token) {
-      const m = REFRESH_RE.exec(token) ?? ACCESS_RE.exec(token);
-      if (m) await consume(m[1], await load(m[1]), "revoke");
+      if (!mine(REFRESH_RE, token) && !mine(ACCESS_RE, token)) {
+        throw new GbpProviderError("revoked", { status: 400 });
+      }
+      await consume(await load(), "revoke");
     },
 
     async listAccounts(accessToken, pageToken) {
-      const { scenario } = await authed(accessToken, "listAccounts");
+      const scenario = await authed(accessToken, "listAccounts");
       return asPage(scenario.accounts, pageToken);
     },
 
     async listLocations(accessToken, accountName, pageToken) {
-      const { scenario } = await authed(accessToken, "listLocations");
+      const scenario = await authed(accessToken, "listLocations");
       if (!scenario.accounts.some((a) => a.name === accountName)) {
         throw new GbpProviderError("not_found", { status: 404 });
       }
@@ -127,7 +139,7 @@ export function createFakeGbpProvider(store: FakeScenarioStore): GbpProvider {
     },
 
     async listReviews(accessToken, { accountName, locationName }, pageToken) {
-      const { scenario } = await authed(accessToken, "listReviews");
+      const scenario = await authed(accessToken, "listReviews");
       const owned = scenario.locations[accountName] ?? [];
       if (!owned.some((l) => l.name === locationName)) {
         throw new GbpProviderError("not_found", { status: 404 });
@@ -147,17 +159,17 @@ export function createFakeGbpProvider(store: FakeScenarioStore): GbpProvider {
     },
 
     async putReply(accessToken, reviewName, comment) {
-      const { subAccountId, scenario } = await authed(accessToken, "putReply");
+      const scenario = await authed(accessToken, "putReply");
       const target = findReview(scenario, reviewName);
       target.reply = { comment, updateTime: new Date().toISOString() };
-      await store.set(subAccountId, scenario);
+      await store.set(bound, scenario);
       return target.reply;
     },
 
     async deleteReply(accessToken, reviewName) {
-      const { subAccountId, scenario } = await authed(accessToken, "deleteReply");
+      const scenario = await authed(accessToken, "deleteReply");
       findReview(scenario, reviewName).reply = null;
-      await store.set(subAccountId, scenario);
+      await store.set(bound, scenario);
     },
   };
 }

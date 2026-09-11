@@ -75,6 +75,6 @@ export async function GET(
   // Throws (500) in fake mode for a sub-account outside the fixture agency.
   const provider = await getGbpProviderFor(id);
   return NextResponse.redirect(
-    provider.authorizeUrl({ redirectUri, state, subAccountId: id }),
+    provider.authorizeUrl({ redirectUri, state }),
   );
 }

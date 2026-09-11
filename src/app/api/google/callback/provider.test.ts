@@ -122,6 +122,17 @@ describe("fake mode", () => {
     expect(state.docs.has(`subAccounts/${OTHER_SUB}/private/googleConnection`)).toBe(false);
   });
 
+  it("refuses a code naming another sub-account: nothing stored, nothing of theirs read", async () => {
+    fakeMode();
+    state.docs.set(`subAccounts/${OTHER_SUB}`, { agencyId: "ag_real_client" });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // A valid state for the fixture SUB, but a code minted for OTHER_SUB.
+    const res = await callback(SUB, "uid_admin", `fake-code:${OTHER_SUB}`);
+    expect(res.headers.get("location")).toContain("google=error");
+    expect(state.writes).toEqual([]);
+    expect(state.reads.filter((p) => p.startsWith(`subAccounts/${OTHER_SUB}`))).toEqual([]);
+  });
+
   it("connect refuses a sub-account of another agency", async () => {
     fakeMode();
     state.docs.set(`subAccounts/${OTHER_SUB}`, { agencyId: "ag_real_client", googleEnabledByAgency: true });

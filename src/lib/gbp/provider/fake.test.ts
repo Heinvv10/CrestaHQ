@@ -14,7 +14,7 @@ const SA = "sa_fake";
 
 function setup() {
   const store = new InMemoryScenarioStore();
-  return { store, fake: createFakeGbpProvider(store) };
+  return { store, fake: createFakeGbpProvider(store, SA) };
 }
 
 async function connected() {
@@ -33,11 +33,17 @@ describe("OAuth", () => {
   it("skips the Google hop: the consent URL is the callback with a fake code", () => {
     const { fake } = setup();
     const url = new URL(
-      fake.authorizeUrl({ redirectUri: "http://127.0.0.1:3100/api/google/callback", state: "st.sig", subAccountId: SA }),
+      fake.authorizeUrl({ redirectUri: "http://127.0.0.1:3100/api/google/callback", state: "st.sig" }),
     );
     expect(url.origin + url.pathname).toBe("http://127.0.0.1:3100/api/google/callback");
     expect(url.searchParams.get("code")).toBe(`fake-code:${SA}`);
     expect(url.searchParams.get("state")).toBe("st.sig");
+  });
+
+  it("mints its code for the sub-account it is bound to", () => {
+    const { fake } = setup();
+    const url = new URL(fake.authorizeUrl({ redirectUri: "http://127.0.0.1:3100/cb", state: "s" }));
+    expect(url.searchParams.get("code")).toBe(`fake-code:${SA}`);
   });
 
   it("exchanges a fake code for tokens that encode the sub-account", async () => {
@@ -152,5 +158,42 @@ describe("scenario controls", () => {
   it("rejects an access token that is not a fake one", async () => {
     const { fake } = setup();
     expect(await kindOf(fake.listAccounts("ya29.real-google-token"))).toBe("auth_expired");
+  });
+});
+
+describe("binding to the fenced sub-account", () => {
+  const OTHER = "sa_real_client";
+
+  /** A store that records every sub-account id it is asked about. */
+  function spiedSetup() {
+    const store = new InMemoryScenarioStore();
+    const touched: string[] = [];
+    const spied = {
+      get: (id: string) => (touched.push(id), store.get(id)),
+      set: (id: string, s: Parameters<typeof store.set>[1]) => (touched.push(id), store.set(id, s)),
+    };
+    return { touched, fake: createFakeGbpProvider(spied, SA) };
+  }
+
+  it("refuses a code, refresh token, access token or revoke naming another sub-account", async () => {
+    const { fake, touched } = spiedSetup();
+    expect(await kindOf(fake.exchangeCode(`fake-code:${OTHER}`, "x"))).toBe("revoked");
+    expect(await kindOf(fake.refresh(`fake-refresh:${OTHER}:1`))).toBe("revoked");
+    expect(await kindOf(fake.revoke(`fake-refresh:${OTHER}:1`))).toBe("revoked");
+    expect(await kindOf(fake.listAccounts(`fake-access:${OTHER}:1`))).toBe("auth_expired");
+    expect(await kindOf(fake.putReply(`fake-access:${OTHER}:1`, "accounts/a/locations/l/reviews/r", "x"))).toBe(
+      "auth_expired",
+    );
+    // Nothing outside the bound sub-account was ever read or written.
+    expect(touched.filter((id) => id !== SA)).toEqual([]);
+  });
+
+  it("only ever loads and saves the bound sub-account's scenario", async () => {
+    const { fake, touched } = spiedSetup();
+    const tokens = await fake.exchangeCode(`fake-code:${SA}`, "x");
+    await fake.listAccounts(tokens.accessToken);
+    await fake.refresh(tokens.refreshToken as string);
+    expect(touched.length).toBeGreaterThan(0);
+    expect(new Set(touched)).toEqual(new Set([SA]));
   });
 });

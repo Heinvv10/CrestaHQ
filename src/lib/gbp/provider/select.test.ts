@@ -86,7 +86,7 @@ describe("getGbpProviderFor", () => {
   it("returns the fake for a sub-account of the fixture agency", async () => {
     const p = await getGbpProviderFor(SUB);
     expect(p).not.toBe(googleGbpProvider);
-    expect(p.authorizeUrl({ redirectUri: "http://127.0.0.1:3100/cb", state: "s", subAccountId: SUB })).toContain(
+    expect(p.authorizeUrl({ redirectUri: "http://127.0.0.1:3100/cb", state: "s" })).toContain(
       `code=fake-code%3A${SUB}`,
     );
   });

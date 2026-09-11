@@ -73,15 +73,8 @@ export interface GbpPage<T> {
 
 export interface GbpProvider {
   // OAuth -------------------------------------------------------------------
-  /**
-   * The consent URL. `subAccountId` is ignored by Google; the fake uses it to
-   * mint a code that names the sub-account (it skips the Google hop).
-   */
-  authorizeUrl(opts: {
-    redirectUri: string;
-    state: string;
-    subAccountId: string;
-  }): string;
+  /** The consent URL (the fake skips the Google hop and targets the callback). */
+  authorizeUrl(opts: { redirectUri: string; state: string }): string;
   exchangeCode(code: string, redirectUri: string): Promise<GoogleTokens>;
   /** `refreshToken` on the result is non-null only when Google rotated it. */
   refresh(refreshToken: string): Promise<GoogleTokens>;

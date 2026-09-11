@@ -69,12 +69,13 @@ export function gbpProviderMode(): "google" | "fake" {
   return "fake";
 }
 
-let fakeProvider: GbpProvider | null = null;
-
 /**
  * The provider for work on one sub-account. Every tenant-touching caller —
  * connect, callback exchange, token refresh, discovery, selection, disconnect
- * revoke — goes through here, so the fixture-agency fence cannot be skipped.
+ * revoke — goes through here. In fake mode the returned fake is BOUND to
+ * `subAccountId`: it refuses any code or token naming another sub-account and
+ * touches only this sub-account's scenario, so the fixture-agency fence
+ * applies to what the fake does, not just to who may obtain it.
  */
 export async function getGbpProviderFor(subAccountId: string): Promise<GbpProvider> {
   if (gbpProviderMode() === "google") return googleGbpProvider;
@@ -84,6 +85,5 @@ export async function getGbpProviderFor(subAccountId: string): Promise<GbpProvid
   if (agencyId !== process.env.GBP_FAKE_AGENCY_ID) {
     throw new GbpFakeRefusedError("sub-account is not in the fixture agency");
   }
-  fakeProvider ??= createFakeGbpProvider(new FirestoreScenarioStore());
-  return fakeProvider;
+  return createFakeGbpProvider(new FirestoreScenarioStore(), subAccountId);
 }
