@@ -22,6 +22,7 @@ import {
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
+import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -44,8 +45,6 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-import { resolveReviewUrl } from "./canonical-url";
 
 export type ReviewTrigger = "manual" | "quote_paid" | "deal_completed";
 

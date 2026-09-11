@@ -61,6 +61,15 @@ describe("posting", () => {
     expect(events(SA, "reply_posted")).toHaveLength(1);
   });
 
+  it("a late retry of an earlier submit never re-posts its text over a newer edit", async () => {
+    await post({ comment: COMMENT, idempotencyKey: KEY });
+    await post({ comment: "A newer edit.", idempotencyKey: "compose-session-key-0002" });
+    const late = await post({ comment: COMMENT, idempotencyKey: KEY });
+    expect(late.status).toBe(200);
+    expect(calls()).toHaveLength(2);
+    expect((mem.read(reviewPath("fake-r6"))?.reply as { comment: string }).comment).toBe("A newer edit.");
+  });
+
   it("the same key with a different comment → 409 idempotency_key_reused, nothing posted", async () => {
     await post({ comment: COMMENT, idempotencyKey: KEY });
     const r = await post({ comment: "Something else", idempotencyKey: KEY });
