@@ -43,8 +43,12 @@ export function useGoogleStatusToast(): void {
     if (!status) return;
     const msg = GOOGLE_STATUS_MESSAGES[status];
     if (msg) {
-      if (msg.ok) toast.success(msg.text);
-      else toast.error(msg.text);
+      // Deferred one task. After the OAuth redirect the whole app mounts in a
+      // single commit and the root <Toaster/> — a later sibling — subscribes
+      // in its own mount effect, AFTER this one: a toast fired now is dropped.
+      // No cleanup on purpose: under StrictMode's remount the param is already
+      // stripped, so cancelling here would lose the toast for good.
+      setTimeout(() => (msg.ok ? toast.success(msg.text) : toast.error(msg.text)), 0);
     }
     params.delete("google");
     const qs = params.toString();
