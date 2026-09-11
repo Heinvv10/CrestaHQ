@@ -7,7 +7,7 @@ import { readEnv } from "../lib/env";
  * WhatsApp-inbound contacts arrive with `name: ""`. Editing one must not
  * force the operator to invent a name: change only the company, save, and
  * the name stays empty in Firestore while the header titles the contact by
- * its phone.
+ * its phone. Then create one the same way: phone only, no name.
  */
 
 test("edits a nameless phone-only contact without requiring a name", async ({
@@ -60,4 +60,26 @@ test("edits a nameless phone-only contact without requiring a name", async ({
     .toBe(company);
   expect((await ref.get()).data()?.name).toBe("");
   await expect(title).toHaveText(phone);
+
+  // --- create: phone only through the UI, no name ------------------------
+  // The client validation passing is not enough — POST /api/contacts must
+  // accept it too, so assert the doc exists in Firestore with name "".
+  const createdPhone = `+2783${String(stamp).slice(-7)}`;
+  await page.goto(`/sa/${env.E2E_SUBACCOUNT_ID}/contacts`);
+  await page.getByRole("button", { name: "Add Contact" }).first().click();
+  const addSheet = page.getByRole("dialog");
+  await addSheet.locator("#c-phone").fill(createdPhone);
+  await addSheet.getByRole("button", { name: "Add Contact" }).click();
+
+  await expect(page.locator("tr").filter({ hasText: createdPhone })).toBeVisible(
+    { timeout: 30_000 },
+  );
+  const created = await adminDb()
+    .collection("contacts")
+    .where("subAccountId", "==", env.E2E_SUBACCOUNT_ID)
+    .where("phone", "==", createdPhone)
+    .limit(1)
+    .get();
+  expect(created.empty, "phone-only contact was not written").toBe(false);
+  expect(created.docs[0].data().name).toBe("");
 });

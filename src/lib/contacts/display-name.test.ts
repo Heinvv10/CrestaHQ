@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contactDisplayName } from "./display-name";
+import { contactDisplayName, hasContactIdentity } from "./display-name";
 
 describe("contactDisplayName", () => {
   it("prefers the name", () => {
@@ -28,5 +28,18 @@ describe("contactDisplayName", () => {
     expect(contactDisplayName({ name: null, phone: null }, "Unnamed contact")).toBe(
       "Unnamed contact"
     );
+  });
+});
+
+describe("hasContactIdentity", () => {
+  it("accepts any one of name, phone or email", () => {
+    expect(hasContactIdentity({ name: "Thandi" })).toBe(true);
+    expect(hasContactIdentity({ phone: "+27821234567" })).toBe(true);
+    expect(hasContactIdentity({ email: "t@x.za" })).toBe(true);
+  });
+
+  it("rejects when all three are empty or whitespace", () => {
+    expect(hasContactIdentity({})).toBe(false);
+    expect(hasContactIdentity({ name: " ", phone: "", email: null })).toBe(false);
   });
 });

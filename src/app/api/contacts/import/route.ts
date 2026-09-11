@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
+import { hasContactIdentity } from "@/lib/contacts/display-name";
 
 /**
  * Dashboard-facing CSV import. The client parses + maps + validates the CSV
@@ -67,8 +68,9 @@ export async function POST(request: Request) {
     const row = rows[i];
     const name = str(row.name, 200);
     const email = str(row.email);
-    if (!name && !email) {
-      errors.push({ index: i, message: "Missing name and email" });
+    const phone = str(row.phone);
+    if (!hasContactIdentity({ name, email, phone })) {
+      errors.push({ index: i, message: "Missing name, phone and email" });
       continue;
     }
     try {
@@ -79,7 +81,7 @@ export async function POST(request: Request) {
         mode: "live",
         name,
         email,
-        phone: str(row.phone),
+        phone,
         phoneCountry: (subSnap.data()?.defaultPhoneCountry as string) ?? null,
         company: str(row.company),
         address: str(row.address),

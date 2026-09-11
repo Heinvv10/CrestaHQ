@@ -12,6 +12,10 @@ import { TerritorySelectField } from "@/components/settings/territory-select-fie
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
 import type { Contact, ContactFormData, ContactSource } from "@/types/contacts";
 
@@ -83,8 +87,8 @@ export function ContactForm({
     const next: Record<string, string> = {};
     // WhatsApp-inbound contacts arrive nameless; a phone or email is enough
     // to identify one, so the name is only required when both are empty.
-    if (!name.trim() && !phone.trim() && !email.trim())
-      next.name = "Enter a name, phone or email";
+    if (!hasContactIdentity({ name, phone, email }))
+      next.name = CONTACT_IDENTITY_ERROR;
     if (email.trim() && !EMAIL_RE.test(email.trim()))
       next.email = "Enter a valid email";
     setErrors(next);

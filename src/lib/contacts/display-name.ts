@@ -15,3 +15,19 @@ export function contactDisplayName(
     fallback
   );
 }
+
+/**
+ * A contact must be identifiable by at least one of name, phone or email.
+ * The one rule behind the contact form, POST /api/contacts and the CSV
+ * import, so a nameless WhatsApp contact that the form accepts is never
+ * refused by the server.
+ */
+export function hasContactIdentity(contact: {
+  name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+}): boolean {
+  return !!(contact.name?.trim() || contact.phone?.trim() || contact.email?.trim());
+}
+
+export const CONTACT_IDENTITY_ERROR = "Enter a name, phone or email";
