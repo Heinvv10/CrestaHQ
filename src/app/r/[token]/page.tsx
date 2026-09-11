@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { resolveReviewUrl, type ReviewUrlSource } from "@/lib/reviews/canonical-url";
 import { verifyReviewToken } from "@/lib/reviews/feedback-token";
 import { PublicReviewView } from "@/components/reviews/public-review-view";
 import { LogoMark } from "@/components/brand/logo-mark";
@@ -50,9 +51,9 @@ export default async function PublicReviewPage({
 
   const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
   const sub = (subSnap.data() ?? {}) as Record<string, unknown>;
-  const cfg = (sub.googleReview ?? {}) as Record<string, unknown>;
-
-  const reviewUrl = typeof cfg.reviewUrl === "string" ? cfg.reviewUrl : "";
+  // The configured URL, through the same seam the senders use. (This read
+  // `sub.googleReview`, a field that does not exist, so the link never showed.)
+  const reviewUrl = resolveReviewUrl(sub as ReviewUrlSource).configured ?? "";
   const businessName =
     (typeof sub.name === "string" && sub.name) || "our team";
   const firstName =
