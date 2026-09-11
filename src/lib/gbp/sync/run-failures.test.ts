@@ -195,7 +195,9 @@ describe("lease lost mid-run", () => {
     const run = await sync();
     expect(run).toMatchObject({ status: "failed", errorKind: "lease_lost", pagesFetched: 1 });
     expect(reviews()).toHaveLength(3);
-    expect(summaryOf()).toBeFalsy();
+    // No real summary — only the cache marker the lease stamped before the
+    // first page, so retention can still find these reviews (round 5).
+    expect(summaryOf()).toMatchObject({ lastRunStatus: "running", lastSuccessfulSyncAt: null, averageRating: null });
     expect(syncState()).toBeUndefined();
   });
 });

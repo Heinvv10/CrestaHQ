@@ -94,7 +94,8 @@ export interface GbpSummary {
   totalReviewCount: number | null;
   lastSuccessfulSyncAt: Date | null;
   lastRunAt: Date;
-  lastRunStatus: SyncStatus;
+  /** `running`: the cache marker stamped by a first run that has not finished yet. */
+  lastRunStatus: SyncStatus | "running";
   lastErrorKind: string | null;
   /** The last run's reconciliation — tells a partial banner why. */
   lastReconciliation?: Reconciliation | null;

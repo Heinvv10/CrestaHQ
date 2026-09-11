@@ -6,6 +6,7 @@ export interface RunView {
   created?: number;
   updated?: number;
   removed?: number;
+  purged?: number;
   errorKind: string | null;
   skipReason: string | null;
 }
@@ -21,6 +22,11 @@ const SKIP_TEXT: Record<string, string> = {
 
 /** One honest sentence for what a run did. */
 export function describeRun(run: RunView): string {
+  if (run.skipReason === "retention_only") {
+    return run.status === "failed"
+      ? "Housekeeping failed — the next daily pass retries."
+      : `Housekeeping: removed ${run.purged ?? 0} cached review(s) past Google's 30-day storage limit.`;
+  }
   if (run.status === "skipped") return SKIP_TEXT[run.skipReason ?? ""] ?? "Sync skipped.";
   const counts = `${run.created ?? 0} new, ${run.updated ?? 0} updated, ${run.removed ?? 0} removed`;
   if (run.status === "success") return `Synced: ${counts}.`;

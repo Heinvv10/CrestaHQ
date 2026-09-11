@@ -198,10 +198,20 @@ function newRecord(subAccountId: string, sub: SubWithSummary, opts: SyncOptions,
  */
 async function underLease(rec: SyncRunRecord, cls: SkipReason | null, opts: SyncOptions, now: Date, syncs: boolean) {
   const sa = rec.subAccountId;
+  // Only a run that will fetch (and so commit review pages) stamps the marker.
+  const stampIfAbsent: GbpSummary | undefined =
+    rec.skipReason === null
+      ? {
+          locationName: rec.locationName ?? "", averageRating: null, totalReviewCount: null,
+          lastSuccessfulSyncAt: null, lastRunAt: now, lastRunStatus: "running", lastErrorKind: null,
+          lastReconciliation: null, health: "never_synced",
+        }
+      : undefined;
   const lease = await acquireLease(sa, rec.runId, now, {
     locationName: rec.locationName,
     skipReason: cls,
     classify: skipReasonFor,
+    stampIfAbsent,
   });
   if (!lease.ok) {
     rec.skipReason = lease.reason;
@@ -255,5 +265,8 @@ export async function retainListing(subAccountId: string, opts: { now?: Date } =
   const cls = rec.skipReason;
   rec.skipReason = "retention_only";
   if (sub.gbpSummary) await underLease(rec, cls, { trigger: "scheduled" }, now, false);
+  // Housekeeping leaves a record only when it did something (or failed), so
+  // Recent syncs stays about real syncs.
+  if (rec.purged === 0 && rec.status !== "failed") return rec;
   return finish(rec, opts, now);
 }

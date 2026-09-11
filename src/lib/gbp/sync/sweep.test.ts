@@ -23,7 +23,7 @@ import {
 } from "@/test/gbp-sync-harness";
 import { storeDb } from "@/test/gbp-sync-store";
 import { fakeScenarioPath } from "../provider/fake-scenario";
-import { runGbpSyncSweep, SWEEP_CAP } from "./sweep";
+import { runGbpRetentionSweep, runGbpSyncSweep, SWEEP_CAP } from "./sweep";
 
 const ORIGINAL = { ...process.env };
 const noSleep = async () => {};
@@ -201,5 +201,30 @@ describe("retention-only pass for caches that can no longer sync", () => {
     expect(result).toMatchObject({ processed: 0, retained: 1 });
     expect(reviews(SA)).toHaveLength(0);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("retention sweep outcomes are counted honestly", () => {
+  it("a retention pass that THROWS records a failed retention run and is not counted as retained", async () => {
+    await runGbpSyncSweep({ sleep: noSleep }); // caches on SA and OTHER_SA
+    const before = mem.read(`subAccounts/${SA}`)?.gbpSummary;
+    const beforeOther = mem.read(`subAccounts/${OTHER_SA}`)?.gbpSummary;
+    vi.spyOn(storeDb, "runTransaction").mockRejectedValueOnce(new Error("14 UNAVAILABLE"));
+    const result = await runGbpRetentionSweep();
+    expect(result).toMatchObject({ retained: 1, failed: 1, refused: 0 });
+    const failed = [...runs(SA), ...runs(OTHER_SA)].filter((r) => r.status === "failed");
+    expect(failed).toEqual([expect.objectContaining({ skipReason: "retention_only", errorKind: "internal", trigger: "scheduled" })]);
+    // A housekeeping failure never rewrites the sync summary.
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toEqual(before);
+    expect(mem.read(`subAccounts/${OTHER_SA}`)?.gbpSummary).toEqual(beforeOther);
+  });
+
+  it("a pass refused by a live lease is reported as refused, not retained, and leaves no run", async () => {
+    await runGbpSyncSweep({ sleep: noSleep });
+    const runsBefore = runs(SA).length;
+    const state = mem.read(`subAccounts/${SA}/private/gbpSyncState`) ?? {};
+    mem.seed(`subAccounts/${SA}/private/gbpSyncState`, { ...state, lease: { runId: "someone", until: Date.now() + 60_000 } });
+    expect(await runGbpRetentionSweep()).toMatchObject({ retained: 1, refused: 1, failed: 0 });
+    expect(runs(SA)).toHaveLength(runsBefore);
   });
 });

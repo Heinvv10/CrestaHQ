@@ -19,7 +19,10 @@ process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
 process.env.QSTASH_NEXT_SIGNING_KEY = "sig_test_next_key_for_gbp_retention";
 
 import { signQStashBody } from "../../../../../e2e/lib/qstash";
-import { OTHER_SA, SA, mem, resetSync, reviews, runs } from "@/test/gbp-sync-harness";
+import { OTHER_SA, SA, mem, resetSync, reviews, runs, seedSub } from "@/test/gbp-sync-harness";
+import { storeDb } from "@/test/gbp-sync-store";
+import { fakeScenarioPath } from "@/lib/gbp/provider/fake-scenario";
+import { syncStatePath } from "@/lib/gbp/sync/types";
 import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { POST } from "./route";
@@ -96,9 +99,54 @@ describe("always-on retention, with the sync schedule OFF", () => {
     expect(getGbpProviderFor).not.toHaveBeenCalled();
   });
 
-  it("touches only tenants that hold a cache", async () => {
+  it("touches only tenants that hold a cache — and records nothing when it purged nothing", async () => {
     expect(await (await cron()).json()).toMatchObject({ retained: 1 });
     expect(runs(OTHER_SA)).toHaveLength(0);
+    // SA's cache is fresh: the pass ran, removed nothing, and left no run
+    // record to crowd out real syncs in Recent syncs.
+    expect(runs(SA)).toEqual([expect.objectContaining({ trigger: "manual", status: "success" })]);
+  });
+
+  it("the round-5 case: a FIRST run that commits a page then dies still leaves its reviews findable", async () => {
+    // OTHER_SA has never synced. Its first run loses its lease after page 1
+    // is committed — before any end-of-run summary could be written.
+    const real = storeDb.doc.bind(storeDb);
+    let reads = 0;
+    const spy = vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+      if (path === fakeScenarioPath(OTHER_SA) && ++reads === 2) void real(syncStatePath(OTHER_SA)).delete();
+      return real(path);
+    });
+    expect(await syncListing(OTHER_SA, { trigger: "scheduled" })).toMatchObject({ status: "failed", errorKind: "lease_lost" });
+    spy.mockRestore();
+    expect(reviews(OTHER_SA)).toHaveLength(3);
+    // The cache marker was stamped inside the lease, before the page landed.
+    expect(mem.read(`subAccounts/${OTHER_SA}`)?.gbpSummary).toMatchObject({
+      lastRunStatus: "running", lastSuccessfulSyncAt: null, averageRating: null, health: "never_synced",
+    });
+    // 45 days later, the housekeeping cron finds and purges them.
+    for (const r of reviews(OTHER_SA)) {
+      const { id, ...doc } = r;
+      mem.seed(`subAccounts/${OTHER_SA}/gbpReviews/${id}`, { ...doc, lastSeenAt: new Date(Date.now() - 45 * DAY) });
+    }
+    vi.mocked(getGbpProviderFor).mockClear();
+    expect(await (await cron()).json()).toMatchObject({ retained: 2 });
+    expect(reviews(OTHER_SA)).toHaveLength(0);
+    expect(getGbpProviderFor).not.toHaveBeenCalled();
+  });
+
+  it("a stamped marker on a cache that can no longer sync, once empty, drops off the list", async () => {
+    seedSub(OTHER_SA, { gateOn: false });
+    const sub = mem.read(`subAccounts/${OTHER_SA}`)!;
+    mem.seed(`subAccounts/${OTHER_SA}`, {
+      ...sub,
+      gbpSummary: {
+        locationName: "locations/e2e-velo-gqeberha", averageRating: null, totalReviewCount: null,
+        lastSuccessfulSyncAt: null, lastRunAt: new Date(), lastRunStatus: "running", lastErrorKind: null, health: "never_synced",
+      },
+    });
+    expect(await (await cron()).json()).toMatchObject({ retained: 2 });
+    expect(mem.read(`subAccounts/${OTHER_SA}`)?.gbpSummary).toBeNull();
+    expect(await (await cron()).json()).toMatchObject({ retained: 1 });
   });
 
   it("500s — so QStash retries — when the sweep cannot start", async () => {

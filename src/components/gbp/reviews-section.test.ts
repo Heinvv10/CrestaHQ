@@ -111,6 +111,18 @@ describe("summary", () => {
     expect(byId("gbp-reviews-load-error")?.textContent).toContain("could not be loaded");
   });
 
+  it("a first sync still in progress (stamped) shows the never-synced state, not a result", async () => {
+    payload = {
+      ...payload,
+      summary: summary({ health: "never_synced", lastRunStatus: "running", lastSuccessfulSyncAt: null, averageRating: null, totalReviewCount: null }),
+      reviews: [],
+    };
+    await render();
+    expect(byId("gbp-health-never_synced")).not.toBeNull();
+    expect(byId("gbp-summary")?.textContent).toContain("Not synced yet");
+    expect(container.querySelector('[data-testid^="gbp-banner-"]')).toBeNull();
+  });
+
   it("says never synced before the first sync", async () => {
     payload = { summary: null, reviews: [], runs: [] };
     await render();
@@ -209,6 +221,19 @@ describe("recent syncs", () => {
     expect(items[0].textContent).toContain("2 new, 1 updated, 0 removed");
     expect(items[1].textContent).toContain("Scheduled");
     expect(items[1].textContent).toContain("already running");
+  });
+
+  it("labels a retention pass as housekeeping, not a scheduled sync", async () => {
+    payload = {
+      ...payload,
+      runs: [{ trigger: "scheduled", status: "skipped", finishedAt: "2026-09-11T04:30:00.000Z", skipReason: "retention_only", purged: 2, errorKind: null }],
+    };
+    await render();
+    const item = byId("gbp-runs")?.querySelector("li")?.textContent ?? "";
+    expect(item).toContain("Retention");
+    expect(item).not.toContain("Scheduled");
+    expect(item).toContain("2");
+    expect(item).toContain("30-day");
   });
 
   it("is absent before any run", async () => {

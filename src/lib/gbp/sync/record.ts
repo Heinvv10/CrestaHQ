@@ -18,6 +18,8 @@ export async function recordFailedRun(
   trigger: SyncTrigger,
   actorUid: string | null,
   startedAt: Date,
+  /** `retention`: a housekeeping pass threw — record it as such, and leave the sync summary alone. */
+  kind: "sync" | "retention" = "sync",
 ): Promise<SyncRunRecord> {
   const db = getAdminDb();
   const ref = db.collection(runsCollection(subAccountId)).doc();
@@ -28,11 +30,11 @@ export async function recordFailedRun(
     startedAt, finishedAt: new Date(), locationName,
     status: "failed", pagesFetched: 0, reviewsSeen: 0, created: 0, updated: 0, unchanged: 0,
     removed: 0, purged: 0, reconciliation: "deferred", resumedFromCursor: false,
-    errorKind: "internal", skipReason: null,
+    errorKind: "internal", skipReason: kind === "retention" ? "retention_only" : null,
   };
   try {
     await ref.create({ ...rec });
-    if (locationName) {
+    if (locationName && kind === "sync") {
       const subRef = db.doc(`subAccounts/${subAccountId}`);
       await db.runTransaction(async (tx) => {
         const fresh = (await tx.get(subRef)).data() as typeof sub | undefined;

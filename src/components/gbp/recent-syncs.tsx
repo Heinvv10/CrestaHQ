@@ -10,7 +10,9 @@ export function RecentSyncs({ runs }: { runs: RunView[] }) {
       <ul className="mt-2 space-y-1 text-xs text-muted-foreground" data-testid="gbp-runs">
         {runs.map((run, i) => (
           <li key={`${run.finishedAt ?? ""}-${i}`}>
-            <span className="font-medium text-foreground">{run.trigger === "manual" ? "Sync now" : "Scheduled"}</span>
+            <span className="font-medium text-foreground">
+              {run.skipReason === "retention_only" ? "Retention" : run.trigger === "manual" ? "Sync now" : "Scheduled"}
+            </span>
             {run.finishedAt && ` · ${absoluteTime(run.finishedAt)}`} · {describeRun(run)}
           </li>
         ))}

@@ -9,16 +9,21 @@ import { retainListing, skipReasonFor, syncListing } from "./run";
 import { toMillis, type GbpSummary } from "./types";
 
 /**
- * The scheduled sweep behind POST /api/cron/gbp-sync (every 6 hours).
+ * The two sweeps behind the GBP crons, both under each tenant's lease:
  *
- * Two kinds of work, both through `syncListing` under its lease:
- *  - SYNC: gated, connected sub-accounts with a listing — least recently run
- *    first (never-run first), at most {@link SWEEP_CAP} per invocation,
- *    {@link CONCURRENCY} at a time. The first rate_limited result stops new
- *    tenants from starting (the quota is project-wide).
- *  - RETENTION ONLY: sub-accounts that still hold a synced cache but can no
- *    longer sync (gate off, disconnected, no listing). No provider call —
- *    just Google's 30-day rule, so a cache never outlives it.
+ *  - `runGbpSyncSweep` (POST /api/cron/gbp-sync, every 6 hours, only while
+ *    GBP_SYNC_SCHEDULE_ENABLED=1): SYNC gated, connected sub-accounts with a
+ *    listing via `syncListing` — least recently run first (never-run first),
+ *    at most {@link SWEEP_CAP} per invocation, {@link CONCURRENCY} at a time;
+ *    the first rate_limited result stops new tenants from starting (the quota
+ *    is project-wide). Then a retention-only pass for caches that can no
+ *    longer sync (gate off, disconnected, no listing).
+ *  - `runGbpRetentionSweep` (POST /api/cron/gbp-retention, daily, always on —
+ *    and the sync cron while its flag is off): a retention-only pass via
+ *    `retainListing` for EVERY sub-account holding a cache, sync-eligible or
+ *    not. Never reaches the provider — Google's 30-day rule is not a matter
+ *    of configuration. A cache is found by `gbpSummary.lastRunAt`, which the
+ *    lease transaction stamps before any review page can land.
  *
  * Queries are equality or single-field inequality only — no composite
  * index. In fake mode ONE query fenced to GBP_FAKE_AGENCY_ID feeds both
@@ -39,6 +44,8 @@ export interface SweepResult {
   byStatus: Record<string, number>;
   /** Retention-only passes run. */
   retained: number;
+  retentionRefused: number;
+  retentionFailed: number;
   stoppedOnRateLimit: boolean;
 }
 
@@ -76,18 +83,32 @@ async function pool(items: Candidate[], work: (c: Candidate) => Promise<void>, s
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
 }
 
+export interface RetentionTally {
+  /** Passes that actually ran retention under the lease. */
+  retained: number;
+  /** Passes refused (a live lease, or the sub-account changed as it started). */
+  refused: number;
+  /** Passes that failed — each leaves a failed retention run. */
+  failed: number;
+}
+
 /** Retention-only passes (`retainListing`, no provider calls), each tenant isolated. */
-async function retainAll(list: Candidate[]): Promise<number> {
-  let retained = 0;
+async function retainAll(list: Candidate[]): Promise<RetentionTally> {
+  const tally: RetentionTally = { retained: 0, refused: 0, failed: 0 };
   await pool(list, async (c) => {
+    const now = new Date();
     try {
-      await retainListing(c.id);
-      retained += 1;
+      const rec = await retainListing(c.id, { now });
+      if (rec.skipReason === "already_running" || rec.skipReason === "listing_changed") tally.refused += 1;
+      else if (rec.status === "failed") tally.failed += 1;
+      else tally.retained += 1;
     } catch (err) {
       console.error(`[cron/gbp-retention] retention threw sa=${c.id}: ${err instanceof Error ? err.name : typeof err}`);
+      await recordFailedRun(c.id, c.sub, "scheduled", null, now, "retention");
+      tally.failed += 1;
     }
   }, () => false);
-  return retained;
+  return tally;
 }
 
 /**
@@ -95,9 +116,9 @@ async function retainAll(list: Candidate[]): Promise<number> {
  * the sync schedule is off): a retention-only pass for EVERY sub-account
  * holding a cache — sync-eligible or not. Never reaches the provider.
  */
-export async function runGbpRetentionSweep(): Promise<{ retained: number }> {
+export async function runGbpRetentionSweep(): Promise<RetentionTally> {
   const { cached } = await candidates();
-  return { retained: await retainAll(cached) };
+  return retainAll(cached);
 }
 
 export async function runGbpSyncSweep(opts: { sleep?: Sleep } = {}): Promise<SweepResult> {
@@ -133,6 +154,10 @@ export async function runGbpSyncSweep(opts: { sleep?: Sleep } = {}): Promise<Swe
   }), () => rateLimited);
   // Caches that cannot sync: retention only (no provider calls, no quota to
   // protect — always runs). Eligible tenants get retention inside their sync.
-  retained = await retainAll(cached.filter(({ sub }) => !eligible(sub)));
-  return { processed, byStatus, retained, stoppedOnRateLimit: rateLimited };
+  const retention = await retainAll(cached.filter(({ sub }) => !eligible(sub)));
+  retained = retention.retained;
+  return {
+    processed, byStatus, retained, retentionRefused: retention.refused, retentionFailed: retention.failed,
+    stoppedOnRateLimit: rateLimited,
+  };
 }

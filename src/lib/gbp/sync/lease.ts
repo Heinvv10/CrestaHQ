@@ -3,7 +3,7 @@ import "server-only";
 import type { Transaction } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
-import { LEASE_TTL_MS, syncStatePath, type SkipReason, type SyncState } from "./types";
+import { LEASE_TTL_MS, syncStatePath, type GbpSummary, type SkipReason, type SyncState } from "./types";
 
 /**
  * One sync per sub-account at a time. The lease lives in the locked
@@ -37,6 +37,13 @@ export interface LeaseExpectation {
   skipReason: SkipReason | null;
   /** The same classification the run used, applied to the fresh read. */
   classify: (sub: SubAccountDoc) => SkipReason | null;
+  /**
+   * For a run that will commit review pages: the cache marker to stamp, in
+   * THIS transaction, when the sub-account has no summary yet. Retention
+   * finds caches by `gbpSummary.lastRunAt`; stamping it before any page can
+   * land means a first run that dies mid-way still leaves a findable cache.
+   */
+  stampIfAbsent?: GbpSummary;
 }
 
 export type LeaseResult =
@@ -68,6 +75,8 @@ export async function acquireLease(
     }
     const lease = { runId, until: now.getTime() + LEASE_TTL_MS };
     tx.set(ref, { ...state, lease });
+    const summary = (sub as SubAccountDoc & { gbpSummary?: GbpSummary | null }).gbpSummary;
+    if (expect.stampIfAbsent && !summary) tx.set(subRef, { gbpSummary: expect.stampIfAbsent }, { merge: true });
     return { ok: true, state: { ...state, lease }, sub } as const;
   });
 }

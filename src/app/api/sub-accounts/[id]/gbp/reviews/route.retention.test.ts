@@ -62,6 +62,22 @@ describe("read-time retention (never serve content older than 30 days)", () => {
   });
 });
 
+describe("a first run that has started but not finished (stamped marker)", () => {
+  it("reads as never synced — no rating, no success, nothing claimed", async () => {
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      gbpSummary: {
+        locationName: LOC_A, averageRating: null, totalReviewCount: null, lastSuccessfulSyncAt: null,
+        lastRunAt: new Date(), lastRunStatus: "running", lastErrorKind: null, health: "never_synced",
+      },
+    });
+    expect((await read()).summary).toMatchObject({
+      health: "never_synced", lastRunStatus: "running", averageRating: null, lastSuccessfulSyncAt: null,
+    });
+  });
+});
+
 describe("schedule honesty", () => {
   it("says scheduled only when the deployment enables the schedule", async () => {
     expect((await read()).scheduled).toBe(false);
