@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
+import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 import { runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
 
 /**
@@ -10,9 +11,12 @@ import { runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
  * Public path — the QStash signature is the authentication, as for every
  * other cron route here, and it is bound to THIS route: it must have been
  * minted for `${NEXT_PUBLIC_APP_URL}/api/cron/gbp-sync` (the schedule's
- * destination), so another route's signed call cannot be replayed here. The schedule is NOT auto-registered
- * (register-schedules.ts): creating it is an owner-approval step, documented
- * in docs/features/gbp-reviews.md.
+ * destination), so another route's signed call cannot be replayed here.
+ *
+ * The schedule is opt-in (`GBP_SYNC_SCHEDULE_ENABLED=1`, registered by
+ * register-schedules.ts). With the flag off this answers 200
+ * `{skipped:"not_scheduled"}` and does nothing, so a schedule left behind in
+ * QStash is harmless and the page's "not scheduled" stays true.
  *
  * Each sub-account is isolated inside the sweep, so this answers 200 with the
  * tally even when some tenants failed; 500 only when the sweep could not
@@ -32,6 +36,8 @@ export async function POST(request: Request) {
   if (!url || !(await verifyQStashSignature(signature, rawBody, url))) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
+
+  if (!gbpSyncScheduled()) return NextResponse.json({ skipped: "not_scheduled" });
 
   try {
     return NextResponse.json(await runGbpSyncSweep());

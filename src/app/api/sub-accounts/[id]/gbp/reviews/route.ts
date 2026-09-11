@@ -49,12 +49,14 @@ export async function GET(
   const locationName = sub.googleListing?.locationName ?? null;
   const now = new Date();
   const [reviewSnap, runSnap] = await Promise.all([
-    db.collection(reviewsCollection(id)).orderBy("createTime", "desc").limit(REVIEW_CAP).get(),
+    // One more than the cap: "truncated" means there really is a 501st record.
+    db.collection(reviewsCollection(id)).orderBy("createTime", "desc").limit(REVIEW_CAP + 1).get(),
     db.collection(runsCollection(id)).orderBy("finishedAt", "desc").limit(RUN_CAP).get(),
   ]);
 
   const reviews = locationName
     ? reviewSnap.docs
+        .slice(0, REVIEW_CAP)
         .map((d) => d.data() as Record<string, unknown>)
         .filter((d) => d.state === "active" && d.locationName === locationName && withinRetention(d.lastSeenAt, now))
         .map(publicReview)
@@ -69,7 +71,7 @@ export async function GET(
     reviews,
     // Counted over records (tombstones included — filtering them in the query
     // would need a composite index), so the list may hold fewer than 500.
-    truncated: reviewSnap.size >= REVIEW_CAP,
+    truncated: reviewSnap.size > REVIEW_CAP,
     runs: runSnap.docs.map((d) => publicRun(d.data())),
     scheduled: gbpSyncScheduled(),
   });

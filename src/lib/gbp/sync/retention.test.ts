@@ -151,6 +151,15 @@ describe("no successful sync for 30 days", () => {
     expect(run).toMatchObject({ status: "success", resumedFromCursor: false, created: 7, pagesFetched: 3 });
   });
 
+  it("an internal failure in the purging run never re-stores the expired rating", async () => {
+    await syncedThenAged();
+    mem.seed(`subAccounts/${SA}/private/gbpFakeScenario`, { accounts: "not an array" });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const run = await sync(at(0.5));
+    expect(run).toMatchObject({ status: "failed", errorKind: "internal", purged: 7 });
+    expect(summaryOf()).toMatchObject({ lastRunStatus: "failed", averageRating: null, totalReviewCount: null });
+  });
+
   it("a successful run starts over with fresh content and is healthy again", async () => {
     await syncedThenAged();
     const run = await sync(at(0.5));

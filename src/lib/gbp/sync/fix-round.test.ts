@@ -104,24 +104,47 @@ describe("a resumed pass never tombstones a live review (H3)", () => {
     expect(syncState()?.pass).toBeNull();
   });
 
-  it("does not reconcile when Google does not report a count", async () => {
+  it("the breaker's case: new reviews arriving between runs cannot cover for a missed live one", async () => {
+    // Fails at page 2 (not 3): with the fake's pages of 3, that is the offset
+    // at which the new reviews land in the resumed pages and inflate the
+    // distinct count to 8 ≥ Google's 7 — the case a count rule got wrong.
+    await sync();
+    setScenario(SA, (s) => void (s.failReviewsPage = { pageToken: "3", kind: "permission_denied", times: 1 }));
+    expect(await sync()).toMatchObject({ status: "partial", pagesFetched: 1 });
+    setScenario(SA, (s) => {
+      const list = s.reviews[LOC_A].reviews;
+      const r1 = list.splice(list.findIndex((r) => r.reviewId === "fake-r1"), 1)[0];
+      r1.comment = "Fixture review: edited to the top.";
+      r1.updateTime = "2026-09-10T09:00:00Z";
+      const fresh = [1, 2, 3, 4].map((n) => ({ ...list[0], name: list[0].name.replace("fake-r7", `fake-n${n}`), reviewId: `fake-n${n}` }));
+      list.unshift(r1, ...fresh);
+      s.reviews[LOC_A].totalReviewCount = 11;
+    });
+    // The pass's count stays the 7 it saw first; it sees 8 distinct reviews.
+    const run = await sync({ now: new Date(NOW.getTime() + 6 * 3600_000) });
+    expect(run).toMatchObject({ resumedFromCursor: true, reconciliation: "deferred", removed: 0 });
+    expect(activeReviews().find((r) => r.reviewId === "fake-r1")).toBeDefined();
+  });
+
+  it("a single-run complete pass removes a review Google removed — with no count reported", async () => {
     await sync();
     setScenario(SA, (s) => {
-      s.reviews[LOC_A].reviews.pop();
+      s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r4");
       s.reviews[LOC_A].totalReviewCount = null;
     });
-    expect(await sync()).toMatchObject({ status: "success", reconciliation: "deferred", removed: 0 });
-    expect(activeReviews()).toHaveLength(7);
+    expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 1 });
+    expect(reviews().find((r) => r.reviewId === "fake-r4")).toMatchObject({ state: "removed" });
   });
 });
 
 describe("rating and count come from the pass, not the last page (M7)", () => {
   it("keeps the first non-null values across a resumed pass, and reconciles with them", async () => {
-    setScenario(SA, (s) => void (s.summaryOnFirstPageOnly = true));
+    setScenario(SA, (s) => void (s.laterPages = { averageRating: null, totalReviewCount: null }));
     await sync({ maxPages: 1 });
     expect(syncState()?.pass).toMatchObject({ averageRating: 3.6, totalReviewCount: 7 });
     const run = await sync({ now: new Date(NOW.getTime() + 6 * 3600_000) });
-    expect(run).toMatchObject({ status: "success", resumedFromCursor: true, reconciliation: "full" });
+    // Resumed, so it removes nothing — but the rating/count survive the pass.
+    expect(run).toMatchObject({ status: "success", resumedFromCursor: true, reconciliation: "deferred" });
     expect(summaryOf()).toMatchObject({ averageRating: 3.6, totalReviewCount: 7 });
   });
 });

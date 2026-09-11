@@ -102,8 +102,12 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     // new pass instead of purging again (a big listing can finish).
     const reset = { retentionPurgedAt: now.getTime(), pass: null, anomalyStreak: null };
     purge.push((tx) => tx.set(stateRef, reset, { merge: true }));
-    // A cache that can no longer sync drops its (Google-sourced) summary too.
-    if (!syncs) purge.push((tx) => tx.set(subRef, { gbpSummary: null }, { merge: true }));
+  }
+  // A cache that can no longer sync drops its (Google-sourced) summary once
+  // expired — or when it is empty and never succeeded, since nothing would
+  // ever expire it — and so leaves the sweep's retention list.
+  if (!syncs && (retention.expired || (cache.size === 0 && !prev?.lastSuccessfulSyncAt))) {
+    purge.push((tx) => tx.set(subRef, { gbpSummary: null }, { merge: true }));
   }
   await commitGuarded(sa, rec.runId, purge);
   if (!syncs) return;
@@ -132,7 +136,7 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     else if (!outcome.complete) rec.status = "partial";
     else {
       const streak = retention.expired ? null : (state.anomalyStreak ?? null);
-      const plan = planReconcile(cache, outcome.passId, outcome.totalReviewCount, streak);
+      const plan = planReconcile(cache, outcome.passId, !outcome.resumed, outcome.totalReviewCount, streak);
       rec.reconciliation = plan.reconciliation;
       rec.status = plan.reconciliation === "skipped_anomaly" ? "partial" : "success";
       rec.removed = plan.remove.length;
@@ -197,13 +201,17 @@ export async function syncListing(subAccountId: string, opts: SyncOptions): Prom
       rec.skipReason = lease.reason;
     } else {
       try {
-        await runLeased(rec, sub, lease.state, opts, now);
+        // The sub-account as read inside the lease: the summary it continues
+        // from (and the retention clock) cannot be a stale pre-lease read.
+        await runLeased(rec, lease.sub as SubWithSummary, lease.state, opts, now);
       } catch (err) {
         rec.status = "failed";
         rec.errorKind = err instanceof LeaseLostError ? "lease_lost" : "internal";
         const reason = err instanceof Error ? err.name : typeof err;
         console.error(`[gbp/sync] sa=${subAccountId} run=${rec.runId} ${rec.errorKind}: ${reason}`);
-        if (syncs && rec.errorKind === "internal") await recordInternalFailure(rec, sub, now);
+        if (syncs && rec.errorKind === "internal") {
+          await recordInternalFailure(rec, lease.sub as SubWithSummary, now);
+        }
       } finally {
         await releaseLease(subAccountId, rec.runId);
       }

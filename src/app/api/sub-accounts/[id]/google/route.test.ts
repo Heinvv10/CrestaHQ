@@ -146,9 +146,15 @@ describe("disconnect", () => {
           updatedAt: "SERVER_TS",
         },
       },
-      // The listing's synced review cache goes with it (sync state first).
-      { op: "delete", path: `${SUB_PATH}/private/gbpSyncState` },
+      // The listing's synced review cache goes with it: take the lease,
+      // delete, drop the summary, then the sync state (and lease) last.
+      {
+        op: "set",
+        path: `${SUB_PATH}/private/gbpSyncState`,
+        data: { lease: { runId: "clearing", until: expect.any(Number) } },
+      },
       { op: "set", path: SUB_PATH, data: { gbpSummary: null } },
+      { op: "delete", path: `${SUB_PATH}/private/gbpSyncState` },
     ]);
   });
 
@@ -185,7 +191,7 @@ describe("disconnect", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = await disconnect();
     expect(res.status).toBe(200);
-    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set", "delete", "set"]);
+    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set", "set", "set", "delete"]);
   });
 
   it("refuses in fake mode for a sub-account outside the fixture agency, touching nothing", async () => {
@@ -270,6 +276,6 @@ describe("disconnect", () => {
   it("works while the agency gate is off, so a connection is never stranded", async () => {
     state.docs.set(SUB_PATH, { agencyId: "ag_1", googleEnabledByAgency: false });
     expect((await disconnect()).status).toBe(200);
-    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set", "delete", "set"]);
+    expect(state.writes.map((w) => w.op)).toEqual(["delete", "set", "set", "set", "delete"]);
   });
 });

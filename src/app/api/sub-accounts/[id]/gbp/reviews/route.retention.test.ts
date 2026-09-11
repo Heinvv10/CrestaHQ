@@ -79,6 +79,18 @@ describe("the last run's reconciliation reaches the page", () => {
 });
 
 describe("the 500-record cap", () => {
+  it("exactly 500 records is NOT truncated", async () => {
+    for (let i = 0; i < 493; i++) {
+      mem.seed(`subAccounts/${SA}/gbpReviews/extra${i}`, {
+        subAccountId: SA, locationName: LOC_A, reviewId: `extra${i}`, state: "active", starRating: 4,
+        createTime: new Date(Date.UTC(2026, 9, 1) + i), lastSeenAt: new Date(), comment: null,
+      });
+    }
+    const body = await read();
+    expect(body.reviews).toHaveLength(500);
+    expect(body.truncated).toBe(false);
+  });
+
   it("says so when the cap was hit", async () => {
     expect((await read()).truncated).toBe(false);
     for (let i = 0; i < 500; i++) {

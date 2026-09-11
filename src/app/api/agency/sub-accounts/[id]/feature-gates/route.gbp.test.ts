@@ -1,0 +1,79 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * PATCH /api/agency/sub-accounts/[id]/feature-gates — the Google Business
+ * gate. Characterization of the existing behaviour first (owner-only, the
+ * flag written), then the one change: switching the gate OFF deletes the
+ * synced review cache at once (Google's 30-day rule must not depend on a
+ * sweep reaching a gate-off tenant). Real tenancy, real gate service,
+ * in-memory Firestore.
+ */
+
+vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+
+import { SA, claims, mem, resetSync, reviews, summaryOf, syncState } from "@/test/gbp-sync-harness";
+import { syncListing } from "@/lib/gbp/sync/run";
+import { PATCH } from "./route";
+
+const ORIGINAL = { ...process.env };
+
+async function patch(body: Record<string, unknown>, uid = "uid_owner") {
+  const res = await PATCH(
+    new Request(`http://127.0.0.1:3100/api/agency/sub-accounts/${SA}/feature-gates`, {
+      method: "PATCH",
+      headers: { "x-user-uid": uid, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ id: SA }) },
+  );
+  return res.status;
+}
+
+const gate = () => mem.read(`subAccounts/${SA}`)?.googleEnabledByAgency;
+
+beforeEach(async () => {
+  resetSync();
+  claims.set("uid_owner", { status: "active", agencyId: "ag_1", agencyRole: "owner" });
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  await syncListing(SA, { trigger: "scheduled" });
+});
+afterEach(() => {
+  process.env = { ...ORIGINAL };
+  vi.restoreAllMocks();
+});
+
+describe("characterization", () => {
+  it("only the agency owner may change the gate", async () => {
+    expect(await patch({ googleEnabled: false }, "uid_admin")).toBe(403);
+    expect(gate()).toBe(true);
+  });
+
+  it("writes googleEnabledByAgency both ways", async () => {
+    expect(await patch({ googleEnabled: false })).toBe(200);
+    expect(gate()).toBe(false);
+    expect(await patch({ googleEnabled: true })).toBe(200);
+    expect(gate()).toBe(true);
+  });
+
+  it("another gate leaves the Google Business cache alone", async () => {
+    expect(await patch({ webinar1Enabled: false })).toBe(200);
+    expect(reviews()).toHaveLength(7);
+  });
+});
+
+describe("switching the gate off", () => {
+  it("deletes the synced reviews, the summary and the sync state at once", async () => {
+    expect(await patch({ googleEnabled: false })).toBe(200);
+    expect(reviews()).toHaveLength(0);
+    expect(summaryOf()).toBeNull();
+    expect(syncState()).toBeUndefined();
+    // The connection and the listing are kept (re-enabling resumes).
+    expect(mem.read(`subAccounts/${SA}`)?.googleListing).toBeTruthy();
+    expect(mem.read(`subAccounts/${SA}/private/googleConnection`)).toBeTruthy();
+  });
+
+  it("switching it ON keeps the cache", async () => {
+    expect(await patch({ googleEnabled: true })).toBe(200);
+    expect(reviews()).toHaveLength(7);
+  });
+});

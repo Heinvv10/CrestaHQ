@@ -39,6 +39,7 @@ function cron(opts: { signature?: string | null; body?: string } = {}) {
 beforeEach(() => {
   resetSync();
   process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
+  process.env.GBP_SYNC_SCHEDULE_ENABLED = "1";
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -71,6 +72,22 @@ describe("signature", () => {
 
   it("401s a signature over a different body", async () => {
     expect((await cron({ signature: signQStashBody(URL_, '{"x":1}'), body: "{}" })).status).toBe(401);
+  });
+});
+
+describe("with the schedule off (GBP_SYNC_SCHEDULE_ENABLED !== \"1\")", () => {
+  it.each([[undefined], ["true"], ["0"]])("%s: a signed call does nothing, so a leftover schedule is harmless", async (flag) => {
+    if (flag === undefined) delete process.env.GBP_SYNC_SCHEDULE_ENABLED;
+    else process.env.GBP_SYNC_SCHEDULE_ENABLED = flag;
+    const res = await cron();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ skipped: "not_scheduled" });
+    expect(runs()).toHaveLength(0);
+  });
+
+  it("still 401s an unsigned call first", async () => {
+    delete process.env.GBP_SYNC_SCHEDULE_ENABLED;
+    expect((await cron({ signature: null })).status).toBe(401);
   });
 });
 

@@ -113,6 +113,23 @@ describe("isolation", () => {
   });
 });
 
+describe("the sweep's failure record respects retention", () => {
+  it("never re-stores a rating whose last success is older than 30 days", async () => {
+    await runGbpSyncSweep({ sleep: noSleep });
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: new Date(Date.now() - 31 * 24 * 3600_000) },
+    });
+    seedSub(OTHER_SA, { gateOn: false }); // only SA is swept
+    vi.spyOn(storeDb, "runTransaction").mockRejectedValueOnce(new Error("14 UNAVAILABLE"));
+    await runGbpSyncSweep({ sleep: noSleep });
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toMatchObject({
+      lastRunStatus: "failed", averageRating: null, totalReviewCount: null,
+    });
+  });
+});
+
 describe("rate limits (quota is project-wide)", () => {
   it("stops starting new tenants once one is rate limited", async () => {
     for (const sa of ["sa_c", "sa_d", "sa_e", "sa_f"]) seedSub(sa);
@@ -151,6 +168,18 @@ describe("retention-only pass for caches that can no longer sync", () => {
     expect(mem.read(fakeScenarioPath(SA))?.failNext).toBeDefined();
     expect(runs(SA).find((r) => r.skipReason === "gate_off")).toMatchObject({ status: "skipped", purged: 7 });
     // Out of the query now: the next sweep leaves it alone.
+    expect((await runGbpSyncSweep({ sleep: noSleep })).retained).toBe(0);
+  });
+
+  it("a never-succeeded gate-off tenant with an empty cache leaves the retention list", async () => {
+    setScenario(SA, (s) => void (s.failReviewsPage = { pageToken: null, kind: "permission_denied" }));
+    await runGbpSyncSweep({ sleep: noSleep });
+    expect(reviews(SA)).toHaveLength(0);
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toMatchObject({ lastSuccessfulSyncAt: null });
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, { ...sub, googleEnabledByAgency: false });
+    expect((await runGbpSyncSweep({ sleep: noSleep })).retained).toBe(1);
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toBeNull();
     expect((await runGbpSyncSweep({ sleep: noSleep })).retained).toBe(0);
   });
 

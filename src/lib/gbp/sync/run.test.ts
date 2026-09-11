@@ -161,8 +161,7 @@ describe("anomaly guard", () => {
     await sync();
     setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = []));
     const run = await sync();
-    // Fewer distinct reviews than Google's count: not authoritative, so no removals.
-    expect(run).toMatchObject({ status: "success", reconciliation: "deferred", removed: 0 });
+    expect(run).toMatchObject({ status: "partial", reconciliation: "skipped_anomaly", removed: 0 });
     expect(activeReviews()).toHaveLength(7);
     expect(syncState()?.pass).toBeNull();
   });

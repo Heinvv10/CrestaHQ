@@ -152,9 +152,9 @@ describe("scenario controls", () => {
     expect((await store.get(SA))?.failReviewsPage).toBeUndefined();
   });
 
-  it("can report rating and count on the first reviews page only", async () => {
+  it("can report other rating/count values (or none) on later reviews pages", async () => {
     const { fake, store, tokens } = await connected();
-    await store.set(SA, { ...defaultFakeScenario(), summaryOnFirstPageOnly: true });
+    await store.set(SA, { ...defaultFakeScenario(), laterPages: { averageRating: null, totalReviewCount: null } });
     const ref = { accountName: "accounts/e2e-fixture-group", locationName: "locations/e2e-velo-gqeberha" };
     expect(await fake.listReviews(tokens.accessToken, ref)).toMatchObject({ averageRating: 3.6, totalReviewCount: 7 });
     expect(await fake.listReviews(tokens.accessToken, ref, "3")).toMatchObject({ averageRating: null, totalReviewCount: null });

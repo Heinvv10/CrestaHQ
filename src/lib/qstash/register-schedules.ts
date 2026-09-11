@@ -85,7 +85,10 @@ const BASE_SCHEDULE_VERSION = "2026-09-08-email-sync";
  * (`GBP_SYNC_SCHEDULE_ENABLED=1`): creating a production schedule is an
  * owner decision, not a side effect of a deploy. The flag is folded into the
  * version so turning it on re-registers at the next cold start instead of
- * waiting out a fresh 24h marker.
+ * waiting out a fresh 24h marker. Turning it OFF does not delete a schedule
+ * already in QStash: the cron route answers `not_scheduled` and does nothing
+ * while the flag is off, so a leftover schedule is harmless (delete it in the
+ * QStash console to stop the calls altogether).
  */
 const GBP_SYNC_SCHEDULE: ScheduleSpec = {
   scheduleId: "leadstack-gbp-sync",

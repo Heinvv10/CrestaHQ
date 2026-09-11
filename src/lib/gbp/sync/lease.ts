@@ -40,7 +40,8 @@ export interface LeaseExpectation {
 }
 
 export type LeaseResult =
-  | { ok: true; state: SyncState }
+  /** `sub` is the sub-account as read INSIDE the lease transaction. */
+  | { ok: true; state: SyncState; sub: SubAccountDoc }
   | { ok: false; reason: "already_running" | "listing_changed" };
 
 export async function acquireLease(
@@ -67,7 +68,7 @@ export async function acquireLease(
     }
     const lease = { runId, until: now.getTime() + LEASE_TTL_MS };
     tx.set(ref, { ...state, lease });
-    return { ok: true, state: { ...state, lease } } as const;
+    return { ok: true, state: { ...state, lease }, sub } as const;
   });
 }
 

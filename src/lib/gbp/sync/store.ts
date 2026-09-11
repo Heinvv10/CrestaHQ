@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GbpReview } from "../provider/types";
 import {
+  LEASE_TTL_MS,
   reviewsCollection,
   syncStatePath,
   toMillis,
@@ -133,19 +134,27 @@ async function deleteAll(paths: string[]): Promise<void> {
   }
 }
 
+/** The lease a cache clear holds while it deletes (an ordinary lease: it expires). */
+export const CLEARING_RUN_ID = "clearing";
+
 /**
- * Drop EVERYTHING synced for a sub-account: the sync state (lease + cursor),
- * every cached review, and the summary. Called whenever the listing is
- * cleared or replaced — the cache only ever holds the current listing.
+ * Drop EVERYTHING synced for a sub-account: every cached review, the summary
+ * and the sync state (lease + cursor). Called whenever the listing is cleared
+ * or replaced, or the agency gate goes off — the cache only ever holds the
+ * current listing.
  *
- * The state doc goes FIRST: every sync write is a transaction that checks the
- * lease in that doc, so once it is gone no in-flight run can land another
- * review behind this delete.
+ * FIRST it takes the lease (`runId: "clearing"`): a run in flight fails its
+ * next guarded write (lease lost) and a run starting now is refused
+ * (`already_running`), so nothing lands behind the deletes. The state doc —
+ * and with it the clearing lease — goes LAST. A clear that dies midway leaves
+ * the lease to expire after its TTL.
  */
 export async function clearGbpCache(subAccountId: string): Promise<void> {
   const db = getAdminDb();
-  await db.doc(syncStatePath(subAccountId)).delete();
+  const stateRef = db.doc(syncStatePath(subAccountId));
+  await stateRef.set({ lease: { runId: CLEARING_RUN_ID, until: Date.now() + LEASE_TTL_MS } }, { merge: true });
   const snap = await db.collection(reviewsCollection(subAccountId)).get();
   await deleteAll(snap.docs.map((d) => `${reviewsCollection(subAccountId)}/${d.id}`));
   await db.doc(`subAccounts/${subAccountId}`).set({ gbpSummary: null }, { merge: true });
+  await stateRef.delete();
 }

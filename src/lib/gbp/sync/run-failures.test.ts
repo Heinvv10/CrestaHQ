@@ -130,7 +130,8 @@ describe("resume", () => {
     expect(reviews()).toHaveLength(3);
     const passId = (syncState()?.pass as { passId: string }).passId;
     const run = await sync({ maxPages: 5 });
-    expect(run).toMatchObject({ status: "success", resumedFromCursor: true, pagesFetched: 2, created: 4, reconciliation: "full" });
+    // A pass that spans runs is never authoritative for removals.
+    expect(run).toMatchObject({ status: "success", resumedFromCursor: true, pagesFetched: 2, created: 4, reconciliation: "deferred" });
     expect(reviews()).toHaveLength(7);
     expect(new Set(reviews().map((r) => r.passId))).toEqual(new Set([passId]));
     expect(syncState()?.pass).toBeNull();
@@ -155,7 +156,7 @@ describe("resume", () => {
       lease: null, pass: { passId, pageToken: "999", pagesDone: 1, startedAt: NOW.getTime() },
     });
     const run = await sync();
-    expect(run).toMatchObject({ status: "success", resumedFromCursor: true, pagesFetched: 3, reconciliation: "full" });
+    expect(run).toMatchObject({ status: "success", resumedFromCursor: true, pagesFetched: 3, reconciliation: "deferred" });
     expect(new Set(reviews().map((r) => r.passId))).toEqual(new Set([passId]));
     expect(activeReviews()).toHaveLength(7);
   });

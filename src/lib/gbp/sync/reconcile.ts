@@ -12,30 +12,32 @@ type Streak = NonNullable<SyncState["anomalyStreak"]> | null;
  * After a COMPLETE pass: every active review the pass did not see was removed
  * at Google — but only when the pass is authoritative:
  *
- *   - Coverage: it saw at least as many distinct reviews as Google reported
- *     for the pass (`totalReviewCount`, first non-null value in the pass).
- *     Google pages by `updateTime desc`, so a pass spread over several runs
- *     can miss a review edited in between (it moved to an already-fetched
- *     page); that pass sees fewer than Google's count and removes nothing
- *     (`deferred`). No count reported → no removals either.
- *   - Anomaly: removing more than half of ten or more active reviews looks
- *     like an outage, so nothing is removed (`skipped_anomaly`) — until the
+ *   - One run: the pass started AND finished within a single run. Google
+ *     pages by `updateTime desc`, so a pass spread over several runs can miss
+ *     a review edited in between (it moved to an already-fetched page), and
+ *     no count can tell: reviews arriving meanwhile inflate what a resumed
+ *     pass sees. So a resumed pass removes nothing (`deferred`); removals on
+ *     a listing too big for one run rely on the 30-day rule instead.
+ *   - Anomaly: a pass that saw nothing while Google still reports reviews,
+ *     or that would remove more than half of ten or more active reviews,
+ *     looks like an outage, so nothing is removed (`skipped_anomaly`) — until the
  *     third consecutive complete pass plans the same removal count, which is
  *     then applied (`full_after_anomaly`). A deferred pass leaves the streak.
  */
 export function planReconcile(
   cache: Map<string, CachedReview>,
   passId: string,
+  singleRun: boolean,
   totalReviewCount: number | null,
   streak: Streak,
 ): { reconciliation: Reconciliation; remove: string[]; streak: Streak } {
+  if (!singleRun) return { reconciliation: "deferred", remove: [], streak };
   const active = [...cache].filter(([, c]) => c.state === "active");
   const seen = active.filter(([, c]) => c.passId === passId).length;
   const remove = active.filter(([, c]) => c.passId !== passId).map(([id]) => id);
-  if (totalReviewCount === null || seen < totalReviewCount) {
-    return { reconciliation: "deferred", remove: [], streak };
-  }
-  const anomaly = active.length >= 10 && remove.length * 2 > active.length;
+  const anomaly =
+    (seen === 0 && (totalReviewCount ?? 0) > 0) ||
+    (active.length >= 10 && remove.length * 2 > active.length);
   if (!anomaly) return { reconciliation: "full", remove, streak: null };
   const count = streak?.removals === remove.length ? streak.count + 1 : 1;
   if (count >= ANOMALY_CONFIRMATIONS) return { reconciliation: "full_after_anomaly", remove, streak: null };

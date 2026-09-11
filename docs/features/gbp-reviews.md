@@ -334,7 +334,8 @@ One core, `lib/gbp/sync/run.ts`; Sync now and the cron differ only in `trigger`
    re-reads the sub-account: if the listing, the connection, the reconnect
    flag or the gate no longer match what step 2 read → `skipped
    listing_changed`, nothing written; a live lease → `skipped
-   already_running`. Every later write of the run — each page, tombstones,
+   already_running` (a cache clear holds a `clearing` lease while it deletes).
+   The run continues from the summary read INSIDE that transaction. Every later write of the run — each page, tombstones,
    the summary — is a transaction that re-checks the lease is still this
    run's (`commitGuarded`), so a run whose cache was cleared under it stops
    with `failed lease_lost`; each page commit renews the lease. Released in
@@ -366,22 +367,27 @@ One core, `lib/gbp/sync/run.ts`; Sync now and the cron differ only in `trigger`
 ### Reconciliation and the anomaly rule
 
 Only after a **complete** pass, and only if the pass is **authoritative**: it
-saw at least as many distinct reviews as Google's `totalReviewCount` for the
-pass. Then every active review whose `passId` is not this pass was removed at
+started AND finished within ONE run (it was never resumed from a cursor).
+Then every active review whose `passId` is not this pass was removed at
 Google → **tombstone** (`state:"removed"`, `removedAt`; `comment`,
 `reviewer`, `reply`, `starRating`, `contentHash` set to null; ids kept). A
 review that comes back is restored as an `update`.
 
-- **Not authoritative → `deferred`, status `success`, nothing removed.**
-  Google pages by `updateTime desc`, so a pass that spans runs (after a
-  mid-pass failure or on a listing over 1000 reviews) can miss a review
-  edited in between — it moved to an already-fetched page. Such a pass sees
-  fewer reviews than Google's count, so it removes nothing; with no count
-  reported it removes nothing either. A review genuinely removed while every
-  pass is non-authoritative stops being re-seen and leaves under the 30-day
-  rule (and is not served past it).
-- **Anomaly guard:** removing more than half of ≥10 active reviews looks like
-  an outage → nothing removed, `reconciliation:"skipped_anomaly"`, status
+- **Resumed → `deferred`, status `success`, nothing removed.** Google pages
+  by `updateTime desc`, so a pass that spans runs can miss a review edited in
+  between — it moved to an already-fetched page — and no count can tell:
+  reviews arriving meanwhile inflate what a resumed pass sees (two count
+  heuristics were broken in review, `sync/fix-round.test.ts` › the breaker's
+  case). Whether Google reports `totalReviewCount` does not matter for a
+  single-run pass.
+- **Big listings:** a listing that cannot finish a pass in one run (more than
+  `maxPages × 50` = 1000 reviews) is **never** reconciled. A review removed at
+  Google stays cached — and served — until it has not been re-seen for 30
+  days, when the retention rule deletes it (and the read stops serving it).
+  That is the whole removal story for such listings.
+- **Anomaly guard:** a pass that saw nothing while Google reports reviews, or
+  that would remove more than half of ≥10 active reviews, looks like an
+  outage → nothing removed, `reconciliation:"skipped_anomaly"`, status
   `partial`. The same planned removal count on the **third consecutive**
   complete pass is applied (`full_after_anomaly`); a different count restarts
   the streak.
@@ -400,10 +406,15 @@ says content "…stored temporarily for no more than 30 calendar days…". So:
   `health:"error"`, `lastErrorKind:"retention_expired"`. The purge restarts
   the clock, so later runs resume the new pass and a listing too big for one
   run can finish it.
-- **Caches that can no longer sync** (gate off, disconnected, no listing) get
-  a retention-only pass from the sweep — no provider call, under the lease.
-  Once expired, their reviews and summary are deleted and they leave the
-  sweep.
+- **Switching the agency gate off** deletes the cache at once
+  (`PATCH …/feature-gates` → `clearGbpCache`), as do clearing/changing the
+  listing and disconnecting. Any other cache that can no longer sync gets a
+  retention-only pass from the sweep — no provider call, under the lease;
+  once expired (or empty and never successful) its reviews and summary are
+  deleted and it leaves the sweep.
+- **Every summary writer** (a run, an internal-failure record, the sweep's
+  failure record) drops rating/count once the last success is older than 30
+  days — nothing re-stores them.
 - **At read time** the reviews route never serves a review not re-seen for 30
   days, and serves no rating/count once the last success is older than 30
   days — whether or not a run has purged them (`withinRetention`, the same
@@ -419,7 +430,9 @@ With the schedule on, the cron runs **every 6 hours**; nothing is real-time.
 The page states only what is true: "Syncs automatically every 6 hours" when
 the deployment has `GBP_SYNC_SCHEDULE_ENABLED=1`, otherwise "Automatic sync is
 not scheduled on this deployment — use Sync now" (`scheduled` in the reviews
-response). Health is derived **at read time** by `deriveHealth(summary, now,
+response). With the flag off the cron route itself answers `{skipped:
+"not_scheduled"}` and does nothing, so a schedule left in QStash cannot make
+that sentence false. Health is derived **at read time** by `deriveHealth(summary, now,
 liveConnection)` (`lib/gbp/sync/health.ts`): `reconnect_required` whenever the
 connection is flagged; `sync_pending` when the last run needed a reconnect and
 the connection has since been reconnected; `ok` after a recent success;
@@ -454,7 +467,12 @@ continues itself.
 **Owner checklist** (not run): set `GBP_SYNC_SCHEDULE_ENABLED=1` in the
 production env, then an approved after-hours deploy (`bash
 scripts/deploy-velo.sh`) — the next cold start registers `leadstack-gbp-sync`
-(`0 */6 * * *`) with the other schedules. The destination is
+(`0 */6 * * *`) with the other schedules. **This is a policy prerequisite**
+before any gate-on tenant keeps synced reviews: without the schedule, content
+older than 30 days is hidden at read time but only *deleted* on that
+tenant's next Sync now. Turning the flag off later does not delete the QStash
+schedule (the cron no-ops instead); delete it in the QStash console to stop
+the calls. The destination is
 `${NEXT_PUBLIC_APP_URL}/api/cron/gbp-sync`, which is also the URL the
 signature is checked against. Alternative, by hand:
 
