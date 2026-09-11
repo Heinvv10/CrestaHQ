@@ -5,7 +5,7 @@
  *  - APP allow-list (`isAppLoopbackUrl`, used by mode.ts): the fake may run
  *    only on exactly 127.0.0.1, localhost or [::1]. Narrow on purpose.
  *  - DEPLOY block-list (`isLoopbackHostname`, used by
- *    scripts/gbp-fake-guard.mjs): refuses a much wider set, a superset of the
+ *    scripts/gbp-deploy-check.mjs, post-build): refuses a much wider set, a superset of the
  *    app list (loopback.test.ts asserts that).
  *
  * Plain JavaScript on purpose: the deploy guard runs before the build.
