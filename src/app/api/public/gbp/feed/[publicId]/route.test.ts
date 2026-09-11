@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { ACCOUNT, LOC_A, SA, asUser, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
+import { ACCOUNT, LOC_A, OTHER_SA, SA, asUser, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
 import { VELO, createWidget, feed, feedBody, freshIp } from "@/test/gbp-feed-harness";
 import { storeDb } from "@/test/gbp-sync-store";
 import { syncListing } from "@/lib/gbp/sync/run";
@@ -119,11 +119,17 @@ describe("an enabled widget returns exactly the selected public data", () => {
     expect(ids).not.toContain("other");
   });
 
-  it("has an honest no-review state: ok, no reviews, no invented rating", async () => {
-    setScenario(SA, (s) => void (s.reviews[LOC_A] = { averageRating: null, totalReviewCount: 0, reviews: [] }));
-    await syncListing(SA, { trigger: "manual" });
-    const body = await feedBody(await createWidget(), { "x-forwarded-for": ip });
-    expect(body).toMatchObject({ status: "ok", rating: null, reviews: [] });
+  it("has an honest no-review state: a listing Google reports empty is ok, empty, with no invented rating", async () => {
+    // Not "sync an existing listing down to zero": PR 2 tombstones a cached review only after TWO
+    // missed complete passes, and a pass that sees nothing while removals are due is braked as an
+    // outage. A listing with no reviews is one Google reports empty from its first sync — here the
+    // second fixture sub-account, never synced before.
+    setScenario(OTHER_SA, (s) => void (s.reviews[LOC_A] = { averageRating: null, totalReviewCount: 0, reviews: [] }));
+    expect((await syncListing(OTHER_SA, { trigger: "manual" })).status).toBe("success");
+    const other = await createWidget({ enabled: true, allowedOrigins: [VELO] }, OTHER_SA, "uid_other_admin");
+    expect(await feedBody(other, { "x-forwarded-for": ip })).toMatchObject({
+      status: "ok", rating: null, reviews: [], freshness: { stale: false },
+    });
   });
 });
 
