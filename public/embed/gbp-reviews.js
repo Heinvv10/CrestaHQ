@@ -180,7 +180,7 @@
 
   /**
    * Automatic rotation with the visitor in control (WCAG 2.2.2): never while
-   * prefers-reduced-motion is on (watched live), never faster than every 8s,
+   * prefers-reduced-motion is on (watched live; Safari ≤13: read at load), never faster than every 8s,
    * paused while hovered or focused, a labelled pause/play button, and any
    * use of prev/next or the arrow keys stops it for good. Turning reduced
    * motion off restarts it only if the visitor never interacted. Once the widget has left the page
@@ -188,7 +188,7 @@
    */
   function rotation(region, track, advance, count) {
     var query = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
-    var timer = null, hovered = false, focused = false, interacted = false;
+    var timer = null, hovered = false, focused = false, interacted = false, detached = false;
     var toggle = el("button", "chq-reviews__toggle");
     toggle.type = "button";
     function reduced() {
@@ -206,11 +206,11 @@
       sync();
     }
     function detach() {
-      stop();
+      detached = true; stop();
       if (query && query.removeEventListener) query.removeEventListener("change", onMotion);
     }
     function start() {
-      if (timer || reduced() || count < 2) return;
+      if (detached || timer || reduced() || count < 2) return;
       timer = setInterval(function () {
         if (!region.isConnected) return detach();
         if (!hovered && !focused) advance();

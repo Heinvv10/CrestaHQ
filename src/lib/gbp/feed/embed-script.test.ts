@@ -362,6 +362,17 @@ describe("WCAG 2.2.2 — the visitor stays in control of motion", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("refuses to start again once detached, even if its Play button is pressed", async () => {
+    await rotating();
+    const widget = box();
+    const toggle = pauseButton();
+    widget.remove();
+    vi.advanceTimersByTime(8_000);
+    expect(vi.getTimerCount()).toBe(0);
+    toggle.click();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("moves focus to Next when reduced motion hides the focused pause/play button", async () => {
     await rotating();
     pauseButton().focus();
