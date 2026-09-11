@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext } from "@playwright/test";
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
 import { FIXTURE_PRIMARY_NAME, readEnv } from "./env";
@@ -77,7 +77,7 @@ export async function setScenario(s: Scenario): Promise<void> {
   await primaryRef().collection("private").doc("gbpFakeScenario").set(s);
 }
 
-/** Remove every GBP trace on the fixture primary: connection, listing, cache, runs, scenario. */
+/** Remove every GBP trace on the fixture primary: connection, listing, cache, runs, scenario, widget. */
 export async function clearGbp(): Promise<void> {
   await guard();
   const ref = primaryRef();
@@ -89,10 +89,14 @@ export async function clearGbp(): Promise<void> {
     const snap = await ref.collection(col).get();
     for (const doc of snap.docs) await deleteScoped(doc.ref);
   }
+  // The public widget is top-level (gbpWidgets/{publicId}), anchored like any tenant doc.
+  const widgets = await adminDb().collection("gbpWidgets").where("subAccountId", "==", primaryId()).get();
+  for (const doc of widgets.docs) await deleteScoped(doc.ref);
   await ref.update({
     googleConnectionMeta: FieldValue.delete(),
     googleListing: FieldValue.delete(),
     gbpSummary: FieldValue.delete(),
+    gbpWidgetMeta: FieldValue.delete(),
   });
 }
 
@@ -168,4 +172,44 @@ export function gbpLifecycle(test: { beforeAll: (fn: () => Promise<void>) => voi
       googleEnabledByAgency: priorGate === undefined ? FieldValue.delete() : priorGate,
     });
   });
+}
+
+/**
+ * The default scenario with reviewer names that carry no "fake-" marker, so a
+ * public-feed spec can deep-scan the body for internal identifiers (the review
+ * ids and Place ID still say "fake-" — and must never be served).
+ */
+export function publicScenario(): Scenario {
+  const s = defaultScenario();
+  for (const r of s.reviews[LOC_A].reviews) {
+    const reviewer = r.reviewer as { displayName: string };
+    if (reviewer.displayName) reviewer.displayName = reviewer.displayName.replace("fake-", "No. ");
+  }
+  return s;
+}
+
+/**
+ * Create (or update) the primary's widget through the real admin route, from
+ * INSIDE the signed-in page: the session cookie is Secure, which the page
+ * sends to 127.0.0.1 but Playwright's API request context does not. The page
+ * must already be on the app.
+ */
+export async function putWidget(page: Page, config: Record<string, unknown>): Promise<string> {
+  const res = await page.evaluate(
+    async ({ url, body }) => {
+      const r = await fetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      return { status: r.status, body: (await r.json()) as { widget?: { publicId: string } } };
+    },
+    { url: `/api/sub-accounts/${primaryId()}/gbp/widget`, body: config },
+  );
+  expect(res.status).toBe(200);
+  return res.body.widget!.publicId;
+}
+
+export const feedPath = (publicId: string) => `/api/public/gbp/feed/${publicId}`;
+
+/** Move the summary's last successful sync `hours` into the past (admin write, fixture-guarded). */
+export async function ageLastSuccess(hours: number): Promise<void> {
+  await guard();
+  await primaryRef().update({ "gbpSummary.lastSuccessfulSyncAt": new Date(Date.now() - hours * 3600_000) });
 }
