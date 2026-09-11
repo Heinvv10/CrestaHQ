@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
+import { deleteScoped } from "../lib/guard";
 
 /**
  * Filter → save as smart list → deep-link → delete, asserted in the browser
@@ -128,8 +129,8 @@ test("filters by tag, saves a smart list, deep-links and deletes it", async ({
     );
     await expect(rowB).toBeVisible({ timeout: 30_000 });
   } finally {
-    await adminDb().doc(`contacts/${idA}`).delete();
-    await adminDb().doc(`contacts/${idB}`).delete();
-    if (listId) await listsCol.doc(listId).delete();
+    await deleteScoped(adminDb().doc(`contacts/${idA}`));
+    await deleteScoped(adminDb().doc(`contacts/${idB}`));
+    if (listId) await deleteScoped(listsCol.doc(listId));
   }
 });

@@ -9,7 +9,7 @@ import {
   renameSmartList,
   subscribeToSmartLists,
 } from "@/lib/firestore/smart-lists";
-import { EMPTY_FILTERS } from "@/components/contacts/contact-filters-panel";
+import { EMPTY_FILTERS } from "@/lib/contacts/filter";
 import type { SmartListDoc } from "@/types/contacts";
 import type { ConditionGroup } from "@/types/workflows";
 
@@ -46,10 +46,20 @@ export function useSmartLists({
 
   useEffect(() => {
     if (!subAccountId) return;
-    const unsub = subscribeToSmartLists(subAccountId, (l) => {
-      listsRef.current = l;
-      setLists(l);
-    });
+    const unsub = subscribeToSmartLists(
+      subAccountId,
+      (l) => {
+        listsRef.current = l;
+        setLists(l);
+      },
+      // Mark the lists as loaded (empty) so a ?list= deep link falls back to
+      // All instead of leaving the page waiting on a stream that has died.
+      () => {
+        toast.error("Couldn't load smart lists.");
+        listsRef.current = [];
+        setLists([]);
+      },
+    );
     return () => unsub();
   }, [subAccountId]);
 
@@ -67,8 +77,13 @@ export function useSmartLists({
     else selectList(null);
   }, [activeListId, listsLoaded, selectList]);
 
-  async function saveList(name: string) {
-    if (!agencyId || !uid) return;
+  // Each action resolves true on success so the dialog closes only when the
+  // write actually happened; a failure toasts and leaves the dialog open.
+  async function saveList(name: string): Promise<boolean> {
+    if (!agencyId || !uid) {
+      toast.error("Could not save the list.");
+      return false;
+    }
     try {
       const id = await createSmartList(
         { agencyId, subAccountId },
@@ -78,23 +93,29 @@ export function useSmartLists({
       );
       toast.success(`Saved “${name}”`);
       selectList(id);
+      return true;
     } catch {
       toast.error("Could not save the list.");
+      return false;
     }
   }
-  async function renameList(id: string, name: string) {
+  async function renameList(id: string, name: string): Promise<boolean> {
     try {
       await renameSmartList(subAccountId, id, name);
+      return true;
     } catch {
       toast.error("Could not rename the list.");
+      return false;
     }
   }
-  async function deleteList(id: string) {
+  async function deleteList(id: string): Promise<boolean> {
     try {
       await deleteSmartList(subAccountId, id);
       selectList(null);
+      return true;
     } catch {
       toast.error("Could not delete the list.");
+      return false;
     }
   }
 

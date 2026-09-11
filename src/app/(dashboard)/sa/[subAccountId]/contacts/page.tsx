@@ -126,12 +126,13 @@ export default function ContactsPage() {
   }, [scopingOn, subAccountId]);
 
   function handleExport() {
-    if (contacts.length === 0) {
+    if (visible.length === 0) {
       toast.error("No contacts to export.");
       return;
     }
     const headers = ["name", "email", "phone", "company", "source", "tags", "pipelineStage", "createdAt"];
-    const rows = contacts.map((c) => ({
+    // Export what the current tab + filters show, not the whole workspace.
+    const rows = visible.map((c) => ({
       name: c.name,
       email: c.email,
       phone: c.phone,
@@ -188,7 +189,7 @@ export default function ContactsPage() {
           <Button
             variant="outline"
             onClick={handleExport}
-            disabled={contacts.length === 0}
+            disabled={visible.length === 0}
           >
             <Download className="mr-1 h-4 w-4" />
             Export
@@ -201,7 +202,7 @@ export default function ContactsPage() {
         lists={lists}
         activeId={activeListId}
         onSelect={selectList}
-        canSave={filters.all.length > 0}
+        canSave={(filters.all?.length ?? 0) > 0}
         onSave={saveList}
         onRename={renameList}
         onDelete={deleteList}

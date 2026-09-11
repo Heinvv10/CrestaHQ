@@ -4,9 +4,8 @@ import { useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConditionsEditor } from "@/components/workflows/conditions-editor";
+import { EMPTY_FILTERS } from "@/lib/contacts/filter";
 import type { ConditionGroup } from "@/types/workflows";
-
-export const EMPTY_FILTERS: ConditionGroup = { all: [] };
 
 /**
  * "Filters" toggle + the inline condition builder. Reuses the workflow
@@ -21,7 +20,8 @@ export function ContactFiltersPanel({
   onChange: (g: ConditionGroup) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const count = value.all.length;
+  // A stored list may be malformed (rules validate shape, but not older docs).
+  const count = value.all?.length ?? 0;
 
   return (
     <div className="space-y-3">

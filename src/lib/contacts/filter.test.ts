@@ -20,7 +20,16 @@ function contact(over: Partial<Contact> = {}): Contact {
 const fixture: Contact[] = [
   contact({ id: "a", name: "Alice", email: "alice@x.io", phone: "+27 82 123 4567", tags: ["vip"], company: "Acme" }),
   contact({ id: "b", name: "Bob", email: "bob@x.io", phone: "0821234567", tags: ["lead"], company: "" }),
-  contact({ id: "c", name: "Cara", email: "", phone: "", tags: [], company: "Acme", source: "referral" }),
+  contact({
+    id: "c",
+    name: "Cara",
+    email: "",
+    phone: "",
+    tags: [],
+    company: "Acme",
+    source: "referral",
+    customFields: { plan: "Gold" },
+  }),
 ];
 
 const ids = (list: Contact[]) => list.map((c) => c.id);
@@ -52,6 +61,23 @@ describe("applyFilters", () => {
 
   it("filters by is_set", () => {
     expect(ids(applyFilters(fixture, { all: [{ field: "email", op: "is_set" }] }))).toEqual(["a", "b"]);
+  });
+
+  it("filters by contains, case-insensitively", () => {
+    expect(ids(applyFilters(fixture, { all: [{ field: "email", op: "contains", value: "@X.IO" }] }))).toEqual(["a", "b"]);
+    expect(ids(applyFilters(fixture, { all: [{ field: "name", op: "contains", value: "ar" }] }))).toEqual(["c"]);
+  });
+
+  it("filters on customFields.* paths, treating a missing object as unset", () => {
+    expect(ids(applyFilters(fixture, { all: [{ field: "customFields.plan", op: "equals", value: "Gold" }] }))).toEqual(["c"]);
+    expect(ids(applyFilters(fixture, { all: [{ field: "customFields.plan", op: "is_set" }] }))).toEqual(["c"]);
+    // a and b have no customFields object at all; that must read as "not set"
+    // rather than throw or match.
+    expect(ids(applyFilters(fixture, { all: [{ field: "customFields.plan", op: "not_set" }] }))).toEqual(["a", "b"]);
+  });
+
+  it("tolerates a malformed group with no `all` array", () => {
+    expect(applyFilters(fixture, { all: undefined as unknown as never })).toBe(fixture);
   });
 
   it("match all requires every condition", () => {

@@ -2,6 +2,8 @@ import { evalConditionGroup } from "@/lib/contacts/conditions";
 import type { Contact } from "@/types/contacts";
 import type { ConditionGroup } from "@/types/workflows";
 
+export const EMPTY_FILTERS: ConditionGroup = { all: [] };
+
 /**
  * Client-side filter for the contacts list. Runs the workflow evaluator over
  * the live contact array; an empty (or absent) group returns the input
@@ -11,7 +13,7 @@ export function applyFilters(
   contacts: Contact[],
   group: ConditionGroup | undefined,
 ): Contact[] {
-  if (!group || group.all.length === 0) return contacts;
+  if (!group?.all?.length) return contacts;
   return contacts.filter((c) => evalConditionGroup(group, c));
 }
 

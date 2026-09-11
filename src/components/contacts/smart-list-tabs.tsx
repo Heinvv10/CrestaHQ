@@ -27,9 +27,10 @@ interface Props {
   onSelect: (id: string | null) => void;
   /** Enabled only when the panel holds at least one condition. */
   canSave: boolean;
-  onSave: (name: string) => Promise<void>;
-  onRename: (id: string, name: string) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
+  /** Each resolves true when the write succeeded; the dialog stays open otherwise. */
+  onSave: (name: string) => Promise<boolean>;
+  onRename: (id: string, name: string) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
 }
 
 export function SmartListTabs({
@@ -61,10 +62,13 @@ export function SmartListTabs({
     if (pending.kind !== "delete" && !trimmed) return;
     setBusy(true);
     try {
-      if (pending.kind === "save") await onSave(trimmed);
-      else if (pending.kind === "rename") await onRename(pending.list.id, trimmed);
-      else await onDelete(pending.list.id);
-      setPending(null);
+      const ok =
+        pending.kind === "save"
+          ? await onSave(trimmed)
+          : pending.kind === "rename"
+            ? await onRename(pending.list.id, trimmed)
+            : await onDelete(pending.list.id);
+      if (ok) setPending(null);
     } finally {
       setBusy(false);
     }
