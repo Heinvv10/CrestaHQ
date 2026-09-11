@@ -13,9 +13,13 @@ export { GbpFakeRefusedError, gbpProviderMode } from "./mode";
  * The ONLY way to obtain a GBP provider: `getGbpProviderFor(subAccountId)`.
  * Selection is from server-side env alone — never from a request value.
  *
- * The fake is selected only when ALL of these hold:
- *   1. GBP_PROVIDER === "fake"
- *   2. NEXT_PUBLIC_APP_URL's host is loopback (127.0.0.1 / localhost / [::1])
+ * The fake is selected only when ALL of these hold (1-3 and the "is set"
+ * half of 4 are checked in mode.ts; the agency match in getGbpProviderFor):
+ *   1. GBP_PROVIDER === "fake" (exactly)
+ *   2. NEXT_PUBLIC_APP_URL's hostname, after WHATWG normalisation, is exactly
+ *      127.0.0.1, localhost or [::1] — the narrow APP allow-list
+ *      (`isAppLoopbackUrl` in loopback.mjs). NOT 0.0.0.0, 127.0.0.2 or
+ *      *.localhost; the wider set is the deploy guard's block-list.
  *   3. NODE_ENV !== "production", OR GBP_FAKE_ALLOW_PROD_BUILD === "1"
  *   4. GBP_FAKE_AGENCY_ID is set — and the sub-account belongs to that agency
  *
