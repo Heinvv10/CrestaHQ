@@ -8,6 +8,27 @@ export function validateFolderName(v: unknown): string | null {
   return name.length >= 1 && name.length <= 60 ? name : null;
 }
 
+/**
+ * The folder ids after moving the folder at `index` one step up (-1) or
+ * down (+1). Works on positions, never on stored `order` values — those go
+ * sparse after a delete (2, 3, 4) and index arithmetic on them scrambles
+ * the list. The result is sent whole to the reorder route, which renumbers
+ * densely.
+ */
+export function movedFolderIds(
+  folders: CustomFieldFolder[],
+  index: number,
+  dir: -1 | 1,
+): string[] | null {
+  const target = index + dir;
+  if (index < 0 || index >= folders.length || target < 0 || target >= folders.length) {
+    return null;
+  }
+  const ids = folders.map((f) => f.id);
+  [ids[index], ids[target]] = [ids[target], ids[index]];
+  return ids;
+}
+
 export interface CustomFieldGroup {
   /** null = the implicit "General" folder. */
   folder: CustomFieldFolder | null;

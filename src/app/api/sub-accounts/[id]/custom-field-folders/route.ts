@@ -3,10 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import {
-  requireSubAccountAdmin,
-  requireSubAccountMember,
-} from "@/lib/auth/require-tenancy";
+import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import {
   MAX_FOLDERS_PER_ENTITY,
   validateFolderName,
@@ -15,33 +12,11 @@ import type { CustomFieldFolder } from "@/types/custom-fields";
 
 /**
  * Custom-field folders per sub-account (sibling of ../custom-fields).
+ * Reads happen client-side over Firestore (member read rule); there is no
+ * GET here.
  *
- * GET  — list folders (optionally `?entity=contact|deal`). Member-readable.
  * POST — create a folder. Sub-account admin only. Appended last in order.
  */
-
-export async function GET(
-  request: Request,
-  ctx: { params: Promise<{ id: string }> }
-) {
-  const { id: subAccountId } = await ctx.params;
-  const access = await requireSubAccountMember(request, subAccountId);
-  if (access instanceof NextResponse) return access;
-
-  const entity = new URL(request.url).searchParams.get("entity");
-  const snap = await getAdminDb()
-    .collection(`subAccounts/${subAccountId}/customFieldFolders`)
-    .get();
-  let folders = snap.docs.map((d) => ({
-    id: d.id,
-    ...(d.data() as Omit<CustomFieldFolder, "id">),
-  }));
-  if (entity === "contact" || entity === "deal") {
-    folders = folders.filter((f) => f.entity === entity);
-  }
-  folders.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
-  return NextResponse.json({ ok: true, folders });
-}
 
 export async function POST(
   request: Request,

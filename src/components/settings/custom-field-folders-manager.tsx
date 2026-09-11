@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { movedFolderIds } from "@/lib/custom-fields/folders";
 import type {
   CustomFieldEntity,
   CustomFieldFolder,
@@ -99,23 +100,15 @@ export function CustomFieldFoldersManager({
   }
 
   async function move(index: number, dir: -1 | 1) {
-    const a = folders[index];
-    const b = folders[index + dir];
-    if (!a || !b) return;
-    // Swap positions; use the indexes so two folders sharing an `order`
-    // still separate.
-    const ok = await call(
-      `${base}/${a.id}`,
-      { method: "PATCH", body: JSON.stringify({ order: index + dir }) },
-      "Couldn't reorder folders."
+    const ids = movedFolderIds(folders, index, dir);
+    if (!ids) return;
+    // One request renumbers every folder 0..n-1, so stored `order` values
+    // that went sparse after a delete cannot scramble the result.
+    await call(
+      `${base}/reorder`,
+      { method: "PUT", body: JSON.stringify({ entity, ids }) },
+      "Couldn't reorder folders.",
     );
-    if (ok) {
-      await call(
-        `${base}/${b.id}`,
-        { method: "PATCH", body: JSON.stringify({ order: index }) },
-        "Couldn't reorder folders."
-      );
-    }
   }
 
   async function remove(f: CustomFieldFolder) {
