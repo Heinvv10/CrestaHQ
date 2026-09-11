@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Building2, Search } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToCompanies } from "@/lib/firestore/companies";
@@ -26,10 +27,17 @@ export default function CompaniesPage() {
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
     setLoading(true);
-    return subscribeToCompanies({ agencyId, subAccountId }, (list) => {
-      setCompanies(list);
-      setLoading(false);
-    });
+    return subscribeToCompanies(
+      { agencyId, subAccountId },
+      (list) => {
+        setCompanies(list);
+        setLoading(false);
+      },
+      () => {
+        setLoading(false);
+        toast.error("Couldn't load companies.");
+      },
+    );
   }, [user, agencyId, subAccountId, authLoading]);
 
   // Same listener the contacts page uses — the count column is derived
@@ -40,6 +48,7 @@ export default function CompaniesPage() {
       { agencyId, subAccountId },
       { territoryFilter },
       setContacts,
+      () => toast.error("Couldn't load contact counts."),
     );
   }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
 

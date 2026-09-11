@@ -47,10 +47,19 @@ export default function CompanyDetailPage() {
 
   useEffect(() => {
     if (authLoading || !user || !id) return;
-    return subscribeToCompany(id, (c) => {
-      setCompany(c);
-      setLoading(false);
-    });
+    return subscribeToCompany(
+      id,
+      (c) => {
+        setCompany(c);
+        setLoading(false);
+      },
+      // Rules deny the read on a foreign or missing doc, so this — not the
+      // null callback — is how the not-found state is reached by URL.
+      () => {
+        setCompany(null);
+        setLoading(false);
+      },
+    );
   }, [id, user, authLoading]);
 
   useEffect(() => {
@@ -59,6 +68,7 @@ export default function CompanyDetailPage() {
       { agencyId, subAccountId },
       { territoryFilter, companyId: id },
       setContacts,
+      () => toast.error("Couldn't load this company's contacts."),
     );
   }, [id, user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
 
@@ -174,6 +184,9 @@ export default function CompanyDetailPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete company?</DialogTitle>
+            {/* `contacts.length` is what this caller can see (territory-
+                filtered); the server unlinks every contact in the sub-account,
+                so a collaborator may see a smaller number than gets unlinked. */}
             <DialogDescription>
               {company.name} will be removed and its {contacts.length} linked
               contact{contacts.length === 1 ? "" : "s"} unlinked. The contacts

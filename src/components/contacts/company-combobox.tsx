@@ -37,7 +37,9 @@ export function CompanyCombobox({ id, value, onChange }: Props) {
 
   useEffect(() => {
     if (!subAccountId || !agencyId) return;
-    return subscribeToCompanies({ agencyId, subAccountId }, setCompanies);
+    return subscribeToCompanies({ agencyId, subAccountId }, setCompanies, () =>
+      toast.error("Couldn't load companies."),
+    );
   }, [subAccountId, agencyId]);
 
   const typed = value.company.trim();

@@ -204,6 +204,19 @@ export interface UpdateContactPatch {
   customFields?: Record<string, CustomFieldValue>;
 }
 
+/** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
+export function companyStringDrifts(
+  existing: { companyId?: string | null; company?: string },
+  patch: { company?: string; companyId?: string | null },
+): boolean {
+  return (
+    patch.companyId === undefined &&
+    patch.company !== undefined &&
+    !!existing.companyId &&
+    patch.company !== existing.company
+  );
+}
+
 /**
  * Update a contact + emit `contact.updated`. Reads the doc back so the
  * webhook payload + return value reflect the merged state. Returns null when
@@ -234,6 +247,11 @@ export async function updateContactServerSide(opts: {
   const patch = {
     ...opts.patch,
     ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
+    // A writer that changes the free-text `company` without saying which
+    // company (the public API, which has no companyId field) breaks the
+    // link rather than leaving companyId pointing at a company whose name
+    // the contact no longer carries. The dashboard always sends companyId.
+    ...(companyStringDrifts(existing, opts.patch) ? { companyId: null } : {}),
   };
 
   // update(), not set(..., {merge: true}): merge recurses into nested maps,

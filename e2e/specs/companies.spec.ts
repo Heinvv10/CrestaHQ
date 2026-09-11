@@ -21,6 +21,12 @@ test("creates a company, links a contact to it, and unlinks on delete", async ({
   let contactId: string | null = null;
 
   try {
+    // --- unknown id renders not-found (rules deny the read; onError path) --
+    await page.goto(`/sa/${env.E2E_SUBACCOUNT_ID}/companies/does-not-exist`);
+    await expect(page.getByText("Company not found")).toBeVisible({
+      timeout: 30_000,
+    });
+
     // --- create company --------------------------------------------------
     await page.goto(`/sa/${env.E2E_SUBACCOUNT_ID}/companies`);
     await page.getByRole("button", { name: "Add Company" }).first().click();
