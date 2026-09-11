@@ -50,26 +50,37 @@ export interface InboundMessageActivityInput {
   subAccountId: string;
 }
 
-/** `<channel>_received` row on the contact, `createdBy: "system"`. */
+/**
+ * `<channel>_received` row on the contact. Providers retry a webhook on any
+ * non-2xx or timeout, and the message row survives that because it is keyed
+ * by the provider id; the activity is keyed the same way so a retry is a
+ * no-op here too. Only a message with no provider id gets an auto id.
+ */
 export async function writeInboundMessageActivity(
   db: FirebaseFirestore.Firestore,
   input: InboundMessageActivityInput
 ): Promise<void> {
   const preview = activityPreview(input.preview);
   try {
-    await db
+    const activities = db
       .collection("contacts")
       .doc(input.contactId)
-      .collection("activities")
-      .add({
+      .collection("activities");
+    const ref = input.messageId
+      ? activities.doc(`inbound_${input.channel}_${input.messageId}`)
+      : activities.doc();
+    await ref.set(
+      {
         type: RECEIVED_TYPE[input.channel],
         content: `${CHANNEL_LABEL[input.channel]} received: ${preview || "(no text)"}`,
-        createdBy: "system",
+        createdBy: `${input.channel}_inbound`,
         agencyId: input.agencyId,
         subAccountId: input.subAccountId,
         meta: { channel: input.channel, messageId: input.messageId },
         createdAt: FieldValue.serverTimestamp(),
-      });
+      },
+      { merge: true }
+    );
   } catch (err) {
     console.warn("[contact-activities] inbound activity write failed", err);
   }

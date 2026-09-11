@@ -38,14 +38,14 @@ function contactRef(id: string) {
     id,
     collection: (name: string) => ({
       doc: (docId: string) => ({
-        set: async () => {
+        set: async (data: Record<string, unknown>) => {
+          if (name === "activities") {
+            m.activityAdds.push({ path: `contacts/${id}/${name}/${docId}`, data });
+            return;
+          }
           m.messageSets.push(`${name}/${docId}`);
         },
       }),
-      add: async (data: Record<string, unknown>) => {
-        m.activityAdds.push({ path: `contacts/${id}/${name}`, data });
-        return { id: "act1" };
-      },
     }),
   };
 }
@@ -125,10 +125,12 @@ it("writes a whatsapp_received activity keyed by the wamid with tenant keys", as
   expect(res.status).toBe(200);
   expect(m.messageSets).toEqual(["whatsappMessages/wamid.ABC"]);
 
-  const activity = m.activityAdds.find((a) => a.path === "contacts/c_1/activities");
+  const activity = m.activityAdds.find(
+    (a) => a.path === "contacts/c_1/activities/inbound_whatsapp_wamid.ABC",
+  );
   expect(activity?.data).toMatchObject({
     type: "whatsapp_received",
-    createdBy: "system",
+    createdBy: "whatsapp_inbound",
     agencyId: "ag_1",
     subAccountId: "sa_1",
     content: "WhatsApp received: Can you move my install to Friday?",

@@ -94,7 +94,7 @@ test("inbound SMS and a new task both land in the Activity timeline", async ({
         expect.objectContaining({
           agencyId: env.E2E_AGENCY_ID,
           subAccountId: sa,
-          createdBy: "system",
+          createdBy: "sms_inbound",
           meta: expect.objectContaining({ messageId: form.MessageSid }),
         }),
       ]);
