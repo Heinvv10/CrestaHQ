@@ -233,6 +233,18 @@ describe("races with a newer grant (reconnect during a refresh)", () => {
     expect(await getValidAccessToken(SUB)).toBe("ya29.NewerGrantAccess");
     expect(meta().reconnectRequired).toBeUndefined();
   });
+
+  it("persists a rotated refresh token even when another writer stored a fresh access token", async () => {
+    seedSecret();
+    stubSequence({
+      body: { ...FRESH, refresh_token: "1//0gRotatedR2" },
+      // Another process refreshed with the SAME refresh token meanwhile.
+      onCall: () =>
+        state.docs.set(SECRET_PATH, { ...secret(), accessToken: "ya29.OtherProcess", accessTokenExpiresAt: Date.now() + 3_000_000 }),
+    });
+    expect(await getValidAccessToken(SUB)).toBe("ya29.OtherProcess");
+    expect(secret()).toMatchObject({ accessToken: "ya29.OtherProcess", refreshToken: "1//0gRotatedR2" });
+  });
 });
 
 describe("fake mode fence", () => {

@@ -141,8 +141,15 @@ async function refreshAndStore(
     // Disconnected while we were at Google: never resurrect the secret.
     if (!current) throw new GbpNotConnectedError();
     // Someone else already stored a usable token (another process, or a
-    // reconnect). Theirs is as good as ours and is already persisted.
-    if (fresh(current)) return current.accessToken;
+    // reconnect). Theirs is as good as ours and is already persisted — but if
+    // Google rotated the refresh token WE used, and the secret still holds
+    // that one, the rotation must land or the next refresh is revoked.
+    if (fresh(current)) {
+      if (tokens.refreshToken && current.refreshToken === read.refreshToken) {
+        tx.update(ref, { refreshToken: tokens.refreshToken });
+      }
+      return current.accessToken;
+    }
     // If the refresh token changed underneath us, another process rotated it:
     // ours may be the stale one, so keep theirs.
     const refreshToken =
