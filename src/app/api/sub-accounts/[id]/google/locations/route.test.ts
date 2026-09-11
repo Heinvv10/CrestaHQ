@@ -16,6 +16,7 @@ vi.mock("firebase-admin/firestore", async () =>
 import { OTHER_SUB, SUB, SUB_PATH, request, resetHarness, state } from "@/test/google-oauth-harness";
 import {
   DEFAULT_ACCOUNT,
+  SCOPE,
   TOKEN_MARKERS,
   enableFakeMode,
   seedConnection,
@@ -116,6 +117,32 @@ describe("states", () => {
     const secret = state.docs.get(`subAccounts/${SUB}/private/googleConnection`);
     expect(secret?.accessToken).not.toBe("fake-access:sa_1:900");
     expect(secret?.accessTokenExpiresAt as number).toBeGreaterThan(Date.now() + 3_000_000);
+  });
+
+  it("retries exactly once: a refresh that works but a data call that keeps 401ing → 502", async () => {
+    // Real-Google mode, only fetch stubbed: the token endpoint always issues a
+    // token, the accounts API always says 401.
+    delete process.env.GBP_PROVIDER;
+    seedConnection();
+    const hits = { token: 0, data: 0 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "https://oauth2.googleapis.com/token") {
+          hits.token += 1;
+          return new Response(
+            JSON.stringify({ access_token: `ya29.Fresh${hits.token}`, expires_in: 3599, scope: SCOPE }),
+            { status: 200 },
+          );
+        }
+        hits.data += 1;
+        return new Response("{}", { status: 401 });
+      }),
+    );
+    const { status, body } = await list();
+    expect([status, body.code]).toEqual([502, "auth_expired"]);
+    expect(hits).toEqual({ token: 1, data: 2 });
+    vi.unstubAllGlobals();
   });
 
   it("flags and reports reconnect_required when the refresh is revoked", async () => {
