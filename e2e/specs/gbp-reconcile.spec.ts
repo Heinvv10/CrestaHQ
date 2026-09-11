@@ -5,6 +5,7 @@ import {
   gbpLifecycle,
   latestRun,
   primaryId,
+  resetManualCooldown,
   reviewDocs,
   runCron,
   setScenario,
@@ -57,6 +58,7 @@ test("an edit updates the same review; a removal tombstones it after a full pass
   changed.reviews[LOC_A].reviews = changed.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r6");
   changed.reviews[LOC_A].totalReviewCount = 6;
   await setScenario(changed);
+  await resetManualCooldown();
   await syncNowInUi(page, "Synced: 0 new, 0 updated, 1 removed.");
 
   const afterRemoval = await reviewDocs();

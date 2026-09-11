@@ -46,7 +46,8 @@ test("the scheduled sync stores each review once, and a rerun duplicates nothing
   await expect(card).toContainText("3.6", { timeout: 30_000 });
   await expect(card).toContainText("7 reviews");
   await expect(card).toContainText("Last synced");
-  await expect(card).toContainText("Syncs every 6 hours");
+  // This build runs no schedule (GBP_SYNC_SCHEDULE_ENABLED unset), and says so.
+  await expect(card).toContainText("Automatic sync is not scheduled on this deployment — use Sync now");
   await expect(page.getByTestId("gbp-health-ok")).toBeVisible();
   await expect(page.locator('[data-testid^="gbp-review-fake-"]')).toHaveCount(7);
   const translated = page.getByTestId("gbp-review-fake-r5").getByTestId("gbp-review-comment");

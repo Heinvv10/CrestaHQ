@@ -117,6 +117,15 @@ export async function seedConnectedListing(): Promise<void> {
   });
 }
 
+/**
+ * Sync now is limited to one a minute per sub-account; a spec that clicks it
+ * twice lifts the cooldown in between rather than sleeping a minute.
+ */
+export async function resetManualCooldown(): Promise<void> {
+  await guard();
+  await primaryRef().collection("private").doc("gbpSyncState").set({ lastManualAt: null }, { merge: true });
+}
+
 /** The scheduled path: POST the cron exactly as QStash would, signed. */
 export async function runCron(request: APIRequestContext): Promise<{ processed: number; byStatus: Record<string, number> }> {
   const body = "{}";

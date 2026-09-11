@@ -3,6 +3,7 @@ import "server-only";
 import { Client } from "@upstash/qstash";
 import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 
 /**
  * Auto-register the LeadStack daily cron schedules on cold start.
@@ -77,7 +78,29 @@ const SCHEDULES: ScheduleSpec[] = [
   },
 ];
 
-const SCHEDULE_VERSION = "2026-09-08-email-sync";
+const BASE_SCHEDULE_VERSION = "2026-09-08-email-sync";
+
+/**
+ * The Google Business Profile review sync is OPT-IN per deployment
+ * (`GBP_SYNC_SCHEDULE_ENABLED=1`): creating a production schedule is an
+ * owner decision, not a side effect of a deploy. The flag is folded into the
+ * version so turning it on re-registers at the next cold start instead of
+ * waiting out a fresh 24h marker.
+ */
+const GBP_SYNC_SCHEDULE: ScheduleSpec = {
+  scheduleId: "leadstack-gbp-sync",
+  path: "/api/cron/gbp-sync",
+  cron: "0 */6 * * *",
+  description: "6-hourly Google Business Profile review sync.",
+};
+
+function activeSchedules(): ScheduleSpec[] {
+  return gbpSyncScheduled() ? [...SCHEDULES, GBP_SYNC_SCHEDULE] : SCHEDULES;
+}
+
+function scheduleVersion(): string {
+  return gbpSyncScheduled() ? `${BASE_SCHEDULE_VERSION}+gbp-sync` : BASE_SCHEDULE_VERSION;
+}
 const MARKER_PATH = "system/scheduleRegistration";
 const SKIP_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -113,7 +136,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
       const lastAt = tsToDate(data.registeredAt);
       if (
         lastUrl === baseUrl &&
-        data.scheduleVersion === SCHEDULE_VERSION &&
+        data.scheduleVersion === scheduleVersion() &&
         lastAt &&
         Date.now() - lastAt.getTime() < SKIP_AGE_MS
       ) {
@@ -131,7 +154,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
   });
 
   const results: Array<{ id: string; ok: boolean; error?: string }> = [];
-  for (const s of SCHEDULES) {
+  for (const s of activeSchedules()) {
     try {
       await client.schedules.create({
         scheduleId: s.scheduleId,
@@ -156,9 +179,9 @@ export async function ensureSchedulesRegistered(): Promise<void> {
     await markerRef.set(
       {
         baseUrl,
-        scheduleVersion: SCHEDULE_VERSION,
+        scheduleVersion: scheduleVersion(),
         registeredAt: FieldValue.serverTimestamp(),
-        scheduleIds: SCHEDULES.map((s) => s.scheduleId),
+        scheduleIds: activeSchedules().map((s) => s.scheduleId),
         lastResults: results,
       },
       { merge: true }

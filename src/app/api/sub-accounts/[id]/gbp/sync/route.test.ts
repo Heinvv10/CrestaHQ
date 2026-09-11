@@ -22,6 +22,7 @@ import {
   runs,
   seedSub,
 } from "@/test/gbp-sync-harness";
+import { storeDb } from "@/test/gbp-sync-store";
 import { POST } from "./route";
 
 const ORIGINAL = { ...process.env };
@@ -64,11 +65,12 @@ describe("authorization", () => {
   it("refuses in fake mode for a sub-account of another agency, writing nothing", async () => {
     seedSub(FOREIGN_SA, { agencyId: FOREIGN_AGENCY });
     mem.seed(`subAccounts/${FOREIGN_SA}/subAccountMembers/uid_admin`, { status: "active", role: "admin" });
-    await expect(
-      POST(asUser(url(FOREIGN_SA), "uid_admin", "POST"), { params: Promise.resolve({ id: FOREIGN_SA }) }),
-    ).rejects.toThrow("GBP fake provider refused");
+    expect(await syncNow("uid_admin", FOREIGN_SA)).toEqual({
+      status: 503, body: { error: expect.any(String), code: "not_configured" },
+    });
     expect(reviews(FOREIGN_SA)).toHaveLength(0);
     expect(runs(FOREIGN_SA)).toHaveLength(0);
+    expect(mem.read(`subAccounts/${FOREIGN_SA}/private/gbpSyncState`)).toBeUndefined();
   });
 });
 
@@ -84,6 +86,33 @@ describe("an admin's Sync now", () => {
     expect(activeReviews()).toHaveLength(7);
     expect(runs()[0]).toMatchObject({ trigger: "manual", actorUid: "uid_admin" });
     expect(reviews(OTHER_SA)).toHaveLength(0);
+  });
+
+  it("a second Sync now within a minute is refused too_soon, and runs nothing", async () => {
+    expect((await syncNow("uid_admin")).status).toBe(200);
+    const again = await syncNow("uid_admin");
+    expect(again).toEqual({ status: 409, body: { error: expect.any(String), code: "too_soon" } });
+    expect(runs()).toHaveLength(1);
+  });
+
+  it("allows Sync now again once the minute has passed", async () => {
+    mem.seed(`subAccounts/${SA}/private/gbpSyncState`, { lease: null, pass: null, lastManualAt: Date.now() - 61_000 });
+    expect((await syncNow("uid_admin")).status).toBe(200);
+  });
+
+  it("a sync that throws still answers JSON and records a failed run", async () => {
+    // A Firestore outage on the lease transaction (after the cooldown claim).
+    const real = storeDb.runTransaction.bind(storeDb);
+    let n = 0;
+    vi.spyOn(storeDb, "runTransaction").mockImplementation((async (fn: never) => {
+      if (++n === 2) throw new Error("14 UNAVAILABLE");
+      return real(fn);
+    }) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { status, body } = await syncNow("uid_admin");
+    expect(status).toBe(200);
+    expect(body.run).toMatchObject({ trigger: "manual", status: "failed", errorKind: "internal" });
+    expect(runs()).toEqual([expect.objectContaining({ status: "failed", actorUid: "uid_admin" })]);
   });
 
   it("reports a skip as a result, not an error", async () => {

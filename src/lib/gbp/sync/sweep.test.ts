@@ -44,7 +44,7 @@ describe("selection", () => {
     seedSub("sa_no_listing", { listing: null });
     seedSub("sa_disconnected", { connected: false });
     const result = await runGbpSyncSweep({ sleep: noSleep });
-    expect(result).toEqual({ processed: 2, byStatus: { success: 2 } });
+    expect(result).toMatchObject({ processed: 2, byStatus: { success: 2 }, retained: 0 });
     expect(runs(SA)).toEqual([expect.objectContaining({ trigger: "scheduled", actorUid: null, status: "success" })]);
     expect(activeReviews(OTHER_SA)).toHaveLength(7);
     for (const sa of ["sa_gate_off", "sa_no_listing", "sa_disconnected"]) expect(runs(sa)).toHaveLength(0);
@@ -91,7 +91,7 @@ describe("isolation", () => {
     mem.seed(fakeScenarioPath("sa_broken"), { accounts: "not an array" });
     seedSub("sa_ok");
     const result = await runGbpSyncSweep({ sleep: noSleep });
-    expect(result).toEqual({ processed: 4, byStatus: { failed: 2, success: 2 } });
+    expect(result).toMatchObject({ processed: 4, byStatus: { failed: 2, success: 2 } });
     expect(runs(SA)[0]).toMatchObject({ status: "failed", errorKind: "permission_denied" });
     expect(runs("sa_broken")[0]).toMatchObject({ status: "failed", errorKind: "internal" });
     expect(activeReviews("sa_ok")).toHaveLength(7);
@@ -102,8 +102,75 @@ describe("isolation", () => {
     // A Firestore outage on the first transaction (one tenant's lease).
     vi.spyOn(storeDb, "runTransaction").mockRejectedValueOnce(new Error("14 UNAVAILABLE"));
     const result = await runGbpSyncSweep({ sleep: noSleep });
-    expect(result).toEqual({ processed: 2, byStatus: { failed: 1, success: 1 } });
+    expect(result).toMatchObject({ processed: 2, byStatus: { failed: 1, success: 1 } });
     const failed = [...runs(SA), ...runs(OTHER_SA)].filter((r) => r.status === "failed");
     expect(failed).toEqual([expect.objectContaining({ trigger: "scheduled", errorKind: "internal", agencyId: "ag_1" })]);
+    // …and it moves to the back of the queue instead of starving the sweep.
+    const failedSa = String(failed[0].subAccountId);
+    const summary = mem.read(`subAccounts/${failedSa}`)?.gbpSummary as Record<string, unknown>;
+    expect(summary).toMatchObject({ lastRunStatus: "failed", lastErrorKind: "internal" });
+    expect(summary.lastRunAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("rate limits (quota is project-wide)", () => {
+  it("stops starting new tenants once one is rate limited", async () => {
+    for (const sa of ["sa_c", "sa_d", "sa_e", "sa_f"]) seedSub(sa);
+    setScenario(SA, (s) => void (s.failReviewsPage = { pageToken: null, kind: "rate_limited" }));
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    expect(result.stoppedOnRateLimit).toBe(true);
+    expect(runs(SA)[0]).toMatchObject({ errorKind: "rate_limited" });
+    // Three workers were already running; nobody picks up the rest.
+    expect(result.processed).toBe(3);
+    expect(runs("sa_e")).toHaveLength(0);
+    expect(runs("sa_f")).toHaveLength(0);
+  });
+});
+
+describe("retention-only pass for caches that can no longer sync", () => {
+  const DAY = 24 * 3600_000;
+  async function cachedThenGateOff(lastSuccessDaysAgo: number, reviewAgeDays = 0) {
+    await runGbpSyncSweep({ sleep: noSleep });
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      googleEnabledByAgency: false,
+      gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: new Date(Date.now() - lastSuccessDaysAgo * DAY) },
+    });
+    const first = reviews(SA)[0];
+    mem.seed(`subAccounts/${SA}/gbpReviews/${first.id}`, { ...first, lastSeenAt: new Date(Date.now() - reviewAgeDays * DAY) });
+  }
+
+  it("a gate-off tenant past 30 days without success: everything purged, summary dropped, no Google call", async () => {
+    await cachedThenGateOff(31);
+    setScenario(SA, (s) => void (s.failNext = { op: "listReviews", kind: "transient" }));
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    expect(result.retained).toBe(1);
+    expect(reviews(SA)).toHaveLength(0);
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toBeNull();
+    expect(mem.read(fakeScenarioPath(SA))?.failNext).toBeDefined();
+    expect(runs(SA).find((r) => r.skipReason === "gate_off")).toMatchObject({ status: "skipped", purged: 7 });
+    // Out of the query now: the next sweep leaves it alone.
+    expect((await runGbpSyncSweep({ sleep: noSleep })).retained).toBe(0);
+  });
+
+  it("within 30 days: only the review not re-seen for 30 days goes", async () => {
+    await cachedThenGateOff(2, 31);
+    await runGbpSyncSweep({ sleep: noSleep });
+    expect(reviews(SA)).toHaveLength(6);
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toBeTruthy();
+  });
+
+  it("in Google mode finds such caches with a single-field inequality (no index) — and never calls Google", async () => {
+    await cachedThenGateOff(31);
+    seedSub(OTHER_SA, { gateOn: false }); // nothing sync-eligible: no real Google call is possible
+    delete process.env.GBP_PROVIDER;
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    vi.unstubAllGlobals();
+    expect(result).toMatchObject({ processed: 0, retained: 1 });
+    expect(reviews(SA)).toHaveLength(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

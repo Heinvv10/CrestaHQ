@@ -59,6 +59,12 @@ describe("signature", () => {
     expect(runs()).toHaveLength(0);
   });
 
+  it("401s a genuine QStash signature minted for ANOTHER cron route (replay)", async () => {
+    const other = signQStashBody("http://127.0.0.1:3100/api/cron/api-cleanup", "{}");
+    expect((await cron({ signature: other })).status).toBe(401);
+    expect(runs()).toHaveLength(0);
+  });
+
   it("401s a signature over a different body", async () => {
     expect((await cron({ signature: signQStashBody(URL_, '{"x":1}'), body: "{}" })).status).toBe(401);
   });
@@ -69,7 +75,7 @@ describe("a signed sweep", () => {
     seedSub("sa_gate_off", { gateOn: false });
     const res = await cron();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ processed: 2, byStatus: { success: 2 } });
+    expect(await res.json()).toMatchObject({ processed: 2, byStatus: { success: 2 }, retained: 0 });
     expect(runs()[0]).toMatchObject({ trigger: "scheduled", status: "success" });
     expect(runs("sa_gate_off")).toHaveLength(0);
   });
