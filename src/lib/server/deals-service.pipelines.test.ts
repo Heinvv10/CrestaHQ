@@ -25,7 +25,9 @@ vi.mock("@/lib/workflows/engine", () => ({
   },
 }));
 
-const { createDealServerSide, updateDealServerSide } = await import("./deals-service");
+const { DealStageError, createDealServerSide, updateDealServerSide } = await import(
+  "./deals-service"
+);
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
@@ -127,6 +129,65 @@ describe("updateDealServerSide — stage moves", () => {
     expect(fired.map((f) => f.type)).toEqual(["pipeline.stage.changed", "deal.won"]);
     expect(fired[0].context?.pipelineId).toBe("default");
     expect(mem.read("deals/legacy")?.pipelineId).toBe("default");
+  });
+
+  it("rejects a stage id the deal's pipeline does not have — nothing written, nothing fired", async () => {
+    const { id } = await createDealServerSide({ ...base, stageId: "open", pipelineId: "p2" });
+    fired.length = 0;
+    // "won" is a DEFAULT-pipeline id; p2's won stage is "renewed".
+    await expect(
+      updateDealServerSide({ dealId: id, patch: { stageId: "won" }, userId: "u1" }),
+    ).rejects.toBeInstanceOf(DealStageError);
+    await tick();
+    expect(mem.read(`deals/${id}`)?.stageId).toBe("open");
+    expect(fired).toEqual([]);
+  });
+
+  it("terminal:'won' resolves to the deal's own pipeline's won stage", async () => {
+    const { id } = await createDealServerSide({ ...base, stageId: "open", pipelineId: "p2" });
+    fired.length = 0;
+    const res = await updateDealServerSide({
+      dealId: id,
+      patch: { terminal: "won", value: 99 },
+      userId: "u1",
+    });
+    await tick();
+    expect(res?.stage.id).toBe("renewed");
+    expect(mem.read(`deals/${id}`)).toMatchObject({ stageId: "renewed", value: 99 });
+    expect(fired.map((f) => f.type)).toEqual(["pipeline.stage.changed", "deal.won"]);
+  });
+
+  it("terminal:'won' on a pipeline without a won stage is refused", async () => {
+    mem.seed("subAccounts/sa1/pipelines/p3", {
+      name: "Open only", isDefault: false, agencyId: "ag1", subAccountId: "sa1",
+      stages: [{ id: "a", label: "A", tone: "" }],
+    });
+    const { id } = await createDealServerSide({ ...base, stageId: "a", pipelineId: "p3" });
+    await expect(
+      updateDealServerSide({ dealId: id, patch: { terminal: "won" }, userId: "u1" }),
+    ).rejects.toMatchObject({ code: "no_terminal_stage" });
+  });
+
+  it("a pipeline move needs a stage; unknown pipeline is refused", async () => {
+    const { id } = await createDealServerSide({ ...base, stageId: "new" });
+    await expect(
+      updateDealServerSide({ dealId: id, patch: { pipelineId: "p2" }, userId: "u1" }),
+    ).rejects.toMatchObject({ code: "invalid_stage" });
+    await expect(
+      updateDealServerSide({ dealId: id, patch: { pipelineId: "nope", stageId: "x" }, userId: "u1" }),
+    ).rejects.toMatchObject({ code: "invalid_pipeline" });
+    const moved = await updateDealServerSide({
+      dealId: id, patch: { pipelineId: "p2", stageId: "open" }, userId: "u1",
+    });
+    expect(moved?.deal.pipeline_id).toBe("p2");
+    expect(mem.read(`deals/${id}`)).toMatchObject({ pipelineId: "p2", stageId: "open" });
+  });
+
+  it("create refuses a stage the pipeline lacks", async () => {
+    await expect(
+      createDealServerSide({ ...base, stageId: "renewed" }),
+    ).rejects.toMatchObject({ code: "invalid_stage" });
+    expect(mem.list("deals")).toHaveLength(0);
   });
 
   it("a field-only edit fires nothing", async () => {

@@ -8,7 +8,12 @@ import {
   serializeDealForApi,
   type DealApiObject,
 } from "@/lib/api/serializers/deals";
-import { getStage, type DealPriority, type PipelineStageId } from "@/types/deals";
+import {
+  getStage,
+  type DealPriority,
+  type PipelineStage,
+  type PipelineStageId,
+} from "@/types/deals";
 import { loadPipeline } from "@/lib/pipelines/server";
 import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import type { WebhookEventType } from "@/types/webhooks";
@@ -33,6 +38,48 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
  */
 
 type Mode = "live" | "test";
+
+/**
+ * A stage / pipeline the deal's pipeline does not have. Thrown by the write
+ * service so no caller — route, AI Suite, quotes lifecycle — can park a deal
+ * on a stage id that does not exist in its pipeline. Routes map it to 400.
+ */
+export class DealStageError extends Error {
+  readonly code: "invalid_pipeline" | "invalid_stage" | "no_terminal_stage";
+  constructor(code: DealStageError["code"], message: string) {
+    super(message);
+    this.name = "DealStageError";
+    this.code = code;
+  }
+}
+
+function resolveStage(
+  pipeline: { id: string; stages: PipelineStage[] } | null,
+  pipelineId: string,
+  want: { stageId?: string; terminal?: "won" | "lost" },
+): PipelineStage {
+  if (!pipeline) {
+    throw new DealStageError("invalid_pipeline", `Pipeline "${pipelineId}" not found.`);
+  }
+  if (want.terminal) {
+    const stage = pipeline.stages.find((s) => s.terminal === want.terminal);
+    if (!stage) {
+      throw new DealStageError(
+        "no_terminal_stage",
+        `Pipeline "${pipeline.id}" has no ${want.terminal} stage.`,
+      );
+    }
+    return stage;
+  }
+  const stage = findStage(pipeline, want.stageId);
+  if (!stage) {
+    throw new DealStageError(
+      "invalid_stage",
+      `Stage "${want.stageId}" is not on pipeline "${pipeline.id}" (${pipeline.stages.map((s) => s.id).join(", ")}).`,
+    );
+  }
+  return stage;
+}
 
 /**
  * The contact fields embedded inline in every deal webhook payload, so
@@ -161,6 +208,8 @@ export interface CreateDealInput {
 export interface DealWriteResult {
   id: string;
   deal: DealApiObject;
+  /** The stage the deal now sits in, from its pipeline. */
+  stage: PipelineStage;
   /** Terminal flag of the stage the deal now sits in (update only). */
   stageTerminal?: "won" | "lost";
 }
@@ -173,7 +222,8 @@ export async function createDealServerSide(
   const ref = db.collection("deals").doc();
   const pipelineId = dealPipelineId(input);
   const pipeline = await loadPipeline(input.subAccountId, pipelineId);
-  const stages = pipeline?.stages;
+  const stage = resolveStage(pipeline, pipelineId, { stageId: input.stageId });
+  const stages = pipeline!.stages;
 
   const doc = {
     title: input.title,
@@ -225,7 +275,7 @@ export async function createDealServerSide(
     context: { dealId: ref.id, pipelineId, toStage: input.stageId },
   });
 
-  return { id: ref.id, deal };
+  return { id: ref.id, deal, stage };
 }
 
 /**
@@ -266,10 +316,17 @@ export interface UpdateDealPatch {
   priority?: DealPriority;
   contactId?: string;
   territoryId?: string | null;
+  /** Must be a stage of the deal's pipeline, else `DealStageError`. */
   stageId?: PipelineStageId;
   /**
-   * Move the deal to another pipeline. The route has already checked that
-   * `stageId` (required alongside) belongs to it.
+   * Move to the pipeline's Won / Lost stage without knowing its id — for
+   * callers that only know the outcome (quote accepted ⇒ won). Ignored when
+   * `stageId` is set.
+   */
+  terminal?: "won" | "lost";
+  /**
+   * Move the deal to another pipeline. `stageId` (or `terminal`) is required
+   * alongside, since stage ids do not carry across pipelines.
    */
   pipelineId?: string;
   /** Only meaningful on a move to the lost stage. */
@@ -312,9 +369,19 @@ export async function updateDealServerSide(opts: {
   const previousPipelineId = dealPipelineId(existing);
   const pipelineId = patch.pipelineId ?? previousPipelineId;
   const pipeline = await loadPipeline(existing.subAccountId, pipelineId);
-  const stages = pipeline?.stages;
+  if (!pipeline) {
+    throw new DealStageError("invalid_pipeline", `Pipeline "${pipelineId}" not found.`);
+  }
+  const stages = pipeline.stages;
   const terminalOf = (stageId: string | undefined) =>
-    stageId ? findStage({ stages: stages ?? [] }, stageId)?.terminal : undefined;
+    stageId ? findStage(pipeline, stageId)?.terminal : undefined;
+  if (patch.pipelineId !== undefined && patch.stageId === undefined && !patch.terminal) {
+    throw new DealStageError("invalid_stage", "A pipeline move needs a stageId.");
+  }
+  const nextStageId =
+    patch.stageId !== undefined || patch.terminal
+      ? resolveStage(pipeline, pipelineId, patch).id
+      : undefined;
 
   const write: Record<string, unknown> = {
     updatedAt: FieldValue.serverTimestamp(),
@@ -332,15 +399,15 @@ export async function updateDealServerSide(opts: {
   }
 
   const stageChanged =
-    (patch.stageId !== undefined && patch.stageId !== previousStage) ||
+    (nextStageId !== undefined && nextStageId !== previousStage) ||
     pipelineId !== previousPipelineId;
   const nextTerminal = stageChanged
-    ? terminalOf(patch.stageId ?? previousStage)
+    ? terminalOf(nextStageId ?? previousStage)
     : undefined;
   // Always stamp the pipeline so a pre-pipeline deal gains it on first edit.
   write.pipelineId = pipelineId;
-  if (patch.stageId !== undefined) {
-    write.stageId = patch.stageId;
+  if (nextStageId !== undefined) {
+    write.stageId = nextStageId;
     if (stageChanged) {
       write.stageChangedAt = FieldValue.serverTimestamp();
       // Mirror the old client `moveDeal`: set the reason moving INTO lost,
@@ -359,7 +426,7 @@ export async function updateDealServerSide(opts: {
   const data = fresh.data()!;
   const deal = serializeDealForApi(fresh.id, data, mode);
 
-  const toStage = (patch.stageId ?? previousStage) as string;
+  const toStage = (nextStageId ?? previousStage) as string;
   if (stageChanged && previousStage) {
     const reasonSuffix =
       nextTerminal === "lost" && write.lostReason
@@ -417,7 +484,12 @@ export async function updateDealServerSide(opts: {
     else if (nextTerminal === "lost") fireDealTrigger({ ...base, type: "deal.lost" });
   }
 
-  return { id: fresh.id, deal, stageTerminal: terminalOf(toStage) };
+  return {
+    id: fresh.id,
+    deal,
+    stage: findStage(pipeline, toStage) ?? getStage(toStage, stages),
+    stageTerminal: terminalOf(toStage),
+  };
 }
 
 /**

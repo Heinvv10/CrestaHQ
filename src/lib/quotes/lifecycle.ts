@@ -184,7 +184,8 @@ export async function applyDealOutcomeForAcceptedQuote(
       const moved = await updateDealServerSide({
         dealId: linkedDealId,
         patch: {
-          stageId: "won",
+          // The linked deal may live in any pipeline; land on ITS won stage.
+          terminal: "won",
           value: totals.total,
           currency: quote.currency,
         },

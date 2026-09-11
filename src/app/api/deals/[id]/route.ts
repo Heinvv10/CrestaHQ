@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import {
+  DealStageError,
   deleteDealServerSide,
   updateDealServerSide,
   type UpdateDealPatch,
@@ -109,12 +110,20 @@ export async function PATCH(
     patch.customFields = cf.value;
   }
 
-  const result = await updateDealServerSide({
-    dealId: id,
-    patch,
-    userId: access.uid,
-    mode: (data.mode as "live" | "test") ?? "live",
-  });
+  let result;
+  try {
+    result = await updateDealServerSide({
+      dealId: id,
+      patch,
+      userId: access.uid,
+      mode: (data.mode as "live" | "test") ?? "live",
+    });
+  } catch (err) {
+    if (err instanceof DealStageError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
+  }
   if (!result) {
     return NextResponse.json({ error: "Deal not found" }, { status: 404 });
   }
