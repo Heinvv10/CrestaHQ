@@ -47,7 +47,7 @@ relative to `src/` unless they start with `e2e/`.
 | 23 | CORS / domain controls | absent | PR 3 |
 | 24 | No-JS / degraded website fallback | absent | PR 3 |
 | 25 | Review-request compatibility | partial | untouched by PR 1 — `lib/reviews/*.test.ts`, `app/api/sub-accounts/[id]/google-review/route.test.ts` stay green; the listing stores `newReviewUri` for the URL-reconciliation seam in PR 4 |
-| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy guard `scripts/gbp-fake-guard.mjs` (`scripts/gbp-fake-guard.test.ts`); runbook + rollout in PR 4 |
+| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy checks `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`); runbook + rollout in PR 4 |
 
 ## Provider boundary
 
@@ -128,44 +128,49 @@ plus `code=fake-code:<real tenant>` cannot point anything at a real tenant
 fake makes `googleAppConfigured()` false, so routes answer `not_configured`
 rather than 500.
 
-### Deviation from v2 §5, and the second layer
+### Deviation from v2 §5, and how the fake is kept out of production
 
 v2 §5 says the fake must refuse `NODE_ENV=production`. It does — unless
 `GBP_FAKE_ALLOW_PROD_BUILD=1`, because the blocking CI Playwright job boots the
 production bundle and the fake is the only way that gate can exercise the
 Google flow. This is a documented deviation that needs Hein's sign-off. It is
-held by two independent layers:
+held by three things, none of which parses env files:
 
-1. **App** (`provider/select.ts`, `provider/mode.ts`): loopback app URL +
+1. **App fence** (`provider/select.ts`, `provider/mode.ts`): loopback app URL +
    prod-build opt-in + fixture-agency fence, each clause mutation-proven. The
-   loopback clause is the NARROW allow-list `isAppLoopbackUrl` in
-   `provider/loopback.mjs`: the hostname, after WHATWG normalisation, must be
-   exactly `127.0.0.1`, `localhost` or `[::1]` (`0.0.0.0`, `127.0.0.2`,
-   `*.localhost` are refused — `select.test.ts`).
-2. **Deploy** (`scripts/gbp-fake-guard.mjs`, run by `deploy-velo.sh` after
-   `pnpm install` and before any gate or build): loads the deploy dir's env
-   files through Next's own `@next/env` in production mode
-   (`.env.production.local`, `.env.local`, `.env.production`, `.env`), so any
-   dotenv spelling Next accepts is seen. The load runs in a **child process
-   with every `GBP_*` key and `NEXT_PUBLIC_APP_URL` stripped**, because
-   `@next/env` lets the process env win: in-process, a shell
-   `GBP_PROVIDER=google` would hide a file's `GBP_PROVIDER=fake`. It refuses
-   when the merged env (deploy shell over files, Next's precedence) **or any
-   single file, on its own value,** sets `GBP_PROVIDER` to `fake` (trimmed, any
-   case), sets any `GBP_FAKE_*`, or sets a `NEXT_PUBLIC_APP_URL` that does not
-   parse or whose host is on the WIDE block-list `isLoopbackHostname` in
-   `provider/loopback.mjs`: `localhost` / `*.localhost`, `127.0.0.0/8` in any
-   IPv4 spelling WHATWG normalises (`127.1`, hex, decimal, octal), `[::1]` in
-   any spelling, IPv4-mapped `::ffff:127.x`, `0.0.0.0` and `[::]`. A test
-   asserts every host the app allows is on this block-list. It fails closed on
-   an unreadable env file or a loader that cannot run, and prints names only. Covered by
-   `scripts/gbp-fake-guard.test.ts` over real env files on disk (every bypass
-   the security review listed, plus the canonical forms), each branch
-   mutation-proven.
+   loopback clause is the NARROW allow-list `isAppLoopbackUrl`
+   (`provider/loopback.mjs`): the hostname, after WHATWG normalisation, must be
+   exactly `127.0.0.1`, `localhost` or `[::1]`. Next **inlines**
+   `NEXT_PUBLIC_APP_URL` into that check at build time — in the server bundle it
+   is a string literal (`…isAppLoopbackUrl)("https://crm.example.test"))throw…`)
+   — so a build that carries a public URL cannot run the fake whatever the
+   runtime environment says. Proven on a throwaway build: with
+   `GBP_PROVIDER=fake`, the opt-in, the fixture agency AND a loopback
+   `NEXT_PUBLIC_APP_URL` in the running server's env, the signed-in app still
+   answered `/google/status` → `{"configured":false}`.
+2. **Pre-build deploy check** (`scripts/gbp-deploy-check.mjs pre`, run by
+   `deploy-velo.sh` before install): refuses if the raw text of any `.env*` file
+   in the deploy dir mentions `GBP_PROVIDER` or `GBP_FAKE_` anywhere — any line,
+   commented or not; production never needs these names (the default is
+   Google) — or if any deploy-shell variable is named `GBP_PROVIDER*` /
+   `GBP_FAKE_*`. No parsing, no expansion, so no dotenv spelling can slip past
+   it. Unreadable files fail closed. `GBP_SYNC_SCHEDULE_ENABLED` is allowed.
+3. **Post-build deploy check** (`scripts/gbp-deploy-check.mjs post`, in
+   `deploy-velo.sh`'s "Verifying NEXT_PUBLIC_APP_URL was inlined" step): the
+   inlined URL must parse, must not be on the WIDE loopback block-list
+   (`isLoopbackHostname`: `localhost`/`*.localhost`, `127.0.0.0/8` in any IPv4
+   spelling, `[::1]` in any spelling, `::ffff:127.x`, `0.0.0.0`, `[::]`), and
+   must be the literal in every server chunk carrying the fake-provider check;
+   if that code cannot be found, nothing is proven and it refuses. This is the
+   authoritative check — it asserts what the running app will actually compare.
 
-   **Not read:** systemd `Environment=` / `EnvironmentFile=` lines on the
-   `crestahq` unit. A fake setting there is stopped only by the app-side fence
-   (layer 1), which does not depend on this guard.
+Both deploy checks are covered by `scripts/gbp-deploy-check.test.ts` (every
+bypass from four review rounds as fixtures), each branch mutation-proven;
+`loopback.test.ts` asserts every host the app allows is on the wide block-list.
+
+**Not covered:** systemd `Environment=` / `EnvironmentFile=` lines on the
+`crestahq` unit are read by neither deploy check. They cannot change the
+inlined URL, so the app fence plus the post-build check still hold.
 
 ## OAuth state and token lifecycle
 
@@ -206,7 +211,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `GET /api/sub-accounts/[id]/google/connect[?return=gbp]` | admin, gated | redirects to Google (or the fake callback) |
 | `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`, and only if the stored listing is still the one checked) when provably not visible; kept if the check fails or the 20-page walk was truncated before finding it |
 | `GET /api/sub-accounts/[id]/google/status` | any member | `{configured}` — deployment-level boolean only |
-| `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke (skipped when the deployment's fake is refused — nothing to revoke with); clears meta **and** `googleListing` (audited `disconnected`) |
+| `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke, skipped when a requested fake is refused (nothing to revoke with) — on a dev machine (loopback app URL) the fixture-agency fence still applies first; clears meta **and** `googleListing` (audited `disconnected`) |
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
 | `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused) |
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
