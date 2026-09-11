@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { revokeGoogleToken } from "@/lib/google/oauth";
+import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
   googleConnectionSecretPath,
   type GoogleConnectionSecret,
@@ -18,7 +18,8 @@ import {
  * Sub-account admin only. Deliberately UNGATED on the agency flag so a
  * connection can always be cleaned up, even after the agency switched the
  * feature off. Revokes at Google best-effort, then deletes the locked secret
- * doc and clears the display metadata. Re-connecting is a fresh OAuth pass.
+ * doc and clears the display metadata and the chosen listing. Re-connecting is
+ * a fresh OAuth pass.
  */
 
 export async function DELETE(
@@ -28,6 +29,11 @@ export async function DELETE(
   const { id } = await ctx.params;
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
+
+  // Before any read or write: in fake mode this throws for a sub-account
+  // outside the fixture agency, so a dev pointed at production Firestore
+  // cannot delete a real tenant's connection.
+  const provider = await getGbpProviderFor(id);
 
   const db = getAdminDb();
   const secretRef = db.doc(googleConnectionSecretPath(id));
@@ -40,7 +46,7 @@ export async function DELETE(
   // the operator is stuck with a connection they can't remove.
   if (secret?.refreshToken) {
     try {
-      await revokeGoogleToken(secret.refreshToken);
+      await provider.revoke(secret.refreshToken);
     } catch (err) {
       console.warn(`[google/disconnect] revoke failed sa=${id}`, err);
     }
@@ -50,6 +56,7 @@ export async function DELETE(
   await db.doc(`subAccounts/${id}`).set(
     {
       googleConnectionMeta: null,
+      googleListing: null,
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },

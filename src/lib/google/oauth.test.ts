@@ -1,11 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import crypto from "node:crypto";
 import {
   GOOGLE_SCOPE,
   GoogleStateSecretMissingError,
   buildGoogleOAuthUrl,
-  exchangeCodeForTokens,
   googleAppConfigured,
   googleRedirectUri,
   signGoogleState,
@@ -34,17 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env = { ...ORIGINAL };
-  vi.unstubAllGlobals();
 });
-
-function stubToken(body: unknown, status = 200) {
-  const spy = vi.fn(
-    async (_url: string, _init: { body: URLSearchParams }) =>
-      new Response(JSON.stringify(body), { status }),
-  );
-  vi.stubGlobal("fetch", spy);
-  return spy;
-}
 
 const NOW = Date.UTC(2026, 8, 11, 12, 0, 0);
 const CLAIMS = { subAccountId: "sa_1", uid: "uid_admin" };
@@ -220,55 +209,5 @@ describe("googleRedirectUri / googleAppConfigured", () => {
     process.env.GOOGLE_CLIENT_SECRET = "client-secret";
     delete process.env.GOOGLE_CLIENT_ID;
     expect(googleAppConfigured()).toBe(false);
-  });
-});
-
-describe("token endpoint", () => {
-  const OK = {
-    access_token: "ya29.abc",
-    refresh_token: "1//0gRefresh",
-    expires_in: 3599,
-    scope: "https://www.googleapis.com/auth/business.manage",
-  };
-
-  it("exchanges a code, sending the client credentials and redirect URI", async () => {
-    const spy = stubToken(OK);
-    const before = Date.now();
-    const tokens = await exchangeCodeForTokens("the-code", "http://x/cb");
-
-    expect(spy.mock.calls[0][0]).toBe("https://oauth2.googleapis.com/token");
-    const body = spy.mock.calls[0][1].body;
-    expect(Object.fromEntries(body)).toEqual({
-      code: "the-code",
-      client_id: "client-id.apps.googleusercontent.com",
-      client_secret: "client-secret",
-      redirect_uri: "http://x/cb",
-      grant_type: "authorization_code",
-    });
-    expect(tokens.accessToken).toBe("ya29.abc");
-    expect(tokens.refreshToken).toBe("1//0gRefresh");
-    expect(tokens.scopes).toEqual([
-      "https://www.googleapis.com/auth/business.manage",
-    ]);
-    expect(tokens.expiresAt).toBeGreaterThanOrEqual(before + 3599 * 1000);
-  });
-
-  it("reports a null refresh token rather than inventing one", async () => {
-    stubToken({ ...OK, refresh_token: undefined });
-    expect((await exchangeCodeForTokens("c", "http://x/cb")).refreshToken).toBeNull();
-  });
-
-  it("throws with Google's own reason on an error response", async () => {
-    stubToken({ error: "invalid_grant", error_description: "Bad Request" }, 400);
-    await expect(exchangeCodeForTokens("c", "http://x/cb")).rejects.toThrow(
-      "Google token request failed: Bad Request",
-    );
-  });
-
-  it("throws rather than storing a response missing an access token", async () => {
-    stubToken({ expires_in: 3599 });
-    await expect(exchangeCodeForTokens("c", "http://x/cb")).rejects.toThrow(
-      "Google token response was malformed",
-    );
   });
 });

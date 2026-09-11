@@ -3,14 +3,15 @@ import "server-only";
 import crypto from "node:crypto";
 
 /**
- * Google OAuth wrapper for the Business Profile connection. Everything here is
- * INERT unless the deployment has a Google OAuth client configured
- * (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) AND the sub-account's agency
- * gate (`googleEnabledByAgency`) is on.
+ * Pure helpers for the Business Profile OAuth connection: the scope, the
+ * redirect URI, the consent URL and the signed `state`. Everything is INERT
+ * unless the deployment has a Google OAuth client configured
+ * (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`, or the fenced fake provider)
+ * AND the sub-account's agency gate (`googleEnabledByAgency`) is on.
  *
- * Mirrors the shape of `lib/comms/meta.ts`: pure helpers + token-endpoint
- * calls, no Firestore writes. The connect route and the shared callback are
- * the only callers.
+ * Calls to Google's token endpoint live behind the GBP provider
+ * (`lib/gbp/provider/google-token.ts`) so they get typed errors like every
+ * other Google call. No Firestore writes here.
  */
 
 /**
@@ -21,8 +22,6 @@ import crypto from "node:crypto";
 export const GOOGLE_SCOPE = "https://www.googleapis.com/auth/business.manage";
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 
 /**
  * The ONE OAuth redirect URI for the whole deployment. Google validates
@@ -41,8 +40,13 @@ export function googleRedirectUri(): string | null {
   return `${base}/api/google/callback`;
 }
 
-/** True when the deployment has Google OAuth client credentials. */
+/**
+ * True when the deployment has Google OAuth client credentials — or runs the
+ * fake provider, which needs none. Whether the fake is actually ALLOWED here
+ * is decided (loudly) by `getGbpProviderFor` in lib/gbp/provider/select.ts.
+ */
 export function googleAppConfigured(): boolean {
+  if (process.env.GBP_PROVIDER === "fake") return true;
   return !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 }
 
@@ -178,90 +182,14 @@ export function googleReturnPath(
 }
 
 // ---------------------------------------------------------------------------
-// Token endpoint
+// Token shape — returned by the provider's exchange / refresh.
 // ---------------------------------------------------------------------------
 
 export interface GoogleTokens {
   accessToken: string;
-  /** Absent on a refresh — Google only returns it at authorisation time. */
+  /** Null on a refresh unless Google rotated it (then it must be stored). */
   refreshToken: string | null;
   /** Epoch ms. */
   expiresAt: number;
   scopes: string[];
-}
-
-function credentials(): { clientId: string; clientSecret: string } {
-  return {
-    clientId: process.env.GOOGLE_CLIENT_ID ?? "",
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
-  };
-}
-
-async function postToken(body: URLSearchParams): Promise<GoogleTokens> {
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  const data = (await res.json().catch(() => null)) as {
-    access_token?: unknown;
-    refresh_token?: unknown;
-    expires_in?: unknown;
-    scope?: unknown;
-    error_description?: unknown;
-    error?: unknown;
-  } | null;
-  if (!res.ok || !data) {
-    const detail =
-      typeof data?.error_description === "string"
-        ? data.error_description
-        : typeof data?.error === "string"
-          ? data.error
-          : `HTTP ${res.status}`;
-    throw new Error(`Google token request failed: ${detail}`);
-  }
-  if (typeof data.access_token !== "string" || typeof data.expires_in !== "number") {
-    throw new Error("Google token response was malformed");
-  }
-  return {
-    accessToken: data.access_token,
-    refreshToken:
-      typeof data.refresh_token === "string" ? data.refresh_token : null,
-    expiresAt: Date.now() + data.expires_in * 1000,
-    scopes: typeof data.scope === "string" ? data.scope.split(" ") : [],
-  };
-}
-
-/** Exchange the one-time `code` from the callback for tokens. */
-export function exchangeCodeForTokens(
-  code: string,
-  redirectUri: string,
-): Promise<GoogleTokens> {
-  const { clientId, clientSecret } = credentials();
-  return postToken(
-    new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    }),
-  );
-}
-
-
-/**
- * Best-effort revoke at Google's end. Callers swallow failures — a revoke that
- * doesn't land must never block the local disconnect, or the operator is stuck
- * with a connection they can't remove.
- */
-export async function revokeGoogleToken(token: string): Promise<void> {
-  const res = await fetch(REVOKE_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ token }),
-  });
-  if (!res.ok) {
-    throw new Error(`Google revoke failed: HTTP ${res.status}`);
-  }
 }

@@ -36,6 +36,10 @@ const STATUS_MESSAGES: Record<string, { ok: boolean; text: string }> = {
     ok: false,
     text: "Google didn't return a long-lived token. Remove this app at myaccount.google.com → Security → Third-party access, then connect again.",
   },
+  insufficient_scope: {
+    ok: false,
+    text: "Google didn't grant Business Profile access. Connect again and leave the Business Profile permission ticked.",
+  },
   error: { ok: false, text: "Couldn't connect to Google. Please try again." },
 };
 

@@ -5,8 +5,9 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
+import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
-  exchangeCodeForTokens,
+  GOOGLE_SCOPE,
   googleAppConfigured,
   googleRedirectUri,
   googleReturnPath,
@@ -98,11 +99,19 @@ export async function GET(request: Request) {
   }
 
   try {
-    const tokens = await exchangeCodeForTokens(code, redirectUri);
+    // Inside the try: in fake mode a sub-account outside the fixture agency
+    // throws here, BEFORE any exchange or write.
+    const provider = await getGbpProviderFor(id);
+    const tokens = await provider.exchangeCode(code, redirectUri);
     // No refresh token means the connection dies within the hour. Refuse it
     // rather than storing a link that looks connected and silently stops.
     if (!tokens.refreshToken) {
       return finish("no_refresh_token");
+    }
+    // Google's consent screen lets the user untick the scope. A grant without
+    // business.manage can do nothing we need — store nothing.
+    if (!tokens.scopes.includes(GOOGLE_SCOPE)) {
+      return finish("insufficient_scope");
     }
 
     const secret: GoogleConnectionSecret = {
@@ -123,6 +132,10 @@ export async function GET(request: Request) {
       scopes: tokens.scopes,
       connectedAt: new Date(),
       connectedByUid: access.uid,
+      // Explicit, not omitted: the doc write below is a deep merge, so an
+      // omitted field would leave a stale `reconnectRequired: true` behind.
+      reconnectRequired: false,
+      reconnectReason: null,
     };
 
     const db = getAdminDb();

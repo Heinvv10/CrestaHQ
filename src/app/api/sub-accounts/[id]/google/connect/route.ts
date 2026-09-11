@@ -2,9 +2,9 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import { googleGateOn } from "@/lib/google/gate";
 import {
-  buildGoogleOAuthUrl,
   googleAppConfigured,
   googleRedirectUri,
   googleReturnPath,
@@ -72,5 +72,9 @@ export async function GET(
     settingsUrl.searchParams.set("google", "not_configured");
     return NextResponse.redirect(settingsUrl);
   }
-  return NextResponse.redirect(buildGoogleOAuthUrl({ redirectUri, state }));
+  // Throws (500) in fake mode for a sub-account outside the fixture agency.
+  const provider = await getGbpProviderFor(id);
+  return NextResponse.redirect(
+    provider.authorizeUrl({ redirectUri, state, subAccountId: id }),
+  );
 }

@@ -137,7 +137,12 @@ describe("disconnect", () => {
       {
         op: "set",
         path: SUB_PATH,
-        data: { googleConnectionMeta: null, updatedAt: "SERVER_TS" },
+        data: {
+          googleConnectionMeta: null,
+          // The chosen listing belongs to the connection it was picked through.
+          googleListing: null,
+          updatedAt: "SERVER_TS",
+        },
       },
     ]);
   });
@@ -148,6 +153,16 @@ describe("disconnect", () => {
     const res = await disconnect();
     expect(res.status).toBe(200);
     expect(state.writes.map((w) => w.op)).toEqual(["delete", "set"]);
+  });
+
+  it("refuses in fake mode for a sub-account outside the fixture agency, touching nothing", async () => {
+    process.env.GBP_PROVIDER = "fake";
+    process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
+    process.env.GBP_FAKE_AGENCY_ID = "ag_fixture_only";
+    await expect(disconnect()).rejects.toThrow("GBP fake provider refused");
+    expect(state.writes).toEqual([]);
+    delete process.env.GBP_PROVIDER;
+    delete process.env.GBP_FAKE_AGENCY_ID;
   });
 
   it("works while the agency gate is off, so a connection is never stranded", async () => {
