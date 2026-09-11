@@ -199,6 +199,7 @@ One Meta app powers BOTH the FB Messenger / IG DM inbox AND the Social Planner (
 | `META_APP_ID` | [developers.facebook.com](https://developers.facebook.com) → your app → Settings → Basic. |
 | `META_APP_SECRET` | Same page. Keep secret. |
 | `META_WEBHOOK_VERIFY_TOKEN` | Any string you choose; enter the same value in the Meta app's Webhooks config. Needed for inbound inbox messages (not for posting). |
+| `WHATSAPP_APP_SECRET` | Optional. The app secret of a separate Meta app used for WhatsApp Cloud — e.g. one in the business portfolio that owns the WABAs. The `/api/webhooks/whatsapp-cloud` webhook accepts a signature from this app or from `META_APP_SECRET`'s. Its webhook uses the same `META_WEBHOOK_VERIFY_TOKEN`. |
 
 **Gray-out behavior:** when `META_APP_ID` + `META_APP_SECRET` are absent, `metaAppConfigured()` is false, so the **"Facebook + Instagram inbox"** and **"Social Planner"** toggles in the agency Manage dialog are **disabled/grayed out** (with a "set META_APP_ID / META_APP_SECRET" hint), and the feature-gates PATCH route refuses to enable either gate (400). The client reads this via `GET /api/agency/deployment-config` (returns `{ metaConfigured }` — non-sensitive booleans only). An already-enabled gate can still be turned OFF so a legacy state isn't trapped. Derives from the two secrets — there is no separate `NEXT_PUBLIC` flag to keep in sync.
 

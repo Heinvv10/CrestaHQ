@@ -118,7 +118,14 @@ async function resolveRoute(
 export async function POST(request: Request) {
   const rawBody = await request.text();
 
-  if (!verifyMetaSignature(rawBody, request.headers.get("x-hub-signature-256"))) {
+  // Meta signs with the secret of the app the WABA is subscribed to, which
+  // may be a WhatsApp-only app in the portfolio that owns the WABA rather
+  // than the Messenger/IG app.
+  const signature = request.headers.get("x-hub-signature-256");
+  const signedByOurApp = [process.env.WHATSAPP_APP_SECRET, process.env.META_APP_SECRET].some(
+    (secret) => verifyMetaSignature(rawBody, signature, secret ?? ""),
+  );
+  if (!signedByOurApp) {
     console.warn("[whatsapp-cloud] invalid X-Hub-Signature-256");
     return new NextResponse("Invalid signature", { status: 403 });
   }
