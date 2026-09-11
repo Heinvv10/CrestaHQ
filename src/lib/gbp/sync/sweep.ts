@@ -77,8 +77,14 @@ async function pool(items: Candidate[], work: (c: Candidate) => Promise<void>, s
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
 }
 
-export async function runGbpSyncSweep(opts: { sleep?: Sleep } = {}): Promise<SweepResult> {
-  const { sync, retain } = await candidates();
+/**
+ * `syncTenants: false` (the schedule is off) runs ONLY the retention half —
+ * no provider calls — so a cache still never outlives Google's 30 days.
+ */
+export async function runGbpSyncSweep(opts: { sleep?: Sleep; syncTenants?: boolean } = {}): Promise<SweepResult> {
+  const found = await candidates();
+  const sync = opts.syncTenants === false ? [] : found.sync;
+  const { retain } = found;
   const byStatus: Record<string, number> = {};
   const count = (k: string) => (byStatus[k] = (byStatus[k] ?? 0) + 1);
   let processed = 0;

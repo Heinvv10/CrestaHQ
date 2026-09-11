@@ -15,8 +15,10 @@ import { runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
  *
  * The schedule is opt-in (`GBP_SYNC_SCHEDULE_ENABLED=1`, registered by
  * register-schedules.ts). With the flag off this answers 200
- * `{skipped:"not_scheduled"}` and does nothing, so a schedule left behind in
- * QStash is harmless and the page's "not scheduled" stays true.
+ * `{skipped:"not_scheduled", …}` and syncs nobody — so a schedule left behind
+ * in QStash cannot make the page's "not scheduled" untrue — but still runs
+ * the retention-only half (no provider calls): expiring content is never a
+ * matter of configuration.
  *
  * Each sub-account is isolated inside the sweep, so this answers 200 with the
  * tally even when some tenants failed; 500 only when the sweep could not
@@ -37,10 +39,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  if (!gbpSyncScheduled()) return NextResponse.json({ skipped: "not_scheduled" });
-
+  const scheduled = gbpSyncScheduled();
   try {
-    return NextResponse.json(await runGbpSyncSweep());
+    const result = await runGbpSyncSweep({ syncTenants: scheduled });
+    return NextResponse.json(scheduled ? result : { skipped: "not_scheduled", ...result });
   } catch (err) {
     console.error("[cron/gbp-sync] sweep failed", err instanceof Error ? err.name : typeof err);
     return NextResponse.json({ error: "sweep_failed" }, { status: 500 });

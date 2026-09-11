@@ -311,9 +311,9 @@ Admin SDK, and the new subcollections fall under default deny.
 
 | Path | Written by | Content |
 |---|---|---|
-| `subAccounts/{id}/gbpReviews/{docId}` | sync only | `docId = sha256(review.name).hex[:40]` (deterministic → idempotent). `agencyId, subAccountId, createdByUid` (= `googleListing.selectedByUid`), `locationName, reviewName, reviewId, reviewer, starRating, comment` (byte-exact or null), `createTime, updateTime, reply, state` (`active`/`removed`), `firstSeenAt, lastSeenAt, removedAt, passId, contentHash` (sha256 of rating, comment, updateTime, reply) |
+| `subAccounts/{id}/gbpReviews/{docId}` | sync only | `docId = sha256(review.name).hex[:40]` (deterministic → idempotent). `agencyId, subAccountId, createdByUid` (= `googleListing.selectedByUid`), `locationName, reviewName, reviewId, reviewer, starRating, comment` (byte-exact or null), `createTime, updateTime, reply, state` (`active`/`removed`), `firstSeenAt, lastSeenAt, removedAt, passId, contentHash` (sha256 of rating, comment, updateTime, reply), `missedPasses` (consecutive complete single-run passes it was missing from) |
 | `subAccounts/{id}/gbpSyncRuns/{runId}` | sync only, `create()` once at the end of a run — never updated | `agencyId, subAccountId, createdByUid, trigger, actorUid, startedAt, finishedAt, locationName, status, pagesFetched, reviewsSeen, created, updated, unchanged, removed, purged, reconciliation, resumedFromCursor, errorKind, skipReason`. No provider body, token or review text |
-| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | `lease {runId, until}`, `pass {passId, pageToken, pagesDone, startedAt, averageRating, totalReviewCount}`, `retentionPurgedAt`, `anomalyStreak {removals, count}`, `lastManualAt` (Sync-now cooldown) |
+| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | `lease {runId, until}`, `pass {passId, pageToken, pagesDone, startedAt, averageRating, totalReviewCount}`, `retentionPurgedAt`, `anomalyStreak {removals, count, lastAt}`, `lastManualAt` (Sync-now cooldown) |
 | `subAccounts/{id}.gbpSummary` | sync only (member-readable) | `locationName, averageRating, totalReviewCount, lastSuccessfulSyncAt, lastRunAt, lastRunStatus, lastErrorKind, lastReconciliation, health` — kinds only |
 
 The review collection only ever holds the **current** listing (see "Data
@@ -334,7 +334,8 @@ One core, `lib/gbp/sync/run.ts`; Sync now and the cron differ only in `trigger`
    re-reads the sub-account: if the listing, the connection, the reconnect
    flag or the gate no longer match what step 2 read → `skipped
    listing_changed`, nothing written; a live lease → `skipped
-   already_running` (a cache clear holds a `clearing` lease while it deletes).
+   already_running` (a cache clear holds a `clearing` lease while it deletes;
+   its first write also drops the pass cursor and anomaly streak).
    The run continues from the summary read INSIDE that transaction. Every later write of the run — each page, tombstones,
    the summary — is a transaction that re-checks the lease is still this
    run's (`commitGuarded`), so a run whose cache was cleared under it stops
@@ -364,33 +365,38 @@ One core, `lib/gbp/sync/run.ts`; Sync now and the cron differ only in `trigger`
 7. **Summary** (rating/count/`lastSuccessfulSyncAt` only on success, from the
    pass) and finally the append-only run record.
 
-### Reconciliation and the anomaly rule
+### Reconciliation — the per-review two-miss rule
 
-Only after a **complete** pass, and only if the pass is **authoritative**: it
-started AND finished within ONE run (it was never resumed from a cursor).
-Then every active review whose `passId` is not this pass was removed at
-Google → **tombstone** (`state:"removed"`, `removedAt`; `comment`,
-`reviewer`, `reply`, `starRating`, `contentHash` set to null; ids kept). A
-review that comes back is restored as an `update`.
+Removal is decided **per review**, never from a whole pass's say-so (three
+pass-level heuristics were broken in review: a count rule twice, then a
+deletion mid-run shifting Google's offset pages so a single-run pass skipped
+a live review — `sync/two-miss.test.ts` › the deletion-shift race).
 
-- **Resumed → `deferred`, status `success`, nothing removed.** Google pages
-  by `updateTime desc`, so a pass that spans runs can miss a review edited in
-  between — it moved to an already-fetched page — and no count can tell:
-  reviews arriving meanwhile inflate what a resumed pass sees (two count
-  heuristics were broken in review, `sync/fix-round.test.ts` › the breaker's
-  case). Whether Google reports `totalReviewCount` does not matter for a
-  single-run pass.
+- Every cached review carries `missedPasses` (0 whenever it is seen).
+- A **complete pass that started and finished in ONE run** adds one miss to
+  every active review it did not see. A **resumed** pass counts nothing
+  (`deferred`).
+- A review is **tombstoned only at its second consecutive miss** (`state:
+  "removed"`, `removedAt`; `comment`, `reviewer`, `reply`, `starRating`,
+  `contentHash` set to null; ids kept). One bad pass can hide a live review
+  for one pass; it cannot remove it. A review that comes back is restored as
+  an `update`.
+- **So a review removed at Google disappears after two complete passes —
+  about 12 hours with the 6-hourly schedule** (or two Sync-now presses a
+  minute apart).
 - **Big listings:** a listing that cannot finish a pass in one run (more than
-  `maxPages × 50` = 1000 reviews) is **never** reconciled. A review removed at
+  `maxPages × 50` = 1000 reviews) never counts misses. A review removed at
   Google stays cached — and served — until it has not been re-seen for 30
   days, when the retention rule deletes it (and the read stops serving it).
-  That is the whole removal story for such listings.
-- **Anomaly guard:** a pass that saw nothing while Google reports reviews, or
-  that would remove more than half of ≥10 active reviews, looks like an
-  outage → nothing removed, `reconciliation:"skipped_anomaly"`, status
-  `partial`. The same planned removal count on the **third consecutive**
-  complete pass is applied (`full_after_anomaly`); a different count restarts
-  the streak.
+- **Anomaly brake on top:** planned tombstones from a pass that saw nothing
+  (whatever `totalReviewCount` says), or more than half of ≥10 active
+  reviews, look like an outage → nothing removed, `reconciliation:
+  "skipped_anomaly"`, status `partial` (misses still count). The same
+  planned count on the **third** such pass is applied (`full_after_anomaly`)
+  — but a confirmation counts only if it is at least **an hour** after the
+  previous one, so pressing Sync now three times confirms nothing. A
+  different count restarts the streak. Mass removal therefore needs two
+  misses AND the streak.
 
 ### Retention — Google's 30-day rule
 
@@ -406,9 +412,11 @@ says content "…stored temporarily for no more than 30 calendar days…". So:
   `health:"error"`, `lastErrorKind:"retention_expired"`. The purge restarts
   the clock, so later runs resume the new pass and a listing too big for one
   run can finish it.
-- **Switching the agency gate off** deletes the cache at once
-  (`PATCH …/feature-gates` → `clearGbpCache`), as do clearing/changing the
-  listing and disconnecting. Any other cache that can no longer sync gets a
+- **Switching the agency gate off** deletes the cache at once, on every
+  path that can do it — the Manage dialog (`PATCH …/feature-gates`) and the
+  Workspace Assistant's `set_feature_gate` both go through
+  `applyFeatureGates`, which calls `clearGbpCache` — as do clearing/changing
+  the listing and disconnecting. Any other cache that can no longer sync gets a
   retention-only pass from the sweep — no provider call, under the lease;
   its reviews go under the 30-day rules, and once it holds none (after an
   expiry purge, or never successful) its summary is deleted too and it
@@ -431,9 +439,10 @@ With the schedule on, the cron runs **every 6 hours**; nothing is real-time.
 The page states only what is true: "Syncs automatically every 6 hours" when
 the deployment has `GBP_SYNC_SCHEDULE_ENABLED=1`, otherwise "Automatic sync is
 not scheduled on this deployment — use Sync now" (`scheduled` in the reviews
-response). With the flag off the cron route itself answers `{skipped:
-"not_scheduled"}` and does nothing, so a schedule left in QStash cannot make
-that sentence false. Health is derived **at read time** by `deriveHealth(summary, now,
+response). With the flag off the cron route answers `{skipped:
+"not_scheduled", …}` and syncs nobody, so a schedule left in QStash cannot
+make that sentence false — but it still runs the sweep's retention-only half
+(no provider calls). Health is derived **at read time** by `deriveHealth(summary, now,
 liveConnection)` (`lib/gbp/sync/health.ts`): `reconnect_required` whenever the
 connection is flagged; `sync_pending` when the last run needed a reconnect and
 the connection has since been reconnected; `ok` after a recent success;

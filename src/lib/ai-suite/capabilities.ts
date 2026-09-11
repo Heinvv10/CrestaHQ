@@ -1,6 +1,5 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
@@ -23,6 +22,7 @@ import {
 } from "@/lib/webhooks/event-categories";
 import { WEBHOOK_EVENT_TYPES, type WebhookEventType } from "@/types/webhooks";
 import { createSubAccountForAgency } from "@/lib/server/sub-accounts-service";
+import { applyFeatureGates, type AgencyGateField } from "@/lib/server/feature-gates-service";
 import {
   assignPlanToSubAccount,
   BillingError,
@@ -614,9 +614,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That sub-account wasn't found in this agency."
         );
       }
-      await ref.update({
-        [g.field]: args.enabled,
-        updatedAt: FieldValue.serverTimestamp(),
+      // The same chokepoint the Manage dialog's route uses, so a gate's side
+      // effects (e.g. Google off → the synced review cache is deleted) hold
+      // on this path too.
+      await applyFeatureGates(snap.id, {
+        [g.field as AgencyGateField]: args.enabled as boolean,
       });
       const name =
         (snap.data()?.name as string) || (args.subAccountName as string);

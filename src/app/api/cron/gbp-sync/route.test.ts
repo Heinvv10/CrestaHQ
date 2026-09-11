@@ -17,6 +17,7 @@ import {
   OTHER_SA,
   SA,
   asUser,
+  mem,
   reviews,
   resetSync,
   runs,
@@ -76,13 +77,29 @@ describe("signature", () => {
 });
 
 describe("with the schedule off (GBP_SYNC_SCHEDULE_ENABLED !== \"1\")", () => {
-  it.each([[undefined], ["true"], ["0"]])("%s: a signed call does nothing, so a leftover schedule is harmless", async (flag) => {
+  it.each([[undefined], ["true"], ["0"]])("%s: a signed call syncs nobody, so a leftover schedule is harmless", async (flag) => {
     if (flag === undefined) delete process.env.GBP_SYNC_SCHEDULE_ENABLED;
     else process.env.GBP_SYNC_SCHEDULE_ENABLED = flag;
     const res = await cron();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ skipped: "not_scheduled" });
+    expect(await res.json()).toMatchObject({ skipped: "not_scheduled", processed: 0, retained: 0 });
     expect(runs()).toHaveLength(0);
+  });
+
+  it("…but still runs the retention-only half (no provider calls)", async () => {
+    await cron(); // flag on: sync SA and OTHER_SA
+    const DAY = 24 * 3600_000;
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      googleEnabledByAgency: false,
+      gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: new Date(Date.now() - 31 * DAY) },
+    });
+    delete process.env.GBP_SYNC_SCHEDULE_ENABLED;
+    const res = await cron();
+    expect(await res.json()).toMatchObject({ skipped: "not_scheduled", processed: 0, retained: 1 });
+    expect(reviews(SA)).toHaveLength(0);
+    expect(reviews(OTHER_SA)).toHaveLength(7);
   });
 
   it("still 401s an unsigned call first", async () => {

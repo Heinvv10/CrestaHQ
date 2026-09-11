@@ -15,8 +15,8 @@ import {
  * E2E 3 — a changed, then removed, review. After a baseline scheduled sync,
  * Google changes one review's text and reply: "Sync now" in the UI (the
  * MANUAL path) updates the same doc, no new one. Then Google drops it: the
- * next sync tombstones it, the run explains the reconciliation, and the
- * dashboard no longer shows it.
+ * next complete pass counts one miss (still shown), the one after tombstones
+ * it, the run explains the reconciliation, and the dashboard no longer shows it.
  */
 
 test.skip(!!process.env.PLAYWRIGHT_BASE_URL, "needs GBP_PROVIDER=fake, which a deployed target refuses by design");
@@ -54,10 +54,15 @@ test("an edit updates the same review; a removal tombstones it after a full pass
   await expect(page.getByTestId("gbp-review-fake-r6")).toContainText("but fixed it the same day");
   await expect(page.getByTestId("gbp-review-fake-r6")).toContainText("Sorry about the delay");
 
-  // --- Google drops it: the next full pass tombstones it.
+  // --- Google drops it: the first complete pass only counts a miss; the
+  // second consecutive miss tombstones it.
   changed.reviews[LOC_A].reviews = changed.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r6");
   changed.reviews[LOC_A].totalReviewCount = 6;
   await setScenario(changed);
+  await resetManualCooldown();
+  await syncNowInUi(page, "Synced: 0 new, 0 updated, 0 removed.");
+  expect((await reviewDocs()).find((d) => d.id === r6!.id)).toMatchObject({ state: "active", missedPasses: 1 });
+  await expect(page.getByTestId("gbp-review-fake-r6")).toBeVisible();
   await resetManualCooldown();
   await syncNowInUi(page, "Synced: 0 new, 0 updated, 1 removed.");
 

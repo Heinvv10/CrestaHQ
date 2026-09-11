@@ -218,10 +218,12 @@ Run through this with the client's real details before calling it done:
 - **Sync now** answers `too_soon` within a minute of the last one.
 - `skipped listing_changed` → the listing/connection/gate changed as the run
   started; nothing was written, the next run picks up the new state.
-- Switching the agency's Google gate off deletes that sub-account's synced
-  reviews at once; the connection is kept.
-- Listings over 1000 reviews are never reconciled pass-to-pass: a review
-  removed at Google disappears only after 30 days unseen.
+- Switching the agency's Google gate off (Manage dialog or Workspace
+  Assistant) deletes that sub-account's synced reviews at once; the
+  connection is kept.
+- A review removed at Google disappears after two complete passes (~12h
+  scheduled). Listings over 1000 reviews never count misses: such a review
+  disappears only after 30 days unseen.
 
 ---
 

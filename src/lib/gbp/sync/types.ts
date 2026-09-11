@@ -21,10 +21,12 @@ export type SkipReason =
   /** The listing / connection / gate changed between the run's read and its lease. */
   | "listing_changed";
 /**
- * `deferred` = this run removed nothing: the pass is not complete, or it did
- * not see as many distinct reviews as Google reports. `skipped_anomaly` = a
- * complete pass whose removals look like an outage; `full_after_anomaly` = the
- * same removals confirmed by the third consecutive complete pass.
+ * `full` = a complete pass that ran in ONE run: it counted a miss for every
+ * active review it did not see and tombstoned those missed twice in a row.
+ * `deferred` = no misses counted (the pass is not complete yet, or it was
+ * resumed across runs). `skipped_anomaly` = a complete pass whose planned
+ * tombstones look like an outage, held back; `full_after_anomaly` = the same
+ * tombstones confirmed by the third such pass, each at least an hour apart.
  */
 export type Reconciliation = "full" | "deferred" | "skipped_anomaly" | "full_after_anomaly";
 export type GbpHealth =
@@ -52,6 +54,10 @@ export const LEASE_TTL_MS = 5 * 60_000;
 export const PASS_MAX_AGE_MS = 7 * 24 * 3600_000;
 /** Consecutive complete passes with the same anomaly before its removals are applied. */
 export const ANOMALY_CONFIRMATIONS = 3;
+/** Anomaly confirmations closer together than this do not count (Sync now presses). */
+export const ANOMALY_CONFIRMATION_GAP_MS = 3600_000;
+/** Consecutive complete single-run passes a review must be missing from before it is tombstoned. */
+export const MISSES_TO_REMOVE = 2;
 /** 20 pages × 50 = 1000 reviews per run. */
 export const DEFAULT_MAX_PAGES = 20;
 
@@ -109,7 +115,7 @@ export interface SyncState {
   /** When retention last purged everything (30 days without success); restarts the clock. */
   retentionPurgedAt?: number | null;
   /** The same planned removal count seen by consecutive anomalous complete passes. */
-  anomalyStreak?: { removals: number; count: number } | null;
+  anomalyStreak?: { removals: number; count: number; lastAt: number } | null;
   /** Last manual "Sync now" (epoch ms) — the 60s cooldown. */
   lastManualAt?: number | null;
 }
@@ -134,6 +140,8 @@ export interface GbpReviewDoc {
   removedAt: Date | null;
   passId: string;
   contentHash: string | null;
+  /** Consecutive complete single-run passes this review was missing from (0 when seen). */
+  missedPasses: number;
 }
 
 export const reviewsCollection = (sa: string) => `subAccounts/${sa}/gbpReviews`;

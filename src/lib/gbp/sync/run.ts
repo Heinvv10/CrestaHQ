@@ -137,11 +137,12 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     else if (!outcome.complete) rec.status = "partial";
     else {
       const streak = retention.expired ? null : (state.anomalyStreak ?? null);
-      const plan = planReconcile(cache, outcome.passId, !outcome.resumed, outcome.totalReviewCount, streak);
+      const plan = planReconcile(cache, outcome.passId, !outcome.resumed, streak, now);
       rec.reconciliation = plan.reconciliation;
       rec.status = plan.reconciliation === "skipped_anomaly" ? "partial" : "success";
       rec.removed = plan.remove.length;
       for (const id of plan.remove) finalOps.push((tx) => tx.set(reviewRef(id), tombstone(now), { merge: true }));
+      for (const [id, n] of plan.misses) finalOps.push((tx) => tx.set(reviewRef(id), { missedPasses: n }, { merge: true }));
       finalOps.push((tx) => tx.set(stateRef, { pass: null, anomalyStreak: plan.streak }, { merge: true }));
     }
   }

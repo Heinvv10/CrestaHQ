@@ -151,7 +151,7 @@ describe("disconnect", () => {
       {
         op: "set",
         path: `${SUB_PATH}/private/gbpSyncState`,
-        data: { lease: { runId: "clearing", until: expect.any(Number) } },
+        data: { lease: { runId: "clearing", until: expect.any(Number) }, pass: null, anomalyStreak: null },
       },
       { op: "set", path: SUB_PATH, data: { gbpSummary: null } },
       { op: "delete", path: `${SUB_PATH}/private/gbpSyncState` },

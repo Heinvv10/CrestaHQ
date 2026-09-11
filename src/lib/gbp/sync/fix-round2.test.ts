@@ -94,6 +94,42 @@ describe("only a cache that can no longer sync drops its summary when empty", ()
   });
 });
 
+describe("a clear that dies midway (L)", () => {
+  it("has already reset the pass cursor and the anomaly streak with its first write", async () => {
+    await sync({ maxPages: 1 });
+    const state = mem.read(`subAccounts/${SA}/private/gbpSyncState`)!;
+    mem.seed(`subAccounts/${SA}/private/gbpSyncState`, { ...state, anomalyStreak: { removals: 3, count: 1, lastAt: 1 } });
+    vi.spyOn(storeDb, "batch").mockImplementationOnce(() => {
+      throw new Error("14 UNAVAILABLE");
+    });
+    await expect(clearGbpCache(SA)).rejects.toThrow("UNAVAILABLE");
+    expect(syncState()).toMatchObject({ lease: { runId: "clearing" }, pass: null, anomalyStreak: null });
+  });
+});
+
+describe("an internal failure records from the summary read inside the lease (M14)", () => {
+  it("never re-stores a rating the lease-read summary says is past 30 days", async () => {
+    await sync();
+    const real = storeDb.runTransaction.bind(storeDb);
+    let first = true;
+    vi.spyOn(storeDb, "runTransaction").mockImplementation((async (fn: never) => {
+      if (first) {
+        first = false;
+        const sub = mem.read(`subAccounts/${SA}`)!;
+        mem.seed(`subAccounts/${SA}`, {
+          ...sub,
+          gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: new Date(NOW.getTime() - 31 * DAY) },
+        });
+        mem.seed(`subAccounts/${SA}/private/gbpFakeScenario`, { accounts: "not an array" });
+      }
+      return real(fn);
+    }) as never);
+    const run = await sync({ now: new Date(NOW.getTime() + 3600_000) });
+    expect(run).toMatchObject({ status: "failed", errorKind: "internal" });
+    expect(summaryOf()).toMatchObject({ lastRunStatus: "failed", averageRating: null, totalReviewCount: null });
+  });
+});
+
 describe("the previous summary is read inside the lease (L5)", () => {
   it("a summary aged past 30 days between the run's read and its lease is honoured", async () => {
     await sync();

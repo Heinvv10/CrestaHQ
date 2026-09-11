@@ -126,22 +126,13 @@ describe("a resumed pass never tombstones a live review (H3)", () => {
     expect(activeReviews().find((r) => r.reviewId === "fake-r1")).toBeDefined();
   });
 
-  it("a single-run pass that sees NO reviews and no count (Google omits it at 0) removes them all", async () => {
-    await sync();
-    setScenario(SA, (s) => {
-      s.reviews[LOC_A].reviews = [];
-      s.reviews[LOC_A].totalReviewCount = null;
-    });
-    expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 7 });
-    expect(activeReviews()).toHaveLength(0);
-  });
-
   it("a single-run complete pass removes a review Google removed — with no count reported", async () => {
     await sync();
     setScenario(SA, (s) => {
       s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r4");
       s.reviews[LOC_A].totalReviewCount = null;
     });
+    expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 0 });
     expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 1 });
     expect(reviews().find((r) => r.reviewId === "fake-r4")).toMatchObject({ state: "removed" });
   });
@@ -160,7 +151,8 @@ describe("rating and count come from the pass, not the last page (M7)", () => {
 });
 
 describe("the anomaly guard does not block a genuine mass removal forever (M5)", () => {
-  it("applies the same removals on the third consecutive anomalous pass", async () => {
+  const at = (h: number) => ({ now: new Date(NOW.getTime() + h * 3600_000) });
+  function twelve() {
     setScenario(SA, (s) => {
       const base = s.reviews[LOC_A].reviews[0];
       for (let i = 8; i <= 12; i++) {
@@ -168,36 +160,37 @@ describe("the anomaly guard does not block a genuine mass removal forever (M5)",
       }
       s.reviews[LOC_A].totalReviewCount = 12;
     });
-    await sync();
-    setScenario(SA, (s) => {
-      s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.slice(0, 5);
-      s.reviews[LOC_A].totalReviewCount = 5;
-    });
-    expect(await sync()).toMatchObject({ reconciliation: "skipped_anomaly", removed: 0 });
-    expect(syncState()?.anomalyStreak).toEqual({ removals: 7, count: 1 });
-    expect(await sync()).toMatchObject({ reconciliation: "skipped_anomaly", removed: 0 });
-    const third = await sync();
+  }
+  const keepFirst = (all: unknown[], n: number) =>
+    setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, n) as never), (s.reviews[LOC_A].totalReviewCount = n)));
+
+  it("applies the same removals on the third consecutive anomalous pass (each an hour apart)", async () => {
+    twelve();
+    await sync(at(0));
+    const all = structuredClone(mem.read(fakeScenarioPath(SA)) as unknown as { reviews: Record<string, { reviews: unknown[] }> }).reviews[LOC_A].reviews;
+    keepFirst(all, 5);
+    expect(await sync(at(6))).toMatchObject({ reconciliation: "full", removed: 0 }); // first miss
+    expect(await sync(at(12))).toMatchObject({ reconciliation: "skipped_anomaly", removed: 0 });
+    expect(syncState()?.anomalyStreak).toMatchObject({ removals: 7, count: 1 });
+    expect(await sync(at(18))).toMatchObject({ reconciliation: "skipped_anomaly", removed: 0 });
+    const third = await sync(at(24));
     expect(third).toMatchObject({ status: "success", reconciliation: "full_after_anomaly", removed: 7 });
     expect(activeReviews()).toHaveLength(5);
     expect(syncState()?.anomalyStreak).toBeNull();
   });
 
   it("a different planned removal restarts the streak", async () => {
-    setScenario(SA, (s) => {
-      const base = s.reviews[LOC_A].reviews[0];
-      for (let i = 8; i <= 12; i++) {
-        s.reviews[LOC_A].reviews.push({ ...base, name: base.name.replace("fake-r7", `fake-r${i}`), reviewId: `fake-r${i}` });
-      }
-      s.reviews[LOC_A].totalReviewCount = 12;
-    });
-    await sync();
+    twelve();
+    await sync(at(0));
     const all = structuredClone(mem.read(fakeScenarioPath(SA)) as unknown as { reviews: Record<string, { reviews: unknown[] }> }).reviews[LOC_A].reviews;
-    setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, 5) as never), (s.reviews[LOC_A].totalReviewCount = 5)));
-    await sync();
-    await sync();
-    setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, 4) as never), (s.reviews[LOC_A].totalReviewCount = 4)));
-    expect(await sync()).toMatchObject({ reconciliation: "skipped_anomaly", removed: 0 });
-    expect(syncState()?.anomalyStreak).toEqual({ removals: 8, count: 1 });
+    keepFirst(all, 5);
+    await sync(at(6));
+    await sync(at(12)); // streak {7, 1}
+    keepFirst(all, 4);
+    await sync(at(18)); // the fifth has one miss: still 7 due → {7, 2}
+    expect(syncState()?.anomalyStreak).toMatchObject({ removals: 7, count: 2 });
+    expect(await sync(at(24))).toMatchObject({ reconciliation: "skipped_anomaly", removed: 0 });
+    expect(syncState()?.anomalyStreak).toMatchObject({ removals: 8, count: 1 });
   });
 });
 

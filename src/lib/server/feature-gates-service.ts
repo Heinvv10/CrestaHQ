@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { removeSendingDomain } from "@/lib/comms/resend-domains";
 import { metaAppConfigured } from "@/lib/comms/meta";
+import { clearGbpCache } from "@/lib/gbp/sync/store";
 import type { ResendConfig } from "@/types";
 import type { PlanGateKey } from "@/types/billing";
 
@@ -123,5 +124,11 @@ export async function applyFeatureGates(
   }
 
   await subRef.update(updates);
+  // Google Business gate OFF → the synced review cache goes now, on every
+  // path that switches it (Manage dialog route, Workspace Assistant): Google's
+  // 30-day storage rule must not wait for a sweep. After the gate write, so a
+  // sync starting meanwhile is refused by its lease check. The connection and
+  // listing stay — re-enabling resumes with a fresh sync.
+  if (gates.googleEnabledByAgency === false) await clearGbpCache(subAccountId);
   return result;
 }

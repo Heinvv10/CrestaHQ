@@ -5,7 +5,6 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { metaAppConfigured } from "@/lib/comms/meta";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
 import {
   sanitizeUsageQuotas,
   sanitizeUsageRates,
@@ -298,11 +297,6 @@ export async function PATCH(
   if (Object.keys(gates).length > 0) {
     ({ clearedDomain } = await applyFeatureGates(subAccountId, gates));
   }
-  // Google Business gate OFF: the synced review cache goes now (Google's
-  // 30-day storage rule must not wait for a sweep). After the gate write, so
-  // a sync starting meanwhile is refused by its lease check. The connection
-  // and listing stay — re-enabling resumes with a fresh sync.
-  if (body.googleEnabled === false) await clearGbpCache(subAccountId);
 
   // "Hide instead of lock" overrides. Pure presentation flags — they don't
   // change any runtime enforcement (a disabled feature's routes 403 the same

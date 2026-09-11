@@ -116,12 +116,13 @@ describe("idempotency and reconciliation", () => {
     expect(reviews()).toHaveLength(7);
   });
 
-  it("a removed review is tombstoned after a FULL pass, its content stripped", async () => {
+  it("a removed review is tombstoned after its second missed FULL pass, its content stripped", async () => {
     await sync();
     setScenario(SA, (s) => {
       s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((x) => x.reviewId !== "fake-r4");
       s.reviews[LOC_A].totalReviewCount = 6;
     });
+    expect(await sync()).toMatchObject({ removed: 0 }); // first miss
     const run = await sync();
     expect(run).toMatchObject({ status: "success", removed: 1, reconciliation: "full" });
     const gone = reviews().find((r) => r.reviewId === "fake-r4");
@@ -138,6 +139,7 @@ describe("idempotency and reconciliation", () => {
       s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((x) => x.reviewId !== "fake-r4");
       s.reviews[LOC_A].totalReviewCount = 6;
     });
+    expect(await sync()).toMatchObject({ removed: 0 });
     expect(await sync()).toMatchObject({ removed: 1 });
     mem.seed(`subAccounts/${SA}/private/gbpFakeScenario`, saved ?? {});
     const run = await sync();
@@ -160,6 +162,7 @@ describe("anomaly guard", () => {
   it("refuses to remove when the pass saw nothing but Google reports reviews", async () => {
     await sync();
     setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = []));
+    await sync(); // first miss for every review
     const run = await sync();
     expect(run).toMatchObject({ status: "partial", reconciliation: "skipped_anomaly", removed: 0 });
     expect(activeReviews()).toHaveLength(7);
@@ -178,9 +181,11 @@ describe("anomaly guard", () => {
     expect(activeReviews()).toHaveLength(12);
     const all = structuredClone((mem.read(`subAccounts/${SA}/private/gbpFakeScenario`) as unknown as FakeScenario).reviews[LOC_A].reviews);
     setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, 5)), (s.reviews[LOC_A].totalReviewCount = 5)));
+    expect(await sync()).toMatchObject({ reconciliation: "full", removed: 0 }); // first miss for 7
     const guarded = await sync();
     expect(guarded).toMatchObject({ status: "partial", reconciliation: "skipped_anomaly", removed: 0 });
     expect(activeReviews()).toHaveLength(12);
+    // Six due of twelve is not more than half: removed.
     setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, 6)), (s.reviews[LOC_A].totalReviewCount = 6)));
     expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 6 });
   });

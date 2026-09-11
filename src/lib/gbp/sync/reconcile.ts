@@ -1,4 +1,13 @@
-import { ANOMALY_CONFIRMATIONS, RETENTION_MS, toMillis, type GbpSummary, type Reconciliation, type SyncState } from "./types";
+import {
+  ANOMALY_CONFIRMATIONS,
+  ANOMALY_CONFIRMATION_GAP_MS,
+  MISSES_TO_REMOVE,
+  RETENTION_MS,
+  toMillis,
+  type GbpSummary,
+  type Reconciliation,
+  type SyncState,
+} from "./types";
 import type { CachedReview } from "./store";
 
 /**
@@ -9,39 +18,51 @@ import type { CachedReview } from "./store";
 type Streak = NonNullable<SyncState["anomalyStreak"]> | null;
 
 /**
- * After a COMPLETE pass: every active review the pass did not see was removed
- * at Google — but only when the pass is authoritative:
+ * After a COMPLETE pass, per review:
  *
- *   - One run: the pass started AND finished within a single run. Google
- *     pages by `updateTime desc`, so a pass spread over several runs can miss
- *     a review edited in between (it moved to an already-fetched page), and
- *     no count can tell: reviews arriving meanwhile inflate what a resumed
- *     pass sees. So a resumed pass removes nothing (`deferred`); removals on
- *     a listing too big for one run rely on the 30-day rule instead.
- *   - Anomaly: a pass that saw nothing while Google still reports reviews,
- *     or that would remove more than half of ten or more active reviews,
- *     looks like an outage, so nothing is removed (`skipped_anomaly`) — until the
- *     third consecutive complete pass plans the same removal count, which is
- *     then applied (`full_after_anomaly`). A deferred pass leaves the streak.
+ *   - Only a pass that started AND finished in ONE run counts misses. Google
+ *     pages by offset under `updateTime desc`, so a review edited or deleted
+ *     mid-pass shifts the pages and a live review can go unseen; a resumed
+ *     pass is even less reliable. A resumed pass counts nothing (`deferred`).
+ *   - A counted pass adds one miss to every active review it did not see
+ *     (seeing a review resets it to 0 — see store.ts). A review is tombstoned
+ *     only at {@link MISSES_TO_REMOVE} consecutive misses: one bad pass can
+ *     hide a live review, it cannot remove it.
+ *   - Anomaly brake on top: planned tombstones from a pass that saw nothing,
+ *     or more than half of ten or more active reviews, look like an outage —
+ *     held back (`skipped_anomaly`) until the third such pass with the same
+ *     count, each confirmation at least an hour after the last
+ *     (`full_after_anomaly`). A different count restarts the streak.
+ *
+ * `misses` are the new miss counts to write for unseen reviews that stay.
  */
 export function planReconcile(
   cache: Map<string, CachedReview>,
   passId: string,
   singleRun: boolean,
-  totalReviewCount: number | null,
   streak: Streak,
-): { reconciliation: Reconciliation; remove: string[]; streak: Streak } {
-  if (!singleRun) return { reconciliation: "deferred", remove: [], streak };
+  now: Date,
+): { reconciliation: Reconciliation; remove: string[]; misses: Array<[string, number]>; streak: Streak } {
+  if (!singleRun) return { reconciliation: "deferred", remove: [], misses: [], streak };
   const active = [...cache].filter(([, c]) => c.state === "active");
   const seen = active.filter(([, c]) => c.passId === passId).length;
-  const remove = active.filter(([, c]) => c.passId !== passId).map(([id]) => id);
+  const unseen = active.filter(([, c]) => c.passId !== passId).map(([id, c]) => [id, c.missedPasses + 1] as [string, number]);
+  const due = unseen.filter(([, n]) => n >= MISSES_TO_REMOVE).map(([id]) => id);
+  const keep = (ids: string[]) => unseen.filter(([id]) => !ids.includes(id));
   const anomaly =
-    (seen === 0 && (totalReviewCount ?? 0) > 0) ||
-    (active.length >= 10 && remove.length * 2 > active.length);
-  if (!anomaly) return { reconciliation: "full", remove, streak: null };
-  const count = streak?.removals === remove.length ? streak.count + 1 : 1;
-  if (count >= ANOMALY_CONFIRMATIONS) return { reconciliation: "full_after_anomaly", remove, streak: null };
-  return { reconciliation: "skipped_anomaly", remove: [], streak: { removals: remove.length, count } };
+    (seen === 0 && due.length > 0) || (active.length >= 10 && due.length * 2 > active.length);
+  if (!anomaly) return { reconciliation: "full", remove: due, misses: keep(due), streak: null };
+
+  const nowMs = now.getTime();
+  const same = streak?.removals === due.length;
+  const confirms = !same || nowMs - streak.lastAt >= ANOMALY_CONFIRMATION_GAP_MS;
+  const next: Streak = same
+    ? (confirms ? { removals: due.length, count: streak.count + 1, lastAt: nowMs } : streak)
+    : { removals: due.length, count: 1, lastAt: nowMs };
+  if (next.count >= ANOMALY_CONFIRMATIONS) {
+    return { reconciliation: "full_after_anomaly", remove: due, misses: keep(due), streak: null };
+  }
+  return { reconciliation: "skipped_anomaly", remove: [], misses: unseen, streak: next };
 }
 
 /** When the retention clock last restarted: the later of a success and a full purge. */

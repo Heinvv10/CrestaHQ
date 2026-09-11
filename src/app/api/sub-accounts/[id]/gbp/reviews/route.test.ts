@@ -127,7 +127,8 @@ describe("payload", () => {
       s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r4");
       s.reviews[LOC_A].totalReviewCount = 6;
     });
-    await syncListing(SA, { trigger: "scheduled" });
+    await syncListing(SA, { trigger: "scheduled" }); // first miss
+    await syncListing(SA, { trigger: "scheduled" }); // second → tombstoned
     mem.seed(`subAccounts/${SA}/gbpReviews/stray`, {
       subAccountId: SA, locationName: "locations/some-other", reviewId: "stray", state: "active",
       createTime: new Date(), comment: "not this listing",

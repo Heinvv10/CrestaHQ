@@ -77,3 +77,35 @@ describe("switching the gate off", () => {
     expect(reviews()).toHaveLength(7);
   });
 });
+
+describe("the Workspace Assistant path (set_feature_gate) hits the same chokepoint", () => {
+  const ctx = { uid: "uid_owner", email: "", displayName: "Owner", agencyId: "ag_1" };
+
+  it("disabling Google via the assistant deletes the review cache too", async () => {
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("set_feature_gate")!;
+    await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "google", enabled: false });
+    expect(gate()).toBe(false);
+    expect(reviews()).toHaveLength(0);
+    expect(summaryOf()).toBeNull();
+    expect(syncState()).toBeUndefined();
+  });
+
+  it("enabling it keeps the cache, and another gate leaves it alone", async () => {
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("set_feature_gate")!;
+    await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "google", enabled: true });
+    await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "webinars", enabled: false });
+    expect(mem.read(`subAccounts/${SA}`)?.webinar1EnabledByAgency).toBe(false);
+    expect(reviews()).toHaveLength(7);
+  });
+
+  it("still refuses a sub-account of another agency (tenant anchor kept)", async () => {
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("set_feature_gate")!;
+    await expect(
+      cap.execute({ ...ctx, agencyId: "ag_other" }, { subAccountId: SA, gate: "google", enabled: false }),
+    ).rejects.toThrow("wasn't found");
+    expect(reviews()).toHaveLength(7);
+  });
+});

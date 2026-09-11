@@ -101,7 +101,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
       counts[kind] += 1;
       // Run-local view, so a review repeated on a later page is "unchanged".
       const hash = kind === "unchanged" ? (cached?.contentHash ?? null) : (data.contentHash as string);
-      cache.set(docId, { state: "active", passId, lastSeenAt: nowMs, contentHash: hash });
+      cache.set(docId, { state: "active", passId, lastSeenAt: nowMs, contentHash: hash, missedPasses: 0 });
     }
     const next = page.nextPageToken;
     pagesDone += 1;

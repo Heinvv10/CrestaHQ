@@ -36,6 +36,7 @@ export interface CachedReview {
   passId: string;
   lastSeenAt: number | null;
   contentHash: string | null;
+  missedPasses: number;
 }
 
 export async function loadCache(subAccountId: string): Promise<Map<string, CachedReview>> {
@@ -48,6 +49,7 @@ export async function loadCache(subAccountId: string): Promise<Map<string, Cache
       passId: d.passId ?? "",
       lastSeenAt: toMillis(d.lastSeenAt),
       contentHash: d.contentHash ?? null,
+      missedPasses: typeof d.missedPasses === "number" ? d.missedPasses : 0,
     });
   }
   return out;
@@ -75,7 +77,8 @@ export function upsertFor(
   ctx: UpsertContext,
 ): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean } {
   const hash = contentHash(review);
-  const seen = { lastSeenAt: ctx.now, passId: ctx.passId };
+  // Seeing a review resets its miss count.
+  const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0 };
   // A tombstone's contentHash is null, so a review that comes back is an update.
   if (cached && cached.contentHash === hash) {
     return { kind: "unchanged", data: seen, merge: true };
@@ -112,6 +115,7 @@ export function upsertFor(
     removedAt: null,
     passId: ctx.passId,
     contentHash: hash,
+    missedPasses: 0,
   };
   return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false };
 }
@@ -152,7 +156,10 @@ export const CLEARING_RUN_ID = "clearing";
 export async function clearGbpCache(subAccountId: string): Promise<void> {
   const db = getAdminDb();
   const stateRef = db.doc(syncStatePath(subAccountId));
-  await stateRef.set({ lease: { runId: CLEARING_RUN_ID, until: Date.now() + LEASE_TTL_MS } }, { merge: true });
+  // The first write also drops the cursor and the anomaly streak, so a clear
+  // that dies midway leaves no stale pass for the next run to resume.
+  const lease = { runId: CLEARING_RUN_ID, until: Date.now() + LEASE_TTL_MS };
+  await stateRef.set({ lease, pass: null, anomalyStreak: null }, { merge: true });
   const snap = await db.collection(reviewsCollection(subAccountId)).get();
   await deleteAll(snap.docs.map((d) => `${reviewsCollection(subAccountId)}/${d.id}`));
   await db.doc(`subAccounts/${subAccountId}`).set({ gbpSummary: null }, { merge: true });
