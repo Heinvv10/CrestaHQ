@@ -12,7 +12,7 @@ import {
 
 /**
  * The defined fields for one entity, grouped under their folders (General
- * first). Each row carries a "Move to folder" select and a delete button;
+ * first, headed only once a folder exists). Each row carries a "Move to folder" select and a delete button;
  * the parent owns the API calls.
  */
 export function CustomFieldsList({
@@ -40,9 +40,11 @@ export function CustomFieldsList({
           aria-label={folder?.name ?? GENERAL_FOLDER_NAME}
           className="space-y-2"
         >
-          <h3 className="text-muted-foreground text-xs font-medium">
-            {folder?.name ?? GENERAL_FOLDER_NAME}
-          </h3>
+          {(folder || folders.length > 0) && (
+            <h3 className="text-muted-foreground text-xs font-medium">
+              {folder?.name ?? GENERAL_FOLDER_NAME}
+            </h3>
+          )}
           {inFolder.length === 0 ? (
             <p className="bg-background text-muted-foreground rounded-lg border border-dashed p-2.5 text-[11px]">
               No fields in this folder.

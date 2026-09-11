@@ -21,8 +21,8 @@ import {
  * Every definition renders, not just filled ones: a blank row (em-dash)
  * is a prompt to go and get the value. The card hides entirely in
  * workspaces that define no contact fields. Fields in a folder render under
- * a collapsible folder heading; General fields sit at the top under
- * "General" (GHL's "General Info").
+ * a collapsible folder heading; General fields sit at the top, headed
+ * "General" once any folder exists (GHL's "General Info").
  */
 
 function formatValue(
@@ -103,18 +103,24 @@ export function ContactDetailsCard({ contact }: { contact: Contact }) {
         </span>
       </div>
       <div className="space-y-3">
-        {groups.map(({ folder, fields }) => (
-          <details
-            key={folder?.id ?? "general"}
-            open
-            className="rounded-lg border p-3"
-          >
-            <summary className="cursor-pointer text-xs font-medium">
-              {folder?.name ?? GENERAL_FOLDER_NAME}
-            </summary>
-            <div className="mt-2">{rows(fields)}</div>
-          </details>
-        ))}
+        {groups.map(({ folder, fields }) =>
+          // General is headed only once the workspace has folders at all;
+          // a zero-folder tenant keeps the plain list.
+          folder || folders.length > 0 ? (
+            <details
+              key={folder?.id ?? "general"}
+              open
+              className="rounded-lg border p-3"
+            >
+              <summary className="cursor-pointer text-xs font-medium">
+                {folder?.name ?? GENERAL_FOLDER_NAME}
+              </summary>
+              <div className="mt-2">{rows(fields)}</div>
+            </details>
+          ) : (
+            <div key="general">{rows(fields)}</div>
+          ),
+        )}
       </div>
     </div>
   );

@@ -6,7 +6,7 @@ import { readEnv } from "../lib/env";
 /**
  * Folders for custom fields, end to end: create a folder in settings, move a
  * seeded field into it, see the field under that folder heading on a
- * contact, delete the folder, and see the field back under General — with
+ * contact, delete the folder, and see the field back in the flat list — with
  * Firestore checked at each step so a UI that only re-renders locally fails.
  */
 
@@ -113,13 +113,11 @@ test("groups custom fields by folder and returns them to General on delete", asy
         .exists,
     ).toBe(false);
 
+    // With no folders left the Details card is a plain list again: the
+    // field is visible and sits inside no folder <details> at all.
     await page.goto(`/sa/${sa}/contacts/${contactRef.id}`);
-    const general = page
-      .locator("details")
-      .filter({ has: page.locator("summary", { hasText: "General" }) });
-    await expect(general.getByText(fieldLabel)).toBeVisible({
-      timeout: 30_000,
-    });
+    await expect(page.getByText(fieldLabel)).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("details").getByText(fieldLabel)).toHaveCount(0);
   } finally {
     // Teardown purges contacts, not custom-field defs or folders — remove
     // ours here (the folder only survives a mid-run failure).
