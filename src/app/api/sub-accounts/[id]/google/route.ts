@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { clearListing } from "@/lib/gbp/listing-events";
+import { fakeProviderAllowed } from "@/lib/gbp/provider/mode";
 import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
   googleConnectionSecretPath,
@@ -30,10 +31,17 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
 
-  // Before any read or write: in fake mode this throws for a sub-account
-  // outside the fixture agency, so a dev pointed at production Firestore
-  // cannot delete a real tenant's connection.
-  const provider = await getGbpProviderFor(id);
+  // A fake that is requested but REFUSED on this deployment leaves no provider
+  // to revoke with — and revoke is best-effort — so the local disconnect must
+  // still go ahead (it is the "not configured" state's Disconnect button).
+  // Otherwise, before any read or write: an ALLOWED fake still throws here for
+  // a sub-account outside the fixture agency, so a dev pointed at production
+  // Firestore cannot delete a real tenant's connection.
+  const fakeRefused = process.env.GBP_PROVIDER === "fake" && !fakeProviderAllowed();
+  const provider = fakeRefused ? null : await getGbpProviderFor(id);
+  if (fakeRefused) {
+    console.warn(`[google/disconnect] fake provider refused here; skipping revoke sa=${id}`);
+  }
 
   const db = getAdminDb();
   const secretRef = db.doc(googleConnectionSecretPath(id));
@@ -44,7 +52,7 @@ export async function DELETE(
 
   // Best-effort — a failed revoke must never block the local disconnect, or
   // the operator is stuck with a connection they can't remove.
-  if (secret?.refreshToken) {
+  if (provider && secret?.refreshToken) {
     try {
       await provider.revoke(secret.refreshToken);
     } catch (err) {

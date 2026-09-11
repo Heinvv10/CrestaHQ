@@ -189,6 +189,23 @@ describe("disconnect", () => {
     delete process.env.GBP_FAKE_AGENCY_ID;
   });
 
+  it("still disconnects locally when the deployment's fake provider is refused", async () => {
+    // GBP_PROVIDER=fake on a non-loopback URL: no provider can be used here,
+    // so there is nothing to revoke with — but the local connection must still
+    // be removable (it is the "not configured" state's Disconnect button).
+    process.env.GBP_PROVIDER = "fake";
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    process.env.GBP_FAKE_AGENCY_ID = "ag_1";
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await disconnect();
+    expect(res.status).toBe(200);
+    expect(state.docs.has(SECRET_PATH)).toBe(false);
+    expect(state.docs.get(SUB_PATH)?.googleConnectionMeta).toBeNull();
+    expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    delete process.env.GBP_PROVIDER;
+    delete process.env.GBP_FAKE_AGENCY_ID;
+  });
+
   it("works while the agency gate is off, so a connection is never stranded", async () => {
     state.docs.set(SUB_PATH, { agencyId: "ag_1", googleEnabledByAgency: false });
     expect((await disconnect()).status).toBe(200);

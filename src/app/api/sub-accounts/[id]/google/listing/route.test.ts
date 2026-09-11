@@ -227,6 +227,12 @@ describe("DELETE", () => {
     expect(events().length).toBe(before);
   });
 
+  it("still clears when the deployment's fake provider is refused", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    expect(await del()).toEqual({ status: 200, body: { ok: true } });
+    expect(listing()).toBeNull();
+  });
+
   it.each([
     ["a non-member", "uid_other_admin"],
     ["a collaborator", "uid_collab"],
