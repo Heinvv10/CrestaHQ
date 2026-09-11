@@ -10,7 +10,8 @@ export default defineConfig({
     // e2e/** carries the fixture guard's unit test — the guard is the only
     // thing between a spec bug and production Firestore, so it is covered
     // by `pnpm test` like any other module.
-    include: ["src/**/*.test.ts", "e2e/**/*.test.ts", "scripts/**/*.test.ts"],
+    // services/qcontact-import is plain TS run under node --experimental-strip-types.
+    include: ["src/**/*.test.ts", "e2e/**/*.test.ts", "scripts/**/*.test.ts", "services/**/*.test.ts"],
   },
   resolve: {
     alias: {
