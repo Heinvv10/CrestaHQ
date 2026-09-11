@@ -58,7 +58,8 @@ interface HeartbeatStats {
 
 function getBaseUrl(): string {
   return (
-    process.env.GITPAGE_API_URL?.replace(/\/$/, "") ?? "https://www.gitpage.site"
+    // `||`, not `??`: .env.example ships `GITPAGE_API_URL=` empty.
+    process.env.GITPAGE_API_URL?.replace(/\/$/, "") || "https://www.gitpage.site"
   );
 }
 
