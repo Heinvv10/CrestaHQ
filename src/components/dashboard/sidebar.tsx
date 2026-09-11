@@ -81,6 +81,7 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
     badgeKey: "unreadConversations",
   },
   { href: "/contacts", label: "Contacts", icon: Users, enabled: true },
+  { href: "/companies", label: "Companies", icon: Building2, enabled: true },
   // Get Leads is PARKED — entry hidden while the flag is on.
   ...(GET_LEADS_PARKED
     ? []
