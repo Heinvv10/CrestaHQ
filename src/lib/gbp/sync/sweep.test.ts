@@ -219,6 +219,19 @@ describe("retention sweep outcomes are counted honestly", () => {
     expect(mem.read(`subAccounts/${OTHER_SA}`)?.gbpSummary).toEqual(beforeOther);
   });
 
+  it("a pass that fails INSIDE its lease is recorded as a failed retention run and counted failed", async () => {
+    await runGbpSyncSweep({ sleep: noSleep });
+    const real = storeDb.collection.bind(storeDb);
+    vi.spyOn(storeDb, "collection").mockImplementation(((path: string) => {
+      if (path === `subAccounts/${SA}/gbpReviews`) throw new Error("14 UNAVAILABLE");
+      return real(path);
+    }) as never);
+    expect(await runGbpRetentionSweep()).toMatchObject({ retained: 1, failed: 1, refused: 0 });
+    expect(runs(SA).filter((r) => r.skipReason === "retention_only")).toEqual([
+      expect.objectContaining({ status: "failed", errorKind: "internal", purged: 0 }),
+    ]);
+  });
+
   it("a pass refused by a live lease is reported as refused, not retained, and leaves no run", async () => {
     await runGbpSyncSweep({ sleep: noSleep });
     const runsBefore = runs(SA).length;

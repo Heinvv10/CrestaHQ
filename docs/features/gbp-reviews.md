@@ -425,7 +425,12 @@ says content "…stored temporarily for no more than 30 calendar days…". So:
   cache, sync-eligible or not. `GBP_SYNC_SCHEDULE_ENABLED` controls only the
   Google sync; with it off, the sync cron (if a schedule is left) does the
   same retention pass and syncs nobody. So no configuration can leave review
-  content stored past 30 days.
+  content stored past 30 days. A cache is found by `gbpSummary.lastRunAt`,
+  which the lease transaction stamps (`lastRunStatus: "running"`, health
+  `never_synced`, no rating) before a first run's first page can land — a
+  run that dies mid-way cannot orphan reviews. Housekeeping leaves a run
+  record only when it removed something or failed (shown as "Retention" in
+  Recent syncs).
 - **Switching the agency gate off** deletes the cache at once, on every
   path that can do it — the Manage dialog (`PATCH …/feature-gates`) and the
   Workspace Assistant's `set_feature_gate` both go through
