@@ -14,7 +14,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 const mem = createMemoryFirestore();
 const graphBodies: Array<Record<string, unknown>> = [];
-const createContentTemplate = vi.fn(async () => ({ sid: "HX1" }));
+const createContentTemplate = vi.fn(async () => ({ contentSid: "HX1" }));
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
@@ -117,7 +117,10 @@ describe("saving buttons", () => {
     ["a label that starts with an opt-out word", [{ type: "quick_reply", text: "Cancel my booking" }]],
     ["two buttons with the same text", [YES, { type: "quick_reply", text: "yes, all good" }]],
     ["a link without https", [{ type: "url", text: "Review", url: "http://g.page/x" }]],
-    ["text over 25 characters", [{ type: "quick_reply", text: "Yes, everything was absolutely fine" }]],
+    ["text of 26 characters", [{ type: "quick_reply", text: "Yes, everything is fine!!!" }]],
+    ["text over two lines", [{ type: "quick_reply", text: "Yes,\nall good" }]],
+    ["three link buttons", [1, 2, 3].map((n) => ({ type: "url", text: `Link ${n}`, url: `https://x.co/${n}` }))],
+    ["a link with a {{variable}}", [{ type: "url", text: "Review", url: "https://g.page/r/{{1}}" }]],
     ["an unknown button type", [{ type: "phone", text: "Call us" }]],
   ])("refuses %s, and writes nothing", async (_label, buttons) => {
     const { status } = await saveTemplate(buttons);
@@ -126,7 +129,47 @@ describe("saving buttons", () => {
   });
 });
 
+it("accepts text of exactly 25 characters", async () => {
+  const { status } = await saveTemplate([{ type: "quick_reply", text: "Yes, everything is fine!!" }]);
+  expect(status).toBeLessThan(300);
+});
+
+it("refuses buttons on an authentication template, including by switching category", async () => {
+  const auth = await create(
+    req("/api/sub-accounts/sa_1/whatsapp-templates", "POST", {
+      displayName: "Code", category: "AUTHENTICATION", body: "Your code is {{1}}", variables: VARIABLES, buttons: [YES],
+    }),
+    { params: Promise.resolve({ id: "sa_1" }) },
+  );
+  expect(auth.status).toBe(400);
+
+  const { json } = await saveTemplate([YES]);
+  const switched = await edit(
+    req(`/api/sub-accounts/sa_1/whatsapp-templates/${json.template!.id}`, "PATCH", { category: "AUTHENTICATION" }),
+    { params: Promise.resolve({ id: "sa_1", templateId: json.template!.id }) },
+  );
+  expect(switched.status).toBe(400);
+  expect(stored()[0].category).toBe("UTILITY");
+});
+
 describe("submitting to Meta", () => {
+  it("sends links as URL buttons, after the quick replies", async () => {
+    const link = { type: "url", text: "Leave a review", url: "https://g.page/r/velocity/review" };
+    const { json } = await saveTemplate([link, YES]);
+    await submitTemplate(json.template!.id);
+
+    expect(graphBodies[0].components).toEqual([
+      { type: "BODY", text: BODY, example: { body_text: [["Thandi"]] } },
+      {
+        type: "BUTTONS",
+        buttons: [
+          { type: "QUICK_REPLY", text: "Yes, all good" },
+          { type: "URL", text: "Leave a review", url: "https://g.page/r/velocity/review" },
+        ],
+      },
+    ]);
+  });
+
   it("sends a BUTTONS component after the body", async () => {
     const { json } = await saveTemplate([YES, NO]);
     const res = await submitTemplate(json.template!.id);
@@ -173,5 +216,6 @@ describe("submitting to Meta", () => {
 
     expect(res.status).toBe(200);
     expect(createContentTemplate).toHaveBeenCalledTimes(1);
+    expect(stored()[0].contentSid).toBe("HX1");
   });
 });

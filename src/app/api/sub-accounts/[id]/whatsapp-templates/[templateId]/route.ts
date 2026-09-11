@@ -112,8 +112,13 @@ export async function PATCH(
     }
     updates.variables = sanitised.variables;
   }
-  if (body.buttons !== undefined) {
-    const buttons = sanitiseButtons(body.buttons);
+  // Re-validated when the category changes too: buttons already on a draft
+  // must not ride along into a category Meta refuses them on.
+  if (body.buttons !== undefined || typeof body.category === "string") {
+    const buttons = sanitiseButtons(
+      body.buttons ?? existing.buttons,
+      (updates.category as string | undefined) ?? existing.category,
+    );
     if ("error" in buttons) {
       return NextResponse.json({ error: buttons.error }, { status: 400 });
     }

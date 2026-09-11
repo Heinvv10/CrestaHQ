@@ -394,7 +394,11 @@ LeadStack API work:
   `velocity-review-ready`** and the review steps; an API key with the
   agency's API access switched on. The experience-check template carries the
   two quick replies, "Yes, all good" and "No, there's a problem", and the
-  workflow's `if_else` tests `reply.text` equals "Yes, all good".
+  workflow's `if_else` tests `reply.text` equals "Yes, all good". The
+  experience check must be a **`whatsapp_template` step** (always sends the
+  template), not a `send_whatsapp` step with the template as its fallback:
+  inside an open window that step sends its plain-text body instead, with no
+  buttons to tap (until build-order PR 3 renders them in-window).
 - **The sub-account's WhatsApp AI agent must be OFF.** The AI auto-reply does
   not know a contact is waiting in a workflow, so it would answer a tap —
   "Yes, all good" — alongside the workflow's own message. (Pre-existing for

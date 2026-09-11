@@ -109,7 +109,7 @@ export async function POST(
   if ("error" in sanitised) {
     return NextResponse.json({ error: sanitised.error }, { status: 400 });
   }
-  const buttons = sanitiseButtons(body.buttons);
+  const buttons = sanitiseButtons(body.buttons, category);
   if ("error" in buttons) {
     return NextResponse.json({ error: buttons.error }, { status: 400 });
   }

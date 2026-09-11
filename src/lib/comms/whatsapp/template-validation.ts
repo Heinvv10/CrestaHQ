@@ -86,6 +86,7 @@ export function sanitiseVariables(
 export const MAX_TEMPLATE_BUTTONS = 3;
 const MAX_BUTTON_TEXT = 25;
 const MAX_BUTTON_URL = 2000;
+const MAX_URL_BUTTONS = 2;
 
 /**
  * Validate a template's buttons. Returns them quick replies first — Meta
@@ -99,9 +100,14 @@ const MAX_BUTTON_URL = 2000;
  */
 export function sanitiseButtons(
   raw: unknown,
+  /** Meta allows only one-time-password buttons on AUTHENTICATION templates. */
+  category?: string,
 ): { buttons: WhatsappTemplateButton[] } | { error: string } {
   if (raw === undefined || raw === null) return { buttons: [] };
   if (!Array.isArray(raw)) return { error: "buttons must be an array" };
+  if (raw.length > 0 && category === "AUTHENTICATION") {
+    return { error: "Authentication templates can't carry buttons." };
+  }
   if (raw.length > MAX_TEMPLATE_BUTTONS) {
     return { error: `A template can have at most ${MAX_TEMPLATE_BUTTONS} buttons.` };
   }
@@ -109,8 +115,8 @@ export function sanitiseButtons(
   for (const b of raw) {
     const r = (b && typeof b === "object" ? b : {}) as Record<string, unknown>;
     const text = typeof r.text === "string" ? r.text.trim() : "";
-    if (!text || text.length > MAX_BUTTON_TEXT) {
-      return { error: `Button text must be 1–${MAX_BUTTON_TEXT} characters.` };
+    if (!text || text.length > MAX_BUTTON_TEXT || /[\r\n]/.test(text)) {
+      return { error: `Button text must be 1–${MAX_BUTTON_TEXT} characters on one line.` };
     }
     if (out.some((o) => o.text.toLowerCase() === text.toLowerCase())) {
       return { error: `Two buttons can't both say "${text}".` };
@@ -127,10 +133,18 @@ export function sanitiseButtons(
       if (!/^https:\/\/\S+$/i.test(url) || url.length > MAX_BUTTON_URL) {
         return { error: `The "${text}" button needs a full https:// link.` };
       }
+      // `{{1}}` in a URL makes Meta treat it as dynamic, which needs a sample
+      // at submission and a parameter on every send — neither exists here.
+      if (url.includes("{{")) {
+        return { error: `The "${text}" link can't contain a {{variable}} — use a fixed URL.` };
+      }
       out.push({ type: "url", text, url });
     } else {
       return { error: "Each button must be a quick reply or a link." };
     }
+  }
+  if (out.filter((b) => b.type === "url").length > MAX_URL_BUTTONS) {
+    return { error: `A template can have at most ${MAX_URL_BUTTONS} link buttons.` };
   }
   const quick = out.filter((b) => b.type === "quick_reply");
   return { buttons: [...quick, ...out.filter((b) => b.type !== "quick_reply")] };
