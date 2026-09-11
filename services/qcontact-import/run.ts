@@ -128,7 +128,8 @@ export async function runImport(opts: {
       continue;
     }
     if (dryRun) {
-      log(`would send ${row.id} (${row.label}) → ${mapped.body.phone}`);
+      // No phone in the log: stdout ends up in cron mail and journal files.
+      log(`would send ${row.id} (${row.label})`);
       summary.sent++;
       continue;
     }
