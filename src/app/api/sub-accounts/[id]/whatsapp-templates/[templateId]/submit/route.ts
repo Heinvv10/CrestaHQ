@@ -12,6 +12,7 @@ import {
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
 import { toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
+import { twilioButtonProblem } from "@/lib/comms/whatsapp/twilio-buttons";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { buildRegistrationUpdate } from "@/lib/comms/whatsapp/template-registrations";
 import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
@@ -97,17 +98,13 @@ export async function POST(
       { status: 400 },
     );
   }
-  // Twilio button content types are not built yet (buttons PR 4). Submitting
-  // there would create the template WITHOUT its buttons, and Meta would
-  // approve a message whose Yes/No the customer can never tap.
-  if (provider === "twilio" && (tpl.buttons?.length ?? 0) > 0) {
-    return NextResponse.json(
-      {
-        error:
-          "Templates with buttons can only be submitted on the Cloud rail for now. Remove the buttons, or submit from a Cloud sender.",
-      },
-      { status: 400 },
-    );
+  // Twilio's button rules are narrower than Meta's (one action type per
+  // template, 20-character titles). Refuse here, before anything is created,
+  // with a message the operator can act on.
+  const twilioProblem =
+    provider === "twilio" ? twilioButtonProblem(tpl.buttons ?? []) : null;
+  if (twilioProblem) {
+    return NextResponse.json({ error: twilioProblem }, { status: 400 });
   }
   if (!SUBMITTABLE.includes(tpl.status)) {
     return NextResponse.json(
@@ -151,6 +148,7 @@ export async function POST(
         language: tpl.language,
         body: tpl.body,
         variables: variablesSample,
+        buttons: tpl.buttons ?? [],
       });
       externalId = created.contentSid;
       await submitForWhatsappApproval({
