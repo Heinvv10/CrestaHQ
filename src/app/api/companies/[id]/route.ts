@@ -26,6 +26,6 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
-  const unlinked = await deleteCompanyAndUnlinkContacts(db, id);
+  const unlinked = await deleteCompanyAndUnlinkContacts(db, id, subAccountId);
   return NextResponse.json({ ok: true, unlinked });
 }

@@ -29,24 +29,39 @@ export async function resolveCompanyLink(
 }
 
 /**
- * Delete a company and null `companyId` on every contact that pointed at
- * it, in one batch. The contacts keep their free-text `company` string —
- * the name is still true, only the link is gone. Returns how many contacts
- * were unlinked.
+ * Delete a company and null `companyId` on every contact in the SAME
+ * sub-account that pointed at it. Scoped by `subAccountId` (not just the
+ * company id) so a foreign tenant's contact that somehow carries this id is
+ * never written to. The contacts keep their free-text `company` string —
+ * the name is still true, only the link is gone. Batches are chunked at
+ * Firestore's 500-write limit; the company doc goes in the last chunk.
+ * Returns how many contacts were unlinked.
  */
 export async function deleteCompanyAndUnlinkContacts(
   db: FirebaseFirestore.Firestore,
   companyId: string,
+  subAccountId: string,
 ): Promise<number> {
   const linked = await db
     .collection("contacts")
+    .where("subAccountId", "==", subAccountId)
     .where("companyId", "==", companyId)
     .get();
-  const batch = db.batch();
-  for (const d of linked.docs) {
-    batch.update(d.ref, { companyId: null });
+  const refs = linked.docs.map((d) => d.ref);
+  // 499 contacts + the company delete fit one batch.
+  const CHUNK = 499;
+  for (let i = 0; i < refs.length; i += CHUNK) {
+    const batch = db.batch();
+    for (const ref of refs.slice(i, i + CHUNK)) {
+      batch.update(ref, { companyId: null });
+    }
+    if (i + CHUNK >= refs.length) batch.delete(db.doc(`companies/${companyId}`));
+    await batch.commit();
   }
-  batch.delete(db.doc(`companies/${companyId}`));
-  await batch.commit();
-  return linked.docs.length;
+  if (refs.length === 0) {
+    const batch = db.batch();
+    batch.delete(db.doc(`companies/${companyId}`));
+    await batch.commit();
+  }
+  return refs.length;
 }

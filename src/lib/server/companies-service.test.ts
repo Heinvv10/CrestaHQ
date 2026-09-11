@@ -12,17 +12,22 @@ function fakeDb(rows: Map<string, Record<string, unknown>>) {
     path,
     get: async () => ({ exists: rows.has(path), data: () => rows.get(path) }),
   });
+  // Chainable where(): every equality clause must match, like Firestore.
+  const queryOver = (name: string, clauses: [string, string][]) => ({
+    where: (field: string, _op: string, value: string) =>
+      queryOver(name, [...clauses, [field, value]]),
+    get: async () => ({
+      docs: [...rows.entries()]
+        .filter(
+          ([k, v]) =>
+            k.startsWith(`${name}/`) && clauses.every(([f, val]) => v[f] === val),
+        )
+        .map(([k]) => ({ ref: ref(k) })),
+    }),
+  });
   const db = {
     doc: ref,
-    collection: (name: string) => ({
-      where: (_field: string, _op: string, value: string) => ({
-        get: async () => ({
-          docs: [...rows.entries()]
-            .filter(([k, v]) => k.startsWith(`${name}/`) && v.companyId === value)
-            .map(([k]) => ({ ref: ref(k) })),
-        }),
-      }),
-    }),
+    collection: (name: string) => queryOver(name, []),
     batch: () => batch,
   };
   return { db: db as unknown as FirebaseFirestore.Firestore, batch };
@@ -32,13 +37,13 @@ describe("deleteCompanyAndUnlinkContacts", () => {
   it("clears companyId on every linked contact and deletes the company in one batch", async () => {
     const rows = new Map<string, Record<string, unknown>>([
       ["companies/co1", { subAccountId: "sa", name: "Acme" }],
-      ["contacts/a", { companyId: "co1", company: "Acme" }],
-      ["contacts/b", { companyId: "co1", company: "Acme" }],
-      ["contacts/other", { companyId: "co2", company: "Other" }],
+      ["contacts/a", { subAccountId: "sa", companyId: "co1", company: "Acme" }],
+      ["contacts/b", { subAccountId: "sa", companyId: "co1", company: "Acme" }],
+      ["contacts/other", { subAccountId: "sa", companyId: "co2", company: "Other" }],
     ]);
     const { db, batch } = fakeDb(rows);
 
-    const unlinked = await deleteCompanyAndUnlinkContacts(db, "co1");
+    const unlinked = await deleteCompanyAndUnlinkContacts(db, "co1", "sa");
 
     expect(unlinked).toBe(2);
     expect(batch.update).toHaveBeenCalledTimes(2);
@@ -52,6 +57,45 @@ describe("deleteCompanyAndUnlinkContacts", () => {
       expect.objectContaining({ path: "companies/co1" }),
     );
     expect(batch.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("never touches a contact from another sub-account that points at the company", async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      ["companies/co1", { subAccountId: "sa", name: "Acme" }],
+      ["contacts/mine", { subAccountId: "sa", companyId: "co1" }],
+      ["contacts/foreign", { subAccountId: "other-sa", companyId: "co1" }],
+    ]);
+    const { db, batch } = fakeDb(rows);
+
+    const unlinked = await deleteCompanyAndUnlinkContacts(db, "co1", "sa");
+
+    expect(unlinked).toBe(1);
+    expect(batch.update).toHaveBeenCalledTimes(1);
+    expect(batch.update).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "contacts/mine" }),
+      expect.anything(),
+    );
+    expect(batch.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "contacts/foreign" }),
+      expect.anything(),
+    );
+  });
+
+  it("chunks the unlink so 501 linked contacts still all get nulled", async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      ["companies/co1", { subAccountId: "sa", name: "Acme" }],
+    ]);
+    for (let i = 0; i < 501; i++) {
+      rows.set(`contacts/c${i}`, { subAccountId: "sa", companyId: "co1" });
+    }
+    const { db, batch } = fakeDb(rows);
+
+    const unlinked = await deleteCompanyAndUnlinkContacts(db, "co1", "sa");
+
+    expect(unlinked).toBe(501);
+    expect(batch.update).toHaveBeenCalledTimes(501);
+    expect(batch.delete).toHaveBeenCalledTimes(1);
+    expect(batch.commit.mock.calls.length).toBeGreaterThan(1);
   });
 });
 
