@@ -88,6 +88,13 @@ export function createFakeGbpProvider(
     return scenario;
   }
 
+  /** Append a reply call to the scenario's log BEFORE anything can fail — a failed call is still a call. */
+  async function logCall(op: "putReply" | "deleteReply", reviewName: string) {
+    const scenario = await load();
+    scenario.calls = [...(scenario.calls ?? []), { op, reviewName }];
+    await store.set(bound, scenario);
+  }
+
   function findReview(scenario: FakeScenario, reviewName: string): GbpReview {
     for (const entry of Object.values(scenario.reviews)) {
       const hit = entry.reviews.find((r) => r.name === reviewName);
@@ -169,6 +176,7 @@ export function createFakeGbpProvider(
     },
 
     async putReply(accessToken, reviewName, comment) {
+      await logCall("putReply", reviewName);
       const scenario = await authed(accessToken, "putReply");
       const target = findReview(scenario, reviewName);
       target.reply = { comment, updateTime: new Date().toISOString() };
@@ -177,6 +185,7 @@ export function createFakeGbpProvider(
     },
 
     async deleteReply(accessToken, reviewName) {
+      await logCall("deleteReply", reviewName);
       const scenario = await authed(accessToken, "deleteReply");
       findReview(scenario, reviewName).reply = null;
       await store.set(bound, scenario);
