@@ -36,6 +36,38 @@ export interface GoogleConnectionMeta {
   scopes: string[];
   connectedAt: Date;
   connectedByUid: string;
+  /**
+   * Set when Google refused the stored grant (revoked / expired refresh
+   * token) or it lacks the business.manage scope. The secret doc is KEPT so a
+   * disconnect can still best-effort revoke. A successful reconnect clears it.
+   */
+  reconnectRequired?: boolean;
+  reconnectReason?: GoogleReconnectReason | null;
+}
+
+export type GoogleReconnectReason = "revoked" | "insufficient_scope";
+
+/**
+ * The GBP listing this sub-account manages — `SubAccountDoc.googleListing`.
+ * Member-readable display data, written ONLY by the server after it re-fetched
+ * the location through the provider (never from client-supplied fields).
+ *
+ * `locationName` (`locations/{l}`) + `accountName` (`accounts/{a}`) are the
+ * resource keys. `placeId`/`mapsUri`/`newReviewUri` are display/link data
+ * only — a Place ID is not a GBP resource name.
+ */
+export interface GoogleListing {
+  accountName: string;
+  accountDisplayName: string;
+  locationName: string;
+  title: string;
+  address: string;
+  websiteUri: string | null;
+  placeId: string | null;
+  mapsUri: string | null;
+  newReviewUri: string | null;
+  selectedAt: Date;
+  selectedByUid: string;
 }
 
 /** Path of the locked secret doc. One place so no caller can typo it open. */

@@ -28,4 +28,14 @@ regexes = [
   # Replaced at the tip by a low-entropy fixture; this anchor exists only
   # so the retired commit's diff stops tripping the history scan.
   '''^op-secret-0123456789abcdef012345$''',
+  # GBP token-lifecycle test fixtures (src/lib/gbp/tokens.test.ts): made-up
+  # refresh tokens given Google's "1//0g" prefix so the refresh/rotation paths
+  # see realistic values. generic-api-key flags them by entropy. Never
+  # credentials — each is an English phrase, and each anchor matches only
+  # that exact value.
+  '''^1//0gMineButStale$''',
+  '''^1//0gTheirRotation$''',
+  '''^1//0gNewerGrant$''',
+  '''^1//0gThirdGrant$''',
+  '''^1//0gOurRotation$''',
 ]

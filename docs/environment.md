@@ -214,6 +214,16 @@ One Google OAuth client lets each sub-account connect the Google account that ma
 
 Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth consent screen, and register **one** authorised redirect URI for the whole deployment: `NEXT_PUBLIC_APP_URL` + `/api/google/callback`. Google matches it byte for byte, so a trailing slash or a different host breaks the exchange. The connecting sub-account travels in the HMAC-signed OAuth `state` (keyed by `AUTOMATIONS_TOKEN_SECRET`), so no per-client registration is needed. Tokens are stored server-only at `subAccounts/{id}/private/googleConnection`; the sub-account doc carries display metadata only.
 
+**Dev/CI only — never set on production:**
+
+| Var | Purpose |
+|---|---|
+| `GBP_PROVIDER` | `fake` swaps Google for the deterministic fake provider ([gbp-reviews.md](features/gbp-reviews.md)). Unset/anything else = real Google. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]` (not `0.0.0.0`, `127.0.0.2` or `*.localhost`); otherwise every Google route refuses loudly (`GbpFakeRefusedError`) rather than falling back. |
+| `GBP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
+| `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
+
+`scripts/deploy-velo.sh` runs `scripts/gbp-deploy-check.mjs` twice. **Before building** it refuses when any `.env*` file in the deploy dir contains the text `GBP_PROVIDER` or `GBP_FAKE_` anywhere (comments included), when a deploy-shell variable is named `GBP_PROVIDER*` or `GBP_FAKE_*`, when `NEXT_PUBLIC_APP_URL` is *defined* more than once in `.env.production`, or when it is defined in any other env file (`.env.example` exempt; comment lines never count as definitions). **After building** it extracts the URL literal inlined into the fake-provider check in each server chunk and refuses unless every one equals the app URL `sed` read from `.env.production`, and that URL parses and is not loopback. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
+
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |
 |---|---|

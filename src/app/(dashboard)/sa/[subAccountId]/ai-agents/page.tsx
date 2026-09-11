@@ -97,6 +97,13 @@ export default function AiAgentsOverviewPage() {
     !!subAccount?.metaConfig?.connected &&
     subAccount?.metaInboxEnabledByAgency === true &&
     subAccount?.metaAgentEnabledByAgency === true;
+  // Google Business — agency-gated, connected (and not needing a reconnect),
+  // with a listing chosen.
+  const googleBusinessEnabled =
+    subAccount?.googleEnabledByAgency === true &&
+    !!subAccount?.googleConnectionMeta?.connected &&
+    !subAccount?.googleConnectionMeta?.reconnectRequired &&
+    !!subAccount?.googleListing;
 
   // Overview grid shows the inbound channels only — Outbound has its own
   // tab + config and isn't a shared-persona inbound channel.
@@ -183,7 +190,9 @@ export default function AiAgentsOverviewPage() {
                         ? whatsappEnabled
                         : channel.id === "meta"
                           ? metaEnabled
-                          : undefined
+                          : channel.id === "google-business"
+                            ? googleBusinessEnabled
+                            : undefined
                 }
               />
             ))}

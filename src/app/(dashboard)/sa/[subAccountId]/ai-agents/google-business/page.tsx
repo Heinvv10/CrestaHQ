@@ -1,9 +1,11 @@
-import { ComingSoon } from "@/components/ai-agents/coming-soon";
+import { GoogleBusinessPanel } from "@/components/gbp/google-business-panel";
 
 export default function AiAgentsGoogleBusinessPage() {
+  // The wrapper is outside the panel, so EVERY panel state (loading, locked,
+  // not-admin, disconnected, reconnect, picker, selected) sits inside it.
   return (
     <div className="mx-auto w-full max-w-5xl">
-      <ComingSoon channelId="google-business" />
+      <GoogleBusinessPanel />
     </div>
   );
 }

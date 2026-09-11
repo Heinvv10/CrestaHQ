@@ -14,6 +14,9 @@
 #     is cleared automatically.
 #   - Runs as a systemd USER service (velo has Linger=yes, no passwordless
 #     sudo). $SYSTEMCTL is overridable if that ever changes.
+#   - Refuses any GBP fake-provider setting: any mention of GBP_PROVIDER /
+#     GBP_FAKE_ in an env file before building, and a loopback app URL inlined
+#     into the built fake-provider check after building.
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.
@@ -97,6 +100,15 @@ after=$(git rev-parse --short HEAD)
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
 
+# ── Refuse the dev/CI-only fake Google Business Profile provider ───────────
+# Pre-build half of scripts/gbp-deploy-check.mjs: no env parsing — any .env*
+# file that even MENTIONS GBP_PROVIDER / GBP_FAKE_, or a shell variable named
+# so, refuses the deploy before anything is built. The post-build half runs in
+# the NEXT_PUBLIC_APP_URL verification below. See docs/features/gbp-reviews.md.
+say "Checking for GBP fake-provider settings"
+node scripts/gbp-deploy-check.mjs pre "$DEPLOY_DIR" \
+  || die "GBP fake-provider settings found (see above). They are dev/CI only — remove them from $DEPLOY_DIR."
+
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
 
@@ -136,6 +148,11 @@ APP_URL="$(sed -n 's/^NEXT_PUBLIC_APP_URL=//p' .env.production 2>/dev/null | hea
 [ -n "$APP_URL" ] || die "NEXT_PUBLIC_APP_URL is not set in $DEPLOY_DIR/.env.production — the build inlines it, so login redirects would point at the server's bind address"
 grep -rqF "$APP_URL" .next/server/edge/chunks/ \
   || die "NEXT_PUBLIC_APP_URL ($APP_URL) is not present in the built middleware — the build did not pick it up; login redirects would point at the server's bind address"
+# The GBP fake provider is allowed only when the URL INLINED into the build is
+# loopback. Assert on the artifact: the URL parses, is not loopback, and is the
+# literal inlined next to the fake-provider check in the server chunks.
+node scripts/gbp-deploy-check.mjs post "$DEPLOY_DIR" "$APP_URL" \
+  || die "the built app could run the GBP fake provider (see above) — refusing to restart $SERVICE"
 
 # Next's standalone output ships server.js + a minimal node_modules, but NOT
 # the static assets or /public — those must be copied in beside it.
