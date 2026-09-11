@@ -194,6 +194,23 @@ Run through this with the client's real details before calling it done:
 | Customer texted STOP but can still be messaged / replies missing | Inbound webhook not set on the Twilio number | Re-save Settings → SMS or paste the webhook URL manually |
 | AI silent on a channel that's "enabled" | Empty persona, agency gate off, or channel prerequisite missing (e.g. Voice without Twilio in BYOC mode) | Work Phase 4 top to bottom for that channel |
 | Emails send but replies vanish | Workspace Reply-To never set | Settings → Sending preferences |
+| Google reviews stale / "Reconnect needed" / "Sync failing" on AI Agents → Google Business | The 6-hourly GBP sync is failing, or the Google grant was revoked | See "Google Business Profile review sync" below |
+
+### Google Business Profile review sync
+
+- **Health:** the Google Business page shows the badge, "Last synced …" and a
+  banner for stale / partial / reconnect / error. Health is re-derived on every
+  page load (stale after 12h without a successful sync).
+- **Manual sync:** a sub-account admin clicks **Sync now** on that page; the
+  result (counts, or why it skipped/failed) shows inline.
+- **Run history:** Firestore `subAccounts/{id}/gbpSyncRuns` — one doc per run
+  (`trigger`, `status`, counts, `reconciliation`, `errorKind`, `skipReason`),
+  newest by `finishedAt`. `reconnect_required` → the client must reconnect
+  Google on that page; `rate_limited`/`transient` → wait for the next run;
+  `skipped already_running` → another run holds the 5-minute lease.
+- **Schedule:** the `leadstack-gbp-sync` QStash schedule (every 6h) is created
+  by hand — command in [docs/features/gbp-reviews.md](docs/features/gbp-reviews.md).
+  No schedule → only Sync now runs.
 
 ---
 

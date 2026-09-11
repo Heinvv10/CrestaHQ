@@ -5,17 +5,19 @@ sub-account admin connects the Google account that manages the business's
 Business Profile, picks the listing, and (in later PRs) syncs, reads and replies
 to genuine Google reviews and publishes a feed for an external website.
 
-Delivered as four stacked PRs. **This document reflects PR 1**
-(`feat/gbp-1-provider`): provider boundary, token lifecycle, hardened OAuth
-state, listing discovery + selection, the picker UI and the fenced fake
-provider. Rows marked for PRs 2–4 are not built yet.
+Delivered as four stacked PRs. **This document reflects PR 2**
+(`feat/gbp-2-sync`, on top of PR 1 `feat/gbp-1-provider`): PR 1's provider
+boundary, token lifecycle, hardened OAuth state, listing discovery + selection,
+picker UI and fenced fake provider, plus PR 2's review sync — Firestore model,
+sync core, Sync now, the signed 6-hourly cron, reconciliation, retention and
+the synced-reviews view. Rows marked for PRs 3–4 are not built yet.
 
 **Four states, kept apart:** fixtures-tested ✅ · real-Google-tested ❌ ·
 deployed ❌ · Velocity-connected ❌. Live Google access waits on the v4 API
 approval (case `4-6894000042302`); until then the GCP project has quota 0 and
 everything is proven against the deterministic fake provider.
 
-## Capability matrix (as of PR 1)
+## Capability matrix (as of PR 2)
 
 `proven` = implemented and proven by the named test. Evidence paths are
 relative to `src/` unless they start with `e2e/`.
@@ -26,28 +28,28 @@ relative to `src/` unless they start with `e2e/`.
 | 2 | Agency gate (`googleEnabledByAgency`) | proven | `lib/google/gate.ts`, `lib/gbp/route-support.ts`; gate_off in `…/google/route.test.ts`, `callback/route.test.ts`, `…/google/locations/route.test.ts`, `…/google/listing/route.test.ts`; disconnect + listing DELETE stay ungated (same files) |
 | 3 | Sub-account admin authorization | proven | `requireSubAccountAdmin` on connect, callback, disconnect, locations, listing; non-member / collaborator / other-sub admin refused in the route tests above |
 | 4 | Secret storage | proven | tokens only at `subAccounts/{id}/private/googleConnection`; substring checks in `callback/route.test.ts`, `callback/provider.test.ts`; admin-SDK scan in `e2e/specs/gbp-connect-select.spec.ts` |
-| 5 | Access-token refresh | proven | `lib/gbp/tokens.ts`; `lib/gbp/tokens.test.ts` (60s margin, single-flight, rotation — also when another writer won — other-writer adoption, revoked → reconnect-required only if the failed grant is still stored, scope check). `lib/gbp/access.ts` `withGbpAccess`: a 401 on a data call expires the cached token, refreshes once, retries once — `…/locations/route.test.ts` › detects a grant revoked while the cached access token is still FRESH. Sync uses it in PR 2 |
+| 5 | Access-token refresh | proven | `lib/gbp/tokens.ts`; `lib/gbp/tokens.test.ts` (60s margin, single-flight, rotation — also when another writer won — other-writer adoption, revoked → reconnect-required only if the failed grant is still stored, scope check). `lib/gbp/access.ts` `withGbpAccess`: a 401 on a data call expires the cached token, refreshes once, retries once — `…/locations/route.test.ts` › detects a grant revoked while the cached access token is still FRESH. The sync uses it for every page (`lib/gbp/sync/pass.ts`; `sync/run-failures.test.ts` › revoked with a still-FRESH cached token → `reconnect_required`) |
 | 6 | Account discovery | proven (fixtures) | `lib/gbp/provider/google.ts` `listAccounts`; `provider/google.test.ts` (URL, paging); `…/locations/route.test.ts`; E2E 1. Real Google: blocked on approval |
 | 7 | GBP location discovery | proven (fixtures) | `listLocations` (readMask required); `provider/google.test.ts`; `lib/gbp/discovery.ts`; `…/locations/route.test.ts` (all pages, 20-page bound); E2E 1 |
 | 8 | Listing selection / mapping | proven (fixtures) | `…/google/listing/route.ts` (server re-fetch, unknown_location); `…/listing/route.test.ts`; E2E 1 selects the second of two similar listings |
-| 9 | Manual sync | absent | PR 2 |
-| 10 | Scheduled sync | absent | PR 2 (signed QStash cron) |
-| 11 | Pagination | partial | provider + discovery paging proven (`provider/google.test.ts`, `provider/fake.test.ts` 3/3/1, `…/locations/route.test.ts`); review-sync paging/resume PR 2 |
-| 12 | Review storage | absent | PR 2. Provider already maps reviews byte-exact (`provider/google.test.ts`) |
-| 13 | Summary rating / count | partial | parsed by the provider (`provider/google.test.ts`, null when absent — never invented); stored in PR 2 |
-| 14 | Owner reply read | partial | `reviewReply` parsed (`provider/google.test.ts`); shown in PR 4 |
+| 9 | Manual sync | proven (fixtures) | `POST …/gbp/sync` → `lib/gbp/sync/run.ts` `syncListing`; `…/gbp/sync/route.test.ts` (admin only, collaborator / non-member / other-sub admin 403, gate_off 403, other agency refused writing nothing); E2E 3 clicks Sync now |
+| 10 | Scheduled sync | proven (fixtures) | `POST /api/cron/gbp-sync` (QStash-signed) → `lib/gbp/sync/sweep.ts`; `app/api/cron/gbp-sync/route.test.ts` (unsigned / forged / wrong-body 401, 500 when the sweep cannot start, manual and cron write identical docs), `sync/sweep.test.ts`; E2E 2. The production schedule is an owner step — see the checklist below |
+| 11 | Pagination | proven (fixtures) | provider + discovery paging (`provider/google.test.ts`, `provider/fake.test.ts` 3/3/1, `…/locations/route.test.ts`); review sync pages, persists the cursor per page, resumes a <24h pass and restarts a stale cursor once (`sync/run-failures.test.ts` › resume); E2E 2 (3 pages) |
+| 12 | Review storage | proven (fixtures) | `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`, byte-exact comment (`sync/run.test.ts` › first full sync; E2E 2 asserts the translated block in Firestore and on the page) |
+| 13 | Summary rating / count | proven (fixtures) | `subAccounts/{id}.gbpSummary` from the provider page on success, null when absent — never invented (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts`, E2E 2) |
+| 14 | Owner reply read | proven (fixtures) | parsed (`provider/google.test.ts`), stored and hashed so a changed reply updates the doc (`sync/run.test.ts` › changed owner reply), shown under the review (`components/gbp/reviews-section.test.ts`, E2E 2 / 3) |
 | 15 | Owner reply create/update | partial | `putReply` / `deleteReply` in the provider (`provider/google.test.ts`, `provider/fake.test.ts`); route + UI PR 4 |
-| 16 | Edit / deletion reconciliation | absent | PR 2 |
-| 17 | Idempotency | absent | PR 2 (sync upsert), PR 4 (reply) |
-| 18 | Sync run / audit history | partial | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; sync runs PR 2 |
-| 19 | Reviews inbox UI | absent | PR 4 |
-| 20 | Sync health UI | partial | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Freshness / stale / partial-sync states PR 4 |
+| 16 | Edit / deletion reconciliation | proven (fixtures) | content hash → update in place; full-pass tombstoning with the anomaly guard (`lib/gbp/sync/reconcile.ts`; `sync/run.test.ts` › idempotency and reconciliation, anomaly guard); E2E 3 |
+| 17 | Idempotency | partial | sync: deterministic doc id + content hash + one lease per sub-account (`sync/run.test.ts` › repeated sync creates and updates nothing; `sync/run-failures.test.ts` › overlapping runs; E2E 2 rerun `created:0`). Reply idempotency PR 4 |
+| 18 | Sync run / audit history | proven (fixtures) | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; append-only `subAccounts/{id}/gbpSyncRuns` — one per run, created at its end, kinds and counts only (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts` last 10; E2E 2 / 3 / 6) |
+| 19 | Reviews inbox UI | partial | read-only list, newest first, byte-exact with replies (`components/gbp/reviews-section.test.ts`, E2E 2); filters + reply composer PR 4 |
+| 20 | Sync health UI | proven (fixtures) | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Sync health (PR 2): `gbp-health-<health>` badge, stale / partial / reconnect / error banners, "Last synced … · Syncs every 6 hours", health re-derived per request (`lib/gbp/sync/health.test.ts`, `components/gbp/reviews-section.test.ts`, `…/gbp/reviews/route.test.ts`; E2E 6 shows the reconnect banner over cached reviews) |
 | 21 | Public feed API | absent | PR 3 |
 | 22 | Widget configuration | absent | PR 3 |
 | 23 | CORS / domain controls | absent | PR 3 |
 | 24 | No-JS / degraded website fallback | absent | PR 3 |
 | 25 | Review-request compatibility | partial | untouched by PR 1 — `lib/reviews/*.test.ts`, `app/api/sub-accounts/[id]/google-review/route.test.ts` stay green; the listing stores `newReviewUri` for the URL-reconciliation seam in PR 4 |
-| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy checks `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`); runbook + rollout in PR 4 |
+| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy checks `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`); sync model, algorithm, retention and the schedule command below; RUNBOOK sync-health section; full rollout in PR 4 |
 
 ## Provider boundary
 
@@ -269,6 +271,9 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
 | `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused) |
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
+| `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
+| `GET /api/sub-accounts/[id]/gbp/reviews` | any member, gated | `{summary, reviews, runs}` — active reviews of the current listing newest first (cap 500), summary with health derived now, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/` |
+| `POST /api/cron/gbp-sync` | QStash signature | the 6-hourly sweep; `{processed, byStatus}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
 `not_connected` / `reconnect_required`, 400 `invalid_body` / `unknown_location` /
@@ -289,7 +294,129 @@ body for token markers).
   each written in the same transaction as the change it records. No client
   rule (default deny).
 
-No Firestore rules or indexes change in PR 1.
+Selecting a **different** listing, clearing it, disconnecting, and a reconnect
+re-verification that drops it all also delete the synced review cache, the
+summary and the sync state (`clearGbpCache`, `lib/gbp/sync/store.ts`, reached
+through `clearListing` and the listing PUT). A re-verification that declines
+because a newer listing was picked meanwhile leaves that listing's cache alone.
+
+No Firestore rules or indexes change in PR 1 or PR 2.
+
+## Review sync (PR 2)
+
+### Firestore model
+
+No client rules and no composite indexes: every read is an API route on the
+Admin SDK, and the new subcollections fall under default deny.
+
+| Path | Written by | Content |
+|---|---|---|
+| `subAccounts/{id}/gbpReviews/{docId}` | sync only | `docId = sha256(review.name).hex[:40]` (deterministic → idempotent). `agencyId, subAccountId, createdByUid` (= `googleListing.selectedByUid`), `locationName, reviewName, reviewId, reviewer, starRating, comment` (byte-exact or null), `createTime, updateTime, reply, state` (`active`/`removed`), `firstSeenAt, lastSeenAt, removedAt, passId, contentHash` (sha256 of rating, comment, updateTime, reply) |
+| `subAccounts/{id}/gbpSyncRuns/{runId}` | sync only, `create()` once at the end of a run — never updated | `agencyId, subAccountId, createdByUid, trigger, actorUid, startedAt, finishedAt, locationName, status, pagesFetched, reviewsSeen, created, updated, unchanged, removed, purged, reconciliation, resumedFromCursor, errorKind, skipReason`. No provider body, token or review text |
+| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | `{lease: {runId, until}, pass: {passId, pageToken, pagesDone, startedAt}}` |
+| `subAccounts/{id}.gbpSummary` | sync only (member-readable) | `locationName, averageRating, totalReviewCount, lastSuccessfulSyncAt, lastRunAt, lastRunStatus, lastErrorKind, health` — kinds only |
+
+The review collection only ever holds the **current** listing (see "Data
+written"), which is why a query on `createTime` alone serves the page.
+
+### Algorithm — `syncListing(subAccountId, {trigger, actorUid?, now?, maxPages?})`
+
+One core, `lib/gbp/sync/run.ts`; Sync now and the cron differ only in `trigger`
+(`…/cron/gbp-sync/route.test.ts` proves both write identical review docs).
+
+1. **Fence first.** `getGbpProviderFor` — in fake mode a sub-account outside
+   the fixture agency throws before anything is read or written.
+2. **Preconditions.** Gate off, not connected, no listing → `skipped` with that
+   `skipReason`, provider never called. A connection already flagged
+   reconnect-required → `skipped reconnect_required` (retention still runs).
+3. **Lease** in a transaction on `private/gbpSyncState`, TTL 5 min; a live
+   lease → `skipped already_running`. Every later write of the run — each
+   page, tombstones, the summary — is a transaction that re-checks the lease
+   is still this run's (`commitGuarded`), so a run whose cache was cleared
+   under it stops with `failed lease_lost`. Released in `finally`, only if
+   still ours.
+4. **Retention** (below), on every run that holds the lease.
+5. **Pass.** Resume the stored pass from its cursor if it is < 24h old, else a
+   new pass from page 1. Up to `maxPages` (20 × 50 = 1000 reviews) per run.
+   Every page call goes through `withGbpAccess` (401 → one refresh → one retry;
+   `invalid_grant` flags reconnect) inside a retry for `transient` /
+   `rate_limited`: 3 attempts, 1s then 2s, or Google's `Retry-After` when
+   longer, capped at 10s. Each page is upserted with its cursor in the same
+   transaction: new → full doc (`created`); hash changed → content fields
+   (`updated`); same → only `lastSeenAt`/`passId` (`unchanged`). A resumed
+   cursor Google rejects (`not_found` / `malformed` on the first resumed page)
+   restarts the pass from page 1 once, same pass id.
+6. **Outcome.** All pages → reconcile. `maxPages` hit → `partial`, cursor kept,
+   `reconciliation:"deferred"`. A page failing after retries → `partial` if a
+   page landed this run, else `failed`. `revoked` / `insufficient_scope` →
+   `reconnect_required`. Cached data is never deleted because a run failed.
+7. **Summary** (rating/count/`lastSuccessfulSyncAt` only on success) and
+   finally the append-only run record.
+
+### Reconciliation and the anomaly rule
+
+Only after a **full** pass: every active review whose `passId` is not this
+pass was removed at Google → **tombstone** (`state:"removed"`, `removedAt`;
+`comment`, `reviewer`, `reply`, `contentHash` set to null; ids kept). A
+review that comes back is restored as an `update`. **Anomaly guard:** if the
+pass saw 0 reviews while Google reports `totalReviewCount > 0`, or it would
+remove more than half of ≥10 active reviews, nothing is removed —
+`reconciliation:"skipped_anomaly"`, status `partial`.
+
+Known limit: Google pages by `updateTime desc`. A pass spread over several
+runs (listings over 1000 reviews) can miss a review that was edited — and so
+moved to page 1 — between runs; it is tombstoned and restored on the next
+full pass. Single-run passes (≤1000 reviews) are not affected.
+
+### Retention — Google's 30-day rule
+
+The GBP content policy (https://developers.google.com/my-business/content/policies)
+says content "…stored temporarily for no more than 30 calendar days…". So:
+
+- a review not re-seen for 30 days is **deleted** (not tombstoned);
+- if `lastSuccessfulSyncAt` is older than 30 days, every run — failed and
+  reconnect-required ones included — deletes **all** cached review content
+  and the summary's rating/count, and the summary reads
+  `health:"error"`, `lastErrorKind:"retention_expired"` until a sync succeeds.
+
+Both rules: `lib/gbp/sync/reconcile.ts` `planRetention`,
+`sync/retention.test.ts` (injected clock). Gap: the sweep selects gated
+sub-accounts only, so a sub-account whose agency switched the gate off keeps
+its cache until the gate is back on (the reviews route refuses it meanwhile —
+nothing is served). Needs a decision if that matters.
+
+### Cadence and freshness
+
+The cron runs **every 6 hours**; nothing is real-time and the UI says so
+("Last synced 2 hours ago (11 Sep 2026, 10:00) · Syncs every 6 hours").
+Health is derived **at read time** by `deriveHealth(summary, now)`
+(`lib/gbp/sync/health.ts`): `ok` after a recent success; `stale` once the last
+success is older than 12h (two missed runs) or the last run failed within 30
+days of it; `partial`; `reconnect_required`; `error` (no success in 30 days,
+retention expired, or failing with no success at all); `never_synced`.
+
+### Sweep and schedule
+
+`POST /api/cron/gbp-sync` (QStash-signed, like `recurring-invoices`; in
+`PUBLIC_PATHS`) → `lib/gbp/sync/sweep.ts`: `where googleEnabledByAgency == true`
+(fake mode: also `where agencyId == GBP_FAKE_AGENCY_ID` — equality only, no
+composite index), filtered to connected + listing, never-run first then oldest
+`gbpSummary.lastRunAt`, at most 25 per call, 3 at a time. Each sub-account is
+isolated: a throw becomes that tenant's `failed` run. 500 only when the sweep
+cannot start, so QStash retries.
+
+The schedule is deliberately **not** in `register-schedules.ts` — that would
+create a production schedule on the next deploy. **Owner checklist** (not run):
+
+```bash
+# Upstash REST: POST /v2/schedules/{destination}, headers Upstash-Cron +
+# Upstash-Schedule-Id (same as @upstash/qstash's schedules.create). Use the
+# token's region base URL (QSTASH_URL) if it is not the global one.
+curl -XPOST "${QSTASH_URL:-https://qstash.upstash.io}/v2/schedules/https://crm.crestahq.com/api/cron/gbp-sync" \
+  -H "Authorization: Bearer $QSTASH_TOKEN" \
+  -H "Upstash-Cron: 0 */6 * * *" \
+  -H "Upstash-Schedule-Id: leadstack-gbp-sync"
+```
 
 ## UI
 
@@ -301,6 +428,15 @@ Disconnect for an existing connection),
 `gbp-location-option-<n>`, button `gbp-select-listing`; Cancel in every picker
 state when changing), `gbp-state-selected` (Change listing / Stop managing this
 listing). Destructive actions use an inline confirm — never `confirm()`/`alert()`.
+Under the selected listing (and, read-only, for non-admins and on the
+reconnect screen) the synced reviews (`reviews-section.tsx`): `gbp-summary`
+(rating, count, last synced, cadence, `gbp-health-<health>`), `gbp-sync-now`
+(admins; result inline in `gbp-sync-result`), `gbp-banner-stale` /
+`-partial` / `-reconnect` ("Google access was revoked — reconnect to resume
+syncing. Showing cached reviews from <date>.") / `-error`, and
+`gbp-review-<reviewId>` newest first (comment verbatim in `whitespace-pre-wrap`,
+owner reply below) or `gbp-reviews-empty`. Each is rendered by
+`components/gbp/reviews-section.test.ts`.
 Every state above has a jsdom test in `components/gbp/google-business-panel.test.ts`
 (the disconnected → Connect → callback round trip itself is E2E-only, in
 `e2e/specs/gbp-connect-select.spec.ts`).
@@ -314,6 +450,10 @@ for expiry + uid binding (done); Google's authorisation codes are single-use.
 keys plus `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100`, `GBP_PROVIDER=fake`,
 `GBP_FAKE_ALLOW_PROD_BUILD=1`, `GBP_FAKE_AGENCY_ID=<E2E_AGENCY_ID>`, a random
 `AUTOMATIONS_TOKEN_SECRET` and dummy QStash strings: `set -a; . ./.env.local;
-set +a; pnpm build && pnpm exec playwright test`. `e2e/specs/gbp-connect-select.spec.ts`
-skips itself only when `PLAYWRIGHT_BASE_URL` points at a deployed target
-(the production smoke job), where the fake is refused by design.
+set +a; pnpm build && pnpm exec playwright test`. The GBP specs
+(`gbp-connect-select`, `gbp-sync` — E2E 2, `gbp-reconcile` — E2E 3,
+`gbp-revoked` — E2E 6 sync half) skip themselves only when
+`PLAYWRIGHT_BASE_URL` points at a deployed target (the production smoke job),
+where the fake is refused by design. The sync specs seed the connection and
+scenario on the fixture primary through `e2e/lib/gbp.ts` and drive the cron
+with a QStash-signed POST (`e2e/lib/qstash.ts`).
