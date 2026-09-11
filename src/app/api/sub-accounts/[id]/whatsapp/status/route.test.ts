@@ -31,6 +31,7 @@ describe("who may read", () => {
     expect(body.phone).toMatchObject({ qualityRating: "GREEN", verifiedName: "E2E Fixture Fibre" });
     expect(body.meta).toEqual({ displayPhoneNumber: "+27 60 000 0000", verifiedName: "E2E Fixture Fibre", phoneNumberId: "pn_fixture" });
     expect(body.quality).toBeNull();
+    expect(body.openAlert).toBeNull();
   });
 
   it("401s without a caller and 403s an admin of ANOTHER sub-account", async () => {
@@ -91,5 +92,17 @@ describe("the provider is the path's sub-account's", () => {
     seedScenario({});
     const { body } = await json(call(GET, { id: SUB }));
     expect(body.quality).toMatchObject({ rating: "YELLOW", changedAt: "t0" });
+  });
+});
+
+describe("openAlert", () => {
+  it("is the newest UNRESOLVED alert for THIS sub-account, or null", async () => {
+    const col = `subAccounts/${SUB}/whatsappQualityAlerts`;
+    state.docs.set(`${col}/old`, { from: "GREEN", to: "RED", createdAt: new Date("2026-09-01T00:00:00Z"), resolvedAt: null });
+    state.docs.set(`${col}/new`, { from: "GREEN", to: "YELLOW", createdAt: new Date("2026-09-10T00:00:00Z"), resolvedAt: null });
+    state.docs.set(`${col}/done`, { from: "GREEN", to: "RED", createdAt: new Date("2026-09-11T00:00:00Z"), resolvedAt: new Date() });
+    state.docs.set(`subAccounts/${OTHER_SUB}/whatsappQualityAlerts/x`, { from: "GREEN", to: "RED", createdAt: new Date("2026-09-12T00:00:00Z"), resolvedAt: null });
+    const { body } = await json(call(GET, { id: SUB }));
+    expect(body.openAlert).toEqual({ from: "GREEN", to: "YELLOW", createdAt: "2026-09-10T00:00:00.000Z" });
   });
 });
