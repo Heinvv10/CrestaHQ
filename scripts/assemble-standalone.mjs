@@ -50,7 +50,10 @@ for (const file of [hook, ...traced.map((f) => path.resolve(serverDir, f))]) {
   // Never overwrite: node_modules in the bundle are Next's own traced copies.
   if (fs.existsSync(dest)) continue;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.cpSync(file, dest);
+  // pnpm's node_modules is relative symlinks: recreate the link text as-is,
+  // as Next's own trace copy does, so the bundle stays self-contained.
+  if (fs.lstatSync(file).isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(file), dest);
+  else fs.copyFileSync(file, dest);
   copied++;
 }
 
