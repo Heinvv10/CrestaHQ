@@ -37,6 +37,7 @@ export function ActivityTimeline({ contactId }: { contactId: string }) {
   useEffect(() => {
     setLoadedNotes(false);
     setLoadedActs(false);
+    setFilter("all");
     const unsubNotes = subscribeToNotes(contactId, (list) => {
       setNotes(list);
       setLoadedNotes(true);
@@ -194,11 +195,11 @@ function ActivityRow({
   if (meta?.taskId) {
     links.push({ href: saPath("/tasks"), label: "View task →" });
   }
-  // Engine-written rows link to the workflow's run history (there is no
-  // per-run page yet; the runs list is the closest view).
+  // Engine-written rows link to that run in the workflow's run history,
+  // which opens and highlights it.
   if (meta?.workflowId && meta?.runId) {
     links.push({
-      href: saPath(`/workflows/${meta.workflowId}/runs`),
+      href: saPath(`/workflows/${meta.workflowId}/runs?run=${meta.runId}`),
       label: "View run →",
     });
   }
