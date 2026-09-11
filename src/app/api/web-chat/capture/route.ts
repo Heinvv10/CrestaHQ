@@ -12,6 +12,7 @@ import { reconcileContactFromCapture } from "@/lib/comms/web-chat/capture";
 import { createFollowUpActions } from "@/lib/comms/web-chat/follow-up";
 import { webChatVisitorLabel } from "@/lib/comms/web-chat/respond";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import { webChatConversationId } from "@/types/conversations";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { ipFromRequest } from "@/lib/contacts/location";
@@ -206,7 +207,7 @@ export async function POST(request: Request) {
   ]
     .filter(Boolean)
     .join(", ");
-  await appendMessage({
+  const submissionMessageId = await appendMessage({
     subAccountId,
     agencyId: session.agencyId,
     sessionId,
@@ -228,6 +229,17 @@ export async function POST(request: Request) {
       capture: { name, email, phone },
     });
     contactId = reconciled?.contactId ?? null;
+    // The submission is the first web-chat turn that belongs to a contact.
+    if (contactId) {
+      await writeInboundMessageActivity(db, {
+        contactId,
+        channel: "webchat",
+        preview: `(submitted via form) ${submittedSummary}`,
+        messageId: submissionMessageId,
+        agencyId: sa.agencyId,
+        subAccountId,
+      });
+    }
   } catch (err) {
     console.error(
       `[web-chat/capture] reconcile failed sa=${subAccountId}`,

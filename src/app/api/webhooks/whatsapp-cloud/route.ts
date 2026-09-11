@@ -16,6 +16,7 @@ import {
 import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import {
@@ -249,6 +250,18 @@ export async function POST(request: Request) {
         buttonTap: inbound.buttonPayload !== null,
       });
     }),
+  );
+  await Promise.all(
+    contactDocs.map((d) =>
+      writeInboundMessageActivity(db, {
+        contactId: d.id,
+        channel: "whatsapp",
+        preview: inbound.text,
+        messageId: inbound.providerMessageId,
+        agencyId: route.agencyId,
+        subAccountId: route.subAccountId,
+      }),
+    ),
   );
 
   if (nextOptedOut !== null) {
