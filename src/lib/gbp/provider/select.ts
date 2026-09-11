@@ -48,11 +48,22 @@ export { GbpFakeRefusedError, gbpProviderMode } from "./mode";
  */
 export async function getGbpProviderFor(subAccountId: string): Promise<GbpProvider> {
   if (gbpProviderMode() === "google") return googleGbpProvider;
+  await assertFakeFixtureAgency(subAccountId);
+  return createFakeGbpProvider(new FirestoreScenarioStore(), subAccountId);
+}
 
+/**
+ * The fixture-agency fence on its own: throws unless GBP_FAKE_AGENCY_ID is
+ * set and `subAccountId` belongs to that agency. Also used by disconnect when
+ * the fake is requested on a dev machine but refused for another reason —
+ * that machine still points at the production Firestore.
+ */
+export async function assertFakeFixtureAgency(subAccountId: string): Promise<void> {
+  const fixture = process.env.GBP_FAKE_AGENCY_ID;
+  if (!fixture) throw new GbpFakeRefusedError("GBP_FAKE_AGENCY_ID is not set");
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const agencyId = snap.exists ? snap.data()?.agencyId : undefined;
-  if (agencyId !== process.env.GBP_FAKE_AGENCY_ID) {
+  if (agencyId !== fixture) {
     throw new GbpFakeRefusedError("sub-account is not in the fixture agency");
   }
-  return createFakeGbpProvider(new FirestoreScenarioStore(), subAccountId);
 }

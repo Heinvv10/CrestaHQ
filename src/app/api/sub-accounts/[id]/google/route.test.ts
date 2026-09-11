@@ -195,7 +195,9 @@ describe("disconnect", () => {
     // be removable (it is the "not configured" state's Disconnect button).
     process.env.GBP_PROVIDER = "fake";
     process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
-    process.env.GBP_FAKE_AGENCY_ID = "ag_1";
+    // A misconfigured deployment carries no fixture agency: the fence must NOT
+    // apply here (the tenant is the deployment's own).
+    delete process.env.GBP_FAKE_AGENCY_ID;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     warn.mockClear(); // earlier tests in this file share the spy
     const res = await disconnect();
@@ -207,6 +209,43 @@ describe("disconnect", () => {
     expect(warn.mock.calls.flat().join(" ")).not.toContain("revoke failed");
     delete process.env.GBP_PROVIDER;
     delete process.env.GBP_FAKE_AGENCY_ID;
+  });
+
+  describe("a refused fake on a DEV machine (loopback app URL) still honours the fixture fence", () => {
+    const devRefused = (agencyId?: string) => {
+      process.env.GBP_PROVIDER = "fake";
+      process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
+      // Refused because it is a production build without the opt-in.
+      (process.env as Record<string, string>).NODE_ENV = "production";
+      delete process.env.GBP_FAKE_ALLOW_PROD_BUILD;
+      if (agencyId === undefined) delete process.env.GBP_FAKE_AGENCY_ID;
+      else process.env.GBP_FAKE_AGENCY_ID = agencyId;
+    };
+    afterEach(() => {
+      (process.env as Record<string, string>).NODE_ENV = "test";
+      delete process.env.GBP_PROVIDER;
+      delete process.env.GBP_FAKE_AGENCY_ID;
+    });
+
+    it("refuses, touching nothing, when no fixture agency is configured", async () => {
+      devRefused(undefined);
+      await expect(disconnect()).rejects.toThrow("GBP fake provider refused");
+      expect(state.writes).toEqual([]);
+    });
+
+    it("refuses, touching nothing, for a sub-account of another agency", async () => {
+      devRefused("ag_fixture_only");
+      await expect(disconnect()).rejects.toThrow("GBP fake provider refused");
+      expect(state.writes).toEqual([]);
+    });
+
+    it("clears the fixture sub-account locally, without a revoke", async () => {
+      devRefused("ag_1");
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect((await disconnect()).status).toBe(200);
+      expect(state.docs.has(SECRET_PATH)).toBe(false);
+      expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
   });
 
   it("works while the agency gate is off, so a connection is never stranded", async () => {

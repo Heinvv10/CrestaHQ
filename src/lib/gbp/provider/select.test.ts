@@ -5,7 +5,12 @@ vi.mock("@/lib/firebase/admin", async () =>
 );
 
 import { resetHarness, state, SUB, OTHER_SUB } from "@/test/google-oauth-harness";
-import { GbpFakeRefusedError, gbpProviderMode, getGbpProviderFor } from "./select";
+import {
+  GbpFakeRefusedError,
+  assertFakeFixtureAgency,
+  gbpProviderMode,
+  getGbpProviderFor,
+} from "./select";
 import { googleGbpProvider } from "./google";
 
 /**
@@ -121,4 +126,11 @@ describe("the app allow-list is narrow (the deploy guard's block-list is the wid
       expect(() => gbpProviderMode()).toThrow(GbpFakeRefusedError);
     },
   );
+});
+
+describe("assertFakeFixtureAgency", () => {
+  it("refuses when no fixture agency is configured — even for a doc with no agencyId", async () => {
+    delete process.env.GBP_FAKE_AGENCY_ID;
+    await expect(assertFakeFixtureAgency("sa_missing")).rejects.toThrow("GBP_FAKE_AGENCY_ID is not set");
+  });
 });

@@ -5,7 +5,9 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { fakeProviderAllowed } from "@/lib/gbp/provider/mode";
-import { getGbpProviderFor } from "@/lib/gbp/provider/select";
+import { isAppLoopbackUrl } from "@/lib/gbp/provider/loopback.mjs";
+import { assertFakeFixtureAgency, getGbpProviderFor } from "@/lib/gbp/provider/select";
+import type { GbpProvider } from "@/lib/gbp/provider/types";
 import {
   googleConnectionSecretPath,
   type GoogleConnectionSecret,
@@ -31,16 +33,23 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
 
-  // A fake that is requested but REFUSED on this deployment leaves no provider
-  // to revoke with — and revoke is best-effort — so the local disconnect must
-  // still go ahead (it is the "not configured" state's Disconnect button).
-  // Otherwise, before any read or write: an ALLOWED fake still throws here for
+  // Before any read or write: an ALLOWED fake throws in getGbpProviderFor for
   // a sub-account outside the fixture agency, so a dev pointed at production
   // Firestore cannot delete a real tenant's connection.
+  //
+  // A fake that is requested but REFUSED leaves no provider to revoke with —
+  // revoke is best-effort, so the local disconnect still goes ahead (it is the
+  // "not configured" state's Disconnect button). On a dev machine (loopback
+  // app URL) that machine still points at production Firestore, so the
+  // fixture-agency fence applies first; on a misconfigured deployment (public
+  // URL) the tenant is the deployment's own, so it simply clears.
   const fakeRefused = process.env.GBP_PROVIDER === "fake" && !fakeProviderAllowed();
-  const provider = fakeRefused ? null : await getGbpProviderFor(id);
+  let provider: GbpProvider | null = null;
   if (fakeRefused) {
+    if (isAppLoopbackUrl(process.env.NEXT_PUBLIC_APP_URL)) await assertFakeFixtureAgency(id);
     console.warn(`[google/disconnect] fake provider refused here; skipping revoke sa=${id}`);
+  } else {
+    provider = await getGbpProviderFor(id);
   }
 
   const db = getAdminDb();
