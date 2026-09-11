@@ -156,7 +156,7 @@ bridge" inside one sub-account is out of scope.
 | 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | `POST /api/v1/contacts/upsert` → `enrolment` | **closed** — see below |
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
 | 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
-| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | **Cloud done** (build-order PR 2); Twilio PR 4; bridge PRs 6–7 |
+| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | **Cloud done** (PR 2); **Twilio templates done** (PR 4a); Twilio in-session PR 4b; bridge PRs 6–7 |
 | 7 | Button taps reach the workflow branch | inbound webhooks → `reply.text` | **closed** for Cloud + Twilio (build-order PR 1); bridge taps with build-order PR 7 |
 | 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
 
@@ -306,8 +306,13 @@ has — `wait_for_reply` (replied / timed out) and an `if_else` on `reply.text`
   ("Reply 1 … 2 …"), which `reply.text` already handles.
 - **Bridge templates need 1.2b.** The CRM's `bridge` send arm is still a stub
   (`send-dispatch.ts:130`).
-- **Twilio in-session call-to-action without approval** is medium confidence
-  — verify against Twilio's docs before PR 4.
+- **Twilio in-session buttons — verified 2026-09-11** against Twilio's Content
+  docs (quick-reply, call-to-action, card): an unapproved Content resource may
+  be sent in-session with up to **3 quick replies** or **exactly one link**
+  (a phone button needs approval). Every button in a Twilio template must be
+  the **same action type**, and titles are **20 characters** even on
+  templates. A tap returns its text in both `Body` and `ButtonText` and the
+  id in `ButtonPayload`.
 - The experience check with buttons must still come back **utility** from
   Meta (submission checklist).
 
@@ -318,7 +323,8 @@ has — `wait_for_reply` (replied / timed out) and an `if_else` on `reply.text`
 | 1 | Tap parsing, Cloud + Twilio: the tapped button's text becomes the message body (so `reply.text`), payload stored on the message | — |
 | 2 | Template buttons on Cloud: the type, BUTTONS on submission to Meta, the builder editor | — |
 | 3 | In-window interactive send on Cloud — quick replies and the URL button — via `resolveWaSendMode` | 2 |
-| 4 | Twilio quick-reply and call-to-action content types | 2, the in-session check |
+| 4a | Twilio templates with buttons: quick-reply / call-to-action Content types at submit | 2, the in-session check |
+| 4b | Twilio in-session buttons: an unapproved Content resource per template, cached | 4a |
 | 5 | Late-tap inbox marker | 1 |
 | 6 | Bridge templates, CRM side | 1.2b |
 | 7 | Bridge Go service: send buttons, parse taps | handset test |

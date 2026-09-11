@@ -5,16 +5,15 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 /**
  * Buttons on WhatsApp templates, save to Meta.
  *
- * Drives the real create, edit and submit routes. Meta's Graph API is stubbed
- * at `fetch`, so the assertion is the exact component JSON Meta would get.
- * The Twilio content client is a spy that must NOT be reached with a buttoned
- * template: it would create the template without its buttons, and Meta would
- * approve a Yes/No nobody can tap.
+ * Drives the real create, edit and submit routes and the real Meta and
+ * Twilio clients. Both APIs are stubbed at `fetch`, so the assertions are the
+ * exact JSON each provider would receive.
  */
 
 const mem = createMemoryFirestore();
 const graphBodies: Array<Record<string, unknown>> = [];
-const createContentTemplate = vi.fn(async () => ({ contentSid: "HX1" }));
+/** POST bodies sent to Twilio's Content API `/Content` endpoint. */
+const twilioContent: Array<Record<string, unknown>> = [];
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
@@ -28,12 +27,14 @@ vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => false,
   publishCallback: async () => null,
 }));
-vi.mock("@/lib/comms/whatsapp/templates-api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/comms/whatsapp/templates-api")>()),
-  createContentTemplate: (...a: unknown[]) => createContentTemplate(...(a as [])),
-  submitForWhatsappApproval: async () => undefined,
-}));
-vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
+vi.stubGlobal("fetch", async (url: string, init: { body: string }) => {
+  if (url.startsWith("https://content.twilio.com/")) {
+    if (url.endsWith("/Content")) {
+      twilioContent.push(JSON.parse(init.body) as Record<string, unknown>);
+      return new Response(JSON.stringify({ sid: "HX1" }), { status: 201 });
+    }
+    return new Response(JSON.stringify({ status: "received" }), { status: 201 });
+  }
   graphBodies.push(JSON.parse(init.body) as Record<string, unknown>);
   return new Response(JSON.stringify({ id: "meta_1", status: "PENDING" }), { status: 200 });
 });
@@ -88,7 +89,7 @@ const stored = () => mem.list("subAccounts/sa_1/whatsappTemplates");
 beforeEach(() => {
   mem.clear();
   graphBodies.length = 0;
-  createContentTemplate.mockClear();
+  twilioContent.length = 0;
   mem.seed("subAccounts/sa_1", CLOUD_SUB);
 });
 
@@ -197,25 +198,61 @@ describe("submitting to Meta", () => {
     ]);
   });
 
-  it("refuses a buttoned template on the Twilio rail before creating anything", async () => {
-    const { json } = await saveTemplate([YES, NO]);
-    mem.seed("subAccounts/sa_1", TWILIO_SUB);
-
-    const res = await submitTemplate(json.template!.id);
-
-    expect(res.status).toBe(400);
-    expect(createContentTemplate).not.toHaveBeenCalled();
-    expect(stored()[0].status).toBe("draft");
-  });
-
-  it("still submits a button-less template on Twilio", async () => {
+  it("still submits a button-less template on Twilio as text", async () => {
     const { json } = await saveTemplate(undefined);
     mem.seed("subAccounts/sa_1", TWILIO_SUB);
 
     const res = await submitTemplate(json.template!.id);
 
     expect(res.status).toBe(200);
-    expect(createContentTemplate).toHaveBeenCalledTimes(1);
+    expect(twilioContent[0].types).toEqual({ "twilio/text": { body: BODY } });
     expect(stored()[0].contentSid).toBe("HX1");
+  });
+});
+
+describe("submitting to Twilio", () => {
+  beforeEach(() => mem.seed("subAccounts/sa_1", TWILIO_SUB));
+
+  it("sends quick replies as a twilio/quick-reply content, the text as the id", async () => {
+    const NO_SHORT = { type: "quick_reply", text: "No, a problem" };
+    const { json } = await saveTemplate([YES, NO_SHORT]);
+    const res = await submitTemplate(json.template!.id);
+
+    expect(res.status).toBe(200);
+    expect(twilioContent[0].types).toEqual({
+      "twilio/quick-reply": {
+        body: BODY,
+        actions: [
+          { title: "Yes, all good", id: "Yes, all good" },
+          { title: "No, a problem", id: "No, a problem" },
+        ],
+      },
+    });
+  });
+
+  it("sends links as a twilio/call-to-action content", async () => {
+    const link = { type: "url", text: "Leave a review", url: "https://g.page/r/velocity/review" };
+    const { json } = await saveTemplate([link]);
+    await submitTemplate(json.template!.id);
+
+    expect(twilioContent[0].types).toEqual({
+      "twilio/call-to-action": {
+        body: BODY,
+        actions: [{ type: "URL", title: "Leave a review", url: "https://g.page/r/velocity/review" }],
+      },
+    });
+  });
+
+  it.each([
+    ["quick replies and a link together", [YES, { type: "url", text: "Review", url: "https://x.co/r" }], /all be quick replies or all be links/],
+    ["a 21-character title (Meta direct allows 25)", [{ type: "quick_reply", text: "No, there's a problem" }], /20 characters/],
+  ])("refuses %s before creating anything", async (_label, buttons, message) => {
+    const { json } = await saveTemplate(buttons);
+    const res = await submitTemplate(json.template!.id);
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(message);
+    expect(twilioContent).toHaveLength(0);
+    expect(stored()[0].status).toBe("draft");
   });
 });

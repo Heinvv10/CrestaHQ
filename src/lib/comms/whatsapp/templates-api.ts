@@ -1,5 +1,8 @@
 import "server-only";
 
+import { twilioContentTypes } from "./twilio-buttons";
+import type { WhatsappTemplateButton } from "@/types/whatsapp-templates";
+
 /**
  * Twilio Content API wrapper for WhatsApp templates.
  *
@@ -61,9 +64,9 @@ function normaliseStatus(raw: string | undefined): ContentApprovalStatus {
 }
 
 /**
- * Create a Twilio Content resource for a text WhatsApp template. `variables`
- * is the position→sample-value map Meta uses for review (e.g. {"1":"Ben"}).
- * Returns the Content SID (HX…).
+ * Create a Twilio Content resource for a WhatsApp template — text, or with
+ * buttons (see twilio-buttons.ts). `variables` is the position→sample-value
+ * map Meta uses for review (e.g. {"1":"Ben"}). Returns the Content SID (HX…).
  */
 export async function createContentTemplate(input: {
   accountSid: string;
@@ -72,6 +75,7 @@ export async function createContentTemplate(input: {
   language: string;
   body: string;
   variables: Record<string, string>;
+  buttons?: WhatsappTemplateButton[];
 }): Promise<{ contentSid: string }> {
   const res = await fetch(`${CONTENT_BASE}/Content`, {
     method: "POST",
@@ -83,7 +87,7 @@ export async function createContentTemplate(input: {
       friendly_name: input.friendlyName,
       language: input.language,
       variables: input.variables,
-      types: { "twilio/text": { body: input.body } },
+      types: twilioContentTypes(input.body, input.buttons),
     }),
   });
   const text = await res.text();
