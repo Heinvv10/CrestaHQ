@@ -1,5 +1,5 @@
 import type { StripeConnectionMeta } from "@/types/payments";
-import type { GoogleConnectionMeta, GoogleListing } from "@/types/google";
+import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
@@ -469,6 +469,11 @@ export interface SubAccountDoc {
    * {@link GoogleListing}). Null/absent until selected; cleared on disconnect.
    */
   googleListing?: GoogleListing | null;
+  /**
+   * The public reviews widget for the selected listing (see
+   * {@link GbpWidgetMeta}); null/absent when none. Written only by the server.
+   */
+  gbpWidgetMeta?: GbpWidgetMeta | null;
   /**
    * Agency-controlled gate for the Workspace Assistant (the in-app AI
    * assistant at Sidebar → Workspace Assistant). Only the agency owner can

@@ -263,6 +263,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // no auth required. Each competitor has its own static route under
   // src/app/leadstack-vs-{slug}/page.tsx; this regex catches them all.
   /^\/leadstack-vs-[a-z0-9-]+$/,
+  // Public Google reviews feed: /api/public/gbp/feed/{publicId}, fetched
+  // cross-origin by a customer's website. The opaque publicId is the only
+  // credential; the route never reads an identity header (a caller can send
+  // its own on a public path), and applies the widget's origin allow-list,
+  // a per-IP limit and a non-enumerating 404 itself. Exactly one segment.
+  /^\/api\/public\/gbp\/feed\/[^/]+$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

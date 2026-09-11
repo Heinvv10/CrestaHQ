@@ -5,19 +5,21 @@ sub-account admin connects the Google account that manages the business's
 Business Profile, picks the listing, and (in later PRs) syncs, reads and replies
 to genuine Google reviews and publishes a feed for an external website.
 
-Delivered as four stacked PRs. **This document reflects PR 2**
-(`feat/gbp-2-sync`, on top of PR 1 `feat/gbp-1-provider`): PR 1's provider
-boundary, token lifecycle, hardened OAuth state, listing discovery + selection,
-picker UI and fenced fake provider, plus PR 2's review sync — Firestore model,
-sync core, Sync now, the signed 6-hourly cron, reconciliation, retention and
-the synced-reviews view. Rows marked for PRs 3–4 are not built yet.
+Delivered as four stacked PRs. **This document reflects PR 3**
+(`feat/gbp-3-public-feed`, on PR 2 `feat/gbp-2-sync`, on PR 1
+`feat/gbp-1-provider`): PR 1's provider boundary, token lifecycle, hardened
+OAuth state, listing discovery + selection, picker UI and fenced fake
+provider; PR 2's review sync — Firestore model, sync core, Sync now, the
+signed 6-hourly cron, reconciliation, retention and the synced-reviews view;
+PR 3's public reviews widget — opaque widget id, allowed origins, the public
+JSON feed and the embeddable script. Rows marked for PR 4 are not built yet.
 
 **Four states, kept apart:** fixtures-tested ✅ · real-Google-tested ❌ ·
 deployed ❌ · Velocity-connected ❌. Live Google access waits on the v4 API
 approval (case `4-6894000042302`); until then the GCP project has quota 0 and
 everything is proven against the deterministic fake provider.
 
-## Capability matrix (as of PR 2)
+## Capability matrix (as of PR 3)
 
 `proven` = implemented and proven by the named test. Evidence paths are
 relative to `src/` unless they start with `e2e/`.
@@ -44,12 +46,12 @@ relative to `src/` unless they start with `e2e/`.
 | 18 | Sync run / audit history | proven (fixtures) | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; append-only `subAccounts/{id}/gbpSyncRuns` — one per run, created at its end, kinds and counts only (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts` last 10; E2E 2 / 3 / 6) |
 | 19 | Reviews inbox UI | partial | read-only list, newest first, byte-exact with replies (`components/gbp/reviews-section.test.ts`, E2E 2); filters + reply composer PR 4 |
 | 20 | Sync health UI | proven (fixtures) | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Sync health (PR 2): `gbp-health-<health>` badge, stale / partial (outage-guard wording for `skipped_anomaly`) / reconnect / sync-pending / error banners, "Last synced …" plus the truthful schedule line, recent syncs, health re-derived per request from the live connection (`lib/gbp/sync/health.test.ts`, `components/gbp/reviews-section.test.ts`, `…/gbp/reviews/route.test.ts`; E2E 6 shows the reconnect banner over cached reviews) |
-| 21 | Public feed API | absent | PR 3 |
-| 22 | Widget configuration | absent | PR 3 |
-| 23 | CORS / domain controls | absent | PR 3 |
-| 24 | No-JS / degraded website fallback | absent | PR 3 |
+| 21 | Public feed API | proven (fixtures) | `GET /api/public/gbp/feed/[publicId]` → `lib/gbp/feed/build.ts` + allow-list serializer `feed/serialize.ts`; `…/feed/[publicId]/route.test.ts` (exact data byte-exact incl. the translated block, newest-first + id tie-break, every rating incl. 1-star, maxReviews, no-review state, one byte-identical 404, disconnect / listing clear → unavailable), `route.freshness.test.ts` (stale at 12h / reconnect / partial / outage, unavailable after 7 days / never synced, 30-day predicate, leakage), `route.http.test.ts` (ETag + 304, cache headers, 429); E2E 4 `e2e/specs/gbp-public-feed.spec.ts`, E2E 6 feed half `e2e/specs/gbp-feed-stale.spec.ts` |
+| 22 | Widget configuration | proven (fixtures) | `gbpWidgets/{publicId}` + `gbpWidgetMeta`; `…/gbp/widget/route.ts`, `…/widget/rotate/route.ts`, `lib/gbp/feed/widget-store.ts`; `…/gbp/widget/route.test.ts` (opaque id, one per sub-account, rotate / revoke, collaborator / other-sub admin / non-member 403, gate off 403 with DELETE allowed, `minRating` refused); dashboard card `components/gbp/widget-section.test.ts`; E2E 4 creates it on the page |
+| 23 | CORS / domain controls | proven (fixtures) | `lib/gbp/feed/origins.ts` (normalised `scheme://host[:port]`, https only except loopback http, no path / wildcard / credentials, ≤10); ACAO echoes an allowed Origin only, 403 otherwise — `route.http.test.ts`, E2E 4 (`https://evil.example` → 403, no ACAO); browser proof below |
+| 24 | No-JS / degraded website fallback | proven (fixtures) | `public/embed/gbp-reviews.js` keeps the site's static content on any failure (`lib/gbp/feed/embed-script.test.ts`); example page `gbp-reviews/example/index.html`; browser proof `proof/pr3-01…07` (feed down, JavaScript off, origin removed) |
 | 25 | Review-request compatibility | partial | untouched by PR 1 — `lib/reviews/*.test.ts`, `app/api/sub-accounts/[id]/google-review/route.test.ts` stay green; the listing stores `newReviewUri` for the URL-reconciliation seam in PR 4 |
-| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy checks `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`); sync model, algorithm, retention and the schedule command below; RUNBOOK sync-health section; full rollout in PR 4 |
+| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy checks `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`); sync model, algorithm, retention and the schedule command below; RUNBOOK sync-health section; the feed + embed contract and the Velocity example below (PR 3); full rollout in PR 4 |
 
 ## Provider boundary
 
@@ -274,6 +276,8 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
 | `GET /api/sub-accounts/[id]/gbp/reviews` | any member, gated | `{summary, reviews, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/` |
 | `POST /api/cron/gbp-retention` | QStash signature bound to this URL | the always-on daily retention housekeeping: a retention-only pass (no provider calls) for every sub-account holding a cache; `{retained}`; 500 only when the sweep cannot start |
+| `GET/PUT/DELETE /api/sub-accounts/[id]/gbp/widget`, `POST …/gbp/widget/rotate` | admin, gated — **DELETE ungated** | the public reviews widget (below) |
+| `GET/OPTIONS /api/public/gbp/feed/[publicId]` | **public** (no session) | the public feed (below) |
 | `POST /api/cron/gbp-sync` | QStash signature bound to this URL | the 6-hourly sweep; `{processed, byStatus, retained, stoppedOnRateLimit}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
@@ -301,7 +305,7 @@ summary and the sync state (`clearGbpCache`, `lib/gbp/sync/store.ts`, reached
 through `clearListing` and the listing PUT). A re-verification that declines
 because a newer listing was picked meanwhile leaves that listing's cache alone.
 
-No Firestore rules or indexes change in PR 1 or PR 2.
+No Firestore rules or indexes change in PR 1, 2 or 3 (`gbpWidgets` is a new top-level collection with no client rule, so default deny).
 
 ## Review sync (PR 2)
 
@@ -521,6 +525,234 @@ curl -XPOST "${QSTASH_URL:-https://qstash.upstash.io}/v2/schedules/https://crm.c
   -H "Upstash-Schedule-Id: leadstack-gbp-sync"
 ```
 
+## Public reviews widget and feed (PR 3)
+
+The Velocity website (and any buyer's site) shows the listing's Google reviews
+without GHL and without a rebuild: a sync changes the feed, the page reads the
+feed.
+
+### Why a JSON feed + script, not an iframe
+
+The Velocity site is static HTML. A small script lets the site keep its own
+markup and styling and gives a real no-JS fallback — the static HTML already
+inside the container stays when JavaScript is off or the feed fails — and the
+per-widget CORS allow-list is meaningful for `fetch`. An iframe would need a
+per-origin `frame-ancestors` policy and has no no-JS fallback. The script is
+served like `/widget.js` (`next.config.ts`).
+
+### Widget config
+
+| Where | Who writes | Content |
+|---|---|---|
+| `gbpWidgets/{publicId}` (top level) | server only; no client rule → default deny | `agencyId, subAccountId, createdByUid, enabled, allowedOrigins, maxReviews, createdAt, updatedAt` |
+| `subAccounts/{id}.gbpWidgetMeta` | server only (member-readable) | `{publicId, enabled, allowedOrigins, maxReviews, updatedAt}` — the id is public by nature (it is in the snippet) |
+
+- **One widget per sub-account.** `publicId` = 24 random bytes, base64url
+  (32 chars) — opaque, never derived from a tenant id. Doc and meta change in
+  one transaction.
+- **Allowed origins:** each normalised to `scheme://host[:port]` (lower-case
+  host, default port dropped, duplicates removed); https only, except
+  `http://localhost[:port]` / `http://127.0.0.1[:port]` for development; a
+  path, query, fragment, wildcard or credentials is refused with a reason per
+  entry (400 `invalid_origins`); at most 10 (400 `too_many_origins`).
+  An empty list means no browser may read the feed (a server can).
+- **maxReviews** 1–50, default 12.
+- **No rating filter exists.** The PUT body accepts exactly `enabled`,
+  `allowedOrigins`, `maxReviews`; anything else — `minRating` included — is a
+  400 `invalid_body`, never silently ignored.
+- **Rotate** (`POST …/gbp/widget/rotate`) issues a new id with the same
+  config and deletes the old doc — the old id 404s on the server at once
+  (a cached copy may live up to a minute, see below). **Revoke**
+  (`DELETE …/gbp/widget`) deletes the doc and clears the meta; it stays
+  **ungated**, like disconnect, so a widget can always be taken down.
+- **Disconnect and listing clears** leave the widget config alone and the feed
+  honest: with no listing (and PR 2's cache cleared) the feed reports
+  `unavailable` with `listing: null`, and resumes by itself once a listing is
+  selected and synced again. (The widget belongs to the sub-account, so a
+  newly selected listing is what it then shows.)
+- **Agency gate off**, or an **archived** sub-account, makes the feed answer
+  the same 404 as a disabled widget.
+- **How fast changes land:** the widget doc and the sub-account are read on
+  every feed request, so revoke, rotate, disable, gate off and an origin
+  removal act on the server at once; only the review scan is memoised (60 s
+  per widget + listing, in memory). With `Cache-Control: public, max-age=60`
+  a browser or proxy may keep a copy for up to a minute — so config changes
+  reach visitors within about a minute, and newly synced reviews within about
+  two minutes (60 s memo + 60 s max-age). The dashboard card says both.
+
+### Feed contract v1 — `GET /api/public/gbp/feed/{publicId}`
+
+A public path (a `PUBLIC_PATH_PATTERNS` regex for exactly one segment). The
+route never reads `x-user-uid` or any identity header — on a public path a
+caller can send its own. Order: id shape → rate limit → resolve → origin → body.
+
+| Status | When | Body | Headers |
+|---|---|---|---|
+| 404 | malformed id — checked FIRST, so it never becomes a limiter key or a Firestore path | `{"error":"not_found"}` | `Cache-Control: no-store` |
+| 429 | more than 300 requests a minute from one client, or 120 for one client + publicId (in-memory, per instance; least-recently-used, expired windows swept first, never a wholesale reset; a per-client refusal does not spend the per-widget budget). The client is `cf-connecting-ip` **only when `TRUST_CF_CONNECTING_IP=1`**, else `x-real-ip`, else the left-most `X-Forwarded-For` | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
+| 404 | unknown, disabled, rotated away, revoked, archived sub-account, agency gate off | `{"error":"not_found"}` — byte-identical to the malformed-id 404 | `Cache-Control: no-store` |
+| 403 | an `Origin` header not in `allowedOrigins` (incl. `null`) | `{"error":"origin_not_allowed"}` | no `Access-Control-Allow-Origin`, `no-store` |
+| 200 | otherwise | the body below | `Access-Control-Allow-Origin: <that origin>` only when an allowed Origin was sent (never `*`), `Vary: Origin`, `Cache-Control: public, max-age=60` (no stale-while-revalidate), strong `ETag` |
+| 304 | `If-None-Match` lists the current ETag (compared weakly — a `W/` prefix is ignored) or is `*` | empty | same as 200 |
+
+`OPTIONS` answers a preflight the same way (204 with ACAO +
+`Access-Control-Allow-Methods: GET, OPTIONS` for an allowed origin). Other
+methods are 405. The ETag is the sha256 of the body **without**
+`generatedAt`, so it is stable between syncs and changes with any review,
+reply, rating or freshness change.
+
+**The origin allow-list is browser-level protection, not access control.** A
+request with no `Origin` header (a server, `curl`) gets the full body — the
+feed holds only public Google review content, and the publicId is the only
+thing standing between it and anyone who has the snippet.
+
+```json
+{ "version": 1,
+  "status": "ok" | "stale" | "unavailable",
+  "listing": { "title": "…", "mapsUri": "…|null", "writeReviewUri": "…|null" } | null,
+  "rating": { "average": 4.6, "count": 123 } | null,
+  "source": { "name": "Google", "attribution": "Reviews from Google" },
+  "freshness": { "lastSuccessfulSyncAt": "ISO|null", "stale": true|false, "generatedAt": "ISO" },
+  "reviews": [ { "id": "<gbpReviews doc id>",
+                 "author": { "name": "…", "photoUrl": "…|null", "anonymous": false },
+                 "rating": 1-5, "text": "<byte-exact comment or null>",
+                 "createdAt": "ISO", "updatedAt": "ISO",
+                 "reply": { "text": "…", "updatedAt": "ISO" } | null } ] }
+```
+
+- `listing` is null only when the sub-account no longer has a listing (then
+  `unavailable`). `writeReviewUri` is Google's `newReviewUri`, served as
+  Google gives it — Google's write-review link
+  (`https://search.google.com/local/writereview?placeid=…`) carries the
+  listing's Place ID in its query. That is Google's own public link; the Place
+  ID is never served anywhere else.
+- `reviews`: `state == "active"` of the current listing, not past the sync's
+  own read-time 30-day predicate (`withinRetention`), newest first by
+  `createTime`, ties by `id`, first `maxReviews`. **Every rating** — there is no
+  sentiment or rating selection anywhere (mutation-proven: adding a
+  `starRating >= 4` filter turns the feed tests red). `text` is Google's
+  comment byte-exact, including the "(Translated by Google) … (Original) …"
+  block. Anonymous reviewers keep Google's (empty) name with
+  `anonymous: true` and never get a photo (`photoUrl: null`). The newest 200 cache records are scanned per request (one
+  single-field query, no composite index); in a cache full of tombstones the
+  feed may hold fewer than `maxReviews` — never an invented one.
+- `rating` comes only from the last successful sync's summary, and only when
+  Google reported both numbers (a listing with no reviews: `ok`, `rating:
+  null`, `reviews: []`).
+- **Never included** — an explicit allow-list serializer
+  (`lib/gbp/feed/serialize.ts`), never a spread: review / account / location
+  resource names, the Place ID as a field (it appears only inside Google's
+  `writeReviewUri`, above), agency / sub-account ids, uids, emails, passId,
+  contentHash, tokens, run diagnostics, error kinds.
+
+**Freshness** (constants in `lib/gbp/feed/build.ts` and PR 2's `sync/types.ts`):
+
+| status | when | served |
+|---|---|---|
+| `ok` | PR 2's `deriveHealth(summary, now, liveConnection)` is `ok` | everything, `freshness.stale: false` |
+| `stale` | health is anything else: last success older than 12 h, grant needs a reconnect (flagged now, or the last run said so), last run partial or failed (a Google outage), reconnected but not yet re-synced | the cached reviews and rating, `freshness.stale: true` — the embed shows "Last updated <date>" |
+| `unavailable` | no listing, never synced, the summary belongs to another listing, or the last success is more than **7 days** old (this also covers Google's 30-day retention) | `rating: null`, `reviews: []`, `freshness.stale: true` |
+
+Nothing is ever presented as live.
+
+**Owner checklist** (not run): set `TRUST_CF_CONNECTING_IP=1` in
+`/home/velo/crestahq-config/.env.production` **before the next deploy** —
+`scripts/deploy-velo.sh` now refuses without it (`gbp-deploy-check.mjs pre`).
+velo is only reachable through the cloudflared tunnel, so Cloudflare's
+`cf-connecting-ip` is the real client; buyer copies on Vercel must not set it.
+Without it the limiter keys on `x-real-ip` / `X-Forwarded-For`, which a
+visitor behind Cloudflare controls.
+
+### Embed contract — `/embed/gbp-reviews.js`
+
+Vanilla ES2017, no dependencies, not minified, safe to include twice. Copy-paste
+for the Velocity site (the dashboard card prints this with the real id):
+
+```html
+<div data-crestahq-reviews="PUBLIC_ID" data-api="https://crm.crestahq.com">
+  <!-- static fallback: rendered as-is with JS off or when the feed fails -->
+  <p><a href="https://maps.google.com/?cid=…">Read our reviews on Google</a></p>
+</div>
+<script src="https://crm.crestahq.com/embed/gbp-reviews.js" defer></script>
+```
+
+- `data-state="loading"` while fetching — the fallback stays visible; the
+  request carries no cookies (`credentials: "omit"`).
+- `ok` / `stale` → the fallback is replaced by: listing title, average
+  (rounded to one decimal) + count, "Reviews from Google" linking to
+  `mapsUri`, "Last updated <date>" when stale, and a carousel. `data-state` is
+  then `ok` or `stale`. With a count but no reviews in the served window (e.g.
+  all older than 30 days) only the header and attribution show — never "no
+  reviews" under a count that says otherwise.
+- `unavailable`, any non-2xx, a network error, a body that is not JSON or an
+  unknown `version` → the fallback is left untouched, `data-state="fallback"`.
+- Feed data reaches the page through `textContent` only (never `innerHTML`);
+  only `http(s)` links from the feed are made clickable.
+- Carousel: labelled `‹` / `›` `<button>`s ("Previous review" / "Next
+  review"), arrow keys on the focusable region, `aria-roledescription`
+  carousel / slide.
+- Motion (WCAG 2.2.2): auto-advance only while `prefers-reduced-motion` is
+  not `reduce` — watched live, so turning it on stops rotation, and turning it
+  off restarts it only if the visitor never interacted; every 8 s; paused
+  while hovered or focused; a labelled pause/play button ("Pause automatic
+  rotation" / "Start automatic rotation"); any use of prev/next or the arrow
+  keys stops rotation for good. The timer clears itself once the widget has
+  left the page. Per the WAI carousel pattern `aria-live` is `off` while it
+  rotates on its own and `polite` otherwise.
+- **Limitation:** containers are found once, when the script runs. A
+  container added to the page later (e.g. by a client-side router) keeps its
+  static fallback.
+- CSS is injected once, namespaced `.chq-reviews…`; the site can override it.
+
+Integration example (loading, live, stale label, feed-down fallback, no-JS
+fallback, reduced motion, manual controls):
+[`gbp-reviews/example/index.html`](gbp-reviews/example/index.html) — serve it
+from a second origin (`cd docs/features/gbp-reviews/example && python3 -m
+http.server 4401`), allow `http://127.0.0.1:4401` on the widget, open
+`http://127.0.0.1:4401/?id=<publicId>` (`&api=` overrides the default
+`http://127.0.0.1:3100`).
+
+### Browser proof (PR 3)
+
+`proof/pr3-*`, fixture data only: the production build on 127.0.0.1:3100 and
+the example page served from a second origin, 127.0.0.1:4401, driven in
+Chromium by a Playwright proof script (one recorded video per flow, converted
+to GIF with ffmpeg). Re-run after review fix round 1, so every image shows the
+current embed (pause/play button, neutral fallback copy).
+
+| Flow | GIF | Screenshot |
+|---|---|---|
+| Dashboard card (origins, snippet with the real id, feed URL, Rotate / Revoke) → live data on the allowed 4401 origin; the unreachable-API box keeps its fallback | `pr3-flow1-widget-card-to-live.gif` | `pr3-00-dashboard-widget-card.png`, `pr3-01-live-and-feed-down.png` |
+| Auto-advance after 8 s → Pause (label flips, nothing moves for 9 s) → Play → manual Next, after which rotation stays stopped | `pr3-flow2-autoadvance-pause-play-next.gif` | `pr3-02-autoadvance-pause-play-next.png` |
+| `prefers-reduced-motion: reduce`: no toggle, still 1/7 after 9 s, arrow keys move it | `pr3-flow3-reduced-motion-keyboard.gif` | `pr3-03-reduced-motion-keyboard.png` |
+| JavaScript disabled: the `<noscript>` note and the static fallbacks | `pr3-flow4-javascript-off.gif` | `pr3-04-javascript-off.png` |
+| The origin removed from the widget: the browser is refused (console: no `Access-Control-Allow-Origin`), the fallback stays | `pr3-flow5-origin-removed-fallback.gif` | `pr3-05-origin-removed-fallback.png` |
+| After a revoked-grant sync: the cached reviews with "Last updated <date>" | `pr3-flow6-stale-after-revoke.gif` | `pr3-06-stale-after-revoke.png` |
+
+### Google policy and attribution
+
+- **Storage** — Business Profile APIs policies,
+  https://developers.google.com/my-business/content/policies: content "must be
+  stored temporarily for no more than 30 calendar days." The feed never serves
+  a review past PR 2's 30-day read-time predicate, and stops serving anything
+  after 7 days without a successful sync.
+- **Attribution** — same page: "you must display such attribution as
+  provided, or as described in the Business Profile APIs documentation, and
+  you must not delete or alter the attribution." The feed carries
+  `source.attribution: "Reviews from Google"` and the listing's Maps link; the
+  embed always renders both. **A specific display/attribution requirement for
+  showing GBP API review content on a third-party website: unconfirmed** — the
+  policies page has no section on it, and no other official source was found.
+  Treat it as an owner-approval question before the Velocity cutover.
+- **No review structured data** — https://developers.google.com/search/docs/appearance/structured-data/review-snippet:
+  "If the entity that's being reviewed controls the reviews about itself,
+  their pages that use `LocalBusiness` or any other type of `Organization`
+  structured data are ineligible for star review feature." and "Don't
+  aggregate reviews or ratings from other websites." Neither the feed, the
+  script nor the example emits `AggregateRating` / `Review` markup; the site
+  should not add any around the widget.
+- **No review gating** — every rating is served, in date order.
+
 ## UI
 
 `/sa/[id]/ai-agents/google-business` (`components/gbp/`), one state per
@@ -542,6 +774,13 @@ owner reply below) or `gbp-reviews-empty`, `gbp-banner-pending` (reconnected,
 sync pending), `gbp-reviews-truncated` (the 500-record cap was hit),
 `gbp-reviews-load-error`, and `gbp-runs` (recent syncs). Each is rendered by
 `components/gbp/reviews-section.test.ts`.
+Below the panel, for admins, the public widget card (`widget-section.tsx`):
+`gbp-widget-card`, `gbp-widget-state-none` / `gbp-widget-state-disabled`,
+`gbp-widget-enable`, `gbp-widget-origins`, `gbp-widget-save`,
+`gbp-widget-errors` (the server's reason per rejected origin),
+`gbp-widget-snippet`, `gbp-widget-feed-url`, `gbp-widget-rotate`,
+`gbp-widget-revoke`; with the gate off only Revoke — each rendered by
+`components/gbp/widget-section.test.ts`.
 Every state above has a jsdom test in `components/gbp/google-business-panel.test.ts`
 (the disconnected → Connect → callback round trip itself is E2E-only, in
 `e2e/specs/gbp-connect-select.spec.ts`).
@@ -557,7 +796,8 @@ keys plus `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100`, `GBP_PROVIDER=fake`,
 `AUTOMATIONS_TOKEN_SECRET` and dummy QStash strings: `set -a; . ./.env.local;
 set +a; pnpm build && pnpm exec playwright test`. The GBP specs
 (`gbp-connect-select`, `gbp-sync` — E2E 2, `gbp-reconcile` — E2E 3,
-`gbp-revoked` — E2E 6 sync half) skip themselves only when
+`gbp-revoked` — E2E 6 sync half, `gbp-public-feed` — E2E 4, `gbp-feed-stale` —
+E2E 6 feed half) skip themselves only when
 `PLAYWRIGHT_BASE_URL` points at a deployed target (the production smoke job),
 where the fake is refused by design. The sync specs seed the connection and
 scenario on the fixture primary through `e2e/lib/gbp.ts` and drive the cron

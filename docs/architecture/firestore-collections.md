@@ -77,6 +77,16 @@ disconnected, no listing) get retention-only passes from the sweep. The member-r
 `gbpSummary` field on the parent carries rating, count, freshness and health
 kinds. Selecting another listing, clearing it or disconnecting deletes the
 reviews, the sync state and the summary.
+
+Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
+random bytes base64url, never derived from a tenant id) holds the widget config
+`agencyId, subAccountId, createdByUid, enabled, allowedOrigins, maxReviews,
+createdAt, updatedAt` — server only, no client rule, so default deny; read by
+the public feed route on the Admin SDK. The member-readable `gbpWidgetMeta`
+field on the parent (`{publicId, enabled, allowedOrigins, maxReviews,
+updatedAt}`) mirrors it for the dashboard; both change in one transaction. One
+widget per sub-account; rotate replaces the doc, revoke deletes it and nulls
+the meta. No new index.
 See [gbp-reviews.md](../features/gbp-reviews.md).
 
 ### Workspace SMTP connection
