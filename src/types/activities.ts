@@ -37,7 +37,7 @@ export type ActivityMeta = {
   dueAt?: string | null;
   /** `*_received` rows: the persisted message row's id + its channel. */
   messageId?: string;
-  channel?: "sms" | "whatsapp" | "email" | "messenger" | "instagram";
+  channel?: "sms" | "whatsapp" | "email" | "messenger" | "instagram" | "webchat";
   /** Rows written by the workflow engine carry the run they belong to so
    *  the timeline can link to the workflow's run history. */
   workflowId?: string;

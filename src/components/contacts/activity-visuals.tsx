@@ -240,6 +240,11 @@ export function activityVisuals(type: ActivityType): {
         icon: <MessagesSquare className="h-3 w-3 text-pink-500" />,
         label: "Instagram received",
       };
+    case "webchat_received":
+      return {
+        icon: <MessageSquare className="h-3 w-3 text-teal-500" />,
+        label: "Web chat received",
+      };
     case "task_created":
       return {
         icon: <ListTodo className="h-3 w-3 text-sky-500" />,

@@ -200,6 +200,9 @@ export type ActivityType =
   | "email_received"
   | "messenger_received"
   | "instagram_received"
+  // A web-chat visitor's message once the session is attributed to a contact
+  // (lib/comms/web-chat/respond.ts) or the capture form itself (api/web-chat/capture).
+  | "webchat_received"
   // Operator replied on the BETA Facebook Messenger / Instagram DM inbox.
   // Written by /api/comms/meta/send.
   | "messenger_sent"
