@@ -26,7 +26,7 @@ relative to `src/` unless they start with `e2e/`.
 | 2 | Agency gate (`googleEnabledByAgency`) | proven | `lib/google/gate.ts`, `lib/gbp/route-support.ts`; gate_off in `…/google/route.test.ts`, `callback/route.test.ts`, `…/google/locations/route.test.ts`, `…/google/listing/route.test.ts`; disconnect + listing DELETE stay ungated (same files) |
 | 3 | Sub-account admin authorization | proven | `requireSubAccountAdmin` on connect, callback, disconnect, locations, listing; non-member / collaborator / other-sub admin refused in the route tests above |
 | 4 | Secret storage | proven | tokens only at `subAccounts/{id}/private/googleConnection`; substring checks in `callback/route.test.ts`, `callback/provider.test.ts`; admin-SDK scan in `e2e/specs/gbp-connect-select.spec.ts` |
-| 5 | Access-token refresh | proven | `lib/gbp/tokens.ts`; `lib/gbp/tokens.test.ts` (60s margin, single-flight, rotation, other-writer adoption, revoked → reconnect-required, scope check). Used by discovery/selection now; sync uses it in PR 2 |
+| 5 | Access-token refresh | proven | `lib/gbp/tokens.ts`; `lib/gbp/tokens.test.ts` (60s margin, single-flight, rotation — also when another writer won — other-writer adoption, revoked → reconnect-required only if the failed grant is still stored, scope check). `lib/gbp/access.ts` `withGbpAccess`: a 401 on a data call expires the cached token, refreshes once, retries once — `…/locations/route.test.ts` › detects a grant revoked while the cached access token is still FRESH. Sync uses it in PR 2 |
 | 6 | Account discovery | proven (fixtures) | `lib/gbp/provider/google.ts` `listAccounts`; `provider/google.test.ts` (URL, paging); `…/locations/route.test.ts`; E2E 1. Real Google: blocked on approval |
 | 7 | GBP location discovery | proven (fixtures) | `listLocations` (readMask required); `provider/google.test.ts`; `lib/gbp/discovery.ts`; `…/locations/route.test.ts` (all pages, 20-page bound); E2E 1 |
 | 8 | Listing selection / mapping | proven (fixtures) | `…/google/listing/route.ts` (server re-fetch, unknown_location); `…/listing/route.test.ts`; E2E 1 selects the second of two similar listings |
@@ -39,15 +39,15 @@ relative to `src/` unless they start with `e2e/`.
 | 15 | Owner reply create/update | partial | `putReply` / `deleteReply` in the provider (`provider/google.test.ts`, `provider/fake.test.ts`); route + UI PR 4 |
 | 16 | Edit / deletion reconciliation | absent | PR 2 |
 | 17 | Idempotency | absent | PR 2 (sync upsert), PR 4 (reply) |
-| 18 | Sync run / audit history | partial | `subAccounts/{id}/gbpEvents` `listing_selected` (`…/listing/route.test.ts`, E2E 1); sync runs PR 2 |
+| 18 | Sync run / audit history | partial | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; sync runs PR 2 |
 | 19 | Reviews inbox UI | absent | PR 4 |
-| 20 | Sync health UI | partial | reconnect-required guidance state (`gbp-state-reconnect`) exists; freshness/stale/partial PR 4 |
+| 20 | Sync health UI | partial | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Freshness / stale / partial-sync states PR 4 |
 | 21 | Public feed API | absent | PR 3 |
 | 22 | Widget configuration | absent | PR 3 |
 | 23 | CORS / domain controls | absent | PR 3 |
 | 24 | No-JS / degraded website fallback | absent | PR 3 |
 | 25 | Review-request compatibility | partial | untouched by PR 1 — `lib/reviews/*.test.ts`, `app/api/sub-accounts/[id]/google-review/route.test.ts` stay green; the listing stores `newReviewUri` for the URL-reconciliation seam in PR 4 |
-| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; runbook + rollout in PR 4 |
+| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy guard `scripts/gbp-fake-guard.sh`; runbook + rollout in PR 4 |
 
 ## Provider boundary
 
@@ -119,7 +119,32 @@ named locations ("Velo Test Fibre — Gqeberha" / "… Gqeberha North") and seve
 reviews on the first (a 1-star, unreplied ones, a translated one), paged in
 threes. Scenario knobs: `revoked`, `rotateRefreshToken`, `failNext: {op, kind}`.
 Tokens encode the sub-account (`fake-refresh:{sa}:{n}`); "Connect" returns
-straight to the callback with `code=fake-code:{sa}`.
+straight to the callback with `code=fake-code:{sa}`. Each fake instance is
+**bound** to the one sub-account the fence admitted: a code or token naming any
+other sub-account is refused (`revoked` / `auth_expired`) and the scenario
+store is read and written only for the bound id — so a valid fixture state
+plus `code=fake-code:<real tenant>` cannot point anything at a real tenant
+(`provider/fake.test.ts`, `callback/provider.test.ts`). A requested-but-refused
+fake makes `googleAppConfigured()` false, so routes answer `not_configured`
+rather than 500.
+
+### Deviation from v2 §5, and the second layer
+
+v2 §5 says the fake must refuse `NODE_ENV=production`. It does — unless
+`GBP_FAKE_ALLOW_PROD_BUILD=1`, because the blocking CI Playwright job boots the
+production bundle and the fake is the only way that gate can exercise the
+Google flow. This is a documented deviation that needs Hein's sign-off. It is
+held by two independent layers:
+
+1. **App** (`provider/select.ts`, `provider/mode.ts`): loopback app URL +
+   prod-build opt-in + fixture-agency fence, each clause mutation-proven.
+2. **Deploy** (`scripts/gbp-fake-guard.sh`, sourced by `deploy-velo.sh`
+   before any gate or build): refuses when `.env`, `.env.production`,
+   `.env.local`, `.env.production.local` or the deploy shell sets
+   `GBP_PROVIDER=fake` or any `GBP_FAKE_*`, or sets a loopback
+   `NEXT_PUBLIC_APP_URL`. Reports variable names only. Proven against 14
+   temp env files, with each branch mutation-proven (the repo has no shell
+   test runner).
 
 ## OAuth state and token lifecycle
 
@@ -135,10 +160,19 @@ verification returns null. `?return=gbp` is the only return value honoured.
 the cached token while it has more than 60 s left, otherwise refreshes —
 single-flight per sub-account in-process — and writes back in a transaction
 that adopts another writer's still-valid token and never overwrites a refresh
-token rotated underneath it. A rotated refresh token is persisted. `revoked`
-(`invalid_grant`) or a missing `business.manage` scope sets
-`googleConnectionMeta.reconnectRequired` + `reconnectReason` and keeps the
-secret so disconnect can still revoke. A successful reconnect clears the flag
+token rotated underneath it. A rotated refresh token is persisted. It also lands a rotated refresh token when another writer won the race
+but the secret still holds the token we used. `revoked` (`invalid_grant`) or a
+missing `business.manage` scope sets `googleConnectionMeta.reconnectRequired` +
+`reconnectReason` — **only if the secret still holds the failed grant**
+(otherwise a newer grant exists and is used instead, refreshed at most once) —
+and keeps the secret so disconnect can still revoke.
+
+**Data calls** go through `withGbpAccess(subAccountId, fn)` (`lib/gbp/access.ts`).
+A 401 on a token we believed valid — what a grant revoked at Google looks like
+while our cached token still has most of its hour — expires the cached token
+(only if still stored), forces one refresh and retries once; the refresh then
+works or hits `invalid_grant` → reconnect-required. A data-call
+`insufficient_scope` is flagged the same conditional way. A successful reconnect clears the flag
 (written explicitly — the doc write is a deep merge). The callback refuses a
 grant without `business.manage` (`?google=insufficient_scope`).
 
@@ -147,11 +181,12 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/sub-accounts/[id]/google/connect[?return=gbp]` | admin, gated | redirects to Google (or the fake callback) |
-| `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split |
-| `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke; clears meta **and** `googleListing` |
+| `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`) if not visible, kept if the check itself fails |
+| `GET /api/sub-accounts/[id]/google/status` | any member | `{configured}` — deployment-level boolean only |
+| `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke; clears meta **and** `googleListing` (audited `disconnected`) |
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
 | `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch or 400 `unknown_location` |
-| `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` |
+| `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
 `not_connected` / `reconnect_required`, 400 `invalid_body` / `unknown_location`,
@@ -166,17 +201,26 @@ body for token markers).
   the server from its own re-fetch.
 - `subAccounts/{id}.googleConnectionMeta.reconnectRequired` / `reconnectReason`.
 - `subAccounts/{id}/gbpEvents/{auto}` — `{type:"listing_selected", agencyId,
-  subAccountId, createdByUid, at, locationName, previousLocationName}`, written
-  in the same transaction as the selection. No client rule (default deny).
+  subAccountId, createdByUid, at, locationName, previousLocationName}` or
+  `{type:"listing_cleared", reason, …, locationName:null, previousLocationName}`,
+  each written in the same transaction as the change it records. No client
+  rule (default deny).
 
 No Firestore rules or indexes change in PR 1.
 
 ## UI
 
 `/sa/[id]/ai-agents/google-business` (`components/gbp/`), one state per
-`data-testid`: `gbp-state-gate-locked`, `gbp-state-not-admin`,
+`data-testid`: `gbp-state-gate-locked` (admins can still disconnect a live
+connection), `gbp-state-not-admin`, `gbp-state-not-configured`,
 `gbp-state-disconnected`, `gbp-state-reconnect`, `gbp-state-pick` (options
-`gbp-location-option-<n>`, button `gbp-select-listing`), `gbp-state-selected`.
+`gbp-location-option-<n>`, button `gbp-select-listing`; Cancel in every picker
+state when changing), `gbp-state-selected` (Change listing / Stop managing this
+listing). Destructive actions use an inline confirm — never `confirm()`/`alert()`.
+Every state is covered by `components/gbp/google-business-panel.test.ts`.
+
+Not done, deliberately: a single-use nonce store for the OAuth state. v2 asked
+for expiry + uid binding (done); Google's authorisation codes are single-use.
 
 ## Local test procedure
 
