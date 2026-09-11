@@ -8,7 +8,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToDealsForContact } from "@/lib/firestore/deals";
 import { formatCurrency, daysSince } from "@/lib/format";
 import { getStage, type Deal } from "@/types/deals";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
 import type { Contact } from "@/types/contacts";
 import { NewDealDialog } from "@/components/pipeline/new-deal-dialog";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 export function ContactDeals({ contact }: { contact: Contact }) {
   const { user } = useAuth();
   const { subAccountId, agencyId, saPath } = useSubAccount();
-  const stages = usePipelineStages();
+  const { pipelines, byId } = usePipelines();
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -75,7 +75,8 @@ export function ContactDeals({ contact }: { contact: Contact }) {
       ) : (
         <ul className="space-y-2">
           {deals.map((deal) => {
-            const stage = getStage(deal.stageId, stages);
+            const pipeline = byId(deal.pipelineId);
+            const stage = getStage(deal.stageId, pipeline.stages);
             const days = daysSince(deal.stageChangedAt);
             return (
               <li
@@ -89,6 +90,7 @@ export function ContactDeals({ contact }: { contact: Contact }) {
                     <p className="text-xs text-muted-foreground">
                       {formatCurrency(deal.value, deal.currency)} ·{" "}
                       {days === 0 ? "today" : `${days}d in stage`}
+                      {pipelines.length > 1 && ` · ${pipeline.name}`}
                     </p>
                   </div>
                 </div>

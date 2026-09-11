@@ -382,6 +382,17 @@ service cloud.firestore {
         }
       }
 
+      // WhatsApp Cloud quality alerts (SP15). Written by the hourly quality
+      // sweep via the Admin SDK on a drop from GREEN; members can READ so the
+      // settings page can show the open alert. Client writes blocked.
+      match /whatsappQualityAlerts/{alertId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
       // Voice agent end-of-call summary docs. Created by the Vapi
       // /api/webhooks/vapi/* routes via the Admin SDK (Bearer-token
       // gated). Sub-account members can READ so a future operator
@@ -482,6 +493,14 @@ service cloud.firestore {
           get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
         );
         allow write: if false;
+      }
+
+      // Deal pipelines (stages embedded). Server-only: the dashboard reads
+      // them through GET /api/sub-accounts/[id]/pipelines (which also seeds
+      // the default), and every write goes through those Admin-SDK routes.
+      // Same shape as importMappings below — nothing here for the client.
+      match /pipelines/{pipelineId} {
+        allow read, write: if false;
       }
 
       // Folders that group custom fields (GHL-style). Same model as
@@ -912,29 +931,19 @@ service cloud.firestore {
     }
 
     match /deals/{dealId} {
-      // Same territory-scoping pattern as contacts above.
+      // Same territory-scoping pattern as contacts above for reads. Every
+      // write goes through the Admin-SDK routes (/api/deals, /api/v1/deals,
+      // the form submit, quotes lifecycle, AI Suite) so the service can
+      // validate stageId against the deal's pipeline and fire the matching
+      // webhooks + workflow triggers — a client write would bypass all of
+      // that. The old client writers in src/lib/firestore/deals.ts have no
+      // callers.
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
-      allow create: if canAccessSub(
-        request.resource.data.subAccountId,
-        request.resource.data.agencyId
-      );
-      allow update: if canSeeScopedDoc(
-        resource.data.subAccountId,
-        resource.data.agencyId,
-        resource.data.get("territoryId", null)
-      ) && tenantFieldsLockedOnUpdate()
-        && territoryIdUnchangedOrAdmin(
-          resource.data.subAccountId,
-          resource.data.agencyId
-        );
-      allow delete: if canAdminSub(
-        resource.data.subAccountId,
-        resource.data.agencyId
-      );
+      allow create, update, delete: if false;
     }
 
     match /tasks/{taskId} {

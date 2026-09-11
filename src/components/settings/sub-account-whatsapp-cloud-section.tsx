@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { CheckCircle2, Loader2, MessageCircle } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -155,6 +156,13 @@ export function SubAccountWhatsappCloudSection() {
               {meta?.displayPhoneNumber ?? "Number unavailable"}
               {meta?.phoneNumberId ? ` · ID ${meta.phoneNumberId}` : ""}
             </p>
+            <Link
+              href={`/sa/${subAccountId}/dashboard/settings/whatsapp`}
+              className="mt-2 inline-block text-xs font-medium text-primary underline"
+              data-testid="wa-settings-link"
+            >
+              Profile, quality rating &amp; message links →
+            </Link>
             {/* Unreachable today: connect sets both the credentials and the
                 provider, disconnect clears both, so the two cannot disagree.
                 Kept for the `bridge` rail (1.2b), which will be selectable

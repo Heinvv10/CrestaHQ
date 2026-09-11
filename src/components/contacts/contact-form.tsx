@@ -14,6 +14,10 @@ import { CustomFieldInputs } from "@/components/custom-fields/custom-field-input
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
 import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
 import type { Contact, ContactFormData, ContactSource } from "@/types/contacts";
 
@@ -87,7 +91,10 @@ export function ContactForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const next: Record<string, string> = {};
-    if (!name.trim()) next.name = "Name is required";
+    // WhatsApp-inbound contacts arrive nameless; a phone or email is enough
+    // to identify one, so the name is only required when both are empty.
+    if (!hasContactIdentity({ name, phone, email }))
+      next.name = CONTACT_IDENTITY_ERROR;
     if (email.trim() && !EMAIL_RE.test(email.trim()))
       next.email = "Enter a valid email";
     setErrors(next);
@@ -139,9 +146,7 @@ export function ContactForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="c-name">
-          Full name <span className="text-destructive">*</span>
-        </Label>
+        <Label htmlFor="c-name">Full name</Label>
         <Input
           id="c-name"
           value={name}

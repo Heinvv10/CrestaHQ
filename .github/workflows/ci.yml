@@ -228,6 +228,11 @@ jobs:
       GBP_PROVIDER: fake
       GBP_FAKE_ALLOW_PROD_BUILD: "1"
       GBP_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The WhatsApp settings fake (SP15) is fenced exactly the same way and
+      # serves only the fixture agency; the deploy guard refuses these too.
+      WHATSAPP_SETTINGS_PROVIDER: fake
+      WHATSAPP_FAKE_ALLOW_PROD_BUILD: "1"
+      WHATSAPP_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       # The GBP sync cron does nothing unless the schedule is enabled; the E2E
       # specs drive it with a signed POST. (Registering the schedule itself
       # fails harmlessly: the E2E QStash values are not Upstash credentials.)

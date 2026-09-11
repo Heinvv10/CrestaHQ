@@ -20,7 +20,8 @@
 | `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid`; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `contacts/{id}/notes/{id}` | inherits | Free-text notes |
 | `contacts/{id}/activities/{id}` | inherits | Typed events |
-| `deals/{id}` | sub-account | One contact → many deals; optional `assignedToUid` (validated by the deals API) |
+| `deals/{id}` | sub-account | One contact → many deals. `pipelineId` names the pipeline; absent = `default` (every pre-multi-pipeline doc). Optional `assignedToUid` (validated by the deals API) |
+| `subAccounts/{id}/pipelines/{pipelineId}` | server-only | Deal pipelines with stages embedded (`{ id, label, tone, terminal? }[]`; `terminal` = `won`/`lost` drives `deal.won`/`deal.lost`). `pipelines/default` is seeded lazily on first read from the canonical six stages + the legacy `subAccounts/{id}.pipelineStages` label/order overrides, keeping the SAME stage ids. Read via `GET /api/sub-accounts/[id]/pipelines`; written only by those Admin-SDK routes. Deleting a stage / pipeline that still holds deals is refused (409) |
 | `events/{id}` | sub-account | Calendar events |
 | `tasks/{id}` | sub-account | Todos; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `forms/{id}` | sub-account | Form config |
@@ -54,6 +55,19 @@
 | `socialPosts/{id}` | sub-account read; server-only write | Social Planner post (top-level, like `quotes`). Carries tenancy (`agencyId`, `subAccountId`, `createdByUid`), `caption`, `imageUrl`, `targets` (`("facebook"\|"instagram")[]`), `status` (draft → scheduled → publishing → published/failed), `scheduledAt`, `publishedAt`, per-target `results[]` (`{platform, status, externalId, error}`), and `qstashMessageId`. Reads stream to the content calendar via `subscribeToSocialPosts`; all writes go through Admin-SDK routes (rules are read-only for members, mirrors `products`). |
 
 
+
+### WhatsApp Cloud settings (SP15)
+`whatsappCloudMeta.quality` on the parent (member-readable) holds the hourly
+poll's last reading of the phone-number node: `{ rating (GREEN | YELLOW | RED |
+UNKNOWN), nameStatus, status, checkedAt, changedAt }` — `changedAt` moves only
+when `rating` changes. `subAccounts/{id}/whatsappQualityAlerts/{autoId}` is one
+doc per drop from GREEN (`agencyId`, `subAccountId`, `createdByUid: "system"`,
+`from`, `to`, `phoneNumberId`, `displayPhoneNumber`, `createdAt`, `resolvedAt`
+null until the rating is next seen GREEN); member-readable, server-only write,
+queried only by `resolvedAt == null` inside one sub-account, so no composite
+index. `private/whatsappFakeScenario` holds the dev/CI fake settings provider's
+scenario (Admin SDK only under the `private/{docId}` deny rule). The business
+profile and message links are NOT cached — Meta is the source of truth.
 
 ### Google Business Profile
 `subAccounts/{id}/private/googleConnection` holds the OAuth refresh/access

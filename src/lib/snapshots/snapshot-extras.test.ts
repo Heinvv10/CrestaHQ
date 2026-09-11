@@ -281,3 +281,48 @@ describe("applySnapshot — create-only guarantees", () => {
     expect(field).not.toHaveProperty("sourceId");
   });
 });
+
+describe("applySnapshot — pipeline ids do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+
+  it("nulls trigger.pipelineId and move_stage.config.pipelineId, keeps the stage", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [
+          {
+            sourceId: "wf_src",
+            name: "Pinned",
+            status: "active",
+            trigger: {
+              type: "pipeline.stage.changed",
+              filters: { all: [] },
+              pipelineId: "src_pipeline",
+              toStage: "qualified",
+            },
+            startNodeId: "n1",
+            nodes: {
+              n1: {
+                id: "n1",
+                type: "move_stage",
+                config: { stage: "proposal", pipelineId: "src_pipeline" },
+                next: null,
+              },
+            },
+          },
+        ] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const wf = written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      trigger: { pipelineId: string | null; toStage: string };
+      nodes: Record<string, { config: Record<string, unknown> }>;
+    };
+    expect(wf.trigger.pipelineId).toBeNull();
+    expect(wf.trigger.toStage).toBe("qualified");
+    expect(wf.nodes.n1.config).toEqual({ stage: "proposal", pipelineId: null });
+  });
+});

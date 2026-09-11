@@ -11,6 +11,8 @@ import {
 } from "@/lib/api/serializers/deals";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { findStage } from "@/lib/pipelines/stages";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 
 const DEFAULT_LIMIT = 20;
@@ -26,6 +28,9 @@ const MAX_LIMIT = 100;
  * Filter behaviour:
  *   - `stage` — exact pipeline-stage id
  *   - `contact_id` — deals attached to a specific contact
+ *
+ * Create accepts `pipeline_id` (absent = the default pipeline); `stage`
+ * must be a stage of that pipeline.
  *
  * Both filters are AND-ed. Cursor pagination orders by `stageChangedAt`
  * desc (matches the dashboard's Kanban "most recently moved first").
@@ -120,6 +125,24 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     );
   }
 
+  const pipeline = await loadPipeline(ctx.subAccountId, input.pipelineId);
+  if (!pipeline) {
+    return apiError(
+      ctx,
+      "invalid_request",
+      "invalid_body",
+      `pipeline_id=${input.pipelineId} does not exist.`,
+    );
+  }
+  if (!findStage(pipeline, input.stage)) {
+    return apiError(
+      ctx,
+      "invalid_request",
+      "invalid_body",
+      `\`stage\` must be one of: ${pipeline.stages.map((s) => s.id).join(", ")}.`,
+    );
+  }
+
   // Validate any custom_fields against the sub-account's deal definitions.
   const cfDefs = await loadCustomFieldDefs(ctx.subAccountId, "deal");
   const cf = validateCustomFieldValues(
@@ -138,6 +161,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     currency: input.currency,
     contactId: input.contactId,
     stageId: input.stage,
+    pipelineId: pipeline.id,
     priority: input.priority,
     lostReason: null,
     customFields: cf.value,

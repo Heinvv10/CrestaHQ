@@ -20,6 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { formatContactDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSubAccount } from "@/context/sub-account-context";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface Props {
   /** Already filtered by the page (search + smart list). */
@@ -75,7 +76,7 @@ export function ContactsTable({
         ),
         cell: ({ row }) => (
           <Checkbox
-            aria-label={`Select ${row.original.name || "Unnamed"}`}
+            aria-label={`Select ${contactDisplayName(row.original)}`}
             checked={selected.has(row.original.id)}
             onCheckedChange={() => onToggle(row.original.id)}
           />
@@ -90,7 +91,7 @@ export function ContactsTable({
             href={saPath(`/contacts/${row.original.id}`)}
             className="font-medium text-foreground hover:text-primary hover:underline"
           >
-            {row.original.name || "Unnamed"}
+            {contactDisplayName(row.original)}
           </Link>
         ),
       },

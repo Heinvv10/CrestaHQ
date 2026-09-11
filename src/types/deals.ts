@@ -1,6 +1,7 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
 
-export type PipelineStageId =
+/** The six stages every sub-account's default pipeline starts with. */
+export type CanonicalStageId =
   | "new"
   | "contacted"
   | "qualified"
@@ -8,11 +9,43 @@ export type PipelineStageId =
   | "won"
   | "lost";
 
+/**
+ * A stage id. Was the closed `CanonicalStageId` union until multi-pipeline
+ * landed; operator-created stages carry any slug, so this is now a string.
+ */
+export type PipelineStageId = string;
+
 export interface PipelineStage {
   id: PipelineStageId;
   label: string;
   tone: string;
+  /**
+   * Closed state. `"won"` / `"lost"` drive `deal.won` / `deal.lost`, the
+   * reports maths, and the lost-reason prompt. Absent = open stage.
+   */
   terminal?: "won" | "lost";
+}
+
+/** Doc id of every sub-account's default pipeline (`pipelines/default`). */
+export const DEFAULT_PIPELINE_ID = "default";
+
+/**
+ * `subAccounts/{id}/pipelines/{pipelineId}`. Stages are embedded in the
+ * order they render. The default pipeline is created lazily on first read
+ * from the canonical stages (+ any legacy label/order overrides), with the
+ * SAME stage ids — so stored workflow triggers and `move_stage` configs keep
+ * matching. Written only by the Admin SDK routes.
+ */
+export interface PipelineDoc {
+  id: string;
+  name: string;
+  stages: PipelineStage[];
+  isDefault: boolean;
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
 }
 
 export const PIPELINE_STAGES: PipelineStage[] = [
@@ -45,7 +78,7 @@ export function getStage(
  * public API / webhooks / reports math. See "Phase 2 (2A)".
  */
 export interface PipelineStageOverride {
-  id: PipelineStageId;
+  id: CanonicalStageId;
   label: string;
   order: number;
 }
@@ -62,7 +95,9 @@ export function resolvePipelineStages(
   if (!Array.isArray(overrides) || overrides.length === 0) {
     return PIPELINE_STAGES;
   }
-  const byId = new Map(overrides.map((o) => [o.id, o]));
+  const byId = new Map<string, PipelineStageOverride>(
+    overrides.map((o) => [o.id, o]),
+  );
   const withOrder = PIPELINE_STAGES.map((s, idx) => {
     const o = byId.get(s.id);
     const label =
@@ -122,6 +157,11 @@ export interface Deal {
   currency: string;
   contactId: string;
   stageId: PipelineStageId;
+  /**
+   * Pipeline the deal sits in. Absent on every pre-multi-pipeline doc and
+   * means the default pipeline; always written on create/update now.
+   */
+  pipelineId?: string;
   priority: DealPriority;
   // Tenancy keys (replace the legacy ownerId).
   agencyId: string;
@@ -167,6 +207,7 @@ export type DealFormData = {
   currency: string;
   contactId: string;
   stageId: PipelineStageId;
+  pipelineId?: string;
   priority: DealPriority;
   territoryId?: string | null;
   assignedToUid?: string | null;

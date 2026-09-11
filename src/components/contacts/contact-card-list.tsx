@@ -6,6 +6,7 @@ import type { Contact } from "@/types/contacts";
 import { SourceBadge } from "@/components/contacts/source-badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useSubAccount } from "@/context/sub-account-context";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 /** The `md:hidden` card rendering of the contacts list (desktop is a table). */
 export function ContactCardList({
@@ -23,7 +24,7 @@ export function ContactCardList({
       {contacts.map((c) => (
         <div key={c.id} className="flex items-start gap-3">
           <Checkbox
-            aria-label={`Select ${c.name || "Unnamed"}`}
+            aria-label={`Select ${contactDisplayName(c)}`}
             checked={selected.has(c.id)}
             onCheckedChange={() => onToggle(c.id)}
             className="mt-5"
@@ -34,7 +35,7 @@ export function ContactCardList({
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
-                <p className="truncate font-medium">{c.name || "Unnamed"}</p>
+                <p className="truncate font-medium">{contactDisplayName(c)}</p>
                 {c.email && (
                   <p className="mt-1 flex items-center gap-1.5 truncate text-sm text-muted-foreground">
                     <Mail className="h-3.5 w-3.5 shrink-0" />

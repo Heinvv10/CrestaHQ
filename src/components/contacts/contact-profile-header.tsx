@@ -49,6 +49,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import type { Contact, ContactFormData } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface ContactBlocker {
   type: string;
@@ -260,7 +261,7 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
               name block to nothing before the flex-wrap kicks in. */}
           <div className="min-w-0 flex-1 basis-56">
             <h1 className="truncate text-2xl font-bold tracking-tight sm:text-3xl">
-              {contact.name || "Unnamed contact"}
+              {contactDisplayName(contact, "Unnamed contact")}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Added {formatContactDate(contact.createdAt)}
@@ -419,7 +420,7 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
           <SheetHeader>
             <SheetTitle>Edit Contact</SheetTitle>
             <SheetDescription>
-              Update {contact.name || "this contact"}&apos;s details.
+              Update {contactDisplayName(contact, "this contact")}&apos;s details.
             </SheetDescription>
           </SheetHeader>
           <div className="p-4 pt-0">
