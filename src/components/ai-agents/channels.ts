@@ -145,11 +145,10 @@ export const AI_CHANNELS: AiChannel[] = [
     id: "google-business",
     label: "Google Business",
     blurb:
-      "AI replies to Google Business Profile reviews and Q&A. Keeps your reputation responsive without manual work.",
+      "Connect your Google Business Profile and choose the listing this workspace manages.",
     icon: Star,
     group: "inbound",
-    comingSoon: true,
-    hidden: true,
+    comingSoon: false,
     slug: "google-business",
   },
 ];

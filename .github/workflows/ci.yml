@@ -220,6 +220,17 @@ jobs:
       E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       E2E_SUBACCOUNT_ID: ${{ secrets.E2E_SUBACCOUNT_ID }}
       E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
+      # Google Business Profile runs against the deterministic FAKE provider.
+      # src/lib/gbp/provider/select.ts refuses it unless the app URL is
+      # loopback, the production build opts in with exactly "1", and the
+      # sub-account belongs to GBP_FAKE_AGENCY_ID — this Firestore is the
+      # production one, so the fake is fenced to the fixture agency.
+      GBP_PROVIDER: fake
+      GBP_FAKE_ALLOW_PROD_BUILD: "1"
+      GBP_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # Signs the OAuth `state`. Per-run, not a stored secret: nothing outlives
+      # the job that signs and verifies it.
+      AUTOMATIONS_TOKEN_SECRET: e2e-state-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
