@@ -222,7 +222,7 @@ Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth c
 | `GBP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
 | `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
 
-`scripts/deploy-velo.sh` (via `scripts/gbp-deploy-check.mjs`) refuses to deploy when any `.env*` file in the deploy dir so much as mentions `GBP_PROVIDER` or `GBP_FAKE_` (even commented out), or a deploy-shell variable is named so — before building; and, after building, when the `NEXT_PUBLIC_APP_URL` inlined next to the fake-provider check is loopback or missing. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which the app fence checks at runtime.
+`scripts/deploy-velo.sh` (via `scripts/gbp-deploy-check.mjs`) refuses to deploy when any `.env*` file in the deploy dir so much as mentions `GBP_PROVIDER` or `GBP_FAKE_` (even commented out), a deploy-shell variable is named so, or `NEXT_PUBLIC_APP_URL` is not mentioned on exactly one line of `.env.production` (and nowhere else) — before building; and, after building, unless the URL literal inlined into the fake-provider check EQUALS that app URL and is not loopback. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
 
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |

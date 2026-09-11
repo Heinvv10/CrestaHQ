@@ -142,35 +142,60 @@ held by three things, none of which parses env files:
    (`provider/loopback.mjs`): the hostname, after WHATWG normalisation, must be
    exactly `127.0.0.1`, `localhost` or `[::1]`. Next **inlines**
    `NEXT_PUBLIC_APP_URL` into that check at build time — in the server bundle it
-   is a string literal (`…isAppLoopbackUrl)("https://crm.example.test"))throw…`)
-   — so a build that carries a public URL cannot run the fake whatever the
-   runtime environment says. Proven on a throwaway build: with
+   is a string literal (`…isAppLoopbackUrl)("https://crm.example.test"))throw…`),
+   so the comparison is against the build-time value. What is proven, on one
+   throwaway build with that URL and dummy Google credentials: with
    `GBP_PROVIDER=fake`, the opt-in, the fixture agency AND a loopback
-   `NEXT_PUBLIC_APP_URL` in the running server's env, the signed-in app still
-   answered `/google/status` → `{"configured":false}`.
+   `NEXT_PUBLIC_APP_URL` in the running server's env, the signed-in app
+   answered `/google/status` → `{"configured":false}`; the same build with
+   `GBP_PROVIDER=google` answered `{"configured":true}` (positive control). Note
+   `next build` copies `.env.local` into `.next/standalone/`, which the
+   standalone server loads at runtime — another source the inlined literal
+   also overrode.
 2. **Pre-build deploy check** (`scripts/gbp-deploy-check.mjs pre`, run by
    `deploy-velo.sh` before install): refuses if the raw text of any `.env*` file
    in the deploy dir mentions `GBP_PROVIDER` or `GBP_FAKE_` anywhere — any line,
    commented or not; production never needs these names (the default is
    Google) — or if any deploy-shell variable is named `GBP_PROVIDER*` /
    `GBP_FAKE_*`. No parsing, no expansion, so no dotenv spelling can slip past
-   it. Unreadable files fail closed. `GBP_SYNC_SCHEDULE_ENABLED` is allowed.
+   it. It also requires `NEXT_PUBLIC_APP_URL` to be mentioned on exactly one
+   line, in `.env.production` only (`.env.example`, which Next never loads, is
+   exempt), so the deploy script's `sed` and Next cannot read different values.
+   Unreadable files fail closed. `GBP_SYNC_SCHEDULE_ENABLED` is allowed.
 3. **Post-build deploy check** (`scripts/gbp-deploy-check.mjs post`, in
    `deploy-velo.sh`'s "Verifying NEXT_PUBLIC_APP_URL was inlined" step): the
-   inlined URL must parse, must not be on the WIDE loopback block-list
+   app URL must parse and must not be on the WIDE loopback block-list
    (`isLoopbackHostname`: `localhost`/`*.localhost`, `127.0.0.0/8` in any IPv4
-   spelling, `[::1]` in any spelling, `::ffff:127.x`, `0.0.0.0`, `[::]`), and
-   must be the literal in every server chunk carrying the fake-provider check;
-   if that code cannot be found, nothing is proven and it refuses. This is the
-   authoritative check — it asserts what the running app will actually compare.
+   spelling, `[::1]` in any spelling, `::ffff:127.x`, `0.0.0.0`, `[::]`); then,
+   in every server chunk carrying the fake-provider check, the string literal
+   passed to that check is extracted, decoded, and must EQUAL the app URL
+   exactly. A substring match was not enough: a second `.env.production` line
+   `https://crm.crestahq.com@127.0.0.1:4300` (userinfo, loopback host) is what
+   Next inlines, and it contains the first line `sed` reads — reproduced on a
+   real build (old check exit 0, new check exit 1). A check whose literal cannot
+   be read, or no check at all, refuses. This is the authoritative check — it
+   asserts the value the running app compares.
 
 Both deploy checks are covered by `scripts/gbp-deploy-check.test.ts` (every
-bypass from four review rounds as fixtures), each branch mutation-proven;
+bypass from five review rounds as fixtures), each branch mutation-proven;
 `loopback.test.ts` asserts every host the app allows is on the wide block-list.
 
 **Not covered:** systemd `Environment=` / `EnvironmentFile=` lines on the
 `crestahq` unit are read by neither deploy check. They cannot change the
 inlined URL, so the app fence plus the post-build check still hold.
+
+### Owner-approval checklist (PR 1)
+
+- [ ] **Before the first deploy after this merges**, confirm the production env
+  file carries none of the fake-provider names — the pre-build check refuses
+  even a commented-out line — and defines the app URL exactly once:
+  ```bash
+  grep -nE 'GBP_PROVIDER|GBP_FAKE_' /home/velo/crestahq-config/.env.production \
+    && echo "REMOVE the lines above before deploying" || echo "clean: no GBP_PROVIDER / GBP_FAKE_ text"
+  grep -c 'NEXT_PUBLIC_APP_URL' /home/velo/crestahq-config/.env.production   # must print 1
+  ```
+- [ ] Sign off the v2 §5 deviation above (fake allowed in the production BUILD
+  for CI only, held by the app fence and both deploy checks).
 
 ## OAuth state and token lifecycle
 
