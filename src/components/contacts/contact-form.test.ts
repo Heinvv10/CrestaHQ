@@ -34,6 +34,9 @@ vi.mock("@/lib/firestore/companies", () => ({
   },
   createCompany: companies.create,
 }));
+vi.mock("@/lib/firestore/custom-field-folders", () => ({
+  subscribeToCustomFieldFolders: () => () => {},
+}));
 
 let container: HTMLDivElement;
 let root: Root;
