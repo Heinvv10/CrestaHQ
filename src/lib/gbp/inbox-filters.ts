@@ -2,11 +2,17 @@ import { toMillis } from "./sync/types";
 
 /**
  * The reviews inbox filters: `rating` (comma list 1–5), `replied`
- * (`all|replied|unreplied`), `from` / `to` (ISO dates on createTime; a
- * date-only `to` covers that whole UTC day), `sort` (`newest` | `oldest`).
- * Applied in memory to the capped newest-first set the route already reads —
- * no composite index. A present-but-empty value is ignored (a blank date
- * input sends one); anything else malformed is refused with its field name.
+ * (`all|replied|unreplied`), `from` / `to` on createTime, `sort` (`newest` |
+ * `oldest`). Applied in memory to the capped newest-first set the route
+ * already reads — no composite index.
+ *
+ * `from` is inclusive, `to` exclusive. Each is an ISO date-time with an
+ * offset — the page sends the viewer's LOCAL midnights (from = local 00:00 of
+ * the first day, to = local 00:00 after the last), so the days match the
+ * local dates the list shows — or a bare ISO date, read as that UTC day (a
+ * date-only `to` covers the whole of that UTC day). A present-but-empty value
+ * is ignored (a blank date input sends one); anything else malformed is
+ * refused with its field name.
  */
 
 export interface ReviewFilters {
@@ -74,7 +80,7 @@ export function parseReviewFilters(params: URLSearchParams): ParsedFilters {
   if (to !== null) {
     const p = parseDate(to);
     if (!p) return { ok: false, field: "to" };
-    toMs = p.dateOnly ? p.ms + DAY_MS : p.ms + 1;
+    toMs = p.dateOnly ? p.ms + DAY_MS : p.ms;
   }
   if (fromMs !== null && toMs !== null && fromMs >= toMs) return { ok: false, field: "to" };
 

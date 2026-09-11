@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { LEAK_MARKERS, SA, asUser, resetSync } from "@/test/gbp-sync-harness";
+import { LEAK_MARKERS, LOC_A, SA, asUser, resetSync, setScenario } from "@/test/gbp-sync-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { GET } from "./route";
 
@@ -102,5 +102,26 @@ describe("validation", () => {
     const { status, body } = await read(`?${query}`);
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: "invalid_filter", field });
+  });
+});
+
+describe("local days (the page sends local midnights with their offset)", () => {
+  it("a UTC+2 user's day runs local midnight to local midnight — a 23:30Z review belongs to the next local day", async () => {
+    setScenario(SA, (s) => {
+      const r6 = s.reviews[LOC_A].reviews[1];
+      const late = {
+        ...r6, name: r6.name.replace("fake-r6", "fake-late"), reviewId: "fake-late",
+        createTime: "2026-08-23T23:30:00Z", updateTime: "2026-08-23T23:30:00Z", reply: null,
+      };
+      s.reviews[LOC_A].reviews.splice(2, 0, late);
+      s.reviews[LOC_A].totalReviewCount = 8;
+    });
+    await syncListing(SA, { trigger: "scheduled" });
+    // 24 Aug in UTC+2: 23 Aug 22:00Z up to (not including) 24 Aug 22:00Z.
+    expect((await read("?from=2026-08-24T00:00:00%2B02:00&to=2026-08-25T00:00:00%2B02:00")).ids).toEqual(["fake-r6", "fake-late"]);
+    // The UTC day would have dropped it.
+    expect((await read("?from=2026-08-24")).ids).not.toContain("fake-late");
+    // A date-time `to` is exclusive: 01:30+02:00 IS 23:30Z.
+    expect((await read("?from=2026-08-24T00:00:00%2B02:00&to=2026-08-24T01:30:00%2B02:00")).ids).toEqual([]);
   });
 });

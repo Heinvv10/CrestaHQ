@@ -56,9 +56,11 @@ export function ReviewsSection({
   const [filters, setFilters] = useState<FilterValue>(NO_FILTERS);
   const [filterError, setFilterError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    const res = await fetch(`${base}/reviews${filterQuery(filters)}`).catch(() => null);
+  /** `signal`: the filter effect's — a response for filters since replaced is dropped, never shown. */
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const res = await fetch(`${base}/reviews${filterQuery(filters)}`, signal ? { signal } : undefined).catch(() => null);
     const data = (await res?.json().catch(() => null)) as (Partial<Omit<Ready, "state">> & { code?: string; field?: string }) | null;
+    if (signal?.aborted) return;
     if (res?.status === 400 && data?.code === "invalid_filter") {
       // Keep what is on screen; say which filter the server refused.
       setFilterError(`Check the ${FIELD_LABEL[data.field ?? ""] ?? "filter"} filter.`);
@@ -76,7 +78,9 @@ export function ReviewsSection({
   }, [base, filters]);
 
   useEffect(() => {
-    void refresh();
+    const controller = new AbortController();
+    void refresh(controller.signal);
+    return () => controller.abort();
   }, [refresh]);
 
   const syncNow = async () => {
@@ -143,7 +147,7 @@ export function ReviewsSection({
 
       {load.truncated && (
         <p className="text-xs text-muted-foreground" data-testid="gbp-reviews-truncated">
-          Showing the newest reviews only — this list reads at most 500 stored records.
+          Showing the newest reviews only — filters and sort apply to the newest 500 stored records only.
         </p>
       )}
 

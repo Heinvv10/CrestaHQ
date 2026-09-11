@@ -11,6 +11,9 @@ import { ReviewsSection } from "./reviews-section";
  * render.
  */
 
+// Before any Date is made: the viewer is in UTC+2 (no DST).
+process.env.TZ = "Africa/Johannesburg";
+
 const BASE = "/api/sub-accounts/sa1/gbp/reviews";
 
 const review = (id: string) => ({
@@ -98,7 +101,13 @@ describe("filter bar", () => {
     await setValue("gbp-filter-from", "2026-08-01");
     await setValue("gbp-filter-to", "2026-08-31");
     await setValue("gbp-filter-sort", "oldest");
-    expect(lastUrl()).toBe(`${BASE}?replied=unreplied&from=2026-08-01&to=2026-08-31&sort=oldest`);
+    // The dates are the viewer's LOCAL days (this file runs in UTC+2): from local
+    // midnight up to the next local midnight, with the offset — the same days
+    // the list shows.
+    const q = new URLSearchParams({
+      replied: "unreplied", from: "2026-08-01T00:00:00+02:00", to: "2026-09-01T00:00:00+02:00", sort: "oldest",
+    });
+    expect(lastUrl()).toBe(`${BASE}?${q}`);
   });
 
   it("shows how many of the reviews match", async () => {
@@ -137,6 +146,33 @@ describe("filter bar", () => {
     expect(byId("gbp-filter-error")?.textContent).toContain("“To” date");
     expect(byId("gbp-review-r1")).not.toBeNull();
     expect(byId("gbp-reviews-load-error")).toBeNull();
+  });
+
+  it("a slow older response never overwrites a newer filter", async () => {
+    let releaseOld!: () => void;
+    const old = new Promise<void>((r) => (releaseOld = r));
+    respond = (url) => ({
+      status: 200,
+      body: {
+        summary: SUMMARY, available: 2, runs: [],
+        reviews: url.endsWith("?rating=1") ? [review("old")] : url.includes("rating=1%2C2") ? [review("new")] : [review("r2"), review("r1")],
+      },
+    });
+    const plain = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("?rating=1")) await old;
+      return plain(url, init);
+    });
+    await render();
+    await act(async () => void (byId("gbp-filter-rating-1") as HTMLButtonElement).click());
+    await act(async () => void (byId("gbp-filter-rating-2") as HTMLButtonElement).click());
+    expect(byId("gbp-review-new")).not.toBeNull();
+    await act(async () => {
+      releaseOld();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(byId("gbp-review-new")).not.toBeNull();
+    expect(byId("gbp-review-old")).toBeNull();
   });
 
   it("is not offered when there are no reviews at all", async () => {

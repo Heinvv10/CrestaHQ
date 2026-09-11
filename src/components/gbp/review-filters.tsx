@@ -16,13 +16,27 @@ export interface FilterValue {
 
 export const NO_FILTERS: FilterValue = { ratings: [], replied: "all", from: "", to: "", sort: "newest" };
 
-/** The API query string, "" when nothing is filtered (the plain list URL). */
+/**
+ * A date input's day as the viewer's LOCAL midnight, `plusDays` later, with
+ * its offset — e.g. `2026-08-01T00:00:00+02:00`. The list shows local dates,
+ * so the filter must cut on local days, not UTC ones.
+ */
+function localMidnight(date: string, plusDays = 0): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const t = new Date(y, m - 1, d + plusDays);
+  const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
+  const offset = -t.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T00:00:00${sign}${pad(Math.trunc(offset / 60))}:${pad(offset % 60)}`;
+}
+
+/** The API query string, "" when nothing is filtered (the plain list URL). `to` is exclusive: the local midnight after the last day. */
 export function filterQuery(f: FilterValue): string {
   const q = new URLSearchParams();
   if (f.ratings.length) q.set("rating", [...f.ratings].sort().join(","));
   if (f.replied !== "all") q.set("replied", f.replied);
-  if (f.from) q.set("from", f.from);
-  if (f.to) q.set("to", f.to);
+  if (f.from) q.set("from", localMidnight(f.from));
+  if (f.to) q.set("to", localMidnight(f.to, 1));
   if (f.sort !== "newest") q.set("sort", f.sort);
   const s = q.toString();
   return s ? `?${s}` : "";
