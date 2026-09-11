@@ -75,6 +75,9 @@ export interface WhatsappDispatchInput {
    * outside it the approved `template` goes as always, buttons and all.
    */
   inWindowButtons?: InteractiveResult | null;
+  /** How the Twilio rail sends those buttons in-session (by ContentSid).
+   *  Absent → a Twilio in-window button send refuses. */
+  sendButtonsViaTwilio?: () => Promise<WhatsAppSendResult>;
   /** Injected by tests and by callers that already read the window. */
   lastInboundAt?: Date | null;
   /**
@@ -167,10 +170,20 @@ export async function dispatchWhatsappSend(
   }
 
   // In-window with buttons: they go as an interactive message or not at all.
-  // Only Cloud renders them today (Twilio: buttons PR 4; bridge: PRs 6–7), and
-  // a template outside Meta's in-window rules cannot be one. Sending the text
+  // Cloud and Twilio render them; the bridge does not yet (buttons PRs 6–7),
+  // and a template outside the in-window rules cannot be one. Sending the text
   // bare would deliver a Yes/No nobody can tap, or a review ask with no link.
   const buttons = decision.mode === "text" ? input.inWindowButtons ?? null : null;
+  if (buttons && !buttons.ok) {
+    return { provider, ok: false, error: buttons.error, providerOutcome: "DEFINITELY_REJECTED" };
+  }
+  // Twilio's unapproved in-session limits are the same as Cloud's in-window
+  // ones (3 quick replies or one link, 20-character titles), so a template
+  // that built for Cloud is valid here; it goes by ContentSid.
+  if (buttons && provider === "twilio" && input.sendButtonsViaTwilio) {
+    const r = await input.sendButtonsViaTwilio();
+    return { ...r, provider, sentAs: "interactive" };
+  }
   if (buttons && provider !== "cloud") {
     return {
       provider,
@@ -178,9 +191,6 @@ export async function dispatchWhatsappSend(
       error: "WA_BUTTONS_UNSUPPORTED_ON_RAIL",
       providerOutcome: "DEFINITELY_REJECTED",
     };
-  }
-  if (buttons && !buttons.ok) {
-    return { provider, ok: false, error: buttons.error, providerOutcome: "DEFINITELY_REJECTED" };
   }
   const interactive = buttons?.ok ? buttons.interactive : null;
 

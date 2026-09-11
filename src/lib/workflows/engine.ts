@@ -23,6 +23,7 @@ import {
   interactiveFromButtons,
   type InteractiveResult,
 } from "@/lib/comms/whatsapp/interactive";
+import { ensureTwilioSessionContent } from "@/lib/comms/whatsapp/twilio-session-content";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { checkQuota, UsageQuotaExceededError } from "@/lib/server/usage-meter";
@@ -467,6 +468,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   // window needs none — and needs no Meta approval to ship.
   let template: CloudTemplateRef | null = null;
   let inWindowButtons: InteractiveResult | null = null;
+  let templateValues: string[] = [];
   let templateBody = "";
   let tplDoc: WhatsappTemplateDoc | null = null;
   if (cfg.templateId) {
@@ -491,6 +493,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       subject,
       manualValues,
     });
+    templateValues = values;
     templateBody = (tplDoc.body ?? "").replace(
       /\{\{\s*(\d+)\s*\}\}/g,
       (_match, position: string) => values[Number(position) - 1] ?? "",
@@ -536,6 +539,28 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       body,
       template,
       inWindowButtons,
+      // Twilio sends in-session buttons only by ContentSid: an unapproved
+      // Content resource per template, cached on the doc.
+      sendButtonsViaTwilio:
+        tplDoc && cfg.templateId && ctx.subAccount?.twilioConfig
+          ? async () => {
+              const contentSid = await ensureTwilioSessionContent({
+                subAccountId: ctx.subAccountId,
+                templateId: cfg.templateId!,
+                template: tplDoc!,
+                accountSid: ctx.subAccount!.twilioConfig!.accountSid,
+                authToken: ctx.subAccount!.twilioConfig!.authToken,
+              });
+              const r = await sendWhatsappTemplateForSubAccount({
+                subAccountId: ctx.subAccountId,
+                subAccount: ctx.subAccount,
+                to,
+                contentSid,
+                contentVariables: templateValues,
+              });
+              return { ok: true, messageId: r.sid };
+            }
+          : undefined,
       sendViaTwilio: async () => {
         const r = await sendWhatsappForSubAccount({
           subAccountId: ctx.subAccountId,

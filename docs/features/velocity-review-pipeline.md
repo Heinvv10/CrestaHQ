@@ -156,7 +156,7 @@ bridge" inside one sub-account is out of scope.
 | 4 | Combined endpoint: upsert + tag + enrol, idempotent, synchronous result | `POST /api/v1/contacts/upsert` → `enrolment` | **closed** — see below |
 | 5 | Install context as contact custom fields, resolvable as template variables | `src/types/whatsapp-templates.ts`, template routes, builder picker | **closed** — see below |
 | 5b | Refuse a template send when any variable renders empty (the template draft requires it) | `src/lib/workflows/engine.ts` `execWhatsappTemplate` | open — changes every tenant's send path, needs its own decision |
-| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | **Cloud done** (PR 2); **Twilio templates done** (PR 4a); Twilio in-session PR 4b; bridge PRs 6–7 |
+| 6 | Buttons on templates — quick-reply and URL, all three rails | template doc, `cloud-templates.ts`, `templates-api.ts`, builder | **Cloud done** (PR 2); **Twilio done** (templates PR 4a, in-session PR 4b); bridge PRs 6–7 |
 | 7 | Button taps reach the workflow branch | inbound webhooks → `reply.text` | **closed** for Cloud + Twilio (build-order PR 1); bridge taps with build-order PR 7 |
 | 8 | FibreFlow: destination column, LeadStack client, delete the ack-poll states | `FF_Next.js:src/modules/velocity-review/` | later session |
 
@@ -362,6 +362,16 @@ still goes as itself, whatever its buttons. The dispatcher makes that call
 once it knows the window. Twilio and the bridge refuse a button template
 in-window until PRs 4 and 6–7. The step's template picker now offers unapproved button
 templates, marked "in-window only".
+
+**PR 4b done:** on Twilio the same step sends a template's buttons in-session
+as an unapproved Content resource — Twilio sends buttons only by ContentSid.
+One resource per template, created on first in-window use and cached on the
+doc (`twilioSessionContent`), keyed by a fingerprint of its body, language,
+samples and buttons, so an edited draft gets a new one; each send passes the
+contact's values as `contentVariables`
+(`lib/comms/whatsapp/twilio-session-content.ts`). Twilio's unapproved
+in-session limits match the Cloud in-window rules, so the same check guards
+both. Only the bridge still refuses in-window buttons.
 
 Each PR: provider-documented payload fixtures, mutation-tested,
 blind review, `pnpm ci:check`. The pilot's end-to-end (own handset, tap Yes
