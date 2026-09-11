@@ -58,6 +58,18 @@ service cloud.firestore {
         && request.resource.data.agencyId == resource.data.agencyId;
     }
 
+    // A contact's `companyId` must be absent/null or point at a company in
+    // the SAME sub-account. Without this a member of tenant B could link
+    // their contact to tenant A's company, and tenant A's server-side
+    // company delete would then write to tenant B's contact.
+    function companyLinkInTenant() {
+      return request.resource.data.get("companyId", null) == null
+        || (request.resource.data.companyId is string
+          && exists(/databases/$(database)/documents/companies/$(request.resource.data.companyId))
+          && get(/databases/$(database)/documents/companies/$(request.resource.data.companyId)).data.subAccountId
+            == request.resource.data.subAccountId);
+    }
+
     // ---------- territory scoping (opt-in per sub-account) ----------
     // When the sub-account's `territoryScopingEnabled` field is true,
     // collaborators only see deals/contacts whose `territoryId` is in
@@ -762,9 +774,9 @@ service cloud.firestore {
     // Sub-account scoped organisations that contacts link to via
     // `contacts.companyId`. Members read/create/update (same as contacts);
     // companies carry no territory, so reads are not territory-scoped.
-    // Delete is server-only-ish: admins may, but the dashboard routes it
-    // through DELETE /api/companies/[id] so linked contacts are unlinked
-    // in the same batch.
+    // Delete is server-only: DELETE /api/companies/[id] unlinks the
+    // contacts in the same batch; a client deleteDoc would leave dangling
+    // companyIds behind.
     match /companies/{companyId} {
       allow read: if canAccessSub(
         resource.data.subAccountId,
@@ -778,10 +790,7 @@ service cloud.firestore {
         resource.data.subAccountId,
         resource.data.agencyId
       ) && tenantFieldsLockedOnUpdate();
-      allow delete: if canAdminSub(
-        resource.data.subAccountId,
-        resource.data.agencyId
-      );
+      allow delete: if false;
     }
 
     match /contacts/{contactId} {
@@ -797,7 +806,7 @@ service cloud.firestore {
       allow create: if canAccessSub(
         request.resource.data.subAccountId,
         request.resource.data.agencyId
-      );
+      ) && companyLinkInTenant();
       // Updates require territory visibility; territory reassignment uses
       // the server route so linked conversation previews move atomically.
       allow update: if canSeeScopedDoc(
@@ -806,7 +815,8 @@ service cloud.firestore {
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         // Territory changes must use the server route, which atomically scopes inbox previews.
-        && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null);
+        && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null)
+        && companyLinkInTenant();
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId
