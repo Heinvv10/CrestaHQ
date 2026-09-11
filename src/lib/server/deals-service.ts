@@ -8,7 +8,14 @@ import {
   serializeDealForApi,
   type DealApiObject,
 } from "@/lib/api/serializers/deals";
-import { getStage, type DealPriority, type PipelineStageId } from "@/types/deals";
+import {
+  getStage,
+  type DealPriority,
+  type PipelineStage,
+  type PipelineStageId,
+} from "@/types/deals";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import type { WebhookEventType } from "@/types/webhooks";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { GLOBAL_TERRITORY_ID } from "@/types";
@@ -22,9 +29,57 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
  * `deal.updated`; a stage change additionally emits `deal.stage.changed`
  * plus the terminal-specific `deal.won` / `deal.lost`, and logs a
  * `pipeline_moved` activity on the contact's timeline.
+ *
+ * Won / lost are decided by the stage's `terminal` flag on the deal's
+ * pipeline (absent `pipelineId` = the default pipeline), never by the
+ * literal ids — a custom pipeline names its closed stages whatever it likes.
+ * The same points also fire the `deal.created` / `deal.won` / `deal.lost`
+ * workflow triggers.
  */
 
 type Mode = "live" | "test";
+
+/**
+ * A stage / pipeline the deal's pipeline does not have. Thrown by the write
+ * service so no caller — route, AI Suite, quotes lifecycle — can park a deal
+ * on a stage id that does not exist in its pipeline. Routes map it to 400.
+ */
+export class DealStageError extends Error {
+  readonly code: "invalid_pipeline" | "invalid_stage" | "no_terminal_stage";
+  constructor(code: DealStageError["code"], message: string) {
+    super(message);
+    this.name = "DealStageError";
+    this.code = code;
+  }
+}
+
+function resolveStage(
+  pipeline: { id: string; stages: PipelineStage[] } | null,
+  pipelineId: string,
+  want: { stageId?: string; terminal?: "won" | "lost" },
+): PipelineStage {
+  if (!pipeline) {
+    throw new DealStageError("invalid_pipeline", `Pipeline "${pipelineId}" not found.`);
+  }
+  if (want.terminal) {
+    const stage = pipeline.stages.find((s) => s.terminal === want.terminal);
+    if (!stage) {
+      throw new DealStageError(
+        "no_terminal_stage",
+        `Pipeline "${pipeline.id}" has no ${want.terminal} stage.`,
+      );
+    }
+    return stage;
+  }
+  const stage = findStage(pipeline, want.stageId);
+  if (!stage) {
+    throw new DealStageError(
+      "invalid_stage",
+      `Stage "${want.stageId}" is not on pipeline "${pipeline.id}" (${pipeline.stages.map((s) => s.id).join(", ")}).`,
+    );
+  }
+  return stage;
+}
 
 /**
  * The contact fields embedded inline in every deal webhook payload, so
@@ -143,14 +198,21 @@ export interface CreateDealInput {
   currency: string;
   contactId: string;
   stageId: PipelineStageId;
+  /** Absent = the default pipeline. Always written to the doc. */
+  pipelineId?: string;
   priority: DealPriority;
   territoryId?: string | null;
+  assignedToUid?: string | null;
   customFields?: Record<string, CustomFieldValue> | null;
 }
 
 export interface DealWriteResult {
   id: string;
   deal: DealApiObject;
+  /** The stage the deal now sits in, from its pipeline. */
+  stage: PipelineStage;
+  /** Terminal flag of the stage the deal now sits in (update only). */
+  stageTerminal?: "won" | "lost";
 }
 
 /** Create a deal + log the create activity + emit `deal.created`. */
@@ -159,6 +221,10 @@ export async function createDealServerSide(
 ): Promise<DealWriteResult> {
   const db = getAdminDb();
   const ref = db.collection("deals").doc();
+  const pipelineId = dealPipelineId(input);
+  const pipeline = await loadPipeline(input.subAccountId, pipelineId);
+  const stage = resolveStage(pipeline, pipelineId, { stageId: input.stageId });
+  const stages = pipeline!.stages;
 
   const doc = {
     title: input.title,
@@ -166,10 +232,12 @@ export async function createDealServerSide(
     currency: input.currency,
     contactId: input.contactId,
     stageId: input.stageId,
+    pipelineId,
     priority: input.priority,
     lostReason: null,
     customFields: input.customFields ?? {},
     territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,
@@ -181,9 +249,9 @@ export async function createDealServerSide(
   await ref.set(doc);
 
   await writePipelineActivity(input.contactId, {
-    content: `Deal "${input.title}" created in ${getStage(input.stageId).label}`,
+    content: `Deal "${input.title}" created in ${getStage(input.stageId, stages).label}`,
     createdBy: input.createdByUid,
-    meta: { dealId: ref.id, toStageId: input.stageId },
+    meta: { dealId: ref.id, toStageId: input.stageId, pipelineId },
   });
 
   const now = new Date();
@@ -200,8 +268,39 @@ export async function createDealServerSide(
     deal,
     events: [{ type: "deal.created" }],
   });
+  fireDealTrigger({
+    subAccountId: input.subAccountId,
+    agencyId: input.agencyId,
+    mode: input.mode,
+    type: "deal.created",
+    contactId: input.contactId,
+    context: { dealId: ref.id, pipelineId, toStage: input.stageId },
+  });
 
-  return { id: ref.id, deal };
+  return { id: ref.id, deal, stage };
+}
+
+/**
+ * Fire a deal-scoped workflow trigger. Live mode only (test-mode API keys
+ * must never enrol real contacts), and only when the deal has a contact —
+ * workflow runs are contact-scoped.
+ */
+function fireDealTrigger(opts: {
+  subAccountId: string;
+  agencyId: string;
+  mode: Mode;
+  type: "deal.created" | "deal.won" | "deal.lost" | "pipeline.stage.changed";
+  contactId: string | null | undefined;
+  context: Record<string, unknown>;
+}): void {
+  if (opts.mode !== "live" || !opts.contactId) return;
+  void fireWorkflowTrigger({
+    subAccountId: opts.subAccountId,
+    agencyId: opts.agencyId,
+    type: opts.type,
+    contactId: opts.contactId,
+    context: opts.context,
+  });
 }
 
 /**
@@ -219,11 +318,25 @@ export interface UpdateDealPatch {
   priority?: DealPriority;
   contactId?: string;
   territoryId?: string | null;
+  /** Must be a stage of the deal's pipeline, else `DealStageError`. */
   stageId?: PipelineStageId;
-  /** Only meaningful on a move to "lost". */
+  /**
+   * Move to the pipeline's Won / Lost stage without knowing its id — for
+   * callers that only know the outcome (quote accepted ⇒ won). Takes
+   * precedence over `stageId` when both are set.
+   */
+  terminal?: "won" | "lost";
+  /**
+   * Move the deal to another pipeline. `stageId` (or `terminal`) is required
+   * alongside, since stage ids do not carry across pipelines.
+   */
+  pipelineId?: string;
+  /** Only meaningful on a move to the lost stage. */
   lostReason?: string | null;
   /** "Completed" tick on a Won deal card. Stamps/clears `completedAt`. */
   completed?: boolean;
+  /** Member uid (validated by the route) or null to unassign. */
+  assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue> | null;
 }
@@ -257,6 +370,22 @@ export async function updateDealServerSide(opts: {
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
   const previousStage = existing.stageId as PipelineStageId | undefined;
   const { patch } = opts;
+  const previousPipelineId = dealPipelineId(existing);
+  const pipelineId = patch.pipelineId ?? previousPipelineId;
+  const pipeline = await loadPipeline(existing.subAccountId, pipelineId);
+  if (!pipeline) {
+    throw new DealStageError("invalid_pipeline", `Pipeline "${pipelineId}" not found.`);
+  }
+  const stages = pipeline.stages;
+  const terminalOf = (stageId: string | undefined) =>
+    stageId ? findStage(pipeline, stageId)?.terminal : undefined;
+  if (patch.pipelineId !== undefined && patch.stageId === undefined && !patch.terminal) {
+    throw new DealStageError("invalid_stage", "A pipeline move needs a stageId.");
+  }
+  const nextStageId =
+    patch.stageId !== undefined || patch.terminal
+      ? resolveStage(pipeline, pipelineId, patch).id
+      : undefined;
 
   const write: Record<string, unknown> = {
     updatedAt: FieldValue.serverTimestamp(),
@@ -267,6 +396,7 @@ export async function updateDealServerSide(opts: {
   if (patch.priority !== undefined) write.priority = patch.priority;
   if (patch.contactId !== undefined) write.contactId = patch.contactId;
   if (patch.territoryId !== undefined) write.territoryId = patch.territoryId;
+  if (patch.assignedToUid !== undefined) write.assignedToUid = patch.assignedToUid;
   if (patch.customFields !== undefined) write.customFields = patch.customFields;
   if (patch.completed !== undefined) {
     write.completed = patch.completed;
@@ -274,16 +404,22 @@ export async function updateDealServerSide(opts: {
   }
 
   const stageChanged =
-    patch.stageId !== undefined && patch.stageId !== previousStage;
-  if (patch.stageId !== undefined) {
-    write.stageId = patch.stageId;
+    (nextStageId !== undefined && nextStageId !== previousStage) ||
+    pipelineId !== previousPipelineId;
+  const nextTerminal = stageChanged
+    ? terminalOf(nextStageId ?? previousStage)
+    : undefined;
+  // Always stamp the pipeline so a pre-pipeline deal gains it on first edit.
+  write.pipelineId = pipelineId;
+  if (nextStageId !== undefined) {
+    write.stageId = nextStageId;
     if (stageChanged) {
       write.stageChangedAt = FieldValue.serverTimestamp();
       // Mirror the old client `moveDeal`: set the reason moving INTO lost,
       // clear it moving back OUT of lost.
-      if (patch.stageId === "lost") {
+      if (nextTerminal === "lost") {
         write.lostReason = patch.lostReason?.trim() || null;
-      } else if (previousStage === "lost") {
+      } else if (existing.lostReason) {
         write.lostReason = null;
       }
     }
@@ -295,18 +431,20 @@ export async function updateDealServerSide(opts: {
   const data = fresh.data()!;
   const deal = serializeDealForApi(fresh.id, data, mode);
 
+  const toStage = (nextStageId ?? previousStage) as string;
   if (stageChanged && previousStage) {
     const reasonSuffix =
-      patch.stageId === "lost" && write.lostReason
+      nextTerminal === "lost" && write.lostReason
         ? ` — ${write.lostReason as string}`
         : "";
     await writePipelineActivity(data.contactId, {
-      content: `Deal "${data.title}" moved from ${getStage(previousStage).label} to ${getStage(patch.stageId!).label}${reasonSuffix}`,
+      content: `Deal "${data.title}" moved from ${getStage(previousStage, stages).label} to ${getStage(toStage, stages).label}${reasonSuffix}`,
       createdBy: opts.userId,
       meta: {
         dealId: fresh.id,
         fromStageId: previousStage,
-        toStageId: patch.stageId,
+        toStageId: toStage,
+        pipelineId,
       },
     });
   }
@@ -319,8 +457,8 @@ export async function updateDealServerSide(opts: {
       type: "deal.stage.changed",
       extra: { previous_stage: previousStage ?? null },
     });
-    if (patch.stageId === "won") events.push({ type: "deal.won" });
-    else if (patch.stageId === "lost") events.push({ type: "deal.lost" });
+    if (nextTerminal === "won") events.push({ type: "deal.won" });
+    else if (nextTerminal === "lost") events.push({ type: "deal.lost" });
   }
   emitDealEvents({
     subAccountId: existing.subAccountId,
@@ -330,19 +468,33 @@ export async function updateDealServerSide(opts: {
     events,
   });
 
-  // Workflow trigger — a stage move enrolls the deal's contact (workflow runs
-  // are contact-scoped). `toStage` lets a workflow narrow to one target stage.
-  if (mode === "live" && stageChanged && data.contactId) {
-    void fireWorkflowTrigger({
+  // Workflow triggers — a stage move enrols the deal's contact (workflow
+  // runs are contact-scoped). `pipelineId` + `toStage` let a workflow narrow
+  // to one stage of one pipeline; a won/lost landing also fires its own.
+  if (stageChanged) {
+    const base = {
       subAccountId: existing.subAccountId as string,
       agencyId: existing.agencyId as string,
-      type: "pipeline.stage.changed",
-      contactId: data.contactId as string,
-      context: { toStage: patch.stageId },
-    });
+      mode,
+      contactId: data.contactId as string | undefined,
+      context: {
+        dealId: fresh.id,
+        pipelineId,
+        fromStage: previousStage ?? null,
+        toStage,
+      },
+    };
+    fireDealTrigger({ ...base, type: "pipeline.stage.changed" });
+    if (nextTerminal === "won") fireDealTrigger({ ...base, type: "deal.won" });
+    else if (nextTerminal === "lost") fireDealTrigger({ ...base, type: "deal.lost" });
   }
 
-  return { id: fresh.id, deal };
+  return {
+    id: fresh.id,
+    deal,
+    stage: findStage(pipeline, toStage) ?? getStage(toStage, stages),
+    stageTerminal: terminalOf(toStage),
+  };
 }
 
 /**
@@ -423,14 +575,27 @@ export async function emitDealCreatedById(opts: {
   try {
     const snap = await getAdminDb().doc(`deals/${opts.dealId}`).get();
     if (!snap.exists) return;
-    const mode = opts.mode ?? (snap.data()!.mode as Mode) ?? "live";
-    const deal = serializeDealForApi(snap.id, snap.data()!, mode);
+    const data = snap.data()!;
+    const mode = opts.mode ?? (data.mode as Mode) ?? "live";
+    const deal = serializeDealForApi(snap.id, data, mode);
     emitDealEvents({
       subAccountId: opts.subAccountId,
       agencyId: opts.agencyId,
       mode,
       deal,
       events: [{ type: "deal.created" }],
+    });
+    fireDealTrigger({
+      subAccountId: opts.subAccountId,
+      agencyId: opts.agencyId,
+      mode,
+      type: "deal.created",
+      contactId: data.contactId as string | undefined,
+      context: {
+        dealId: snap.id,
+        pipelineId: dealPipelineId(data),
+        toStage: data.stageId,
+      },
     });
   } catch (err) {
     console.warn("[deals-service] emitDealCreatedById failed", err);

@@ -4,26 +4,21 @@ import type { Timestamp } from "firebase-admin/firestore";
 import type { DealPriority, PipelineStageId } from "@/types/deals";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { customFieldsForApi } from "@/lib/api/serializers/contacts";
+import { DEFAULT_PIPELINE_ID } from "@/types/deals";
 
 /**
- * Public-API wire shape for Deal. Frozen contract.
+ * Public-API wire shape for Deal. Frozen contract (additive only).
  *
- * Stage discriminator (`stage`) carries the internal id directly —
- * `new | contacted | qualified | proposal | won | lost`. Stable across
- * versions because the dashboard UI already treats these as fixed.
+ * Stage discriminator (`stage`) carries the internal id directly. On the
+ * default pipeline those are `new | contacted | qualified | proposal | won |
+ * lost`; other pipelines define their own. `pipeline_id` names the
+ * pipeline (`"default"` for every pre-multi-pipeline deal). The parsers
+ * below only check the shape — the routes validate `stage` against the
+ * target pipeline, since only they can read it.
  *
  * `stage_changed_at` is exposed so subscribers can de-dup `deal.stage.changed`
  * webhook deliveries against their own state.
  */
-
-export const VALID_STAGES: PipelineStageId[] = [
-  "new",
-  "contacted",
-  "qualified",
-  "proposal",
-  "won",
-  "lost",
-];
 
 export const VALID_PRIORITIES: DealPriority[] = ["high", "medium", "low"];
 
@@ -35,10 +30,13 @@ export interface DealApiObject {
   value: number;
   currency: string;
   stage: PipelineStageId;
+  pipeline_id: string;
   priority: DealPriority;
   contact_id: string | null;
   lost_reason: string | null;
   territory_id: string | null;
+  /** Sub-account member uid the record is assigned to; read-only over the public API. */
+  assigned_to_uid: string | null;
   custom_fields: Record<string, CustomFieldValue> | null;
   created_at: string;
   updated_at: string;
@@ -77,10 +75,15 @@ export function serializeDealForApi(
         ? data.currency.toUpperCase()
         : "USD",
     stage: (data.stageId ?? "new") as PipelineStageId,
+    pipeline_id:
+      typeof data.pipelineId === "string" && data.pipelineId
+        ? data.pipelineId
+        : DEFAULT_PIPELINE_ID,
     priority: (data.priority ?? "medium") as DealPriority,
     contact_id: (data.contactId as string | null) ?? null,
     lost_reason: (data.lostReason as string | null) ?? null,
     territory_id: (data.territoryId as string | null) ?? null,
+    assigned_to_uid: (data.assignedToUid as string | null) ?? null,
     custom_fields: customFieldsForApi(data.customFields),
     created_at: tsToIso(data.createdAt),
     updated_at: tsToIso(data.updatedAt),
@@ -94,6 +97,8 @@ export interface DealCreateInput {
   currency: string;
   contactId: string;
   stage: PipelineStageId;
+  /** Absent = the default pipeline. */
+  pipelineId: string | null;
   priority: DealPriority;
   territoryId: string | null;
 }
@@ -144,15 +149,14 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
     return { ok: false, error: "`contact_id` is required." };
   }
 
-  const stageRaw = b.stage;
-  if (
-    typeof stageRaw !== "string" ||
-    !VALID_STAGES.includes(stageRaw as PipelineStageId)
-  ) {
-    return {
-      ok: false,
-      error: `\`stage\` must be one of: ${VALID_STAGES.join(", ")}.`,
-    };
+  const stageRaw = asString(b.stage, 40);
+  if (stageRaw === null || stageRaw.length === 0) {
+    return { ok: false, error: "`stage` is required (a stage id on the pipeline)." };
+  }
+
+  const pipelineId = asString(b.pipeline_id, 200);
+  if (pipelineId === null) {
+    return { ok: false, error: "`pipeline_id` must be a string." };
   }
 
   const priorityRaw = b.priority ?? "medium";
@@ -178,7 +182,8 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
       value: valueRaw,
       currency,
       contactId,
-      stage: stageRaw as PipelineStageId,
+      stage: stageRaw,
+      pipelineId: pipelineId.length === 0 ? null : pipelineId,
       priority: priorityRaw as DealPriority,
       territoryId: territoryId.length === 0 ? null : territoryId,
     },
@@ -222,16 +227,11 @@ export function parseDealPatch(raw: unknown): ParseResult<DealPatchInput> {
     patch.currency = b.currency.toUpperCase();
   }
   if (b.stage !== undefined) {
-    if (
-      typeof b.stage !== "string" ||
-      !VALID_STAGES.includes(b.stage as PipelineStageId)
-    ) {
-      return {
-        ok: false,
-        error: `\`stage\` must be one of: ${VALID_STAGES.join(", ")}.`,
-      };
+    const v = asString(b.stage, 40);
+    if (v === null || v.length === 0) {
+      return { ok: false, error: "`stage` must be a stage id on the deal's pipeline." };
     }
-    patch.stage = b.stage as PipelineStageId;
+    patch.stage = v;
   }
   if (b.priority !== undefined) {
     if (

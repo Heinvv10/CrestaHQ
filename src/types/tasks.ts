@@ -10,6 +10,11 @@ export interface Task {
   contactId: string | null;
   dealId: string | null;
   eventId: string | null;
+  /**
+   * Sub-account member this record is assigned to (GHL "owner"). `null` /
+   * absent = unassigned. Validated against `subAccountMembers` on write.
+   */
+  assignedToUid?: string | null;
   agencyId: string;
   subAccountId: string;
   createdByUid: string;
@@ -31,6 +36,7 @@ export type TaskFormData = {
   contactId: string | null;
   dealId: string | null;
   eventId: string | null;
+  assignedToUid?: string | null;
 };
 
 export type TaskFilter = "today" | "overdue" | "upcoming" | "done" | "all";

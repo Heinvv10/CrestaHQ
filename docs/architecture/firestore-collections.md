@@ -17,12 +17,14 @@
 | `system/heartbeat` | server-only | Instance id + last-heartbeat timestamp (gitpage status checks) |
 | `system/gitpageStatus` | active members read | Cached gitpage subscription state; drives the activate-banner UI |
 | `invites/{auto}` | agency owner / sub-account admin | Typed invites (carry `subAccountId` + `subAccountRole`) |
-| `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid` |
+| `contacts/{id}` | sub-account | Carries `agencyId`, `subAccountId`, `createdByUid`; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `contacts/{id}/notes/{id}` | inherits | Free-text notes |
 | `contacts/{id}/activities/{id}` | inherits | Typed events |
-| `deals/{id}` | sub-account | One contact → many deals |
+| `companies/{id}` | sub-account | GHL "Businesses". `{name, phone, email, website, address}` + tenancy keys. Members read/create/update via the client SDK; delete is admin-only and goes through `DELETE /api/companies/[id]`, which nulls `companyId` on every linked contact in the same batch. A contact links via `contacts.companyId`; on link the server copies the company's `name` into the legacy free-text `contacts.company`, so CSV export, quotes and webhooks read the string unchanged. Free-text values with no link keep `companyId: null`. **Renaming a company does not propagate** — `contacts.company` is a link-time copy; the string refreshes on the next contact save that picks the company. Conversely, a writer that changes `contacts.company` without a `companyId` (the public API PATCH / phone upsert) clears `companyId` rather than leaving a stale link. |
+| `deals/{id}` | sub-account | One contact → many deals. `pipelineId` names the pipeline; absent = `default` (every pre-multi-pipeline doc). Optional `assignedToUid` (validated by the deals API) |
+| `subAccounts/{id}/pipelines/{pipelineId}` | server-only | Deal pipelines with stages embedded (`{ id, label, tone, terminal? }[]`; `terminal` = `won`/`lost` drives `deal.won`/`deal.lost`). `pipelines/default` is seeded lazily on first read from the canonical six stages + the legacy `subAccounts/{id}.pipelineStages` label/order overrides, keeping the SAME stage ids. Read via `GET /api/sub-accounts/[id]/pipelines`; written only by those Admin-SDK routes. Deleting a stage / pipeline that still holds deals is refused (409) |
 | `events/{id}` | sub-account | Calendar events |
-| `tasks/{id}` | sub-account | Todos |
+| `tasks/{id}` | sub-account | Todos; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `forms/{id}` | sub-account | Form config |
 | `forms/{id}/submissions/{id}` | sub-account read, server-write | Inbound submissions; route stamps tenancy from the form doc |
 | `usage/{subAccountId}/users/{uid}` | self/owner read | Email + SMS quotas |
@@ -32,6 +34,7 @@
 | `automation_executions/{id}` | sub-account read; server-only write | Per-firing run rows; the QStash callback executor mutates these |
 | `contacts/{id}/messages/{id}` | sub-account read; server-only create/delete; client `readAt`-only update | SMS chat thread when the sub-account has dedicated Twilio enabled. Doc id = Twilio MessageSid for natural dedupe on retries. |
 | `contacts/{id}/whatsappMessages/{id}` | sub-account read; server-only create/delete; client `readAt`-only update | WhatsApp chat thread (same model as `messages`). Populated by the WhatsApp inbound webhook + `/api/comms/whatsapp/send` + `/api/comms/whatsapp/send-template`. Doc id = Twilio MessageSid. |
+| `subAccounts/{id}/smartLists/{id}` | members read/create/update/delete | Saved contacts-list filter: `name`, `filters` (a workflow `ConditionGroup`, evaluated client-side by `lib/contacts/filter.ts`), plus `agencyId`, `subAccountId`, `createdByUid`. Tenant keys locked on update. No composite index — the list is read by subcollection path alone. |
 | `subAccounts/{id}/whatsappTemplates/{id}` | members read; server-only write | WhatsApp message templates (v2). Carries the body + positional variables, Twilio `contentSid`, and the Meta approval `status`. Written by the `whatsapp-templates/*` Admin-SDK routes; status synced live by the QStash approval poll. |
 | `broadcasts/{id}` | sub-account read; server-only write | Bulk-email batch metadata (template, audience filter, totals, status). One per "Send bulk email" action. |
 | `broadcasts/{id}/sends/{contactId}` | sub-account read; server-only write | Per-recipient delivery row. Doc id = contactId for natural dedup. Status: queued/sent/skipped/failed. Carries Resend message id + error string. |
@@ -53,6 +56,19 @@
 | `socialPosts/{id}` | sub-account read; server-only write | Social Planner post (top-level, like `quotes`). Carries tenancy (`agencyId`, `subAccountId`, `createdByUid`), `caption`, `imageUrl`, `targets` (`("facebook"\|"instagram")[]`), `status` (draft → scheduled → publishing → published/failed), `scheduledAt`, `publishedAt`, per-target `results[]` (`{platform, status, externalId, error}`), and `qstashMessageId`. Reads stream to the content calendar via `subscribeToSocialPosts`; all writes go through Admin-SDK routes (rules are read-only for members, mirrors `products`). |
 
 
+
+### WhatsApp Cloud settings (SP15)
+`whatsappCloudMeta.quality` on the parent (member-readable) holds the hourly
+poll's last reading of the phone-number node: `{ rating (GREEN | YELLOW | RED |
+UNKNOWN), nameStatus, status, checkedAt, changedAt }` — `changedAt` moves only
+when `rating` changes. `subAccounts/{id}/whatsappQualityAlerts/{autoId}` is one
+doc per drop from GREEN (`agencyId`, `subAccountId`, `createdByUid: "system"`,
+`from`, `to`, `phoneNumberId`, `displayPhoneNumber`, `createdAt`, `resolvedAt`
+null until the rating is next seen GREEN); member-readable, server-only write,
+queried only by `resolvedAt == null` inside one sub-account, so no composite
+index. `private/whatsappFakeScenario` holds the dev/CI fake settings provider's
+scenario (Admin SDK only under the `private/{docId}` deny rule). The business
+profile and message links are NOT cached — Meta is the source of truth.
 
 ### Google Business Profile
 `subAccounts/{id}/private/googleConnection` holds the OAuth refresh/access

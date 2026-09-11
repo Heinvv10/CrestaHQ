@@ -85,9 +85,17 @@ const SCHEDULES: ScheduleSpec[] = [
     cron: "0 * * * *",
     description: "Hourly Inbox Follow-up Watchdog sweep (Labs custom agent).",
   },
+  {
+    scheduleId: "leadstack-whatsapp-quality",
+    path: "/api/cron/whatsapp-quality",
+    // :15 so it never lands on the same minute as the watchdog above.
+    cron: "15 * * * *",
+    description:
+      "Hourly WhatsApp Cloud sender quality-rating poll; alerts on a drop from GREEN.",
+  },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-11-gbp-retention";
+const BASE_SCHEDULE_VERSION = "2026-09-11-whatsapp-quality";
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment

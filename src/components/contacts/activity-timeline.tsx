@@ -2,43 +2,19 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  Pencil,
-  Activity,
-  GitBranch,
-  CalendarCheck,
-  CheckSquare,
-  FileText,
-  FileSignature,
-  Mail,
-  MessageSquare,
-  MessagesSquare,
-  PhoneMissed,
-  PhoneOutgoing,
-  Zap,
-  Send,
-  CircleSlash,
-  CheckCircle2,
-  XCircle,
-  Eye,
-  DollarSign,
-  AlertTriangle,
-  MapPinned,
-  CalendarPlus,
-  CalendarX,
-  CalendarClock,
-  UserX,
-  Users,
-  Star,
-  MonitorPlay,
-  MousePointerClick,
-} from "lucide-react";
+import { Activity, Pencil } from "lucide-react";
 import { subscribeToNotes } from "@/lib/firestore/contacts";
 import { subscribeToActivities } from "@/lib/firestore/activities";
 import { formatRelativeTime } from "@/lib/format";
 import { useSubAccount } from "@/context/sub-account-context";
 import type { Note, ActivityType } from "@/types/contacts";
 import type { ActivityDoc } from "@/types/activities";
+import { activityVisuals } from "@/components/contacts/activity-visuals";
+import {
+  ACTIVITY_FILTERS,
+  matchesActivityFilter,
+  type ActivityFilter,
+} from "@/lib/contacts/activity-filter";
 
 type TimelineItem =
   | { kind: "note"; id: string; createdAt: Note["createdAt"]; content: string }
@@ -56,10 +32,12 @@ export function ActivityTimeline({ contactId }: { contactId: string }) {
   const [activities, setActivities] = useState<ActivityDoc[]>([]);
   const [loadedNotes, setLoadedNotes] = useState(false);
   const [loadedActs, setLoadedActs] = useState(false);
+  const [filter, setFilter] = useState<ActivityFilter>("all");
 
   useEffect(() => {
     setLoadedNotes(false);
     setLoadedActs(false);
+    setFilter("all");
     const unsubNotes = subscribeToNotes(contactId, (list) => {
       setNotes(list);
       setLoadedNotes(true);
@@ -97,6 +75,17 @@ export function ActivityTimeline({ contactId }: { contactId: string }) {
     return merged;
   }, [notes, activities]);
 
+  const visible = useMemo(
+    () =>
+      items.filter((item) =>
+        matchesActivityFilter(
+          item.kind === "note" ? "note_added" : item.type,
+          filter
+        )
+      ),
+    [items, filter]
+  );
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -123,24 +112,53 @@ export function ActivityTimeline({ contactId }: { contactId: string }) {
   }
 
   return (
-    <ol className="before:bg-border relative space-y-4 pl-6 before:absolute before:top-2 before:bottom-2 before:left-3 before:w-px">
-      {items.map((item) =>
-        item.kind === "note" ? (
-          <TimelineRow
-            key={`n-${item.id}`}
-            icon={<Pencil className="text-muted-foreground h-3 w-3" />}
-            label="Note added"
-            when={item.createdAt}
+    <div className="space-y-4">
+      <div
+        role="group"
+        aria-label="Filter activity"
+        className="flex flex-wrap gap-1.5"
+      >
+        {ACTIVITY_FILTERS.map((f) => (
+          <button
+            key={f.value}
+            type="button"
+            aria-pressed={filter === f.value}
+            onClick={() => setFilter(f.value)}
+            className={
+              filter === f.value
+                ? "border-primary bg-primary/10 text-primary rounded-full border px-2.5 py-1 text-xs"
+                : "text-muted-foreground hover:bg-muted rounded-full border px-2.5 py-1 text-xs"
+            }
           >
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">
-              {item.content}
-            </p>
-          </TimelineRow>
-        ) : (
-          <ActivityRow key={`a-${item.id}`} item={item} />
-        )
+            {f.label}
+          </button>
+        ))}
+      </div>
+      {visible.length === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          Nothing in this category yet.
+        </p>
+      ) : (
+        <ol className="before:bg-border relative space-y-4 pl-6 before:absolute before:top-2 before:bottom-2 before:left-3 before:w-px">
+          {visible.map((item) =>
+            item.kind === "note" ? (
+              <TimelineRow
+                key={`n-${item.id}`}
+                icon={<Pencil className="text-muted-foreground h-3 w-3" />}
+                label="Note added"
+                when={item.createdAt}
+              >
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {item.content}
+                </p>
+              </TimelineRow>
+            ) : (
+              <ActivityRow key={`a-${item.id}`} item={item} />
+            )
+          )}
+        </ol>
       )}
-    </ol>
+    </div>
   );
 }
 
@@ -176,6 +194,14 @@ function ActivityRow({
   }
   if (meta?.taskId) {
     links.push({ href: saPath("/tasks"), label: "View task →" });
+  }
+  // Engine-written rows link to that run in the workflow's run history,
+  // which opens and highlights it.
+  if (meta?.workflowId && meta?.runId) {
+    links.push({
+      href: saPath(`/workflows/${meta.workflowId}/runs?run=${meta.runId}`),
+      label: "View run →",
+    });
   }
   return (
     <TimelineRow
@@ -230,195 +256,6 @@ function TimelineRow({
       </div>
     </li>
   );
-}
-
-function activityVisuals(type: ActivityType): {
-  icon: React.ReactNode;
-  label: string;
-} {
-  switch (type) {
-    case "pipeline_moved":
-      return {
-        icon: <GitBranch className="h-3 w-3 text-indigo-500" />,
-        label: "Pipeline updated",
-      };
-    case "booking_created":
-      return {
-        icon: <CalendarCheck className="h-3 w-3 text-emerald-500" />,
-        label: "Event scheduled",
-      };
-    case "task_completed":
-      return {
-        icon: <CheckSquare className="h-3 w-3 text-emerald-500" />,
-        label: "Task completed",
-      };
-    case "form_submitted":
-      return {
-        icon: <FileText className="h-3 w-3 text-violet-500" />,
-        label: "Form submitted",
-      };
-    case "email_sent":
-      return {
-        icon: <Mail className="h-3 w-3 text-blue-500" />,
-        label: "Email sent",
-      };
-    case "sms_sent":
-      return {
-        icon: <MessageSquare className="h-3 w-3 text-violet-500" />,
-        label: "SMS sent",
-      };
-    case "whatsapp_sent":
-      return {
-        icon: <MessagesSquare className="h-3 w-3 text-green-500" />,
-        label: "WhatsApp sent",
-      };
-    case "messenger_sent":
-      return {
-        icon: <MessagesSquare className="h-3 w-3 text-blue-500" />,
-        label: "Messenger sent",
-      };
-    case "instagram_sent":
-      return {
-        icon: <MessagesSquare className="h-3 w-3 text-pink-500" />,
-        label: "Instagram sent",
-      };
-    case "voice_call_initiated":
-      return {
-        icon: <PhoneOutgoing className="h-3 w-3 text-orange-500" />,
-        label: "AI call placed",
-      };
-    case "voice_call_completed":
-      return {
-        icon: <PhoneOutgoing className="h-3 w-3 text-emerald-500" />,
-        label: "AI call",
-      };
-    case "missed_call":
-      return {
-        icon: <PhoneMissed className="h-3 w-3 text-rose-500" />,
-        label: "Missed call",
-      };
-    case "automation_started":
-      return {
-        icon: <Zap className="h-3 w-3 text-amber-500" />,
-        label: "Automation started",
-      };
-    case "automation_step_sent":
-      return {
-        icon: <Send className="h-3 w-3 text-violet-500" />,
-        label: "Automation step sent",
-      };
-    case "automation_step_skipped":
-      return {
-        icon: <CircleSlash className="text-muted-foreground h-3 w-3" />,
-        label: "Automation step skipped",
-      };
-    case "automation_completed":
-      return {
-        icon: <CheckCircle2 className="h-3 w-3 text-emerald-500" />,
-        label: "Automation completed",
-      };
-    case "automation_failed":
-      return {
-        icon: <AlertTriangle className="h-3 w-3 text-rose-500" />,
-        label: "Automation failed",
-      };
-    case "quote_sent":
-      return {
-        icon: <FileSignature className="h-3 w-3 text-blue-500" />,
-        label: "Quote sent",
-      };
-    case "quote_viewed":
-      return {
-        icon: <Eye className="h-3 w-3 text-indigo-500" />,
-        label: "Quote viewed",
-      };
-    case "quote_accepted":
-      return {
-        icon: <CheckCircle2 className="h-3 w-3 text-emerald-500" />,
-        label: "Quote accepted",
-      };
-    case "quote_declined":
-      return {
-        icon: <XCircle className="h-3 w-3 text-rose-500" />,
-        label: "Quote declined",
-      };
-    case "quote_marked_paid":
-      return {
-        icon: <DollarSign className="h-3 w-3 text-emerald-500" />,
-        label: "Quote paid",
-      };
-    case "review_requested":
-      return {
-        icon: <Star className="h-3 w-3 text-amber-500" />,
-        label: "Review requested",
-      };
-    case "contact_territory_changed":
-      return {
-        icon: <MapPinned className="h-3 w-3 text-sky-500" />,
-        label: "Territory changed",
-      };
-    case "booking_page_booked":
-      return {
-        icon: <CalendarPlus className="h-3 w-3 text-teal-500" />,
-        label: "Meeting booked",
-      };
-    case "booking_payment_received":
-      return {
-        icon: <DollarSign className="h-3 w-3 text-emerald-500" />,
-        label: "Booking payment received",
-      };
-    case "booking_cancelled":
-      return {
-        icon: <CalendarX className="h-3 w-3 text-rose-500" />,
-        label: "Meeting cancelled",
-      };
-    case "booking_rescheduled":
-      return {
-        icon: <CalendarClock className="h-3 w-3 text-amber-500" />,
-        label: "Meeting rescheduled",
-      };
-    case "booking_no_show":
-      return {
-        icon: <UserX className="h-3 w-3 text-rose-500" />,
-        label: "No-show",
-      };
-    case "booking_completed":
-      return {
-        icon: <CheckCircle2 className="h-3 w-3 text-emerald-500" />,
-        label: "Meeting completed",
-      };
-    case "booking_reassigned":
-      return {
-        icon: <Users className="h-3 w-3 text-indigo-500" />,
-        label: "Booking reassigned",
-      };
-    case "webinar_registered":
-      return {
-        icon: <MonitorPlay className="h-3 w-3 text-violet-500" />,
-        label: "Webinar registration",
-      };
-    case "webinar_joined":
-      return {
-        icon: <MonitorPlay className="h-3 w-3 text-sky-500" />,
-        label: "Joined webinar",
-      };
-    case "webinar_completed":
-      return {
-        icon: <CheckCircle2 className="h-3 w-3 text-emerald-500" />,
-        label: "Webinar completed",
-      };
-    case "webinar_cta_clicked":
-      return {
-        icon: <MousePointerClick className="h-3 w-3 text-amber-500" />,
-        label: "Webinar offer clicked",
-      };
-    case "note_added":
-    default:
-      return {
-        icon: <Pencil className="text-muted-foreground h-3 w-3" />,
-        label: "Note added",
-      };
-  }
 }
 
 function toMillis(v: unknown): number {

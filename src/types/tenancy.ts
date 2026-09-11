@@ -623,12 +623,11 @@ export interface SubAccountDoc {
   territoryScopingEnabledAt?: Date | null;
   territoryScopingEnabledByUid?: string | null;
   /**
-   * Optional per-sub-account overrides for the deal pipeline's stage labels +
-   * order. ONLY label/order are editable; ids + won/lost terminals always come
-   * from the canonical {@link PipelineStage} set, so this is a pure display
-   * layer. Absent/undefined (the default for every existing sub-account) →
-   * the canonical stages render unchanged. Set via PATCH
-   * /api/sub-accounts/[id]/pipeline-stages (admin). See "Phase 2 (2A)".
+   * LEGACY. Pre-multi-pipeline label/order overrides for the six canonical
+   * stages. No longer written (the `pipeline-stages` route is gone); read
+   * once to seed `subAccounts/{id}/pipelines/default` on its first load and
+   * for the client's synthetic default until that read lands. After the
+   * default pipeline doc exists this field is ignored.
    */
   pipelineStages?: import("./deals").PipelineStageOverride[];
   /**
@@ -885,6 +884,19 @@ export interface AgencyMemberDoc {
   displayName: string;
   addedAt: Date;
   addedByUid: string;
+}
+
+/**
+ * The display slice of a member row that GET /api/sub-accounts/[id]/members
+ * returns to every active member for the "Assigned to" pickers.
+ */
+export interface AssignableMember {
+  uid: string;
+  /** Display name, or the email when none is set, or the uid. */
+  displayName: string;
+  /** Empty unless the member has no display name (then it IS the label). */
+  email: string;
+  role: string;
 }
 
 export interface SubAccountMemberDoc {

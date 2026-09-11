@@ -15,6 +15,7 @@ src/
       sa/[subAccountId]/          Per-sub-account CRM (the working surface)
         dashboard/                Home: KPI summary + pipeline snapshot + activity
         dashboard/settings/       Profile, theme, subscription, members, SMS, send-window
+        dashboard/settings/whatsapp/  WhatsApp Cloud sender: header + quality badge, business profile, message links (SP15)
         contacts/                 List + [id] profile (notes, activities, send email/SMS)
         pipeline/                 6-stage Kanban (drag-drop deals)
         calendar/                 Month grid + events
@@ -62,9 +63,11 @@ src/
       broadcasts/email/step/      QStash callback — sends one recipient's email
       u/[token]/                  POST unsubscribe (flips contact.emailOptedOut)
       cron/gitpage-heartbeat/     Daily QStash-scheduled gitpage subscription-status refresh
+      cron/whatsapp-quality/      Hourly QStash-scheduled WhatsApp Cloud quality-rating poll (alerts on a drop from GREEN)
       webhooks/stripe/            Stripe subscription webhook
       webhooks/twilio/inbound/    Inbound SMS (STOP/START opt-out + chat-thread writes + AI auto-reply)
       sub-accounts/[id]/
+        whatsapp/                 status, profile (+photo), message-links (+[code]) — the WhatsApp settings routes over the provider seam
         ai-agent/profile/         GET/PATCH shared agent profile (persona, hours, KB)
         ai-agent/profile/         POST refresh-kb → Firecrawl scrape of websiteUrl
           refresh-kb/
@@ -102,12 +105,14 @@ src/
     analytics-scripts.tsx  Crisp/GTM/Pixel loader — skips on /embed/* so the chat iframe doesn't render a nested support widget
     search/              Cmd+K command palette
     settings/            Sub-account members + per-SA Twilio config sections
+    settings/whatsapp/   WhatsApp settings page: shell, sender-header (flag + quality badge), profile-tab + phone-preview, message-links-tab, dial-flag
   config/
     landing.ts           CUSTOM_BRAND fields (white-label config)
   lib/
     firebase/            Client + admin SDK (admin uses "server-only" guard) + auth helpers
     stripe/              Checkout + portal + webhooks + client/server helpers
     comms/               Resend + Twilio wrappers, route-auth, usage counter, SMS segments, per-SA config; meta.ts (server-only Graph API: OAuth, scopes, granted-scope read, send + Social Planner publish helpers), meta-capabilities.ts (client-safe metaCanInbox/metaCanPublish/deriveMetaCapabilities)
+    comms/whatsapp/settings/  WhatsApp settings provider seam: types, graph (Meta), fake + fake-scenario (dev/CI, fenced by mode + select), route-support, quality-sweep + quality-alert
     comms/ai/            AI Agents: agent.ts (profile + per-channel resolver + lazy migration), respond.ts (SMS orchestrator), prompt.ts (channel-aware system prompt + KB injection), context.ts (contact context block), escalation.ts (keyword match + email notify), openrouter.ts (LLM client)
     comms/web-chat/      Web Chat: session.ts (get-or-create + history + capture-state), respond.ts (orchestrator returning reply over HTTP), capture.ts (parse [[form]] + [[capture]] markers, Contact reconciliation), follow-up.ts (post-capture Task + escalation email), origin.ts (Origin allowlist), rate-limit.ts (in-memory IP + session caps)
     firecrawl/           client.ts — agency-level scrape wrapper (/v1/scrape, 30s timeout, FirecrawlError)

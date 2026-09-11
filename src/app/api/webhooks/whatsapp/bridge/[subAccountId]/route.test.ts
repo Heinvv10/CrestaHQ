@@ -40,6 +40,9 @@ let contactUpdates: Array<Record<string, unknown>> = [];
 let activityWrites: Array<{ docId: string; data: Record<string, unknown> }> = [];
 /** Set to make the opt-out batch commit fail, as contention would. */
 let commitThrows = false;
+/** `*_received` timeline rows, keyed `${contactId}/${docId}` — a retry that
+ *  lands on the same key is what idempotent means here. */
+let inboundActivities = new Map<string, Record<string, unknown>>();
 
 function makeSnap(row: { id: string; data: Record<string, unknown> }) {
   const ref = {
@@ -95,6 +98,14 @@ const fakeDb = {
       doc: (id?: string) => ({
         id: id ?? "generated-contact-id",
         get: async () => makeSnap(contactRows[contactRows.length - 1]),
+        collection: (sub: string) => ({
+          doc: (docId?: string) => ({
+            set: async (data: Record<string, unknown>) => {
+              if (sub !== "activities") throw new Error(`unexpected ${sub}`);
+              inboundActivities.set(`${id}/${docId ?? "auto"}`, data);
+            },
+          }),
+        }),
       }),
     };
   },
@@ -205,6 +216,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     messageReads = [];
     contactUpdates = [];
     activityWrites = [];
+    inboundActivities = new Map();
     commitThrows = false;
     aiOn = false;
     maybeRespondWithAi.mockReset();
@@ -247,6 +259,27 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
       channel: "whatsapp",
       direction: "inbound",
     });
+  });
+
+  it("writes one whatsapp_received timeline row per matched contact, keyed by the bridge id", async () => {
+    await post(inbound());
+    expect([...inboundActivities.keys()]).toEqual(["c1/inbound_whatsapp_3EB0ABC"]);
+    expect(inboundActivities.get("c1/inbound_whatsapp_3EB0ABC")).toMatchObject({
+      type: "whatsapp_received",
+      createdBy: "whatsapp_inbound",
+      agencyId: "ag_1",
+      subAccountId: "sa_1",
+      content: "WhatsApp received: hi there",
+      meta: { channel: "whatsapp", messageId: "3EB0ABC" },
+    });
+  });
+
+  it("a redelivery lands on the same timeline row, not a second one", async () => {
+    await post(inbound());
+    existingMessageIds.add("3EB0ABC");
+    await post(inbound());
+    expect(messageWrites).toHaveLength(2);
+    expect(inboundActivities.size).toBe(1);
   });
 
   it("stamps createdAt from the payload's `at`, not the write time", async () => {

@@ -11,6 +11,8 @@ import {
 } from "@/lib/api/serializers/deals";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import type { WebhookEventType } from "@/types/webhooks";
 
 /**
@@ -22,8 +24,9 @@ import type { WebhookEventType } from "@/types/webhooks";
  *
  * Stage-change semantics: PATCHing `stage` updates `stageChangedAt` to
  * server-now AND emits `deal.stage.changed`. Terminal-state transitions
- * (`won` / `lost`) ALSO emit `deal.won` / `deal.lost` so subscribers can
- * subscribe to those specifically without filtering server-side.
+ * (the pipeline's won / lost stages) ALSO emit `deal.won` / `deal.lost` so
+ * subscribers can subscribe to those specifically without filtering
+ * server-side. `stage` is validated against the deal's own pipeline.
  */
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
@@ -82,7 +85,22 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   }
 
   const stageChanged = patch.stage !== undefined && patch.stage !== previousStage;
+  let terminal: "won" | "lost" | undefined;
   if (patch.stage !== undefined) {
+    const pipeline = await loadPipeline(
+      existing.subAccountId as string,
+      dealPipelineId(existing),
+    );
+    const stage = pipeline ? findStage(pipeline, patch.stage) : undefined;
+    if (!stage) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        "invalid_body",
+        `\`stage\` must be one of: ${(pipeline?.stages ?? []).map((s) => s.id).join(", ")}.`,
+      );
+    }
+    terminal = stage.terminal;
     writePatch.stageId = patch.stage;
     if (stageChanged) {
       writePatch.stageChangedAt = FieldValue.serverTimestamp();
@@ -103,8 +121,8 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
       type: "deal.stage.changed",
       extra: { previous_stage: previousStage ?? null },
     });
-    if (patch.stage === "won") events.push({ type: "deal.won" });
-    else if (patch.stage === "lost") events.push({ type: "deal.lost" });
+    if (terminal === "won") events.push({ type: "deal.won" });
+    else if (terminal === "lost") events.push({ type: "deal.lost" });
   }
   emitDealEvents({
     subAccountId: ctx.subAccountId,

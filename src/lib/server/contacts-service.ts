@@ -51,11 +51,15 @@ export interface CreateContactInput {
    */
   phoneCountry?: string | null;
   company: string;
+  /** Linked `companies/{id}` (routes verify tenancy via resolveCompanyLink). */
+  companyId?: string | null;
   address: string;
   source: string;
   tags: string[];
   pipelineStage?: string | null;
   territoryId?: string | null;
+  /** Member uid (validated by the route) or null. */
+  assignedToUid?: string | null;
   /** Validated custom-field value map (routes validate against live defs). */
   customFields?: Record<string, CustomFieldValue> | null;
   attribution?: ContactAttribution | null;
@@ -114,6 +118,7 @@ export function buildContactDoc(input: CreateContactInput) {
     email: input.email,
     phone: normalizePhoneLenient(input.phone, input.phoneCountry),
     company: input.company,
+    companyId: input.companyId ?? null,
     address: input.address,
     source: input.source,
     tags: [...new Set(input.tags)],
@@ -128,6 +133,7 @@ export function buildContactDoc(input: CreateContactInput) {
     lat: loc?.lat ?? null,
     lng: loc?.lng ?? null,
     territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,
@@ -186,6 +192,7 @@ export interface UpdateContactPatch {
   email?: string;
   phone?: string;
   company?: string;
+  companyId?: string | null;
   address?: string;
   source?: string;
   tags?: string[];
@@ -196,8 +203,23 @@ export interface UpdateContactPatch {
    * still belongs to the dedicated admin endpoint — see the note below.
    */
   territoryId?: string | null;
+  /** Member uid (validated by the route) or null to unassign. */
+  assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue>;
+}
+
+/** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
+export function companyStringDrifts(
+  existing: { companyId?: string | null; company?: string },
+  patch: { company?: string; companyId?: string | null },
+): boolean {
+  return (
+    patch.companyId === undefined &&
+    patch.company !== undefined &&
+    !!existing.companyId &&
+    patch.company !== existing.company
+  );
 }
 
 /**
@@ -230,6 +252,11 @@ export async function updateContactServerSide(opts: {
   const patch = {
     ...opts.patch,
     ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
+    // A writer that changes the free-text `company` without saying which
+    // company (the public API, which has no companyId field) breaks the
+    // link rather than leaving companyId pointing at a company whose name
+    // the contact no longer carries. The dashboard always sends companyId.
+    ...(companyStringDrifts(existing, opts.patch) ? { companyId: null } : {}),
   };
 
   // update(), not set(..., {merge: true}): merge recurses into nested maps,

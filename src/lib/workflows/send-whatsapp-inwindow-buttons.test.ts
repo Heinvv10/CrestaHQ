@@ -94,7 +94,7 @@ const run = (
     } as unknown as Contact,
     subAccount,
     owner: { displayName: "Hein", email: "h@example.com" },
-    subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", triggerContext: {},
+    subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", workflowId: "wf1", runId: "run1", triggerContext: {},
   });
 
 beforeEach(() => {

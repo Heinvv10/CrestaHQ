@@ -6,13 +6,22 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useSubAccount } from "@/context/sub-account-context";
 import { TerritorySelectField } from "@/components/settings/territory-select-field";
+import {
+  CompanyCombobox,
+  type CompanyValue,
+} from "@/components/contacts/company-combobox";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
 import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
 import type { Contact, ContactFormData, ContactSource } from "@/types/contacts";
 
@@ -51,12 +60,18 @@ export function ContactForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [email, setEmail] = useState(initial?.email ?? "");
   const [phone, setPhone] = useState(initial?.phone ?? "");
-  const [company, setCompany] = useState(initial?.company ?? "");
+  const [company, setCompany] = useState<CompanyValue>({
+    companyId: initial?.companyId ?? null,
+    company: initial?.company ?? "",
+  });
   const [address, setAddress] = useState(initial?.address ?? "");
   const [source, setSource] = useState<ContactSource>(initial?.source ?? "");
   const [tagsInput, setTagsInput] = useState((initial?.tags ?? []).join(", "));
   const [territoryId, setTerritoryId] = useState<string | null>(
     initial?.territoryId ?? null
+  );
+  const [assignedToUid, setAssignedToUid] = useState<string | null>(
+    initial?.assignedToUid ?? null
   );
 
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
@@ -83,7 +98,10 @@ export function ContactForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const next: Record<string, string> = {};
-    if (!name.trim()) next.name = "Name is required";
+    // WhatsApp-inbound contacts arrive nameless; a phone or email is enough
+    // to identify one, so the name is only required when both are empty.
+    if (!hasContactIdentity({ name, phone, email }))
+      next.name = CONTACT_IDENTITY_ERROR;
     if (email.trim() && !EMAIL_RE.test(email.trim()))
       next.email = "Enter a valid email";
     setErrors(next);
@@ -111,10 +129,12 @@ export function ContactForm({
         name: name.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        company: company.trim(),
+        company: company.company.trim(),
+        companyId: company.companyId,
         address: address.trim(),
         source,
         tags,
+        assignedToUid,
         customFields: cf.value,
       };
       // Only include territoryId when scoping is on AND (creating OR
@@ -134,9 +154,7 @@ export function ContactForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="c-name">
-          Full name <span className="text-destructive">*</span>
-        </Label>
+        <Label htmlFor="c-name">Full name</Label>
         <Input
           id="c-name"
           value={name}
@@ -177,11 +195,10 @@ export function ContactForm({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="c-company">Company</Label>
-          <Input
+          <CompanyCombobox
             id="c-company"
             value={company}
-            onChange={(e) => setCompany(e.target.value)}
-            placeholder="Acme Inc."
+            onChange={setCompany}
           />
         </div>
       </div>
@@ -227,6 +244,15 @@ export function ContactForm({
         <p className="text-muted-foreground text-xs">
           Separate tags with commas
         </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="c-assignee">Assigned to</Label>
+        <AssigneeSelect
+          id="c-assignee"
+          value={assignedToUid}
+          onChange={setAssignedToUid}
+        />
       </div>
 
       {/* Renders nothing when territory scoping is off. */}

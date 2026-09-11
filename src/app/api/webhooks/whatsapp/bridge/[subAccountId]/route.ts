@@ -14,6 +14,7 @@ import { isGroupJid, isLidJid, isPhoneJid, jidToE164, redactJid } from "@/lib/co
 import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import {
@@ -377,6 +378,18 @@ export async function POST(
     } catch (err) {
       console.warn("[whatsapp-bridge] conversation upsert failed", err);
     }
+    await Promise.all(
+      contactDocs.map((d) =>
+        writeInboundMessageActivity(db, {
+          contactId: d.id,
+          channel: "whatsapp",
+          preview: body,
+          messageId: docId,
+          agencyId,
+          subAccountId,
+        })
+      )
+    );
   }
 
   // Runs on EVERY delivery, redelivery included. An opt-out is a POPIA

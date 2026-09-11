@@ -2,6 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { FieldPath, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import { validEmail } from "@/lib/comms/smtp";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { EmailMessageDoc } from "@/types/email";
@@ -106,9 +107,11 @@ export async function recordEmailMessage(
     input.contactId && correspondents.length === 1
       ? null
       : await legacyContactIndex(input.subAccountId);
-  return db.runTransaction(async (tx) => {
+  let tenantAgencyId = "";
+  const result = await db.runTransaction(async (tx) => {
     const sub = await tx.get(db.doc(`subAccounts/${input.subAccountId}`));
     const agencyId = sub.data()?.agencyId as string | undefined;
+    tenantAgencyId = agencyId ?? "";
     if (!sub.exists || !agencyId)
       throw new Error("Email tenant does not exist.");
     if (input.mailboxFence) {
@@ -316,4 +319,18 @@ export async function recordEmailMessage(
       tx.set(write.ref, write.data, { merge: write.merge ?? false });
     return { contactId: firstContactId, inserted };
   });
+  // Timeline row for a NEW live inbound mail — written after the
+  // transaction commits, never inside it (a derived row must not be able to
+  // abort the message write). Historical backfill stays off the timeline.
+  if (result.inserted && input.direction === "inbound" && !input.historical) {
+    await writeInboundMessageActivity(db, {
+      contactId: result.contactId,
+      channel: "email",
+      preview: input.subject ? `${input.subject} — ${input.body}` : input.body,
+      messageId,
+      agencyId: tenantAgencyId,
+      subAccountId: input.subAccountId,
+    });
+  }
+  return result;
 }

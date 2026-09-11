@@ -89,9 +89,20 @@ function listUnder(path: string) {
   return { empty: docs.length === 0, size: docs.length, docs };
 }
 
-function collectionRef(path: string) {
+function collectionRef(path: string, filters: Array<[string, unknown]> = []) {
+  const matches = (d: Record<string, unknown> | undefined) =>
+    filters.every(([field, value]) => d?.[field] === value);
   return {
-    get: async () => listUnder(path),
+    get: async () => {
+      const all = listUnder(path);
+      const docs = all.docs.filter((d) => matches(d.data()));
+      return { empty: docs.length === 0, size: docs.length, docs };
+    },
+    /** Equality on a top-level field only — add operators when a test needs them. */
+    where: (field: string, op: "==", value: unknown) => {
+      if (op !== "==") throw new Error("harness: only == is modelled");
+      return collectionRef(path, [...filters, [field, value]]);
+    },
     doc: () => docRef(`${path}/auto_${++autoId}`),
     add: async (data: Record<string, unknown>) => {
       const id = `auto_${++autoId}`;

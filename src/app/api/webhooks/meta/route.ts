@@ -10,6 +10,7 @@ import {
 } from "@/lib/comms/meta";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import { resolveAgent } from "@/lib/comms/ai/agent";
 import { maybeRespondWithAi } from "@/lib/comms/ai/respond";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
@@ -324,6 +325,14 @@ export async function POST(request: Request) {
         channel,
         direction: "inbound",
         body: text,
+      });
+      await writeInboundMessageActivity(db, {
+        contactId: contact.id,
+        channel,
+        preview: text,
+        messageId: mid,
+        agencyId: route.agencyId,
+        subAccountId: route.subAccountId,
       });
 
       // Phase B — AI auto-reply. Awaited (serverless can't fire-and-forget)

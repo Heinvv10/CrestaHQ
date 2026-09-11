@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   CircleDot,
   MapPinned,
+  UserRound,
   MessageSquare,
   PhoneOutgoing,
   Star,
@@ -45,8 +46,10 @@ import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { formatContactDate } from "@/lib/format";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { useSubAccount } from "@/context/sub-account-context";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import type { Contact, ContactFormData } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface ContactBlocker {
   type: string;
@@ -90,6 +93,12 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
     );
     return () => unsub();
   }, [scopingOn, subAccountId]);
+
+  const { members } = useSubAccountMembers(subAccountId);
+  const assigneeName = contact.assignedToUid
+    ? (members.find((m) => m.uid === contact.assignedToUid)?.displayName ??
+      "Former member")
+    : null;
 
   const territoryName = (() => {
     if (!contact.territoryId) return null;
@@ -252,7 +261,7 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
               name block to nothing before the flex-wrap kicks in. */}
           <div className="min-w-0 flex-1 basis-56">
             <h1 className="truncate text-2xl font-bold tracking-tight sm:text-3xl">
-              {contact.name || "Unnamed contact"}
+              {contactDisplayName(contact, "Unnamed contact")}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Added {formatContactDate(contact.createdAt)}
@@ -360,7 +369,16 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
               icon={<Building2 className="h-4 w-4 text-muted-foreground" />}
               label="Company"
             >
-              <span className="text-foreground">{contact.company}</span>
+              {contact.companyId ? (
+                <Link
+                  href={saPath(`/companies/${contact.companyId}`)}
+                  className="text-foreground hover:text-primary hover:underline"
+                >
+                  {contact.company}
+                </Link>
+              ) : (
+                <span className="text-foreground">{contact.company}</span>
+              )}
             </Row>
           )}
           <Row
@@ -368,6 +386,14 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
             label="Source"
           >
             <SourceBadge source={contact.source} />
+          </Row>
+          <Row
+            icon={<UserRound className="h-4 w-4 text-muted-foreground" />}
+            label="Assigned to"
+          >
+            <span className="text-foreground" data-testid="contact-assignee">
+              {assigneeName ?? "Unassigned"}
+            </span>
           </Row>
           <Row
             icon={<Tag className="h-4 w-4 text-muted-foreground" />}
@@ -403,7 +429,7 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
           <SheetHeader>
             <SheetTitle>Edit Contact</SheetTitle>
             <SheetDescription>
-              Update {contact.name || "this contact"}&apos;s details.
+              Update {contactDisplayName(contact, "this contact")}&apos;s details.
             </SheetDescription>
           </SheetHeader>
           <div className="p-4 pt-0">

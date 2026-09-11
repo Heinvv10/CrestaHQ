@@ -1,4 +1,5 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
+import type { ConditionGroup } from "@/types/workflows";
 
 /**
  * How a Contact entered the CRM. Stored as a free-form string on the doc
@@ -62,6 +63,12 @@ export interface Contact {
   email: string;
   phone: string;
   company: string;
+  /**
+   * Linked `companies/{id}` doc, or null/absent for legacy free-text
+   * `company` values. On link the server copies the company's name into
+   * `company` so every existing reader of the string keeps working.
+   */
+  companyId?: string | null;
   /** Free-form billing/postal address. Surfaced under "Billed to" on
    *  quotes + invoices (snapshotted onto the doc at contact pick time
    *  so historical docs aren't mutated when the contact's address
@@ -69,6 +76,11 @@ export interface Contact {
    *  their region. Empty string when not provided. */
   address: string;
   source: ContactSource;
+  /**
+   * Sub-account member this record is assigned to (GHL "owner"). `null` /
+   * absent = unassigned. Validated against `subAccountMembers` on write.
+   */
+  assignedToUid?: string | null;
   tags: string[];
   pipelineStage: string | null;
   attribution: ContactAttribution | null;
@@ -173,7 +185,9 @@ export type ContactFormData = Pick<
   Contact,
   "name" | "email" | "phone" | "company" | "address" | "source" | "tags"
 > & {
+  companyId?: string | null;
   territoryId?: string | null;
+  assignedToUid?: string | null;
   customFields?: Record<
     string,
     import("./custom-fields").CustomFieldValue
@@ -184,11 +198,25 @@ export type ActivityType =
   | "note_added"
   | "booking_created"
   | "pipeline_moved"
+  // Written by createTaskServerSide for tasks linked to a contact.
+  | "task_created"
   | "task_completed"
   | "form_submitted"
   | "email_sent"
   | "sms_sent"
   | "whatsapp_sent"
+  // Inbound messages, written by the same server path that persists the
+  // message row (Twilio SMS / WhatsApp webhooks, WhatsApp Cloud + bridge,
+  // Meta webhook, email sync) via lib/server/contact-activities.ts — so the
+  // Activity tab shows both halves of a conversation.
+  | "sms_received"
+  | "whatsapp_received"
+  | "email_received"
+  | "messenger_received"
+  | "instagram_received"
+  // A web-chat visitor's message once the session is attributed to a contact
+  // (lib/comms/web-chat/respond.ts) or the capture form itself (api/web-chat/capture).
+  | "webchat_received"
   // Operator replied on the BETA Facebook Messenger / Instagram DM inbox.
   // Written by /api/comms/meta/send.
   | "messenger_sent"
@@ -261,6 +289,23 @@ export interface Note {
   content: string;
   createdBy: string;
   createdAt: Timestamp | FieldValue | null;
+}
+
+/**
+ * Saved filter over the contacts list, stored at
+ * `subAccounts/{subAccountId}/smartLists/{id}`. `filters` is the same
+ * ConditionGroup a workflow trigger uses, evaluated client-side over the
+ * live contact array by `lib/contacts/filter.ts::applyFilters`.
+ */
+export interface SmartListDoc {
+  id: string;
+  name: string;
+  filters: ConditionGroup;
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
 }
 
 export interface ActivityItem {

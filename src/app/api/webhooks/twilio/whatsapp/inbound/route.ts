@@ -11,6 +11,7 @@ import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { stripWhatsappPrefix } from "@/lib/comms/twilio";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import {
@@ -260,6 +261,18 @@ export async function POST(request: Request) {
           buttonTap: buttonPayload !== null,
         });
       }),
+    );
+    await Promise.all(
+      contactDocs.map((d) =>
+        writeInboundMessageActivity(db, {
+          contactId: d.id,
+          channel: "whatsapp",
+          preview: bodyRaw,
+          messageId: docId,
+          agencyId: route.agencyId ?? "",
+          subAccountId: route.subAccountId,
+        }),
+      ),
     );
   }
 

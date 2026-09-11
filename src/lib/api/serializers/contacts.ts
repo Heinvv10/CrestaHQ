@@ -37,6 +37,8 @@ export interface ContactApiObject {
   tags: string[];
   pipeline_stage: string | null;
   territory_id: string | null;
+  /** Sub-account member uid the record is assigned to; read-only over the public API. */
+  assigned_to_uid: string | null;
   email_opted_out: boolean;
   sms_opted_out: boolean;
   custom_fields: Record<string, CustomFieldValue> | null;
@@ -144,6 +146,7 @@ export function serializeContactForApi(
     tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
     pipeline_stage: (data.pipelineStage as string | null) ?? null,
     territory_id: (data.territoryId as string | null) ?? null,
+    assigned_to_uid: (data.assignedToUid as string | null) ?? null,
     email_opted_out: !!data.emailOptedOut,
     sms_opted_out: !!data.smsOptedOut,
     custom_fields: customFieldsForApi(data.customFields),
