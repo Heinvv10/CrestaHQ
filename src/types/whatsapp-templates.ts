@@ -66,6 +66,10 @@ export interface WhatsappTemplateVariable {
   mergeTag: string | null;
 }
 
+export type WhatsappTemplateButton =
+  | { type: "quick_reply"; text: string }
+  | { type: "url"; text: string; url: string };
+
 export interface WhatsappTemplateDoc {
   id: string;
   subAccountId: string;
@@ -81,6 +85,10 @@ export interface WhatsappTemplateDoc {
   /** Body with positional {{1}}-style placeholders. */
   body: string;
   variables: WhatsappTemplateVariable[];
+  /** Up to 3 buttons — quick replies first, then URLs. Absent on every
+   *  template that predates buttons. A quick-reply tap comes back as a reply
+   *  whose text is the button's text (see cloud-payload.ts). */
+  buttons?: WhatsappTemplateButton[];
   /** Twilio Content resource id (HX…). Null until submitted. The send path
    *  references this; the approval-poll keys off it.
    *

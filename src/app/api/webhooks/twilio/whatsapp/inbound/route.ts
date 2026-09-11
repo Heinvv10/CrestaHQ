@@ -13,6 +13,11 @@ import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import {
+  firstKeyword,
+  WHATSAPP_START_WORDS,
+  WHATSAPP_STOP_WORDS,
+} from "@/lib/comms/whatsapp/opt-keywords";
 
 export const dynamic = "force-dynamic";
 
@@ -40,16 +45,6 @@ export const dynamic = "force-dynamic";
  *
  * Always returns 200 + empty TwiML so Twilio doesn't retry.
  */
-
-const STOP_WORDS = new Set([
-  "STOP",
-  "STOPALL",
-  "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
-]);
-const START_WORDS = new Set(["START", "UNSTOP", "YES"]);
 
 function emptyTwimlResponse(): string {
   return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
@@ -164,10 +159,10 @@ export async function POST(request: Request) {
   }
 
   // Detect opt-out / opt-in keywords.
-  const word = bodyRaw.trim().toUpperCase().split(/\s+/)[0] ?? "";
+  const word = firstKeyword(bodyRaw);
   let nextOptedOut: boolean | null = null;
-  if (STOP_WORDS.has(word)) nextOptedOut = true;
-  else if (START_WORDS.has(word)) nextOptedOut = false;
+  if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
+  else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
 
   const db = getAdminDb();
   const profileName =

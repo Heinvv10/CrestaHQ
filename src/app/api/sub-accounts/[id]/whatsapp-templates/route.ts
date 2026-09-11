@@ -4,7 +4,10 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { sanitiseVariables } from "@/lib/comms/whatsapp/template-validation";
+import {
+  sanitiseButtons,
+  sanitiseVariables,
+} from "@/lib/comms/whatsapp/template-validation";
 import { loadContactCustomFieldKeys } from "@/lib/custom-fields/load-defs";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateCategory } from "@/types/whatsapp-templates";
@@ -30,6 +33,7 @@ interface CreateBody {
   language?: string;
   body?: string;
   variables?: unknown;
+  buttons?: unknown;
 }
 
 async function requireWhatsappGate(
@@ -105,6 +109,10 @@ export async function POST(
   if ("error" in sanitised) {
     return NextResponse.json({ error: sanitised.error }, { status: 400 });
   }
+  const buttons = sanitiseButtons(body.buttons);
+  if ("error" in buttons) {
+    return NextResponse.json({ error: buttons.error }, { status: 400 });
+  }
 
   const ref = getAdminDb()
     .collection(`subAccounts/${subAccountId}/whatsappTemplates`)
@@ -118,6 +126,7 @@ export async function POST(
     language,
     body: templateBody.slice(0, 1024),
     variables: sanitised.variables,
+    buttons: buttons.buttons,
     contentSid: null,
     status: "draft",
     rejectionReason: null,

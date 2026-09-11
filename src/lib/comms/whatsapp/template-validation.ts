@@ -1,7 +1,9 @@
 import {
   isWhatsappMergeTag,
+  type WhatsappTemplateButton,
   type WhatsappTemplateVariable,
 } from "@/types/whatsapp-templates";
+import { firstKeyword, WHATSAPP_STOP_WORDS } from "@/lib/comms/whatsapp/opt-keywords";
 
 /**
  * Shared validation for WhatsApp template bodies + variables. Used by the
@@ -76,6 +78,62 @@ export function sanitiseVariables(
     if (!byPos.has(p)) return { error: `Missing definition for {{${p}}}.` };
   }
   return { variables: positions.map((p) => byPos.get(p)!) };
+}
+
+/** Meta's limits: 25 characters of button text, 2000 of URL. We cap the
+ *  count at 3 so one definition renders on every rail (an in-window
+ *  interactive message allows 3 reply buttons). */
+export const MAX_TEMPLATE_BUTTONS = 3;
+const MAX_BUTTON_TEXT = 25;
+const MAX_BUTTON_URL = 2000;
+
+/**
+ * Validate a template's buttons. Returns them quick replies first — Meta
+ * requires quick replies grouped together ahead of call-to-action buttons —
+ * otherwise in the order given.
+ *
+ * A quick reply's text comes back as the customer's message, and every
+ * WhatsApp inbound route reads a first word of STOP / CANCEL / … as an
+ * opt-out. So "Cancel my booking" is refused here rather than silently
+ * unsubscribing whoever taps it.
+ */
+export function sanitiseButtons(
+  raw: unknown,
+): { buttons: WhatsappTemplateButton[] } | { error: string } {
+  if (raw === undefined || raw === null) return { buttons: [] };
+  if (!Array.isArray(raw)) return { error: "buttons must be an array" };
+  if (raw.length > MAX_TEMPLATE_BUTTONS) {
+    return { error: `A template can have at most ${MAX_TEMPLATE_BUTTONS} buttons.` };
+  }
+  const out: WhatsappTemplateButton[] = [];
+  for (const b of raw) {
+    const r = (b && typeof b === "object" ? b : {}) as Record<string, unknown>;
+    const text = typeof r.text === "string" ? r.text.trim() : "";
+    if (!text || text.length > MAX_BUTTON_TEXT) {
+      return { error: `Button text must be 1–${MAX_BUTTON_TEXT} characters.` };
+    }
+    if (out.some((o) => o.text.toLowerCase() === text.toLowerCase())) {
+      return { error: `Two buttons can't both say "${text}".` };
+    }
+    if (r.type === "quick_reply") {
+      if (WHATSAPP_STOP_WORDS.has(firstKeyword(text))) {
+        return {
+          error: `"${text}" starts with an opt-out word — tapping it would unsubscribe the customer. Reword it.`,
+        };
+      }
+      out.push({ type: "quick_reply", text });
+    } else if (r.type === "url") {
+      const url = typeof r.url === "string" ? r.url.trim() : "";
+      if (!/^https:\/\/\S+$/i.test(url) || url.length > MAX_BUTTON_URL) {
+        return { error: `The "${text}" button needs a full https:// link.` };
+      }
+      out.push({ type: "url", text, url });
+    } else {
+      return { error: "Each button must be a quick reply or a link." };
+    }
+  }
+  const quick = out.filter((b) => b.type === "quick_reply");
+  return { buttons: [...quick, ...out.filter((b) => b.type !== "quick_reply")] };
 }
 
 /** Derive a Meta-compliant template name (lowercase + underscores) from a

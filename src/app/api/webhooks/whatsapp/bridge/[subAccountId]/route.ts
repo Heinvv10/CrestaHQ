@@ -16,6 +16,11 @@ import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import {
+  firstKeyword,
+  WHATSAPP_START_WORDS,
+  WHATSAPP_STOP_WORDS,
+} from "@/lib/comms/whatsapp/opt-keywords";
 
 export const dynamic = "force-dynamic";
 
@@ -40,16 +45,6 @@ export const dynamic = "force-dynamic";
  *
  * Answers 200 on every accepted path: the bridge warns on any status >= 300.
  */
-
-const STOP_WORDS = new Set([
-  "STOP",
-  "STOPALL",
-  "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
-]);
-const START_WORDS = new Set(["START", "UNSTOP", "YES"]);
 
 const ok = (body: Record<string, unknown> = { ok: true }) =>
   NextResponse.json(body, { status: 200 });
@@ -188,10 +183,10 @@ export async function POST(
 
   const agencyId = subAccount.agencyId ?? "";
   const body = payload.text ?? "";
-  const word = body.trim().toUpperCase().split(/\s+/)[0] ?? "";
+  const word = firstKeyword(body);
   let nextOptedOut: boolean | null = null;
-  if (STOP_WORDS.has(word)) nextOptedOut = true;
-  else if (START_WORDS.has(word)) nextOptedOut = false;
+  if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
+  else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
 
   const matches = await db
     .collection("contacts")
