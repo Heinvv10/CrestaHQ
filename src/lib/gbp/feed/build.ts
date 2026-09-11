@@ -40,7 +40,7 @@ const SCAN_CAP = 200;
  * synced meanwhile reaches the feed within the minute.
  */
 export const SCAN_MEMO_MS = 60_000;
-const MAX_MEMO = 1_000;
+export const MAX_MEMO = 1_000;
 type Scan = Array<{ id: string; data: Record<string, unknown> }>;
 const memo = new Map<string, { at: number; scan: Scan }>();
 
@@ -50,7 +50,6 @@ async function reviewScan(publicId: string, subAccountId: string, locationName: 
   if (hit && now - hit.at < SCAN_MEMO_MS) return hit.scan;
   const snap = await getAdminDb().collection(reviewsCollection(subAccountId)).orderBy("createTime", "desc").limit(SCAN_CAP).get();
   const scan = snap.docs.map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }));
-  memo.delete(key);
   memo.set(key, { at: now, scan });
   while (memo.size > MAX_MEMO) memo.delete(memo.keys().next().value!);
   return scan;

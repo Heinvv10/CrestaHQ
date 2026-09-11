@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { LOC_A, SA, asUser, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
+import { LOC_A, LOC_NORTH, SA, asUser, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
+import { MAX_MEMO } from "@/lib/gbp/feed/build";
 import { storeDb } from "@/test/gbp-sync-store";
 import { VELO, createWidget, feed, feedBody, freshIp } from "@/test/gbp-feed-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
@@ -60,6 +61,37 @@ describe("the review scan is memoised for 60s per widget", () => {
     vi.setSystemTime(Date.now() + 2_000);
     expect((await feedBody(id, h())).reviews[0].text).toBe("Edited at Google.");
   });
+});
+
+describe("the memo is keyed by widget AND listing, and bounded", () => {
+  it("a different listing selected within the minute is scanned afresh", async () => {
+    await feedBody(id, h());
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      googleListing: { ...(sub.googleListing as object), locationName: LOC_NORTH },
+      gbpSummary: { ...(sub.gbpSummary as object), locationName: LOC_NORTH },
+    });
+    const now = new Date();
+    mem.seed(`subAccounts/${SA}/gbpReviews/north1`, {
+      subAccountId: SA, locationName: LOC_NORTH, state: "active", starRating: 4, comment: "North review.",
+      reviewer: { displayName: "N", profilePhotoUrl: null, isAnonymous: false }, createTime: now, updateTime: now, reply: null, lastSeenAt: now,
+    });
+    expect((await feedBody(id, h())).reviews.map((r) => r.id)).toContain("north1");
+  });
+
+  it(`keeps at most ${MAX_MEMO} scans, dropping the oldest`, async () => {
+    const collection = vi.spyOn(storeDb, "collection");
+    const widget = mem.read(`gbpWidgets/${id}`)!;
+    const ids = Array.from({ length: MAX_MEMO }, (_, i) => `M${String(i).padStart(31, "0")}`);
+    for (const other of ids) mem.seed(`gbpWidgets/${other}`, widget);
+    await feedBody(id, { "cf-connecting-ip": "memo-0" });
+    for (const [i, other] of ids.entries()) await feedBody(other, { "cf-connecting-ip": `memo-${i + 1}` });
+    const before = scans(collection);
+    // The first widget's scan was the oldest, so it was evicted: a fresh scan.
+    await feedBody(id, { "cf-connecting-ip": "memo-last" });
+    expect(scans(collection)).toBe(before + 1);
+  }, 60_000);
 });
 
 describe("while the scan is cached, every access change still acts at once", () => {

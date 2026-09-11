@@ -299,6 +299,15 @@ describe("WCAG 2.2.2 — the visitor stays in control of motion", () => {
     expect(box().querySelector("[aria-live]")?.getAttribute("aria-live")).toBe("polite");
   });
 
+  it("focus on the pause/play button does not pause: pressing Play must play", async () => {
+    await rotating();
+    pauseButton().click();
+    pauseButton().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    pauseButton().click();
+    vi.advanceTimersByTime(8_000);
+    expect(count()).toBe("2 / 3");
+  });
+
   it("stops rotating for good once the visitor uses the keyboard", async () => {
     await rotating();
     box().querySelector<HTMLElement>(".chq-reviews__carousel")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));

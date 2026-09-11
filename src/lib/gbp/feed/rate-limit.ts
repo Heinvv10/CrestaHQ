@@ -12,7 +12,7 @@ import { clientIpFrom } from "@/lib/checkout/rate-limit";
  *
  * The route checks the id's SHAPE before calling this, so junk ids never
  * create a key. When the table is full the OLDEST keys go (a Map iterates in
- * insertion order and a bucket is re-inserted when its window restarts) —
+ * insertion order) —
  * never a wholesale clear, which would hand every abuser a fresh budget.
  * In-memory, per instance: an abuse-dampener in front of a 60s-cacheable
  * read, not a security boundary.
@@ -42,7 +42,6 @@ export function feedClientKey(request: Request): string {
 function hit(key: string, limit: number, now: number): number {
   let bucket = buckets.get(key);
   if (!bucket || now - bucket.windowStartedAt >= WINDOW_MS) {
-    buckets.delete(key);
     bucket = { count: 0, windowStartedAt: now };
     buckets.set(key, bucket);
     while (buckets.size > MAX_TRACKED_KEYS) buckets.delete(buckets.keys().next().value!);
