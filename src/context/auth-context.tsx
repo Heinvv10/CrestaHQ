@@ -19,6 +19,7 @@ import {
   isFirebaseConfigured,
 } from "@/lib/firebase/client";
 import { signOutUser } from "@/lib/firebase/auth";
+import { loadIdTokenClaims } from "@/lib/firebase/id-token-claims";
 import type {
   AgencyRole,
   AppConfig,
@@ -117,10 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Firestore read fires. Without this, rules see a stale token
           // missing the `status: "active"` claim and deny the reads with
           // "Missing or insufficient permissions".
-          const tokenResult = await firebaseUser
-            .getIdTokenResult(true)
-            .catch(() => null);
-          const claims = tokenResult?.claims ?? {};
+          const claims = await loadIdTokenClaims(firebaseUser);
 
           const db = getFirebaseDb();
           const [cfgSnap, userSnap] = await Promise.all([
