@@ -436,7 +436,7 @@ export function SetupEnvForm() {
         </div>
         <input
           type="password"
-          autoComplete="off"
+          autoComplete="new-password"
           spellCheck={false}
           placeholder={
             k.state === "active" ? "paste new value to replace" : "paste value"
