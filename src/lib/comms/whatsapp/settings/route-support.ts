@@ -49,6 +49,12 @@ export async function withWhatsappSettings(
   if (sub.whatsappEnabledByAgency !== true) {
     return NextResponse.json({ error: GATE_OFF_MESSAGE }, { status: 403 });
   }
+  // The connection check the PAGE makes, applied here too: a workspace
+  // without a Cloud number is "not connected" in fake mode as well, where no
+  // credential read would otherwise refuse it.
+  if (!sub.whatsappCloudMeta?.phoneNumberId) {
+    return NextResponse.json({ error: "not_connected" }, { status: 409 });
+  }
 
   let provider: WhatsappSettingsProvider;
   try {

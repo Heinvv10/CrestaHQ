@@ -113,3 +113,15 @@ describe("isPublicPath — the GBP public reviews feed", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/gbp/widget/rotate")).toBe(false);
   });
 });
+
+describe("isPublicPath — the WhatsApp settings routes (SP15)", () => {
+  it("lets QStash reach the signed quality poll (the signature is its auth)", () => {
+    expect(isPublicPath("/api/cron/whatsapp-quality")).toBe(true);
+  });
+
+  it("keeps the settings routes behind a session", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/whatsapp/status")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/whatsapp/profile")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/whatsapp/message-links")).toBe(false);
+  });
+});

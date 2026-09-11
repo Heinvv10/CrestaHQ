@@ -56,6 +56,15 @@ describe("the provider is the path's sub-account's", () => {
     expect(body).toEqual({ error: "not_connected" });
   });
 
+  it("409 not_connected in fake mode too, when the sub-account carries no Cloud number", async () => {
+    const sub = state.docs.get(`subAccounts/${SUB}`)!;
+    state.docs.set(`subAccounts/${SUB}`, { ...sub, whatsappCloudMeta: null });
+    const { status, body } = await json(call(GET, { id: SUB }));
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: "not_connected" });
+    expect(state.reads).not.toContain(`subAccounts/${SUB}/private/whatsappFakeScenario`);
+  });
+
   it("graph mode calls Meta with THIS sub-account's phone-number id and token", async () => {
     resetWaSettings({ mode: "graph" });
     state.docs.set(whatsappCloudSecretPath(SUB), { phoneNumberId: "pn_mine", wabaId: "w", accessToken: "tok_mine" });
