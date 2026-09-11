@@ -112,6 +112,14 @@ describe("no successful sync for 30 days", () => {
     expect(summaryOf()).toMatchObject({ health: "error", lastErrorKind: "retention_expired" });
   });
 
+  it("drops a half-done pass with the content, so the next pass starts at page 1", async () => {
+    await syncedThenAged();
+    await syncListing(SA, { trigger: "scheduled", now: at(0.25), sleep: clock.sleep, maxPages: 1 });
+    expect(mem.read(`subAccounts/${SA}/private/gbpSyncState`)?.pass).toMatchObject({ pageToken: "3" });
+    const run = await sync(at(0.5));
+    expect(run).toMatchObject({ status: "success", resumedFromCursor: false, created: 7, pagesFetched: 3 });
+  });
+
   it("a successful run starts over with fresh content and is healthy again", async () => {
     await syncedThenAged();
     const run = await sync(at(0.5));

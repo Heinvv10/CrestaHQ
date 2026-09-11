@@ -22,7 +22,10 @@ import {
   summaryOf,
   syncState,
 } from "@/test/gbp-sync-harness";
+import { storeDb } from "@/test/gbp-sync-store";
+import { fakeScenarioPath } from "../provider/fake-scenario";
 import { syncListing } from "./run";
+import { syncStatePath } from "./types";
 
 const ORIGINAL = { ...process.env };
 let clock: ReturnType<typeof recordingSleep>;
@@ -80,6 +83,8 @@ describe("partial failure keeps good data", () => {
     expect(run).toMatchObject({ status: "failed", errorKind: "rate_limited", pagesFetched: 0 });
     expect(activeReviews()).toHaveLength(7);
     expect(summaryOf()).toMatchObject({ averageRating: 3.6, totalReviewCount: 7, health: "stale" });
+    // A failure never moves the last SUCCESS forward.
+    expect((summaryOf()?.lastSuccessfulSyncAt as Date).getTime()).toBe(NOW.getTime());
   });
 
   it("honours Retry-After, capped at 10s", async () => {
@@ -145,6 +150,23 @@ describe("overlapping runs", () => {
     expect(syncState()?.lease).toMatchObject({ runId: "other" });
     mem.seed(`subAccounts/${SA}/private/gbpSyncState`, { lease: { runId: "other", until: NOW.getTime() - 1 }, pass: null });
     expect(await sync()).toMatchObject({ status: "success" });
+  });
+});
+
+describe("lease lost mid-run", () => {
+  it("stops writing the moment its sync state is cleared (listing changed / disconnected)", async () => {
+    const real = storeDb.doc.bind(storeDb);
+    let scenarioReads = 0;
+    vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+      // While page 2 is being fetched, the cache is cleared under the run.
+      if (path === fakeScenarioPath(SA) && ++scenarioReads === 2) void real(syncStatePath(SA)).delete();
+      return real(path);
+    });
+    const run = await sync();
+    expect(run).toMatchObject({ status: "failed", errorKind: "lease_lost", pagesFetched: 1 });
+    expect(reviews()).toHaveLength(3);
+    expect(summaryOf()).toBeFalsy();
+    expect(syncState()).toBeUndefined();
   });
 });
 

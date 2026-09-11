@@ -75,7 +75,8 @@ export function upsertFor(
 ): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean } {
   const hash = contentHash(review);
   const seen = { lastSeenAt: ctx.now, passId: ctx.passId };
-  if (cached && cached.state === "active" && cached.contentHash === hash) {
+  // A tombstone's contentHash is null, so a review that comes back is an update.
+  if (cached && cached.contentHash === hash) {
     return { kind: "unchanged", data: seen, merge: true };
   }
   const content = {

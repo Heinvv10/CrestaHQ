@@ -120,8 +120,6 @@ async function runLeased(
   rec.purged = retention.remove.length;
   const purge: GuardedOp[] = retention.remove.map((id) => (tx) => tx.delete(reviewRef(id)));
   retention.remove.forEach((id) => cache.delete(id));
-  // Expired: the cursor's pass refers to deleted content — start afresh.
-  if (retention.expired) purge.push((tx) => tx.set(stateRef, { pass: null }, { merge: true }));
   await commitGuarded(sa, rec.runId, purge);
 
   const finalOps: GuardedOp[] = [];
@@ -133,6 +131,8 @@ async function runLeased(
       ref: { accountName: listing.accountName, locationName: listing.locationName },
       ctx: { agencyId: rec.agencyId, subAccountId: sa, createdByUid: rec.createdByUid, locationName: listing.locationName, now },
       cache,
+      // Expired: the cursor's pass refers to deleted content — start afresh.
+      // (Every run stays expired until one succeeds, and success clears it.)
       pass: retention.expired ? null : state.pass,
       maxPages: opts.maxPages ?? DEFAULT_MAX_PAGES,
       sleep: opts.sleep ?? realSleep,
