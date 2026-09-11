@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, Copy, Loader2, MapPin } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Loader2, MapPin } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { useGoogleStatusToast } from "@/components/gbp/use-google-status-toast";
@@ -99,15 +99,30 @@ export function SubAccountGoogleSection() {
       {connected ? (
         <div className="rounded-lg border bg-background p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-1">
-              <p className="flex items-center gap-2 text-sm font-medium">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                {meta?.email || "Google account connected"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Business Profile management access granted.
-              </p>
-            </div>
+            {meta?.reconnectRequired ? (
+              // Google refused the stored grant: never show it as healthy.
+              <div className="space-y-1" data-testid="google-settings-reconnect">
+                <p className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-4 w-4" />
+                  Google no longer accepts this connection
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {meta.reconnectReason === "insufficient_scope"
+                    ? "The Business Profile permission was not granted. Reconnect and leave it ticked."
+                    : "Access was revoked or expired at Google. Reconnect to restore it."}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  {meta?.email || "Google account connected"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Business Profile management access granted.
+                </p>
+              </div>
+            )}
             <div className="flex items-center gap-1.5">
               <Button
                 type="button"
