@@ -85,7 +85,7 @@ export async function clearGbp(): Promise<void> {
   for (const id of ["googleConnection", "gbpFakeScenario", "gbpSyncState"]) {
     await ref.collection("private").doc(id).delete();
   }
-  for (const col of ["gbpReviews", "gbpSyncRuns", "gbpEvents"]) {
+  for (const col of ["gbpReviews", "gbpSyncRuns", "gbpEvents", "gbpReplyAttempts"]) {
     const snap = await ref.collection(col).get();
     for (const doc of snap.docs) await deleteScoped(doc.ref);
   }
@@ -212,4 +212,37 @@ export const feedPath = (publicId: string) => `/api/public/gbp/feed/${publicId}`
 export async function ageLastSuccess(hours: number): Promise<void> {
   await guard();
   await primaryRef().update({ "gbpSummary.lastSuccessfulSyncAt": new Date(Date.now() - hours * 3600_000) });
+}
+
+/** Every reply call the fake received for the primary, in order (failed ones too). */
+export async function replyCalls(): Promise<Array<{ op: string; reviewName: string }>> {
+  const snap = await primaryRef().collection("private").doc("gbpFakeScenario").get();
+  return (snap.data()?.calls ?? []) as Array<{ op: string; reviewName: string }>;
+}
+
+/** Merge into the primary's stored scenario — keeps the fake's reply state and call log. */
+export async function patchScenario(patch: Record<string, unknown>): Promise<void> {
+  await guard();
+  await primaryRef().collection("private").doc("gbpFakeScenario").set(patch, { merge: true });
+}
+
+/** Give the selected listing a Google "write a review" link. */
+export async function setListingReviewUri(url: string | null): Promise<void> {
+  await guard();
+  await primaryRef().update({ "googleListing.newReviewUri": url });
+}
+
+/**
+ * A same-origin JSON call from INSIDE the signed-in page (the session cookie
+ * is Secure: the page sends it to 127.0.0.1, Playwright's API request context
+ * does not — see putWidget). The page must already be on the app.
+ */
+export async function pageFetch(page: Page, url: string, method: string, body?: string) {
+  return page.evaluate(
+    async ({ url, method, body }) => {
+      const r = await fetch(url, { method, headers: { "content-type": "application/json" }, body });
+      return { status: r.status, body: (await r.json()) as Record<string, unknown> };
+    },
+    { url, method, body },
+  );
 }

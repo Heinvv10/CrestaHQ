@@ -22,6 +22,7 @@ import {
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
+import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -97,7 +98,9 @@ export async function maybeSendReviewRequest(
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
     const subAccount = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
     const cfg = subAccount?.googleReviewConfig ?? null;
-    if (!subAccount || !cfg || !cfg.reviewUrl) {
+    // The configured URL only — a listing's proposed link is never sent.
+    const reviewUrl = resolveReviewUrl(subAccount).configured;
+    if (!subAccount || !cfg || !reviewUrl) {
       return { sent: false, reason: "not_configured" };
     }
 
@@ -184,7 +187,7 @@ export async function maybeSendReviewRequest(
 
       const freeFormBody = fillReviewSms(
         cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl: cfg.reviewUrl },
+        { firstName: firstWord(contact.name), businessName, reviewUrl },
       );
 
       if (channel === "whatsapp_manual") {
@@ -274,7 +277,7 @@ export async function maybeSendReviewRequest(
       }
       renderedBody = fillReviewSms(
         cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl: cfg.reviewUrl },
+        { firstName: firstWord(contact.name), businessName, reviewUrl },
       );
       const res = await sendSmsForSubAccount({
         subAccountId: input.subAccountId,

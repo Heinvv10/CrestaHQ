@@ -2,24 +2,27 @@
 
 Owned replacement for GHL's Google Business Profile (GBP) dependency: a
 sub-account admin connects the Google account that manages the business's
-Business Profile, picks the listing, and (in later PRs) syncs, reads and replies
-to genuine Google reviews and publishes a feed for an external website.
+Business Profile, picks the listing, syncs, reads and filters, and explicitly
+replies to genuine Google reviews, reconciles the review-request link against
+the listing, and publishes a feed for an external website.
 
-Delivered as four stacked PRs. **This document reflects PR 3**
-(`feat/gbp-3-public-feed`, on PR 2 `feat/gbp-2-sync`, on PR 1
-`feat/gbp-1-provider`): PR 1's provider boundary, token lifecycle, hardened
-OAuth state, listing discovery + selection, picker UI and fenced fake
-provider; PR 2's review sync — Firestore model, sync core, Sync now, the
-signed 6-hourly cron, reconciliation, retention and the synced-reviews view;
-PR 3's public reviews widget — opaque widget id, allowed origins, the public
-JSON feed and the embeddable script. Rows marked for PR 4 are not built yet.
+Delivered as four stacked PRs. **This document reflects the whole stack at
+PR 4** (`feat/gbp-4-inbox-reply`, on PR 3 `feat/gbp-3-public-feed`, on PR 2
+`feat/gbp-2-sync`, on PR 1 `feat/gbp-1-provider`): PR 1's provider boundary,
+token lifecycle, hardened OAuth state, listing discovery + selection, picker
+UI and fenced fake provider; PR 2's review sync — Firestore model, sync core,
+Sync now, the signed 6-hourly cron, reconciliation, retention and the
+synced-reviews view; PR 3's public reviews widget — opaque widget id, allowed
+origins, the public JSON feed and the embeddable script; PR 4's reviews inbox
+filters, explicit human reply with an idempotency ledger, and the
+review-request URL reconciliation (with the `/r/[token]` link fix).
 
 **Four states, kept apart:** fixtures-tested ✅ · real-Google-tested ❌ ·
 deployed ❌ · Velocity-connected ❌. Live Google access waits on the v4 API
 approval (case `4-6894000042302`); until then the GCP project has quota 0 and
 everything is proven against the deterministic fake provider.
 
-## Capability matrix (as of PR 3)
+## Capability matrix (as of PR 4)
 
 `proven` = implemented and proven by the named test. Evidence paths are
 relative to `src/` unless they start with `e2e/`.
@@ -40,18 +43,18 @@ relative to `src/` unless they start with `e2e/`.
 | 12 | Review storage | proven (fixtures) | `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`, byte-exact comment (`sync/run.test.ts` › first full sync; E2E 2 asserts the translated block in Firestore and on the page) |
 | 13 | Summary rating / count | proven (fixtures) | `subAccounts/{id}.gbpSummary` from the provider page on success, null when absent — never invented (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts`, E2E 2) |
 | 14 | Owner reply read | proven (fixtures) | parsed (`provider/google.test.ts`), stored and hashed so a changed reply updates the doc (`sync/run.test.ts` › changed owner reply), shown under the review (`components/gbp/reviews-section.test.ts`, E2E 2 / 3) |
-| 15 | Owner reply create/update | partial | `putReply` / `deleteReply` in the provider (`provider/google.test.ts`, `provider/fake.test.ts`); route + UI PR 4 |
-| 16 | Edit / deletion reconciliation | proven (fixtures) | content hash → update in place; full-pass tombstoning with the anomaly guard (`lib/gbp/sync/reconcile.ts`; `sync/run.test.ts` › idempotency and reconciliation, anomaly guard); E2E 3 |
-| 17 | Idempotency | partial | sync: deterministic doc id + content hash + one lease per sub-account (`sync/run.test.ts` › repeated sync creates and updates nothing; `sync/run-failures.test.ts` › overlapping runs; E2E 2 rerun `created:0`). Reply idempotency PR 4 |
-| 18 | Sync run / audit history | proven (fixtures) | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; append-only `subAccounts/{id}/gbpSyncRuns` — one per run, created at its end, kinds and counts only (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts` last 10; E2E 2 / 3 / 6) |
-| 19 | Reviews inbox UI | partial | read-only list, newest first, byte-exact with replies (`components/gbp/reviews-section.test.ts`, E2E 2); filters + reply composer PR 4 |
+| 15 | Owner reply create/update | proven (fixtures) | `POST …/gbp/reviews/[reviewDocId]/reply` → `lib/gbp/reply.ts`, the only caller of `putReply` / `deleteReply`. `…/reply/route.test.ts` (admin only — collaborator / non-member / other-sub admin 403; another tenant's guessed id 404 with zero calls; gate_off before the lookup; tombstone / other listing / smuggled path 404; body limits; reconnect / not connected / fake fence), `…/reply/route.idempotency.test.ts` + `route.inflight.test.ts` (one call, byte-exact text, failure leaves the review untouched, zero reply calls from sync / sweep), `components/gbp/reply-composer.test.ts` (POST only — the composer has no delete button); E2E 5 `e2e/specs/gbp-reply.spec.ts`. **`DELETE …/gbp/reviews/[reviewDocId]/reply` is API-only in v1** (v1 makes deletion optional) — proven at the route in `…/reply/route.test.ts` / `route.idempotency.test.ts` / `route.inflight.test.ts`, but there is no delete button or UI test; the manual removal path is the raw `curl` in the owner checklist below. Real Google: blocked on approval |
+| 16 | Edit / deletion reconciliation | proven (fixtures) | content hash → update in place; a review is tombstoned only after it is missing from two consecutive complete single-run passes, with the anomaly brake on mass removals (`lib/gbp/sync/reconcile.ts`; `sync/two-miss.test.ts` › tombstoned only after missing from TWO consecutive complete passes, a deletion after page 1 hides a live review for one pass, one empty response never wipes a small listing; `sync/run.test.ts` › tombstoned after its second missed FULL pass); E2E 3 |
+| 17 | Idempotency | proven (fixtures) | sync: deterministic doc id + content hash + one lease per sub-account (`sync/run.test.ts` › repeated sync creates and updates nothing; `sync/run-failures.test.ts` › overlapping runs; E2E 2 rerun `created:0`). Reply: the `gbpReplyAttempts/{sha256(key)[:40]}` ledger — same key → the stored result, no call; other text or review → 409 `idempotency_key_reused`; pending under 2 min → 409 `in_progress`; reply already byte-equal → no call (`…/reply/route.idempotency.test.ts`; E2E 5 replays the same request — still one call) |
+| 18 | Sync run / audit history | proven (fixtures) | `subAccounts/{id}/gbpEvents`: `listing_selected` and `listing_cleared` (reasons `admin_cleared`, `disconnected`, `not_accessible_after_reconnect`) — `…/listing/route.test.ts`, `…/google/route.test.ts`, `callback/provider.test.ts`, E2E 1; `reply_posted` / `reply_deleted` (`actorUid`, `reviewDocId`, never the text — `…/reply/route.idempotency.test.ts`) and `review_url_adopted` (`previousUrl`, `url` — `…/google-review/adopt-listing-url/route.test.ts`); append-only `subAccounts/{id}/gbpSyncRuns` — one per run, created at its end, kinds and counts only (`sync/run.test.ts`, `…/gbp/reviews/route.test.ts` last 10; E2E 2 / 3 / 6) |
+| 19 | Reviews inbox UI | proven (fixtures) | newest first, byte-exact with replies (`components/gbp/reviews-section.test.ts`, E2E 2); filters — stars, replied, from / to, sort — applied over the capped set with an N-of-M count, a filtered-empty state and a refused filter shown inline (`…/gbp/reviews/route.filters.test.ts`, `components/gbp/review-filters.test.ts`); Reply / Edit reply composer (`components/gbp/reply-composer.test.ts`, E2E 5) |
 | 20 | Sync health UI | proven (fixtures) | connection health only: reconnect guidance with its reason on the page (`components/gbp/google-business-panel.test.ts`; E2E 1 flags reconnect, sees `gbp-state-reconnect`, reconnects) and on the Settings card (`components/settings/sub-account-google-section.test.ts`); not-configured state (`google-business-panel.test.ts`). Sync health (PR 2): `gbp-health-<health>` badge, stale / partial (outage-guard wording for `skipped_anomaly`) / reconnect / sync-pending / error banners, "Last synced …" plus the truthful schedule line, recent syncs, health re-derived per request from the live connection (`lib/gbp/sync/health.test.ts`, `components/gbp/reviews-section.test.ts`, `…/gbp/reviews/route.test.ts`; E2E 6 shows the reconnect banner over cached reviews) |
 | 21 | Public feed API | proven (fixtures) | `GET /api/public/gbp/feed/[publicId]` → `lib/gbp/feed/build.ts` + allow-list serializer `feed/serialize.ts`; `…/feed/[publicId]/route.test.ts` (exact data byte-exact incl. the translated block, newest-first + id tie-break, every rating incl. 1-star, maxReviews, no-review state, one byte-identical 404, disconnect / listing clear → unavailable), `route.freshness.test.ts` (stale at 12h / reconnect / partial / outage, unavailable after 7 days / never synced, 30-day predicate, leakage), `route.http.test.ts` (ETag + 304, cache headers, 429); E2E 4 `e2e/specs/gbp-public-feed.spec.ts`, E2E 6 feed half `e2e/specs/gbp-feed-stale.spec.ts` |
 | 22 | Widget configuration | proven (fixtures) | `gbpWidgets/{publicId}` + `gbpWidgetMeta`; `…/gbp/widget/route.ts`, `…/widget/rotate/route.ts`, `lib/gbp/feed/widget-store.ts`; `…/gbp/widget/route.test.ts` (opaque id, one per sub-account, rotate / revoke, collaborator / other-sub admin / non-member 403, gate off 403 with DELETE allowed, `minRating` refused); dashboard card `components/gbp/widget-section.test.ts`; E2E 4 creates it on the page |
 | 23 | CORS / domain controls | proven (fixtures) | `lib/gbp/feed/origins.ts` (normalised `scheme://host[:port]`, https only except loopback http, no path / wildcard / credentials, ≤10); ACAO echoes an allowed Origin only, 403 otherwise — `route.http.test.ts`, E2E 4 (`https://evil.example` → 403, no ACAO); browser proof below |
 | 24 | No-JS / degraded website fallback | proven (fixtures) | `public/embed/gbp-reviews.js` keeps the site's static content on any failure (`lib/gbp/feed/embed-script.test.ts`); example page `gbp-reviews/example/index.html`; browser proof `proof/pr3-01…07` (feed down, JavaScript off, origin removed) |
-| 25 | Review-request compatibility | partial | untouched by PR 1 — `lib/reviews/*.test.ts`, `app/api/sub-accounts/[id]/google-review/route.test.ts` stay green; the listing stores `newReviewUri` for the URL-reconciliation seam in PR 4 |
-| 26 | Documentation / environment / runbook | partial | this file, `docs/environment.md`, `docs/architecture/firestore-collections.md`; deploy checks `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`); sync model, algorithm, retention and the schedule command below; RUNBOOK sync-health section; the feed + embed contract and the Velocity example below (PR 3); full rollout in PR 4 |
+| 25 | Review-request compatibility | proven (fixtures) | one seam, `lib/reviews/canonical-url.ts` (`canonical-url.test.ts`, 4 states); senders read `configured` only (`lib/reviews/request-canonical-url.test.ts`); the listing's link is adopted only by the explicit compare-and-set `POST …/google-review/adopt-listing-url` (`…/adopt-listing-url/route.test.ts` — CAS success, `changed` writes nothing, a sync never changes the URL); proposal card `components/gbp/review-url-card.test.ts`; `/r/[token]` link fix `app/r/[token]/page.test.ts`; quote-paid seam `lib/server/quotes-service.review-request.test.ts`; existing suites green (`lib/reviews/*.test.ts`, `…/google-review/route.test.ts`); E2E 7 `e2e/specs/gbp-review-request.spec.ts` |
+| 26 | Documentation / environment / runbook | implemented | this file (capability matrix, provider / OAuth / identifier and Firestore models, cadence, feed contract, degraded states, policy, review-request compatibility, security, setup, env, schedule, local tests, rollout / rollback, owner checklist); `docs/environment.md`; `docs/architecture/firestore-collections.md` + `feature-gates.md`; RUNBOOK GBP section; deploy guard `scripts/gbp-deploy-check.mjs` (`scripts/gbp-deploy-check.test.ts`) |
 
 ## Provider boundary
 
@@ -274,16 +277,19 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused) |
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
-| `GET /api/sub-accounts/[id]/gbp/reviews` | any member, gated | `{summary, reviews, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/` |
+| `GET /api/sub-accounts/[id]/gbp/reviews[?rating=&replied=&from=&to=&sort=]` | any member, gated | `{summary, reviews, available, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), each with its cache `docId`; `available` = active reviews before the filters; summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/`. Filters (in memory over the capped set, no composite index): `rating` comma list of 1–5, `replied` `all\|replied\|unreplied`, `from` / `to` on `createTime` — an ISO date-time WITH an offset (the page sends the viewer's local midnights: `from` = local 00:00 of the first day, `to` = local 00:00 after the last, exclusive — so filtered days match the local dates the list shows) or a bare ISO date, read as that UTC day (a date-only `to` covers the whole UTC day), `sort` `newest\|oldest`; an empty value is ignored, anything else malformed is 400 `invalid_filter` with `field` |
 | `POST /api/cron/gbp-retention` | QStash signature bound to this URL | the always-on daily retention housekeeping: a retention-only pass (no provider calls) for every sub-account holding a cache; `{retained}`; 500 only when the sweep cannot start |
+| `POST` / `DELETE /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply` | admin, gated | the explicit human reply — see "Explicit owner reply (PR 4)" |
+| `POST /api/sub-accounts/[id]/google-review/adopt-listing-url` | admin, gated | `{expectedCurrentUrl}` — see "Review-request compatibility (PR 4)" |
 | `GET/PUT/DELETE /api/sub-accounts/[id]/gbp/widget`, `POST …/gbp/widget/rotate` | admin, gated — **DELETE ungated** | the public reviews widget (below) |
 | `GET/OPTIONS /api/public/gbp/feed/[publicId]` | **public** (no session) | the public feed (below) |
 | `POST /api/cron/gbp-sync` | QStash signature bound to this URL | the 6-hourly sweep; `{processed, byStatus, retained, stoppedOnRateLimit}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
 
-Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 409
-`not_connected` / `reconnect_required`, 400 `invalid_body` / `unknown_location` /
-`unverifiable_truncated`,
-502 `<provider kind>`. No response carries a token (every route test scans the
+Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 404
+`not_found` (reply: not an active cached review of this sub-account's listing),
+409 `not_connected` / `reconnect_required` / `idempotency_key_reused` /
+`in_progress` / `changed` (+ `currentUrl`) / `no_proposal`, 400 `invalid_body` /
+`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), 502 `<provider kind>`. No response carries a token (every route test scans the
 body for token markers).
 
 ## Data written
@@ -305,7 +311,29 @@ summary and the sync state (`clearGbpCache`, `lib/gbp/sync/store.ts`, reached
 through `clearListing` and the listing PUT). A re-verification that declines
 because a newer listing was picked meanwhile leaves that listing's cache alone.
 
-No Firestore rules or indexes change in PR 1, 2 or 3 (`gbpWidgets` is a new top-level collection with no client rule, so default deny).
+PR 4 adds:
+
+- `subAccounts/{id}/gbpReplyAttempts/{sha256(idempotencyKey)[:40]}` — the
+  reply idempotency ledger: `{agencyId, subAccountId, createdByUid,
+  reviewDocId, commentHash, status: pending|succeeded|failed, errorKind,
+  replyUpdateTime, at}`. A hash of the reply, never its text. No client rule
+  (default deny).
+- `gbpEvents` types `reply_posted` / `reply_deleted` (`actorUid`,
+  `reviewDocId`) and `review_url_adopted` (`previousUrl`, `url`, `actorUid`),
+  each in the same transaction as its change; never reply text.
+- On a posted / deleted reply, the cached review's `reply` and `contentHash`
+  only — `passId`, `lastSeenAt` and the sync's per-review bookkeeping are left
+  alone. `contentHash` hashes the review's `updateTime` as an instant, so the
+  hash recomputed from the stored doc equals the next sync's.
+- `subAccounts/{id}.googleReviewConfig.reviewUrl` (+ `updatedAt`) — only via
+  the adopt compare-and-set; a missing config is created with the config
+  route's defaults (auto-send off).
+
+**No Firestore rules or indexes change anywhere in this stack** (PR 1–4): every
+new collection (`gbpReviews`, `gbpSyncRuns`, `gbpReplyAttempts`, top-level
+`gbpWidgets`) has no client rule, so default deny, and every query is a
+single-field one (the inbox filters run in memory). Re-check after the PR 2
+rebase.
 
 ## Review sync (PR 2)
 
@@ -774,6 +802,17 @@ owner reply below) or `gbp-reviews-empty`, `gbp-banner-pending` (reconnected,
 sync pending), `gbp-reviews-truncated` (the 500-record cap was hit),
 `gbp-reviews-load-error`, and `gbp-runs` (recent syncs). Each is rendered by
 `components/gbp/reviews-section.test.ts`.
+PR 4 adds, over the reviews: the filter bar `gbp-filters` —
+`gbp-filter-rating-<1…5>` (toggles, `aria-pressed`), `gbp-filter-replied`,
+`gbp-filter-from`, `gbp-filter-to`, `gbp-filter-sort`, `gbp-filter-clear`,
+the count `gbp-filter-count` ("Showing N of M reviews"), `gbp-filter-error`
+(a filter the server refused, list kept) and `gbp-reviews-empty-filtered` —
+rendered by `components/gbp/review-filters.test.ts`; the reply composer on
+each review (see "Explicit owner reply") — `components/gbp/reply-composer.test.ts`;
+and, next to the selected listing and on Settings → Google reviews, the
+review-link card (see "Review-request compatibility") —
+`components/gbp/review-url-card.test.ts`, mounted on the page per
+`google-business-panel.test.ts`.
 Below the panel, for admins, the public widget card (`widget-section.tsx`):
 `gbp-widget-card`, `gbp-widget-state-none` / `gbp-widget-state-disabled`,
 `gbp-widget-enable`, `gbp-widget-origins`, `gbp-widget-save`,
@@ -797,8 +836,323 @@ keys plus `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100`, `GBP_PROVIDER=fake`,
 set +a; pnpm build && pnpm exec playwright test`. The GBP specs
 (`gbp-connect-select`, `gbp-sync` — E2E 2, `gbp-reconcile` — E2E 3,
 `gbp-revoked` — E2E 6 sync half, `gbp-public-feed` — E2E 4, `gbp-feed-stale` —
-E2E 6 feed half) skip themselves only when
+E2E 6 feed half, `gbp-reply` — E2E 5, `gbp-review-request` — E2E 7) skip themselves only when
 `PLAYWRIGHT_BASE_URL` points at a deployed target (the production smoke job),
 where the fake is refused by design. The sync specs seed the connection and
 scenario on the fixture primary through `e2e/lib/gbp.ts` and drive the cron
 with a QStash-signed POST (`e2e/lib/qstash.ts`).
+
+## Explicit owner reply (PR 4)
+
+`POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply`
+`{comment, idempotencyKey}` posts (or edits) the owner reply to one Google
+review; `DELETE` on the same path deletes it. `lib/gbp/reply.ts` is the
+**only** caller of the provider's `putReply` / `deleteReply` — no sync, cron,
+workflow or AI path posts a reply (`…/reply/route.idempotency.test.ts` › no
+sync, sweep or cron path ever calls putReply or deleteReply; E2E 5 counts the
+fake's call log after a cron sweep). There is no AI draft in v1.
+
+Order of checks, each refusal writing nothing and calling Google zero times:
+
+1. `requireSubAccountAdmin` — collaborator, non-member and other-sub admin 403.
+2. Agency gate — 403 `gate_off`, answered before the review is looked up.
+3. The review — 404 `not_found` unless `reviewDocId` is 40 lower-case hex
+   characters naming an **active** cached review of the **current** listing
+   under **this** sub-account. A guessed id from another tenant, a tombstone,
+   another listing's review and a smuggled path (`a/b/c`) all 404.
+4. Body — `comment` a string of 1–4000 characters, trimmed only to test for
+   emptiness and sent exactly as typed; `idempotencyKey` 8–128 characters,
+   made by the browser when the composer opens. Else 400 `invalid_body`.
+5. Deployment / connection / fake fence — 503 `not_configured`, 409
+   `not_connected` / `reconnect_required`.
+
+**Idempotency** — one transaction on
+`subAccounts/{id}/gbpReplyAttempts/{sha256(idempotencyKey)[:40]}`:
+
+| Ledger state for the key | Result |
+|---|---|
+| none, or `failed`, or `pending` for over 2 minutes | claim as `pending`, then call `putReply` **once** |
+| `succeeded` | the stored result, no call — also for a late retry after a newer edit |
+| `pending` under 2 minutes | 409 `in_progress`, no call |
+| recorded for other text or another review | 409 `idempotency_key_reused`, no call |
+| the review's reply is already byte-equal | `succeeded` without a call |
+| a DIFFERENT key's attempt already holds this review's lock (see below), under 2 minutes | 409 `in_progress`, no call |
+
+**Per-review in-flight lock** — the claim transaction also takes
+`replyInFlight {key, at}` on the cached review, released by whichever attempt
+holds it (success, failure, or "gone"). This stops a second, different key
+from posting over the first while its call is still in flight — the network
+drops, the admin edits and resubmits under a new key, and Google's PUT keeps
+only the last write, so an abandoned text could otherwise go public. A lock
+older than 2 minutes is treated as a dead request and does not block. The
+`putReply` / `deleteReply` fetches carry `AbortSignal.timeout(30_000)`
+(`lib/gbp/provider/google.ts`), well inside that window, so a "pending past 2
+minutes" lock really is dead, not just slow.
+
+The call goes through `withGbpAccess` (a 401 refreshes and retries once — the
+only retry; the human retries with the same key). The composer reuses its key
+for a retry of the same text and makes a new one when the text changes.
+
+- **Success** — in one transaction: the cached review's `reply {comment,
+  updateTime}` (Google's) and a recomputed `contentHash`, so the next sync
+  reads it `unchanged`; the attempt `succeeded`; a `reply_posted` event
+  (`actorUid`, `reviewDocId`, no text); the lock released. A review whose
+  cache was cleared meanwhile is not recreated, and a tombstone stays one.
+  **If this local write itself throws** (Firestore hiccup) after Google has
+  already accepted the reply, the route does not report a failure — it marks
+  the attempt `succeeded` best-effort and answers 200
+  `{reply, localRecordPending: true}`; the next sync's cache read brings the
+  reply in normally. Reporting a 500 here would be dishonest: the reply is
+  already public.
+- **Failure** — the attempt `failed` with its `errorKind`, the cached review
+  untouched, the lock released; 502 `{code: <kind>}`, or 409
+  `reconnect_required` (a revoked grant is flagged as everywhere else). The
+  reply text is never logged. If *recording* the failure itself throws, the
+  route still returns Google's real error (logs the failure-to-record by kind
+  only) rather than masking it.
+- **Limit** — Google's API reference gives the reply `comment` a maximum of
+  4096 **bytes**; the route counts 4000 **characters** (the decided rule), so
+  a long reply in multi-byte characters can still be refused by Google — an
+  honest 502, nothing cached. (Byte limit: from the v4 reference, not
+  re-verified against the live API.)
+
+UI: each review shows **Reply** (or **Edit reply**) to admins while the
+connection is healthy → a textarea, the note "Your reply will be public on
+Google, shown under this review as the business's response", and **Post reply
+to Google**, disabled while pending or blank. Success reloads the list (the
+reply shows under the review); if Google accepted the reply but the local
+record write failed, the composer instead shows "Posted to Google — the inbox
+will catch up on the next sync." (`gbp-reply-notice`) rather than a failure —
+the reply is live either way; failure shows inline. Test ids
+`gbp-reply-open-<reviewId>`, `gbp-reply-composer`, `gbp-reply-text`,
+`gbp-reply-submit`, `gbp-reply-error`, `gbp-reply-notice`,
+`gbp-review-reply-<reviewId>`. No `confirm()` / `alert()`. **There is no
+delete button** — `DELETE` is API-only in v1 (see the matrix, row 15).
+
+## Review-request compatibility (PR 4)
+
+"Ask for a review" (SMS / WhatsApp requests) and "manage received reviews"
+stay separate capabilities joined by one seam,
+`lib/reviews/canonical-url.ts` — `resolveReviewUrl(sub)`:
+
+| | Meaning |
+|---|---|
+| `configured` | `googleReviewConfig.reviewUrl` — the **only** URL a sender uses |
+| `proposed` | the selected listing's `newReviewUri` — never used on its own |
+| `state` | `none` (no listing link) · `proposal_available` (nothing configured) · `matches` · `differs` |
+
+Readers: `lib/reviews/request.ts` (every SMS / WhatsApp request),
+`app/r/[token]/page.tsx` (the public feedback page) and the review-link card.
+The velocity-review-pipeline is untouched and can read the same seam later.
+
+**Adopting the listing's link** — `POST
+/api/sub-accounts/[id]/google-review/adopt-listing-url {expectedCurrentUrl:
+string|null}`, admin, gated. In one transaction it sets
+`googleReviewConfig.reviewUrl` to the listing's `newReviewUri` **only if** the
+configured URL is still `expectedCurrentUrl`; otherwise 409 `{code:"changed",
+currentUrl}` and nothing is written. No https listing link → 409
+`no_proposal`. No config yet → created with the config route's defaults (SMS,
+default template and cooldown, **auto-send off**). Audited
+`review_url_adopted`. Nothing else ever writes the URL from the listing — a
+sync does not (`…/adopt-listing-url/route.test.ts`).
+
+The card (`components/gbp/review-url-card.tsx`, admins, on the selected
+listing and on Settings → Google reviews): `proposal_available` → "Your
+selected Google listing's review link is <url>" + **Use it**; `differs` → both
+links + **Replace with listing link**; `matches` → a quiet confirmation;
+`none` → nothing. The click is the compare-and-set on the link shown; a
+changed link is reported inline. Test ids `gbp-reviewurl-proposal` (with
+`data-state`), `gbp-reviewurl-adopt`, `gbp-reviewurl-matches`,
+`gbp-reviewurl-done`, `gbp-reviewurl-error`.
+
+**Pre-existing bug fixed here, because it is this seam:** `/r/[token]` read
+`sub.googleReview`, a field that does not exist (the config is
+`googleReviewConfig`), so the page's primary call to action — the Google
+review link — never rendered. `app/r/[token]/page.test.ts` was red on the old
+read and is green through the seam.
+
+What stays as it was, and what proves it: manual request, SMS opt-out and the
+real dispatcher (E2E 7 — an opted-out fixture contact answers `opted_out`,
+asserted opted out before acting); merge tags, cooldown, trigger flags
+(`lib/reviews/request.test.ts`); WhatsApp compliance and rails
+(`request-whatsapp.test.ts`, `request-rails.test.ts`); quote-paid
+(`lib/server/quotes-service.review-request.test.ts` — marking a quote paid
+asks with `trigger: "quote_paid"`, a refused mark-paid asks for nothing); the
+config save route (`…/google-review/route.test.ts`, `isHttpsUrl` now shared).
+The conversation composer's "Ask for review" and the contact header read
+`googleReviewConfig` directly for display and are unchanged.
+
+## Degraded states
+
+| Situation | UI | API | Proven by |
+|---|---|---|---|
+| Google OAuth env absent (or the fake refused) | `gbp-state-not-configured` (Disconnect kept for a live connection) | 503 `not_configured` | `components/gbp/google-business-panel.test.ts`; `app/api/google/callback/provider.test.ts`; reply `…/reply/route.test.ts` (fake fence) |
+| Agency gate off | `gbp-state-gate-locked` | 403 `gate_off` (disconnect, listing clear, widget revoke stay ungated); feed 404 | panel test; every GBP route test; `…/feed/[publicId]/route.test.ts` |
+| Disconnected | `gbp-state-disconnected` + Connect | 409 `not_connected`; sync `skipped not_connected` | panel test; `…/reply/route.test.ts`; `sync/run.test.ts` |
+| No listing selected | `gbp-state-pick` | sync `skipped no_listing`; feed `unavailable`, `listing: null` | panel test; `sync/run.test.ts`; feed `route.test.ts` |
+| Refresh token revoked | `gbp-state-reconnect` + `gbp-banner-reconnect` over cached reviews; no Reply | 409 `reconnect_required`; run `reconnect_required`, cache kept | `lib/gbp/tokens.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts`; E2E 6 |
+| Insufficient scope | reconnect with the scope wording | callback `?google=insufficient_scope`; flagged reconnect | `tokens.test.ts`; `callback/route.test.ts`; panel test |
+| Google 401 / 403 / 404 / 429 / 5xx | run result inline; reply error inline | typed `GbpProviderError`; 401 → refresh + one retry; 429 / 5xx retried (3 attempts) in sync, never in reply; 502 `<kind>` | `provider/google.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts` |
+| Pagination fails halfway | `gbp-banner-partial` | run `partial`, cursor kept, next run resumes | `sync/run-failures.test.ts` |
+| Location gone / access removed | listing cleared on reconnect re-verify | `listing_cleared not_accessible_after_reconnect`; `not_found` run | `callback/provider.test.ts`; `listing-events.test.ts` |
+| Cached data stale | `gbp-banner-stale`, `gbp-health-stale` | health `stale`; feed `stale` / later `unavailable` | `sync/health.test.ts`; `reviews-section.test.ts`; `route.freshness.test.ts`; E2E 6 feed half |
+| No reviews | `gbp-reviews-empty`; filtered: `gbp-reviews-empty-filtered` | `reviews: []`; feed `ok`, `rating: null` | `reviews-section.test.ts`; `review-filters.test.ts`; feed `route.test.ts` |
+| Never synced / sync pending | `gbp-health-never_synced`; `gbp-banner-pending` | health `never_synced` / `sync_pending` | `reviews-section.test.ts`; `…/gbp/reviews/route.test.ts` |
+| Reviews could not load | `gbp-reviews-load-error` | — | `reviews-section.test.ts` |
+| Widget disabled / revoked | card `gbp-widget-state-disabled` / `-none` | feed 404, byte-identical | `…/gbp/widget/route.test.ts`; feed `route.test.ts` |
+| Disallowed origin | the site keeps its static fallback | 403, no ACAO | `route.http.test.ts`; E2E 4 |
+| QStash not configured (local) | "Automatic sync is not scheduled on this deployment — use Sync now" | no schedule; the cron 401s unsigned calls | `reviews-section.test.ts`; `app/api/cron/gbp-sync/route.test.ts` |
+| A reply Google refuses | `gbp-reply-error`, text kept | 502 `<kind>`, attempt `failed`, review untouched | `…/reply/route.idempotency.test.ts`; `reply-composer.test.ts`; E2E 5 |
+| Review link changed under the admin | `gbp-reviewurl-error` with the current link | 409 `changed`, nothing written | `…/adopt-listing-url/route.test.ts`; `review-url-card.test.ts`; E2E 7 |
+
+## Security and tenancy
+
+- Every internal route authorises server-side through `lib/auth/require-tenancy`
+  (members read; admins write, connect, sync, reply, adopt), then the agency
+  gate. The public feed reads no identity header at all.
+- Tokens live only at `subAccounts/{id}/private/googleConnection` (locked);
+  no response carries one (route tests scan every body). Refusal messages are
+  fixed per code; provider error bodies are never returned or logged — only
+  the kind and HTTP status.
+- Every tenant doc carries `agencyId`, `subAccountId`, `createdByUid`. A review
+  id guessed from another tenant names nothing under the caller's sub-account
+  (404, zero provider calls). The fake provider is fenced to the fixture
+  agency and bound to one sub-account.
+- Replies are an explicit authenticated human action; the ledger and events
+  hold a hash and ids, never reply text. Review text is stored byte-exact and
+  never logged.
+- No review gating: every rating is shown, served and replyable; the feed has
+  no rating filter. The configured review link is the same for every customer.
+
+## Google setup prerequisites
+
+1. GCP project `crestahq-app` with the OAuth consent screen and a web OAuth
+   client; redirect URI `${NEXT_PUBLIC_APP_URL}/api/google/callback`; scope
+   `https://www.googleapis.com/auth/business.manage`. Client id / secret and
+   the state secret: [docs/environment.md](../environment.md) → "Optional —
+   Google Business Profile".
+2. APIs: My Business Account Management, My Business Business Information and
+   the legacy v4 reviews API (`mybusiness.googleapis.com`). The v4 API needs
+   Google's GBP API access approval — case `4-6894000042302`; until approved
+   the project's quota is 0.
+3. The connecting Google account must own or manage the listing.
+
+PR 4 adds no environment variables. The GBP ones (`GBP_PROVIDER`,
+`GBP_FAKE_ALLOW_PROD_BUILD`, `GBP_FAKE_AGENCY_ID`, `GBP_SYNC_SCHEDULE_ENABLED`)
+and the QStash keys are in [docs/environment.md](../environment.md); the
+schedule is described under "Sweep, capacity and schedule" above.
+
+## Rollout and rollback
+
+**Rollout** (after the four PRs are reviewed and merged in order):
+
+1. After-hours production deploy (checklist item 3). Nothing changes for any
+   tenant: `googleEnabledByAgency` defaults to off.
+2. Turn the schedule on (item 2).
+3. Live proof on a TEST sub-account (item 5), once Google approves v4 (item 4).
+4. Enable the gate for a real sub-account, one at a time, and verify the gate
+   in Firestore after each save.
+5. Velocity website cutover, separately approved (item 6).
+
+**Rollout note:** the first sync after this deploy rewrites every cached
+review's `contentHash` once (PR 4 changed what the hash is computed from —
+`updateTime` is now hashed as an instant, not its raw string). Reviews with no
+real content change will briefly show as `updated` in that one run's audit
+history. Harmless; it does not repeat on later runs.
+
+**Rollback**, cheapest first:
+
+- Turn the agency gate off for the sub-account: the page locks, the feed 404s,
+  reply / adopt / sync-now refuse with `gate_off`, and scheduled syncs skip.
+  Stored connection and config are preserved; cached reviews still leave under
+  the 30-day rule.
+- Stop scheduled syncs: unset `GBP_SYNC_SCHEDULE_ENABLED` and delete the
+  schedule — `curl -XDELETE "${QSTASH_URL:-https://qstash.upstash.io}/v2/schedules/leadstack-gbp-sync" -H "Authorization: Bearer $QSTASH_TOKEN"`.
+- Redeploy the previous release with `bash scripts/deploy-velo.sh` (after
+  hours). The new collections are additive and need no migration either way.
+- A reply already posted lives at Google: remove it with `DELETE
+  …/gbp/reviews/[reviewDocId]/reply` (or in Google's own UI) before rolling
+  back if it must go. Disconnect revokes the grant at Google.
+
+## Browser proof (PR 4)
+
+`proof/pr4-*.png` — the production build on 127.0.0.1:3100 with the fake
+provider, fixture primary only, driven by a Playwright proof script in
+Chromium (not committed). Each is one section of the page, never the full
+window.
+
+| File | Shows |
+|---|---|
+| `pr4-01-review-link-differs.png` | the configured link and the selected listing's link side by side, with **Replace with listing link** — nothing applied |
+| `pr4-02-filters-1-2-stars-unreplied.png` | 1★ + 2★ and "Not replied": "Showing 2 of 7 reviews", each with **Reply** |
+| `pr4-03-reply-composer.png` | the composer: typed text, "Your reply will be public on Google…", **Post reply to Google** |
+| `pr4-04-reply-posted.png` | after the click: the owner reply under the review, **Edit reply** |
+| `pr4-05-reply-failed-inline.png` | the fake refuses the next reply: "Google request failed" inline, the text kept |
+| `pr4-06-review-link-adopted.png` | after **Replace with listing link**: "Review requests use this listing's review link." |
+
+No GIF this time: a screen recording captures the whole window, including the
+signed-in account's chrome, which is not fixture data.
+
+## Owner-approval checklist (none of these were run)
+
+The deploy dir's `/home/velo/crestahq/.env.production` is a symlink to
+`/home/velo/crestahq-config/.env.production` — the real file every step below
+edits; both paths name the same file.
+
+1. **Firestore rules / indexes** — `firebase deploy --only firestore:rules,firestore:indexes`.
+   **Not required for this stack:** PR 1–4 change no rules and no indexes
+   (default-deny collections, single-field queries) — verified on the final
+   stack: `git diff origin/main...feat/gbp-4-inbox-reply -- firestore.rules
+   firestore.indexes.json` is empty.
+2. **Env vars** — in `/home/velo/crestahq-config/.env.production`:
+   - `GBP_SYNC_SCHEDULE_ENABLED=1` — enables the sync schedule below.
+   - `TRUST_CF_CONNECTING_IP=1` — required before this deploy; `gbp-deploy-check.mjs pre`
+     refuses the deploy without it (see "Embed contract" above for why).
+   Then do the approved deploy (item 3).
+3. **Production deploy** — `bash scripts/deploy-velo.sh` on velo-server from
+   the deploy checkout, after hours only (never 08:00–17:00 SAST Mon–Fri),
+   after the PR 1 velo check block above (the deploy's `scripts/gbp-deploy-check.mjs`
+   refuses a fake-provider setting or a missing `TRUST_CF_CONNECTING_IP`).
+4. **Verify the schedules registered** — the next cold start after this
+   deploy registers `leadstack-gbp-sync` (`0 */6 * * *`, only when
+   `GBP_SYNC_SCHEDULE_ENABLED=1`) and, unconditionally, `leadstack-gbp-retention`
+   (`30 4 * * *` daily, registered regardless of that flag). Confirm both exist:
+   `curl -s "${QSTASH_URL:-https://qstash.upstash.io}/v2/schedules" -H "Authorization: Bearer $QSTASH_TOKEN" | jq '.[].scheduleId'`
+   should list `leadstack-gbp-sync` and `leadstack-gbp-retention`. Without a
+   deploy, register the sync schedule by running the exact curl under "Sweep,
+   capacity and schedule" above instead.
+5. **v4 approval** — `gcloud services list --available --project crestahq-app | grep mybusiness.googleapis.com`.
+6. **Live proof, Hein present** — on a named TEST sub-account (not Blitz or
+   Velocity's live sub-account), exact sequence:
+   1. Agency → Manage dialog for the TEST sub-account → enable the Google
+      Business gate → Save.
+   2. `https://crm.crestahq.com/sa/<TEST_SUB_ACCOUNT_ID>/ai-agents/google-business`
+      → **Connect** → sign in with the account that manages the real Blitz or
+      Velocity listing → **grant access**.
+   3. On the same page, pick that listing from the list Google returns.
+   4. Click **Sync now**; wait for the run to finish (`gbp-sync-result`).
+   5. Compare the shown count and average rating against the same listing on
+      Google Maps, and one review's text byte for byte.
+   6. Check the review-link card shows the listing's real review URL.
+   7. Open one unreplied review's **Reply**, type a short reply, click **Post
+      reply to Google** — **exactly one**, only with Hein present.
+   8. If it must come down: `curl -X DELETE
+      https://crm.crestahq.com/api/sub-accounts/<TEST_SUB_ACCOUNT_ID>/gbp/reviews/<reviewDocId>/reply
+      -H "Cookie: <session cookie>"` (or delete it in Google's own UI).
+7. **Rollout note — `/r/[token]` fix is a live, customer-facing change.** PR 4
+   fixed a pre-existing bug (`src/app/r/[token]/page.tsx` reading the wrong
+   field) that meant the Google review button never showed on the public
+   feedback page. Once deployed, that button will start appearing on feedback
+   links customers **already received** before this fix — needs Hein's
+   explicit OK before this deploy, separately from the rest of PR 4.
+8. **Velocity website cutover** (separately approved) — on Velocity's
+   sub-account's dashboard widget card, add the live site's real origin,
+   `https://www.velocityfibre.co.za` (from the v1 spec, E2E 4 — no path), via
+   **its** Save (the PUT body accepts only `enabled`, `allowedOrigins`,
+   `maxReviews`:
+   `curl -X PUT https://crm.crestahq.com/api/sub-accounts/<VELOCITY_SUB_ACCOUNT_ID>/gbp/widget -H "Content-Type: application/json" -H "Cookie: <session cookie>" -d '{"enabled":true,"allowedOrigins":["https://www.velocityfibre.co.za"],"maxReviews":12}'`),
+   then paste the printed snippet (real `PUBLIC_ID`, `https://crm.crestahq.com`
+   feed host — see "Embed contract" above) onto the Velocity site.
+
+**Four states:** fixtures-tested ✅ · real-Google-tested ❌ · deployed ❌ ·
+Velocity-connected ❌.

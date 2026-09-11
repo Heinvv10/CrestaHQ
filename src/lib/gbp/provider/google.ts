@@ -24,6 +24,11 @@ const ACCOUNTS = "https://mybusinessaccountmanagement.googleapis.com/v1";
 const BUSINESS_INFO = "https://mybusinessbusinessinformation.googleapis.com/v1";
 const V4 = "https://mybusiness.googleapis.com/v4";
 const LOCATION_READ_MASK = "name,title,storefrontAddress,websiteUri,metadata";
+/**
+ * Reply calls abort after 30 s (→ `transient`), well inside the reply
+ * ledger's 2-minute pending window, so a pending attempt past it is dead.
+ */
+const REPLY_TIMEOUT_MS = 30_000;
 
 /** Refuse a resource name that could smuggle extra path segments. */
 function assertName(value: string, re: RegExp, what: string): void {
@@ -86,6 +91,7 @@ export const googleGbpProvider: GbpProvider = {
         method: "PUT",
         headers: { ...bearer(accessToken), "Content-Type": "application/json" },
         body: JSON.stringify({ comment }),
+        signal: AbortSignal.timeout(REPLY_TIMEOUT_MS),
       }),
     );
   },
@@ -95,6 +101,7 @@ export const googleGbpProvider: GbpProvider = {
     await fetchJson(`${V4}/${reviewName}/reply`, {
       method: "DELETE",
       headers: bearer(accessToken),
+      signal: AbortSignal.timeout(REPLY_TIMEOUT_MS),
     });
   },
 };

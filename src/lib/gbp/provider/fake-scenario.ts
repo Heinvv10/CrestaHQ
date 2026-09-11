@@ -47,6 +47,12 @@ export interface FakeScenario {
    * totalReviewCount (null = omitted), instead of the location's values.
    */
   laterPages?: { averageRating: number | null; totalReviewCount: number | null };
+  /**
+   * Every reply call that reached the fake, in order — failed ones too. How
+   * tests prove a reply is posted exactly once, and that nothing but an
+   * explicit human submit ever posts one.
+   */
+  calls?: Array<{ op: "putReply" | "deleteReply"; reviewName: string }>;
 }
 
 export interface FakeScenarioStore {

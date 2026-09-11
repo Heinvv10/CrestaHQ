@@ -22,11 +22,23 @@ export function reviewDocId(reviewName: string): string {
   return createHash("sha256").update(reviewName).digest("hex").slice(0, 40);
 }
 
-/** Over the provider fields a change to which must reach the cache. */
-export function contentHash(r: GbpReview): string {
+/**
+ * Over the provider fields a change to which must reach the cache. The review
+ * `updateTime` is hashed as an instant, so Google's RFC 3339 string and the
+ * same time read back from the stored doc (the explicit reply recomputes the
+ * hash from it) hash alike.
+ */
+export function contentHash(r: {
+  starRating: number | null;
+  comment: string | null;
+  updateTime: string;
+  reply: GbpReview["reply"];
+}): string {
   const reply = r.reply ? [r.reply.comment, r.reply.updateTime] : null;
+  const ms = Date.parse(r.updateTime);
+  const updateTime = Number.isNaN(ms) ? r.updateTime : new Date(ms).toISOString();
   return createHash("sha256")
-    .update(JSON.stringify([r.starRating, r.comment, r.updateTime, reply]))
+    .update(JSON.stringify([r.starRating, r.comment, updateTime, reply]))
     .digest("hex");
 }
 

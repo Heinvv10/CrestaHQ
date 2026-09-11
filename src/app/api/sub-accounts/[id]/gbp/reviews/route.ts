@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
+import { applyReviewFilters, parseReviewFilters } from "@/lib/gbp/inbox-filters";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { publicReview, publicRun, publicSummary } from "@/lib/gbp/sync/public";
 import { withinRetention } from "@/lib/gbp/sync/reconcile";
@@ -42,6 +43,14 @@ export async function GET(
     return gbpRefusal(403, "gate_off", "This feature is locked by your agency.");
   }
 
+  const parsed = parseReviewFilters(new URL(request.url).searchParams);
+  if (!parsed.ok) {
+    return NextResponse.json(
+      { error: `Invalid filter: ${parsed.field}`, code: "invalid_filter", field: parsed.field },
+      { status: 400 },
+    );
+  }
+
   const db = getAdminDb();
   const sub = ((await db.doc(`subAccounts/${id}`).get()).data() ?? {}) as SubAccountDoc & {
     gbpSummary?: GbpSummary | null;
@@ -54,13 +63,13 @@ export async function GET(
     db.collection(runsCollection(id)).orderBy("finishedAt", "desc").limit(RUN_CAP).get(),
   ]);
 
-  const reviews = locationName
+  const active = locationName
     ? reviewSnap.docs
         .slice(0, REVIEW_CAP)
-        .map((d) => d.data() as Record<string, unknown>)
+        .map((d): Record<string, unknown> => ({ ...d.data(), docId: d.id }))
         .filter((d) => d.state === "active" && d.locationName === locationName && withinRetention(d.lastSeenAt, now))
-        .map(publicReview)
     : [];
+  const reviews = applyReviewFilters(active, parsed.filters).map(publicReview);
   const summary =
     locationName && sub.gbpSummary?.locationName === locationName
       ? publicSummary(sub.gbpSummary, now, { reconnectRequired: sub.googleConnectionMeta?.reconnectRequired })
@@ -69,6 +78,8 @@ export async function GET(
   return NextResponse.json({
     summary,
     reviews,
+    /** Active reviews before the filters — the page's "N of M". */
+    available: active.length,
     // Counted over records (tombstones included — filtering them in the query
     // would need a composite index), so the list may hold fewer than 500.
     truncated: reviewSnap.size > REVIEW_CAP,

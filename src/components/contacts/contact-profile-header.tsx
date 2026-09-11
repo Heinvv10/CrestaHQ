@@ -43,6 +43,7 @@ import { SendSmsDialog } from "@/components/contacts/send-sms-dialog";
 import { SendCallDialog } from "@/components/contacts/send-call-dialog";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { formatContactDate } from "@/lib/format";
+import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { useSubAccount } from "@/context/sub-account-context";
 import type { Contact, ContactFormData } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
@@ -68,7 +69,7 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
   const outboundAvailable = subAccount?.outboundVoiceEnabledByAgency === true;
   // Manual Google review request — only shown once the sub-account has a
   // review link configured (Settings → Google reviews).
-  const reviewConfigured = !!subAccount?.googleReviewConfig?.reviewUrl;
+  const reviewConfigured = !!resolveReviewUrl(subAccount).configured;
   const [reviewSending, setReviewSending] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);

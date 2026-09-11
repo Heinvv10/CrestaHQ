@@ -185,6 +185,23 @@ describe("scenario controls", () => {
     expect(after.reviews.find((r) => r.name === target.name)?.reply).toBeNull();
   });
 
+  it("logs every reply call in the scenario — failed ones too — and nothing else", async () => {
+    const { fake, tokens, store } = await connected();
+    const name = defaultFakeScenario().reviews["locations/e2e-velo-gqeberha"].reviews[1].name;
+    await fake.listReviews(tokens.accessToken, { accountName: "accounts/e2e-fixture-group", locationName: "locations/e2e-velo-gqeberha" });
+    await fake.putReply(tokens.accessToken, name, "Thanks");
+    const s = (await store.get(SA))!;
+    s.failNext = { op: "putReply", kind: "transient" };
+    await store.set(SA, s);
+    expect(await kindOf(fake.putReply(tokens.accessToken, name, "Again"))).toBe("transient");
+    await fake.deleteReply(tokens.accessToken, name);
+    expect((await store.get(SA))?.calls).toEqual([
+      { op: "putReply", reviewName: name },
+      { op: "putReply", reviewName: name },
+      { op: "deleteReply", reviewName: name },
+    ]);
+  });
+
   it("rejects an access token that is not a fake one", async () => {
     const { fake } = setup();
     expect(await kindOf(fake.listAccounts("ya29.real-google-token"))).toBe("auth_expired");

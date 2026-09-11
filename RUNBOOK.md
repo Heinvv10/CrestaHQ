@@ -195,6 +195,7 @@ Run through this with the client's real details before calling it done:
 | AI silent on a channel that's "enabled" | Empty persona, agency gate off, or channel prerequisite missing (e.g. Voice without Twilio in BYOC mode) | Work Phase 4 top to bottom for that channel |
 | Emails send but replies vanish | Workspace Reply-To never set | Settings → Sending preferences |
 | Google reviews stale / "Reconnect needed" / "Sync failing" on AI Agents → Google Business | The 6-hourly GBP sync is failing, or the Google grant was revoked | See "Google Business Profile review sync" below |
+| A reply to a Google review shows an error under the review | Google refused or timed out (the attempt is `failed` in `subAccounts/{id}/gbpReplyAttempts`), or the grant needs a reconnect | Click **Post reply to Google** again — the same text reuses the idempotency key, so it can never post twice. `Reconnect` → reconnect on that page first |
 
 ### Google Business Profile review sync
 
@@ -229,6 +230,15 @@ Run through this with the client's real details before calling it done:
 - A review removed at Google disappears after two complete passes (~12h
   scheduled). Listings over 1000 reviews never count misses: such a review
   disappears only after 30 days unseen.
+- **Replies** are posted only by an admin's **Post reply to Google** click
+  (nothing automatic, no AI). `in_progress` → an identical submit is still
+  running (at most 2 minutes); `idempotency_key_reused` → the text changed
+  after a submit — close and reopen the composer.
+- **Review-request link:** the selected listing's Google review link is only
+  *proposed* (Google Business page and Settings → Google reviews); the link
+  review requests send changes only on **Use it** / **Replace with listing
+  link**. "The review link changed since you looked" → someone saved a
+  different link meanwhile; reload and decide again.
 
 ---
 

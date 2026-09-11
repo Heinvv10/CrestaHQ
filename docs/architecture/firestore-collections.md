@@ -62,8 +62,18 @@ parent carries display data only: `googleConnectionMeta` (incl.
 `reconnectRequired` / `reconnectReason`) and `googleListing` (the selected
 `accounts/…` + `locations/…` pair plus title/address/links — Place ID is
 display-only). `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
-append-only audit log (`listing_selected`, `listing_cleared` with a `reason`; tenant-anchored with `agencyId`,
-`subAccountId`, `createdByUid`); no client rule, so default deny. No new index.
+append-only audit log (`listing_selected`, `listing_cleared` with a `reason`;
+`reply_posted` / `reply_deleted` with `actorUid` + `reviewDocId` — never the
+reply text; `review_url_adopted` with `previousUrl`, `url`, `actorUid`;
+tenant-anchored with `agencyId`, `subAccountId`, `createdByUid`); no client
+rule, so default deny. No new index.
+
+Explicit replies: `subAccounts/{id}/gbpReplyAttempts/{sha256(idempotencyKey)[:40]}`
+is the reply idempotency ledger — `status` (`pending` / `succeeded` /
+`failed`), `reviewDocId`, `commentHash` (sha256 of the reply, never its text),
+`replyUpdateTime`, `errorKind`, `at`; tenant-anchored. Written by the reply
+route only (Admin SDK); no client rule, so default deny; no index. A posted or
+deleted reply changes only the cached review's `reply` and `contentHash`.
 
 Review sync (all written by the sync core only, Admin SDK; no client rule, so
 default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`
