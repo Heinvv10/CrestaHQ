@@ -765,6 +765,7 @@ const execCreateTask: NodeExecutor = async (ctx) => {
     contactId: ctx.contact.id,
     dealId: null,
     eventId: null,
+    workflow: { workflowId: ctx.workflowId, runId: ctx.runId },
   });
   return { result: { kind: "next" }, log: "task_created" };
 };
@@ -1109,12 +1110,26 @@ async function enroll(
     .doc(`workflows/${wf.id}`)
     .update({ "stats.enrolled": FieldValue.increment(1) })
     .catch(() => {});
+  const run: RunActivityRun = {
+    id: runRef.id,
+    contactId,
+    workflowId: wf.id,
+    subAccountId: wf.subAccountId,
+    agencyId: wf.agencyId,
+  };
+  await writeRunActivity(run, wf.name, "automation_started");
 
   if (!qstashIsConfigured()) {
     await runRef.update({ status: "failed" });
+    await writeRunActivity(
+      run,
+      wf.name,
+      "automation_failed",
+      "scheduling is not configured"
+    );
     return { runId: runRef.id, status: "failed" };
   }
-  const scheduled = await scheduleNode(runRef, wf.startNodeId!, 0);
+  const scheduled = await scheduleNode(runRef, wf.startNodeId!, 0, run, wf);
   return { runId: runRef.id, status: scheduled ? "running" : "failed" };
 }
 
@@ -1124,7 +1139,9 @@ async function enroll(
 async function scheduleNode(
   runRef: FirebaseFirestore.DocumentReference,
   nodeId: string,
-  delaySeconds: number
+  delaySeconds: number,
+  run: RunActivityRun,
+  wf: WorkflowDoc | null
 ): Promise<boolean> {
   const res = await publishCallback({
     pathname: STEP_PATH,
@@ -1137,6 +1154,12 @@ async function scheduleNode(
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),
     });
+    await writeRunActivity(
+      run,
+      wf?.name ?? null,
+      "automation_failed",
+      "the next step could not be scheduled"
+    );
     return false;
   }
   await runRef.update({
@@ -1148,9 +1171,54 @@ async function scheduleNode(
   return true;
 }
 
+/** The run fields a contact-timeline row needs. */
+type RunActivityRun = Pick<
+  WorkflowRunDoc,
+  "id" | "contactId" | "workflowId" | "subAccountId" | "agencyId"
+>;
+
+/**
+ * `automation_started` / `automation_completed` / `automation_failed` on the
+ * contact — the run lifecycle as the operator sees it from the record.
+ * Keyed by run + type so a QStash redelivery of the step that flipped the
+ * status cannot duplicate the row. Never throws: the run doc is the source
+ * of truth and a timeline row must not fail a step.
+ */
+async function writeRunActivity(
+  run: RunActivityRun,
+  workflowName: string | null,
+  type: "automation_started" | "automation_completed" | "automation_failed",
+  detail?: string
+): Promise<void> {
+  const verb = type.replace("automation_", "");
+  const name = workflowName ? `"${workflowName}"` : run.workflowId;
+  try {
+    await getAdminDb()
+      .collection("contacts")
+      .doc(run.contactId)
+      .collection("activities")
+      .doc(`run_${run.id}_${type}`)
+      .set(
+        {
+          type,
+          content: `Workflow ${name} ${verb}${detail ? ` — ${detail}` : ""}`,
+          createdBy: "workflow",
+          agencyId: run.agencyId,
+          subAccountId: run.subAccountId,
+          meta: { workflowId: run.workflowId, runId: run.id },
+          createdAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+  } catch (err) {
+    console.warn(`[workflows] ${type} activity write failed`, err);
+  }
+}
+
 async function completeRun(
   runRef: FirebaseFirestore.DocumentReference,
-  workflowId: string
+  run: RunActivityRun,
+  wf: WorkflowDoc | null
 ): Promise<void> {
   await runRef.update({
     status: "completed",
@@ -1158,9 +1226,10 @@ async function completeRun(
     updatedAt: FieldValue.serverTimestamp(),
   });
   await getAdminDb()
-    .doc(`workflows/${workflowId}`)
+    .doc(`workflows/${run.workflowId}`)
     .update({ "stats.completed": FieldValue.increment(1) })
     .catch(() => {});
+  await writeRunActivity(run, wf?.name ?? null, "automation_completed");
 }
 
 /** Advance one node of a run. Idempotent on the run's history. */
@@ -1184,6 +1253,12 @@ export async function runStep(
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),
     });
+    await writeRunActivity(
+      run,
+      null,
+      "automation_failed",
+      "the workflow no longer exists"
+    );
     return;
   }
   const wf = wfSnap.data() as WorkflowDoc;
@@ -1199,7 +1274,7 @@ export async function runStep(
 
   const node = wf.nodes[nodeId];
   if (!node) {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   }
 
@@ -1269,7 +1344,7 @@ export async function runStep(
   let target: string | null = null;
   let delay = 0;
   if (result.kind === "end") {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   } else if (result.kind === "branch") {
     const b = node.branches;
@@ -1282,10 +1357,10 @@ export async function runStep(
   }
 
   if (!target) {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   }
-  await scheduleNode(runRef, target, delay);
+  await scheduleNode(runRef, target, delay, run, wf);
 }
 
 /* --------------------------- wait_for_reply ---------------------------- */
@@ -1345,6 +1420,12 @@ async function stepWaitForReply(
         status: "failed",
         updatedAt: FieldValue.serverTimestamp(),
       });
+      await writeRunActivity(
+        run,
+        wf.name,
+        "automation_failed",
+        "the reply timeout could not be scheduled"
+      );
       return;
     }
     await runRef.update({ qstashMessageId: res.messageId });
@@ -1376,10 +1457,10 @@ async function stepWaitForReply(
 
   const target = node.branches?.whenFalse ?? null;
   if (!target) {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   }
-  await scheduleNode(runRef, target, 0);
+  await scheduleNode(runRef, target, 0, run, wf);
 }
 
 /**
@@ -1455,10 +1536,10 @@ export async function resumeWaitingRunsOnReply(input: {
       const wf = wfSnap.exists ? (wfSnap.data() as WorkflowDoc) : null;
       const target = wf?.nodes?.[nodeId]?.branches?.whenTrue ?? null;
       if (!target) {
-        await completeRun(doc.ref, run.workflowId);
+        await completeRun(doc.ref, run, wf);
         continue;
       }
-      await scheduleNode(doc.ref, target, 0);
+      await scheduleNode(doc.ref, target, 0, run, wf);
     }
   } catch (err) {
     console.warn("[workflows] resumeWaitingRunsOnReply failed", err);

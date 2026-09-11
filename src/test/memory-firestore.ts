@@ -126,7 +126,10 @@ export interface MemoryDocRef {
   update: Write<[Data]>;
   create: Write<[Data]>;
   delete: Write<[]>;
-  collection: (name: string) => MemoryQuery & { doc: (id?: string) => MemoryDocRef };
+  collection: (name: string) => MemoryQuery & {
+    doc: (id?: string) => MemoryDocRef;
+    add: (data: Data) => Promise<MemoryDocRef>;
+  };
 }
 
 export interface MemoryQuery {
@@ -232,8 +235,15 @@ export function createMemoryFirestore() {
   }
 
   function collectionRef(path: string) {
+    const doc = (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`);
     return Object.assign(query((parent) => parent === path, [], null, null), {
-      doc: (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`),
+      doc,
+      /** `collection.add(data)` — an auto-id doc, like the Admin SDK's. */
+      add: async (data: Data) => {
+        const ref = doc();
+        await ref.set(data);
+        return ref;
+      },
     });
   }
 
