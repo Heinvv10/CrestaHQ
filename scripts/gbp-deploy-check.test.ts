@@ -70,14 +70,39 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(dir, { GBP_SYNC_SCHEDULE_ENABLED: "1", GBP_MODE: "fake" })).toEqual([]);
   });
 
+  it("refuses NEXT_PUBLIC_APP_URL defined twice in .env.production (sed takes the first, Next the last)", () => {
+    const dup = "NEXT_PUBLIC_APP_URL=https://crm.crestahq.com\nNEXT_PUBLIC_APP_URL=https://crm.crestahq.com@127.0.0.1:4300\n";
+    expect(mentionsFakeKeys(tmp({ ".env.production": dup }), {}).join()).toContain("NEXT_PUBLIC_APP_URL");
+    // Any mention counts, commented or not — no parsing.
+    expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}# NEXT_PUBLIC_APP_URL=x\n` }), {})).not.toEqual([]);
+  });
+
+  it.each([".env", ".env.local", ".env.production.local", ".env.staging"])(
+    "refuses NEXT_PUBLIC_APP_URL in a second env file — %s",
+    (file) => {
+      expect(
+        mentionsFakeKeys(tmp({ ".env.production": CLEAN, [file]: "NEXT_PUBLIC_APP_URL=http://127.0.0.1:4300\n" }), {}).join(),
+      ).toContain(file);
+    },
+  );
+
+  it("does not count the repo's .env.example, which Next never loads (it ships to the deploy dir)", () => {
+    const example = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
+    expect(example).toContain("NEXT_PUBLIC_APP_URL=");
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN, ".env.example": example }), {})).toEqual([]);
+  });
+
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
     expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_/);
   });
 });
 
+// Both shapes the minifier has produced for mode.ts's check (see pr1-runtime-proof.md).
 const MODE_CODE = (url: string) =>
-  `function r(){if("fake"!==process.env.GBP_PROVIDER)return"google";if(!ok("${url}"))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")} class n extends Error{constructor(e){super(\`GBP fake provider refused: \${e}\`)}}`;
+  `class n extends Error{constructor(e){super(\`GBP fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.GBP_PROVIDER)return"google";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")}`;
+const INLINED_FN_SHAPE = (url: string) =>
+  `function n(){if("fake"!==process.env.GBP_PROVIDER)return"google";if(!function(e){let r;try{r=new URL(String(e??"").trim()).hostname}catch{return!1}return t.includes(r)}(${JSON.stringify(url)}))throw new r("NEXT_PUBLIC_APP_URL is not a loopback host")}`;
 const server = (url: string) => [{ path: "chunks/a.js", text: MODE_CODE(url) }, { path: "chunks/b.js", text: "unrelated" }];
 
 describe("(b) post-build: the inlined app URL", () => {
@@ -99,8 +124,49 @@ describe("(b) post-build: the inlined app URL", () => {
     expect(inlinedUrlIsSafe(url, server(url))).not.toEqual([]);
   });
 
+  it("reads the inlined-function shape too", () => {
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: INLINED_FN_SHAPE("https://crm.crestahq.com") }])).toEqual([]);
+  });
+
+  it.each([
+    // The reviewer's reproduction: sed reads line 1, Next inlines line 2, which CONTAINS line 1.
+    ["duplicate line with userinfo", "https://crm.crestahq.com", "https://crm.crestahq.com@127.0.0.1:4300"],
+    ["?-suffix", "https://crm.crestahq.com", "https://crm.crestahq.com?x=1"],
+    ["#-suffix", "https://crm.crestahq.com", "https://crm.crestahq.com#127.0.0.1"],
+    ["prefix", "https://crm.crestahq.com", "https://crm.crestahq.com.evil.example"],
+  ])("compares the EXACT inlined literal, not a substring — %s", (_label, sedUrl, inlined) => {
+    expect(inlinedUrlIsSafe(sedUrl, server(inlined)).join()).toMatch(/is not|loopback/);
+  });
+
+  it("refuses when ANY chunk carries a different literal", () => {
+    const files = [...server("https://crm.crestahq.com"), { path: "chunks/c.js", text: MODE_CODE("http://127.0.0.1:3100") }];
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", files)).not.toEqual([]);
+  });
+
+  it("refuses a chunk whose check it cannot read a literal from (fail closed)", () => {
+    const opaque = 'if(!(0,t.isAppLoopbackUrl)(process.env.NEXT_PUBLIC_APP_URL))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host") GBP fake provider refused';
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: opaque }]).join()).toContain("could not read");
+  });
+
+  it("decodes the literal as a string (escaped slashes still match), and fails closed on an escape it cannot decode", () => {
+    const withLiteral = (lit: string) =>
+      `if(!(0,t.isAppLoopbackUrl)(${lit}))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")`;
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: withLiteral(String.raw`"https:\/\/crm.crestahq.com"`) }])).toEqual([]);
+    expect(
+      inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text: withLiteral(String.raw`"https:\x2f\x2fcrm.crestahq.com"`) }]).join(),
+    ).toContain("could not read");
+  });
+
+  it("refuses when only SOME of a chunk's checks yield a literal", () => {
+    const opaque = 'if(!(0,t.isAppLoopbackUrl)(process.env.NEXT_PUBLIC_APP_URL))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")';
+    const text = `${MODE_CODE("https://crm.crestahq.com")};${opaque}`;
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text }]).join()).toContain("could not read");
+  });
+
   it("refuses when the built fake-mode code does not carry that URL", () => {
-    expect(inlinedUrlIsSafe("https://crm.crestahq.com", server("http://127.0.0.1:3100")).join()).toContain("not inlined");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", server("http://127.0.0.1:3100")).join()).toContain(
+      "is not NEXT_PUBLIC_APP_URL",
+    );
   });
 
   it("refuses when the fake-mode code cannot be found in the build at all (nothing proven)", () => {
