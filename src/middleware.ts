@@ -47,6 +47,8 @@ const PUBLIC_PATHS = [
   "/api/cron/gbp-sync",
   // Daily GBP review-cache retention (always on). Same auth: the signature.
   "/api/cron/gbp-retention",
+  // Hourly WhatsApp Cloud quality-rating poll (SP15). Same auth: the signature.
+  "/api/cron/whatsapp-quality",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",

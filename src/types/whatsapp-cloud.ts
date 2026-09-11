@@ -57,4 +57,42 @@ export interface WhatsappCloudMeta {
   verifiedName: string | null;
   connectedAt: unknown;
   connectedByUid: string | null;
+  /**
+   * Last quality-rating reading from the hourly poll (SP15). Absent until the
+   * first sweep after connection; `null` never written, tolerated on read.
+   */
+  quality?: StoredQuality | null;
+}
+
+/** Meta's `quality_rating`; anything unrecognised (incl. "NA") is UNKNOWN. */
+export type WaQualityRating = "GREEN" | "YELLOW" | "RED" | "UNKNOWN";
+
+/**
+ * `whatsappCloudMeta.quality` — what the poll last saw on the phone-number
+ * node. `changedAt` moves only when `rating` changes, so the settings page can
+ * say "Yellow since Tuesday" rather than "checked an hour ago".
+ */
+export interface StoredQuality {
+  rating: WaQualityRating;
+  nameStatus: string | null;
+  status: string | null;
+  checkedAt: unknown;
+  changedAt: unknown;
+}
+
+/**
+ * `subAccounts/{id}/whatsappQualityAlerts/{autoId}` — one doc per drop from
+ * GREEN, written by the quality sweep (`createdByUid: "system"`); `resolvedAt`
+ * is set when the rating is next seen GREEN. Member-readable, server-written.
+ */
+export interface WhatsappQualityAlertDoc {
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: "system";
+  from: WaQualityRating;
+  to: WaQualityRating;
+  phoneNumberId: string;
+  displayPhoneNumber: string | null;
+  createdAt: unknown;
+  resolvedAt: unknown | null;
 }

@@ -205,6 +205,21 @@ One Meta app powers BOTH the FB Messenger / IG DM inbox AND the Social Planner (
 
 Beyond the env vars, posting also requires **Meta App Review** for `pages_manage_posts` + `instagram_content_publish` (on top of the messaging review). Until approved, only Meta app admins/testers can connect. See [Social Planner](features/social-planner.md) + the Meta inbox section of [AI Agents](features/ai-agents.md).
 
+## Optional — WhatsApp Cloud API
+Each sub-account connects its own Meta WhatsApp Cloud sender (phone number id, WABA id, system-user token) under Settings → Messaging; nothing deployment-wide is required. The Settings → WhatsApp page (profile, quality badge, message links) and the hourly quality poll (`leadstack-whatsapp-quality` → `/api/cron/whatsapp-quality`) call the Graph API with that stored token.
+
+| Var | Purpose |
+|---|---|
+| `WHATSAPP_GRAPH_VERSION` | Optional. Graph API version for every WhatsApp Cloud call (sends, templates, settings). Default `v23.0`. |
+
+**Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER`):
+
+| Var | Purpose |
+|---|---|
+| `WHATSAPP_SETTINGS_PROVIDER` | `fake` swaps Meta for the deterministic fake settings provider (`src/lib/comms/whatsapp/settings/fake.ts`) behind the Settings → WhatsApp page and the quality poll. Unset/anything else = real Meta. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]`; otherwise every WhatsApp settings route refuses loudly (`WaFakeRefusedError`) rather than falling back. Sends never go through this seam. |
+| `WHATSAPP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
+| `WHATSAPP_FAKE_AGENCY_ID` | Required with `WHATSAPP_SETTINGS_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake profile write or quality alert landing on a real tenant. |
+
 ## Optional — Google Business Profile
 One Google OAuth client lets each sub-account connect the Google account that manages its Business Profile listings. Optional — leave unset and the Connect button reports "not configured on this deployment".
 
@@ -225,7 +240,7 @@ Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth c
 | `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
 | `GBP_SYNC_SCHEDULE_ENABLED` | `1` = register the 6-hourly Google Business Profile review sync (`leadstack-gbp-sync`, `0 */6 * * *` → `/api/cron/gbp-sync`) with the other QStash schedules at cold start, and let the Google Business page say "Syncs automatically every 6 hours". Unset/anything else = no schedule; the page says automatic sync is not scheduled, the sync cron answers `not_scheduled` and syncs nobody (a leftover QStash schedule is harmless), and only Sync now syncs. Retention does NOT depend on this flag: the daily `leadstack-gbp-retention` schedule (`/api/cron/gbp-retention`, Firestore only, no Google calls) is always registered. Turning it on in production is an owner step ([gbp-reviews.md](features/gbp-reviews.md)). |
 
-`scripts/deploy-velo.sh` runs `scripts/gbp-deploy-check.mjs` twice. **Before building** it refuses when any `.env*` file in the deploy dir contains the text `GBP_PROVIDER` or `GBP_FAKE_` anywhere (comments included), when a deploy-shell variable is named `GBP_PROVIDER*` or `GBP_FAKE_*`, when `NEXT_PUBLIC_APP_URL` is *defined* more than once in `.env.production`, or when it is defined in any other env file (`.env.example` exempt; comment lines never count as definitions). **After building** it extracts the URL literal inlined into the fake-provider check in each server chunk and refuses unless every one equals the app URL `sed` read from `.env.production`, and that URL parses and is not loopback. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
+`scripts/deploy-velo.sh` runs `scripts/gbp-deploy-check.mjs` twice. **Before building** it refuses when any `.env*` file in the deploy dir contains the text `GBP_PROVIDER`, `GBP_FAKE_`, `WHATSAPP_SETTINGS_PROVIDER` or `WHATSAPP_FAKE_` anywhere (comments included), when a deploy-shell variable is named so, when `NEXT_PUBLIC_APP_URL` is *defined* more than once in `.env.production`, or when it is defined in any other env file (`.env.example` exempt; comment lines never count as definitions). **After building** it extracts the URL literal inlined into each fake-provider check (GBP's and the WhatsApp settings fake's) in each server chunk and refuses unless every one equals the app URL `sed` read from `.env.production`, that URL parses and is not loopback, and both checks were found. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
 
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |
