@@ -169,6 +169,14 @@ describe("(b) post-build: the inlined app URL", () => {
     ).toContain("could not read");
   });
 
+  it.each([
+    ["single-quoted", "'NEXT_PUBLIC_APP_URL is not a loopback host'"],
+    ["backtick", "`NEXT_PUBLIC_APP_URL is not a loopback host`"],
+  ])("fails closed on a %s refusal message (real builds use double quotes)", (_label, msg) => {
+    const text = `if(!(0,t.isAppLoopbackUrl)("https://crm.crestahq.com"))throw new n(${msg})`;
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", [{ path: "c.js", text }]).join()).toContain("could not read");
+  });
+
   it("refuses when only SOME of a chunk's checks yield a literal", () => {
     const opaque = 'if(!(0,t.isAppLoopbackUrl)(process.env.NEXT_PUBLIC_APP_URL))throw new n("NEXT_PUBLIC_APP_URL is not a loopback host")';
     const text = `${MODE_CODE("https://crm.crestahq.com")};${opaque}`;

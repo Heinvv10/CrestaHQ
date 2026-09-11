@@ -43,9 +43,11 @@ const CHECK_MESSAGE = "NEXT_PUBLIC_APP_URL is not a loopback host";
  * The literal the build passed to that check: `…("<url>"))throw new X("<CHECK_MESSAGE>")`.
  * Matches both shapes the minifier has produced (`(0,t.isAppLoopbackUrl)("…")`
  * and an inlined `function(e){…}("…")`). Captures a double-quoted JS string.
+ * Real builds double-quote both the literal and the message; any other quoting
+ * does not match and fails closed ("could not read").
  */
 const INLINED_LITERAL = new RegExp(
-  String.raw`\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*\)\s*throw\s+new\s+[\w$]+\(\s*["'\x60]` +
+  String.raw`\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*\)\s*throw\s+new\s+[\w$]+\(\s*"` +
     CHECK_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
   "g",
 );
