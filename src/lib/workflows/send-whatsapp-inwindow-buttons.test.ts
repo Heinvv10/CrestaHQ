@@ -19,6 +19,9 @@ import type { WorkflowNode } from "@/types/workflows";
 const mem = createMemoryFirestore();
 const graph: Array<Record<string, unknown>> = [];
 const sendWhatsappForSubAccount = vi.fn(async () => ({ sid: "SM1", from: "+27110000000" }));
+const sendWhatsappTemplateForSubAccount = vi.fn(async () => ({ sid: "SM2", from: "+27110000000" }));
+/** POST bodies to Twilio's Content API — one per session resource created. */
+const twilioContent: Array<Record<string, unknown>> = [];
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/comms/whatsapp/cloud-credentials", () => ({
@@ -29,9 +32,15 @@ vi.mock("@/lib/comms/twilio", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/comms/twilio")>()),
   subAccountWhatsappIsConfigured: () => true,
   sendWhatsappForSubAccount: (...a: unknown[]) => sendWhatsappForSubAccount(...(a as [])),
+  sendWhatsappTemplateForSubAccount: (...a: unknown[]) =>
+    sendWhatsappTemplateForSubAccount(...(a as [])),
 }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
-vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
+vi.stubGlobal("fetch", async (url: string, init: { body: string }) => {
+  if (url.startsWith("https://content.twilio.com/")) {
+    twilioContent.push(JSON.parse(init.body) as Record<string, unknown>);
+    return new Response(JSON.stringify({ sid: `HXS${twilioContent.length}` }), { status: 201 });
+  }
   graph.push(JSON.parse(init.body) as Record<string, unknown>);
   return new Response(JSON.stringify({ messages: [{ id: `wamid.${graph.length}` }] }), { status: 200 });
 });
@@ -54,7 +63,9 @@ function seedTemplate(id: string, over: Record<string, unknown>) {
   mem.seed(`subAccounts/sa1/whatsappTemplates/${id}`, {
     name: id, displayName: id, language: "en", status: "draft",
     body: "Thank you {{1}}! If you have a moment, a quick Google review would mean a lot.",
-    variables: [{ position: 1, label: "Name", sampleValue: "Thandi", source: "merge_tag", mergeTag: "contact.firstName" }],
+    // The SAMPLE differs from the contact's name, so a send of samples instead
+    // of the contact's values cannot pass.
+    variables: [{ position: 1, label: "Name", sampleValue: "Sam", source: "merge_tag", mergeTag: "contact.firstName" }],
     ...over,
   });
 }
@@ -71,6 +82,7 @@ const run = (
   templateId: string | null,
   subAccount: SubAccountDoc = CLOUD,
   body = "Thanks! Review us: https://g.page/r/velocity/review",
+  contactName = "Thandi Mokoena",
 ) =>
   execSendWhatsapp({
     node: {
@@ -78,7 +90,7 @@ const run = (
       config: { body, templateId },
     } as unknown as WorkflowNode,
     contact: {
-      id: "c1", name: "Thandi Mokoena", phone: "+27821234567", whatsappOptedOut: false,
+      id: "c1", name: contactName, phone: "+27821234567", whatsappOptedOut: false,
     } as unknown as Contact,
     subAccount,
     owner: { displayName: "Hein", email: "h@example.com" },
@@ -88,7 +100,9 @@ const run = (
 beforeEach(() => {
   mem.clear();
   graph.length = 0;
+  twilioContent.length = 0;
   sendWhatsappForSubAccount.mockClear();
+  sendWhatsappTemplateForSubAccount.mockClear();
   mem.seed("subAccounts/sa1", CLOUD as unknown as Record<string, unknown>);
   mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", name: "Thandi Mokoena", phone: "+27821234567" });
 });
@@ -173,17 +187,6 @@ describe("refusals send nothing", () => {
     expect(graph).toHaveLength(0);
   });
 
-  it("refuses a button template on the Twilio rail rather than send it bare", async () => {
-    mem.seed("subAccounts/sa1", TWILIO as unknown as Record<string, unknown>);
-    seedTemplate("review_link", { buttons: [REVIEW] });
-    lastInbound(1);
-
-    const out = await run("review_link", TWILIO);
-
-    expect(out.log).toBe("error:WA_BUTTONS_UNSUPPORTED_ON_RAIL");
-    expect(sendWhatsappForSubAccount).not.toHaveBeenCalled();
-    expect(graph).toHaveLength(0);
-  });
 });
 
 describe("an approved template whose buttons Meta cannot render in-window", () => {
@@ -215,6 +218,123 @@ describe("an approved template whose buttons Meta cannot render in-window", () =
     expect(out.log).toBe("error:WA_INTERACTIVE_BUTTONS_UNSUPPORTED");
     expect(graph).toHaveLength(0);
   });
+});
+
+describe("Twilio in the window: an unapproved Content resource, cached per template", () => {
+  beforeEach(() => mem.seed("subAccounts/sa1", TWILIO as unknown as Record<string, unknown>));
+
+  it("creates a call-to-action resource from the raw template and sends it with the contact's values", async () => {
+    seedTemplate("review_link", { buttons: [REVIEW] });
+    lastInbound(1);
+
+    const out = await run("review_link", TWILIO);
+
+    expect(out.log).toBe("ok");
+    expect(twilioContent).toHaveLength(1);
+    expect(twilioContent[0].variables).toEqual({ "1": "Sam" });
+    expect(twilioContent[0].types).toEqual({
+      "twilio/call-to-action": {
+        body: "Thank you {{1}}! If you have a moment, a quick Google review would mean a lot.",
+        actions: [{ type: "URL", title: "Leave a review", url: REVIEW.url }],
+      },
+    });
+    expect(sendWhatsappTemplateForSubAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ contentSid: "HXS1", contentVariables: ["Thandi"], to: "+27821234567" }),
+    );
+    expect(sendWhatsappForSubAccount).not.toHaveBeenCalled();
+    expect(mem.read("subAccounts/sa1/whatsappTemplates/review_link")?.twilioSessionContent).toMatchObject({ sid: "HXS1" });
+    expect(mem.read("contacts/c1/whatsappMessages/SM2")?.body).toBe(
+      "Thank you Thandi! If you have a moment, a quick Google review would mean a lot.",
+    );
+  });
+
+  it("reuses the cached resource on the next send", async () => {
+    seedTemplate("review_link", { buttons: [REVIEW] });
+    lastInbound(1);
+
+    await run("review_link", TWILIO);
+    await run("review_link", TWILIO);
+
+    expect(twilioContent).toHaveLength(1);
+    expect(sendWhatsappTemplateForSubAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates a fresh resource once the template's text has changed", async () => {
+    seedTemplate("review_link", { buttons: [REVIEW] });
+    lastInbound(1);
+    await run("review_link", TWILIO);
+
+    const doc = mem.read("subAccounts/sa1/whatsappTemplates/review_link")!;
+    mem.seed("subAccounts/sa1/whatsappTemplates/review_link", { ...doc, body: "Thanks {{1}} — reviews help us." });
+    await run("review_link", TWILIO);
+
+    expect(twilioContent).toHaveLength(2);
+    expect(sendWhatsappTemplateForSubAccount).toHaveBeenLastCalledWith(
+      expect.objectContaining({ contentSid: "HXS2" }),
+    );
+  });
+
+  it("creates a fresh resource when the tenant's Twilio account changes", async () => {
+    seedTemplate("review_link", { buttons: [REVIEW] });
+    lastInbound(1);
+    await run("review_link", TWILIO);
+
+    const moved = {
+      ...TWILIO,
+      twilioConfig: { ...(TWILIO as unknown as { twilioConfig: object }).twilioConfig, accountSid: "AC2" },
+    } as unknown as SubAccountDoc;
+    mem.seed("subAccounts/sa1", moved as unknown as Record<string, unknown>);
+    await run("review_link", moved);
+
+    expect(twilioContent).toHaveLength(2);
+    expect(sendWhatsappTemplateForSubAccount).toHaveBeenLastCalledWith(
+      expect.objectContaining({ contentSid: "HXS2" }),
+    );
+  });
+
+  it("refuses buttons outside the in-session rules before creating anything", async () => {
+    seedTemplate("mixed", { buttons: [{ type: "quick_reply", text: "Yes" }, REVIEW] });
+    lastInbound(1);
+
+    const out = await run("mixed", TWILIO);
+
+    expect(out.log).toBe("error:WA_INTERACTIVE_BUTTONS_UNSUPPORTED");
+    expect(twilioContent).toHaveLength(0);
+    expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
+  });
+});
+
+it.each([
+  ["Cloud", CLOUD],
+  ["Twilio", TWILIO],
+])("refuses an in-window button send with a blank variable on %s", async (_rail, sub) => {
+  mem.seed("subAccounts/sa1", sub as unknown as Record<string, unknown>);
+  seedTemplate("review_link", { buttons: [REVIEW] });
+  lastInbound(1);
+
+  const out = await run("review_link", sub, "fallback", "");
+
+  expect(out.log).toBe("error:WA_TEMPLATE_VARIABLE_EMPTY");
+  expect(graph).toHaveLength(0);
+  expect(twilioContent).toHaveLength(0);
+  expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
+});
+
+it("a Cloud workspace with a leftover Twilio config still sends via Meta", async () => {
+  const cloudWithTwilio = {
+    ...CLOUD,
+    twilioConfig: (TWILIO as unknown as { twilioConfig: object }).twilioConfig,
+  } as unknown as SubAccountDoc;
+  mem.seed("subAccounts/sa1", cloudWithTwilio as unknown as Record<string, unknown>);
+  seedTemplate("review_link", { buttons: [REVIEW] });
+  lastInbound(1);
+
+  const out = await run("review_link", cloudWithTwilio);
+
+  expect(out.log).toBe("ok");
+  expect(graph[0]).toMatchObject({ type: "interactive" });
+  expect(twilioContent).toHaveLength(0);
+  expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
 });
 
 it("the bridge refuses in-window buttons instead of sending the text bare", async () => {
