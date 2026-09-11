@@ -102,3 +102,13 @@ describe("getGbpProviderFor", () => {
     await expect(getGbpProviderFor(SUB)).rejects.toBeInstanceOf(GbpFakeRefusedError);
   });
 });
+
+describe("loopback semantics shared with the deploy guard", () => {
+  it.each(["http://127.1:3100", "http://0x7f000001:3100", "HTTP://LOCALHOST:3100", "http://[0:0:0:0:0:0:0:1]:3100"])(
+    "treats %s as loopback (WHATWG-normalised)",
+    (url) => {
+      process.env.NEXT_PUBLIC_APP_URL = url;
+      expect(gbpProviderMode()).toBe("fake");
+    },
+  );
+});

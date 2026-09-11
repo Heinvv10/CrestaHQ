@@ -99,18 +99,18 @@ after=$(git rev-parse --short HEAD)
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
 
-# ── Refuse the dev/CI-only fake Google Business Profile provider ───────────
-# Every env file Next may read at build or run time. Checked BEFORE any gate or
-# build so a misconfigured deploy dir never produces an artifact at all. See
-# scripts/gbp-fake-guard.sh and docs/features/gbp-reviews.md.
-say "Checking for the GBP fake provider"
-# shellcheck source=scripts/gbp-fake-guard.sh
-. "$(dirname "$0")/gbp-fake-guard.sh"
-gbp_fake_guard .env .env.production .env.local .env.production.local \
-  || die "GBP fake-provider settings found (see above). They are dev/CI only — remove them from $DEPLOY_DIR."
-
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
+
+# ── Refuse the dev/CI-only fake Google Business Profile provider ───────────
+# Loads this dir's env files exactly as Next will (@next/env, production mode)
+# and refuses GBP_PROVIDER=fake, any GBP_FAKE_*, or a loopback
+# NEXT_PUBLIC_APP_URL — BEFORE any gate or build, so a misconfigured deploy dir
+# never produces an artifact. Needs node_modules, hence after install. See
+# scripts/gbp-fake-guard.mjs and docs/features/gbp-reviews.md.
+say "Checking for the GBP fake provider"
+node scripts/gbp-fake-guard.mjs "$DEPLOY_DIR" \
+  || die "GBP fake-provider settings found (see above). They are dev/CI only — remove them from $DEPLOY_DIR."
 
 # ── Gates: everything that can fail runs BEFORE the service is touched ───────
 say "Lint + tenancy check"

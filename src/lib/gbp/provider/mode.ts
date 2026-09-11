@@ -1,5 +1,7 @@
 import "server-only";
 
+import { isLoopbackUrl } from "./loopback.mjs";
+
 /**
  * Which GBP provider this deployment runs — decided from server env alone.
  * Dependency-free on purpose: `lib/google/oauth.ts` (googleAppConfigured)
@@ -14,23 +16,18 @@ export class GbpFakeRefusedError extends Error {
   }
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
-
-function appHost(): string {
+function appUrl(): string | undefined {
   // Read as a literal `process.env.NEXT_PUBLIC_APP_URL` so a Next build
   // constant-folds it: the production bundle carries the production URL no
   // matter what the runtime environment says.
-  try {
-    return new URL(process.env.NEXT_PUBLIC_APP_URL ?? "").hostname;
-  } catch {
-    return "";
-  }
+  return process.env.NEXT_PUBLIC_APP_URL;
 }
 
 /** "google" or "fake"; throws GbpFakeRefusedError when fake is requested but unsafe. */
 export function gbpProviderMode(): "google" | "fake" {
   if (process.env.GBP_PROVIDER !== "fake") return "google";
-  if (!LOOPBACK.has(appHost())) {
+  // The same loopback rule the deploy guard applies (loopback.mjs).
+  if (!isLoopbackUrl(appUrl())) {
     throw new GbpFakeRefusedError("NEXT_PUBLIC_APP_URL is not a loopback host");
   }
   if (
