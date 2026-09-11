@@ -28,7 +28,8 @@ import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToForms } from "@/lib/firestore/forms";
 import { formatCurrency, daysSince, toDate } from "@/lib/format";
 import { getStage, type Deal } from "@/types/deals";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { usePipelines, usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { dealOutcome } from "@/lib/pipelines/stages";
 import type { Contact } from "@/types/contacts";
 import type { LeadForm } from "@/types/forms";
 import { Button } from "@/components/ui/button";
@@ -102,9 +103,11 @@ export default function DashboardPage() {
   // part produced "Welcome back, joesdetailing1987".
   const displayName = user?.displayName?.trim() ?? "";
 
+  // Won / lost / open by each deal's OWN pipeline's terminal stages.
+  const { pipelines } = usePipelines();
   const openDeals = useMemo(
-    () => deals.filter((d) => d.stageId !== "won" && d.stageId !== "lost"),
-    [deals],
+    () => deals.filter((d) => dealOutcome(d, pipelines) === "open"),
+    [deals, pipelines],
   );
   const currency = deals[0]?.currency ?? "USD";
   const pipelineValue = openDeals.reduce((s, d) => s + (d.value || 0), 0);
@@ -113,13 +116,13 @@ export default function DashboardPage() {
     cutoff.setDate(1);
     cutoff.setHours(0, 0, 0, 0);
     return deals
-      .filter((d) => d.stageId === "won")
+      .filter((d) => dealOutcome(d, pipelines) === "won")
       .filter((d) => {
         const date = toDate(d.stageChangedAt);
         return date && date.getTime() >= cutoff.getTime();
       })
       .reduce((s, d) => s + (d.value || 0), 0);
-  }, [deals]);
+  }, [deals, pipelines]);
   const newContactsThisWeek = useMemo(() => {
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     return contacts.filter((c) => {
