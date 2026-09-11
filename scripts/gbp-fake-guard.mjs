@@ -13,8 +13,10 @@
  * It loads the deploy dir's env files EXACTLY as Next does — @next/env's
  * loadEnvConfig in production mode (.env.production.local, .env.local,
  * .env.production, .env) — so every dotenv spelling that reaches the app
- * reaches this check too. It refuses when the merged env (process env over
- * files, Next's precedence) OR any single file:
+ * reaches this check too — in a child process with GBP_* and
+ * NEXT_PUBLIC_APP_URL stripped, so each file is judged on its OWN value. It
+ * refuses when the merged env (process env over files, Next's precedence) OR
+ * any single file:
  *   - sets GBP_PROVIDER to "fake" (case-insensitive, trimmed),
  *   - sets any GBP_FAKE_* variable,
  *   - sets a NEXT_PUBLIC_APP_URL whose host is loopback (the shared rule in
@@ -29,9 +31,10 @@
  * Prints variable NAMES and file names only — never values.
  */
 
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isLoopbackHostname } from "../src/lib/gbp/provider/loopback.mjs";
 
 const require = createRequire(import.meta.url);
@@ -42,25 +45,55 @@ function nextEnv() {
   return require(require.resolve("@next/env", { paths: [nextDir] }));
 }
 
+/** Keys whose shell value must never shadow what a FILE says. */
+const GUARDED_KEY = /^(GBP_|NEXT_PUBLIC_APP_URL$)/i;
+
 /**
- * The env files Next would load for a production build of `dir`, and any read
- * errors. process.env is restored afterwards (loadEnvConfig mutates it).
+ * In a child process: the env files Next would load for a production build of
+ * `dir`, each with its own parsed (and expanded) values, plus read errors.
+ * Printed as JSON on stdout for the parent — never shown to a person.
  */
-function loadFiles(dir) {
+function childLoadFiles(dir) {
   const errors = [];
-  const saved = { ...process.env };
   let files = [];
   try {
-    process.env.NODE_ENV = "production"; // "test" would load .env.test instead
     const log = { info() {}, error: (msg) => errors.push(String(msg)) };
-    files = nextEnv().loadEnvConfig(dir, false, log, true).loadedEnvFiles;
+    files = nextEnv()
+      .loadEnvConfig(dir, false, log, true)
+      .loadedEnvFiles.map((f) => ({ path: f.path, env: f.env ?? {} }));
   } catch (err) {
     errors.push(`could not load env: ${err instanceof Error ? err.name : typeof err}`);
-  } finally {
-    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
-    Object.assign(process.env, saved);
   }
-  return { files, errors };
+  process.stdout.write(JSON.stringify({ files, errors }));
+}
+
+/**
+ * Load `dir`'s env files in a CHILD process whose environment has every GBP_*
+ * key and NEXT_PUBLIC_APP_URL removed. @next/env lets the process env win over
+ * file values (and snapshots it once per process), so loading in-process would
+ * report a file's `GBP_PROVIDER=fake` as whatever the deploy shell exported —
+ * a shell `GBP_PROVIDER=google` would hide it. The child sees each file's OWN
+ * value. Any failure of the child fails closed.
+ */
+function loadFiles(dir) {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!GUARDED_KEY.test(key)) env[key] = value;
+  }
+  env.NODE_ENV = "production"; // "test" would make @next/env load .env.test instead
+  const res = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--load-files", dir], {
+    env,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  try {
+    // The child prints one complete JSON document as its last act; a crashed,
+    // killed or never-started child leaves nothing parseable.
+    const parsed = JSON.parse(res.stdout);
+    return { files: parsed.files, errors: parsed.errors };
+  } catch {
+    return { files: [], errors: ["the env loader did not complete"] };
+  }
 }
 
 /** Problems in one env map, as human-readable names (never values). */
@@ -107,7 +140,11 @@ export function guardDeployDir(dir, baseEnv = process.env) {
   return [...new Set(problems)];
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (isMain && process.argv[2] === "--load-files") {
+  childLoadFiles(path.resolve(process.argv[3]));
+} else if (isMain) {
   let problems;
   try {
     problems = guardDeployDir(path.resolve(process.argv[2] ?? process.cwd()));

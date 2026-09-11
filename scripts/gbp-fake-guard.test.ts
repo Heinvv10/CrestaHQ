@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { guardDeployDir } from "./gbp-fake-guard.mjs";
 
@@ -12,16 +12,6 @@ import { guardDeployDir } from "./gbp-fake-guard.mjs";
  * dotenv spelling that reaches the app also reaches the guard. Each case below
  * is a real env file on disk.
  */
-
-// @next/env snapshots the process env on its FIRST load and lets it win over
-// file values — right for a deploy (the shell's env really applies), but a
-// developer shell that exported a local .env would leak into every fixture.
-// Start the worker from a neutral env; the shell case is passed explicitly.
-beforeAll(() => {
-  for (const key of Object.keys(process.env)) {
-    if (/^GBP_/i.test(key) || key === "NEXT_PUBLIC_APP_URL") delete process.env[key];
-  }
-});
 
 const dirs: string[] = [];
 function deployDir(files: Record<string, string>): string {
@@ -78,6 +68,42 @@ describe("refuses the fake provider in any spelling Next would load", () => {
   });
 });
 
+describe("the deploy shell cannot shadow a file (REAL process env, not an argument)", () => {
+  const keys = ["GBP_PROVIDER", "NEXT_PUBLIC_APP_URL"] as const;
+  let saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    process.env.GBP_PROVIDER = "google";
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+  });
+  afterEach(() => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("refuses a file saying fake while the shell says google", () => {
+    const problems = guardDeployDir(deployDir({ ".env.production": "GBP_PROVIDER=fake\n" })) as string[];
+    expect(problems.join()).toContain(".env.production: GBP_PROVIDER is set to fake");
+  });
+
+  it("refuses a file with a loopback URL while the shell has the public one", () => {
+    const problems = guardDeployDir(deployDir({ ".env.production": "NEXT_PUBLIC_APP_URL=http://localhost:3100\n" })) as string[];
+    expect(problems.join()).toContain(".env.production: NEXT_PUBLIC_APP_URL is a loopback address");
+  });
+
+  it("refuses via the CLI too", () => {
+    const dir = deployDir({ ".env.production": `${CLEAN}GBP_PROVIDER=fake\n` });
+    const res = spawnSync(process.execPath, [path.join(__dirname, "gbp-fake-guard.mjs"), dir], {
+      encoding: "utf8",
+      env: { ...process.env },
+    });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(".env.production: GBP_PROVIDER is set to fake");
+  });
+});
+
 describe("refuses a loopback NEXT_PUBLIC_APP_URL in any spelling", () => {
   it.each([
     "http://127.0.0.1:3100",
@@ -116,6 +142,20 @@ describe("fails closed", () => {
     const dir = deployDir({ ".env.production": CLEAN });
     fs.chmodSync(path.join(dir, ".env.production"), 0o000);
     expect((guardDeployDir(dir, {}) as string[]).join()).toContain("unreadable");
+  });
+});
+
+describe("fails closed when the env loader cannot run", () => {
+  it("refuses when the loader child process cannot even start", () => {
+    const saved = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = "--require=/nonexistent/gbp-guard-preload.cjs";
+    try {
+      const problems = guardDeployDir(deployDir({ ".env.production": CLEAN }), {}) as string[];
+      expect(problems.join()).toContain("the env loader did not complete");
+    } finally {
+      if (saved === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = saved;
+    }
   });
 });
 
