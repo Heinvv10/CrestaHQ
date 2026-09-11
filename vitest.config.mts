@@ -6,6 +6,12 @@ export default defineConfig({
   oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
+    // Hooks that import the workflow engine / server modules take >10s when
+    // the box is saturated (parallel builds on the self-hosted runner). 30s
+    // matches the timeout the Playwright specs already use; it changes no
+    // assertion, only how long a slow import may take before it counts as a
+    // failure.
+    hookTimeout: 30_000,
     // scripts/** carries the deploy-time fake-provider guard's test.
     // e2e/** carries the fixture guard's unit test — the guard is the only
     // thing between a spec bug and production Firestore, so it is covered

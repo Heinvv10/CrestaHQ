@@ -47,7 +47,9 @@ for (const c of cases) {
 
     await page.goto("/agency/sub-accounts");
     const row = page.locator("tr").filter({ hasText: c.name });
-    await expect(row).toHaveCount(1);
+    // 30s like every other assertion in this spec: the sub-accounts table is
+    // a live Firestore query and the default 5s is what a loaded runner trips.
+    await expect(row).toHaveCount(1, { timeout: 30_000 });
     await row.getByRole("link", { name: /Open/ }).click();
 
     await page.waitForURL(new RegExp(`/sa/${expectedId}/dashboard`), {
