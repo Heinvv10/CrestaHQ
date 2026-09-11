@@ -20,6 +20,8 @@ const mem = createMemoryFirestore();
 const published: Array<{ runId: string; nodeId: string; phase?: string }> = [];
 /** Resumes the conversations service starts and does not await. */
 const resumes: Promise<unknown>[] = [];
+/** When set, every resume is held until it resolves — to force orderings. */
+let resumeGate: Promise<void> | null = null;
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/comms/meta", () => ({
@@ -43,7 +45,11 @@ vi.mock("@/lib/workflows/engine", async (importOriginal) => {
   return {
     ...real,
     resumeWaitingRunsOnReply: (input: Parameters<typeof real.resumeWaitingRunsOnReply>[0]) => {
-      const p = real.resumeWaitingRunsOnReply(input);
+      const gate = resumeGate;
+      const p = real.resumeWaitingRunsOnReply(input).then(async (n) => {
+        if (gate) await gate;
+        return n;
+      });
       resumes.push(p);
       return p;
     },
@@ -68,6 +74,7 @@ beforeEach(() => {
   mem.clear();
   published.length = 0;
   resumes.length = 0;
+  resumeGate = null;
   mem.seed("agencies/ag1", { ownerUid: "u_owner", name: "Agency" });
   mem.seed("users/u_owner", { displayName: "Owner", email: "owner@example.com" });
   mem.seed("subAccounts/sa1", {
@@ -244,6 +251,24 @@ describe("a tap nothing is waiting for is flagged for a human", () => {
     await settled();
 
     expect(flag()).toBeUndefined();
+  });
+
+  it("does not raise the flag if a human replied before the late resume settled", async () => {
+    finishRun();
+    let release!: () => void;
+    resumeGate = new Promise<void>((r) => (release = r));
+
+    await cloudTap({ type: "button", button: { text: YES, payload: "yes_all_good" } });
+    // The operator answers while the tap's resume is still in flight.
+    await upsertConversationForMessage({
+      contactId: "c1", subAccountId: "sa1", agencyId: "ag1",
+      contactName: "Thandi Mokoena", contactPhone: PHONE,
+      channel: "whatsapp", direction: "outbound", body: "On it, Thandi.", pauseBot: true,
+    });
+    release();
+    await settled();
+
+    expect(flag()).toBeNull();
   });
 
   it("clears the flag when a human replies", async () => {

@@ -106,7 +106,7 @@ export function ConversationList({
                   {c.lateButtonTap && (
                     <span
                       title={`Tapped "${c.lateButtonTap.text}" after the workflow stopped waiting — no automation will answer it. Clears when you reply.`}
-                      className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400"
+                      className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-400"
                     >
                       Late tap
                     </span>

@@ -202,14 +202,26 @@ export async function upsertConversationForMessage(
       });
       // A tap always answers an earlier button message. If no run was waiting
       // for it (the wait had timed out), no automation will act on it — flag
-      // the thread so a human does. A finished run is never resumed.
+      // the thread so a human does. A finished run is never resumed. If ANY
+      // other run of this contact was waiting, the reply went to it and no
+      // flag is raised.
+      //
+      // The flag lands after the fire-and-forget resume settles, so a human
+      // may already have replied (and cleared it). This tap's upsert left the
+      // thread's last message inbound; if it is outbound now, the thread was
+      // answered after the tap and the flag is not raised. (Not covered: a
+      // reply AND a newer inbound message both landing before the resume
+      // settles.)
       void Promise.resolve(resumed)
         .then(async (n) => {
-          if (input.buttonTap && n === 0) {
-            await ref.update({
+          if (!input.buttonTap || n !== 0) return;
+          await db.runTransaction(async (tx) => {
+            const current = (await tx.get(ref)).data();
+            if (!current || current.lastDirection === "outbound") return;
+            tx.update(ref, {
               lateButtonTap: { text: preview, at: FieldValue.serverTimestamp() },
             });
-          }
+          });
         })
         .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err));
       // And enrolls the contact in message.received workflows (the trigger's

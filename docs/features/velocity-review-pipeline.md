@@ -383,7 +383,11 @@ both. Only the bridge still refuses in-window buttons.
 or the run already finished — flags its conversation `lateButtonTap` and
 shows a **Late tap** badge in the inbox, whose tooltip names the tapped text.
 Nothing resumes the finished run. The flag clears when a human replies.
-Typed text is never flagged, and a tap that did resume a run is not.
+Typed text is never flagged, and a tap that did resume a run is not — nor is
+a tap while any OTHER run of that contact was still waiting (the reply went
+to it). If a human replied while the tap's resume was still settling, the
+flag is not raised: the write checks the thread's last message is still
+inbound.
 `resumeWaitingRunsOnReply` now returns how many runs a reply resumed; the
 conversation service flags on 0 for a tap (`buttonTap`, passed by the Cloud
 and Twilio webhooks).
