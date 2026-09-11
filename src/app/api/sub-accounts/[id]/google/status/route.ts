@@ -9,8 +9,9 @@ import { googleAppConfigured } from "@/lib/google/oauth";
  *
  *   GET /api/sub-accounts/[id]/google/status → { configured }
  *
- * Any active member (the page renders a "not configured" state for everyone).
- * A deployment-level boolean only — no tenant data, no credential detail.
+ * Any active member may ask; the Google Business page asks only for admins
+ * (non-admins get a read-only notice and never reach Connect). A
+ * deployment-level boolean only — no tenant data, no credential detail.
  */
 
 export async function GET(

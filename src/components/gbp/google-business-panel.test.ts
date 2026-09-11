@@ -123,6 +123,21 @@ describe("states", () => {
     expect(byId("gbp-connect")).toBeNull();
   });
 
+  it("keeps Disconnect reachable when a connection exists on a now-unconfigured deployment", async () => {
+    routes["GET /api/sub-accounts/sa1/google/status"] = () => json({ configured: false });
+    ctx.subAccount = {
+      googleEnabledByAgency: true,
+      googleConnectionMeta: { ...CONNECTED, reconnectRequired: true, reconnectReason: "revoked" },
+    };
+    await render();
+    expect(byId("gbp-state-not-configured")).not.toBeNull();
+    // No Reconnect / picker: neither can work without a Google client here.
+    expect(byId("gbp-reconnect")).toBeNull();
+    await click("Disconnect Google");
+    await click("Yes, disconnect");
+    expect(calls("DELETE", "/api/sub-accounts/sa1/google")).toHaveLength(1);
+  });
+
   it("shows reconnect guidance, with the reason, when the grant was refused", async () => {
     ctx.subAccount = {
       googleEnabledByAgency: true,

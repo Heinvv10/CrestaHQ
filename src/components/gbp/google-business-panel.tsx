@@ -98,6 +98,19 @@ export function GoogleBusinessPanel() {
     window.location.href = connectHref;
   };
 
+  // Disconnect must stay reachable wherever the rest of the flow cannot run
+  // (gate off, deployment not configured) — the API always permits it.
+  const disconnect = (
+    <div className="mt-3">
+      <InlineConfirm
+        label="Disconnect Google"
+        confirmLabel="Yes, disconnect"
+        prompt="Revoke access at Google and remove this connection?"
+        onConfirm={() => send(api, "DELETE", "Google Business Profile disconnected.")}
+      />
+    </div>
+  );
+
   if (loading) {
     return (
       <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="gbp-state-loading">
@@ -114,16 +127,7 @@ export function GoogleBusinessPanel() {
         </p>
         {/* Disconnect stays available with the gate off (the API allows it),
             so a connection is never stranded. */}
-        {isAdmin && subAccount?.googleConnectionMeta?.connected && (
-          <div className="mt-3">
-            <InlineConfirm
-              label="Disconnect Google"
-              confirmLabel="Yes, disconnect"
-              prompt="Revoke access at Google and remove this connection?"
-              onConfirm={() => send(api, "DELETE", "Google Business Profile disconnected.")}
-            />
-          </div>
-        )}
+        {isAdmin && subAccount?.googleConnectionMeta?.connected && disconnect}
       </Shell>
     );
   }
@@ -156,8 +160,13 @@ export function GoogleBusinessPanel() {
         <p className="text-sm font-medium">Not configured on this deployment</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           Google Business Profile needs the deployment&apos;s Google OAuth client
-          (set up by whoever runs this app). Nothing is connected until then.
+          (set up by whoever runs this app).{" "}
+          {meta?.connected
+            ? "The existing connection can't be used until then, but you can still disconnect it."
+            : "Nothing can be connected until then."}
         </p>
+        {/* Connect / Reconnect / the picker cannot work here; Disconnect can. */}
+        {meta?.connected && disconnect}
       </Shell>
     );
   }
