@@ -3,6 +3,8 @@ import { shortDate } from "./format-time";
 /** The public review shape GET /gbp/reviews returns (lib/gbp/sync/public.ts). */
 export interface ReviewView {
   reviewId: string;
+  /** Cache doc id — the reply route's address for this review. */
+  docId: string;
   reviewer: { displayName: string; profilePhotoUrl: string | null; isAnonymous: boolean } | null;
   starRating: number;
   comment: string | null;
@@ -25,7 +27,7 @@ function Stars({ rating }: { rating: number }) {
  * in `whitespace-pre-wrap` (never truncated, never rewritten — Google's
  * "(Translated by Google) … (Original) …" block shows as it came).
  */
-export function ReviewItem({ review }: { review: ReviewView }) {
+export function ReviewItem({ review, children }: { review: ReviewView; children?: React.ReactNode }) {
   const name =
     !review.reviewer || review.reviewer.isAnonymous || !review.reviewer.displayName
       ? "Anonymous"
@@ -47,11 +49,12 @@ export function ReviewItem({ review }: { review: ReviewView }) {
         <p className="mt-2 text-xs italic text-muted-foreground">Rating only — no written review.</p>
       )}
       {review.reply && (
-        <div className="mt-3 rounded-lg bg-muted/50 p-3 text-sm" data-testid="gbp-review-reply">
+        <div className="mt-3 rounded-lg bg-muted/50 p-3 text-sm" data-testid={`gbp-review-reply-${review.reviewId}`}>
           <p className="text-xs font-medium text-muted-foreground">Owner reply</p>
           <p className="mt-1 whitespace-pre-wrap break-words">{review.reply.comment}</p>
         </div>
       )}
+      {children}
     </li>
   );
 }

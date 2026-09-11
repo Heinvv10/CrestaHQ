@@ -7,6 +7,7 @@ import type { GbpHealth } from "@/lib/gbp/sync/types";
 import { absoluteTime, relativeTime } from "./format-time";
 import { RecentSyncs } from "./recent-syncs";
 import { FIELD_LABEL, NO_FILTERS, ReviewFilters, filterQuery, type FilterValue } from "./review-filters";
+import { ReplyComposer } from "./reply-composer";
 import { ReviewItem, type ReviewView } from "./review-item";
 import { describeRun, type RunView } from "./run-text";
 import { HealthBadge, HealthBanner } from "./sync-health";
@@ -165,7 +166,12 @@ export function ReviewsSection({
         )
       ) : (
         <ul className="space-y-3" data-testid="gbp-reviews">
-          {load.reviews.map((r) => <ReviewItem key={r.reviewId} review={r} />)}
+          {load.reviews.map((r) => (
+            <ReviewItem key={r.reviewId} review={r}>
+              {/* Admins only, and not while Google needs a reconnect. */}
+              {canSync && !reconnect && <ReplyComposer subAccountId={subAccountId} review={r} onPosted={refresh} />}
+            </ReviewItem>
+          ))}
         </ul>
       )}
 

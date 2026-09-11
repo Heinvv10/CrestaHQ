@@ -81,6 +81,8 @@ describe("payload", () => {
     ]);
     expect(body.reviews[0]).toEqual({
       reviewId: "fake-r7",
+      // The cache doc id — what the reply route is addressed by (already public in the feed).
+      docId: expect.stringMatching(/^[0-9a-f]{40}$/),
       reviewer: { displayName: "Fixture Reviewer fake-r7", profilePhotoUrl: null, isAnonymous: false },
       starRating: 5,
       comment: "Fixture review: installed on the day promised.",

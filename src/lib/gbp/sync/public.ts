@@ -54,6 +54,8 @@ export function publicRun(r: Partial<SyncRunRecord>): PublicRun {
 
 export interface PublicReview {
   reviewId: string;
+  /** The cache doc id — how the reply route addresses a review (the public feed already serves it as `id`). */
+  docId: string;
   reviewer: { displayName: string; profilePhotoUrl: string | null; isAnonymous: boolean } | null;
   starRating: number;
   /** Byte-exact, never truncated. */
@@ -68,6 +70,7 @@ export function publicReview(d: Record<string, unknown>): PublicReview {
   const reply = d.reply as PublicReview["reply"];
   return {
     reviewId: String(d.reviewId ?? ""),
+    docId: String(d.docId ?? ""),
     reviewer: reviewer
       ? { displayName: reviewer.displayName, profilePhotoUrl: reviewer.profilePhotoUrl, isAnonymous: reviewer.isAnonymous }
       : null,
