@@ -193,6 +193,8 @@ inlined URL, so the app fence plus the post-build check still hold.
   grep -nE 'GBP_PROVIDER|GBP_FAKE_' /home/velo/crestahq-config/.env.production \
     && echo "REMOVE the lines above before deploying" || echo "clean: no GBP_PROVIDER / GBP_FAKE_ text"
   grep -c 'NEXT_PUBLIC_APP_URL' /home/velo/crestahq-config/.env.production   # must print 1
+  # every .env* file the deploy dir holds: only .env.production (and the .env.example template) may name the app URL
+  grep -l 'NEXT_PUBLIC_APP_URL' /home/velo/crestahq/.env*
   ```
 - [ ] Sign off the v2 §5 deviation above (fake allowed in the production BUILD
   for CI only, held by the app fence and both deploy checks).
