@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReviewsSection } from "./reviews-section";
 
 /**
@@ -11,8 +11,17 @@ import { ReviewsSection } from "./reviews-section";
  * render.
  */
 
-// Before any Date is made: the viewer is in UTC+2 (no DST).
-process.env.TZ = "Africa/Johannesburg";
+// Before any Date is made in a test: the viewer is in UTC+2 (no DST). Set
+// (and restored) around the suite rather than at module scope, so it never
+// leaks to another file sharing this worker.
+const ORIGINAL_TZ = process.env.TZ;
+beforeAll(() => {
+  process.env.TZ = "Africa/Johannesburg";
+});
+afterAll(() => {
+  if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+  else process.env.TZ = ORIGINAL_TZ;
+});
 
 const BASE = "/api/sub-accounts/sa1/gbp/reviews";
 

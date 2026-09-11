@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GbpReviewReply } from "./provider/types";
 import { contentHash } from "./sync/store";
@@ -100,6 +100,29 @@ export async function claimAttempt(
   });
 }
 
+export type DeleteClaim = { kind: "new"; key: string } | { kind: "in_progress" };
+
+/**
+ * DELETE takes the same per-review lock as a reply POST — it has no
+ * idempotency key of its own, so one is minted here (never stored anywhere
+ * but the lock, never logged). Blocked by a DIFFERENT live lock (a pending
+ * POST or another pending DELETE); a review with no lock, or one only this
+ * key already holds, is claimed.
+ */
+export async function claimDeleteLock(sa: string, target: AttemptTarget, now: Date): Promise<DeleteClaim> {
+  const db = getAdminDb();
+  const reviewRef = reviewRefOf(sa, target.docId);
+  const key = randomBytes(20).toString("hex");
+  const live = (at: unknown) => now.getTime() - (toMillis(at) ?? 0) < PENDING_MS;
+  return db.runTransaction(async (tx): Promise<DeleteClaim> => {
+    const data = (await tx.get(reviewRef)).data();
+    const lock = data?.replyInFlight as { key?: unknown; at?: unknown } | null | undefined;
+    if (lock && !holds(lock, key) && live(lock.at)) return { kind: "in_progress" };
+    tx.update(reviewRef, { replyInFlight: { key: attemptId(key), at: now } });
+    return { kind: "new", key };
+  });
+}
+
 /** The provider call failed: the attempt `failed`, and this attempt's lock released. */
 export async function failAttempt(sa: string, target: AttemptTarget, key: string, errorKind: string): Promise<void> {
   const db = getAdminDb();
@@ -107,6 +130,21 @@ export async function failAttempt(sa: string, target: AttemptTarget, key: string
   await db.runTransaction(async (tx) => {
     const d = (await tx.get(reviewRef)).data();
     tx.set(attemptRef(sa, key), { status: "failed", errorKind }, { merge: true });
+    if (d && holds(d.replyInFlight, key)) tx.update(reviewRef, { replyInFlight: null });
+  });
+}
+
+/**
+ * Release this key's per-review lock unconditionally, on its own — for when
+ * the transaction that would otherwise have released it (recordReplyChange)
+ * itself failed. Never another key's lock. Best-effort: the caller logs a
+ * failure here, it never masks the outcome already decided.
+ */
+export async function releaseLock(sa: string, docId: string, key: string): Promise<void> {
+  const db = getAdminDb();
+  const reviewRef = reviewRefOf(sa, docId);
+  await db.runTransaction(async (tx) => {
+    const d = (await tx.get(reviewRef)).data();
     if (d && holds(d.replyInFlight, key)) tx.update(reviewRef, { replyInFlight: null });
   });
 }

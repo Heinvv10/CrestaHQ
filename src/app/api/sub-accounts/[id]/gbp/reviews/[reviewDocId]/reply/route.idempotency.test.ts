@@ -185,7 +185,9 @@ describe("DELETE", () => {
 
   it("a failure at Google leaves the local reply in place", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "deleteReply", kind: "transient" }));
-    const before = mem.read(reviewPath("fake-r7"));
+    // DELETE takes and releases the same per-review lock as POST, so a clean
+    // review picks up an explicit `replyInFlight: null` — nothing else moves.
+    const before = { ...mem.read(reviewPath("fake-r7")), replyInFlight: null };
     expect(await del()).toMatchObject({ status: 502, body: { code: "transient" } });
     expect(mem.read(reviewPath("fake-r7"))).toEqual(before);
   });

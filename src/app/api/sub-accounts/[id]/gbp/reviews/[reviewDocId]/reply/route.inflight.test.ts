@@ -22,9 +22,11 @@ import { DELETE, POST } from "./route";
 
 const ORIGINAL = { ...process.env };
 const R6 = docIdOf("fake-r6");
+const R7 = docIdOf("fake-r7");
 const K2 = "compose-session-key-0002";
 const lockOf = (key: string) => sha256(key).slice(0, 40);
 const post = (comment: string, key: string, docId = R6) => callReply(POST, "POST", "uid_admin", SA, docId, { comment, idempotencyKey: key });
+const del = (docId = R7) => callReply(DELETE, "DELETE", "uid_admin", SA, docId);
 
 /** An attempt for KEY on r6 still in flight, `ageMs` old: its ledger doc and the review's lock. */
 function inFlight(ageMs: number) {
@@ -34,6 +36,12 @@ function inFlight(ageMs: number) {
     commentHash: sha256("First text."), at,
   });
   mem.seed(reviewPath("fake-r6"), { ...mem.read(reviewPath("fake-r6"))!, replyInFlight: { key: lockOf(KEY), at } });
+}
+
+/** Just the per-review lock (no ledger doc) — what a pending POST or DELETE leaves behind. */
+function lockReview(reviewId: string, key: string, ageMs: number) {
+  const at = new Date(Date.now() - ageMs);
+  mem.seed(reviewPath(reviewId), { ...mem.read(reviewPath(reviewId))!, replyInFlight: { key: lockOf(key), at } });
 }
 
 /** Fail the Nth runTransaction (1 = the claim). */
@@ -90,6 +98,46 @@ describe("the per-review in-flight lock", () => {
     expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toBeNull();
     expect((await post("Second text.", K2)).status).toBe(200);
   });
+
+  it("DELETE takes the same lock: a pending POST on the review blocks it — 409 in_progress, zero delete calls", async () => {
+    lockReview("fake-r7", KEY, 60_000);
+    expect(await del()).toMatchObject({ status: 409, body: { code: "in_progress" } });
+    expect(calls()).toEqual([]);
+  });
+
+  it("DELETE takes the lock and releases it on success", async () => {
+    expect((await del()).status).toBe(200);
+    expect(mem.read(reviewPath("fake-r7"))?.replyInFlight).toBeNull();
+  });
+
+  it("DELETE releases its lock on failure, and a POST on the same review may then proceed", async () => {
+    setScenario(SA, (s) => void (s.failNext = { op: "deleteReply", kind: "transient" }));
+    expect((await del()).status).toBe(502);
+    expect(mem.read(reviewPath("fake-r7"))?.replyInFlight).toBeNull();
+    expect((await post("A reply on r7.", K2, R7)).status).toBe(200);
+  });
+
+  it("a pending DELETE on a review blocks a POST on it — 409 in_progress, zero calls", async () => {
+    lockReview("fake-r7", "some-other-delete-lock", 60_000);
+    expect(await post("Edited text.", K2, R7)).toMatchObject({ status: 409, body: { code: "in_progress" } });
+    expect(calls()).toEqual([]);
+  });
+});
+
+describe("the review vanishing between the lookup and the claim", () => {
+  it("404s honestly, zero calls, nothing claimed", async () => {
+    const real = storeDb.runTransaction;
+    vi.spyOn(storeDb, "runTransaction").mockImplementationOnce((async (fn: Parameters<typeof real>[0]) => {
+      // authorize() already loaded the review as a valid target; delete it
+      // right before the claim transaction reads it, as a concurrent
+      // listing-change sync would.
+      await mem.db.doc(reviewPath("fake-r6")).delete();
+      return real(fn);
+    }) as typeof real);
+    expect((await post("First text.", KEY)).status).toBe(404);
+    expect(calls()).toEqual([]);
+    expect(attempts()).toEqual([]);
+  });
 });
 
 describe("partial failure", () => {
@@ -99,16 +147,23 @@ describe("partial failure", () => {
     expect(r).toMatchObject({ status: 200, body: { localRecordPending: true, reply: { comment: "First text." } } });
     expect(calls()).toHaveLength(1);
     expect(mem.read(attemptPath())).toMatchObject({ status: "succeeded" });
+    // The lock recordReplyChange would have released was never committed —
+    // it must still be cleared, so a DIFFERENT key can post right away.
+    expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toBeNull();
+    expect((await post("Second text.", K2)).status).toBe(200);
+    expect(calls()).toHaveLength(2);
     vi.mocked(storeDb.runTransaction).mockRestore();
     expect((await post("First text.", KEY)).status).toBe(200);
-    expect(calls()).toHaveLength(1);
+    expect(calls()).toHaveLength(2);
   });
 
   it("a DELETE Google accepted but not recorded locally → 200 localRecordPending", async () => {
-    failTransaction(1);
+    // 1 = DELETE's own claim of the per-review lock; 2 = recordReplyChange.
+    failTransaction(2);
     const r = await callReply(DELETE, "DELETE", "uid_admin", SA, docIdOf("fake-r7"));
     expect(r).toMatchObject({ status: 200, body: { ok: true, localRecordPending: true } });
     expect(calls()).toEqual([{ op: "deleteReply", reviewName: expect.stringContaining("fake-r7") }]);
+    expect(mem.read(reviewPath("fake-r7"))?.replyInFlight).toBeNull();
   });
 
   it("recording a failure that itself fails still answers with the provider's error", async () => {

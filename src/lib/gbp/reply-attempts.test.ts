@@ -12,7 +12,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 import { AGENCY, SA, mem, resetSync } from "@/test/gbp-sync-harness";
 import { docIdOf, events, reviewPath } from "@/test/gbp-reply-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
-import { failAttempt, recordReplyChange } from "./reply-attempts";
+import { claimAttempt, failAttempt, recordReplyChange } from "./reply-attempts";
 
 const ORIGINAL = { ...process.env };
 const REPLY = { comment: "Thanks from the fixture team.", updateTime: "2026-09-11T10:00:00Z" };
@@ -53,5 +53,17 @@ describe("recordReplyChange", () => {
     expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toEqual(other);
     await failAttempt(SA, TARGET, "compose-session-key-0001", "transient");
     expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toEqual(other);
+  });
+});
+
+describe("claimAttempt", () => {
+  it("the review vanishing between loadReplyTarget's lookup and the claim → gone, nothing written", async () => {
+    await mem.db.doc(reviewPath("fake-r6")).delete();
+    const claim = await claimAttempt(
+      SA, TARGET, { comment: "Thanks.", idempotencyKey: "compose-session-key-0003" }, "uid_admin", new Date(),
+    );
+    expect(claim).toEqual({ kind: "gone" });
+    expect(mem.read(`subAccounts/${SA}/gbpReplyAttempts/${TARGET.docId}`)).toBeUndefined();
+    expect(mem.list(`subAccounts/${SA}/gbpReplyAttempts`)).toEqual([]);
   });
 });

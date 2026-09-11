@@ -5,7 +5,10 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { withGbpAccess } from "./access";
 import { GbpFakeRefusedError, getGbpProviderFor } from "./provider/select";
 import { GbpProviderError, type GbpReviewReply } from "./provider/types";
-import { claimAttempt, failAttempt, markAttemptSucceeded, recordReplyChange, type AttemptTarget } from "./reply-attempts";
+import {
+  claimAttempt, claimDeleteLock, failAttempt, markAttemptSucceeded, recordReplyChange, releaseLock,
+  type AttemptTarget,
+} from "./reply-attempts";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "./route-support";
 import { reviewsCollection } from "./sync/types";
 import { GbpNotConnectedError } from "./tokens";
@@ -109,6 +112,11 @@ export async function postReply(
     await markAttemptSucceeded(subAccountId, body.idempotencyKey, reply).catch((markErr: unknown) =>
       console.error(`[gbp/reply] attempt not marked succeeded sa=${subAccountId}: ${nameOf(markErr)}`),
     );
+    // recordReplyChange's transaction is what would have released the lock —
+    // it failed too, so release it on its own (best effort).
+    await releaseLock(subAccountId, target.docId, body.idempotencyKey).catch((lockErr: unknown) =>
+      console.error(`[gbp/reply] lock not released sa=${subAccountId}: ${nameOf(lockErr)}`),
+    );
     return NextResponse.json({ reply, localRecordPending: true });
   }
   return NextResponse.json({ reply });
@@ -116,16 +124,29 @@ export async function postReply(
 
 /** API only in v1 (v1 makes deletion optional): there is no delete button. */
 export async function deleteReplyFor(subAccountId: string, target: ReplyTarget, actorUid: string): Promise<NextResponse> {
+  const claim = await claimDeleteLock(subAccountId, target, new Date());
+  if (claim.kind === "in_progress") {
+    return gbpRefusal(409, "in_progress", "This review has a reply change in progress — try again in a moment.");
+  }
+  // DELETE has no idempotency key of its own — the ledger is for POST only —
+  // so this lock is always released here rather than by recordReplyChange.
+  const release = () =>
+    releaseLock(subAccountId, target.docId, claim.key).catch((lockErr: unknown) =>
+      console.error(`[gbp/reply] lock not released sa=${subAccountId}: ${nameOf(lockErr)}`),
+    );
   try {
     await withGbpAccess(subAccountId, (p, token) => p.deleteReply(token, target.reviewName));
   } catch (err) {
+    await release();
     return gbpErrorResponse(err, subAccountId, "gbp/reply");
   }
   try {
     await recordReplyChange(subAccountId, target, null, { type: "reply_deleted", actorUid, key: null, now: new Date() });
   } catch (err) {
     console.error(`[gbp/reply] deleted but not recorded locally sa=${subAccountId}: ${nameOf(err)}`);
+    await release();
     return NextResponse.json({ ok: true, localRecordPending: true });
   }
+  await release();
   return NextResponse.json({ ok: true });
 }
