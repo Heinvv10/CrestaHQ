@@ -10,6 +10,7 @@ import {
 import {
   announceContactCreated,
   buildContactDoc,
+  companyStringDrifts,
   fireTagsAdded,
 } from "@/lib/server/contacts-service";
 import type { CustomFieldValue } from "@/types/custom-fields";
@@ -132,7 +133,16 @@ export async function upsertContactByPhone(
     const tags = nextTags(target?.data()?.tags, input.tagsAdd, input.tagsRemove);
     const customFields = mergeCustomFields(target?.data()?.customFields, input.customFields);
     if (target) {
-      const update = { ...input.fields, tags, customFields };
+      const update = {
+        ...input.fields,
+        tags,
+        customFields,
+        // Same rule as updateContactServerSide: a company rename with no
+        // companyId drops the link instead of leaving it stale.
+        ...(companyStringDrifts(target.data() ?? {}, input.fields)
+          ? { companyId: null }
+          : {}),
+      };
       tx.update(target.ref, { ...update, updatedAt: FieldValue.serverTimestamp() });
       return {
         kind: "updated" as const,

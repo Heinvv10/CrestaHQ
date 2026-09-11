@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
+import { resolveCompanyLink } from "@/lib/server/companies-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import {
@@ -80,6 +81,18 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  // A linked company must belong to this sub-account; its name overrides
+  // the free-text `company` so the two never disagree.
+  let company = str(body.company);
+  let companyId: string | null = null;
+  if (typeof body.companyId === "string" && body.companyId) {
+    const link = await resolveCompanyLink(getAdminDb(), subAccountId, body.companyId);
+    if (!link.ok) {
+      return NextResponse.json({ error: link.error }, { status: 400 });
+    }
+    company = link.company;
+    companyId = link.companyId;
+  }
 
   const { id, contact } = await createContactServerSide({
     subAccountId,
@@ -92,7 +105,8 @@ export async function POST(request: Request) {
     email,
     phone,
     phoneCountry: (subSnap.data()?.defaultPhoneCountry as string) ?? null,
-    company: str(body.company),
+    company,
+    companyId,
     address: str(body.address),
     source: str(body.source),
     tags: strArray(body.tags),

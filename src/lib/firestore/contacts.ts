@@ -30,6 +30,8 @@ export interface ContactQueryOptions {
    * `null` (the default) = no extra clause.
    */
   territoryFilter?: string[] | null;
+  /** Only contacts linked to this `companies/{id}` doc (company detail page). */
+  companyId?: string;
 }
 
 export function subscribeToContacts(
@@ -76,6 +78,7 @@ export function subscribeToContacts(
     where("subAccountId", "==", scope.subAccountId),
   ];
   if (plan.mode === "in") constraints.push(plan.constraint);
+  if (opts.companyId) constraints.push(where("companyId", "==", opts.companyId));
   const q = query(collection(getFirebaseDb(), CONTACTS), ...constraints);
   return onSnapshot(
     q,
