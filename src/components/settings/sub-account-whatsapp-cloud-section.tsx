@@ -250,7 +250,7 @@ export function SubAccountWhatsappCloudSection() {
               value={accessToken}
               onChange={(e) => setAccessToken(e.target.value)}
               placeholder="EAAG…"
-              autoComplete="off"
+              autoComplete="new-password"
               required
             />
             <p className="mt-1 text-xs text-muted-foreground">
