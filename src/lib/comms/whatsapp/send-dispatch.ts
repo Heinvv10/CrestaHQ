@@ -6,6 +6,7 @@ import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { getWabaCreds } from "./cloud-credentials";
 import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
+import type { CloudInteractive } from "./interactive";
 import { sendWhatsappBridge, type BridgeAttachment } from "./bridge-client";
 import { resolveWhatsappSender } from "./resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
@@ -68,6 +69,11 @@ export interface WhatsappDispatchInput {
   windowHours?: number;
   /** Approved template to fall back on when the window is shut. */
   template?: CloudTemplateRef | null;
+  /**
+   * Buttons to send with the message inside the window (Cloud only). Outside
+   * the window the approved `template` goes instead, or the send refuses.
+   */
+  interactive?: CloudInteractive | null;
   /** Injected by tests and by callers that already read the window. */
   lastInboundAt?: Date | null;
   /**
@@ -118,6 +124,18 @@ export async function dispatchWhatsappSend(
     };
   }
   const { provider, capabilities } = resolved;
+
+  // Only Cloud renders in-window buttons today (Twilio: buttons PR 4; bridge:
+  // PRs 6–7). Sending the text without them would deliver a Yes/No nobody can
+  // tap, or a review ask with no link — refuse instead.
+  if (input.interactive && provider !== "cloud") {
+    return {
+      provider,
+      ok: false,
+      error: "WA_BUTTONS_UNSUPPORTED_ON_RAIL",
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
 
   // Refused before the window is read and before anything is sent. Placed here
   // rather than in each rail's branch so a fourth rail cannot be added without
@@ -179,6 +197,7 @@ export async function dispatchWhatsappSend(
       message: input.body,
       lastInboundAt,
       template: input.template ?? null,
+      interactive: input.interactive ?? null,
       windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
       provider,
       now,

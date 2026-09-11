@@ -1,24 +1,14 @@
 import { FieldValue } from "firebase-admin/firestore";
 
 /**
- * In-memory Firestore for seam tests — the ones that drive a route down
- * through the real service and the real workflow engine.
- *
- * The ad-hoc fakes elsewhere in the suite return every doc from every query.
- * That is fine for a unit that never filters, and it makes any test of "find
- * the contact with this phone" or "enrol the workflows with this trigger"
- * vacuous: the wrong query finds the right doc. This one honours `where`,
- * applies the FieldValue transforms the code writes, and yields between
- * operations so two concurrent requests genuinely interleave.
- *
- * Transactions run concurrently and commit atomically: every doc a
- * transaction read (directly, or as a query result) must be unchanged at
- * commit, or the body re-runs — as Firestore retries on contention. Queries
- * get NO phantom protection: a doc inserted after a transaction's query does
- * not conflict with it. Code that relies on a query alone to prevent a
- * duplicate therefore races here; contending on a doc it read does not.
- *
- * Deliberately small: add an operator when a test needs it, not before. */
+ * In-memory Firestore for seam tests (route → real service → real engine).
+ * Unlike the suite's ad-hoc fakes it honours `where` — otherwise the wrong
+ * query finds the right doc — applies FieldValue transforms, and yields
+ * between operations so concurrent requests interleave. Transactions commit
+ * atomically and re-run if any doc they read changed, as Firestore retries on
+ * contention; queries get NO phantom protection, so code relying on a query
+ * alone to prevent a duplicate races here. Add an operator when a test needs
+ * it, not before. */
 
 type Data = Record<string, unknown>;
 type WhereOp = "==" | "in" | "array-contains";
@@ -29,16 +19,26 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const transformOf = (v: unknown): string | null =>
   v instanceof FieldValue ? (v as unknown as { methodName: string }).methodName : null;
 
+/** Maps only — a Timestamp, Date or FieldValue is a VALUE, as in Firestore. */
 function isPlainObject(v: unknown): v is Data {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
-  return !(v instanceof Date) && !(v instanceof FieldValue);
+  if (typeof v !== "object" || v === null) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/** Deep copy of maps and arrays; class instances (Timestamp) kept intact,
+ *  where structuredClone would strip their methods (`toDate`). */
+function clone<T>(v: T): T {
+  if (Array.isArray(v)) return v.map(clone) as T;
+  if (!isPlainObject(v)) return v;
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)])) as T;
 }
 
 function resolveValue(current: unknown, v: unknown): unknown {
   const t = transformOf(v);
   // Copy, as Firestore serializes at call time: a caller mutating its array
   // after set() must not reach into the stored doc.
-  if (t === null) return Array.isArray(v) ? structuredClone(v) : v;
+  if (t === null) return Array.isArray(v) ? clone(v) : v;
   const arr = Array.isArray(current) ? current : [];
   const elements = (v as unknown as { elements?: unknown[] }).elements ?? [];
   switch (t) {
@@ -153,12 +153,12 @@ export function createMemoryFirestore() {
       exists: data !== undefined,
       version: versions.get(path) ?? 0,
       ref: docRef(path),
-      data: () => (data === undefined ? undefined : structuredClone(data)),
+      data: () => (data === undefined ? undefined : clone(data)),
     };
   };
 
   const writeSet = (path: string, data: Data, merge: boolean) => {
-    const next = merge ? structuredClone(store.get(path) ?? {}) : {};
+    const next = merge ? clone(store.get(path) ?? {}) : {};
     mergeInto(next, data);
     store.set(path, next);
     bump(path);
@@ -171,7 +171,7 @@ export function createMemoryFirestore() {
         code: 5,
       });
     }
-    const next = structuredClone(current);
+    const next = clone(current);
     for (const [k, v] of Object.entries(patch)) setPath(next, k.split("."), v);
     store.set(path, next);
     bump(path);
@@ -285,15 +285,15 @@ export function createMemoryFirestore() {
     /** Empty the store — call from beforeEach. */
     clear: () => (store.clear(), versions.clear()),
     /** Put a doc in place without going through the code under test. */
-    seed: (path: string, data: Data) => void (store.set(path, structuredClone(data)), bump(path)),
+    seed: (path: string, data: Data) => void (store.set(path, clone(data)), bump(path)),
     /** Current doc data, or undefined. */
     read: (path: string) => {
       const d = store.get(path);
-      return d === undefined ? undefined : structuredClone(d);
+      return d === undefined ? undefined : clone(d);
     },
     /** Every doc directly under a collection path, as `{ id, ...data }`. */
     list: (path: string): Array<Data & { id: string }> =>
       [...store.entries()].filter(([p]) => p.slice(0, p.lastIndexOf("/")) === path)
-        .map(([p, d]) => ({ id: p.split("/").pop()!, ...structuredClone(d) })),
+        .map(([p, d]) => ({ id: p.split("/").pop()!, ...clone(d) })),
   };
 }

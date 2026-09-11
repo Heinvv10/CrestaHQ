@@ -19,6 +19,10 @@ import {
 } from "@/lib/comms/twilio";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
+import {
+  interactiveFromButtons,
+  type CloudInteractive,
+} from "@/lib/comms/whatsapp/interactive";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { checkQuota, UsageQuotaExceededError } from "@/lib/server/usage-meter";
@@ -458,12 +462,11 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
 
   const subject = mergeSubject(ctx, "");
   const body = resolveMergeTags(cfg.body ?? "", subject);
-  if (!body.trim())
-    return { result: { kind: "next" }, log: "skipped:empty_body" };
 
-  // The fallback template is optional. A step that only ever fires inside an
-  // open window needs none — and needs no Meta approval to ship.
+  // The template is optional. A step that only ever fires inside an open
+  // window needs none — and needs no Meta approval to ship.
   let template: CloudTemplateRef | null = null;
+  let interactive: CloudInteractive | null = null;
   let templateBody = "";
   let tplDoc: WhatsappTemplateDoc | null = null;
   if (cfg.templateId) {
@@ -471,29 +474,44 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       .doc(`subAccounts/${ctx.subAccountId}/whatsappTemplates/${cfg.templateId}`)
       .get();
     tplDoc = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
+  }
+  if (tplDoc) {
+    // The variables have to be resolved here, exactly as execWhatsappTemplate
+    // does. Meta fills a template's {{1}}, {{2}} from the `parameters` list;
+    // sending an empty `components` for a template that declares variables
+    // is a 400 from Graph, or worse, a message with visible placeholders
+    // reaching the customer. `merge_tag` variables resolve from the contact;
+    // MANUAL ones are operator-set strings that may themselves carry tags.
+    const manualValues: Record<number, string> = {};
+    for (const [pos, val] of Object.entries(cfg.manualValues ?? {})) {
+      manualValues[Number(pos)] = resolveMergeTags(val ?? "", subject);
+    }
+    const values = resolveTemplateVariables({
+      variables: tplDoc.variables,
+      subject,
+      manualValues,
+    });
+    templateBody = (tplDoc.body ?? "").replace(
+      /\{\{\s*(\d+)\s*\}\}/g,
+      (_match, position: string) => values[Number(position) - 1] ?? "",
+    );
+    // A template with buttons goes out WITH them inside the window, as a
+    // free interactive message that needs no approval — how the review link
+    // rides behind a "Leave a review" button without becoming a paid,
+    // likely-MARKETING template send. Its text is the template's, since the
+    // buttons belong to it. Buttons Meta cannot render in-window refuse the
+    // send rather than go out stripped.
+    if (tplDoc.buttons?.length) {
+      const built = interactiveFromButtons(templateBody, tplDoc.buttons);
+      if (!built.ok) {
+        return { result: { kind: "next" }, log: `error:${built.error}` };
+      }
+      interactive = built.interactive;
+    }
     // Approval is per rail, as in execWhatsappTemplate: a template cleared on
     // Twilio has never been seen by our own WABA. The rail is the one
     // readiness resolved, so this check and the dispatcher below agree.
-    if (tplDoc && isTemplateApprovedFor(tplDoc, readiness.provider)) {
-      // The variables have to be resolved here, exactly as execWhatsappTemplate
-      // does. Meta fills a template's {{1}}, {{2}} from the `parameters` list;
-      // sending an empty `components` for a template that declares variables
-      // is a 400 from Graph, or worse, a message with visible placeholders
-      // reaching the customer. `merge_tag` variables resolve from the contact;
-      // MANUAL ones are operator-set strings that may themselves carry tags.
-      const manualValues: Record<number, string> = {};
-      for (const [pos, val] of Object.entries(cfg.manualValues ?? {})) {
-        manualValues[Number(pos)] = resolveMergeTags(val ?? "", subject);
-      }
-      const values = resolveTemplateVariables({
-        variables: tplDoc.variables,
-        subject,
-        manualValues,
-      });
-      templateBody = (tplDoc.body ?? "").replace(
-        /\{\{\s*(\d+)\s*\}\}/g,
-        (_match, position: string) => values[Number(position) - 1] ?? "",
-      );
+    if (isTemplateApprovedFor(tplDoc, readiness.provider)) {
       template = {
         name: tplDoc.name,
         language: tplDoc.language ?? "en",
@@ -509,6 +527,8 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       };
     }
   }
+  if (!body.trim() && !interactive)
+    return { result: { kind: "next" }, log: "skipped:empty_body" };
 
   try {
     const res = await dispatchWhatsappSend({
@@ -518,6 +538,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       to,
       body,
       template,
+      interactive,
       sendViaTwilio: async () => {
         const r = await sendWhatsappForSubAccount({
           subAccountId: ctx.subAccountId,
@@ -537,7 +558,8 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // A successful provider call does not write the CRM thread. Use the same
     // provider message id as the manual composer so the row is addressable.
     // Keep recording failures distinct: the message has already been sent.
-    const recordedBody = res.sentAs === "template" ? templateBody : body;
+    const recordedBody =
+      res.sentAs === "template" || interactive ? templateBody : body;
     try {
       const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
       const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();
