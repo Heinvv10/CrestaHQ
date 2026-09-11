@@ -77,6 +77,8 @@ const ctx = (
     subAccountId: "sa_1",
     agencyId: "ag_1",
     createdByUid: "u_1",
+    workflowId: "wf1",
+    runId: "run1",
     triggerContext: {},
     ...over,
   }) as Parameters<typeof execSendWhatsapp>[0];

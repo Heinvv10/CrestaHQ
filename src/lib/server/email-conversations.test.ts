@@ -27,6 +27,18 @@ const db = {
         return query;
       },
       orderBy: () => query,
+      // Contact-scoped subcollection writes (the timeline row the helper
+      // adds after the transaction). Not part of any query above.
+      doc: (id: string) => ({
+        ...ref(`${path}/${id}`),
+        collection: (sub: string) => ({
+          doc: (docId?: string) => ({
+            set: async (data: Record<string, unknown>) => {
+              m.rows.set(`${path}/${id}/${sub}/${docId ?? "auto"}`, data);
+            },
+          }),
+        }),
+      }),
       startAfter: (doc: { id: string }) => {
         afterId = doc.id;
         return query;
@@ -120,6 +132,22 @@ it("atomically creates a tenant contact, message and conversation and dedupes", 
   expect(
     [...m.rows.keys()].filter((k) => k.includes("/emailMessages/"))
   ).toHaveLength(1);
+  // One timeline row for the new inbound mail; the dedupe wrote none.
+  expect([...m.rows.keys()].filter((k) => k.includes("/activities/"))).toEqual([
+    `contacts/${first.contactId}/activities/inbound_email_<one@example.com>`,
+  ]);
+  expect(
+    m.rows.get(
+      `contacts/${first.contactId}/activities/inbound_email_<one@example.com>`
+    )
+  ).toMatchObject({
+    type: "email_received",
+    createdBy: "email_inbound",
+    agencyId: "agency",
+    subAccountId: "sa",
+    content: "Email received: Hello — Latest",
+    meta: { channel: "email", messageId: "<one@example.com>" },
+  });
 });
 it("historical mail preserves newer previews and unread counts", async () => {
   const first = await recordEmailMessage(input);
@@ -134,6 +162,10 @@ it("historical mail preserves newer previews and unread counts", async () => {
     unreadCount: 1,
     lastMessagePreview: "Latest",
   });
+  // Backfilled mail stays off the timeline.
+  expect([...m.rows.keys()].filter((k) => k.includes("/activities/"))).toEqual([
+    `contacts/${first.contactId}/activities/inbound_email_<one@example.com>`,
+  ]);
 });
 it("rejects an explicit cross-tenant contact before any writes", async () => {
   m.rows.set("contacts/foreign", {
@@ -253,6 +285,8 @@ it("dedupes Sent import against the original explicit contact when emails are du
   expect(
     [...m.rows.keys()].filter((k) => k.includes("/emailMessages/"))
   ).toHaveLength(1);
+  // Outbound mail is not an inbound activity.
+  expect([...m.rows.keys()].filter((k) => k.includes("/activities/"))).toEqual([]);
 });
 
 it("pages beyond five thousand contacts to resolve mixed-case addresses", async () => {

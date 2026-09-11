@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -45,7 +46,12 @@ export function WorkflowRuns({
   workflowId: string;
 }) {
   const [runs, setRuns] = useState<RunRow[] | null>(null);
-  const [open, setOpen] = useState<Set<string>>(new Set());
+  // `?run=<id>` — a contact-timeline "View run" link: that run opens
+  // expanded, highlighted, and scrolled into view.
+  const focusRunId = useSearchParams().get("run");
+  const [open, setOpen] = useState<Set<string>>(
+    () => new Set(focusRunId ? [focusRunId] : []),
+  );
 
   const load = useCallback(async () => {
     const res = await fetch(
@@ -87,8 +93,18 @@ export function WorkflowRuns({
         <div className="divide-y overflow-hidden rounded-xl border bg-card">
           {runs.map((r) => {
             const isOpen = open.has(r.id);
+            const focused = r.id === focusRunId;
             return (
-              <div key={r.id}>
+              <div
+                key={r.id}
+                data-run-id={r.id}
+                className={cn(focused && "ring-2 ring-primary/40 ring-inset")}
+                ref={
+                  focused
+                    ? (el) => el?.scrollIntoView({ block: "center" })
+                    : undefined
+                }
+              >
                 <button
                   className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/40"
                   onClick={() =>

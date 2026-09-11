@@ -126,7 +126,10 @@ export interface MemoryDocRef {
   update: Write<[Data]>;
   create: Write<[Data]>;
   delete: Write<[]>;
-  collection: (name: string) => MemoryQuery & { doc: (id?: string) => MemoryDocRef };
+  collection: (name: string) => MemoryQuery & {
+    doc: (id?: string) => MemoryDocRef;
+    add: (data: Data) => Promise<MemoryDocRef>;
+  };
 }
 
 export interface MemoryQuery {

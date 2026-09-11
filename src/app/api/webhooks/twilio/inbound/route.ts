@@ -9,6 +9,7 @@ import { maybeRespondWithAi } from "@/lib/comms/ai/respond";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 
@@ -236,6 +237,18 @@ export async function POST(request: Request) {
           body: bodyRaw,
         });
       }),
+    );
+    await Promise.all(
+      matches.docs.map((d) =>
+        writeInboundMessageActivity(db, {
+          contactId: d.id,
+          channel: "sms",
+          preview: bodyRaw,
+          messageId: docId,
+          agencyId: route.agencyId ?? "",
+          subAccountId: route.subAccountId!,
+        }),
+      ),
     );
   } else if (route.mode === "dedicated" && matches.empty) {
     console.warn(

@@ -190,6 +190,14 @@ describe("a tap resumes the wait and the if_else branches on its text", () => {
     expect(mem.read("contacts/c1/whatsappMessages/SM_TAP")).toMatchObject({
       body: YES, buttonPayload: "yes_all_good",
     });
+    // The tap is also a customer message on the timeline, keyed by the SID
+    // so Twilio's retries cannot duplicate it.
+    expect(mem.read("contacts/c1/activities/inbound_whatsapp_SM_TAP")).toMatchObject({
+      type: "whatsapp_received", createdBy: "whatsapp_inbound",
+      agencyId: "ag1", subAccountId: "sa1",
+      content: `WhatsApp received: ${YES}`,
+      meta: { channel: "whatsapp", messageId: "SM_TAP" },
+    });
   });
 
   it("Cloud template quick reply: No → the No branch", async () => {

@@ -33,6 +33,15 @@ export type ActivityMeta = {
   paymentCurrency?: string;
   /** Follow-up task minted alongside this row (watchdog, captures). */
   taskId?: string;
+  /** `task_created` rows: the task's due date as ISO, or null. */
+  dueAt?: string | null;
+  /** `*_received` rows: the persisted message row's id + its channel. */
+  messageId?: string;
+  channel?: "sms" | "whatsapp" | "email" | "messenger" | "instagram" | "webchat";
+  /** Rows written by the workflow engine carry the run they belong to so
+   *  the timeline can link to the workflow's run history. */
+  workflowId?: string;
+  runId?: string;
   /** Bulk-email send rows carry the parent broadcast for deep-linking. */
   broadcastId?: string;
   /** Webinar1 rows (`webinar_*`) carry the source webinar + registration so
