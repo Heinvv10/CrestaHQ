@@ -66,6 +66,14 @@ export interface UpsertConversationInput {
    * clears any pending AI draft. The bot's own replies pass this false.
    */
   pauseBot?: boolean;
+  /** The inbound message was a WhatsApp button tap (it carried a payload). */
+  buttonTap?: boolean;
+}
+
+function toMillis(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  const ts = v as { toMillis?: () => number } | null | undefined;
+  return typeof ts?.toMillis === "function" ? ts.toMillis() : null;
 }
 
 async function contactTerritory(
@@ -88,6 +96,9 @@ async function contactTerritory(
 export async function upsertConversationForMessage(
   input: UpsertConversationInput
 ): Promise<void> {
+  // When this message arrived — a late-tap flag must not land over a human
+  // reply made after it (see below).
+  const receivedAt = Date.now();
   try {
     const db = getAdminDb();
     // Doc id: an explicit conversationKey (web chat's session key) wins;
@@ -140,6 +151,8 @@ export async function upsertConversationForMessage(
         patch.botPausedUntil = new Date(Date.now() + PAUSE_WINDOW_MS);
         patch.unreadCount = 0;
         patch.pendingDraft = null;
+        patch.lateButtonTap = null;
+        patch.lastHumanReplyAt = FieldValue.serverTimestamp();
       }
 
       if (!snap.exists) {
@@ -188,7 +201,7 @@ export async function upsertConversationForMessage(
       });
       // A reply resolves any workflow run parked on a wait_for_reply node.
       // Self-guarded fire-and-forget — same contract as the webhook emit.
-      void resumeWaitingRunsOnReply({
+      const resumed = resumeWaitingRunsOnReply({
         subAccountId: input.subAccountId,
         contactId,
         channel: input.channel,
@@ -197,6 +210,31 @@ export async function upsertConversationForMessage(
         // to what the contact actually said.
         text: input.body,
       });
+      // A tap always answers an earlier button message. If no run was waiting
+      // for it (the wait had timed out), no automation will act on it — flag
+      // the thread so a human does. A finished run is never resumed. If ANY
+      // other run of this contact was waiting, the reply went to it and no
+      // flag is raised.
+      //
+      // The flag lands after the fire-and-forget resume settles, so a human
+      // may already have replied (and cleared it). The write is skipped when a
+      // HUMAN replied after this message arrived — `lastHumanReplyAt`, set only
+      // on the operator-reply path. An AI or workflow send in that window does
+      // not suppress it: an automated reply is not a human handling the tap.
+      void Promise.resolve(resumed)
+        .then(async (n) => {
+          if (!input.buttonTap || n !== 0) return;
+          await db.runTransaction(async (tx) => {
+            const current = (await tx.get(ref)).data();
+            if (!current) return;
+            const humanAt = toMillis(current.lastHumanReplyAt);
+            if (humanAt !== null && humanAt >= receivedAt) return;
+            tx.update(ref, {
+              lateButtonTap: { text: preview, at: FieldValue.serverTimestamp() },
+            });
+          });
+        })
+        .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err));
       // And enrolls the contact in message.received workflows (the trigger's
       // optional channel filter narrows inside fireWorkflowTrigger).
       void fireWorkflowTrigger({
