@@ -136,6 +136,12 @@ describe("resume", () => {
     expect(syncState()?.pass).toBeNull();
   });
 
+  it("still resumes a pass that is days old (a big listing finishing over many runs)", async () => {
+    await sync({ maxPages: 1 });
+    const run = await sync({ now: new Date(NOW.getTime() + 3 * 24 * 3600_000) });
+    expect(run).toMatchObject({ resumedFromCursor: true, pagesFetched: 2, status: "success" });
+  });
+
   it("abandons a pass older than 7 days and starts again from page 1", async () => {
     await sync({ maxPages: 1 });
     const run = await sync({ now: new Date(NOW.getTime() + 8 * 24 * 3600_000) });
