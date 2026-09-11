@@ -27,6 +27,9 @@ export interface WhatsappTemplateOption {
   displayName: string;
   body: string;
   variables: WhatsappTemplateVariable[];
+  approved: boolean;
+  /** A template with buttons can go out in-window without approval. */
+  hasButtons: boolean;
 }
 
 /** One of the sub-account's WhatsApp senders, for the send-from picker. */
@@ -69,6 +72,10 @@ export function NodeConfigDialog({
   const defaultSender =
     whatsappSenders.find((s) => s.isDefault) ?? whatsappSenders[0] ?? null;
   const str = (k: string) => (cfg[k] as string) ?? "";
+  // The template step always sends a template, so only approved ones. The
+  // free-form step can also carry a button template in-window, unapproved.
+  const approvedTemplates = whatsappTemplates.filter((t) => t.approved);
+  const sendTemplates = whatsappTemplates.filter((t) => t.approved || t.hasButtons);
 
   const wait = deriveWait(Number(cfg.seconds ?? 86_400));
   // Legacy notify configs have no `recipient` — derive a sensible default so
@@ -132,11 +139,11 @@ export function NodeConfigDialog({
                 />
               </Field>
               <Field
-                label="If the 24-hour window has closed"
+                label="Template — its buttons, or the fallback when the window has closed"
                 hint={
-                  whatsappTemplates.length === 0
+                  sendTemplates.length === 0
                     ? "No approved templates yet. Without one this step is skipped when the window is shut — which is correct for a step that only ever replies to a contact who just messaged."
-                    : "Meta only allows free-form text within 24 hours of the contact's last message. Pick a template to re-open a closed window, or leave this empty to skip the step instead of paying template rates."
+                    : "Meta only allows free-form text within 24 hours of the contact's last message. Pick an approved template to re-open a closed window, or leave this empty to skip the step instead of paying template rates. A template with buttons is sent WITH them inside the window (its own text, free, no approval needed); outside it, it needs approval or the step is skipped."
                 }
               >
                 <select
@@ -149,9 +156,10 @@ export function NodeConfigDialog({
                   <option value="">
                     Skip the step (no template fallback)
                   </option>
-                  {whatsappTemplates.map((t) => (
+                  {sendTemplates.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.displayName}
+                      {t.approved ? "" : " — buttons, in-window only (Cloud)"}
                     </option>
                   ))}
                 </select>
@@ -161,7 +169,7 @@ export function NodeConfigDialog({
                 // Without these inputs `manualValues` is unreachable from the
                 // UI, and Meta receives a template with empty parameters.
                 const tpl =
-                  whatsappTemplates.find((t) => t.id === str("templateId")) ??
+                  sendTemplates.find((t) => t.id === str("templateId")) ??
                   null;
                 if (!tpl) return null;
                 const manualValues =
@@ -242,7 +250,7 @@ export function NodeConfigDialog({
           {step.type === "whatsapp_template" &&
             (() => {
               const tplId = str("templateId");
-              const tpl = whatsappTemplates.find((t) => t.id === tplId) ?? null;
+              const tpl = approvedTemplates.find((t) => t.id === tplId) ?? null;
               const manualValues =
                 (cfg.manualValues as Record<string, string> | undefined) ?? {};
               const mergeVars =
@@ -254,7 +262,7 @@ export function NodeConfigDialog({
                   <Field
                     label="Template"
                     hint={
-                      whatsappTemplates.length === 0
+                      approvedTemplates.length === 0
                         ? "No approved WhatsApp templates yet. Create one in AI Agents → WhatsApp → Templates."
                         : "Only Meta-approved templates can be sent on WhatsApp."
                     }
@@ -267,7 +275,7 @@ export function NodeConfigDialog({
                       className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
                     >
                       <option value="">Choose a template…</option>
-                      {whatsappTemplates.map((t) => (
+                      {approvedTemplates.map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.displayName}
                         </option>

@@ -103,8 +103,7 @@ export function WorkflowBuilderLoader({
               "subAccounts",
               saId,
               "whatsappTemplates"
-            ),
-            where("status", "==", "approved")
+            )
           )
         );
         if (alive) {
@@ -116,6 +115,8 @@ export function WorkflowBuilderLoader({
                 displayName: (data.displayName as string) || "Template",
                 body: (data.body as string) || "",
                 variables: (data.variables as WhatsappTemplateVariable[]) ?? [],
+                approved: data.status === "approved",
+                hasButtons: Array.isArray(data.buttons) && data.buttons.length > 0,
               };
             })
           );

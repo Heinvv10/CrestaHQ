@@ -8,6 +8,7 @@ import {
 } from "./provider";
 import { resolveWaSendMode, type WaSendMode } from "./send-mode";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
+import type { CloudInteractive } from "./interactive";
 
 /**
  * Meta WhatsApp Cloud API sender — the `cloud` arm of the provider seam.
@@ -46,8 +47,14 @@ export function buildCloudMessageBody(
   to: string,
   message: string,
   template: Pick<CloudTemplateRef, "name" | "language" | "components"> | null,
+  /** In-window buttons. Used only in text mode: interactive messages are
+   *  free-form, so like plain text they are allowed only inside the window. */
+  interactive: CloudInteractive | null = null,
 ): Record<string, unknown> {
   const recipient = normalizeWaPhone(to);
+  if (decision.mode === "text" && interactive) {
+    return { messaging_product: "whatsapp", to: recipient, type: "interactive", interactive };
+  }
   if (decision.mode === "template" && template) {
     return {
       messaging_product: "whatsapp",
@@ -86,6 +93,7 @@ export async function sendWhatsappCloud(opts: {
   /** When the contact last messaged in — drives the 24h service window. */
   lastInboundAt: Date | null;
   template: CloudTemplateRef | null;
+  interactive?: CloudInteractive | null;
   windowHours?: number;
   provider?: WhatsAppProviderId;
   now?: Date;
@@ -114,6 +122,7 @@ export async function sendWhatsappCloud(opts: {
     opts.to,
     opts.message,
     opts.template?.approved ? opts.template : null,
+    opts.interactive ?? null,
   );
 
   const url = `https://graph.facebook.com/${graphVersion()}/${opts.creds.phoneNumberId}/messages`;

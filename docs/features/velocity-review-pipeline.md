@@ -343,6 +343,20 @@ from the same keyword list every WhatsApp inbound route now shares. A
 buttoned template cannot be submitted on Twilio until PR 4 — Twilio would
 approve it without its buttons.
 
+**PR 3 done:** a `send_whatsapp` step whose template has buttons sends that
+template's text WITH them inside the window, as a free Cloud interactive
+message that needs no approval — reply buttons for quick replies, `cta_url`
+for a single link (`lib/comms/whatsapp/interactive.ts`). Outside the window it
+sends the template only if approved, else refuses; it never falls back to a
+paid template for the review link. Meta's in-window rules are narrower than a
+template's — labels at most **20** characters, one link per message, reply
+buttons and a link never together — and a template outside them is refused
+IN-WINDOW rather than sent stripped; outside the window an approved one
+still goes as itself, whatever its buttons. The dispatcher makes that call
+once it knows the window. Twilio and the bridge refuse a button template
+in-window until PRs 4 and 6–7. The step's template picker now offers unapproved button
+templates, marked "in-window only".
+
 Each PR: provider-documented payload fixtures, mutation-tested,
 blind review, `pnpm ci:check`. The pilot's end-to-end (own handset, tap Yes
 and No, link on both branches) stays a human gate.
@@ -396,9 +410,13 @@ LeadStack API work:
   two quick replies, "Yes, all good" and "No, there's a problem", and the
   workflow's `if_else` tests `reply.text` equals "Yes, all good". The
   experience check must be a **`whatsapp_template` step** (always sends the
-  template), not a `send_whatsapp` step with the template as its fallback:
-  inside an open window that step sends its plain-text body instead, with no
-  buttons to tap (until build-order PR 3 renders them in-window).
+  template), so it goes out the same way whether or not the customer has
+  messaged recently.
+- **The review link** is a template that is never submitted: body text plus
+  ONE link button ("Leave a review" → the Google review URL). Both the Yes and
+  the No branch send it with a `send_whatsapp` step — inside the window the
+  tap opened, so it goes free as an interactive message. Keep its label to 20
+  characters.
 - **The sub-account's WhatsApp AI agent must be OFF.** The AI auto-reply does
   not know a contact is waiting in a workflow, so it would answer a tap —
   "Yes, all good" — alongside the workflow's own message. (Pre-existing for
