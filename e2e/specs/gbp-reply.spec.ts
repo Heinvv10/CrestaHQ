@@ -55,6 +55,9 @@ test("an explicit reply posts once; a replay is free; a failure is honest; a gue
   expect((await doc("fake-r6")).reply).toMatchObject({ comment: TEXT });
 
   // --- The same request again (same idempotency key): the stored result, no second call.
+  // One replay only — every ledger state (pending, reused key, another key in
+  // flight, stale takeover, late retry) is proven in vitest:
+  // …/reply/route.idempotency.test.ts and …/reply/route.inflight.test.ts.
   const replay = await pageFetch(page, new URL(req.url()).pathname, "POST", req.postData() ?? "");
   expect(replay.status).toBe(200);
   expect(replay.body.reply).toMatchObject({ comment: TEXT });
