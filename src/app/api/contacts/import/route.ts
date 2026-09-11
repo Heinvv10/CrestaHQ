@@ -4,7 +4,10 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
-import { hasContactIdentity } from "@/lib/contacts/display-name";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 
 /**
  * Dashboard-facing CSV import. The client parses + maps + validates the CSV
@@ -70,7 +73,7 @@ export async function POST(request: Request) {
     const email = str(row.email);
     const phone = str(row.phone);
     if (!hasContactIdentity({ name, email, phone })) {
-      errors.push({ index: i, message: "Missing name, phone and email" });
+      errors.push({ index: i, message: CONTACT_IDENTITY_ERROR });
       continue;
     }
     try {
