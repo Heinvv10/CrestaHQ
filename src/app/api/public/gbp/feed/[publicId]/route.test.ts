@@ -11,6 +11,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { ACCOUNT, LOC_A, SA, asUser, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
 import { VELO, createWidget, feed, feedBody, freshIp } from "@/test/gbp-feed-harness";
+import { storeDb } from "@/test/gbp-sync-store";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { reviewDocId } from "@/lib/gbp/sync/store";
 import { DELETE as disconnect } from "@/app/api/sub-accounts/[id]/google/route";
@@ -158,6 +159,14 @@ describe("unknown, malformed, disabled and revoked ids are the SAME 404", () => 
 
     await revokeRoute(admin("/gbp/widget", "DELETE"), params);
     expect(await snapshot(await feed(rotated, h))).toEqual(unknown);
+  });
+
+  it("never lets a malformed id reach Firestore as a path", async () => {
+    const doc = vi.spyOn(storeDb, "doc");
+    for (const bad of ["../etc/passwd", "a/b", "A".repeat(31), "A".repeat(33), "A".repeat(31) + "="]) {
+      expect((await feed(bad, { "x-forwarded-for": ip })).status).toBe(404);
+    }
+    expect(doc.mock.calls.filter(([path]) => String(path).startsWith("gbpWidgets"))).toEqual([]);
   });
 
   it("a widget switched off 404s, and switched back on serves again", async () => {

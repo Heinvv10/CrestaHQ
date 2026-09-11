@@ -79,6 +79,7 @@ describe("loading and the fallback contract", () => {
 
   it.each([
     ["an HTTP error", () => respond({ error: "not_found" }, 404)],
+    ["an HTTP error, even one whose body looks like a feed", () => respond(feedBody(), 500)],
     ["a network error", () => fetchMock.mockRejectedValue(new TypeError("Failed to fetch"))],
     ["an unavailable feed", () => respond(feedBody({ status: "unavailable", rating: null, reviews: [] }))],
     ["an unknown contract version", () => respond(feedBody({ version: 2 }))],
