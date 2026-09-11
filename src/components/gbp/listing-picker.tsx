@@ -46,6 +46,9 @@ const ERROR_TEXT: Record<string, string> = {
   rate_limited: "Google is rate-limiting requests. Try again in a minute.",
   transient: "Google is temporarily unavailable. Try again shortly.",
   malformed: "Google sent an unexpected response. Try again shortly.",
+  unknown_location: "That listing isn't available to this Google connection. Reload the list and pick again.",
+  unverifiable_truncated:
+    "This Google account has too many listings to verify that one here, so it can't be selected. Contact support to manage it.",
 };
 
 export function ListingPicker({

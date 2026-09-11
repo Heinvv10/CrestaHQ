@@ -61,8 +61,16 @@ export async function PUT(
   } catch (err) {
     return gbpErrorResponse(err, id, "gbp/listing");
   }
-  // "unknown" (walk truncated) cannot prove access either: refuse.
-  if (!match || match === "unknown") {
+  // "unknown": the walk hit the page bound before finding the pair, so access
+  // is unproven — refuse, but say so honestly rather than "not available".
+  if (match === "unknown") {
+    return gbpRefusal(
+      400,
+      "unverifiable_truncated",
+      "This Google account has too many listings to verify that one.",
+    );
+  }
+  if (!match) {
     return gbpRefusal(400, "unknown_location", "That listing isn't available to this Google connection.");
   }
 

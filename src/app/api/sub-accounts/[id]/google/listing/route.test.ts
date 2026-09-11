@@ -114,7 +114,8 @@ describe("PUT validation", () => {
       for (let i = 0; i < 70; i++) s.accounts.unshift({ name: `accounts/filler-${i}`, accountName: `F${i}`, type: "PERSONAL" });
     });
     const res = await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_NORTH });
-    expect([res.status, res.body.code]).toEqual([400, "unknown_location"]);
+    // Distinct from unknown_location: absence is NOT proven, only unverifiable.
+    expect([res.status, res.body.code]).toEqual([400, "unverifiable_truncated"]);
     expect(state.writes).toEqual([]);
   });
 
