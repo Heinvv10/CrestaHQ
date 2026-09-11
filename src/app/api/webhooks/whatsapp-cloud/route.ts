@@ -239,6 +239,7 @@ export async function POST(request: Request) {
         channel: "whatsapp",
         direction: "inbound",
         body: inbound.text,
+        buttonTap: inbound.buttonPayload !== null,
       });
     }),
   );

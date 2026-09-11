@@ -379,6 +379,15 @@ in the template's sample value — a stranger's name
 in-session limits match the Cloud in-window rules, so the same check guards
 both. Only the bridge still refuses in-window buttons.
 
+**PR 5 done:** a button tap that resumes no waiting run — the wait timed out,
+or the run already finished — flags its conversation `lateButtonTap` and
+shows a **Late tap** badge in the inbox, whose tooltip names the tapped text.
+Nothing resumes the finished run. The flag clears when a human replies.
+Typed text is never flagged, and a tap that did resume a run is not.
+`resumeWaitingRunsOnReply` now returns how many runs a reply resumed; the
+conversation service flags on 0 for a tap (`buttonTap`, passed by the Cloud
+and Twilio webhooks).
+
 Each PR: provider-documented payload fixtures, mutation-tested,
 blind review, `pnpm ci:check`. The pilot's end-to-end (own handset, tap Yes
 and No, link on both branches) stays a human gate.

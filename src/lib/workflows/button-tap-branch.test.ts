@@ -55,6 +55,7 @@ const { POST: twilioInbound } = await import(
   "@/app/api/webhooks/twilio/whatsapp/inbound/route"
 );
 const { runStep } = await import("./engine");
+const { upsertConversationForMessage } = await import("@/lib/server/conversations-service");
 
 const PHONE = "+27821234567";
 const PN = "pn_velocity";
@@ -195,5 +196,69 @@ describe("a tap resumes the wait and the if_else branches on its text", () => {
     await cloudTap({ type: "text", text: { body: "the tech left a mess" } });
 
     expect(await branchTaken()).toBe("n_no");
+  });
+});
+
+describe("a tap nothing is waiting for is flagged for a human", () => {
+  /** The run already took its no-reply path: nothing is parked any more. */
+  const finishRun = () =>
+    mem.seed("workflowRuns/run1", {
+      ...mem.read("workflowRuns/run1"), status: "completed", waiting: null,
+    });
+  const flag = () => mem.read("conversations/c1")?.lateButtonTap;
+  /** Resumes, then the late-tap write they chain, have settled. The positive
+   *  cases prove these ticks are enough for that write to land. */
+  const settled = async () => {
+    await Promise.all(resumes);
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it("flags the thread when a Cloud tap resumes nothing, and resumes nothing", async () => {
+    finishRun();
+    await cloudTap({ type: "button", button: { text: YES, payload: "yes_all_good" } });
+    await settled();
+
+    expect(flag()).toMatchObject({ text: YES });
+    expect(mem.read("workflowRuns/run1")?.status).toBe("completed");
+    expect(published).toHaveLength(0);
+  });
+
+  it("flags a late Twilio tap too", async () => {
+    finishRun();
+    await twilioTap({ Body: YES, ButtonText: YES, ButtonPayload: "yes_all_good" });
+    await settled();
+
+    expect(flag()).toMatchObject({ text: YES });
+  });
+
+  it("does not flag a tap that resumed a waiting run", async () => {
+    await cloudTap({ type: "button", button: { text: YES, payload: "yes_all_good" } });
+    await settled();
+
+    expect(flag()).toBeUndefined();
+  });
+
+  it("does not flag typed text, even with nothing waiting", async () => {
+    finishRun();
+    await cloudTap({ type: "text", text: { body: "hello?" } });
+    await settled();
+
+    expect(flag()).toBeUndefined();
+  });
+
+  it("clears the flag when a human replies", async () => {
+    finishRun();
+    await cloudTap({ type: "button", button: { text: YES, payload: "yes_all_good" } });
+    await settled();
+    expect(flag()).toBeTruthy();
+
+    await upsertConversationForMessage({
+      contactId: "c1", subAccountId: "sa1", agencyId: "ag1",
+      contactName: "Thandi Mokoena", contactPhone: PHONE,
+      channel: "whatsapp", direction: "outbound", body: "Thanks Thandi — here's the link.",
+      pauseBot: true,
+    });
+
+    expect(flag()).toBeNull();
   });
 });

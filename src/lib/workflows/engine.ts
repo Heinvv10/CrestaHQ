@@ -1369,6 +1369,8 @@ async function stepWaitForReply(
  *
  * Equality-only query (contactId + status) — no composite index needed.
  * Never throws: a workflow problem must not break the inbound webhook.
+ * Returns how many runs this reply resumed — 0 tells the caller nothing was
+ * waiting (a late button tap is flagged for a human on that basis).
  */
 export async function resumeWaitingRunsOnReply(input: {
   subAccountId: string;
@@ -1378,7 +1380,8 @@ export async function resumeWaitingRunsOnReply(input: {
    *  contact said and not merely that they said something. Optional: callers
    *  that predate this still resume the run, they just cannot branch on it. */
   text?: string | null;
-}): Promise<void> {
+}): Promise<number> {
+  let resumed = 0;
   try {
     const db = getAdminDb();
     const snap = await db
@@ -1386,7 +1389,7 @@ export async function resumeWaitingRunsOnReply(input: {
       .where("contactId", "==", input.contactId)
       .where("status", "==", "waiting")
       .get();
-    if (snap.empty) return;
+    if (snap.empty) return 0;
 
     for (const doc of snap.docs) {
       const run = doc.data() as WorkflowRunDoc;
@@ -1424,6 +1427,7 @@ export async function resumeWaitingRunsOnReply(input: {
         return true;
       });
       if (!claimed) continue;
+      resumed += 1;
 
       const wfSnap = await db.doc(`workflows/${run.workflowId}`).get();
       const wf = wfSnap.exists ? (wfSnap.data() as WorkflowDoc) : null;
@@ -1437,6 +1441,7 @@ export async function resumeWaitingRunsOnReply(input: {
   } catch (err) {
     console.warn("[workflows] resumeWaitingRunsOnReply failed", err);
   }
+  return resumed;
 }
 
 /** Manually enroll one contact to dry-run a workflow (ignores trigger/filters;

@@ -133,6 +133,12 @@ export interface ConversationDoc {
   botPausedUntil: Timestamp | FieldValue | null;
   /** Suggest-mode draft awaiting human approval; null when none. */
   pendingDraft: ConversationDraft | null;
+  /**
+   * A WhatsApp button tap that no workflow was waiting for — it arrived after
+   * the wait timed out, so no automation will answer it. Set by the inbound
+   * upsert, cleared when a human replies.
+   */
+  lateButtonTap?: { text: string; at: Timestamp | FieldValue | null } | null;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }

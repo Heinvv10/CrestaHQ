@@ -257,6 +257,7 @@ export async function POST(request: Request) {
           channel: "whatsapp",
           direction: "inbound",
           body: bodyRaw,
+          buttonTap: buttonPayload !== null,
         });
       }),
     );

@@ -66,6 +66,8 @@ export interface UpsertConversationInput {
    * clears any pending AI draft. The bot's own replies pass this false.
    */
   pauseBot?: boolean;
+  /** The inbound message was a WhatsApp button tap (it carried a payload). */
+  buttonTap?: boolean;
 }
 
 async function contactTerritory(
@@ -140,6 +142,7 @@ export async function upsertConversationForMessage(
         patch.botPausedUntil = new Date(Date.now() + PAUSE_WINDOW_MS);
         patch.unreadCount = 0;
         patch.pendingDraft = null;
+        patch.lateButtonTap = null;
       }
 
       if (!snap.exists) {
@@ -188,7 +191,7 @@ export async function upsertConversationForMessage(
       });
       // A reply resolves any workflow run parked on a wait_for_reply node.
       // Self-guarded fire-and-forget — same contract as the webhook emit.
-      void resumeWaitingRunsOnReply({
+      const resumed = resumeWaitingRunsOnReply({
         subAccountId: input.subAccountId,
         contactId,
         channel: input.channel,
@@ -197,6 +200,18 @@ export async function upsertConversationForMessage(
         // to what the contact actually said.
         text: input.body,
       });
+      // A tap always answers an earlier button message. If no run was waiting
+      // for it (the wait had timed out), no automation will act on it — flag
+      // the thread so a human does. A finished run is never resumed.
+      void Promise.resolve(resumed)
+        .then(async (n) => {
+          if (input.buttonTap && n === 0) {
+            await ref.update({
+              lateButtonTap: { text: preview, at: FieldValue.serverTimestamp() },
+            });
+          }
+        })
+        .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err));
       // And enrolls the contact in message.received workflows (the trigger's
       // optional channel filter narrows inside fireWorkflowTrigger).
       void fireWorkflowTrigger({
