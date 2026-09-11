@@ -149,7 +149,10 @@ export async function GET(request: Request) {
 
     return finish("connected");
   } catch (err) {
-    console.error(`[google/callback] connect failed sa=${id}`, err);
+    // Name + message only: a raw error object can carry request detail.
+    // GbpProviderError messages are fixed per kind and never hold a token.
+    const reason = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+    console.error(`[google/callback] connect failed sa=${id}`, reason);
     return finish("error");
   }
 }

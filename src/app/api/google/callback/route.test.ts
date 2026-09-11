@@ -178,6 +178,19 @@ describe("successful exchange", () => {
     expect(state.writes).toEqual([]);
   });
 
+  it("logs only the error's name and message, never the raw object", async () => {
+    stubTokenEndpoint({ error: "invalid_grant", error_description: "LEAKY-DETAIL" }, 400);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await call({ code: "abc", state: validState() });
+    expect(spy).toHaveBeenCalledTimes(1);
+    const args = spy.mock.calls[0];
+    expect(args.every((a) => typeof a === "string")).toBe(true);
+    expect(args.join(" ")).toContain(
+      "GbpProviderError: Google Business Profile provider error: revoked (HTTP 400)",
+    );
+    expect(args.join(" ")).not.toContain("LEAKY-DETAIL");
+  });
+
   it("redirects with `error` and stores nothing when Google rejects the code", async () => {
     stubTokenEndpoint({ error: "invalid_grant" }, 400);
     vi.spyOn(console, "error").mockImplementation(() => {});
