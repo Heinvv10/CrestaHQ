@@ -40,18 +40,19 @@ const feedBody = (over: Record<string, unknown> = {}) => ({
 let reduceMotion = false;
 const fetchMock = vi.fn();
 /** ONE MediaQueryList, as a browser gives: `matches` is live and `change` can be dispatched. */
-let motionListeners: Array<() => void> = [];
+let motionListeners: Array<(e: unknown) => void> = [];
 const motionQuery = {
   media: "(prefers-reduced-motion: reduce)",
   get matches() {
     return reduceMotion;
   },
-  addEventListener: (_type: string, fn: () => void) => void motionListeners.push(fn),
-  removeEventListener: (_type: string, fn: () => void) => void (motionListeners = motionListeners.filter((f) => f !== fn)),
+  addEventListener: (_type: string, fn: (e: unknown) => void) => void motionListeners.push(fn),
+  removeEventListener: (_type: string, fn: (e: unknown) => void) => void (motionListeners = motionListeners.filter((f) => f !== fn)),
 };
 function setReducedMotion(on: boolean) {
   reduceMotion = on;
-  motionListeners.forEach((fn) => fn());
+  // A browser passes a MediaQueryListEvent to `change` listeners.
+  motionListeners.forEach((fn) => fn({ type: "change", matches: on }));
 }
 
 function mountPage(html = `<div id="w" data-crestahq-reviews="${ID}" data-api="${API}/">${FALLBACK}</div>`) {
@@ -342,6 +343,31 @@ describe("WCAG 2.2.2 — the visitor stays in control of motion", () => {
     setReducedMotion(false);
     vi.advanceTimersByTime(60_000);
     expect(count()).toBe("2 / 3");
+  });
+
+  it("drops its reduced-motion listener once the widget is gone (timer path)", async () => {
+    await rotating();
+    expect(motionListeners).toHaveLength(1);
+    box().remove();
+    vi.advanceTimersByTime(8_000);
+    expect(motionListeners).toHaveLength(0);
+  });
+
+  it("drops its reduced-motion listener once the widget is gone (change path), starting nothing", async () => {
+    reduceMotion = true;
+    await rotating();
+    box().remove();
+    setReducedMotion(false);
+    expect(motionListeners).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("moves focus to Next when reduced motion hides the focused pause/play button", async () => {
+    await rotating();
+    pauseButton().focus();
+    expect(document.activeElement).toBe(pauseButton());
+    setReducedMotion(true);
+    expect(document.activeElement).toBe(box().querySelector('button[aria-label="Next review"]'));
   });
 
   it("clears its timer once the widget is removed from the page", async () => {

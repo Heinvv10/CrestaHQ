@@ -79,7 +79,7 @@ function Card({ children }: { children: React.ReactNode }) {
           <h2 className="text-base font-semibold">Reviews on your website</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             A public feed of this listing&apos;s Google reviews — every rating, newest first — for an allowed website to embed.
-            Changes here and new syncs reach visitors within about a minute.
+            Settings changes reach visitors within about a minute; newly synced reviews within about two minutes.
           </p>
         </div>
       </header>

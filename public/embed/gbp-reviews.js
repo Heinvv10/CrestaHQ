@@ -24,16 +24,12 @@
   var AUTO_ADVANCE_MS = 8000;
   var CSS_ID = "chq-reviews-css";
   var CSS = [
-    ".chq-reviews{font:inherit;color:inherit;max-width:40rem}",
-    ".chq-reviews__head{margin-bottom:.75rem}",
-    ".chq-reviews__title{font-weight:600;margin:0}",
+    ".chq-reviews{font:inherit;color:inherit;max-width:40rem} .chq-reviews__head{margin-bottom:.75rem}",
+    ".chq-reviews__title{font-weight:600;margin:0} .chq-reviews__stale{opacity:.75;font-style:italic}",
     ".chq-reviews__rating,.chq-reviews__source,.chq-reviews__stale{margin:.25rem 0 0;font-size:.875em}",
-    ".chq-reviews__stale{opacity:.75;font-style:italic}",
     ".chq-reviews__carousel{border:1px solid rgba(0,0,0,.15);border-radius:.5rem;padding:1rem}",
-    ".chq-reviews__carousel:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
-    ".chq-reviews__slide{margin:0}",
-    ".chq-reviews__stars{margin:0;letter-spacing:.1em}",
-    ".chq-reviews__text{margin:.5rem 0;white-space:pre-wrap}",
+    ".chq-reviews__carousel:focus-visible{outline:2px solid currentColor;outline-offset:2px} .chq-reviews__slide{margin:0}",
+    ".chq-reviews__stars{margin:0;letter-spacing:.1em} .chq-reviews__text{margin:.5rem 0;white-space:pre-wrap}",
     ".chq-reviews__author{font-size:.875em;opacity:.8}",
     ".chq-reviews__reply{margin:.5rem 0 0;padding-left:.75rem;border-left:2px solid rgba(0,0,0,.2);font-size:.875em;white-space:pre-wrap}",
     ".chq-reviews__controls{display:flex;align-items:center;gap:.75rem;margin-top:.75rem}",
@@ -187,8 +183,8 @@
    * prefers-reduced-motion is on (watched live), never faster than every 8s,
    * paused while hovered or focused, a labelled pause/play button, and any
    * use of prev/next or the arrow keys stops it for good. Turning reduced
-   * motion off restarts it only if the visitor never interacted. The timer
-   * clears itself once the widget has left the page.
+   * motion off restarts it only if the visitor never interacted. Once the widget has left the page
+   * (checked per tick and per change event, not on init) the timer and media listener are dropped.
    */
   function rotation(region, track, advance, count) {
     var query = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -209,15 +205,22 @@
       timer = null;
       sync();
     }
+    function detach() {
+      stop();
+      if (query && query.removeEventListener) query.removeEventListener("change", onMotion);
+    }
     function start() {
       if (timer || reduced() || count < 2) return;
       timer = setInterval(function () {
-        if (!region.isConnected) return stop();
+        if (!region.isConnected) return detach();
         if (!hovered && !focused) advance();
       }, AUTO_ADVANCE_MS);
       sync();
     }
-    function onMotion() {
+    function onMotion(e) {
+      if (e && !region.isConnected) return detach();
+      // Hiding a focused button would drop focus to the page: hand it to Next first.
+      if (reduced() && document.activeElement === toggle) region.querySelector('button[aria-label="Next review"]').focus();
       toggle.hidden = reduced() || count < 2;
       if (reduced()) stop();
       else if (!interacted) start();
@@ -233,7 +236,6 @@
     region.addEventListener("focusin", function (e) { focused = e.target !== toggle; sync(); });
     region.addEventListener("focusout", function () { focused = false; sync(); });
     if (query && query.addEventListener) query.addEventListener("change", onMotion);
-    else if (query && query.addListener) query.addListener(onMotion);
     return {
       toggle: toggle,
       init: function () {
@@ -251,8 +253,7 @@
     var root = el("div", "chq-reviews");
     root.appendChild(header(feed));
     var reviews = Array.isArray(feed.reviews) ? feed.reviews : [];
-    // Reviews exist at Google but none are in the served window: the header
-    // alone, rather than "no reviews" under a count that says otherwise.
+    // A count but no reviews in the window: the header alone, never "no reviews" under a count.
     var counted = feed.rating && feed.rating.count > 0;
     if (reviews.length > 0) root.appendChild(carousel(reviews));
     else if (!counted) root.appendChild(el("p", "chq-reviews__empty", "No Google reviews yet."));

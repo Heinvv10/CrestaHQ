@@ -11,9 +11,11 @@ import { clientIpFrom } from "@/lib/checkout/rate-limit";
  *   - per client + widget:  PER_WIDGET_LIMIT a minute.
  *
  * The route checks the id's SHAPE before calling this, so junk ids never
- * create a key. When the table is full the OLDEST keys go (a Map iterates in
- * insertion order) —
- * never a wholesale clear, which would hand every abuser a fresh budget.
+ * create a key. A per-client refusal does not touch the per-widget bucket.
+ * The table is least-recently-used — every hit re-inserts its key at the end
+ * of the Map's order — so a persistent abuser is never the one evicted. When
+ * it is full, expired windows are swept first, then the least recently used
+ * keys go; never a wholesale clear, which would hand every abuser a fresh budget.
  * In-memory, per instance: an abuse-dampener in front of a 60s-cacheable
  * read, not a security boundary.
  */
@@ -31,21 +33,30 @@ interface Bucket {
 const buckets = new Map<string, Bucket>();
 
 /**
- * The client, as the tunnel saw it: `cf-connecting-ip` (set by Cloudflare,
- * which the cloudflared tunnel fronts), else `x-real-ip`, else the shared
- * helper's left-most X-Forwarded-For — which a caller can spoof, so it comes last.
+ * The client. `cf-connecting-ip` is trusted ONLY when the deployment sets
+ * `TRUST_CF_CONNECTING_IP=1` — true on velo, which is reachable only through
+ * the cloudflared tunnel; elsewhere (a buyer's Vercel copy) a caller could
+ * send its own. Otherwise `x-real-ip`, else the shared helper's left-most
+ * X-Forwarded-For.
  */
 export function feedClientKey(request: Request): string {
-  return request.headers.get("cf-connecting-ip") ?? request.headers.get("x-real-ip") ?? clientIpFrom(request);
+  const cf = process.env.TRUST_CF_CONNECTING_IP === "1" ? request.headers.get("cf-connecting-ip") : null;
+  return cf ?? request.headers.get("x-real-ip") ?? clientIpFrom(request);
+}
+
+/** Full table: drop expired windows first, then the least recently used keys. */
+function evict(now: number): void {
+  for (const [key, b] of buckets) if (now - b.windowStartedAt >= WINDOW_MS) buckets.delete(key);
+  while (buckets.size > MAX_TRACKED_KEYS) buckets.delete(buckets.keys().next().value!);
 }
 
 function hit(key: string, limit: number, now: number): number {
   let bucket = buckets.get(key);
-  if (!bucket || now - bucket.windowStartedAt >= WINDOW_MS) {
-    bucket = { count: 0, windowStartedAt: now };
-    buckets.set(key, bucket);
-    while (buckets.size > MAX_TRACKED_KEYS) buckets.delete(buckets.keys().next().value!);
-  }
+  if (!bucket || now - bucket.windowStartedAt >= WINDOW_MS) bucket = { count: 0, windowStartedAt: now };
+  // Least-recently-used: every hit moves this key to the end of the Map's order.
+  buckets.delete(key);
+  buckets.set(key, bucket);
+  if (buckets.size > MAX_TRACKED_KEYS) evict(now);
   bucket.count += 1;
   return bucket.count > limit ? Math.max(1, Math.ceil((WINDOW_MS - (now - bucket.windowStartedAt)) / 1000)) : 0;
 }
@@ -57,6 +68,9 @@ export interface FeedRateLimitResult {
 
 export function checkFeedRateLimit(client: string, publicId: string): FeedRateLimitResult {
   const now = Date.now();
-  const retry = Math.max(hit(`ip|${client}`, PER_IP_LIMIT, now), hit(`w|${client}|${publicId}`, PER_WIDGET_LIMIT, now));
-  return { ok: retry === 0, retryAfterSec: retry };
+  const perClient = hit(`ip|${client}`, PER_IP_LIMIT, now);
+  // Refused per client: the per-widget budget is not spent.
+  if (perClient > 0) return { ok: false, retryAfterSec: perClient };
+  const perWidget = hit(`w|${client}|${publicId}`, PER_WIDGET_LIMIT, now);
+  return { ok: perWidget === 0, retryAfterSec: perWidget };
 }

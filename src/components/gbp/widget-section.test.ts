@@ -175,9 +175,19 @@ describe("an existing widget", () => {
     expect(writeText).toHaveBeenCalledWith(snippet);
   });
 
-  it("tells the admin that changes reach visitors within about a minute", async () => {
+  it("tells the admin how fast changes reach visitors: settings ~1 min, synced reviews ~2 min", async () => {
     await render();
-    expect(byId("gbp-widget-card")?.textContent).toContain("within about a minute");
+    const text = byId("gbp-widget-card")?.textContent ?? "";
+    expect(text).toContain("Settings changes reach visitors within about a minute");
+    expect(text).toContain("newly synced reviews within about two minutes");
+  });
+
+  it("HTML-escapes the publicId it pastes into the snippet", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, publicId: 'x"<y>&z' } };
+    await render();
+    const snippet = byId("gbp-widget-snippet")!.textContent ?? "";
+    expect(snippet).toContain('data-crestahq-reviews="x&quot;&lt;y&gt;&amp;z"');
+    expect(snippet).not.toContain('x"<y>');
   });
 
   it("puts only an http(s) Maps link in the snippet, normalised and HTML-escaped", async () => {

@@ -85,11 +85,12 @@ describe("the memo is keyed by widget AND listing, and bounded", () => {
     const widget = mem.read(`gbpWidgets/${id}`)!;
     const ids = Array.from({ length: MAX_MEMO }, (_, i) => `M${String(i).padStart(31, "0")}`);
     for (const other of ids) mem.seed(`gbpWidgets/${other}`, widget);
-    await feedBody(id, { "cf-connecting-ip": "memo-0" });
-    for (const [i, other] of ids.entries()) await feedBody(other, { "cf-connecting-ip": `memo-${i + 1}` });
+    // Distinct x-real-ip per request, so the 300/min per-client limit never refuses one.
+    await feedBody(id, { "x-real-ip": "memo-0" });
+    for (const [i, other] of ids.entries()) await feedBody(other, { "x-real-ip": `memo-${i + 1}` });
     const before = scans(collection);
     // The first widget's scan was the oldest, so it was evicted: a fresh scan.
-    await feedBody(id, { "cf-connecting-ip": "memo-last" });
+    await feedBody(id, { "x-real-ip": "memo-last" });
     expect(scans(collection)).toBe(before + 1);
   }, 60_000);
 });

@@ -167,6 +167,8 @@ Every value is written into a single file: **`.env.local`**. Nothing is hidden i
 
 **This file is safe and private.** The `.gitignore` ignores all `.env*` files except `.env.example` (which only has empty placeholders). Your keys and secrets will never be committed to GitHub.
 
+**Do not set `TRUST_CF_CONNECTING_IP` on Vercel.** It is for deployments reachable only through a Cloudflare tunnel; on Vercel it would let a visitor choose their own rate-limit identity ([docs/environment.md](docs/environment.md)).
+
 ### Cookie Secrets
 
 Claude Code generates these automatically. If you ever need to regenerate manually:

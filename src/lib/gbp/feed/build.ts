@@ -37,7 +37,8 @@ const SCAN_CAP = 200;
  * 60s (in memory, per instance), so a busy page costs one query a minute.
  * The widget doc and the sub-account are read on every request, which is why
  * revoke, rotate, disable, gate off and origin changes act at once. A review
- * synced meanwhile reaches the feed within the minute.
+ * synced meanwhile reaches the feed within the minute — and a visitor within
+ * about two (this memo plus the response's max-age=60).
  */
 export const SCAN_MEMO_MS = 60_000;
 export const MAX_MEMO = 1_000;

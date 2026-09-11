@@ -127,12 +127,21 @@ describe("cache headers and ETag", () => {
 });
 
 describe("rate limit: 120 a minute per IP and widget", () => {
-  it("keys on cf-connecting-ip, so a rotating X-Forwarded-For does not reset the budget", async () => {
+  it("with TRUST_CF_CONNECTING_IP=1, keys on cf-connecting-ip, so a rotating X-Forwarded-For does not reset the budget", async () => {
+    process.env.TRUST_CF_CONNECTING_IP = "1";
     const cf = `cf-${ip}`;
     for (let i = 0; i < 120; i++) {
       expect((await feed(id, { "cf-connecting-ip": cf, "x-forwarded-for": `203.0.113.${i}` })).status).toBe(200);
     }
     expect((await feed(id, { "cf-connecting-ip": cf, "x-forwarded-for": "203.0.113.250" })).status).toBe(429);
+  });
+
+  it("without TRUST_CF_CONNECTING_IP, a client-sent cf-connecting-ip changes nothing", async () => {
+    delete process.env.TRUST_CF_CONNECTING_IP;
+    for (let i = 0; i < 120; i++) {
+      expect((await feed(id, { "cf-connecting-ip": `198.51.99.${i}`, "x-forwarded-for": ip })).status).toBe(200);
+    }
+    expect((await feed(id, { "cf-connecting-ip": "198.51.99.250", "x-forwarded-for": ip })).status).toBe(429);
   });
 
   it("checks the id's shape BEFORE the limiter: junk ids spend no budget", async () => {

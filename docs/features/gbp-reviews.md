@@ -577,19 +577,19 @@ served like `/widget.js` (`next.config.ts`).
   removal act on the server at once; only the review scan is memoised (60 s
   per widget + listing, in memory). With `Cache-Control: public, max-age=60`
   a browser or proxy may keep a copy for up to a minute — so config changes
-  and new syncs reach visitors within about a minute (the dashboard card says
-  so).
+  reach visitors within about a minute, and newly synced reviews within about
+  two minutes (60 s memo + 60 s max-age). The dashboard card says both.
 
 ### Feed contract v1 — `GET /api/public/gbp/feed/{publicId}`
 
 A public path (a `PUBLIC_PATH_PATTERNS` regex for exactly one segment). The
 route never reads `x-user-uid` or any identity header — on a public path a
-caller can send its own. Order: rate limit → resolve → origin → body.
+caller can send its own. Order: id shape → rate limit → resolve → origin → body.
 
 | Status | When | Body | Headers |
 |---|---|---|---|
 | 404 | malformed id — checked FIRST, so it never becomes a limiter key or a Firestore path | `{"error":"not_found"}` | `Cache-Control: no-store` |
-| 429 | more than 300 requests a minute from one client, or 120 for one client + publicId (in-memory, per instance; oldest keys evicted, never a wholesale reset). The client is `cf-connecting-ip`, else `x-real-ip`, else the left-most `X-Forwarded-For` | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
+| 429 | more than 300 requests a minute from one client, or 120 for one client + publicId (in-memory, per instance; least-recently-used, expired windows swept first, never a wholesale reset; a per-client refusal does not spend the per-widget budget). The client is `cf-connecting-ip` **only when `TRUST_CF_CONNECTING_IP=1`**, else `x-real-ip`, else the left-most `X-Forwarded-For` | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
 | 404 | unknown, disabled, rotated away, revoked, archived sub-account, agency gate off | `{"error":"not_found"}` — byte-identical to the malformed-id 404 | `Cache-Control: no-store` |
 | 403 | an `Origin` header not in `allowedOrigins` (incl. `null`) | `{"error":"origin_not_allowed"}` | no `Access-Control-Allow-Origin`, `no-store` |
 | 200 | otherwise | the body below | `Access-Control-Allow-Origin: <that origin>` only when an allowed Origin was sent (never `*`), `Vary: Origin`, `Cache-Control: public, max-age=60` (no stale-while-revalidate), strong `ETag` |
@@ -605,6 +605,11 @@ reply, rating or freshness change.
 request with no `Origin` header (a server, `curl`) gets the full body — the
 feed holds only public Google review content, and the publicId is the only
 thing standing between it and anyone who has the snippet.
+
+**Owner checklist** (not run): set `TRUST_CF_CONNECTING_IP=1` in the velo
+production env — the app is only reachable through the cloudflared tunnel;
+buyer copies on Vercel must not set it. Without it the limiter keys on
+`x-real-ip` / `X-Forwarded-For`, which a caller can vary.
 
 ```json
 { "version": 1,
