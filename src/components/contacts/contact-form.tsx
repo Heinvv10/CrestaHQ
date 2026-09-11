@@ -11,6 +11,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { TerritorySelectField } from "@/components/settings/territory-select-field";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import {
   CONTACT_IDENTITY_ERROR,
@@ -63,6 +64,7 @@ export function ContactForm({
   );
 
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
+  const cfFolders = useCustomFieldFolders(subAccountId, "contact");
   const [cfValues, setCfValues] = useState<Record<string, CustomFieldValue>>(
     (initial?.customFields ?? {}) as Record<string, CustomFieldValue>
   );
@@ -250,6 +252,7 @@ export function ContactForm({
           <CustomFieldInputs
             idPrefix="c-cf"
             defs={cfDefs}
+            folders={cfFolders}
             values={cfValues}
             onChange={setCfValues}
           />

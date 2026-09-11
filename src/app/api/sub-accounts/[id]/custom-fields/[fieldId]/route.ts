@@ -10,7 +10,8 @@ import type { CustomFieldDef } from "@/types/custom-fields";
 /**
  * Per-definition operations. Sub-account admin only.
  *
- * PATCH  — edit the label, options, required flag, or order. `entity`, `key`,
+ * PATCH  — edit the label, options, required flag, order, or folder (`folderId`:
+ *          a folder of the same entity, or null for General). `entity`, `key`,
  *          and `type` are IMMUTABLE — changing them would orphan or corrupt
  *          stored values keyed by `key` and typed by `type`. To change a
  *          field's type, delete it and create a new one.
@@ -67,6 +68,25 @@ export async function PATCH(
       return NextResponse.json({ error: "Order must be a number." }, { status: 400 });
     }
     update.order = Math.max(0, Math.floor(order));
+  }
+
+  if (b.folderId !== undefined) {
+    if (b.folderId === null) {
+      update.folderId = null;
+    } else if (typeof b.folderId === "string" && b.folderId) {
+      const folder = await db
+        .doc(`subAccounts/${subAccountId}/customFieldFolders/${b.folderId}`)
+        .get();
+      if (!folder.exists || folder.data()?.entity !== def.entity) {
+        return NextResponse.json({ error: "Folder not found" }, { status: 404 });
+      }
+      update.folderId = b.folderId;
+    } else {
+      return NextResponse.json(
+        { error: "folderId must be a folder id or null." },
+        { status: 400 },
+      );
+    }
   }
 
   if (b.options !== undefined) {

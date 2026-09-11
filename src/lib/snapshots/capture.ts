@@ -98,8 +98,10 @@ export async function captureSnapshot(
     (d) => stripDoc(d.id, d.data(), ["stats"]) as unknown as SnapshotWorkflow,
   );
 
+  // `folderId` points at a source-only folder doc; folders do not travel
+  // (yet), so a copied id would dangle on the target. Fields land in General.
   const customFields = customFieldsSnap.docs.map(
-    (d) => stripDoc(d.id, d.data()) as unknown as SnapshotCustomField,
+    (d) => stripDoc(d.id, d.data(), ["folderId"]) as unknown as SnapshotCustomField,
   );
 
   // Only the reusable half of the persona travels. An empty prompt means the
