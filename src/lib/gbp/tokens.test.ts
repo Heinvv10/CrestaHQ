@@ -175,6 +175,66 @@ describe("getValidAccessToken", () => {
   });
 });
 
+function stubSequence(...steps: Array<{ body: Record<string, unknown>; status?: number; onCall?: () => void }>) {
+  const queue = [...steps];
+  const spy = vi.fn(async () => {
+    const step = queue.shift();
+    if (!step) throw new Error("unexpected extra token-endpoint call");
+    step.onCall?.();
+    await new Promise((r) => setTimeout(r, 5));
+    return new Response(JSON.stringify(step.body), { status: step.status ?? 200 });
+  });
+  vi.stubGlobal("fetch", spy);
+  return spy;
+}
+
+const NEWER_GRANT = (fresh: boolean) => ({
+  refreshToken: "1//0gNewerGrant",
+  accessToken: "ya29.NewerGrantAccess",
+  accessTokenExpiresAt: Date.now() + (fresh ? 3_000_000 : -1000),
+  scopes: [SCOPE],
+});
+
+describe("races with a newer grant (reconnect during a refresh)", () => {
+  it("does not flag reconnect when a stale refresh token is revoked but a newer grant is stored", async () => {
+    seedSecret();
+    stubSequence({ body: { error: "invalid_grant" }, status: 400, onCall: () => state.docs.set(SECRET_PATH, NEWER_GRANT(true)) });
+    expect(await getValidAccessToken(SUB)).toBe("ya29.NewerGrantAccess");
+    expect(meta().reconnectRequired).toBeUndefined();
+  });
+
+  it("retries once with the newer grant when its access token also needs a refresh", async () => {
+    seedSecret();
+    const spy = stubSequence(
+      { body: { error: "invalid_grant" }, status: 400, onCall: () => state.docs.set(SECRET_PATH, NEWER_GRANT(false)) },
+      { body: FRESH },
+    );
+    expect(await getValidAccessToken(SUB)).toBe("ya29.FreshAccess");
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(secret().refreshToken).toBe("1//0gNewerGrant");
+    expect(meta().reconnectRequired).toBeUndefined();
+  });
+
+  it("retries at most ONCE, even if the grant keeps changing underneath", async () => {
+    seedSecret();
+    const third = { ...NEWER_GRANT(false), refreshToken: "1//0gThirdGrant" };
+    const spy = stubSequence(
+      { body: { error: "invalid_grant" }, status: 400, onCall: () => state.docs.set(SECRET_PATH, NEWER_GRANT(false)) },
+      { body: { error: "invalid_grant" }, status: 400, onCall: () => state.docs.set(SECRET_PATH, third) },
+    );
+    const err = await getValidAccessToken(SUB).catch((e: unknown) => e);
+    expect((err as GbpProviderError).kind).toBe("revoked");
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not flag insufficient_scope from a stale grant either", async () => {
+    seedSecret();
+    stubSequence({ body: { ...FRESH, scope: "openid" }, onCall: () => state.docs.set(SECRET_PATH, NEWER_GRANT(true)) });
+    expect(await getValidAccessToken(SUB)).toBe("ya29.NewerGrantAccess");
+    expect(meta().reconnectRequired).toBeUndefined();
+  });
+});
+
 describe("fake mode fence", () => {
   it("refuses a sub-account outside the fixture agency and writes nothing", async () => {
     process.env.GBP_PROVIDER = "fake";

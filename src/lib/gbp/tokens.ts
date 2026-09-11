@@ -31,10 +31,43 @@ export class GbpNotConnectedError extends Error {
 }
 
 /**
- * Flag the connection as needing a fresh OAuth pass. Deep-merges into the
- * existing meta (keeping `connected`, `scopes`…) and leaves the secret doc in
- * place so a disconnect can still best-effort revoke it.
+ * Flag the connection as needing a fresh OAuth pass — but ONLY if the secret
+ * still holds the credential that failed (`expected`). If it changed, a newer
+ * grant (a reconnect, or another process's rotation) exists and flagging
+ * would mark a healthy connection broken; that newer secret is returned
+ * instead, unflagged. Returns null when flagged, or when there is no
+ * connection at all. Deep-merges into the meta (keeping `connected`,
+ * `scopes`…) and keeps the secret so a disconnect can still revoke it.
  */
+export async function markReconnectRequiredIf(
+  subAccountId: string,
+  reason: GoogleReconnectReason,
+  expected: { refreshToken: string } | { accessToken: string },
+): Promise<GoogleConnectionSecret | null> {
+  const db = getAdminDb();
+  const secretRef = db.doc(googleConnectionSecretPath(subAccountId));
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(secretRef);
+    const current = snap.exists ? (snap.data() as GoogleConnectionSecret) : null;
+    if (!current) return null;
+    const unchanged =
+      "refreshToken" in expected
+        ? current.refreshToken === expected.refreshToken
+        : current.accessToken === expected.accessToken;
+    if (!unchanged) return current;
+    tx.set(
+      db.doc(`subAccounts/${subAccountId}`),
+      {
+        googleConnectionMeta: { reconnectRequired: true, reconnectReason: reason },
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+    return null;
+  });
+}
+
+/** Unconditional flag. Interim: only route-support still uses it. */
 export async function markReconnectRequired(
   subAccountId: string,
   reason: GoogleReconnectReason,
@@ -63,8 +96,22 @@ const fresh = (s: GoogleConnectionSecret) =>
 async function refreshAndStore(
   subAccountId: string,
   read: GoogleConnectionSecret,
+  retried = false,
 ): Promise<string> {
   const provider = await getGbpProviderFor(subAccountId);
+
+  /**
+   * Google refused THIS grant. Flag reconnect unless a newer grant replaced
+   * it meanwhile — then use that one instead (refreshing it at most once).
+   */
+  const grantFailed = async (err: GbpProviderError): Promise<string> => {
+    const kind = err.kind === "revoked" ? "revoked" : "insufficient_scope";
+    const newer = await markReconnectRequiredIf(subAccountId, kind, {
+      refreshToken: read.refreshToken,
+    });
+    if (!newer || retried) throw err;
+    return fresh(newer) ? newer.accessToken : refreshAndStore(subAccountId, newer, true);
+  };
 
   let tokens: GoogleTokens;
   try {
@@ -74,7 +121,7 @@ async function refreshAndStore(
       err instanceof GbpProviderError &&
       (err.kind === "revoked" || err.kind === "insufficient_scope")
     ) {
-      await markReconnectRequired(subAccountId, err.kind);
+      return grantFailed(err);
     }
     throw err;
   }
@@ -83,8 +130,7 @@ async function refreshAndStore(
   // grant is still the best evidence of what was consented to.
   const scopes = tokens.scopes.length > 0 ? tokens.scopes : read.scopes;
   if (!scopes.includes(GOOGLE_SCOPE)) {
-    await markReconnectRequired(subAccountId, "insufficient_scope");
-    throw new GbpProviderError("insufficient_scope");
+    return grantFailed(new GbpProviderError("insufficient_scope"));
   }
 
   const db = getAdminDb();
