@@ -6,26 +6,15 @@ import {
   updateWorkflowServerSide,
   type WorkflowPatch,
 } from "@/lib/server/workflows-service";
+import { ADDABLE_TYPES } from "@/lib/workflows/catalog";
 import type { WorkflowNode, WorkflowNodeType } from "@/types/workflows";
 
 export const dynamic = "force-dynamic";
 
-const NODE_TYPES: WorkflowNodeType[] = [
-  "send_email",
-  "send_sms",
-  "whatsapp_template",
-  "wait",
-  "wait_for_reply",
-  "if_else",
-  "goal",
-  "add_tag",
-  "remove_tag",
-  "move_stage",
-  "update_field",
-  "create_task",
-  "notify",
-  "webhook",
-];
+// The builder's own list of step types, not a copy of it: a copy here went
+// stale when `send_whatsapp` was added, and every workflow containing that
+// step then failed to save with "Invalid nodes".
+const NODE_TYPES: readonly WorkflowNodeType[] = ADDABLE_TYPES;
 
 /** Defensive sanitize of a client-supplied nodes map (authed staff, but keep
  *  the shape honest so a malformed save can't poison the engine). */
