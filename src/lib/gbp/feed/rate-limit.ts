@@ -31,6 +31,12 @@ interface Bucket {
 }
 
 const buckets = new Map<string, Bucket>();
+/** The expired-window sweep walks the whole table, so it runs at most once a second. */
+const SWEEP_EVERY_MS = 1_000;
+let lastSweepAt = 0;
+let sweeps = 0;
+/** For the cost test: how many full-table sweeps this instance has run. */
+export const limiterStats = () => ({ sweeps });
 
 /**
  * The client. `cf-connecting-ip` is trusted ONLY when the deployment sets
@@ -44,9 +50,17 @@ export function feedClientKey(request: Request): string {
   return cf ?? request.headers.get("x-real-ip") ?? clientIpFrom(request);
 }
 
-/** Full table: drop expired windows first, then the least recently used keys. */
+/**
+ * Full table: drop expired windows first (at most once a second — a flood of
+ * new clients must not walk 10,000 keys per request), then the least recently
+ * used keys, which pop from the Map's front in O(1).
+ */
 function evict(now: number): void {
-  for (const [key, b] of buckets) if (now - b.windowStartedAt >= WINDOW_MS) buckets.delete(key);
+  if (now - lastSweepAt >= SWEEP_EVERY_MS) {
+    lastSweepAt = now;
+    sweeps += 1;
+    for (const [key, b] of buckets) if (now - b.windowStartedAt >= WINDOW_MS) buckets.delete(key);
+  }
   while (buckets.size > MAX_TRACKED_KEYS) buckets.delete(buckets.keys().next().value!);
 }
 

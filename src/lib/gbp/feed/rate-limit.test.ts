@@ -112,6 +112,22 @@ describe("eviction", () => {
   });
 });
 
+describe("eviction cost", () => {
+  it("does not sweep the whole table on every request when a flood of new clients arrives", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    const fresh = await freshLimiter();
+    for (let i = 0; i < fresh.MAX_TRACKED_KEYS / 2; i++) fresh.checkFeedRateLimit(`198.60.${i >> 8}.${i & 255}`, id(1));
+    // 5,000 more unique clients within the same second: every one overflows the table.
+    for (let i = 0; i < fresh.MAX_TRACKED_KEYS / 2; i++) fresh.checkFeedRateLimit(`198.61.${i >> 8}.${i & 255}`, id(1));
+    expect(fresh.limiterStats().sweeps).toBe(1);
+    // A second later the next overflow may sweep again.
+    vi.setSystemTime(t0 + 1_000);
+    fresh.checkFeedRateLimit("198.62.0.1", id(1));
+    expect(fresh.limiterStats().sweeps).toBe(2);
+  });
+});
+
 describe("a per-client refusal", () => {
   it("does not spend the per-widget budget", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
