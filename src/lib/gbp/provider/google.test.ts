@@ -191,6 +191,18 @@ describe("replies", () => {
     expect(spy.mock.calls[0][1].method).toBe("DELETE");
   });
 
+  it("gives both reply calls a timeout signal, so a pending attempt past 2 minutes really is dead", async () => {
+    const spy = stub({ body: { comment: "x", updateTime: "2026-09-04T00:00:00Z" } }, { body: {} });
+    await g.putReply(TOKEN, REVIEW.name, "x");
+    await g.deleteReply(TOKEN, REVIEW.name);
+    for (const [, init] of spy.mock.calls) expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("an aborted (timed-out) reply call is transient", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("timed out", "TimeoutError"); }));
+    expect((await errOf(g.putReply(TOKEN, REVIEW.name, "x"))).kind).toBe("transient");
+  });
+
   it("refuses a review name that is not a v4 review path", async () => {
     stub();
     await expect(g.putReply(TOKEN, "locations/222/reviews/r1", "x")).rejects.toThrow();

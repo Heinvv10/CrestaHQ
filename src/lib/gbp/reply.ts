@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { withGbpAccess } from "./access";
 import { GbpFakeRefusedError, getGbpProviderFor } from "./provider/select";
 import { GbpProviderError, type GbpReviewReply } from "./provider/types";
-import { claimAttempt, failAttempt, recordReplyChange, type AttemptTarget } from "./reply-attempts";
+import { claimAttempt, failAttempt, markAttemptSucceeded, recordReplyChange, type AttemptTarget } from "./reply-attempts";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "./route-support";
 import { reviewsCollection } from "./sync/types";
 import { GbpNotConnectedError } from "./tokens";
@@ -62,6 +62,8 @@ export async function replyPreflight(subAccountId: string): Promise<NextResponse
   return null;
 }
 
+const nameOf = (err: unknown) => (err instanceof Error ? err.name : typeof err);
+
 function kindOf(err: unknown): string {
   if (err instanceof GbpProviderError) return err.kind;
   if (err instanceof GbpNotConnectedError) return "not_connected";
@@ -83,26 +85,47 @@ export async function postReply(
     return gbpRefusal(409, "in_progress", "This reply is still being posted — try again in a moment.");
   }
   if (claim.kind === "done") return NextResponse.json({ reply: claim.reply });
+  if (claim.kind === "gone") return gbpRefusal(404, "not_found", "Review not found.");
 
   let reply: GbpReviewReply;
   try {
     reply = await withGbpAccess(subAccountId, (p, token) => p.putReply(token, target.reviewName, body.comment));
   } catch (err) {
-    await failAttempt(subAccountId, body.idempotencyKey, kindOf(err));
+    // Recording the failure must never mask Google's answer.
+    await failAttempt(subAccountId, target, body.idempotencyKey, kindOf(err)).catch((recordErr: unknown) =>
+      console.error(`[gbp/reply] failed attempt not recorded sa=${subAccountId}: ${nameOf(recordErr)}`),
+    );
     return gbpErrorResponse(err, subAccountId, "gbp/reply");
   }
-  await recordReplyChange(subAccountId, target, reply, {
-    type: "reply_posted", actorUid, key: body.idempotencyKey, now,
-  });
+  try {
+    await recordReplyChange(subAccountId, target, reply, {
+      type: "reply_posted", actorUid, key: body.idempotencyKey, now,
+    });
+  } catch (err) {
+    // The reply IS public on Google; only our record of it failed. Say so —
+    // the next sync brings it into the cache — and stop a same-key retry
+    // from posting again (best effort).
+    console.error(`[gbp/reply] posted but not recorded locally sa=${subAccountId}: ${nameOf(err)}`);
+    await markAttemptSucceeded(subAccountId, body.idempotencyKey, reply).catch((markErr: unknown) =>
+      console.error(`[gbp/reply] attempt not marked succeeded sa=${subAccountId}: ${nameOf(markErr)}`),
+    );
+    return NextResponse.json({ reply, localRecordPending: true });
+  }
   return NextResponse.json({ reply });
 }
 
+/** API only in v1 (v1 makes deletion optional): there is no delete button. */
 export async function deleteReplyFor(subAccountId: string, target: ReplyTarget, actorUid: string): Promise<NextResponse> {
   try {
     await withGbpAccess(subAccountId, (p, token) => p.deleteReply(token, target.reviewName));
   } catch (err) {
     return gbpErrorResponse(err, subAccountId, "gbp/reply");
   }
-  await recordReplyChange(subAccountId, target, null, { type: "reply_deleted", actorUid, key: null, now: new Date() });
+  try {
+    await recordReplyChange(subAccountId, target, null, { type: "reply_deleted", actorUid, key: null, now: new Date() });
+  } catch (err) {
+    console.error(`[gbp/reply] deleted but not recorded locally sa=${subAccountId}: ${nameOf(err)}`);
+    return NextResponse.json({ ok: true, localRecordPending: true });
+  }
   return NextResponse.json({ ok: true });
 }

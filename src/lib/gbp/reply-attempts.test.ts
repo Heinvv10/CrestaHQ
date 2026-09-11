@@ -12,12 +12,13 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 import { AGENCY, SA, mem, resetSync } from "@/test/gbp-sync-harness";
 import { docIdOf, events, reviewPath } from "@/test/gbp-reply-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
-import { recordReplyChange } from "./reply-attempts";
+import { failAttempt, recordReplyChange } from "./reply-attempts";
 
 const ORIGINAL = { ...process.env };
 const REPLY = { comment: "Thanks from the fixture team.", updateTime: "2026-09-11T10:00:00Z" };
+const TARGET = { docId: docIdOf("fake-r6"), agencyId: AGENCY };
 const record = () =>
-  recordReplyChange(SA, { docId: docIdOf("fake-r6"), agencyId: AGENCY }, REPLY, {
+  recordReplyChange(SA, TARGET, REPLY, {
     type: "reply_posted", actorUid: "uid_admin", key: null, now: new Date(),
   });
 
@@ -43,5 +44,14 @@ describe("recordReplyChange", () => {
     mem.seed(reviewPath("fake-r6"), { ...mem.read(reviewPath("fake-r6"))!, state: "removed", reply: null, contentHash: null });
     await record();
     expect(mem.read(reviewPath("fake-r6"))).toMatchObject({ state: "removed", reply: null, contentHash: null });
+  });
+
+  it("releases only its own in-flight lock — never another key's (success and failure)", async () => {
+    const other = { key: "b".repeat(40), at: new Date() };
+    mem.seed(reviewPath("fake-r6"), { ...mem.read(reviewPath("fake-r6"))!, replyInFlight: other });
+    await recordReplyChange(SA, TARGET, REPLY, { type: "reply_posted", actorUid: "uid_admin", key: "compose-session-key-0001", now: new Date() });
+    expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toEqual(other);
+    await failAttempt(SA, TARGET, "compose-session-key-0001", "transient");
+    expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toEqual(other);
   });
 });

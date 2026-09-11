@@ -22,6 +22,12 @@ const R7 = docIdOf("fake-r7");
 const COMMENT = "  Sorry about the wait.\nWe've spoken to the team.  ";
 const post = (body: unknown, docId = R6, uid = "uid_admin") => callReply(POST, "POST", uid, SA, docId, body);
 const del = (docId = R7, uid = "uid_admin") => callReply(DELETE, "DELETE", uid, SA, docId);
+/** The cached review minus the per-review in-flight lock, which must be released (null) again. */
+function contentOf(reviewId: string) {
+  const { replyInFlight, ...rest } = mem.read(reviewPath(reviewId)) ?? {};
+  expect(replyInFlight ?? null).toBeNull();
+  return rest;
+}
 
 beforeEach(async () => {
   resetSync();
@@ -120,10 +126,10 @@ describe("posting", () => {
 describe("failure", () => {
   it("leaves the review untouched, marks the attempt failed, and the same key may retry", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind: "transient" }));
-    const before = mem.read(reviewPath("fake-r6"));
+    const before = contentOf("fake-r6");
     const r = await post({ comment: COMMENT, idempotencyKey: KEY });
     expect(r).toMatchObject({ status: 502, body: { code: "transient" } });
-    expect(mem.read(reviewPath("fake-r6"))).toEqual(before);
+    expect(contentOf("fake-r6")).toEqual(before);
     expect(attempts()[0]).toMatchObject({ status: "failed", errorKind: "transient" });
     expect(events(SA, "reply_posted")).toEqual([]);
 
@@ -133,9 +139,9 @@ describe("failure", () => {
 
   it("a grant revoked at Google → 409 reconnect_required, the connection flagged, the review untouched", async () => {
     setScenario(SA, (s) => void (s.revoked = true));
-    const before = mem.read(reviewPath("fake-r6"));
+    const before = contentOf("fake-r6");
     expect(await post({ comment: COMMENT, idempotencyKey: KEY })).toMatchObject({ status: 409, body: { code: "reconnect_required" } });
-    expect(mem.read(reviewPath("fake-r6"))).toEqual(before);
+    expect(contentOf("fake-r6")).toEqual(before);
     expect(mem.read(`subAccounts/${SA}`)?.googleConnectionMeta).toMatchObject({ reconnectRequired: true });
     expect(attempts()[0]).toMatchObject({ status: "failed", errorKind: "revoked" });
   });

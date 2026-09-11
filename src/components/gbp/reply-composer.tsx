@@ -17,6 +17,7 @@ import type { ReviewView } from "./review-item";
 
 const newKey = () => crypto.randomUUID();
 const FAILED = "Your reply could not be posted. Please try again.";
+const RECORD_PENDING = "Posted to Google — the inbox will catch up on the next sync.";
 
 export function ReplyComposer({
   subAccountId,
@@ -31,12 +32,14 @@ export function ReplyComposer({
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const key = useRef("");
   const lastSent = useRef<string | null>(null);
 
   const start = () => {
     setText(review.reply?.comment ?? "");
     setError(null);
+    setNotice(null);
     key.current = newKey();
     lastSent.current = null;
     setOpen(true);
@@ -55,8 +58,10 @@ export function ReplyComposer({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ comment, idempotencyKey: key.current }),
       });
-      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      const data = (await res.json().catch(() => null)) as { error?: string; localRecordPending?: boolean } | null;
       if (res.ok) {
+        // Live on Google, but our record of it failed: the next sync brings it in.
+        if (data?.localRecordPending) setNotice(RECORD_PENDING);
         setOpen(false);
         await onPosted();
       } else {
@@ -72,9 +77,14 @@ export function ReplyComposer({
 
   if (!open) {
     return (
-      <Button type="button" size="sm" variant="outline" className="mt-3" onClick={start} data-testid={`gbp-reply-open-${review.reviewId}`}>
-        {review.reply ? "Edit reply" : "Reply"}
-      </Button>
+      <>
+        <Button type="button" size="sm" variant="outline" className="mt-3" onClick={start} data-testid={`gbp-reply-open-${review.reviewId}`}>
+          {review.reply ? "Edit reply" : "Reply"}
+        </Button>
+        {notice && (
+          <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-400" role="status" data-testid="gbp-reply-notice">{notice}</p>
+        )}
+      </>
     );
   }
   return (

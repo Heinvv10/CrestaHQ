@@ -12,14 +12,26 @@ import { reviewsCollection, toMillis } from "./sync/types";
  * rule: default deny). One doc per compose session's key: `pending` while the
  * provider call is in flight, then `succeeded` or `failed`. It stores a hash
  * of the reply, never its text.
+ *
+ * Plus a per-review in-flight lock, `replyInFlight {key, at}` on the cached
+ * review, taken in the same claim transaction: while one key's call is in
+ * flight, a DIFFERENT key on the same review is refused (Google keeps the
+ * last write, so an abandoned text could otherwise go public after an edit).
+ * Only the attempt that holds it releases it.
  */
 
-/** A pending attempt younger than this is someone else's request still in flight. */
+/**
+ * A pending attempt (or lock) younger than this is a request still in flight.
+ * The reply fetch aborts after 30 s, so an older one is dead.
+ */
 export const PENDING_MS = 2 * 60_000;
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+const attemptId = (key: string) => sha256(key).slice(0, 40);
 const attemptRef = (sa: string, key: string) =>
-  getAdminDb().doc(`subAccounts/${sa}/gbpReplyAttempts/${sha256(key).slice(0, 40)}`);
+  getAdminDb().doc(`subAccounts/${sa}/gbpReplyAttempts/${attemptId(key)}`);
+const reviewRefOf = (sa: string, docId: string) => getAdminDb().doc(`${reviewsCollection(sa)}/${docId}`);
+const holds = (lock: unknown, key: string) => (lock as { key?: unknown } | null | undefined)?.key === attemptId(key);
 
 export interface AttemptTarget {
   docId: string;
@@ -30,15 +42,18 @@ export type Claim =
   | { kind: "new" }
   | { kind: "done"; reply: GbpReviewReply }
   | { kind: "in_progress" }
-  | { kind: "reused" };
+  | { kind: "reused" }
+  /** The cached review went away between the lookup and the claim. */
+  | { kind: "gone" };
 
 /**
  * Claim the attempt for `idempotencyKey` in one transaction. A key already
  * used for other text or another review is `reused`; a succeeded attempt is
- * `done` (no provider call); a pending one under {@link PENDING_MS} is
- * `in_progress`; a review whose reply is already byte-equal is `done` without
- * a call. Otherwise the attempt becomes `pending` and the caller calls Google
- * exactly once.
+ * `done` (no provider call); a pending one under {@link PENDING_MS} — or
+ * another key's live lock on the review — is `in_progress`; a review whose
+ * CACHED reply is already byte-equal is `done` without a call. Otherwise the
+ * attempt becomes `pending`, the review's lock is taken, and the caller calls
+ * Google exactly once.
  */
 export async function claimAttempt(
   sa: string,
@@ -49,8 +64,9 @@ export async function claimAttempt(
 ): Promise<Claim> {
   const db = getAdminDb();
   const ref = attemptRef(sa, body.idempotencyKey);
-  const reviewRef = db.doc(`${reviewsCollection(sa)}/${target.docId}`);
+  const reviewRef = reviewRefOf(sa, target.docId);
   const commentHash = sha256(body.comment);
+  const live = (at: unknown) => now.getTime() - (toMillis(at) ?? 0) < PENDING_MS;
   return db.runTransaction(async (tx): Promise<Claim> => {
     const snap = await tx.get(ref);
     const review = await tx.get(reviewRef);
@@ -60,26 +76,44 @@ export async function claimAttempt(
       if (prior.status === "succeeded") {
         return { kind: "done", reply: { comment: body.comment, updateTime: String(prior.replyUpdateTime) } };
       }
-      if (prior.status === "pending" && now.getTime() - (toMillis(prior.at) ?? 0) < PENDING_MS) {
-        return { kind: "in_progress" };
-      }
+      if (prior.status === "pending" && live(prior.at)) return { kind: "in_progress" };
     }
+    const data = review.data();
+    if (!data) return { kind: "gone" };
+    const lock = data.replyInFlight as { key?: unknown; at?: unknown } | null | undefined;
+    if (lock && !holds(lock, body.idempotencyKey) && live(lock.at)) return { kind: "in_progress" };
+
     const base = {
       agencyId: target.agencyId, subAccountId: sa, createdByUid: actorUid, reviewDocId: target.docId,
       commentHash, at: now, errorKind: null,
     };
-    const current = review.data()?.reply as GbpReviewReply | null | undefined;
+    // Compared with the CACHED reply: a reply edited at Google since the last
+    // sync is not seen here, and then this posts (Google keeps the last write).
+    const current = data.reply as GbpReviewReply | null | undefined;
     if (current && current.comment === body.comment) {
       tx.set(ref, { ...base, status: "succeeded", replyUpdateTime: current.updateTime });
       return { kind: "done", reply: current };
     }
     tx.set(ref, { ...base, status: "pending", replyUpdateTime: null });
+    tx.update(reviewRef, { replyInFlight: { key: attemptId(body.idempotencyKey), at: now } });
     return { kind: "new" };
   });
 }
 
-export async function failAttempt(sa: string, key: string, errorKind: string): Promise<void> {
-  await attemptRef(sa, key).set({ status: "failed", errorKind }, { merge: true });
+/** The provider call failed: the attempt `failed`, and this attempt's lock released. */
+export async function failAttempt(sa: string, target: AttemptTarget, key: string, errorKind: string): Promise<void> {
+  const db = getAdminDb();
+  const reviewRef = reviewRefOf(sa, target.docId);
+  await db.runTransaction(async (tx) => {
+    const d = (await tx.get(reviewRef)).data();
+    tx.set(attemptRef(sa, key), { status: "failed", errorKind }, { merge: true });
+    if (d && holds(d.replyInFlight, key)) tx.update(reviewRef, { replyInFlight: null });
+  });
+}
+
+/** Google accepted the reply but the local record failed — at least stop a retry re-posting it. */
+export async function markAttemptSucceeded(sa: string, key: string, reply: GbpReviewReply): Promise<void> {
+  await attemptRef(sa, key).set({ status: "succeeded", replyUpdateTime: reply.updateTime, errorKind: null }, { merge: true });
 }
 
 const isoOf = (v: unknown) => {
@@ -89,10 +123,10 @@ const isoOf = (v: unknown) => {
 
 /**
  * After Google accepted a reply (or its deletion): the cached review's reply
- * and content hash — so the next sync sees it unchanged — the attempt (when
- * there is one) and an audit event, in one transaction. Nothing else on the
- * review moves (pass bookkeeping stays the sync's). Events carry ids, never
- * reply text.
+ * and content hash — so the next sync sees it unchanged — this attempt's lock
+ * released, the attempt (when there is one) and an audit event, in one
+ * transaction. Nothing else on the review moves (pass bookkeeping stays the
+ * sync's). Events carry ids, never reply text.
  */
 export async function recordReplyChange(
   sa: string,
@@ -101,7 +135,7 @@ export async function recordReplyChange(
   change: { type: "reply_posted" | "reply_deleted"; actorUid: string; key: string | null; now: Date },
 ): Promise<void> {
   const db = getAdminDb();
-  const reviewRef = db.doc(`${reviewsCollection(sa)}/${target.docId}`);
+  const reviewRef = reviewRefOf(sa, target.docId);
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(reviewRef);
     const d = snap.data();
@@ -110,7 +144,8 @@ export async function recordReplyChange(
       const hash = contentHash({
         starRating: d.starRating ?? null, comment: d.comment ?? null, updateTime: isoOf(d.updateTime), reply,
       });
-      tx.update(reviewRef, { reply, contentHash: hash });
+      const release = change.key && holds(d.replyInFlight, change.key) ? { replyInFlight: null } : {};
+      tx.update(reviewRef, { reply, contentHash: hash, ...release });
     }
     if (change.key) {
       tx.set(attemptRef(sa, change.key), { status: "succeeded", replyUpdateTime: reply?.updateTime ?? null, errorKind: null }, { merge: true });

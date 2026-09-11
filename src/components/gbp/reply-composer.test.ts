@@ -164,3 +164,16 @@ describe("failure", () => {
     expect(byId("gbp-reply-error")?.textContent).toContain("could not be posted");
   });
 });
+
+describe("posted, not yet recorded", () => {
+  it("says it is on Google and that the inbox catches up on the next sync", async () => {
+    replyResult = async () => ({ status: 200, body: { reply: { comment: TEXT, updateTime: "2026-09-11T10:00:00Z" }, localRecordPending: true } });
+    await render();
+    await click("gbp-reply-open-r1");
+    await type(TEXT);
+    await click("gbp-reply-submit");
+    expect(byId("gbp-reply-notice")?.textContent).toBe("Posted to Google — the inbox will catch up on the next sync.");
+    expect(byId("gbp-reply-composer")).toBeNull();
+    expect(byId("gbp-reply-error")).toBeNull();
+  });
+});
