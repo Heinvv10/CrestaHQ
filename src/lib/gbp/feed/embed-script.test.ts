@@ -39,6 +39,20 @@ const feedBody = (over: Record<string, unknown> = {}) => ({
 
 let reduceMotion = false;
 const fetchMock = vi.fn();
+/** ONE MediaQueryList, as a browser gives: `matches` is live and `change` can be dispatched. */
+let motionListeners: Array<() => void> = [];
+const motionQuery = {
+  media: "(prefers-reduced-motion: reduce)",
+  get matches() {
+    return reduceMotion;
+  },
+  addEventListener: (_type: string, fn: () => void) => void motionListeners.push(fn),
+  removeEventListener: (_type: string, fn: () => void) => void (motionListeners = motionListeners.filter((f) => f !== fn)),
+};
+function setReducedMotion(on: boolean) {
+  reduceMotion = on;
+  motionListeners.forEach((fn) => fn());
+}
 
 function mountPage(html = `<div id="w" data-crestahq-reviews="${ID}" data-api="${API}/">${FALLBACK}</div>`) {
   document.body.innerHTML = html;
@@ -51,6 +65,8 @@ async function runScript() {
 const box = () => document.getElementById("w")!;
 const slides = () => [...box().querySelectorAll<HTMLElement>(".chq-reviews__slide")];
 const visible = () => slides().filter((s) => !s.hidden).map((s) => s.querySelector(".chq-reviews__text")?.textContent);
+const pauseButton = () => box().querySelector<HTMLButtonElement>(".chq-reviews__toggle")!;
+const count = () => box().querySelector(".chq-reviews__count")?.textContent;
 const respond = (body: unknown, status = 200) =>
   fetchMock.mockResolvedValue({ ok: status >= 200 && status < 300, status, json: async () => body });
 
@@ -59,7 +75,8 @@ beforeEach(() => {
   document.head.innerHTML = "";
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
-  vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("reduce") && reduceMotion, media: q }));
+  motionListeners = [];
+  vi.stubGlobal("matchMedia", () => motionQuery);
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -246,5 +263,102 @@ describe("how the app serves it", () => {
         { key: "Cache-Control", value: "public, max-age=300, s-maxage=300" },
       ]),
     );
+  });
+});
+
+describe("WCAG 2.2.2 — the visitor stays in control of motion", () => {
+  async function rotating() {
+    vi.useFakeTimers();
+    respond(feedBody());
+    mountPage();
+    await runScript();
+  }
+
+  it("has a labelled pause/play button that stops and restarts rotation", async () => {
+    await rotating();
+    expect(pauseButton().type).toBe("button");
+    expect(pauseButton().getAttribute("aria-label")).toBe("Pause automatic rotation");
+    pauseButton().click();
+    expect(pauseButton().getAttribute("aria-label")).toBe("Start automatic rotation");
+    vi.advanceTimersByTime(30_000);
+    expect(count()).toBe("1 / 3");
+    pauseButton().click();
+    vi.advanceTimersByTime(8_000);
+    expect(count()).toBe("2 / 3");
+  });
+
+  it("stops rotating for good once the visitor uses a control", async () => {
+    await rotating();
+    box().querySelector<HTMLButtonElement>('button[aria-label="Next review"]')!.click();
+    expect(count()).toBe("2 / 3");
+    const region = box().querySelector<HTMLElement>(".chq-reviews__carousel")!;
+    region.dispatchEvent(new MouseEvent("mouseenter"));
+    region.dispatchEvent(new MouseEvent("mouseleave"));
+    vi.advanceTimersByTime(60_000);
+    expect(count()).toBe("2 / 3");
+    expect(box().querySelector("[aria-live]")?.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("stops rotating for good once the visitor uses the keyboard", async () => {
+    await rotating();
+    box().querySelector<HTMLElement>(".chq-reviews__carousel")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    vi.advanceTimersByTime(60_000);
+    expect(count()).toBe("2 / 3");
+  });
+
+  it("stops when the visitor turns reduced motion ON mid-rotation, and hides the toggle", async () => {
+    await rotating();
+    vi.advanceTimersByTime(8_000);
+    expect(count()).toBe("2 / 3");
+    setReducedMotion(true);
+    vi.advanceTimersByTime(60_000);
+    expect(count()).toBe("2 / 3");
+    expect(pauseButton().hidden).toBe(true);
+  });
+
+  it("restarts when reduced motion is turned OFF — only if the visitor never interacted", async () => {
+    reduceMotion = true;
+    await rotating();
+    expect(pauseButton().hidden).toBe(true);
+    setReducedMotion(false);
+    expect(pauseButton().hidden).toBe(false);
+    vi.advanceTimersByTime(8_000);
+    expect(count()).toBe("2 / 3");
+  });
+
+  it("does not restart on reduced motion OFF after the visitor interacted", async () => {
+    reduceMotion = true;
+    await rotating();
+    box().querySelector<HTMLButtonElement>('button[aria-label="Next review"]')!.click();
+    setReducedMotion(false);
+    vi.advanceTimersByTime(60_000);
+    expect(count()).toBe("2 / 3");
+  });
+
+  it("clears its timer once the widget is removed from the page", async () => {
+    await rotating();
+    box().remove();
+    vi.advanceTimersByTime(8_000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("the header never contradicts the list", () => {
+  it("rounds the average to one decimal", async () => {
+    reduceMotion = true;
+    respond(feedBody({ rating: { average: 4.6666666, count: 12 } }));
+    mountPage();
+    await runScript();
+    expect(box().querySelector(".chq-reviews__rating")?.textContent).toBe("4.7 ★ · 12 reviews");
+  });
+
+  it("with a count but no reviews in the window, shows only the header and attribution", async () => {
+    respond(feedBody({ rating: { average: 4.2, count: 9 }, reviews: [] }));
+    mountPage();
+    await runScript();
+    expect(box().querySelector(".chq-reviews__rating")?.textContent).toBe("4.2 ★ · 9 reviews");
+    expect(box().querySelector(".chq-reviews__source")?.textContent).toBe("Reviews from Google");
+    expect(box().querySelector(".chq-reviews__carousel")).toBeNull();
+    expect(box().textContent).not.toContain("No Google reviews yet.");
   });
 });

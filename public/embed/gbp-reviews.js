@@ -1,26 +1,20 @@
-/* CrestaHQ Google reviews embed — contract: docs/features/gbp-reviews.md
+/* CrestaHQ Google reviews embed — contract: docs/features/gbp-reviews.md › Embed contract
  *
- * Usage:
  *   <div data-crestahq-reviews="PUBLIC_ID" data-api="https://crm.crestahq.com">
  *     <!-- static fallback: shown as-is with JS off or when the feed fails -->
- *     <p>Rated 4.8 on Google — <a href="https://…">read our reviews</a></p>
+ *     <p><a href="https://…">Read our reviews on Google</a></p>
  *   </div>
  *   <script src="https://crm.crestahq.com/embed/gbp-reviews.js" defer></script>
  *
- * What it does, per container:
- *   1. data-state="loading" — the fallback stays visible.
- *   2. GET {data-api}/api/public/gbp/feed/{id} (no cookies). The page's origin
- *      must be on the widget's allow-list, or the browser is refused.
- *   3. status ok / stale → replace the fallback with the reviews carousel
- *      (stale data carries "Last updated <date>"). Anything else — unavailable,
- *      an HTTP or network error, an unknown contract version — leaves the
- *      fallback untouched and sets data-state="fallback".
+ * Per container: data-state="loading" (fallback visible) → GET
+ * {data-api}/api/public/gbp/feed/{id} with no cookies (the page's origin must
+ * be on the widget's allow-list) → status ok / stale replaces the fallback
+ * with the carousel ("Last updated <date>" when stale); anything else leaves
+ * the fallback untouched, data-state="fallback".
  *
- * Feed data only ever reaches the page through textContent, and only http(s)
- * links from the feed are made clickable. Auto-advance runs only when the
- * visitor has not asked for reduced motion, never faster than every 8s, and
- * pauses while the carousel is hovered or focused.
- *
+ * Feed data reaches the page through textContent only; only http(s) links from
+ * the feed are clickable. Rotation rules: see rotation() below. Containers are
+ * found once, when the script runs — one added later keeps its fallback.
  * Vanilla ES2017, no dependencies, safe to include more than once.
  */
 (function () {
@@ -88,8 +82,9 @@
     head.appendChild(el("p", "chq-reviews__title", listing.title || ""));
     if (feed.rating) {
       var count = feed.rating.count;
+      var average = (Math.round(Number(feed.rating.average) * 10) / 10).toFixed(1);
       head.appendChild(el("p", "chq-reviews__rating",
-        feed.rating.average + " ★ · " + count + (count === 1 ? " review" : " reviews")));
+        average + " ★ · " + count + (count === 1 ? " review" : " reviews")));
     }
     var source = el("p", "chq-reviews__source");
     var attribution = (feed.source && feed.source.attribution) || "Reviews from Google";
@@ -155,12 +150,20 @@
       });
       counter.textContent = current + 1 + " / " + slides.length;
     }
-    function button(label, symbol, step) {
+    var motion = rotation(region, track, function () {
+      show(current + 1);
+    }, slides.length);
+    // Any manual step stops automatic rotation for good.
+    function step(n) {
+      motion.interacted();
+      show(current + n);
+    }
+    function button(label, symbol, n) {
       var b = el("button", null, symbol);
       b.type = "button";
       b.setAttribute("aria-label", label);
       b.addEventListener("click", function () {
-        show(current + step);
+        step(n);
       });
       return b;
     }
@@ -168,43 +171,91 @@
     controls.appendChild(button("Previous review", "‹", -1));
     controls.appendChild(counter);
     controls.appendChild(button("Next review", "›", 1));
+    controls.appendChild(motion.toggle);
     region.appendChild(controls);
     region.addEventListener("keydown", function (e) {
-      if (e.key === "ArrowRight") show(current + 1);
-      else if (e.key === "ArrowLeft") show(current - 1);
+      if (e.key === "ArrowRight") step(1);
+      else if (e.key === "ArrowLeft") step(-1);
     });
     show(0);
-    autoAdvance(region, track, function () {
-      show(current + 1);
-    }, slides.length);
+    motion.init();
     return region;
   }
 
-  function autoAdvance(region, track, advance, count) {
-    var reduce = !window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || count < 2) return;
-    var hovered = false;
-    var focused = false;
-    function sync() {
-      // WAI carousel pattern: no announcements while it rotates on its own.
-      track.setAttribute("aria-live", hovered || focused ? "polite" : "off");
+  /**
+   * Automatic rotation with the visitor in control (WCAG 2.2.2): never while
+   * prefers-reduced-motion is on (watched live), never faster than every 8s,
+   * paused while hovered or focused, a labelled pause/play button, and any
+   * use of prev/next or the arrow keys stops it for good. Turning reduced
+   * motion off restarts it only if the visitor never interacted. The timer
+   * clears itself once the widget has left the page.
+   */
+  function rotation(region, track, advance, count) {
+    var query = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+    var timer = null, hovered = false, focused = false, interacted = false;
+    var toggle = el("button", "chq-reviews__toggle");
+    toggle.type = "button";
+    function reduced() {
+      return !query || query.matches;
     }
+    function sync() {
+      toggle.setAttribute("aria-label", timer ? "Pause automatic rotation" : "Start automatic rotation");
+      toggle.textContent = timer ? "❚❚" : "▶";
+      // WAI carousel pattern: no announcements while it rotates on its own.
+      track.setAttribute("aria-live", timer && !hovered && !focused ? "off" : "polite");
+    }
+    function stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      sync();
+    }
+    function start() {
+      if (timer || reduced() || count < 2) return;
+      timer = setInterval(function () {
+        if (!region.isConnected) return stop();
+        if (!hovered && !focused) advance();
+      }, AUTO_ADVANCE_MS);
+      sync();
+    }
+    function onMotion() {
+      toggle.hidden = reduced() || count < 2;
+      if (reduced()) stop();
+      else if (!interacted) start();
+    }
+    toggle.addEventListener("click", function () {
+      interacted = true;
+      if (timer) stop();
+      else start();
+    });
     region.addEventListener("mouseenter", function () { hovered = true; sync(); });
     region.addEventListener("mouseleave", function () { hovered = false; sync(); });
-    region.addEventListener("focusin", function () { focused = true; sync(); });
+    // Focus on the pause/play button itself does not pause: pressing Play must play.
+    region.addEventListener("focusin", function (e) { focused = e.target !== toggle; sync(); });
     region.addEventListener("focusout", function () { focused = false; sync(); });
-    sync();
-    setInterval(function () {
-      if (!hovered && !focused) advance();
-    }, AUTO_ADVANCE_MS);
+    if (query && query.addEventListener) query.addEventListener("change", onMotion);
+    else if (query && query.addListener) query.addListener(onMotion);
+    return {
+      toggle: toggle,
+      init: function () {
+        onMotion();
+        sync();
+      },
+      interacted: function () {
+        interacted = true;
+        stop();
+      },
+    };
   }
 
   function render(container, feed) {
     var root = el("div", "chq-reviews");
     root.appendChild(header(feed));
     var reviews = Array.isArray(feed.reviews) ? feed.reviews : [];
-    if (reviews.length === 0) root.appendChild(el("p", "chq-reviews__empty", "No Google reviews yet."));
-    else root.appendChild(carousel(reviews));
+    // Reviews exist at Google but none are in the served window: the header
+    // alone, rather than "no reviews" under a count that says otherwise.
+    var counted = feed.rating && feed.rating.count > 0;
+    if (reviews.length > 0) root.appendChild(carousel(reviews));
+    else if (!counted) root.appendChild(el("p", "chq-reviews__empty", "No Google reviews yet."));
     // Built in full before the fallback is touched, so a failure above keeps it.
     while (container.firstChild) container.removeChild(container.firstChild);
     container.appendChild(root);
