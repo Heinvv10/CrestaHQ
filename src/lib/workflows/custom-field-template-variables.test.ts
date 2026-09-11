@@ -151,6 +151,8 @@ describe("a template variable mapped to a contact custom field", () => {
       subAccountId: "sa_1",
       agencyId: "ag_1",
       createdByUid: "u_1",
+      workflowId: "wf1",
+      runId: "run1",
       triggerContext: {},
     });
 

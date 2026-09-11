@@ -184,11 +184,22 @@ export type ActivityType =
   | "note_added"
   | "booking_created"
   | "pipeline_moved"
+  // Written by createTaskServerSide for tasks linked to a contact.
+  | "task_created"
   | "task_completed"
   | "form_submitted"
   | "email_sent"
   | "sms_sent"
   | "whatsapp_sent"
+  // Inbound messages, written by the same server path that persists the
+  // message row (Twilio SMS / WhatsApp webhooks, WhatsApp Cloud + bridge,
+  // Meta webhook, email sync) via lib/server/contact-activities.ts — so the
+  // Activity tab shows both halves of a conversation.
+  | "sms_received"
+  | "whatsapp_received"
+  | "email_received"
+  | "messenger_received"
+  | "instagram_received"
   // Operator replied on the BETA Facebook Messenger / Instagram DM inbox.
   // Written by /api/comms/meta/send.
   | "messenger_sent"

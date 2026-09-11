@@ -80,6 +80,10 @@ interface NodeContext {
   agencyId: string;
   /** Workflow author — stamped on writes (tasks) for audit. */
   createdByUid: string;
+  /** The run this step belongs to — stamped on the contact-timeline rows the
+   *  engine writes so the Activity tab can link to the run history. */
+  workflowId: string;
+  runId: string;
   /**
    * The trigger context captured at enrollment (e.g. the submitted form's
    * answers under `formData`). Carried on the run doc; surfaced here so the
@@ -174,7 +178,12 @@ const execSendEmail: NodeExecutor = async (ctx) => {
           type: "email_sent",
           content: `Email (workflow): ${subject || "(no subject)"}`,
           createdBy: "workflow",
-          meta: { messageId, subject: subject || "(no subject)" },
+          meta: {
+            messageId,
+            subject: subject || "(no subject)",
+            workflowId: ctx.workflowId,
+            runId: ctx.runId,
+          },
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (err) {
@@ -231,7 +240,12 @@ const execSendSms: NodeExecutor = async (ctx) => {
           type: "sms_sent",
           content: `SMS (workflow): ${preview}`,
           createdBy: "workflow",
-          meta: { sid: sent.sid, mode: sent.mode },
+          meta: {
+            sid: sent.sid,
+            mode: sent.mode,
+            workflowId: ctx.workflowId,
+            runId: ctx.runId,
+          },
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (err) {
@@ -304,7 +318,13 @@ const execSendSms: NodeExecutor = async (ctx) => {
             type: "automation_step_skipped",
             content: `SMS refused by carrier — ${to} is unsubscribed (Twilio 21610).`,
             createdBy: "workflow",
-            meta: { kind: "sms_opt_out", word: "21610", optedOut: true },
+            meta: {
+              kind: "sms_opt_out",
+              word: "21610",
+              optedOut: true,
+              workflowId: ctx.workflowId,
+              runId: ctx.runId,
+            },
             createdAt: FieldValue.serverTimestamp(),
           });
       } catch (recordErr) {
@@ -1229,6 +1249,8 @@ export async function runStep(
     subAccountId: run.subAccountId,
     agencyId: run.agencyId,
     createdByUid: wf.createdByUid,
+    workflowId: run.workflowId,
+    runId,
     triggerContext: run.context ?? {},
   });
 

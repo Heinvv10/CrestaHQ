@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import { writeTaskCreatedActivity } from "@/lib/server/contact-activities";
 import {
   serializeTaskForApi,
   type TaskApiObject,
@@ -52,7 +53,8 @@ export interface TaskWriteResult {
   task: TaskApiObject;
 }
 
-/** Create a task + emit `task.created`. */
+/** Create a task + emit `task.created` (+ a `task_created` activity on the
+ *  linked contact). */
 export async function createTaskServerSide(
   input: CreateTaskInput,
 ): Promise<TaskWriteResult> {
@@ -93,6 +95,18 @@ export async function createTaskServerSide(
     type: "task.created",
     payload: { task },
   });
+
+  if (input.contactId) {
+    await writeTaskCreatedActivity(db, {
+      contactId: input.contactId,
+      taskId: ref.id,
+      title: input.title,
+      dueAt: input.dueAt,
+      createdByUid: input.createdByUid,
+      agencyId: input.agencyId,
+      subAccountId: input.subAccountId,
+    });
+  }
 
   return { id: ref.id, task };
 }
