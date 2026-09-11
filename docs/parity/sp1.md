@@ -1,6 +1,6 @@
 # SP1 — Contacts, Smart Lists, Opportunities, Tasks
 
-**Date:** 2026-09-11 · **Depends on:** SP0 (merged) · **Blocks:** SP6 (workflow rebuild needs tags/pipelines), SP11 (reporting), SP14.
+**Date:** 2026-09-11 · **Status: all 8 PRs merged 2026-09-11 (main 3c21cf1); rules deployed from main; NOT yet deployed to crm.crestahq.com** · **Depends on:** SP0 (merged) · **Blocks:** SP6 (workflow rebuild needs tags/pipelines), SP11 (reporting), SP14.
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP1. Handoff: `.claude/handoffs/2026-09-11-1640.md`.
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`). Never Blitz/Velocity/Vortex.
@@ -23,11 +23,11 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 | C2 | Quick search (name/email/phone) | Search box, client-side substring on name/email/company. **Phone not searched** | phone search | (a) #91 | `contacts-smart-lists.spec.ts` | merged |
 | C3 | **Filters** panel: AND/OR condition builder over tag, source, date added, pipeline stage, custom fields, DND, assigned user… | None. Only the search box | Filter builder | (a) #91 | same | merged |
 | C4 | **Smart Lists**: save a filter set as a named tab; per-user + shared; rename/delete; "All" is the default list | None | Saved smart lists | (a) #91 | same | **merged 8846b2c** |
-| C5 | Row checkboxes, select-all-on-page / select-all-matching | No row-selection model in the table | Selection | (b) #97 | `contacts-bulk-actions.spec.ts` | approved, CI pending |
-| C6 | Bulk: add/remove tag | None (bulk email/call dialogs exist but use their own audience filter, not selection) | Bulk tag | (b) #97 | same | approved, CI pending |
-| C7 | Bulk: assign to user (owner) | **No `assignedTo` on Contact at all** (`src/types/contacts.ts`) | Add `assignedToUid` + bulk assign + single-contact assign in form | (b) #97 | same | approved, CI pending |
-| C8 | Bulk: delete (with confirm) | None | Bulk delete | (b) #97 | same | approved, CI pending |
-| C9 | Bulk: export CSV of selection | Export button dumps *all loaded* contacts | Export selection (falls back to all when nothing selected) | (b) #97 | same | approved, CI pending |
+| C5 | Row checkboxes, select-all-on-page / select-all-matching | No row-selection model in the table | Selection | (b) #97 | `contacts-bulk-actions.spec.ts` | **merged 3c21cf1** |
+| C6 | Bulk: add/remove tag | None (bulk email/call dialogs exist but use their own audience filter, not selection) | Bulk tag | (b) #97 | same | merged |
+| C7 | Bulk: assign to user (owner) | **No `assignedTo` on Contact at all** (`src/types/contacts.ts`) | Add `assignedToUid` + bulk assign + single-contact assign in form | (b) #97 | same | merged |
+| C8 | Bulk: delete (with confirm) | None | Bulk delete | (b) #97 | same | merged |
+| C9 | Bulk: export CSV of selection | Export button dumps *all loaded* contacts | Export selection (falls back to all when nothing selected) | (b) #97 | same | merged |
 | C10 | Bulk: send email / SMS / add to workflow / pipeline change | Bulk email + bulk AI call exist (audience filter) | Not in scope list; keep existing | — | — | out of scope |
 | C11 | Import CSV with mapping | Exists (`import-contacts-dialog.tsx`) | — | — | — | parity |
 | C12 | ⚠ Contact can exist with phone only, name optional (shows phone as title) | Create/edit with **no email works** (proven in browser 2026-09-11: created "SP1 NoEmail Probe" with phone only, edited company, deleted). **Name is required** — WhatsApp-inbound contacts arrive nameless ("Unnamed"), so the first edit forces the operator to invent a name | Make name optional when phone or email is present; title falls back to phone | (g) #89 | `contact-nameless-edit.spec.ts` | merged |
@@ -36,7 +36,7 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| D1 | Header: name, tags, owner, DND, source | Name, Email/SMS/Review/Edit/Delete actions, phone, company, source, tags | Owner (needs C7) | (b) #97 | bulk spec asserts owner shown | approved, CI pending |
+| D1 | Header: name, tags, owner, DND, source | Name, Email/SMS/Review/Edit/Delete actions, phone, company, source, tags | Owner (needs C7) | (b) #97 | bulk spec asserts owner shown | merged |
 | D2 | **Custom fields grouped in folders** ("General Info", custom folders), collapsible | Flat "Details" card, ordered by `order` (`CustomFieldDef` has no folder) | Folders: `folder` on def + settings UI to create/rename/assign + grouped render in detail + form | (f) #90 | `custom-field-folders.spec.ts` | **merged 6f984d5** |
 | D3 | **Activity** tab: every event (messages in/out, notes, tasks, appointments, opportunity moves, workflow enrolments/steps, form submits) | `activity-timeline.tsx` merges `notes` + `activities`; types cover pipeline_moved, task_completed, form_submitted, email/sms/wa/messenger/ig sent, automation_*, voice, quote, booking, order, webinar | **Inbound** messages are not activities (they live in `messages`/`whatsappMessages`/`emailMessages`); `task_created` missing; `deal_created`/`deal_won`/`deal_lost` only via pipeline_moved; workflow entries not linked to the run | (e) #96 | `contact-timeline.spec.ts` | **merged 7ee08ae** |
 | D4 | Tasks sub-tab on contact | `contact-tasks.tsx` | — | — | — | parity |
@@ -60,14 +60,14 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 | O3 | ⚠ Stage-level automation: stage change fires workflow trigger "Pipeline Stage Changed" (filter by pipeline + stage); "Opportunity Created"; "Opportunity Status Changed" (won/lost) | `pipeline.stage.changed` fires from `deals-service.ts:336-341` with `toStage`; no created/won/lost triggers; trigger filter has no pipeline dimension | Add `pipelineId`/`fromStage` to context; new triggers `deal.created`, `deal.won`, `deal.lost`; trigger filter by pipeline | (c) #93 | same + workflow enrol assertion | merged |
 | O4 | Board + list view, filters (owner, stage, value, date) | Board only; filters: stage, priority, value range, country | List view out of scope | — | — | out of scope |
 | O5 | Won/Lost with lost reason | `lostReason`, terminal stages | — | — | — | parity |
-| O6 | Opportunity owner | No `assignedTo` on Deal | `assignedToUid` on Deal (same PR as contacts) | (b) #97 | — | approved, CI pending |
+| O6 | Opportunity owner | No `assignedTo` on Deal | `assignedToUid` on Deal (same PR as contacts) | (b) #97 | — | merged |
 
 ### Tasks
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| T1 | Tasks list across contacts; filters: assignee, status, due | Today/Overdue/Upcoming/Done/All tabs (`TaskFilter`) | Assignee filter (needs T2) | (b) #97 | `tasks-assign.spec.ts` | approved, CI pending |
-| T2 | Assign task to user | **No `assignedTo` on Task** | `assignedToUid` on Task + dialog picker + filter | (b) #97 | same | approved, CI pending |
+| T1 | Tasks list across contacts; filters: assignee, status, due | Today/Overdue/Upcoming/Done/All tabs (`TaskFilter`) | Assignee filter (needs T2) | (b) #97 | `tasks-assign.spec.ts` | merged |
+| T2 | Assign task to user | **No `assignedTo` on Task** | `assignedToUid` on Task + dialog picker + filter | (b) #97 | same | merged |
 | T3 | Link task to contact / opportunity | `contactId`, `dealId` | — | — | — | parity |
 | T4 | Bulk complete / delete | None | Not in scope list | — | — | out of scope |
 
@@ -139,7 +139,7 @@ Sizes: (a) and (c) are the large ones (expect 500+ lines → `review-team`). (b)
 
 Decisions and residuals surfaced by the blind review teams — the code is the source of truth; this is the why.
 
-- **Firestore rules are not deployed by CI**, so every new subcollection is default-deny until `firebase deploy`. Deployed during the session as a union of all open SP1 branches (smartLists, customFieldFolders, companies + `companyLinkInTenant()`, pipelines, deals server-only). **After the PRs merge, deploy once more from `main`** so the released ruleset equals the file in the repo.
+- **Firestore rules are not deployed by CI**, so every new subcollection is default-deny until `firebase deploy`. Deployed during the session as a union of all open SP1 branches; **after the last merge, deployed once more from `main` 3c21cf1** so the released ruleset equals the file in the repo (verified byte-identical). A parallel SP15 session overwrote the union once mid-day — any session that runs `firebase deploy` must do it from `main`, not a branch.
 - **Deals are now server-only at the rules level** (#93): every deal write goes through `/api/deals` or `/api/v1/deals`; `src/lib/firestore/deals.ts` writers are dead code (kept, not deleted).
 - **`updateDealServerSide` validates `stageId` against the deal's pipeline** and accepts `patch.terminal: "won"|"lost"` resolved to that pipeline's closed stage (#93). Quotes lifecycle and the AI Suite use `terminal`; a pipeline with no won stage leaves the linked deal untouched and does not mint a duplicate.
 - **`dealOutcome(deal, pipelines)`** replaces the `"won"`/`"lost"` literals in dashboard, reports and attribution. Reports funnel is default-pipeline-only (follow-up). `find_deals` labels still resolve via the canonical `getStage` (follow-up).
@@ -149,3 +149,12 @@ Decisions and residuals surfaced by the blind review teams — the code is the s
 - **Snapshots** strip `folderId` on capture and null `trigger.pipelineId` / `move_stage.config.pipelineId` on apply.
 - **Gate fragility under load** (four parallel builders on one runner): vitest `hookTimeout` 10s and one `toHaveCount` on 5s tripped on three PRs — raised to 30s in #95. The shared E2E fixture tenant is purged by any concurrent CI/local Playwright run; builders serialised on port 3100.
 - **Browser evidence:** `evidence/sp1/<letter>-*/` — frames extracted from Playwright traces of the real specs run against a local standalone build of `main` (7ee08ae) on the E2E fixture tenant; `a-smart-lists/` was captured earlier on #91's build (local standalone build of #91 driven through the E2E harness on the fixture tenant — the Chrome session's login is origin-bound to crm.crestahq.com). Screenshots on #1000 itself follow the next production deploy (this goal forbade deploying).
+
+## Follow-ups (not in SP1 scope, surfaced by review)
+
+- Reports funnel is default-pipeline-only; `find_deals` AI labels use canonical stage names.
+- CSV export shows a former member as blank where the UI says "Former member"; CSV import has no assignee column.
+- A crash between run-doc `completed` and the activity write leaves that run without an `automation_completed` row.
+- Contacts: tags column + columns manager (C1); opportunities list view (O4); bulk complete/delete tasks (T4); bulk email/call dialogs still use their own audience picker (C10).
+- Roster cache (`use-sub-account-members`) is module-level and not cleared on sign-out.
+- GHL-side column of this ledger was written from product knowledge; the GHL tab was logged out all session — verify side-by-side on the next pass.
