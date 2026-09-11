@@ -7,7 +7,7 @@ import { GbpProviderError, type GbpReviewsPage } from "../provider/types";
 import { commitGuarded, type GuardedOp } from "./lease";
 import { withRetry, type Sleep } from "./retry";
 import { reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
-import { PASS_MAX_AGE_MS, reviewsCollection, syncStatePath, type SyncState } from "./types";
+import { LEASE_TTL_MS, PASS_MAX_AGE_MS, reviewsCollection, syncStatePath, type SyncPass, type SyncState } from "./types";
 
 /**
  * Fetch one run's share of a pass: resume a young pass from its cursor (else
@@ -15,7 +15,9 @@ import { PASS_MAX_AGE_MS, reviewsCollection, syncStatePath, type SyncState } fro
  * page and persist the cursor in the SAME guarded transaction. Every provider
  * call goes through withGbpAccess (401 → refresh once → revoked is flagged)
  * and withRetry. A resumed cursor Google rejects restarts the pass from page
- * 1 once, keeping its id.
+ * 1 once, keeping its id. The pass remembers the first non-null rating and
+ * count Google reported (a later page's null never overwrites them), and each
+ * page commit renews the lease.
  */
 
 export interface PassInput {
@@ -27,6 +29,8 @@ export interface PassInput {
   pass: SyncState["pass"];
   maxPages: number;
   sleep: Sleep;
+  /** Wall clock for lease renewal (tests inject one). */
+  clock: () => Date;
 }
 
 export interface PassOutcome {
@@ -39,7 +43,9 @@ export interface PassOutcome {
   unchanged: number;
   /** Every page of the pass has now been fetched. */
   complete: boolean;
-  lastPage: GbpReviewsPage | null;
+  /** The pass's rating/count: first non-null values Google reported in it. */
+  averageRating: number | null;
+  totalReviewCount: number | null;
   /** What stopped the run early, if anything. */
   error: unknown;
 }
@@ -56,7 +62,9 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
   let token: string | undefined = young?.pageToken ?? undefined;
   const out: PassOutcome = {
     passId, resumed: !!token, pagesFetched: 0, reviewsSeen: 0, created: 0, updated: 0,
-    unchanged: 0, complete: false, lastPage: null, error: null,
+    unchanged: 0, complete: false, error: null,
+    averageRating: young?.averageRating ?? null,
+    totalReviewCount: young?.totalReviewCount ?? null,
   };
   let mayRestart = out.resumed;
   const db = getAdminDb();
@@ -97,8 +105,11 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
     }
     const next = page.nextPageToken;
     pagesDone += 1;
-    const pass = { passId, pageToken: next, pagesDone, startedAt };
-    ops.push((tx) => tx.set(stateRef, { pass }, { merge: true }));
+    const averageRating = out.averageRating ?? page.averageRating;
+    const totalReviewCount = out.totalReviewCount ?? page.totalReviewCount;
+    const pass: SyncPass = { passId, pageToken: next, pagesDone, startedAt, averageRating, totalReviewCount };
+    const lease = { runId, until: input.clock().getTime() + LEASE_TTL_MS };
+    ops.push((tx) => tx.set(stateRef, { pass, lease }, { merge: true }));
     try {
       await commitGuarded(subAccountId, runId, ops);
     } catch (err) {
@@ -111,7 +122,8 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
     out.created += counts.created;
     out.updated += counts.updated;
     out.unchanged += counts.unchanged;
-    out.lastPage = page;
+    out.averageRating = averageRating;
+    out.totalReviewCount = totalReviewCount;
     if (!next) {
       out.complete = true;
       return out;

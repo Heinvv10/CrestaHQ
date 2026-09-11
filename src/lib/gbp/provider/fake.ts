@@ -159,10 +159,11 @@ export function createFakeGbpProvider(
         reviews: [],
       };
       const { slice, next } = page(entry.reviews, pageToken);
+      const blank = scenario.summaryOnFirstPageOnly && !!pageToken;
       return {
         reviews: slice,
-        averageRating: entry.averageRating,
-        totalReviewCount: entry.totalReviewCount,
+        averageRating: blank ? null : entry.averageRating,
+        totalReviewCount: blank ? null : entry.totalReviewCount,
         nextPageToken: next,
       };
     },

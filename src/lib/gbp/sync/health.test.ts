@@ -60,6 +60,15 @@ describe("deriveHealth", () => {
     expect(deriveHealth(summary({ lastErrorKind: "retention_expired" }), NOW)).toBe("error");
   });
 
+  it("with the LIVE connection: a reconnect summary on a reconnected connection is sync_pending", () => {
+    const reconnectRun = summary({ lastRunStatus: "reconnect_required", lastErrorKind: "revoked" });
+    expect(deriveHealth(reconnectRun, NOW, { reconnectRequired: false })).toBe("sync_pending");
+    expect(deriveHealth(reconnectRun, NOW, { reconnectRequired: true })).toBe("reconnect_required");
+    // A flagged connection wins even over a summary that says ok.
+    expect(deriveHealth(summary(), NOW, { reconnectRequired: true })).toBe("reconnect_required");
+    expect(deriveHealth(summary(), NOW, { reconnectRequired: false })).toBe("ok");
+  });
+
   it("accepts Firestore Timestamp-like values", () => {
     const ts = { toMillis: () => hoursAgo(1).getTime() } as unknown as Date;
     expect(deriveHealth(summary({ lastSuccessfulSyncAt: ts }), NOW)).toBe("ok");

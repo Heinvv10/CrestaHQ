@@ -42,6 +42,8 @@ export interface FakeScenario {
    * What a sync that fails halfway through a pass looks like.
    */
   failReviewsPage?: { pageToken: string | null; kind: GbpProviderErrorKind; times?: number };
+  /** Report averageRating / totalReviewCount on the first reviews page only (null after). */
+  summaryOnFirstPageOnly?: boolean;
 }
 
 export interface FakeScenarioStore {

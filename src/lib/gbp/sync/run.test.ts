@@ -125,7 +125,7 @@ describe("idempotency and reconciliation", () => {
     const run = await sync();
     expect(run).toMatchObject({ status: "success", removed: 1, reconciliation: "full" });
     const gone = reviews().find((r) => r.reviewId === "fake-r4");
-    expect(gone).toMatchObject({ state: "removed", comment: null, reviewer: null, reply: null });
+    expect(gone).toMatchObject({ state: "removed", comment: null, reviewer: null, reply: null, starRating: null });
     expect((gone?.removedAt as Date).getTime()).toBe(NOW.getTime());
     expect(activeReviews()).toHaveLength(6);
   });
@@ -134,8 +134,11 @@ describe("idempotency and reconciliation", () => {
     setScenario(SA, () => {});
     await sync();
     const saved = structuredClone(mem.read(`subAccounts/${SA}/private/gbpFakeScenario`));
-    setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((x) => x.reviewId !== "fake-r4")));
-    await sync();
+    setScenario(SA, (s) => {
+      s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((x) => x.reviewId !== "fake-r4");
+      s.reviews[LOC_A].totalReviewCount = 6;
+    });
+    expect(await sync()).toMatchObject({ removed: 1 });
     mem.seed(`subAccounts/${SA}/private/gbpFakeScenario`, saved ?? {});
     const run = await sync();
     expect(run).toMatchObject({ created: 0, updated: 1, removed: 0 });
@@ -158,7 +161,8 @@ describe("anomaly guard", () => {
     await sync();
     setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = []));
     const run = await sync();
-    expect(run).toMatchObject({ status: "partial", reconciliation: "skipped_anomaly", removed: 0 });
+    // Fewer distinct reviews than Google's count: not authoritative, so no removals.
+    expect(run).toMatchObject({ status: "success", reconciliation: "deferred", removed: 0 });
     expect(activeReviews()).toHaveLength(7);
     expect(syncState()?.pass).toBeNull();
   });
@@ -174,11 +178,11 @@ describe("anomaly guard", () => {
     await sync();
     expect(activeReviews()).toHaveLength(12);
     const all = structuredClone((mem.read(`subAccounts/${SA}/private/gbpFakeScenario`) as unknown as FakeScenario).reviews[LOC_A].reviews);
-    setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = all.slice(0, 5)));
+    setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, 5)), (s.reviews[LOC_A].totalReviewCount = 5)));
     const guarded = await sync();
     expect(guarded).toMatchObject({ status: "partial", reconciliation: "skipped_anomaly", removed: 0 });
     expect(activeReviews()).toHaveLength(12);
-    setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = all.slice(0, 6)));
+    setScenario(SA, (s) => void ((s.reviews[LOC_A].reviews = all.slice(0, 6)), (s.reviews[LOC_A].totalReviewCount = 6)));
     expect(await sync()).toMatchObject({ status: "success", reconciliation: "full", removed: 6 });
   });
 });

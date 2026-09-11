@@ -1,5 +1,6 @@
 import { deriveHealth } from "./health";
-import { toMillis, type GbpHealth, type GbpSummary, type SyncRunRecord } from "./types";
+import { retentionBasis } from "./reconcile";
+import { RETENTION_MS, toMillis, type GbpHealth, type GbpSummary, type SyncRunRecord } from "./types";
 
 /**
  * What a signed-in member's browser may see of the sync. Explicit field
@@ -85,18 +86,31 @@ export interface PublicSummary {
   lastRunAt: string | null;
   lastRunStatus: string;
   lastErrorKind: string | null;
-  /** Re-derived against the request's clock — never the stored value. */
+  lastReconciliation: string | null;
+  /** Re-derived against the request's clock and the live connection — never the stored value. */
   health: GbpHealth;
 }
 
-export function publicSummary(s: GbpSummary | null, now: Date): PublicSummary {
+/**
+ * `live` is the sub-account's current connection meta. Rating and count are
+ * Google content too: past 30 days without a success they are not served,
+ * whether or not a run has purged them yet.
+ */
+export function publicSummary(
+  s: GbpSummary | null,
+  now: Date,
+  live: { reconnectRequired?: boolean | null },
+): PublicSummary {
+  const basis = retentionBasis(s, null);
+  const expired = basis !== null && now.getTime() - basis > RETENTION_MS;
   return {
-    averageRating: s?.averageRating ?? null,
-    totalReviewCount: s?.totalReviewCount ?? null,
+    averageRating: expired ? null : (s?.averageRating ?? null),
+    totalReviewCount: expired ? null : (s?.totalReviewCount ?? null),
     lastSuccessfulSyncAt: iso(s?.lastSuccessfulSyncAt),
     lastRunAt: iso(s?.lastRunAt),
     lastRunStatus: s?.lastRunStatus ?? "never",
     lastErrorKind: s?.lastErrorKind ?? null,
-    health: deriveHealth(s, now),
+    lastReconciliation: s?.lastReconciliation ?? null,
+    health: deriveHealth(s, now, live),
   };
 }

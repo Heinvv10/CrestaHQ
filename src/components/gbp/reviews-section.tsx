@@ -5,7 +5,9 @@ import { Loader2, RefreshCw, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GbpHealth } from "@/lib/gbp/sync/types";
 import { absoluteTime, relativeTime } from "./format-time";
+import { RecentSyncs } from "./recent-syncs";
 import { ReviewItem, type ReviewView } from "./review-item";
+import { describeRun, type RunView } from "./run-text";
 import { HealthBadge, HealthBanner } from "./sync-health";
 
 /**
@@ -20,34 +22,18 @@ interface SummaryView {
   totalReviewCount: number | null;
   lastSuccessfulSyncAt: string | null;
   lastErrorKind: string | null;
+  lastReconciliation?: string | null;
   health: GbpHealth;
 }
-interface RunView {
-  status: string;
-  created?: number;
-  updated?: number;
-  removed?: number;
-  errorKind: string | null;
-  skipReason: string | null;
+interface Ready {
+  state: "ready";
+  summary: SummaryView | null;
+  reviews: ReviewView[];
+  runs: RunView[];
+  scheduled: boolean;
+  truncated: boolean;
 }
-type Load = { state: "loading" } | { state: "error" } | { state: "ready"; summary: SummaryView | null; reviews: ReviewView[] };
-
-const SKIP_TEXT: Record<string, string> = {
-  already_running: "A sync is already running — try again in a minute.",
-  reconnect_required: "Google needs to be reconnected before syncing.",
-  no_listing: "Choose a listing first.",
-  not_connected: "Google is not connected.",
-  gate_off: "This feature is locked by your agency.",
-};
-
-function describeRun(run: RunView): string {
-  if (run.status === "skipped") return SKIP_TEXT[run.skipReason ?? ""] ?? "Sync skipped.";
-  const counts = `${run.created ?? 0} new, ${run.updated ?? 0} updated, ${run.removed ?? 0} removed`;
-  if (run.status === "success") return `Synced: ${counts}.`;
-  if (run.status === "partial") return `Partly synced (${counts}) — the next sync carries on.`;
-  if (run.status === "reconnect_required") return "Google refused this connection — reconnect to resume syncing.";
-  return `Sync failed (${run.errorKind ?? "unknown"}). Cached reviews are kept.`;
-}
+type Load = { state: "loading" } | { state: "error" } | Ready;
 
 export function ReviewsSection({
   subAccountId,
@@ -66,9 +52,14 @@ export function ReviewsSection({
 
   const refresh = useCallback(async () => {
     const res = await fetch(`${base}/reviews`).catch(() => null);
-    const data = (await res?.json().catch(() => null)) as { summary?: SummaryView | null; reviews?: ReviewView[] } | null;
+    const data = (await res?.json().catch(() => null)) as Partial<Omit<Ready, "state">> | null;
     if (!res?.ok || !data || !Array.isArray(data.reviews)) setLoad({ state: "error" });
-    else setLoad({ state: "ready", summary: data.summary ?? null, reviews: data.reviews });
+    else {
+      setLoad({
+        state: "ready", summary: data.summary ?? null, reviews: data.reviews, runs: data.runs ?? [],
+        scheduled: data.scheduled === true, truncated: data.truncated === true,
+      });
+    }
   }, [base]);
 
   useEffect(() => {
@@ -122,7 +113,10 @@ export function ReviewsSection({
           {s?.lastSuccessfulSyncAt
             ? `Last synced ${relativeTime(s.lastSuccessfulSyncAt)} (${absoluteTime(s.lastSuccessfulSyncAt)})`
             : "Not synced yet"}{" "}
-          · Syncs every 6 hours
+          ·{" "}
+          {load.scheduled
+            ? "Syncs automatically every 6 hours"
+            : "Automatic sync is not scheduled on this deployment — use Sync now"}
         </p>
         {result && <p className="mt-2 text-sm" data-testid="gbp-sync-result" role="status">{result}</p>}
       </section>
@@ -130,8 +124,15 @@ export function ReviewsSection({
       <HealthBanner
         health={health}
         lastErrorKind={s?.lastErrorKind ?? null}
+        lastReconciliation={s?.lastReconciliation ?? null}
         lastSuccessfulSyncAt={s?.lastSuccessfulSyncAt ?? null}
       />
+
+      {load.truncated && (
+        <p className="text-xs text-muted-foreground" data-testid="gbp-reviews-truncated">
+          Showing the newest reviews only — this list reads at most 500 stored records.
+        </p>
+      )}
 
       {load.reviews.length === 0 ? (
         <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground" data-testid="gbp-reviews-empty">
@@ -142,6 +143,8 @@ export function ReviewsSection({
           {load.reviews.map((r) => <ReviewItem key={r.reviewId} review={r} />)}
         </ul>
       )}
+
+      <RecentSyncs runs={load.runs} />
     </div>
   );
 }

@@ -68,6 +68,35 @@ describe("a review not re-seen for 30 days", () => {
   });
 });
 
+describe("purgeable docs", () => {
+  it("a doc with no lastSeenAt (a stub) is purged", async () => {
+    seedOrphan("stub", 0, NOW);
+    const doc = mem.read(`subAccounts/${SA}/gbpReviews/stub`)!;
+    mem.seed(`subAccounts/${SA}/gbpReviews/stub`, { ...doc, lastSeenAt: null });
+    expect(await sync(NOW)).toMatchObject({ purged: 1 });
+    expect(reviews().find((r) => r.id === "stub")).toBeUndefined();
+  });
+});
+
+describe("expiry does not loop on a listing bigger than one run (H2)", () => {
+  it("purges once, then resumes the new pass to success within ceil(7/3)+1 runs", async () => {
+    await sync(NOW);
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, { ...sub, gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: at(-31) } });
+    const statuses: string[] = [];
+    for (let i = 0; i < 4 && statuses.at(-1) !== "success"; i++) {
+      const run = await syncListing(SA, { trigger: "scheduled", now: at(0.25 * (i + 1)), sleep: clock.sleep, maxPages: 1 });
+      statuses.push(run.status);
+      if (i === 0) expect(run.purged).toBe(7);
+      else expect(run.purged).toBe(0);
+    }
+    expect(statuses.at(-1)).toBe("success");
+    expect(statuses.length).toBeLessThanOrEqual(4);
+    expect(activeReviews()).toHaveLength(7);
+    expect(mem.read(`subAccounts/${SA}/private/gbpSyncState`)?.retentionPurgedAt).toBe(at(0.25).getTime());
+  });
+});
+
 describe("no successful sync for 30 days", () => {
   async function syncedThenAged() {
     await sync(NOW);
@@ -112,10 +141,12 @@ describe("no successful sync for 30 days", () => {
     expect(summaryOf()).toMatchObject({ health: "error", lastErrorKind: "retention_expired" });
   });
 
-  it("drops a half-done pass with the content, so the next pass starts at page 1", async () => {
-    await syncedThenAged();
-    await syncListing(SA, { trigger: "scheduled", now: at(0.25), sleep: clock.sleep, maxPages: 1 });
+  it("drops a pass begun BEFORE the purge, so the new pass starts at page 1", async () => {
+    await sync(NOW);
+    await syncListing(SA, { trigger: "scheduled", now: at(0.1), sleep: clock.sleep, maxPages: 1 });
     expect(mem.read(`subAccounts/${SA}/private/gbpSyncState`)?.pass).toMatchObject({ pageToken: "3" });
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, { ...sub, gbpSummary: { ...(sub.gbpSummary as object), lastSuccessfulSyncAt: at(-31) } });
     const run = await sync(at(0.5));
     expect(run).toMatchObject({ status: "success", resumedFromCursor: false, created: 7, pagesFetched: 3 });
   });

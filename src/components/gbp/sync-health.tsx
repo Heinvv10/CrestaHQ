@@ -14,6 +14,7 @@ const LABEL: Record<GbpHealth, string> = {
   stale: "Stale",
   partial: "Partial sync",
   reconnect_required: "Reconnect needed",
+  sync_pending: "Reconnected — sync pending",
   error: "Sync failing",
   never_synced: "Not synced yet",
 };
@@ -23,6 +24,7 @@ const TONE: Record<GbpHealth, string> = {
   stale: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   partial: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   reconnect_required: "bg-red-500/10 text-red-700 dark:text-red-400",
+  sync_pending: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
   error: "bg-red-500/10 text-red-700 dark:text-red-400",
   never_synced: "bg-muted text-muted-foreground",
 };
@@ -51,10 +53,12 @@ function Banner({ testId, children }: { testId: string; children: React.ReactNod
 export function HealthBanner({
   health,
   lastErrorKind,
+  lastReconciliation,
   lastSuccessfulSyncAt,
 }: {
   health: GbpHealth;
   lastErrorKind: string | null;
+  lastReconciliation: string | null;
   lastSuccessfulSyncAt: string | null;
 }) {
   const since = lastSuccessfulSyncAt ? absoluteTime(lastSuccessfulSyncAt) : null;
@@ -75,8 +79,16 @@ export function HealthBanner({
     case "partial":
       return (
         <Banner testId="gbp-banner-partial">
-          The last sync didn&apos;t finish, so some reviews may be missing or out of date. The next sync
-          carries on from where it stopped.
+          {lastReconciliation === "skipped_anomaly"
+            ? "The last sync saw an unusually large drop in reviews, so no reviews were removed. Removals are applied only if the next syncs confirm the same drop."
+            : "The last sync didn't finish, so some reviews may be missing or out of date. The next sync carries on from where it stopped."}
+        </Banner>
+      );
+    case "sync_pending":
+      return (
+        <Banner testId="gbp-banner-pending">
+          Google was reconnected. The reviews below are from the last successful sync
+          {since ? ` (${since})` : ""} and refresh on the next sync.
         </Banner>
       );
     case "error":

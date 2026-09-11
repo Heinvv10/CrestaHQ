@@ -39,15 +39,19 @@ let container: HTMLDivElement;
 let root: Root;
 let payload: Record<string, unknown>;
 let syncResult: Record<string, unknown>;
+let reviewsStatus = 200;
+let syncStatus = 200;
 const fetchMock = vi.fn();
 
 beforeEach(() => {
-  payload = { summary: summary(), reviews: [review("r2"), review("r1")], runs: [] };
+  payload = { summary: summary(), reviews: [review("r2"), review("r1")], runs: [], scheduled: true, truncated: false };
+  reviewsStatus = 200;
+  syncStatus = 200;
   syncResult = { run: { status: "success", created: 2, updated: 1, removed: 0, reconciliation: "full", errorKind: null, skipReason: null } };
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     const key = `${init?.method ?? "GET"} ${url}`;
-    if (key === `GET ${URL_}`) return { ok: true, status: 200, json: async () => payload };
-    if (key === `POST ${SYNC}`) return { ok: true, status: 200, json: async () => syncResult };
+    if (key === `GET ${URL_}`) return { ok: reviewsStatus < 400, status: reviewsStatus, json: async () => payload };
+    if (key === `POST ${SYNC}`) return { ok: syncStatus < 400, status: syncStatus, json: async () => syncResult };
     throw new Error(`unexpected fetch ${key}`);
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -81,9 +85,30 @@ describe("summary", () => {
     expect(text).toContain("3.6");
     expect(text).toContain("7 reviews");
     expect(text).toMatch(/Last synced 2 hours ago \(.+\)/);
-    expect(text).toContain("Syncs every 6 hours");
+    expect(text).toContain("Syncs automatically every 6 hours");
     expect(container.textContent?.toLowerCase()).not.toContain("live");
     expect(byId("gbp-health-ok")).not.toBeNull();
+  });
+
+  it("says so when this deployment runs no schedule", async () => {
+    payload = { ...payload, scheduled: false };
+    await render();
+    const text = byId("gbp-summary")?.textContent ?? "";
+    expect(text).toContain("Automatic sync is not scheduled on this deployment — use Sync now");
+    expect(text).not.toContain("every 6 hours");
+  });
+
+  it("says when the list was cut at the cap", async () => {
+    payload = { ...payload, truncated: true };
+    await render();
+    expect(byId("gbp-reviews-truncated")?.textContent).toContain("500");
+  });
+
+  it("says when the reviews could not be loaded", async () => {
+    reviewsStatus = 500;
+    payload = { error: "x" };
+    await render();
+    expect(byId("gbp-reviews-load-error")?.textContent).toContain("could not be loaded");
   });
 
   it("says never synced before the first sync", async () => {
@@ -99,12 +124,21 @@ describe("health banners", () => {
   it.each([
     ["stale", "gbp-banner-stale", "may be out of date"],
     ["partial", "gbp-banner-partial", "didn't finish"],
+    ["sync_pending", "gbp-banner-pending", "reconnected"],
     ["error", "gbp-banner-error", "failing"],
   ])("%s", async (health, testId, text) => {
     payload = { ...payload, summary: summary({ health }) };
     await render();
     expect(byId(`gbp-health-${health}`)).not.toBeNull();
     expect(byId(testId)?.textContent).toContain(text);
+  });
+
+  it("explains a partial run held back by the anomaly guard differently", async () => {
+    payload = { ...payload, summary: summary({ health: "partial", lastReconciliation: "skipped_anomaly" }) };
+    await render();
+    const text = byId("gbp-banner-partial")?.textContent ?? "";
+    expect(text).toContain("unusually large drop");
+    expect(text).not.toContain("didn't finish");
   });
 
   it("explains retention expiry in the error banner", async () => {
@@ -159,6 +193,30 @@ describe("reviews", () => {
   });
 });
 
+describe("recent syncs", () => {
+  it("lists the last runs with what each did", async () => {
+    payload = {
+      ...payload,
+      runs: [
+        { trigger: "manual", status: "success", finishedAt: "2026-09-11T08:00:00.000Z", created: 2, updated: 1, removed: 0, skipReason: null, errorKind: null },
+        { trigger: "scheduled", status: "skipped", finishedAt: "2026-09-11T02:00:00.000Z", skipReason: "already_running", errorKind: null },
+      ],
+    };
+    await render();
+    const items = byId("gbp-runs")?.querySelectorAll("li") ?? [];
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain("Sync now");
+    expect(items[0].textContent).toContain("2 new, 1 updated, 0 removed");
+    expect(items[1].textContent).toContain("Scheduled");
+    expect(items[1].textContent).toContain("already running");
+  });
+
+  it("is absent before any run", async () => {
+    await render();
+    expect(byId("gbp-runs")).toBeNull();
+  });
+});
+
 describe("Sync now", () => {
   it("is offered to admins only", async () => {
     await render({ canSync: false });
@@ -171,6 +229,14 @@ describe("Sync now", () => {
     expect(fetchMock.mock.calls.filter(([u, i]) => u === SYNC && i?.method === "POST")).toHaveLength(1);
     expect(byId("gbp-sync-result")?.textContent).toContain("2 new, 1 updated, 0 removed");
     expect(fetchMock.mock.calls.filter(([u]) => u === URL_).length).toBe(2);
+  });
+
+  it("shows the cooldown refusal inline", async () => {
+    syncStatus = 409;
+    syncResult = { error: "A sync ran less than a minute ago — try again shortly.", code: "too_soon" };
+    await render();
+    await act(async () => (byId("gbp-sync-now") as HTMLButtonElement).click());
+    expect(byId("gbp-sync-result")?.textContent).toContain("less than a minute ago");
   });
 
   it("shows a skip or a failure inline, honestly", async () => {

@@ -110,8 +110,23 @@ describe("payload", () => {
     expect((await read("uid_admin")).body.summary?.health).toBe("stale");
   });
 
+  it("after a reconnect, says sync pending — never still revoked", async () => {
+    setScenario(SA, (s) => void (s.revoked = true));
+    await syncListing(SA, { trigger: "scheduled" });
+    expect((await read("uid_admin")).body.summary?.health).toBe("reconnect_required");
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      googleConnectionMeta: { ...(sub.googleConnectionMeta as object), reconnectRequired: false, reconnectReason: null },
+    });
+    expect((await read("uid_admin")).body.summary?.health).toBe("sync_pending");
+  });
+
   it("leaves out tombstoned reviews and anything not of the current listing", async () => {
-    setScenario(SA, (s) => void (s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r4")));
+    setScenario(SA, (s) => {
+      s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r4");
+      s.reviews[LOC_A].totalReviewCount = 6;
+    });
     await syncListing(SA, { trigger: "scheduled" });
     mem.seed(`subAccounts/${SA}/gbpReviews/stray`, {
       subAccountId: SA, locationName: "locations/some-other", reviewId: "stray", state: "active",

@@ -87,17 +87,40 @@ describe("partial failure keeps good data", () => {
     expect((summaryOf()?.lastSuccessfulSyncAt as Date).getTime()).toBe(NOW.getTime());
   });
 
-  it("honours Retry-After, capped at 10s", async () => {
+  it("honours a Retry-After up to 10s", async () => {
     const { withRetry } = await import("./retry");
     const { GbpProviderError } = await import("../provider/types");
     let n = 0;
     await withRetry(async () => {
       n += 1;
       if (n === 1) throw new GbpProviderError("rate_limited", { retryAfterMs: 4000 });
-      if (n === 2) throw new GbpProviderError("rate_limited", { retryAfterMs: 60_000 });
       return "ok";
     }, clock.sleep);
-    expect(clock.waits).toEqual([4000, 10_000]);
+    expect(clock.waits).toEqual([4000]);
+  });
+
+  it("does NOT retry when Google asks for more than 10s — quota is project-wide", async () => {
+    const { withRetry } = await import("./retry");
+    const { GbpProviderError } = await import("../provider/types");
+    let n = 0;
+    const call = withRetry(async () => {
+      n += 1;
+      throw new GbpProviderError("rate_limited", { retryAfterMs: 60_000 });
+    }, clock.sleep);
+    await expect(call).rejects.toMatchObject({ kind: "rate_limited" });
+    expect(n).toBe(1);
+    expect(clock.waits).toEqual([]);
+  });
+
+  it("an internal failure still records the run in the summary (M4)", async () => {
+    await sync();
+    mem.seed(fakeScenarioPath(SA), { accounts: "not an array" });
+    const later = new Date(NOW.getTime() + 3600_000);
+    expect(await sync({ now: later })).toMatchObject({ status: "failed", errorKind: "internal" });
+    expect(summaryOf()).toMatchObject({
+      lastRunStatus: "failed", lastErrorKind: "internal", averageRating: 3.6, health: "stale",
+    });
+    expect((summaryOf()?.lastRunAt as Date).getTime()).toBe(later.getTime());
   });
 });
 
@@ -113,9 +136,9 @@ describe("resume", () => {
     expect(syncState()?.pass).toBeNull();
   });
 
-  it("abandons a pass older than 24h and starts again from page 1", async () => {
+  it("abandons a pass older than 7 days and starts again from page 1", async () => {
     await sync({ maxPages: 1 });
-    const run = await sync({ now: new Date(NOW.getTime() + 25 * 3600_000) });
+    const run = await sync({ now: new Date(NOW.getTime() + 8 * 24 * 3600_000) });
     expect(run).toMatchObject({ resumedFromCursor: false, pagesFetched: 3, status: "success" });
   });
 
