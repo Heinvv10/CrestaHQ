@@ -1042,6 +1042,25 @@ schedule is described under "Sweep, capacity and schedule" above.
   …/gbp/reviews/[reviewDocId]/reply` (or in Google's own UI) before rolling
   back if it must go. Disconnect revokes the grant at Google.
 
+## Browser proof (PR 4)
+
+`proof/pr4-*.png` — the production build on 127.0.0.1:3100 with the fake
+provider, fixture primary only, driven by a Playwright proof script in
+Chromium (not committed). Each is one section of the page, never the full
+window.
+
+| File | Shows |
+|---|---|
+| `pr4-01-review-link-differs.png` | the configured link and the selected listing's link side by side, with **Replace with listing link** — nothing applied |
+| `pr4-02-filters-1-2-stars-unreplied.png` | 1★ + 2★ and "Not replied": "Showing 2 of 7 reviews", each with **Reply** |
+| `pr4-03-reply-composer.png` | the composer: typed text, "Your reply will be public on Google…", **Post reply to Google** |
+| `pr4-04-reply-posted.png` | after the click: the owner reply under the review, **Edit reply** |
+| `pr4-05-reply-failed-inline.png` | the fake refuses the next reply: "Google request failed" inline, the text kept |
+| `pr4-06-review-link-adopted.png` | after **Replace with listing link**: "Review requests use this listing's review link." |
+
+No GIF this time: a screen recording captures the whole window, including the
+signed-in account's chrome, which is not fixture data.
+
 ## Owner-approval checklist (none of these were run)
 
 1. **Firestore rules / indexes** — `firebase deploy --only firestore:rules,firestore:indexes`.
