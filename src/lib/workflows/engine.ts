@@ -21,7 +21,7 @@ import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
 import {
   interactiveFromButtons,
-  type CloudInteractive,
+  type InteractiveResult,
 } from "@/lib/comms/whatsapp/interactive";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
@@ -466,7 +466,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   // The template is optional. A step that only ever fires inside an open
   // window needs none — and needs no Meta approval to ship.
   let template: CloudTemplateRef | null = null;
-  let interactive: CloudInteractive | null = null;
+  let inWindowButtons: InteractiveResult | null = null;
   let templateBody = "";
   let tplDoc: WhatsappTemplateDoc | null = null;
   if (cfg.templateId) {
@@ -487,7 +487,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       manualValues[Number(pos)] = resolveMergeTags(val ?? "", subject);
     }
     const values = resolveTemplateVariables({
-      variables: tplDoc.variables,
+      variables: tplDoc.variables ?? [],
       subject,
       manualValues,
     });
@@ -499,14 +499,11 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // free interactive message that needs no approval — how the review link
     // rides behind a "Leave a review" button without becoming a paid,
     // likely-MARKETING template send. Its text is the template's, since the
-    // buttons belong to it. Buttons Meta cannot render in-window refuse the
-    // send rather than go out stripped.
+    // buttons belong to it. Whether they CAN be rendered in-window is decided
+    // by the dispatcher once the window is known: outside it an approved
+    // template goes as itself, whatever its buttons.
     if (tplDoc.buttons?.length) {
-      const built = interactiveFromButtons(templateBody, tplDoc.buttons);
-      if (!built.ok) {
-        return { result: { kind: "next" }, log: `error:${built.error}` };
-      }
-      interactive = built.interactive;
+      inWindowButtons = interactiveFromButtons(templateBody, tplDoc.buttons);
     }
     // Approval is per rail, as in execWhatsappTemplate: a template cleared on
     // Twilio has never been seen by our own WABA. The rail is the one
@@ -527,7 +524,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       };
     }
   }
-  if (!body.trim() && !interactive)
+  if (!body.trim() && !inWindowButtons)
     return { result: { kind: "next" }, log: "skipped:empty_body" };
 
   try {
@@ -538,7 +535,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       to,
       body,
       template,
-      interactive,
+      inWindowButtons,
       sendViaTwilio: async () => {
         const r = await sendWhatsappForSubAccount({
           subAccountId: ctx.subAccountId,
@@ -559,7 +556,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // provider message id as the manual composer so the row is addressable.
     // Keep recording failures distinct: the message has already been sent.
     const recordedBody =
-      res.sentAs === "template" || interactive ? templateBody : body;
+      res.sentAs === "template" || res.sentAs === "interactive" ? templateBody : body;
     try {
       const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
       const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();

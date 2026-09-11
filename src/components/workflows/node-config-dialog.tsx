@@ -159,7 +159,7 @@ export function NodeConfigDialog({
                   {sendTemplates.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.displayName}
-                      {t.approved ? "" : " — buttons, in-window only"}
+                      {t.approved ? "" : " — buttons, in-window only (Cloud)"}
                     </option>
                   ))}
                 </select>

@@ -19,6 +19,8 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const transformOf = (v: unknown): string | null =>
   v instanceof FieldValue ? (v as unknown as { methodName: string }).methodName : null;
 
+const isTs = (v: unknown): v is { toMillis: () => number } => typeof (v as { toMillis?: unknown })?.toMillis === "function";
+
 /** Maps only — a Timestamp, Date or FieldValue is a VALUE, as in Firestore. */
 function isPlainObject(v: unknown): v is Data {
   if (typeof v !== "object" || v === null) return false;
@@ -26,8 +28,7 @@ function isPlainObject(v: unknown): v is Data {
   return proto === Object.prototype || proto === null;
 }
 
-/** Deep copy of maps and arrays; class instances (Timestamp) kept intact,
- *  where structuredClone would strip their methods (`toDate`). */
+/** Deep-copies maps/arrays; keeps class instances (structuredClone strips `toDate`). */
 function clone<T>(v: T): T {
   if (Array.isArray(v)) return v.map(clone) as T;
   if (!isPlainObject(v)) return v;
@@ -216,8 +217,8 @@ export function createMemoryFirestore() {
         });
         if (order) {
           const [f, dir] = order;
-          const key = (p: string, v = getPath(store.get(p)!, f)) =>
-            v instanceof Date ? v.getTime() : (v as number | string);
+          const key = (p: string, v = getPath(store.get(p)!, f)): number | string =>
+            v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : (v as number | string);
           paths.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
           if (dir === "desc") paths.reverse();
         }

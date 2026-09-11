@@ -37,6 +37,7 @@ vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
 });
 
 const { execSendWhatsapp } = await import("./engine");
+const { dispatchWhatsappSend } = await import("@/lib/comms/whatsapp/send-dispatch");
 
 const CLOUD = {
   name: "Velocity", agencyId: "ag1", whatsappEnabledByAgency: true, whatsappProvider: "cloud",
@@ -66,11 +67,15 @@ function lastInbound(hoursAgo: number) {
   });
 }
 
-const run = (templateId: string | null, subAccount: SubAccountDoc = CLOUD) =>
+const run = (
+  templateId: string | null,
+  subAccount: SubAccountDoc = CLOUD,
+  body = "Thanks! Review us: https://g.page/r/velocity/review",
+) =>
   execSendWhatsapp({
     node: {
       id: "n1", type: "send_whatsapp",
-      config: { body: "Thanks! Review us: https://g.page/r/velocity/review", templateId },
+      config: { body, templateId },
     } as unknown as WorkflowNode,
     contact: {
       id: "c1", name: "Thandi Mokoena", phone: "+27821234567", whatsappOptedOut: false,
@@ -137,6 +142,16 @@ describe("in the window: the template's text WITH its buttons, free", () => {
   });
 });
 
+it("sends the button template even when the step's own text is empty", async () => {
+  seedTemplate("review_link", { buttons: [REVIEW] });
+  lastInbound(1);
+
+  const out = await run("review_link", CLOUD, "");
+
+  expect(out.log).toBe("ok");
+  expect(graph[0]).toMatchObject({ type: "interactive", interactive: { type: "cta_url" } });
+});
+
 describe("refusals send nothing", () => {
   it("refuses outside the window when the button template is not approved — never a template fallback", async () => {
     seedTemplate("review_link", { buttons: [REVIEW] });
@@ -169,6 +184,53 @@ describe("refusals send nothing", () => {
     expect(sendWhatsappForSubAccount).not.toHaveBeenCalled();
     expect(graph).toHaveLength(0);
   });
+});
+
+describe("an approved template whose buttons Meta cannot render in-window", () => {
+  // Mixed buttons: valid on an approved template, impossible as ONE
+  // interactive message. Only the in-window send may refuse over that.
+  const seedApprovedMixed = () =>
+    seedTemplate("mixed", {
+      status: "approved", body: "Was everything done?", variables: [],
+      buttons: [{ type: "quick_reply", text: "Yes" }, REVIEW],
+      registrations: { cloud: { externalId: "m1", status: "approved", rejectionReason: null } },
+    });
+
+  it("outside the window, still goes as the template", async () => {
+    seedApprovedMixed();
+    lastInbound(30);
+
+    const out = await run("mixed");
+
+    expect(out.log).toBe("ok");
+    expect(graph[0]).toMatchObject({ type: "template", template: { name: "mixed" } });
+  });
+
+  it("inside the window, refuses rather than send it without its buttons", async () => {
+    seedApprovedMixed();
+    lastInbound(1);
+
+    const out = await run("mixed");
+
+    expect(out.log).toBe("error:WA_INTERACTIVE_BUTTONS_UNSUPPORTED");
+    expect(graph).toHaveLength(0);
+  });
+});
+
+it("the bridge refuses in-window buttons instead of sending the text bare", async () => {
+  const sub = {
+    agencyId: "ag1", whatsappEnabledByAgency: true, whatsappProvider: "bridge",
+    whatsappBridgeMeta: { displayPhoneNumber: "+27110000001" },
+  } as unknown as SubAccountDoc;
+  const res = await dispatchWhatsappSend({
+    subAccountId: "sa1", subAccount: sub, contactId: "c1", to: "+27821234567", body: "Thanks",
+    lastInboundAt: null,
+    inWindowButtons: { ok: true, interactive: { type: "cta_url", body: { text: "Thanks" }, action: { name: "cta_url", parameters: { display_text: "Review", url: REVIEW.url } } } },
+    sendViaTwilio: async () => ({ ok: true, messageId: "x" }),
+  });
+
+  expect(res).toMatchObject({ provider: "bridge", ok: false, error: "WA_BUTTONS_UNSUPPORTED_ON_RAIL" });
+  expect(graph).toHaveLength(0);
 });
 
 it("outside the window, an APPROVED button template goes as the template itself", async () => {

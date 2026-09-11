@@ -351,8 +351,10 @@ sends the template only if approved, else refuses; it never falls back to a
 paid template for the review link. Meta's in-window rules are narrower than a
 template's — labels at most **20** characters, one link per message, reply
 buttons and a link never together — and a template outside them is refused
-rather than sent stripped. Twilio and the bridge refuse a button template
-until PRs 4 and 6–7. The step's template picker now offers unapproved button
+IN-WINDOW rather than sent stripped; outside the window an approved one
+still goes as itself, whatever its buttons. The dispatcher makes that call
+once it knows the window. Twilio and the bridge refuse a button template
+in-window until PRs 4 and 6–7. The step's template picker now offers unapproved button
 templates, marked "in-window only".
 
 Each PR: provider-documented payload fixtures, mutation-tested,
