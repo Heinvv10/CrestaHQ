@@ -11,7 +11,7 @@ Definition of done per row: Playwright spec (mutation-proven, blocking CI) + bli
 
 ## Ledger
 
-Columns: GHL behaviour · CrestaHQ today (verified in code at `7bab54a` and in the browser on #1000, 2026-09-11) · Gap · PR · Spec · Status.
+Columns: GHL behaviour · CrestaHQ today (verified in code at `0d6f449` and in the browser on #1000, 2026-09-11) · Gap · PR · Spec · Status.
 
 GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ still need side-by-side confirmation in the GHL tab, which was logged out in this Chrome profile at session start.
 
@@ -57,7 +57,7 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 |---|---|---|---|---|---|---|
 | O1 | **Multiple pipelines** per sub-account, each with its own stages; pipeline switcher on the board | One fixed 6-stage pipeline (`PIPELINE_STAGES`), label/order overrides on the sub-account doc | `pipelines` collection (stages embedded), `pipelineId` on Deal, switcher, default pipeline migration | (c) | `pipelines.spec.ts` | todo |
 | O2 | Pipeline settings: create/rename/delete pipeline, add/rename/reorder/delete stages | Stage label/order only, in settings | Full CRUD | (c) | same | todo |
-| O3 | ⚠ Stage-level automation: stage change fires workflow trigger "Pipeline Stage Changed" (filter by pipeline + stage); "Opportunity Created"; "Opportunity Status Changed" (won/lost) | `pipeline.stage.changed` fires from `deals-service.ts:333` with `toStage`; no created/won/lost triggers; trigger filter has no pipeline dimension | Add `pipelineId`/`fromStage` to context; new triggers `deal.created`, `deal.won`, `deal.lost`; trigger filter by pipeline | (c) | same + workflow enrol assertion | todo |
+| O3 | ⚠ Stage-level automation: stage change fires workflow trigger "Pipeline Stage Changed" (filter by pipeline + stage); "Opportunity Created"; "Opportunity Status Changed" (won/lost) | `pipeline.stage.changed` fires from `deals-service.ts:336-341` with `toStage`; no created/won/lost triggers; trigger filter has no pipeline dimension | Add `pipelineId`/`fromStage` to context; new triggers `deal.created`, `deal.won`, `deal.lost`; trigger filter by pipeline | (c) | same + workflow enrol assertion | todo |
 | O4 | Board + list view, filters (owner, stage, value, date) | Board only; filters: stage, priority, value range, country | List view out of scope | — | — | out of scope |
 | O5 | Won/Lost with lost reason | `lostReason`, terminal stages | — | — | — | parity |
 | O6 | Opportunity owner | No `assignedTo` on Deal | `assignedToUid` on Deal (same PR as contacts) | (b) | — | todo |
@@ -85,7 +85,7 @@ Each PR is greenfield-or-additive, on tenant-scoped docs carrying `agencyId`/`su
 
 | PR | Scope | Ledger rows | Depends on |
 |---|---|---|---|
-| #87 | agency-owner claims fallback (unblocks owner-login specs) | — | — |
+| #87 | agency-owner claims fallback (unblocks owner-login specs) — **merged** | — | — |
 | (a) | Smart lists: filter model + builder UI + saved lists (`subAccounts/{id}/smartLists`) + phone search | C2 C3 C4 | #87 |
 | (b) | Selection + bulk tag/assign/delete/export; `assignedToUid` on Contact/Deal/Task; task assignee filter | C5–C9 D1 O6 T1 T2 | (a) (filter → selection) |
 | (c) | Multiple pipelines + stage CRUD + `pipelineId` on Deal + triggers `deal.created/won/lost` + pipeline dimension on `pipeline.stage.changed` | O1 O2 O3 D5 | — (parallel with a/b) |
@@ -113,11 +113,11 @@ Sizes: (a) and (c) are the large ones (expect 500+ lines → `review-team`). (b)
 **Design concept:** SP1 is "GHL's contact/opportunity data model on top of what already exists" — every feature extends a live collection additively; nothing existing is renamed or moved.
 
 **Proven assumptions (checked at `7bab54a`):**
-- A filter engine already exists: `ConditionGroup { all: Condition[]; match?: "all"|"any" }` (`src/types/workflows.ts:58-73`), evaluated by `src/lib/workflows/conditions.ts`, with an editor at `src/components/workflows/conditions-editor.tsx`. **Smart lists store a `ConditionGroup` and reuse the evaluator and the editor.** The evaluator is `server-only`; the pure evaluation moves to an isomorphic module (`src/lib/contacts/conditions.ts`) that `workflows/conditions.ts` re-exports — the workflow engine's behaviour is unchanged and its tests stay green.
-- `pipeline.stage.changed` is the only stage hook and it keys on `stageId` (`engine.ts:970`). Multi-pipeline keeps existing `stageId` strings on the migrated default pipeline, so every stored trigger keeps matching without a data migration of workflows.
+- A filter engine already exists: `ConditionGroup { all: Condition[]; match?: "all"|"any" }` (`src/types/workflows.ts:70-73`), evaluated by `src/lib/workflows/conditions.ts`, with an editor at `src/components/workflows/conditions-editor.tsx`. **Smart lists store a `ConditionGroup` and reuse the evaluator and the editor.** The evaluator is `server-only`; the pure evaluation moves to an isomorphic module (`src/lib/contacts/conditions.ts`) that `workflows/conditions.ts` re-exports — the workflow engine's behaviour is unchanged and its tests stay green.
+- `pipeline.stage.changed` is the only stage hook and it keys on `trigger.toStage` (a stage id; `engine.ts:970`). Multi-pipeline keeps existing `stageId` strings on the migrated default pipeline, so every stored trigger keeps matching without a data migration of workflows.
 - The contacts list is fully client-loaded (`onSnapshot`, no pagination). Smart lists evaluate client-side over that array. #1000 holds a few hundred contacts; Blitz/Velocity are larger but still one collection read — acceptable for v1, noted as the first thing to revisit if a list stalls.
 - No assignment concept exists on Contact, Deal or Task. `assignedToUid` is a new nullable field on all three; the picker lists `subAccounts/{id}/subAccountMembers`.
-- Rules pattern for new sub-account collections is `tenantFieldsLockedOnUpdate()` + territory-aware read (contacts `firestore.rules:761`). `smartLists`, `pipelines`, `companies` follow it.
+- Rules pattern for new sub-account collections is `tenantFieldsLockedOnUpdate()` + territory-aware read (contacts `firestore.rules:762`). `smartLists`, `pipelines`, `companies` follow it.
 
 **Highest-risk unknown:** (c). Changing the deal → stage relationship touches the board, the deal dialogs, the deals API/v1 API, webhooks, the workflow `move_stage` action and the trigger filter. Mitigation: default pipeline = today's stages with the same ids; `pipelineId` optional on read (absent ⇒ default) and always written on create/update; one reviewer briefed to hunt any path that still assumes one pipeline.
 
