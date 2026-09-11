@@ -9,6 +9,7 @@ import {
   exchangeCodeForTokens,
   googleAppConfigured,
   googleRedirectUri,
+  googleReturnPath,
   verifyGoogleState,
 } from "@/lib/google/oauth";
 import {
@@ -32,8 +33,8 @@ import {
  * session cookie — admin-gated, not public). Verifies `state`, re-checks the
  * agency gate, exchanges the code, and stores the tokens in the LOCKED
  * `private` subcollection with only display metadata on the sub-account doc.
- * Always redirects back to Settings with a `?google=…` status; never throws to
- * the user.
+ * Always redirects back to Settings (or the Google Business page, per the
+ * signed `r` claim) with a `?google=…` status; never throws to the user.
  */
 
 function appBase(request: Request): string {
@@ -50,12 +51,12 @@ export async function GET(request: Request) {
 
   // The sub-account identity lives in `state`. Without a valid one we can't
   // even tell whose settings page to return to, so bail to a safe landing.
-  const verified = state ? verifyGoogleState(state) : null;
-  if (!verified) {
-    return NextResponse.redirect(
+  const badState = () =>
+    NextResponse.redirect(
       new URL("/agency/sub-accounts?google=bad_state", appBase(request)),
     );
-  }
+  const verified = state ? verifyGoogleState(state) : null;
+  if (!verified) return badState();
   const id = verified.subAccountId;
 
   // Now that we trust the sub-account id (HMAC-authenticated), gate on the
@@ -63,7 +64,14 @@ export async function GET(request: Request) {
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
 
-  const settingsUrl = new URL(`/sa/${id}/dashboard/settings`, appBase(request));
+  // The state is bound to the uid that started the flow. Another admin of the
+  // same sub-account holding a leaked state must not be able to complete it.
+  if (access.uid !== verified.uid) return badState();
+
+  const settingsUrl = new URL(
+    googleReturnPath(id, verified.returnTo),
+    appBase(request),
+  );
   const finish = (status: string) => {
     settingsUrl.searchParams.set("google", status);
     return NextResponse.redirect(settingsUrl);

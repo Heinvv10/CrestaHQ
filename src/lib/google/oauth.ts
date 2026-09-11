@@ -74,41 +74,107 @@ export function buildGoogleOAuthUrl(opts: {
 // ---------------------------------------------------------------------------
 // CSRF state — HMAC-signed with the existing AUTOMATIONS_TOKEN_SECRET so the
 // callback can trust `state` came from our connect route (and names the right
-// sub-account) without persisting anything. Same construction as Meta's.
+// sub-account) without persisting anything.
+//
+//   state = base64url(JSON {s, u, t, n, r?}) + "." + hex HMAC-SHA256("googlestate:" + payload)
+//
+// s = sub-account, u = the uid that started the flow, t = issued-at (ms),
+// n = nonce, r = return page (allow-listed). `t` bounds how long a leaked state
+// stays usable; `u` means a state leaked to another admin of the same
+// sub-account is useless to them. Without both, a state was replayable forever
+// by anyone who could pass the admin check.
 // ---------------------------------------------------------------------------
 
-function stateSecret(): string {
-  return process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
+/** Where the callback sends the admin back to. An allow-list, never a URL. */
+export type GoogleReturnTo = "settings" | "gbp";
+
+export interface GoogleStateClaims {
+  subAccountId: string;
+  uid: string;
+  returnTo: GoogleReturnTo;
 }
 
-export function signGoogleState(subAccountId: string, nonce: string): string {
-  const payload = `${subAccountId}.${nonce}`;
-  const sig = crypto
-    .createHmac("sha256", stateSecret())
+const STATE_MAX_AGE_MS = 10 * 60_000;
+const STATE_MAX_SKEW_MS = 60_000;
+
+/** Thrown by signGoogleState when there is no key to sign with. */
+export class GoogleStateSecretMissingError extends Error {
+  constructor() {
+    super("AUTOMATIONS_TOKEN_SECRET is not set; cannot sign OAuth state");
+    this.name = "GoogleStateSecretMissingError";
+  }
+}
+
+function stateHmac(secret: string, payload: string): string {
+  return crypto
+    .createHmac("sha256", secret)
     .update(`googlestate:${payload}`)
     .digest("hex");
-  return `${payload}.${sig}`;
+}
+
+export function signGoogleState(
+  claims: { subAccountId: string; uid: string; returnTo?: GoogleReturnTo },
+  now: number = Date.now(),
+): string {
+  // An empty key makes the HMAC forgeable by anyone who reads this file.
+  const secret = process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
+  if (!secret) throw new GoogleStateSecretMissingError();
+  const body: Record<string, unknown> = {
+    s: claims.subAccountId,
+    u: claims.uid,
+    t: now,
+    n: crypto.randomBytes(16).toString("hex"),
+  };
+  if (claims.returnTo === "gbp") body.r = "gbp";
+  const payload = Buffer.from(JSON.stringify(body)).toString("base64url");
+  return `${payload}.${stateHmac(secret, payload)}`;
 }
 
 export function verifyGoogleState(
   state: string,
-): { subAccountId: string } | null {
+  now: number = Date.now(),
+): GoogleStateClaims | null {
+  const secret = process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
+  if (!secret) return null;
   const parts = state.split(".");
-  if (parts.length !== 3) return null;
-  const [subAccountId, nonce, sig] = parts;
-  const expected = crypto
-    .createHmac("sha256", stateSecret())
-    .update(`googlestate:${subAccountId}.${nonce}`)
-    .digest("hex");
-  if (sig.length !== expected.length) return null;
-  try {
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-      return null;
-    }
-  } catch {
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  // Shape-check first: timingSafeEqual throws on unequal BYTE lengths, and a
+  // non-hex character can make equal string lengths differ in bytes.
+  if (!/^[0-9a-f]{64}$/.test(sig)) return null;
+  const expected = stateHmac(secret, payload);
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return null;
   }
-  return { subAccountId };
+
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    // Correctly signed but not JSON — only a key holder could produce it, and
+    // it still names no sub-account. Refuse like any other bad state.
+    return null;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const { s, u, t, n, r } = body as Record<string, unknown>;
+  if (typeof s !== "string" || !s) return null;
+  if (typeof u !== "string" || !u) return null;
+  if (typeof t !== "number" || !Number.isFinite(t)) return null;
+  if (typeof n !== "string" || !n) return null;
+  if (r !== undefined && r !== "gbp") return null;
+  if (now - t > STATE_MAX_AGE_MS) return null;
+  if (t - now > STATE_MAX_SKEW_MS) return null;
+  return { subAccountId: s, uid: u, returnTo: r === "gbp" ? "gbp" : "settings" };
+}
+
+/** The in-app page a Google flow returns to. Allow-listed by construction. */
+export function googleReturnPath(
+  subAccountId: string,
+  returnTo: GoogleReturnTo,
+): string {
+  return returnTo === "gbp"
+    ? `/sa/${subAccountId}/ai-agents/google-business`
+    : `/sa/${subAccountId}/dashboard/settings`;
 }
 
 // ---------------------------------------------------------------------------

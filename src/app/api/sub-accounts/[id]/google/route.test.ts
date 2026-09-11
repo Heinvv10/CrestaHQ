@@ -58,7 +58,7 @@ describe("connect", () => {
     );
     expect(
       verifyGoogleState(location.searchParams.get("state") as string),
-    ).toEqual({ subAccountId: SUB });
+    ).toEqual({ subAccountId: SUB, uid: "uid_admin", returnTo: "settings" });
     expect(location.searchParams.get("redirect_uri")).toBe(
       "http://app.local/api/google/callback",
     );

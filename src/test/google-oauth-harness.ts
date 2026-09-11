@@ -75,6 +75,16 @@ export function resetHarness(opts: { gateOn?: boolean } = {}) {
       `${SUB_PATH}/subAccountMembers/uid_member`,
       { status: "active", subAccountRole: "user", role: "user" },
     ],
+    // A second genuine admin of SUB — the replay target for uid binding.
+    [
+      `${SUB_PATH}/subAccountMembers/uid_admin2`,
+      { status: "active", subAccountRole: "admin", role: "admin" },
+    ],
+    // The real read-only role (src/types/tenancy.ts SubAccountRole).
+    [
+      `${SUB_PATH}/subAccountMembers/uid_collab`,
+      { status: "active", subAccountRole: "collaborator", role: "collaborator" },
+    ],
     [
       `subAccounts/${OTHER_SUB}/subAccountMembers/uid_other_admin`,
       { status: "active", subAccountRole: "admin", role: "admin" },
@@ -83,6 +93,8 @@ export function resetHarness(opts: { gateOn?: boolean } = {}) {
   state.claims = new Map<string, Record<string, unknown>>([
     ["uid_admin", { status: "active", agencyId: "ag_1", agencyRole: null }],
     ["uid_member", { status: "active", agencyId: "ag_1", agencyRole: null }],
+    ["uid_admin2", { status: "active", agencyId: "ag_1", agencyRole: null }],
+    ["uid_collab", { status: "active", agencyId: "ag_1", agencyRole: null }],
     [
       "uid_other_admin",
       { status: "active", agencyId: "ag_1", agencyRole: null },

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import crypto from "node:crypto";
 import {
   GOOGLE_SCOPE,
+  GoogleStateSecretMissingError,
   buildGoogleOAuthUrl,
   exchangeCodeForTokens,
   googleAppConfigured,
@@ -44,38 +46,114 @@ function stubToken(body: unknown, status = 200) {
   return spy;
 }
 
+const NOW = Date.UTC(2026, 8, 11, 12, 0, 0);
+const CLAIMS = { subAccountId: "sa_1", uid: "uid_admin" };
+
+/** Re-sign an arbitrary payload with the test secret — a forger WITH the key. */
+function signRaw(payload: string, secret = "test-state-secret"): string {
+  const sig = crypto
+    .createHmac("sha256", secret)
+    .update(`googlestate:${payload}`)
+    .digest("hex");
+  return `${payload}.${sig}`;
+}
+
+const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+
 describe("google OAuth state", () => {
-  it("round-trips the sub-account id", () => {
-    const state = signGoogleState("sa_1", "nonce123");
-    expect(verifyGoogleState(state)).toEqual({ subAccountId: "sa_1" });
+  it("round-trips the sub-account, the initiating uid and the return page", () => {
+    const state = signGoogleState(CLAIMS, NOW);
+    expect(verifyGoogleState(state, NOW)).toEqual({
+      subAccountId: "sa_1",
+      uid: "uid_admin",
+      returnTo: "settings",
+    });
+    const gbp = signGoogleState({ ...CLAIMS, returnTo: "gbp" }, NOW);
+    expect(verifyGoogleState(gbp, NOW)?.returnTo).toBe("gbp");
+  });
+
+  it("is base64url(JSON {s,u,t,n}) + '.' + hex HMAC", () => {
+    const state = signGoogleState(CLAIMS, NOW);
+    const [payload, sig, extra] = state.split(".");
+    expect(extra).toBeUndefined();
+    expect(sig).toMatch(/^[0-9a-f]{64}$/);
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString());
+    expect(decoded).toMatchObject({ s: "sa_1", u: "uid_admin", t: NOW });
+    expect(typeof decoded.n).toBe("string");
+    expect(decoded.n.length).toBeGreaterThanOrEqual(16);
+    // Two states for the same claims differ — the nonce is fresh each time.
+    expect(signGoogleState(CLAIMS, NOW)).not.toBe(state);
   });
 
   it("rejects a state whose sub-account id was swapped", () => {
-    const state = signGoogleState("sa_1", "nonce123");
-    const [, nonce, sig] = state.split(".");
-    expect(verifyGoogleState(`sa_victim.${nonce}.${sig}`)).toBeNull();
+    const [payload, sig] = signGoogleState(CLAIMS, NOW).split(".");
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString());
+    const swapped = b64({ ...decoded, s: "sa_victim" });
+    expect(verifyGoogleState(`${swapped}.${sig}`, NOW)).toBeNull();
   });
 
   it("rejects a state whose signature was tampered with", () => {
-    const state = signGoogleState("sa_1", "nonce123");
-    const [id, nonce, sig] = state.split(".");
+    const [payload, sig] = signGoogleState(CLAIMS, NOW).split(".");
     // Flip one hex character — same length, so a length-only check passes.
     const flipped = (sig[0] === "a" ? "b" : "a") + sig.slice(1);
-    expect(verifyGoogleState(`${id}.${nonce}.${flipped}`)).toBeNull();
+    expect(verifyGoogleState(`${payload}.${flipped}`, NOW)).toBeNull();
   });
 
   it("rejects a state signed with a different secret", () => {
-    const state = signGoogleState("sa_1", "nonce123");
+    const state = signGoogleState(CLAIMS, NOW);
     process.env.AUTOMATIONS_TOKEN_SECRET = "some-other-secret";
-    expect(verifyGoogleState(state)).toBeNull();
+    expect(verifyGoogleState(state, NOW)).toBeNull();
+  });
+
+  it("expires ten minutes after it was issued", () => {
+    const state = signGoogleState(CLAIMS, NOW);
+    expect(verifyGoogleState(state, NOW + 10 * 60_000)).not.toBeNull();
+    expect(verifyGoogleState(state, NOW + 10 * 60_000 + 1)).toBeNull();
+  });
+
+  it("rejects a state issued more than 60s in the future", () => {
+    expect(verifyGoogleState(signGoogleState(CLAIMS, NOW + 60_000), NOW)).not.toBeNull();
+    expect(verifyGoogleState(signGoogleState(CLAIMS, NOW + 60_001), NOW)).toBeNull();
+  });
+
+  it("refuses to sign, and verifies nothing, when the secret is unset or empty", () => {
+    const signedWithEmpty = signRaw(b64({ s: "sa_1", u: "uid_admin", t: NOW, n: "x".repeat(32) }), "");
+    for (const value of [undefined, ""]) {
+      if (value === undefined) delete process.env.AUTOMATIONS_TOKEN_SECRET;
+      else process.env.AUTOMATIONS_TOKEN_SECRET = value;
+      expect(() => signGoogleState(CLAIMS, NOW)).toThrow(GoogleStateSecretMissingError);
+      expect(verifyGoogleState(signedWithEmpty, NOW)).toBeNull();
+    }
+  });
+
+  it("rejects correctly-signed payloads that are not a well-formed claim set", () => {
+    const good = { s: "sa_1", u: "uid_admin", t: NOW, n: "x".repeat(32) };
+    const cases: unknown[] = [
+      "not json",
+      [],
+      { ...good, s: "" },
+      { ...good, u: "" },
+      { ...good, s: 7 },
+      { ...good, t: String(NOW) },
+      { ...good, n: undefined },
+      // The return page is an allow-list, never an arbitrary URL.
+      { ...good, r: "https://evil.example" },
+    ];
+    for (const c of cases) {
+      const payload =
+        typeof c === "string" ? Buffer.from(c).toString("base64url") : b64(c);
+      expect(verifyGoogleState(signRaw(payload), NOW)).toBeNull();
+    }
+    // Sanity: the same helper produces an accepted state for the good claims.
+    expect(verifyGoogleState(signRaw(b64(good)), NOW)).not.toBeNull();
   });
 
   it("rejects malformed states", () => {
-    expect(verifyGoogleState("")).toBeNull();
-    expect(verifyGoogleState("sa_1.nonce")).toBeNull();
-    expect(verifyGoogleState("sa_1.nonce.sig.extra")).toBeNull();
+    expect(verifyGoogleState("", NOW)).toBeNull();
+    expect(verifyGoogleState("sa_1.nonce.sig", NOW)).toBeNull();
+    expect(verifyGoogleState("onlyonesegment", NOW)).toBeNull();
     // A short signature must not throw out of timingSafeEqual.
-    expect(verifyGoogleState("sa_1.nonce.ab")).toBeNull();
+    expect(verifyGoogleState(`${b64({})}.ab`, NOW)).toBeNull();
   });
 });
 
@@ -84,7 +162,7 @@ describe("buildGoogleOAuthUrl", () => {
     new URL(
       buildGoogleOAuthUrl({
         redirectUri: googleRedirectUri() as string,
-        state: signGoogleState("sa_1", "nonce123"),
+        state: signGoogleState(CLAIMS),
       }),
     ).searchParams;
 
@@ -118,7 +196,7 @@ describe("buildGoogleOAuthUrl", () => {
   });
 
   it("carries the signed state through untouched", () => {
-    const state = signGoogleState("sa_1", "nonce123");
+    const state = signGoogleState(CLAIMS);
     const url = new URL(
       buildGoogleOAuthUrl({ redirectUri: "http://x/cb", state }),
     );
