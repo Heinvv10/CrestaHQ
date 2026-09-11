@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { fakeProviderAllowed } from "@/lib/gbp/provider/mode";
-import { isAppLoopbackUrl } from "@/lib/gbp/provider/loopback.mjs";
+import { isLoopbackOrUnparseableUrl } from "@/lib/gbp/provider/loopback.mjs";
 import { assertFakeFixtureAgency, getGbpProviderFor } from "@/lib/gbp/provider/select";
 import type { GbpProvider } from "@/lib/gbp/provider/types";
 import {
@@ -46,7 +46,9 @@ export async function DELETE(
   const fakeRefused = process.env.GBP_PROVIDER === "fake" && !fakeProviderAllowed();
   let provider: GbpProvider | null = null;
   if (fakeRefused) {
-    if (isAppLoopbackUrl(process.env.NEXT_PUBLIC_APP_URL)) await assertFakeFixtureAgency(id);
+    // WIDE rule: when in doubt (0.0.0.0, *.localhost, an unparseable URL) treat
+    // it as a dev machine and apply the fence — failing toward fencing.
+    if (isLoopbackOrUnparseableUrl(process.env.NEXT_PUBLIC_APP_URL)) await assertFakeFixtureAgency(id);
     console.warn(`[google/disconnect] fake provider refused here; skipping revoke sa=${id}`);
   } else {
     provider = await getGbpProviderFor(id);

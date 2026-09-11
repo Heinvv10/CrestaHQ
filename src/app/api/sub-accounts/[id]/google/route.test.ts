@@ -227,6 +227,16 @@ describe("disconnect", () => {
       delete process.env.GBP_FAKE_AGENCY_ID;
     });
 
+    it.each(["http://0.0.0.0:4300", "http://foo.localhost:4300", "not a url"])(
+      "treats %s as a dev machine too (the WIDE rule — fail toward fencing)",
+      async (url) => {
+        devRefused(undefined);
+        process.env.NEXT_PUBLIC_APP_URL = url;
+        await expect(disconnect()).rejects.toThrow("GBP fake provider refused");
+        expect(state.writes).toEqual([]);
+      },
+    );
+
     it("refuses, touching nothing, when no fixture agency is configured", async () => {
       devRefused(undefined);
       await expect(disconnect()).rejects.toThrow("GBP fake provider refused");

@@ -49,3 +49,19 @@ export function isAppLoopbackUrl(url) {
   }
   return APP_LOOPBACK_HOSTNAMES.includes(hostname);
 }
+
+/**
+ * Fail-toward-fencing test for "might this be a dev machine?": true when `url`
+ * does not parse, or its host is on the WIDE block-list. Used where the safe
+ * answer to doubt is to apply the fixture-agency fence (disconnect).
+ *
+ * @param {string | undefined} url
+ * @returns {boolean}
+ */
+export function isLoopbackOrUnparseableUrl(url) {
+  try {
+    return isLoopbackHostname(new URL(String(url ?? "").trim()).hostname);
+  } catch {
+    return true;
+  }
+}
