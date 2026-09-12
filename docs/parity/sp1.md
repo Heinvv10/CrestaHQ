@@ -1,13 +1,13 @@
 # SP1 — Contacts, Smart Lists, Opportunities, Tasks
 
-**Date:** 2026-09-11 · **Status: all 8 PRs merged 2026-09-11 (main 3c21cf1); rules deployed from main; NOT yet deployed to crm.crestahq.com** · **Depends on:** SP0 (merged) · **Blocks:** SP6 (workflow rebuild needs tags/pipelines), SP11 (reporting), SP14.
+**Date:** 2026-09-11 · **Status: all PRs merged; deployed to crm.crestahq.com 2026-09-12 05:20 SAST (0e2cc7d)** · **Depends on:** SP0 (merged) · **Blocks:** SP6 (workflow rebuild needs tags/pipelines), SP11 (reporting), SP14.
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP1. Handoff: `.claude/handoffs/2026-09-11-1640.md`.
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`). Never Blitz/Velocity/Vortex.
 
 Definition of done per row: Playwright spec (mutation-proven, blocking CI) + blind review APPROVED + shown in the browser on #1000 with a screenshot under `docs/parity/evidence/sp1/`.
 
-> **Evidence caveat:** the frames under `evidence/sp1/` come from a LOCAL standalone build of `main` driven on the E2E fixture tenant — not from crm.crestahq.com. The app has not been deployed; #1000 screenshots follow the next production deploy.
+> **Evidence:** per-feature frames under `evidence/sp1/<letter>-*/` come from a local standalone build of `main` driven on the E2E fixture tenant; `evidence/sp1/prod-1000/` are screenshots of crm.crestahq.com on #1000 after the 2026-09-12 deploy (contacts with smart-list tabs/filters/selection/phone-titled contacts, pipeline, companies, contact activity chips, custom-field folders).
 
 ---
 
