@@ -15,7 +15,7 @@ Definition of done per row: Playwright spec (mutation-proven, blocking CI) + bli
 
 Columns: GHL behaviour · CrestaHQ today (verified in code at `0d6f449` and in the browser on #1000, 2026-09-11) · Gap · PR · Spec · Status.
 
-GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ still need side-by-side confirmation in the GHL tab, which was logged out in this Chrome profile at session start.
+GHL column verified side-by-side on 2026-09-12 in the CrestaHQ sub-account (Contacts › Smart Lists / Bulk Actions / Custom Fields / Companies; Opportunities › Pipelines). Rows still marked ⚠ were not exercised in GHL (C12 nameless contact, O3 per-stage automation config).
 
 ### Contacts list
 
@@ -27,10 +27,10 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 | C4 | **Smart Lists**: save a filter set as a named tab; per-user + shared; rename/delete; "All" is the default list | None | Saved smart lists | (a) #91 | same | **merged 8846b2c** |
 | C5 | Row checkboxes, select-all-on-page / select-all-matching | No row-selection model in the table | Selection | (b) #97 | `contacts-bulk-actions.spec.ts` | **merged 3c21cf1** |
 | C6 | Bulk: add/remove tag | None (bulk email/call dialogs exist but use their own audience filter, not selection) | Bulk tag | (b) #97 | same | merged |
-| C7 | Bulk: assign to user (owner) | **No `assignedTo` on Contact at all** (`src/types/contacts.ts`) | Add `assignedToUid` + bulk assign + single-contact assign in form | (b) #97 | same | merged |
+| C7 | Bulk: assign to user (owner) — **not in GHL's bulk menu** (verified 2026-09-12: Send SMS/email/WhatsApp, Request reviews, Manage companies/opportunities, Trigger automation, Add/Remove tags, Export, Merge, Delete); CrestaHQ ships it anyway | **No `assignedTo` on Contact at all** (`src/types/contacts.ts`) | Add `assignedToUid` + bulk assign + single-contact assign in form | (b) #97 | same | merged |
 | C8 | Bulk: delete (with confirm) | None | Bulk delete | (b) #97 | same | merged |
 | C9 | Bulk: export CSV of selection | Export button dumps *all loaded* contacts | Export selection (falls back to all when nothing selected) | (b) #97 | same | merged |
-| C10 | Bulk: send email / SMS / add to workflow / pipeline change | Bulk email + bulk AI call exist (audience filter) | Not in scope list; keep existing | — | — | out of scope |
+| C10 | Bulk: send email / SMS / WhatsApp, request reviews, manage companies / opportunities, trigger automation, merge | Bulk email + bulk AI call exist (audience filter) | Not in scope list; keep existing | — | — | out of scope |
 | C11 | Import CSV with mapping | Exists (`import-contacts-dialog.tsx`) | — | — | — | parity |
 | C12 | ⚠ Contact can exist with phone only, name optional (shows phone as title) | Create/edit with **no email works** (proven in browser 2026-09-11: created "SP1 NoEmail Probe" with phone only, edited company, deleted). **Name is required** — WhatsApp-inbound contacts arrive nameless ("Unnamed"), so the first edit forces the operator to invent a name | Make name optional when phone or email is present; title falls back to phone | (g) #89 | `contact-nameless-edit.spec.ts` | merged |
 
@@ -49,7 +49,7 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| B1 | Companies list (name, phone, website, address, #contacts) | Nothing | `companies` collection + list page `/sa/[id]/companies` | (d) #92 | `companies.spec.ts` | merged |
+| B1 | Companies list (Company, Phone, Email, Website, Address, State, City; Filters/Sort; saved "+ List" views; Manage fields) | Nothing | `companies` collection + list page `/sa/[id]/companies` | (d) #92 | `companies.spec.ts` | merged |
 | B2 | Company detail with linked contacts | Nothing | Detail page listing contacts where `companyId == id` | (d) #92 | same | merged |
 | B3 | Contact → company picker (create inline) | Free text | `companyId` on Contact; form picker with create-new; keep `company` string in sync for CSV/quotes | (d) #92 | same | merged |
 
@@ -77,7 +77,7 @@ GHL column drawn from product knowledge (ghl-agency-ops skill); rows marked ⚠ 
 
 | # | GHL | CrestaHQ today | Gap | PR | Spec | Status |
 |---|---|---|---|---|---|---|
-| F1 | Custom Fields page: folders, drag order, field types | `sub-account-custom-fields-section.tsx`, flat, 9 types, max 100 | Folders (D2) | (f) #90 | `custom-field-folders.spec.ts` | **merged 6f984d5** |
+| F1 | Custom Fields page: per-object tabs (Contact 22 / Opportunity 10 / **Business 11**), Fields + Folders (8) tabs, Folder column, move-to-folder | `sub-account-custom-fields-section.tsx`, flat, 9 types, max 100 | Folders (D2) | (f) #90 | `custom-field-folders.spec.ts` | **merged 6f984d5** |
 
 ---
 
@@ -159,4 +159,5 @@ Decisions and residuals surfaced by the blind review teams — the code is the s
 - A crash between run-doc `completed` and the activity write leaves that run without an `automation_completed` row.
 - Contacts: tags column + columns manager (C1); opportunities list view (O4); bulk complete/delete tasks (T4); bulk email/call dialogs still use their own audience picker (C10).
 - Roster cache (`use-sub-account-members`) is module-level and not cleared on sign-out.
-- GHL-side column of this ledger was written from product knowledge; the GHL tab was logged out all session — verify side-by-side on the next pass.
+- GHL has custom fields on **Businesses** (11 on the CrestaHQ sub-account); CrestaHQ companies have none — candidate for a later PR.
+- GHL Companies supports saved "+ List" views like Smart Lists; CrestaHQ companies list has search only.
