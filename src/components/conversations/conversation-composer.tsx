@@ -19,7 +19,11 @@ import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { useWhatsappWindow } from "@/hooks/use-whatsapp-window";
 import { ChannelSwitcher, WhatsappWindowBadge } from "./channel-switcher";
 import { WhatsappTemplatePicker } from "./whatsapp-template-picker";
-import type { ChannelOption } from "@/lib/conversations/channel-availability";
+import {
+  initialComposerChannel,
+  type ChannelOption,
+} from "@/lib/conversations/channel-availability";
+import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 
@@ -67,9 +71,21 @@ export function ConversationComposer({
   channelOptions?: ChannelOption[];
   defaultChannel: ConversationChannel;
 }) {
-  const initial = availableChannels.includes(defaultChannel)
-    ? defaultChannel
-    : (availableChannels[0] ?? "sms");
+  const options: ChannelOption[] =
+    channelOptions ??
+    availableChannels.map((ch) => ({
+      channel: ch as ChannelOption["channel"],
+      label: LABEL[ch],
+      available: true,
+      code: null,
+      reason: null,
+    }));
+  // A contact-level block on the last-used channel keeps it selected and
+  // disabled — never a silent switch to another channel (SP2 T7).
+  const initial =
+    initialComposerChannel(options, defaultChannel) ??
+    availableChannels[0] ??
+    "sms";
   const [channel, setChannel] = useState<ConversationChannel>(initial);
   const [subject, setSubject] = useState("");
   const [mode, setMode] = useState<ComposerMode>("reply");
@@ -99,15 +115,6 @@ export function ConversationComposer({
     contact.id,
     mode === "reply" && channel === "whatsapp",
   );
-  const options: ChannelOption[] =
-    channelOptions ??
-    availableChannels.map((ch) => ({
-      channel: ch as ChannelOption["channel"],
-      label: LABEL[ch],
-      available: true,
-      code: null,
-      reason: null,
-    }));
   const switcher = (
     <ChannelSwitcher
       options={options}
@@ -169,7 +176,12 @@ export function ConversationComposer({
   // SP2 T8 — free-form text is refused by the route outside the window; say
   // so here instead of letting the operator find out on Send.
   const windowClosed = channel === "whatsapp" && waWindow?.state.kind === "closed";
-  const disabled = optedOut || sending || !hasIdentity || windowClosed;
+  // The selected channel may be one this contact cannot be reached on (kept
+  // selected on purpose, see `initial`): nothing sends until another is picked.
+  const blockedReason =
+    options.find((o) => o.channel === channel && !o.available)?.reason ?? null;
+  const disabled =
+    optedOut || sending || !hasIdentity || windowClosed || !!blockedReason;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -283,7 +295,9 @@ export function ConversationComposer({
           merge.reset();
         }}
         placeholder={
-          optedOut
+          blockedReason
+            ? `${LABEL[channel]}: ${blockedReason} — pick another channel above`
+            : optedOut
             ? `Contact opted out of ${LABEL[channel]}`
             : windowClosed
               ? "WhatsApp window closed — send an approved template above"
@@ -297,7 +311,12 @@ export function ConversationComposer({
         }
         rows={2}
         disabled={disabled}
-        className="min-h-[60px] resize-none px-3 py-2 text-sm"
+        className={cn(
+          "min-h-[60px] resize-none px-3 py-2 text-sm",
+          // On a phone a closed window's disabled box only costs thread
+          // height; the template picker is the action there.
+          windowClosed && "max-sm:hidden"
+        )}
       />
       {merge.notice}
       <div className="mt-2 flex items-center justify-between gap-2">

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   composerChannelOptions,
+  initialComposerChannel,
   type ChannelContact,
   type ChannelSubAccount,
   type ComposerChannel,
@@ -158,5 +159,53 @@ describe("composerChannelOptions", () => {
       "agency_gate_off",
     );
     expect(option("email", { smtpConfig: null }, { email: "" }).code).toBe("not_connected");
+  });
+});
+
+describe("initialComposerChannel", () => {
+  const opts = (sub: Partial<Record<string, unknown>> = {}, contact: Partial<ChannelContact> = {}) =>
+    composerChannelOptions({
+      subAccount: { ...SUB, ...sub } as ChannelSubAccount,
+      contact: { ...CONTACT, ...contact },
+      channelsSeen: SEEN,
+    });
+
+  it("opens on the last-used channel when it is usable", () => {
+    expect(initialComposerChannel(opts(), "whatsapp")).toBe("whatsapp");
+    expect(initialComposerChannel(opts(), "instagram")).toBe("instagram");
+  });
+
+  it.each([
+    ["opted out", "whatsapp", {}, { whatsappOptedOut: true }],
+    ["no phone", "sms", {}, { phone: "" }],
+    ["no email", "email", {}, { email: "" }],
+    ["no Meta identity", "messenger", {}, { metaUserId: null }],
+  ] as const)("keeps the last-used channel when the contact blocks it (%s)", (_n, ch, sub, contact) => {
+    expect(initialComposerChannel(opts(sub, contact), ch)).toBe(ch);
+  });
+
+  it("keeps a Meta channel the contact never used there", () => {
+    const o = composerChannelOptions({ subAccount: SUB, contact: CONTACT, channelsSeen: ["messenger"] });
+    expect(initialComposerChannel(o, "instagram")).toBe("instagram");
+  });
+
+  it.each([
+    ["not connected", "whatsapp", { whatsappCloudMeta: null }],
+    ["agency gate off", "whatsapp", { whatsappEnabledByAgency: false }],
+    ["IG scope missing", "instagram", { metaConfig: { connected: true, capabilities: { inbox: true, publish: false, instagramDm: false } } }],
+  ] as const)("falls back to the first available when the WORKSPACE blocks it (%s)", (_n, ch, sub) => {
+    expect(initialComposerChannel(opts(sub), ch)).toBe("email");
+  });
+
+  it("never falls back to a channel the contact opted out of", () => {
+    expect(
+      initialComposerChannel(opts({ whatsappEnabledByAgency: false }, { emailOptedOut: true, smsOptedOut: true }), "whatsapp"),
+    ).toBe("messenger");
+  });
+
+  it("uses the first available with no (or a web-chat) last channel, and null when none is", () => {
+    expect(initialComposerChannel(opts(), undefined)).toBe("email");
+    expect(initialComposerChannel(opts(), "web-chat")).toBe("email");
+    expect(initialComposerChannel(composerChannelOptions({ subAccount: null, contact: CONTACT }), "sms")).toBeNull();
   });
 });

@@ -88,10 +88,23 @@ export default function ConversationDetailPage() {
   // Conversation index doc — subscribed for both modes by its doc id.
   useEffect(() => {
     if (authLoading || !user || !conversationId) return;
-    const unsubConv = subscribeToConversation(conversationId, (c) => {
-      setConversation(c);
-      setConvReady(true);
-    });
+    // Not ready until THIS id's doc arrives, so a thread switch never opens
+    // the composer on the previous thread's channel.
+    setConvReady(false);
+    const unsubConv = subscribeToConversation(
+      conversationId,
+      (c) => {
+        setConversation(c);
+        setConvReady(true);
+      },
+      // A contact with no conversation doc yet reads as a rules refusal (the
+      // read rule needs resource.data). Settle as "no conversation" so the
+      // composer, which waits on this, still renders.
+      () => {
+        setConversation(null);
+        setConvReady(true);
+      },
+    );
     return () => unsubConv();
   }, [conversationId, user, authLoading]);
 
@@ -309,7 +322,10 @@ export default function ConversationDetailPage() {
               draft={conversation.pendingDraft}
             />
           )}
-          {contact && (
+          {/* Waits for the conversation doc: the opening channel is its
+              lastChannel, and a composer mounted before it would start on
+              the fallback instead (SP2 T7). */}
+          {contact && convReady && (
             <ConversationComposer
               key={contact.id}
               emailReply={emailReply?.contactId === contact.id ? emailReply : null}

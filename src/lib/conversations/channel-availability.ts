@@ -165,3 +165,33 @@ export function composerChannelOptions(input: {
     };
   });
 }
+
+/** Codes that are about the WORKSPACE, not the contact. */
+const WORKSPACE_CODES: ReadonlySet<ChannelUnavailableCode> = new Set([
+  "agency_gate_off",
+  "not_connected",
+  "ig_scope_missing",
+]);
+
+/**
+ * The channel the composer opens on.
+ *
+ * The thread's last-used channel when it is usable. When it is unusable
+ * because of the CONTACT (opted out, no address, no Meta identity, never
+ * messaged there) it stays selected — shown disabled with its reason — so an
+ * operator on a thread whose customer just sent STOP is never quietly handed
+ * a different channel to that customer; they must pick one themselves.
+ * Only a WORKSPACE reason (not connected, agency gate off, IG scope) falls
+ * back automatically, to the first available channel — which by construction
+ * is never one the contact opted out of.
+ */
+export function initialComposerChannel(
+  options: readonly ChannelOption[],
+  lastChannel: ConversationChannel | null | undefined,
+): ConversationChannel | null {
+  const last = options.find((o) => o.channel === lastChannel);
+  if (last && (last.available || !WORKSPACE_CODES.has(last.code!))) {
+    return last.channel;
+  }
+  return options.find((o) => o.available)?.channel ?? null;
+}

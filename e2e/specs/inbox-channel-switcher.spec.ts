@@ -266,6 +266,14 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
       templateId: cloudTplId,
       manualValues: {},
     });
+    if (process.env.SP2_EVIDENCE) {
+      // Phone width: the picker collapses behind a button and the disabled
+      // free-form box hides, so the thread keeps its height.
+      const size = page.viewportSize();
+      await page.setViewportSize({ width: 400, height: 800 });
+      await shot("04-phone-window-closed.png");
+      if (size) await page.setViewportSize(size);
+    }
 
     // Messenger is still a free-form channel: no window UI there.
     await option("messenger").click();
@@ -273,6 +281,71 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
     await expect(picker).toHaveCount(0);
     await expect(textarea).toBeEnabled();
     expect(sends.every((s) => !s.url.includes("/api/comms/sms/"))).toBe(true);
+
+    // --- T7: a WhatsApp thread whose contact sent STOP --------------------
+    // The composer stays on WhatsApp, disabled with the reason. SMS is usable
+    // but is NOT selected for the operator: nothing can be sent until they
+    // pick it themselves.
+    const stopName = `Stopped ${stamp}`;
+    const stopRef = await db.collection("contacts").add({
+      ...tenant,
+      name: stopName,
+      email: "",
+      phone: `+2786${String(stamp + 1).slice(-7)}`,
+      company: "",
+      address: "",
+      source: "e2e-fixture",
+      tags: ["e2e-inbox-channel-switcher"],
+      pipelineStage: null,
+      attribution: null,
+      createdByUid: owner,
+      emailOptedOut: false,
+      smsOptedOut: false,
+      whatsappOptedOut: true,
+      territoryId: "global",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await db.doc(`conversations/${stopRef.id}`).set({
+      ...tenant,
+      contactId: stopRef.id,
+      createdByUid: owner,
+      territoryId: "global",
+      contactName: stopName,
+      contactPhone: null,
+      channelsSeen: ["whatsapp"],
+      status: "open",
+      assigneeUid: null,
+      botMode: "off",
+      botPausedUntil: null,
+      pendingDraft: null,
+      unreadCount: 0,
+      lastChannel: "whatsapp",
+      lastDirection: "inbound",
+      lastMessagePreview: "STOP",
+      lastMessageAt: at,
+      createdAt: at,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await page.goto(`/sa/${sa}/conversations/${stopRef.id}`);
+    await expect(
+      page.getByTestId("thread-header").getByRole("heading", { name: stopName }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(option("whatsapp")).toHaveText("WhatsApp · Opted out of WhatsApp", {
+      timeout: 15_000,
+    });
+    await expect(option("whatsapp")).toBeDisabled();
+    await expect(option("whatsapp")).toHaveAttribute("aria-pressed", "true");
+    await expect(option("sms")).toBeEnabled();
+    await expect(option("sms")).toHaveAttribute("aria-pressed", "false");
+    await expect(textarea).toBeDisabled();
+    await expect(composer.getByRole("button", { name: "Send via WhatsApp" })).toBeDisabled();
+    await expect(composer.getByRole("button", { name: /Send via SMS/ })).toHaveCount(0);
+    await shot("03-opted-out-stays-selected.png");
+    await option("sms").click();
+    await expect(option("sms")).toHaveAttribute("aria-pressed", "true");
+    await expect(textarea).toBeEnabled();
+    await expect(composer.getByRole("button", { name: "Send via SMS" })).toBeVisible();
   } finally {
     await assertFixtureSubAccount(sa, FIXTURE_PRIMARY_NAME);
     await saRef.update(

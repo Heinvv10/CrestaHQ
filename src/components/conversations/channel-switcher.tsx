@@ -35,13 +35,17 @@ export function ChannelSwitcher({
           type="button"
           data-testid={`channel-option-${o.channel}`}
           disabled={!o.available}
-          aria-pressed={o.available ? value === o.channel : undefined}
+          aria-pressed={value === o.channel}
           title={o.reason ?? undefined}
           onClick={() => onChange(o.channel)}
           className={cn(
             "rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
             !o.available
-              ? "text-muted-foreground/70 cursor-not-allowed border-dashed"
+              ? cn(
+                  "text-muted-foreground/70 cursor-not-allowed border-dashed",
+                  // Kept selected when the contact blocks the last-used channel.
+                  value === o.channel && "border-primary/60 bg-muted"
+                )
               : value === o.channel
                 ? "border-primary bg-primary/10 text-primary"
                 : "text-muted-foreground hover:bg-muted"

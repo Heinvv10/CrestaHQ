@@ -8,7 +8,18 @@ import { DEFAULT_WA_WINDOW_HOURS, isWithinServiceWindow } from "./send-mode";
  * composer cannot disagree with the route about whether the window is open.
  * This module only adds what a display needs on top: when it closes. The
  * route's 409 `session_window_closed` stays the authority.
+ *
+ * Clock skew: the browser's clock is not the server's. A fast browser clock
+ * would show "closed" and disable free-form text while the server still
+ * accepts it — the harmful direction, because the operator is blocked for
+ * nothing. So the client applies the server's rule at `now - grace`: it
+ * reports "closed" only once the window is WA_CLIENT_CLOSE_GRACE_MS past its
+ * end. Any remaining disagreement lands on the harmless side — the operator
+ * sends, and the server answers 409.
  */
+
+/** How long past the window's end the composer still treats it as open. */
+export const WA_CLIENT_CLOSE_GRACE_MS = 2 * 60_000;
 
 export type WaWindowState =
   /** The rail has no service window (the bridge) — show nothing. */
@@ -22,14 +33,20 @@ export function waWindowState(input: {
   lastInboundAt: Date | null;
   now: Date;
   windowHours?: number;
+  /** Defaults to WA_CLIENT_CLOSE_GRACE_MS; 0 reproduces the server exactly. */
+  graceMs?: number;
 }): WaWindowState {
   if (!input.enforcesWindow) return { kind: "exempt" };
   const hours = input.windowHours ?? DEFAULT_WA_WINDOW_HOURS;
-  if (!isWithinServiceWindow(input.lastInboundAt, input.now, hours)) {
+  const grace = input.graceMs ?? WA_CLIENT_CLOSE_GRACE_MS;
+  const judgedAt = new Date(input.now.getTime() - grace);
+  if (!isWithinServiceWindow(input.lastInboundAt, judgedAt, hours)) {
     return { kind: "closed", lastInboundAt: input.lastInboundAt };
   }
   // Non-null: isWithinServiceWindow is false for a null lastInboundAt.
   const closesAt = new Date(input.lastInboundAt!.getTime() + hours * 3600_000);
+  // msLeft is to the window's REAL end, so it can dip to -grace; the label
+  // then reads "closes in <1m" until the grace runs out.
   return { kind: "open", closesAt, msLeft: closesAt.getTime() - input.now.getTime() };
 }
 

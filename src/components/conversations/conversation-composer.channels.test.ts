@@ -43,11 +43,18 @@ afterEach(async () => {
 });
 
 const contact = { id: "c1", phone: "+27820000000", email: "" } as Contact;
+const CODE: Record<string, ChannelOption["code"]> = {
+  "No email address": "no_email",
+  "Opted out of SMS": "opted_out",
+  "Opted out of WhatsApp": "opted_out",
+  "Turned off by your agency": "agency_gate_off",
+  "Not connected": "not_connected",
+};
 const opt = (channel: ChannelOption["channel"], reason: string | null = null): ChannelOption => ({
   channel,
   label: { email: "Email", sms: "SMS", whatsapp: "WhatsApp", messenger: "Messenger", instagram: "Instagram" }[channel],
   available: reason === null,
-  code: reason === null ? null : "not_connected",
+  code: reason === null ? null : (CODE[reason] ?? "not_connected"),
   reason,
 });
 const OPTIONS = [
@@ -85,10 +92,43 @@ it("lists every channel; unavailable ones are disabled and say why", async () =>
   expect(pill("whatsapp").getAttribute("aria-pressed")).toBe("true");
 });
 
-it("defaults to the first available channel when the last-used one is unavailable", async () => {
-  await mount("email");
+it("falls back to the first available channel when the last-used one is off for the WORKSPACE", async () => {
+  await mount("messenger");
   expect(pill("whatsapp").getAttribute("aria-pressed")).toBe("true");
   expect(container.textContent).toContain("Send via WhatsApp");
+  expect(textarea().disabled).toBe(false);
+});
+
+it("keeps a last-used channel the CONTACT blocks selected and disabled — no silent switch", async () => {
+  // A WhatsApp thread whose contact just sent STOP; SMS is usable.
+  const options = [
+    opt("email", "No email address"),
+    opt("sms"),
+    opt("whatsapp", "Opted out of WhatsApp"),
+    opt("messenger", "Turned off by your agency"),
+    opt("instagram", "Turned off by your agency"),
+  ];
+  await mount("whatsapp", options);
+  expect(pill("whatsapp").getAttribute("aria-pressed")).toBe("true");
+  expect(pill("whatsapp").disabled).toBe(true);
+  expect(pill("whatsapp").textContent).toBe("WhatsApp · Opted out of WhatsApp");
+  expect(pill("sms").getAttribute("aria-pressed")).toBe("false");
+  expect(textarea().disabled).toBe(true);
+  expect(textarea().placeholder).toContain("Opted out of WhatsApp");
+  const send = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Send via"))!;
+  expect(send.textContent).toContain("Send via WhatsApp");
+  expect(send.disabled).toBe(true);
+
+  // Only the operator's explicit pick enables anything.
+  await act(async () => pill("sms").click());
+  expect(pill("sms").getAttribute("aria-pressed")).toBe("true");
+  expect(textarea().disabled).toBe(false);
+});
+
+it("keeps a contact-blocked Email selected too (no email address)", async () => {
+  await mount("email");
+  expect(pill("email").getAttribute("aria-pressed")).toBe("true");
+  expect(textarea().disabled).toBe(true);
 });
 
 it("window open: badge shown, free-form enabled, no template picker", async () => {

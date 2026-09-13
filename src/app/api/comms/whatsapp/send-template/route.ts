@@ -8,6 +8,7 @@ import {
 } from "@/lib/comms/twilio";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
+import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
@@ -245,6 +246,22 @@ export async function POST(request: Request) {
   } catch (err) {
     console.warn("[whatsapp/send-template] message-row write failed", err);
   }
+
+  // Unified-inbox index, exactly as the free-form route does it: the thread
+  // is now answered (leaves awaiting-reply), the preview is what was sent,
+  // and the bot pauses so AI does not auto-reply over the operator. Runs only
+  // after a successful send; upsertConversationForMessage never throws.
+  await upsertConversationForMessage({
+    contactId,
+    subAccountId: contact.subAccountId,
+    agencyId: contact.agencyId,
+    contactName: contact.name ?? "",
+    contactPhone: contact.phone,
+    channel: "whatsapp",
+    direction: "outbound",
+    body: rendered || `[Template: ${tpl.displayName}]`,
+    pauseBot: true,
+  });
 
   return NextResponse.json({ ok: true, sid });
 }

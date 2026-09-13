@@ -14,6 +14,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS } from "@/lib/comms/whatsapp/send-mode";
 import {
+  WA_CLIENT_CLOSE_GRACE_MS,
   latestInboundAt,
   waWindowState,
   type WaWindowState,
@@ -110,7 +111,10 @@ export function useWhatsappWindow(
   const msLeft = state?.kind === "open" ? state.msLeft : null;
   useEffect(() => {
     if (msLeft === null) return;
-    const t = setTimeout(() => setNow(Date.now()), (msLeft % 60_000) + 50);
+    // Past the real end (inside the client grace), wake when the grace ends.
+    const delay =
+      msLeft > 0 ? (msLeft % 60_000) + 50 : msLeft + WA_CLIENT_CLOSE_GRACE_MS + 50;
+    const t = setTimeout(() => setNow(Date.now()), Math.max(50, delay));
     return () => clearTimeout(t);
   }, [msLeft]);
 

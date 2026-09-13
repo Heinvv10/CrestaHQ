@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  WA_CLIENT_CLOSE_GRACE_MS,
   formatWindowLeft,
   latestInboundAt,
   waWindowLabel,
@@ -22,13 +23,29 @@ describe("waWindowState", () => {
     expect(waWindowLabel(s)).toBe("Window open · closes in 3h 12m");
   });
 
-  it("is closed exactly at the boundary and just after (same rule as the server)", () => {
+  it("with no grace, is closed exactly at the boundary (the server's rule)", () => {
     for (const lastInboundAt of [ago(24 * H), ago(24 * H + 1)]) {
-      const s = waWindowState({ enforcesWindow: true, lastInboundAt, now: NOW });
+      const s = waWindowState({ enforcesWindow: true, lastInboundAt, now: NOW, graceMs: 0 });
       expect(s).toEqual({ kind: "closed", lastInboundAt });
       expect(waWindowLabel(s)).toBe("Window closed — only an approved template can be sent");
     }
-    expect(waWindowState({ enforcesWindow: true, lastInboundAt: ago(24 * H - 1), now: NOW }).kind).toBe("open");
+    expect(
+      waWindowState({ enforcesWindow: true, lastInboundAt: ago(24 * H - 1), now: NOW, graceMs: 0 }).kind,
+    ).toBe("open");
+  });
+
+  it("by default stays open for 2 minutes past the end, so a fast browser clock errs towards the server's 409", () => {
+    expect(WA_CLIENT_CLOSE_GRACE_MS).toBe(2 * M);
+    const justInside = waWindowState({ enforcesWindow: true, lastInboundAt: ago(24 * H + 2 * M - 1), now: NOW });
+    expect(justInside).toMatchObject({ kind: "open", msLeft: -(2 * M - 1) });
+    expect(waWindowLabel(justInside)).toBe("Window open · closes in <1m");
+    expect(waWindowState({ enforcesWindow: true, lastInboundAt: ago(24 * H), now: NOW }).kind).toBe("open");
+    for (const lastInboundAt of [ago(24 * H + 2 * M), ago(24 * H + 2 * M + 1)]) {
+      expect(waWindowState({ enforcesWindow: true, lastInboundAt, now: NOW })).toEqual({
+        kind: "closed",
+        lastInboundAt,
+      });
+    }
   });
 
   it("is closed when the contact never messaged in", () => {

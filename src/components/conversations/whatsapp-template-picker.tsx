@@ -10,6 +10,7 @@ import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registratio
 import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
@@ -38,31 +39,40 @@ export function WhatsappTemplatePicker({
   const [selectedId, setSelectedId] = useState("");
   const [manualValues, setManualValues] = useState<Record<number, string>>({});
   const [sending, setSending] = useState(false);
+  // Phones only: collapsed behind a button so the picker does not squeeze
+  // the thread to a sliver. Always open from `sm` up.
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     if (!subAccountId) return;
     return onSnapshot(
-      collection(getFirebaseDb(), `subAccounts/${subAccountId}/whatsappTemplates`),
+      collection(
+        getFirebaseDb(),
+        `subAccounts/${subAccountId}/whatsappTemplates`
+      ),
       (snap) =>
         setTemplates(
           snap.docs
             .map((d) => ({ ...(d.data() as WhatsappTemplateDoc), id: d.id }))
             .filter((t) => isTemplateApprovedFor(t, provider))
-            .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+            .sort((a, b) => a.displayName.localeCompare(b.displayName))
         ),
       (err) => {
         console.warn("[whatsapp-template-picker] read failed", err);
         setTemplates([]);
-      },
+      }
     );
   }, [subAccountId, provider]);
 
   const selected = templates?.find((t) => t.id === selectedId) ?? null;
-  const manualVars = selected?.variables.filter((v) => v.source === "manual") ?? [];
+  const manualVars =
+    selected?.variables.filter((v) => v.source === "manual") ?? [];
 
   async function send() {
     if (!selected || sending) return;
-    const missing = manualVars.find((v) => !(manualValues[v.position] ?? "").trim());
+    const missing = manualVars.find(
+      (v) => !(manualValues[v.position] ?? "").trim()
+    );
     if (missing) {
       toast.error(`Fill in "${missing.label}".`);
       return;
@@ -100,64 +110,82 @@ export function WhatsappTemplatePicker({
       data-testid="wa-template-picker"
       className="mb-2 space-y-2 rounded-md border border-dashed p-2"
     >
-      {templates === null ? (
-        <p className="text-muted-foreground text-xs">Loading templates…</p>
-      ) : templates.length === 0 ? (
-        <p className="text-muted-foreground text-xs">
-          No template is approved for this WhatsApp number yet. Create and
-          submit one under AI Agents → WhatsApp → Templates.
-        </p>
-      ) : (
-        <>
-          <select
-            aria-label="Approved WhatsApp template"
-            value={selectedId}
-            onChange={(e) => {
-              setSelectedId(e.target.value);
-              setManualValues({});
-            }}
-            className="bg-background h-8 w-full rounded-md border px-2 text-sm"
-          >
-            <option value="">Select an approved template…</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.displayName}
-              </option>
-            ))}
-          </select>
-          {selected && (
-            <>
-              <p className="bg-muted/40 text-muted-foreground rounded-md p-2 text-xs whitespace-pre-wrap">
-                {selected.body}
-              </p>
-              {manualVars.map((v) => (
-                <Input
-                  key={v.position}
-                  aria-label={v.label}
-                  placeholder={`${v.label} (e.g. ${v.sampleValue})`}
-                  value={manualValues[v.position] ?? ""}
-                  onChange={(e) =>
-                    setManualValues((prev) => ({
-                      ...prev,
-                      [v.position]: e.target.value,
-                    }))
-                  }
-                />
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="w-full sm:hidden"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <FileText className="mr-1 h-3.5 w-3.5" />
+        {expanded ? "Hide templates" : "Choose an approved template"}
+      </Button>
+      <div className={cn("space-y-2", !expanded && "max-sm:hidden")}>
+        {templates === null ? (
+          <p className="text-muted-foreground text-xs">Loading templates…</p>
+        ) : templates.length === 0 ? (
+          <p className="text-muted-foreground text-xs">
+            No template is approved for this WhatsApp number yet. Create and
+            submit one under AI Agents → WhatsApp → Templates.
+          </p>
+        ) : (
+          <>
+            <select
+              aria-label="Approved WhatsApp template"
+              value={selectedId}
+              onChange={(e) => {
+                setSelectedId(e.target.value);
+                setManualValues({});
+              }}
+              className="bg-background h-8 w-full rounded-md border px-2 text-sm"
+            >
+              <option value="">Select an approved template…</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.displayName}
+                </option>
               ))}
-              <div className="flex justify-end">
-                <Button type="button" size="sm" onClick={send} disabled={sending}>
-                  {sending ? (
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <FileText className="mr-1 h-3.5 w-3.5" />
-                  )}
-                  Send template
-                </Button>
-              </div>
-            </>
-          )}
-        </>
-      )}
+            </select>
+            {selected && (
+              <>
+                <p className="bg-muted/40 text-muted-foreground max-h-24 overflow-y-auto rounded-md p-2 text-xs whitespace-pre-wrap">
+                  {selected.body}
+                </p>
+                {manualVars.map((v) => (
+                  <Input
+                    key={v.position}
+                    aria-label={v.label}
+                    placeholder={`${v.label} (e.g. ${v.sampleValue})`}
+                    value={manualValues[v.position] ?? ""}
+                    onChange={(e) =>
+                      setManualValues((prev) => ({
+                        ...prev,
+                        [v.position]: e.target.value,
+                      }))
+                    }
+                  />
+                ))}
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={send}
+                    disabled={sending}
+                  >
+                    {sending ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileText className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    Send template
+                  </Button>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
