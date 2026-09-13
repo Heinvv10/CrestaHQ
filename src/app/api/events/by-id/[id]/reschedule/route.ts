@@ -10,7 +10,6 @@ import {
   rescheduleWithoutAvailabilityCheck,
   runRescheduleSideEffects,
 } from "@/lib/booking/reschedule";
-import type { BookingPage } from "@/types/booking";
 
 /**
  * Operator-side reschedule for a booking-page event. Unlike the public
@@ -22,6 +21,11 @@ import type { BookingPage } from "@/types/booking";
  *
  * Manual (non-booking-page) events have no reschedule bookkeeping to apply
  * and keep editing their time through the plain calendar-event update.
+ *
+ * The response reports whether the visitor got the "Updated:" email
+ * (`notifyEmailSent` / `notifyEmailSkipReason`, same vocabulary as
+ * mark-status): the token rotation just killed their old manage link, so
+ * the operator has to know when they weren't told.
  *
  * Auth: active sub-account member.
  */
@@ -76,7 +80,10 @@ export async function POST(
     );
   } catch (err) {
     if (err instanceof RescheduleRejected) {
-      return NextResponse.json({ error: err.message }, { status: err.httpStatus });
+      return NextResponse.json(
+        { error: err.message, ...(err.code ? { code: err.code } : {}) },
+        { status: err.httpStatus },
+      );
     }
     console.error("[events/reschedule-operator] failed", err);
     return NextResponse.json(
@@ -85,15 +92,8 @@ export async function POST(
     );
   }
 
-  const { event, newToken } = outcome;
-  const pageSnap = event.bookingPageSlug
-    ? await getAdminDb()
-        .doc(`subAccounts/${event.subAccountId}/bookingPages/${event.bookingPageSlug}`)
-        .get()
-    : null;
-  const page = (pageSnap?.data() as BookingPage | undefined) ?? undefined;
-
-  await runRescheduleSideEffects({
+  const { event, newToken, page } = outcome;
+  const notify = await runRescheduleSideEffects({
     event,
     page,
     newRawToken: newToken,
@@ -107,5 +107,7 @@ export async function POST(
     ok: true,
     newStartAt: newStart.toISOString(),
     newEndAt: newEnd.toISOString(),
+    notifyEmailSent: notify.emailSent,
+    notifyEmailSkipReason: notify.emailSkipReason,
   });
 }
