@@ -100,6 +100,8 @@ const PUBLIC_PATHS = [
   "/embed",
   // Widget loader JS — public static file served from /public.
   "/widget.js",
+  // Booking widget loader JS — public static file served from /public.
+  "/booking-embed.js",
   // PWA — the manifest is fetched by the browser without credentials on
   // every page (including /login), and the service worker script must be
   // publicly fetchable for registration. Both are harmless to expose:
@@ -247,6 +249,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // is the HMAC event token, re-hashed and compared against the stored
   // `publicTokenHash` inside the route.
   /^\/api\/events\/[^/]+\/pay$/,
+  // Public reschedule + cancel, the /e/[token] page's own POSTs. Same
+  // token-hash security as /pay above. Without this an anonymous visitor's
+  // click 307s to /login instead of rescheduling/cancelling — the page
+  // itself is public (`/e` above) but its actions were not.
+  /^\/api\/events\/[^/]+\/reschedule$/,
+  /^\/api\/events\/[^/]+\/cancel$/,
   // Calendar subscription feed: /api/sub-accounts/{id}/calendar.ics
   // Token-gated inside the route via verifyCalendarFeedToken — Google /
   // Apple / Outlook pollers are unauthenticated, so session-cookie auth
