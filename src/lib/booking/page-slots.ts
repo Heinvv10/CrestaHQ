@@ -108,16 +108,22 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
 
   // Buffers: a slot [S, E) needs `bufferBeforeMinutes` free before it and
   // `bufferMinutes` (after) free after it — i.e. [S − before, E + after)
-  // must not overlap any busy [s, e). Padding every busy interval to
-  // [s − after, e + before) is the same test, and applies to every busy
-  // source the resolver feeds in.
+  // must not overlap any busy [s, e). Padding busy to [s − after,
+  // e + before) is the same test, so it covers every busy source the
+  // resolver feeds in. This page's OWN bookings also keep their buffers:
+  // the new slot must not overlap [s − before, e + after) either, and the
+  // two tests together pad by max(before, after) on both sides.
   const before = (page.bufferBeforeMinutes ?? 0) * 60_000;
   const after = page.bufferMinutes * 60_000;
-  const pad = (b: HostBusy): HostBusy => ({
-    ...b,
-    startAt: new Date(b.startAt.getTime() - after),
-    endAt: new Date(b.endAt.getTime() + before),
-  });
+  const both = Math.max(before, after);
+  const pad = (b: HostBusy): HostBusy => {
+    const own = b.bookingPageSlug === page.slug;
+    return {
+      ...b,
+      startAt: new Date(b.startAt.getTime() - (own ? both : after)),
+      endAt: new Date(b.endAt.getTime() + (own ? both : before)),
+    };
+  };
 
   // Class pages: the page's own bookings are seats, not busy time.
   const seats = type === "class" ? Math.max(1, page.seatsPerSlot ?? 1) : null;

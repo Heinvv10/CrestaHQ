@@ -204,6 +204,40 @@ describe("buffers pad every busy interval", () => {
   });
 });
 
+describe("this page's own bookings carry its buffers too", () => {
+  it("ledger A3: 15-min buffer, a 10:00–10:30 booking on the page → no 10:30 slot, even at interval 15", () => {
+    const p = page({ bufferMinutes: 15, slotIntervalMinutes: 15 });
+    const out = starts(slots(p, [busy(MON, "10:00", "10:30", [], "p")], {}, `${MON}T23:59:00Z`));
+    expect(out).not.toContain("09-14 10:30");
+    expect(out).toContain("09-14 10:45");
+    // …and the booking's before side too: gap ≥ max(before, after) = 15.
+    expect(out).not.toContain("09-14 09:30"); // ends 10:00, 0 min before
+    expect(out).toContain("09-14 09:15"); // ends 09:45, 15 min before
+  });
+
+  it("a manual event keeps only the new slot's buffers", () => {
+    const p = page({ bufferMinutes: 15, slotIntervalMinutes: 15 });
+    const out = starts(slots(p, [busy(MON, "10:00", "10:30")], {}, `${MON}T23:59:00Z`));
+    expect(out).toContain("09-14 10:30"); // only needs 15 min AFTER itself
+    expect(out).not.toContain("09-14 09:30"); // its after-buffer hits 10:00
+  });
+
+  it("before-buffer: a slot right before a same-page booking goes, before a manual one stays", () => {
+    const p = page({ bufferBeforeMinutes: 15, slotIntervalMinutes: 15 });
+    const own = starts(slots(p, [busy(MON, "10:30", "11:00", [], "p")], {}, `${MON}T23:59:00Z`));
+    expect(own).not.toContain("09-14 10:00");
+    expect(own).toContain("09-14 09:45");
+    const manual = starts(slots(p, [busy(MON, "10:30", "11:00")], {}, `${MON}T23:59:00Z`));
+    expect(manual).toContain("09-14 10:00");
+  });
+
+  it("another page's booking counts as external busy", () => {
+    const p = page({ bufferMinutes: 15, slotIntervalMinutes: 15 });
+    const out = starts(slots(p, [busy(MON, "10:00", "10:30", [], "other")], {}, `${MON}T23:59:00Z`));
+    expect(out).toContain("09-14 10:30");
+  });
+});
+
 describe("slot interval", () => {
   it("15 on a 30-min page offers quarter-hour starts", () => {
     const out = starts(slots(page({ slotIntervalMinutes: 15 }), [], {}, `${MON}T23:59:00Z`));
@@ -246,9 +280,10 @@ describe("interplay with calendar types", () => {
     const p = page({ calendarType: "class", seatsPerSlot: 2, bufferBeforeMinutes: 15, slotIntervalMinutes: 30 });
     const out = slots(p, [busy(MON, "09:00", "09:30", [], "p"), busy(MON, "10:40", "11:10", [], "p")], {}, `${MON}T23:59:00Z`);
     expect(out[0]).toMatchObject({ seatsLeft: 1 });
-    // 09:30 needs 09:15–09:30 free (the 09:00 class runs to 09:30); 10:30
-    // and 11:00 overlap the 10:40 booking; 11:30 needs 11:15–11:30 (free).
-    expect(starts(out)).toEqual(["09-14 09:00", "09-14 10:00", "09-14 11:30"]);
+    // Same-page bookings carry the page's buffers: 09:30 is within 15 min
+    // of the 09:00 class; 10:00, 10:30, 11:00 are within 15 min of (or
+    // overlap) the 10:40–11:10 booking; 11:30 starts 20 min after it.
+    expect(starts(out)).toEqual(["09-14 09:00", "09-14 11:30"]);
   });
 
   it("service: a date override shortens the day for every service", () => {

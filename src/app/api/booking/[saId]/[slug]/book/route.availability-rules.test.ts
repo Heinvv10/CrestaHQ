@@ -31,6 +31,13 @@ describe("book-time re-verify", () => {
     expect((await book("p", slot("09:00", "09:30"))).status).toBe(200);
   });
 
+  it("refuses a slot inside the before-buffer of a later booking on the same page", async () => {
+    seedPage("p", { bufferBeforeMinutes: 15, slotIntervalMinutes: 30 });
+    seedEvent("own", "10:10", "10:40", { bookingPageSlug: "p" });
+    expect((await book("p", slot("09:30", "10:00"))).status).toBe(409);
+    expect((await book("p", slot("09:00", "09:30"))).status).toBe(200);
+  });
+
   it("refuses a slot inside the before-buffer after an event", async () => {
     seedPage("p", { bufferBeforeMinutes: 15 });
     seedEvent("earlier", "09:50", "10:20");

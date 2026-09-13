@@ -56,14 +56,19 @@ export async function resolvePageAvailability(
   const queryFrom = new Date(
     (opts.fromInstant ?? now).getTime() - BUSY_LOOKBACK_MS,
   );
-  // Read past the window by the after-buffer: an event starting that soon
-  // after the last slot still blocks it.
+  // Read past the window by the widest buffer: an event starting inside the
+  // last slot's after-buffer (or a same-page booking whose before-buffer
+  // reaches back into it) still blocks it.
+  const padMinutes = Math.max(
+    opts.page.bufferMinutes,
+    opts.page.bufferBeforeMinutes ?? 0,
+  );
   const queryTo = new Date(
     (
       opts.toInstant ??
       new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000)
     ).getTime() +
-      opts.page.bufferMinutes * 60_000,
+      padMinutes * 60_000,
   );
 
   const busy = await loadEventBusy(

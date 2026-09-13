@@ -165,6 +165,25 @@ test("an after-buffer removes the slot right before a manual event", async ({ pa
   await expect(page.getByRole("button", { name: time("9:30 PM") })).toHaveCount(0);
 });
 
+test("a booking on the page keeps its after-buffer: no slot right after it, even at interval 15", async ({ page }) => {
+  const slug = `${PREFIX}own-${stamp}`;
+  await seedPage(slug, { bufferMinutes: 15, slotIntervalMinutes: 15 });
+  const res = await page.request.post(`/api/booking/${sa}/${slug}/book`, {
+    data: {
+      slot: { startAt: at(TOMORROW, "21:00").toISOString(), endAt: at(TOMORROW, "21:30").toISOString() },
+      name: `E2E Avail Visitor ${stamp}`,
+      email: `e2e-avail-${stamp}@example.com`,
+      phone: "+27600000000",
+    },
+  });
+  expect(res.status()).toBe(200);
+
+  await page.goto(`/b/${sa}/${slug}`);
+  await expect(page.getByRole("button", { name: time("9:45 PM") })).toBeVisible({ timeout: 30_000 });
+  // 9:30 PM would start the moment the 9:00 booking ends; its 15-min buffer forbids it.
+  await expect(page.getByRole("button", { name: time("9:30 PM") })).toHaveCount(0);
+});
+
 test("a 15-minute interval on a 30-minute page offers quarter-hour starts, bookable", async ({ page }) => {
   const slug = `${PREFIX}interval-${stamp}`;
   await seedPage(slug, { slotIntervalMinutes: 15 });
