@@ -1,7 +1,7 @@
 import twilio from "twilio";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
-import { FIXTURE_PRIMARY_NAME, readEnv } from "./env";
+import { E2E_PORT, FIXTURE_PRIMARY_NAME, appUrl, readEnv } from "./env";
 import { assertFixtureSubAccount, deleteScoped } from "./guard";
 
 /**
@@ -87,7 +87,7 @@ export function signMissedCallRequest(
   path: string,
   params: Record<string, string>,
 ): { signature: string; url: string; body: string } {
-  const url = `http://127.0.0.1:3100${path}`;
+  const url = appUrl(path);
   const signature = twilio.getExpectedTwilioSignature(FAKE_AUTH_TOKEN, url, params);
   const body = new URLSearchParams(params).toString();
   return { signature, url, body };
@@ -99,7 +99,7 @@ export function twilioHeaders(signature: string): Record<string, string> {
     "content-type": "application/x-www-form-urlencoded",
     "x-twilio-signature": signature,
     "x-forwarded-proto": "http",
-    "x-forwarded-host": "127.0.0.1:3100",
+    "x-forwarded-host": `127.0.0.1:${E2E_PORT}`,
   };
 }
 

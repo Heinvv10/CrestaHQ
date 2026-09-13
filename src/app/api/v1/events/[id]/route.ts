@@ -9,6 +9,12 @@ import {
   parseEventPatch,
   serializeEventForApi,
 } from "@/lib/api/serializers/events";
+import {
+  changeEventStatus,
+  statusTransitionError,
+} from "@/lib/server/event-status-service";
+import { eventStatus } from "@/types/events";
+import type { CalendarEvent } from "@/types/events";
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   const snap = await getAdminDb().doc(`events/${params.id}`).get();
@@ -34,22 +40,59 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
   const existing = snap.data()!;
+  // Booking-page and voice bookings carry no `mode`, so they never match a
+  // key's mode and are not exposed here — every event this route can reach
+  // is a manual (API or dashboard) event.
   if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
 
-  const writePatch: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
+  // Status changes go through the same transition table + side effects as
+  // the dashboard's mark-status action — a raw write here let an API key
+  // un-cancel an event or skip the activity row, trigger, and cancel email.
+  // Refuse a bad transition before writing anything, so a rejected PATCH
+  // leaves the event untouched.
+  if (patch.status !== undefined) {
+    const error = statusTransitionError(
+      eventStatus(existing as CalendarEvent),
+      patch.status,
+    );
+    if (error) {
+      return apiError(ctx, "invalid_request", "invalid_status_transition", error, {
+        status: 409,
+      });
+    }
+  }
+
+  const writePatch: Record<string, unknown> = {};
   if (patch.title !== undefined) writePatch.title = patch.title;
   if (patch.startAt !== undefined) writePatch.startAt = patch.startAt;
   if (patch.endAt !== undefined) writePatch.endAt = patch.endAt;
   if (patch.contactId !== undefined) writePatch.contactId = patch.contactId;
   if (patch.location !== undefined) writePatch.location = patch.location;
   if (patch.notes !== undefined) writePatch.notes = patch.notes;
-  if (patch.status !== undefined) writePatch.status = patch.status;
+  if (Object.keys(writePatch).length > 0) {
+    writePatch.updatedAt = FieldValue.serverTimestamp();
+    await ref.set(writePatch, { merge: true });
+  }
 
-  await ref.set(writePatch, { merge: true });
+  // Side effects run against the POST-patch event, so a PATCH changing
+  // contact_id and status together notifies and enrols the NEW contact.
+  if (patch.status !== undefined) {
+    const patched = await ref.get();
+    const outcome = await changeEventStatus(
+      { ...(patched.data() as CalendarEvent), id: params.id },
+      patch.status,
+    );
+    if (!outcome.ok) {
+      return outcome.httpStatus === 409
+        ? apiError(ctx, "invalid_request", "invalid_status_transition", outcome.error!, {
+            status: 409,
+          })
+        : apiError(ctx, "internal_error", "internal_error", outcome.error!);
+    }
+  }
+
   const fresh = await ref.get();
   return apiOk(ctx, {
     event: serializeEventForApi(fresh.id, fresh.data()!, ctx.mode),

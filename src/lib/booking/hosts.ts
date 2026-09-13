@@ -7,21 +7,19 @@ import type { BookingHost } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
 
 /**
- * Server-side helpers for booking-page **team mode** (round-robin).
- *
- * A booking page may carry a `hosts: BookingHost[]` list. When non-empty the
- * page runs in team mode: availability is the union of each host's free time
- * and each booking is auto-assigned to the least-loaded free host. These
- * helpers cover the two server touch-points — resolving the host list against
- * live membership on save, and picking the host at book time.
+ * Server-side helpers for booking-page hosts: resolving the host list against
+ * live membership on save, host notification contacts, and the upcoming-load
+ * counts round-robin assignment reads. The assignment itself is pure and
+ * lives in `page-slots.ts`.
  */
 
 /**
  * Resolve a requested host list against the sub-account's live membership:
  * keep only uids that are ACTIVE members, re-snapshot each `name` from the
  * member doc (never trust the client-supplied name), preserve request order,
- * per-host `workingHours` overrides, and drop removed/unknown members. Called
- * from the booking-page POST/PATCH routes after shape validation.
+ * per-host `workingHours`, `dateOverrides` and `priority`, and drop removed/unknown
+ * members. Called from the booking-page POST/PATCH routes after shape
+ * validation.
  */
 export async function resolveBookingHosts(
   subAccountId: string,
@@ -53,6 +51,10 @@ export async function resolveBookingHosts(
     // validateHosts). Omit when empty so the host inherits the page hours.
     if (h.workingHours && h.workingHours.length > 0) {
       resolved.workingHours = h.workingHours;
+    }
+    if (h.priority) resolved.priority = h.priority;
+    if (h.dateOverrides && h.dateOverrides.length > 0) {
+      resolved.dateOverrides = h.dateOverrides;
     }
     out.push(resolved);
   }
@@ -88,30 +90,61 @@ export async function loadHostNotifyContact(
 }
 
 /**
+ * Every event `uid` attends in the sub-account — the two sources of
+ * `eventHostUids`: the ones they own (`assignedToUid`) and the collective ones
+ * listing them in `hostUids` — merged by id. `refine` adds the same range /
+ * order / limit to both queries. Needs the composite indexes
+ * events(subAccountId, assignedToUid, startAt) and
+ * events(subAccountId, hostUids CONTAINS, startAt).
+ */
+export async function queryHostEvents(
+  subAccountId: string,
+  uid: string,
+  refine: (q: FirebaseFirestore.Query) => FirebaseFirestore.Query,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const events = getAdminDb()
+    .collection("events")
+    .where("subAccountId", "==", subAccountId);
+  const [owned, listed] = await Promise.allSettled([
+    refine(events.where("assignedToUid", "==", uid)).get(),
+    refine(events.where("hostUids", "array-contains", uid)).get(),
+  ]);
+  if (owned.status === "rejected") throw owned.reason;
+  const byId = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+  for (const d of owned.value.docs) byId.set(d.id, d);
+  if (listed.status === "fulfilled") {
+    for (const d of listed.value.docs) byId.set(d.id, d);
+  } else {
+    // Most likely the hostUids index isn't built yet: keep the owned half
+    // rather than lose every booking, and say so.
+    console.error(
+      `[booking/hosts] collective-host query failed sa=${subAccountId} uid=${uid}`,
+      listed.reason,
+    );
+  }
+  return [...byId.values()];
+}
+
+/**
  * Count each host's upcoming occupying bookings — a load proxy for the
- * least-loaded tiebreak. One bounded query per host; runs BEFORE the book
- * transaction (slightly stale is fine, fairness doesn't need transactional
- * accuracy). Requires the `events(subAccountId, assignedToUid, startAt)`
- * composite index.
+ * least-loaded tiebreak. A collective booking counts for each of its hosts.
+ * Runs BEFORE the book transaction (slightly stale is fine, fairness doesn't
+ * need transactional accuracy). Indexes: see `queryHostEvents`.
  */
 export async function loadHostUpcomingCounts(
   subAccountId: string,
   hostUids: string[],
   now: Date,
 ): Promise<Map<string, number>> {
-  const db = getAdminDb();
   const counts = new Map<string, number>();
   await Promise.all(
     hostUids.map(async (uid) => {
       try {
-        const snap = await db
-          .collection("events")
-          .where("subAccountId", "==", subAccountId)
-          .where("assignedToUid", "==", uid)
-          .where("startAt", ">=", now)
-          .get();
+        const docs = await queryHostEvents(subAccountId, uid, (q) =>
+          q.where("startAt", ">=", now),
+        );
         let n = 0;
-        for (const d of snap.docs) {
+        for (const d of docs) {
           const e = d.data() as CalendarEvent;
           if (eventOccupiesSlot(eventStatus(e))) n++;
         }
@@ -125,26 +158,4 @@ export async function loadHostUpcomingCounts(
     }),
   );
   return counts;
-}
-
-/**
- * Pick the least-loaded host from an already-filtered list of hosts that are
- * free at the chosen slot. Tiebreak: the page's host order (first wins).
- * Returns null when the list is empty (caller treats as 409 — slot full).
- */
-export function pickLeastLoadedHost(
-  freeHosts: BookingHost[],
-  loadByHost: Map<string, number>,
-): BookingHost | null {
-  if (freeHosts.length === 0) return null;
-  let best = freeHosts[0];
-  let bestLoad = loadByHost.get(best.uid) ?? 0;
-  for (let i = 1; i < freeHosts.length; i++) {
-    const load = loadByHost.get(freeHosts[i].uid) ?? 0;
-    if (load < bestLoad) {
-      best = freeHosts[i];
-      bestLoad = load;
-    }
-  }
-  return best;
 }

@@ -96,12 +96,32 @@ export interface CalendarEvent {
    * lookup. Null when unassigned.
    */
   assignedToName?: string | null;
+  /**
+   * Collective bookings only: every host in the meeting. The event is busy
+   * time for each of them (and for `assignedToUid`, the first host). Absent
+   * on every other event. Written by the server only.
+   */
+  hostUids?: string[] | null;
+  /** Service bookings only: the service the visitor picked, snapshotted. */
+  serviceId?: string | null;
+  serviceName?: string | null;
   /** Set when transitioning to `cancelled`. */
   cancelledAt?: Timestamp | FieldValue | null;
   /** True when the visitor cancelled via /e/[token]; false/undefined when the operator did. */
   cancelledByVisitor?: boolean | null;
   /** Free text or known sentinels: "rescheduled" | "payment_expired" | "operator". */
   cancelReason?: string | null;
+  /** Set (and incremented via `rescheduleCount`) on every successful reschedule. */
+  rescheduledAt?: Timestamp | FieldValue | null;
+  /** Number of times this event has been rescheduled. Undefined/0 = never. */
+  rescheduleCount?: number;
+  /**
+   * API-key mode the event was created under. Set only by the v1 API and
+   * the server-side manual create; undefined (booking-page, voice, client
+   * writes) means live. A `"test"` event must never fire real automations
+   * or email — see event-status-service.
+   */
+  mode?: "live" | "test";
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
@@ -120,6 +140,31 @@ export type EventFormData = {
    */
   meetingUrl?: string | null;
 };
+
+/**
+ * Why a status change or reschedule did NOT email the visitor. Returned by
+ * the mark-status and operator reschedule routes so the dialog's toast can
+ * say what actually happened instead of assuming the email went out.
+ *   - `not_cancelled`         status flip wasn't a cancellation (mark-status only)
+ *   - `test_mode`             test-mode event — no real side effects
+ *   - `no_contact`            event has no linked contact
+ *   - `email_not_configured`  RESEND_API_KEY / EMAIL_FROM missing
+ *   - `no_contact_email`      contact record has no email field
+ *   - `contact_opted_out`     contact.emailOptedOut === true
+ *   - `missing_records`       contact / sub-account doc not found
+ *   - `bad_timestamps`        event's startAt/endAt unreadable
+ *   - `send_failed`           the send threw
+ */
+export type EventNotifySkipReason =
+  | "not_cancelled"
+  | "test_mode"
+  | "no_contact"
+  | "email_not_configured"
+  | "no_contact_email"
+  | "contact_opted_out"
+  | "missing_records"
+  | "bad_timestamps"
+  | "send_failed";
 
 /**
  * Read an event's lifecycle status with the legacy default applied.
@@ -151,4 +196,25 @@ export function eventSource(
  */
 export function eventOccupiesSlot(status: EventStatus): boolean {
   return status === "scheduled" || status === "awaiting_payment";
+}
+
+/**
+ * Operator-facing display text for a status, matching the GHL vocabulary
+ * (Confirmed / Unconfirmed / Showed / No-show / Cancelled). Single source
+ * for every status badge/menu in the app — the stored `EventStatus` values
+ * are unchanged, this only maps them to copy.
+ */
+export function eventStatusLabel(status: EventStatus): string {
+  switch (status) {
+    case "scheduled":
+      return "Confirmed";
+    case "awaiting_payment":
+      return "Unconfirmed (awaiting payment)";
+    case "completed":
+      return "Showed";
+    case "no_show":
+      return "No-show";
+    case "cancelled":
+      return "Cancelled";
+  }
 }

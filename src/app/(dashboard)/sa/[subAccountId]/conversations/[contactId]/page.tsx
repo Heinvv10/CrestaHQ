@@ -35,6 +35,7 @@ import {
 import type { EmailMessageDoc } from "@/types/email";
 import type { Contact } from "@/types/contacts";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { scheduleTimeZone } from "@/lib/conversations/schedule-time";
 import {
   parseWebChatConversationId,
   type ConversationChannel,
@@ -314,7 +315,12 @@ export default function ConversationDetailPage() {
               trailing={ownerPicker}
             />
           )}
-          <ConversationThread key={conversationId} contactId={conversationId} theme={theme} onEmailReply={
+          {/* Prefixed: the composer below is keyed by the same id, and two
+              siblings sharing a key left a stale duplicate thread on screen. */}
+          <ConversationThread key={`thread-${conversationId}`} contactId={conversationId} theme={theme}
+            subAccountId={subAccountId}
+            scheduleTimeZone={scheduleTimeZone(subAccount?.timezone)}
+            onEmailReply={
               availableChannels.includes("email")
                 ? // A fresh object per click, so clicking Reply on the SAME
                   // email again (e.g. after switching the composer to an
@@ -335,6 +341,7 @@ export default function ConversationDetailPage() {
               key={contact.id}
               emailReply={emailReply?.contactId === contact.id ? emailReply : null}
               onClearEmailReply={() => setEmailReply(null)}
+              senderName={user?.displayName ?? null}
               contact={contact}
               availableChannels={availableChannels}
               defaultChannel={conversation?.lastChannel ?? "sms"}

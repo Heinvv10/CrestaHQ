@@ -5,36 +5,24 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
-  emailIsConfigured,
-  sendEmail,
-  tenantFrom,
-} from "@/lib/comms/resend";
-import {
-  computeAvailability,
   isSlotAvailable,
-  type BusyEvent,
   type SlotCandidate,
 } from "@/lib/booking/availability";
+import {
+  departedHostMessage,
+  movingEventOf,
+  resolvePageAvailability,
+} from "@/lib/booking/resolve-availability";
 import {
   buildEventPublicUrl,
   hashEventToken,
   issueEventToken,
   verifyEventToken,
 } from "@/lib/booking/event-token";
-import { generateIcs } from "@/lib/booking/ics";
-import {
-  fireBookingTrigger,
-  recordBookingActivity,
-  scheduleEventReminders,
-} from "@/lib/booking/lifecycle";
-import { renderBookingConfirmationEmail } from "@/lib/booking/email";
-import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
-import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { runRescheduleSideEffects } from "@/lib/booking/reschedule";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
-import type { Contact } from "@/types/contacts";
-import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
  * Public reschedule endpoint. The HMAC token IS the credential. On
@@ -50,6 +38,12 @@ import type { SubAccountDoc } from "@/types/tenancy";
  *   - Payment-pending events keep the payment requirement on the new
  *     slot (operator still has to mark paid). The hold-expiry deadline
  *     is NOT extended — visitor should pay quickly regardless.
+ *
+ * The only path here that checks slot availability — it's the only actor
+ * without a human on the other end double-checking the calendar. The
+ * operator route reuses `runRescheduleSideEffects` from
+ * lib/booking/reschedule.ts for identical post-write bookkeeping, but
+ * skips this availability check (see rescheduleWithoutAvailabilityCheck).
  */
 
 interface RescheduleBody {
@@ -106,13 +100,6 @@ export async function POST(
     newEnd: Date;
   };
 
-  // The host's Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
-  const googleBusy = await loadGoogleBusyForEvent(
-    verified.eventId,
-    new Date(newStart.getTime() - 8 * 60 * 60_000),
-    new Date(newEnd.getTime() + 1000),
-  );
-
   let outcome: Outcome | null = null;
   try {
     outcome = await db.runTransaction(async (txn) => {
@@ -146,37 +133,23 @@ export async function POST(
         );
       }
       const page = pageSnap.data() as BookingPage;
+      const departed = await departedHostMessage(page, event);
+      if (departed) throw new BadState(departed);
 
-      // Busy events for the new slot's window — re-uses the same
-      // pattern as the book route.
-      const lookbackMs = 8 * 60 * 60_000;
-      const queryFrom = new Date(newStart.getTime() - lookbackMs);
-      const queryTo = new Date(newEnd.getTime() + 1000);
-      const busySnap = await txn.get(
-        db
-          .collection("events")
-          .where("subAccountId", "==", event.subAccountId)
-          .where("startAt", ">=", queryFrom)
-          .where("startAt", "<=", queryTo),
-      );
-      const busy: BusyEvent[] = [];
-      for (const d of busySnap.docs) {
-        if (d.id === eventRef.id) continue; // exclude our own slot
-        const e = d.data() as CalendarEvent;
-        const s = e.status ?? "scheduled";
-        if (s !== "scheduled" && s !== "awaiting_payment") continue;
-        const s2 = (e.startAt as { toDate?: () => Date } | null)?.toDate?.();
-        const e2 = (e.endAt as { toDate?: () => Date } | null)?.toDate?.();
-        if (!(s2 instanceof Date) || !(e2 instanceof Date)) continue;
-        busy.push({ startAt: s2, endAt: e2 });
-      }
-      busy.push(...googleBusy);
-      const free = computeAvailability({
+      // Re-verify through the same resolver the booking used, as a moved
+      // booking: its own host(s) and service, its current slot not busy. A
+      // team booking is checked against its host's calendar only — not
+      // every host's (and a collective one against all of its hosts); a
+      // hostless one against every event, as it was booked.
+      const free = await resolvePageAvailability({
+        subAccountId: event.subAccountId,
         page,
         now: new Date(),
         fromInstant: new Date(newStart.getTime() - 1),
         toInstant: new Date(newEnd.getTime() + 1),
-        busy,
+        movingEvent: movingEventOf(eventRef.id, event),
+        serviceId: event.serviceId ?? null,
+        txn,
       });
       const candidate: SlotCandidate = { startAt: newStart, endAt: newEnd };
       if (!isSlotAvailable(candidate, free)) {
@@ -190,6 +163,8 @@ export async function POST(
         startAt: newStart,
         endAt: newEnd,
         publicTokenHash: newHash,
+        rescheduledAt: FieldValue.serverTimestamp(),
+        rescheduleCount: FieldValue.increment(1),
         updatedAt: FieldValue.serverTimestamp(),
       });
       return {
@@ -239,8 +214,8 @@ export async function POST(
     publicEventUrl,
     startAt: nsa,
     endAt: nea,
+    actor: "visitor",
   });
-  await pushBookingToGoogle(event.id);
 
   return NextResponse.json({
     ok: true,
@@ -258,139 +233,3 @@ class BadState extends Error {
   }
 }
 class SlotConflict extends Error {}
-
-async function runRescheduleSideEffects(args: {
-  event: CalendarEvent;
-  page: BookingPage | undefined;
-  newRawToken: string;
-  publicEventUrl: string;
-  startAt: Date;
-  endAt: Date;
-}): Promise<void> {
-  const db = getAdminDb();
-  const { event, page, newRawToken, publicEventUrl, startAt, endAt } = args;
-
-  // Re-publish reminder callbacks with a fresh schedule nonce so the
-  // QStash dedup key doesn't collapse onto the previous ones.
-  if (page?.remindersEnabled) {
-    await scheduleEventReminders({
-      eventId: event.id,
-      startAt,
-      reminderOffsetsMinutes: page.reminderOffsetsMinutes,
-      rawToken: newRawToken,
-      pendingPayment: eventStatus(event) === "awaiting_payment",
-      scheduleNonce: Date.now().toString(36),
-    });
-  }
-
-  // Activity + automation trigger.
-  if (event.contactId) {
-    await recordBookingActivity(
-      {
-        id: event.id,
-        title: event.title || "Meeting",
-        contactId: event.contactId,
-        bookingPageSlug: event.bookingPageSlug ?? null,
-      },
-      "booking_rescheduled",
-    );
-    await fireBookingTrigger(
-      {
-        agencyId: event.agencyId,
-        subAccountId: event.subAccountId,
-        contactId: event.contactId,
-      },
-      "event_rescheduled",
-    );
-  }
-
-  // Visitor confirmation email + ICS (UPDATE, sequence+1 so calendar
-  // clients overwrite the existing entry).
-  if (!event.contactId) return;
-  try {
-    const [contactSnap, subSnap] = await Promise.all([
-      db.collection("contacts").doc(event.contactId).get(),
-      db.doc(`subAccounts/${event.subAccountId}`).get(),
-    ]);
-    if (!contactSnap.exists || !subSnap.exists) return;
-    const contact = contactSnap.data() as Contact;
-    const sub = subSnap.data() as SubAccountDoc;
-    if (!emailIsConfigured(sub)) return;
-    if (!contact.email || contact.emailOptedOut) return;
-
-    const rendered = renderBookingConfirmationEmail({
-      recipientName: contact.name ?? "",
-      businessName: sub.name ?? "Booking",
-      businessLogoUrl: sub.logoUrl,
-      page: {
-        name: page?.name ?? event.title ?? "Meeting",
-        durationMinutes:
-          page?.durationMinutes ??
-          Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
-        timezone: page?.timezone ?? "UTC",
-        payment: page?.payment ?? null,
-        confirmationMessage: page?.confirmationMessage ?? "",
-      },
-      startAt,
-      endAt,
-      publicEventUrl,
-    });
-    rendered.subject = `Updated: ${rendered.subject.replace(/^Confirmed: /, "")}`;
-    const appHost =
-      process.env.NEXT_PUBLIC_APP_URL?.replace(/^https?:\/\//, "")
-        ?.replace(/\/.*$/, "")
-        ?.toLowerCase() ?? "leadstack.dev";
-    const ics = generateIcs({
-      uid: event.id,
-      domain: appHost,
-      startAt,
-      endAt,
-      summary: event.title || page?.name || "Meeting",
-      description: page?.confirmationMessage ?? "",
-      location: event.location || "",
-      method: "REQUEST",
-      status: "CONFIRMED",
-      sequence: 1, // bump so calendar apps treat as update
-      attendeeEmail: contact.email,
-      attendeeName: contact.name ?? undefined,
-      organizerEmail: sub.replyToEmail ?? undefined,
-      organizerName: sub.name ?? undefined,
-    });
-
-    if (eventStatus(event) === "awaiting_payment") {
-      // Skip ICS for unconfirmed holds — same logic as the book route.
-      await sendEmail({
-        to: contact.email,
-        subject: rendered.subject,
-        text: rendered.text,
-        html: rendered.html,
-        replyTo: sub.replyToEmail ?? undefined,
-        from: tenantFrom(sub),
-        subAccount: sub,
-        meter: { subAccountId: event.subAccountId },
-      });
-      return;
-    }
-
-    // Through the shared wrapper (it supports attachments) so the
-    // From/Reply-To policy can't be bypassed by the ICS path.
-    await sendEmail({
-      from: tenantFrom(sub),
-      to: contact.email,
-      subject: rendered.subject,
-      text: rendered.text,
-      html: rendered.html,
-      replyTo: sub.replyToEmail ?? undefined,
-      subAccount: sub,
-      meter: { subAccountId: event.subAccountId },
-      attachments: [
-        {
-          filename: "invite.ics",
-          content: Buffer.from(ics, "utf-8").toString("base64"),
-        },
-      ],
-    });
-  } catch (err) {
-    console.warn("[events/reschedule] confirmation send failed", err);
-  }
-}

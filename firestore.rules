@@ -884,6 +884,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---------- snippets (GHL "Snippets", SP2 T3) ----------
+    // Saved replies, sub-account scoped (agencyId / subAccountId /
+    // createdByUid on every doc). Server-only, like customFields and
+    // pipelines: the management page and the composer read and write
+    // through /api/sub-accounts/[id]/snippets, which checks membership,
+    // stamps the tenant keys from the route (never the body) and validates
+    // name/body/subject/folder. Closing the client path means that
+    // validation cannot be bypassed with a direct SDK write, and a malformed
+    // snippet can never reach another member's composer. Explicit here so
+    // the collection's stance is on record; default-deny would do the same.
+    match /snippets/{snippetId} {
+      allow read, write: if false;
+    }
+
     match /contacts/{contactId} {
       // Reads honor territory scoping when enabled — collaborators only
       // see contacts whose `territoryId` is in their assigned list (or
@@ -967,6 +981,16 @@ service cloud.firestore {
           get(/databases/$(database)/documents/contacts/$(contactId)).data.agencyId
         ) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']);
         allow create, delete: if false;
+      }
+      // Scheduled messages ("Send later", SP2 T5). Server-only in BOTH
+      // directions: the scheduling API books them, the QStash worker fires
+      // them, and the thread reads them through
+      // GET /api/sub-accounts/[id]/scheduled-messages (Admin SDK, authorised
+      // like the send routes). A browser must never be able to book, edit or
+      // un-cancel a message that a worker will later send to a real person,
+      // and nothing reads them client-side, so reads stay closed too.
+      match /scheduledMessages/{scheduledId} {
+        allow read, write: if false;
       }
       // BETA Facebook Messenger + Instagram DM chat thread — same model as the
       // SMS / WhatsApp threads above. Populated server-side by the Meta inbound
@@ -1175,14 +1199,20 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
+      // hostUids / serviceId / serviceName are written by the booking
+      // routes only (Admin SDK): hostUids is busy time for every listed
+      // host, so a client must not be able to set or change it.
       // googleEventIds / googleSyncError are written by the Google Calendar
-      // push only (Admin SDK): a forged id would make the next push patch or
-      // delete an arbitrary event in a host's Google calendar.
+      // push only: a forged id would make the next push patch or delete an
+      // arbitrary event in a host's Google calendar.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      ) && !request.resource.data.keys().hasAny(["googleEventIds", "googleSyncError"]);
+      )
+        // Server-set only — the dashboard creates through /api/events. `mode`
+        // decides v1 exposure and whether status changes fire side effects.
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError"]);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1192,8 +1222,10 @@ service cloud.firestore {
           resource.data.subAccountId,
           resource.data.agencyId
         )
+        // Server-set only. `mode` also decides v1 exposure and whether a
+        // status change fires real triggers/email.
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(["googleEventIds", "googleSyncError"]);
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError"]);
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
