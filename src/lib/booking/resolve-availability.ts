@@ -20,9 +20,17 @@ import type { CalendarEvent } from "@/types/events";
  * and host rules via `computePageSlots`.
  *
  * Busy time is a list of intervals tagged with the hosts they occupy
- * (`HostBusy`), so another source — e.g. a host's external calendar — adds
- * intervals here, tagged with that host, and no caller changes.
+ * (`HostBusy`), so another source — e.g. a host's external calendar — is
+ * passed in as `externalBusy`, tagged with that host, and merges the same way.
  */
+
+/** Busy time from outside LeadStack (e.g. a host's Google calendar). */
+export interface ExternalBusy {
+  startAt: Date;
+  endAt: Date;
+  /** Hosts it occupies — see `HostBusy.hostUids` (empty ⇒ everyone). */
+  hostUids: string[];
+}
 
 export interface ResolveAvailabilityOptions
   extends Omit<PageSlotsInput, "busy" | "now" | "movingEvent"> {
@@ -35,6 +43,11 @@ export interface ResolveAvailabilityOptions
    * the caller has checked belongs to this page.
    */
   movingEvent?: (MovingEvent & { id: string }) | null;
+  /**
+   * Pre-loaded external busy time. Load it OUTSIDE any transaction: an
+   * external call inside one is repeated on every contention retry.
+   */
+  externalBusy?: ExternalBusy[];
   /**
    * Read busy events inside this transaction, so a book/reschedule write
    * conflicts with any concurrent booking that changes what it read.
@@ -71,6 +84,9 @@ export async function resolvePageAvailability(
     opts.movingEvent?.id ?? null,
     opts.txn,
   );
+  for (const b of opts.externalBusy ?? []) {
+    busy.push({ ...b, bookingPageSlug: null });
+  }
 
   return computePageSlots({
     page: opts.page,
