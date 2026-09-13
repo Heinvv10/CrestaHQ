@@ -156,7 +156,11 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   // the calculator (per host in team mode).
   const capAfter = type === "collective" || seats !== null;
   const base = capAfter ? { ...sized, maxPerDay: null } : sized;
-  const run = (b: BusyEvent[], hours?: WorkingHour[], host?: BookingHost) =>
+  const run = (
+    b: BusyEvent[],
+    hours?: WorkingHour[],
+    host?: Pick<BookingHost, "dateOverrides">,
+  ) =>
     computeAvailability({
       page: base,
       now: input.now,
@@ -175,7 +179,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
     // the legacy single shared schedule, where every event blocks.
     slots = run(busy).map((s) => ({ ...s, hostUids: [] }));
   } else {
-    const hosts: Array<Pick<BookingHost, "uid" | "workingHours">> = moving
+    const hosts: Array<Pick<BookingHost, "uid" | "workingHours" | "dateOverrides">> = moving
       ? moving.hostUids.map((uid) => pageHosts.find((h) => h.uid === uid) ?? { uid })
       : pageHosts.filter((h) => input.onlyHostUid == null || h.uid === input.onlyHostUid);
     const perHost = hosts.map((h) => ({
