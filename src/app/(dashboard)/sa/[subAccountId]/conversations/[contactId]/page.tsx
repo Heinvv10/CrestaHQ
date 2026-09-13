@@ -335,6 +335,7 @@ export default function ConversationDetailPage() {
               key={contact.id}
               emailReply={emailReply?.contactId === contact.id ? emailReply : null}
               onClearEmailReply={() => setEmailReply(null)}
+              senderName={user?.displayName ?? null}
               contact={contact}
               availableChannels={availableChannels}
               defaultChannel={conversation?.lastChannel ?? "sms"}
