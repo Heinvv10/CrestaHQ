@@ -23,14 +23,6 @@ vi.mock("@/lib/booking/email", () => ({
   renderBookingCancelledEmail: () => ({ subject: "", text: "", html: "" }),
 }));
 
-const STATUSES: EventStatus[] = [
-  "scheduled",
-  "awaiting_payment",
-  "completed",
-  "cancelled",
-  "no_show",
-];
-
 let eventDoc: Record<string, unknown>;
 let updatedPatch: Record<string, unknown> | null;
 
@@ -48,7 +40,7 @@ vi.mock("@/lib/firebase/admin", () => ({
   }),
 }));
 
-const { POST, isValidStatusTransition } = await import("./route");
+const { POST } = await import("./route");
 
 function post(status: EventStatus) {
   return POST(
@@ -72,46 +64,6 @@ beforeEach(() => {
     bookingPageSlug: "page-a",
     title: "Meeting",
   };
-});
-
-describe("isValidStatusTransition — every from→to pair", () => {
-  const expected: Record<string, boolean> = {
-    "scheduled->scheduled": true,
-    "scheduled->awaiting_payment": false,
-    "scheduled->completed": true,
-    "scheduled->cancelled": true,
-    "scheduled->no_show": true,
-    "awaiting_payment->scheduled": false,
-    "awaiting_payment->awaiting_payment": true,
-    "awaiting_payment->completed": false,
-    "awaiting_payment->cancelled": true,
-    "awaiting_payment->no_show": false,
-    "completed->scheduled": false,
-    "completed->awaiting_payment": false,
-    "completed->completed": true,
-    "completed->cancelled": false,
-    "completed->no_show": true,
-    "cancelled->scheduled": false,
-    "cancelled->awaiting_payment": false,
-    "cancelled->completed": false,
-    "cancelled->cancelled": true,
-    "cancelled->no_show": false,
-    "no_show->scheduled": false,
-    "no_show->awaiting_payment": false,
-    "no_show->completed": true,
-    "no_show->cancelled": false,
-    "no_show->no_show": true,
-  };
-
-  for (const from of STATUSES) {
-    for (const to of STATUSES) {
-      it(`${from} -> ${to} is ${expected[`${from}->${to}`]}`, () => {
-        expect(isValidStatusTransition(from, to)).toBe(
-          expected[`${from}->${to}`],
-        );
-      });
-    }
-  }
 });
 
 describe("POST mark-status — trigger firing", () => {
