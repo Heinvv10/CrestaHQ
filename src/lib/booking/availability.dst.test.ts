@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeAvailability, formatterFor } from "@/lib/booking/availability";
+import { computeAvailability, formatterFor, utcFromWallClock } from "@/lib/booking/availability";
 import type { BookingPage } from "@/types/booking";
 
 /**
@@ -166,5 +166,51 @@ describe("timezone formatter cache", () => {
   it("spellings of one zone share one formatter", () => {
     expect(formatterFor("europe/london")).toBe(formatterFor("Europe/London"));
     expect(formatterFor("EUROPE/LONDON").resolvedOptions().timeZone).toBe("Europe/London");
+  });
+
+  it("clears itself once it holds 500 spellings", () => {
+    // 501 distinct spellings of one zone (letter-case variants).
+    const base = "america/argentina/buenos_aires";
+    const letters = [...base].flatMap((c, i) => (/[a-z]/.test(c) ? [i] : []));
+    const spell = (n: number) =>
+      [...base].map((c, i) => (n & (1 << letters.indexOf(i)) ? c.toUpperCase() : c)).join("");
+    const spellings = Array.from({ length: 501 }, (_, n) => spell(n + 1));
+
+    const Real = Intl.DateTimeFormat;
+    let constructed = 0;
+    Intl.DateTimeFormat = function (...args: ConstructorParameters<typeof Real>) {
+      constructed++;
+      return new Real(...args);
+    } as unknown as typeof Intl.DateTimeFormat;
+    try {
+      // Whatever other tests left behind is flushed by the time 500 new
+      // spellings are in; then the first 500 of ours are cached…
+      for (const s of spellings.slice(0, 500)) formatterFor(s);
+      for (const s of spellings.slice(0, 500)) formatterFor(s);
+      const warm = constructed;
+      formatterFor(spellings[499]);
+      expect(constructed).toBe(warm); // a hit
+      // …and the 501st arrives at a full cache, which clears it first.
+      formatterFor(spellings[500]);
+      const afterClear = constructed;
+      formatterFor(spellings[0]);
+      expect(constructed).toBe(afterClear + 1); // gone: built again
+    } finally {
+      Intl.DateTimeFormat = Real;
+    }
+  });
+});
+
+describe("utcFromWallClock", () => {
+  it.each([
+    // tz, y, m, d, minute, expected — a wall time in a spring-forward gap
+    // shifts forward by the gap (it keeps the pre-change offset).
+    ["America/New_York", 2026, 3, 8, 150, "2026-03-08T07:30:00.000Z"], // 02:30 → 03:30 EDT
+    ["America/Santiago", 2026, 9, 6, 0, "2026-09-06T04:00:00.000Z"], // 00:00 → 01:00 -03
+    // Ordinary and repeated times, for contrast.
+    ["America/New_York", 2026, 3, 8, 180, "2026-03-08T07:00:00.000Z"], // 03:00 EDT
+    ["America/New_York", 2026, 11, 1, 90, "2026-11-01T05:30:00.000Z"], // 01:30 EDT, first occurrence
+  ])("%s %i-%i-%i minute %i → %s", (tz, y, m, d, minute, iso) => {
+    expect(utcFromWallClock(y, m, d, minute, tz).toISOString()).toBe(iso);
   });
 });
