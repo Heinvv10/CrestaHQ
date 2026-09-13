@@ -44,6 +44,12 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   if (patch.title !== undefined) writePatch.title = patch.title;
   if (patch.startAt !== undefined) writePatch.startAt = patch.startAt;
   if (patch.endAt !== undefined) writePatch.endAt = patch.endAt;
+  // Same "rescheduled" bookkeeping as the public reschedule endpoint —
+  // this is the only other path that can move a booking-page event's time.
+  if (patch.startAt !== undefined || patch.endAt !== undefined) {
+    writePatch.rescheduledAt = FieldValue.serverTimestamp();
+    writePatch.rescheduleCount = FieldValue.increment(1);
+  }
   if (patch.contactId !== undefined) writePatch.contactId = patch.contactId;
   if (patch.location !== undefined) writePatch.location = patch.location;
   if (patch.notes !== undefined) writePatch.notes = patch.notes;

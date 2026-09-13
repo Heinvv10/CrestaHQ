@@ -180,6 +180,8 @@ export async function POST(
         startAt: newStart,
         endAt: newEnd,
         publicTokenHash: newHash,
+        rescheduledAt: FieldValue.serverTimestamp(),
+        rescheduleCount: FieldValue.increment(1),
         updatedAt: FieldValue.serverTimestamp(),
       });
       return {
@@ -285,9 +287,11 @@ async function runRescheduleSideEffects(args: {
     );
     await fireBookingTrigger(
       {
+        id: event.id,
         agencyId: event.agencyId,
         subAccountId: event.subAccountId,
         contactId: event.contactId,
+        bookingPageSlug: event.bookingPageSlug ?? null,
       },
       "event_rescheduled",
     );

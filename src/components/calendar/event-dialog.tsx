@@ -39,6 +39,7 @@ import { toDate } from "@/lib/format";
 import {
   eventSource,
   eventStatus,
+  eventStatusLabel,
   type CalendarEvent,
   type EventFormData,
   type EventStatus,
@@ -560,10 +561,10 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
     }
   }
 
-  const terminal =
-    localStatus === "cancelled" ||
-    localStatus === "completed" ||
-    localStatus === "no_show";
+  // "cancelled" is truly final; "completed"/"no_show" can still be
+  // corrected into each other but never into anything else.
+  const terminal = localStatus === "cancelled";
+  const correctable = localStatus === "completed" || localStatus === "no_show";
 
   return (
     <div className="space-y-3 rounded-xl border bg-muted/30 p-3">
@@ -573,6 +574,12 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
           From booking page
         </span>
         <BookingStatusBadge status={localStatus} />
+        {!!event.rescheduleCount && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">
+            <CalendarClock className="h-3 w-3" />
+            Rescheduled
+          </span>
+        )}
         {event.assignedToName && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:text-indigo-400">
             <User className="h-3 w-3" />
@@ -634,27 +641,61 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
               </Button>
             </>
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setStatus("cancelled", "Cancelled. Visitor notified.")}
-            disabled={busy !== null}
-            className="text-destructive hover:bg-destructive/5 hover:text-destructive"
-          >
-            {busy === "cancelled" ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <XCircle className="mr-1 h-3.5 w-3.5" />
-            )}
-            Cancel booking
-          </Button>
+          {localStatus === "completed" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setStatus("no_show", "Corrected to no-show.")}
+              disabled={busy !== null}
+            >
+              {busy === "no_show" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <UserX className="mr-1 h-3.5 w-3.5" />
+              )}
+              Correct to no-show
+            </Button>
+          )}
+          {localStatus === "no_show" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setStatus("completed", "Corrected to attended.")}
+              disabled={busy !== null}
+            >
+              {busy === "completed" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+              )}
+              Correct to attended
+            </Button>
+          )}
+          {!correctable && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setStatus("cancelled", "Cancelled. Visitor notified.")}
+              disabled={busy !== null}
+              className="text-destructive hover:bg-destructive/5 hover:text-destructive"
+            >
+              {busy === "cancelled" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <XCircle className="mr-1 h-3.5 w-3.5" />
+              )}
+              Cancel booking
+            </Button>
+          )}
         </div>
       )}
 
-      {/* Reassign host — only renders for team bookings the caller can
-          reassign (booking-page event with hosts + admin/current host). */}
-      {!terminal && <BookingReassign event={event} />}
+      {/* Reassign host — only renders while the booking is still live
+          (not cancelled, not a completed/no_show correction target). */}
+      {!terminal && !correctable && <BookingReassign event={event} />}
     </div>
   );
 }
@@ -663,34 +704,34 @@ function BookingStatusBadge({ status }: { status: EventStatus }) {
   if (status === "awaiting_payment") {
     return (
       <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-        Awaiting payment
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "cancelled") {
     return (
       <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-400">
-        Cancelled
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "completed") {
     return (
       <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-        Completed
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "no_show") {
     return (
       <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-700 dark:text-zinc-400">
-        No-show
+        {eventStatusLabel(status)}
       </span>
     );
   }
   return (
     <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-      Confirmed
+      {eventStatusLabel(status)}
     </span>
   );
 }

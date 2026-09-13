@@ -23,7 +23,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { EventDialog } from "@/components/calendar/event-dialog";
 import { toDate } from "@/lib/format";
-import { eventStatus, type CalendarEvent, type EventStatus } from "@/types/events";
+import {
+  eventStatus,
+  eventStatusLabel,
+  type CalendarEvent,
+  type EventStatus,
+} from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { Contact } from "@/types/contacts";
 
@@ -351,34 +356,34 @@ function StatusPill({ status }: { status: EventStatus }) {
   if (status === "awaiting_payment") {
     return (
       <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-        Awaiting payment
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "cancelled") {
     return (
       <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-400">
-        Cancelled
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "completed") {
     return (
       <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-        Completed
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "no_show") {
     return (
       <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-700 dark:text-zinc-400">
-        No-show
+        {eventStatusLabel(status)}
       </span>
     );
   }
   return (
     <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-      Confirmed
+      {eventStatusLabel(status)}
     </span>
   );
 }

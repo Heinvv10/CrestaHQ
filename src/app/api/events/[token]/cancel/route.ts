@@ -183,9 +183,11 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
   );
   await fireBookingTrigger(
     {
+      id: event.id,
       agencyId: event.agencyId,
       subAccountId: event.subAccountId,
       contactId: event.contactId,
+      bookingPageSlug: event.bookingPageSlug ?? null,
     },
     "event_cancelled",
   );

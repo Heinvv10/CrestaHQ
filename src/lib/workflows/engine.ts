@@ -905,6 +905,15 @@ const DEAL_TRIGGERS = new Set<WorkflowTriggerType>([
   "deal.lost",
 ]);
 
+const BOOKING_TRIGGERS = new Set<WorkflowTriggerType>([
+  "booking.created",
+  "booking.cancelled",
+  "booking.rescheduled",
+  "booking.confirmed",
+  "booking.showed",
+  "booking.no_show",
+]);
+
 interface FireInput {
   subAccountId: string;
   agencyId: string;
@@ -1015,6 +1024,17 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         wf.trigger.type === "link.clicked" &&
         wf.trigger.linkId &&
         wf.trigger.linkId !== input.context?.linkId
+      ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      // A booking.* workflow may be pinned to one booking page. Unset =
+      // any page (also what a manual, non-booking-page event's absent
+      // `bookingPageSlug` context always fails to match against).
+      if (
+        BOOKING_TRIGGERS.has(wf.trigger.type) &&
+        wf.trigger.bookingPageSlug &&
+        wf.trigger.bookingPageSlug !== input.context?.bookingPageSlug
       ) {
         skip("trigger_mismatch");
         continue;

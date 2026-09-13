@@ -674,12 +674,28 @@ export async function POST(
   );
   await fireBookingTrigger(
     {
+      id: created.eventDocRef.id,
       agencyId,
       subAccountId: saId,
       contactId: created.contactId,
+      bookingPageSlug: page.slug,
     },
     "event_booked",
   );
+  // A free booking is confirmed the moment it's created; a paid hold only
+  // becomes confirmed once mark-paid fires this same trigger.
+  if (!paymentRequired) {
+    await fireBookingTrigger(
+      {
+        id: created.eventDocRef.id,
+        agencyId,
+        subAccountId: saId,
+        contactId: created.contactId,
+        bookingPageSlug: page.slug,
+      },
+      "event_confirmed",
+    );
+  }
   void emitBookingWebhook({
     eventId: created.eventDocRef.id,
     agencyId,

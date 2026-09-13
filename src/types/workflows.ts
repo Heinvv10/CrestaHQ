@@ -30,6 +30,13 @@ export type WorkflowTriggerType =
   | "booking.created"
   | "booking.cancelled"
   | "booking.rescheduled"
+  // A booking-page slot became confirmed — a free booking at book time, or
+  // a paid hold once the operator marks it paid.
+  | "booking.confirmed"
+  // Operator marked a past booking attended / a no-show. Corrections
+  // (flipping one to the other) fire the matching trigger again.
+  | "booking.showed"
+  | "booking.no_show"
   | "quote.accepted"
   | "quote.paid"
   | "message.received"
@@ -85,6 +92,11 @@ export interface WorkflowTrigger {
   formId?: string | null;
   /** Restrict `link.clicked` to one tracked link. Null/absent = any link. */
   linkId?: string | null;
+  /**
+   * Restrict any `booking.*` trigger to one booking page (its slug).
+   * Null/absent = any page.
+   */
+  bookingPageSlug?: string | null;
   /** Restrict the deal triggers to one pipeline. Null/absent = any. */
   pipelineId?: string | null;
   /** Restrict `pipeline.stage.changed` to one target stage. */

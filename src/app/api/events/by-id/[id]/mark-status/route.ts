@@ -31,7 +31,8 @@ import type { SubAccountDoc } from "@/types/tenancy";
  *
  * `awaiting_payment` → use POST /api/events/by-id/[id]/mark-paid instead.
  * `scheduled` → "completed" / "no_show" / "cancelled" allowed.
- * Terminal states (cancelled, completed, no_show) reject further flips.
+ * `completed` ↔ `no_show` → allowed as a correction either direction.
+ * `cancelled` is always final. Any other flip is rejected.
  *
  * Auth: active sub-account member.
  */
@@ -43,6 +44,23 @@ interface PatchBody {
 }
 
 const ALLOWED: EventStatus[] = ["completed", "no_show", "cancelled"];
+
+/**
+ * Every valid `current → next` flip, exported so tests can exercise it
+ * directly against every from→to pair without hitting the route.
+ */
+export function isValidStatusTransition(
+  current: EventStatus,
+  next: EventStatus,
+): boolean {
+  if (current === next) return true;
+  if (current === "cancelled") return false; // always final
+  if (current === "completed") return next === "no_show"; // correction
+  if (current === "no_show") return next === "completed"; // correction
+  if (current === "awaiting_payment") return next === "cancelled";
+  // current === "scheduled"
+  return next === "completed" || next === "no_show" || next === "cancelled";
+}
 
 export async function POST(
   request: Request,
@@ -80,27 +98,14 @@ export async function POST(
   if (current === next) {
     return NextResponse.json({ ok: true, status: next, noop: true });
   }
-  if (
-    current === "completed" ||
-    current === "cancelled" ||
-    current === "no_show"
-  ) {
-    return NextResponse.json(
-      {
-        error:
-          "This event is already in a final state — operators can't flip past it.",
-      },
-      { status: 409 },
-    );
-  }
-  if (current === "awaiting_payment" && next !== "cancelled") {
-    return NextResponse.json(
-      {
-        error:
-          "Mark as paid first if the visitor paid, or cancel to release the slot.",
-      },
-      { status: 409 },
-    );
+  if (!isValidStatusTransition(current, next)) {
+    const error =
+      current === "cancelled"
+        ? "This event was cancelled — operators can't flip past it."
+        : current === "awaiting_payment"
+          ? "Mark as paid first if the visitor paid, or cancel to release the slot."
+          : "That status change isn't allowed.";
+    return NextResponse.json({ error }, { status: 409 });
   }
 
   const patch: Record<string, unknown> = {
@@ -183,8 +188,12 @@ async function runStatusSideEffects(
       : next === "no_show"
         ? "booking_no_show"
         : "booking_cancelled";
-  const triggerType: Extract<AutomationTriggerType, `event_${string}`> | null =
-    next === "cancelled" ? "event_cancelled" : null;
+  const triggerType: Extract<AutomationTriggerType, `event_${string}`> =
+    next === "cancelled"
+      ? "event_cancelled"
+      : next === "completed"
+        ? "event_completed"
+        : "event_no_show";
 
   await recordBookingActivity(
     {
@@ -196,16 +205,16 @@ async function runStatusSideEffects(
     activityType satisfies ActivityType,
     { extra: reason || null },
   );
-  if (triggerType) {
-    await fireBookingTrigger(
-      {
-        agencyId: event.agencyId,
-        subAccountId: event.subAccountId,
-        contactId: event.contactId,
-      },
-      triggerType,
-    );
-  }
+  await fireBookingTrigger(
+    {
+      id: event.id,
+      agencyId: event.agencyId,
+      subAccountId: event.subAccountId,
+      contactId: event.contactId,
+      bookingPageSlug: event.bookingPageSlug ?? null,
+    },
+    triggerType,
+  );
 
   // Operator-cancelled bookings notify the visitor via email.
   if (next !== "cancelled") return { emailSent: false, emailSkipReason: "not_cancelled" };

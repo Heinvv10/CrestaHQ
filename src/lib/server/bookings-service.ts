@@ -182,9 +182,11 @@ async function runMarkPaidSideEffects(args: {
   );
   await fireBookingTrigger(
     {
+      id: event.id,
       agencyId: event.agencyId,
       subAccountId: event.subAccountId,
       contactId: event.contactId,
+      bookingPageSlug: event.bookingPageSlug ?? null,
     },
     "event_paid",
   );

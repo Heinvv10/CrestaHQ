@@ -102,6 +102,10 @@ export interface CalendarEvent {
   cancelledByVisitor?: boolean | null;
   /** Free text or known sentinels: "rescheduled" | "payment_expired" | "operator". */
   cancelReason?: string | null;
+  /** Set (and incremented via `rescheduleCount`) on every successful reschedule. */
+  rescheduledAt?: Timestamp | FieldValue | null;
+  /** Number of times this event has been rescheduled. Undefined/0 = never. */
+  rescheduleCount?: number;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
@@ -151,4 +155,25 @@ export function eventSource(
  */
 export function eventOccupiesSlot(status: EventStatus): boolean {
   return status === "scheduled" || status === "awaiting_payment";
+}
+
+/**
+ * Operator-facing display text for a status, matching the GHL vocabulary
+ * (Confirmed / Unconfirmed / Showed / No-show / Cancelled). Single source
+ * for every status badge/menu in the app — the stored `EventStatus` values
+ * are unchanged, this only maps them to copy.
+ */
+export function eventStatusLabel(status: EventStatus): string {
+  switch (status) {
+    case "scheduled":
+      return "Confirmed";
+    case "awaiting_payment":
+      return "Unconfirmed (awaiting payment)";
+    case "completed":
+      return "Showed";
+    case "no_show":
+      return "No-show";
+    case "cancelled":
+      return "Cancelled";
+  }
 }
