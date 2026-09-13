@@ -24,6 +24,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
 import { TerritorySelectField } from "@/components/settings/territory-select-field";
 import { WorkingHoursGrid } from "@/components/booking/working-hours-grid";
+import { DateOverridesEditor } from "@/components/booking/date-overrides-editor";
 import { IntakeFieldBuilder } from "@/components/booking/intake-field-builder";
 import { BookingHelpDialog } from "@/components/booking/booking-help-dialog";
 import { TeamBookingHelpDialog } from "@/components/booking/team-booking-help-dialog";
@@ -43,6 +44,7 @@ import {
   type BookingPageFormData,
   type BookingPayment,
   type CalendarType,
+  type DateOverride,
   type WorkingHour,
 } from "@/types/booking";
 
@@ -70,6 +72,7 @@ interface Props {
 
 const DURATIONS = [15, 30, 45, 60, 75, 90, 120] as const;
 const BUFFERS = [0, 5, 10, 15, 30, 45, 60] as const;
+const INTERVALS = [5, 10, 15, 20, 30, 45, 60, 90, 120] as const;
 const CURRENCIES = ["USD", "AUD", "EUR", "GBP", "CAD"] as const;
 
 // Curated common timezones at the top, then the runtime's full list.
@@ -127,6 +130,9 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         status: initial.status,
         durationMinutes: initial.durationMinutes,
         bufferMinutes: initial.bufferMinutes,
+        bufferBeforeMinutes: initial.bufferBeforeMinutes ?? 0,
+        slotIntervalMinutes: initial.slotIntervalMinutes ?? null,
+        dateOverrides: initial.dateOverrides ?? [],
         workingHours: initial.workingHours,
         timezone: initial.timezone,
         visibleDays: initial.visibleDays,
@@ -247,6 +253,19 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
     set(
       "hosts",
       (form.hosts ?? []).map((h) => (h.uid === uid ? { ...h, priority } : h)),
+    );
+  }
+
+  function setHostDateOverrides(uid: string, next: DateOverride[]) {
+    set(
+      "hosts",
+      (form.hosts ?? []).map((h) => {
+        if (h.uid !== uid) return h;
+        if (next.length > 0) return { ...h, dateOverrides: next };
+        const rest = { ...h };
+        delete rest.dateOverrides;
+        return rest;
+      }),
     );
   }
 
@@ -536,9 +555,9 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
           </Field>
 
           <Field
-            label="Buffer between meetings"
+            label="Buffer after meetings"
             htmlFor="buffer"
-            hint="Time to breathe between back-to-back bookings."
+            hint="Free time a booking needs after it — nothing else can start inside it."
           >
             <select
               id="buffer"
@@ -549,6 +568,56 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
               {BUFFERS.map((d) => (
                 <option key={d} value={d}>
                   {d === 0 ? "None" : `${d} minutes`}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field
+            label="Buffer before meetings"
+            htmlFor="bufferBefore"
+            hint="Free time a booking needs before it."
+          >
+            <select
+              id="bufferBefore"
+              value={form.bufferBeforeMinutes ?? 0}
+              onChange={(e) => set("bufferBeforeMinutes", Number(e.target.value))}
+              className="flex h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
+            >
+              {BUFFERS.map((d) => (
+                <option key={d} value={d}>
+                  {d === 0 ? "None" : `${d} minutes`}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field
+            label="Slot interval"
+            htmlFor="slotInterval"
+            hint="How often a start time is offered."
+          >
+            <select
+              id="slotInterval"
+              value={form.slotIntervalMinutes ?? ""}
+              onChange={(e) =>
+                set(
+                  "slotIntervalMinutes",
+                  e.target.value === "" ? null : Number(e.target.value),
+                )
+              }
+              className="flex h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
+            >
+              <option value="">Every duration + buffer after</option>
+              {form.slotIntervalMinutes != null &&
+                !(INTERVALS as readonly number[]).includes(form.slotIntervalMinutes) && (
+                  <option value={form.slotIntervalMinutes}>
+                    Every {form.slotIntervalMinutes} minutes
+                  </option>
+                )}
+              {INTERVALS.map((d) => (
+                <option key={d} value={d}>
+                  Every {d} minutes
                 </option>
               ))}
             </select>
@@ -586,6 +655,13 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         <WorkingHoursGrid
           value={form.workingHours}
           onChange={(next) => set("workingHours", next)}
+          disabled={saving}
+        />
+
+        <DateOverridesEditor
+          value={form.dateOverrides ?? []}
+          onChange={(next) => set("dateOverrides", next)}
+          timezone={form.timezone}
           disabled={saving}
         />
 
@@ -733,6 +809,14 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
                           Uses the page working hours above.
                         </p>
                       )}
+                      <DateOverridesEditor
+                        value={host!.dateOverrides ?? []}
+                        onChange={(next) => setHostDateOverrides(m.uid, next)}
+                        timezone={form.timezone}
+                        disabled={saving}
+                        label={`Date-specific hours for ${m.name}`}
+                        hint="Beats the page's changed hours for the same date — but not a date the page marks unavailable."
+                      />
                     </div>
                   )}
                 </div>

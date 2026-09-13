@@ -74,12 +74,22 @@ export async function resolvePageAvailability(
   opts: ResolveAvailabilityOptions,
 ): Promise<PageSlot[]> {
   const now = opts.now ?? new Date();
+  // Buffers pad busy time by up to the wider buffer on either side, so read
+  // that much further both ways: an event ending just before the window
+  // (before-buffer), or starting just after it (after-buffer, or a
+  // same-page booking's before-buffer), still blocks a slot inside it.
+  const padMs =
+    Math.max(opts.page.bufferMinutes, opts.page.bufferBeforeMinutes ?? 0) *
+    60_000;
   const queryFrom = new Date(
-    (opts.fromInstant ?? now).getTime() - BUSY_LOOKBACK_MS,
+    (opts.fromInstant ?? now).getTime() - BUSY_LOOKBACK_MS - padMs,
   );
-  const queryTo =
-    opts.toInstant ??
-    new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000);
+  const queryTo = new Date(
+    (
+      opts.toInstant ??
+      new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000)
+    ).getTime() + padMs,
+  );
 
   const busy = await loadEventBusy(
     opts.subAccountId,

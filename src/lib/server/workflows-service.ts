@@ -94,11 +94,14 @@ function speedToLeadSeed(): Pick<
   };
 }
 
-/** Appointment confirmation (booking.created): instant SMS + email confirmation
- *  to the contact, notify the team, and drop a prep task. NOTE: timed reminders
- *  BEFORE the appointment are handled by the Booking page's own reminder offsets
- *  — the workflow `wait` is a fixed delay from enrollment, so it can't anchor to
- *  the appointment time. */
+/** Appointment confirmation (booking.confirmed): instant SMS + email confirmation
+ *  to the contact, notify the team, and drop a prep task. Fires on `booking.confirmed`
+ *  rather than `booking.created` so a paid-hold booking (`awaiting_payment`) doesn't
+ *  get a "your booking is confirmed" text before it actually is — `booking.confirmed`
+ *  fires at book time for a free slot, or on mark-paid for a paid one. NOTE: timed
+ *  reminders BEFORE the appointment are handled by the Booking page's own reminder
+ *  offsets — the workflow `wait` is a fixed delay from enrollment, so it can't anchor
+ *  to the appointment time. */
 function appointmentConfirmationSeed(): Seed {
   const nodes: Record<string, WorkflowNode> = {
     n1: {
@@ -140,7 +143,7 @@ function appointmentConfirmationSeed(): Seed {
     },
   };
   return {
-    trigger: { type: "booking.created", filters: { all: [] } },
+    trigger: { type: "booking.confirmed", filters: { all: [] } },
     nodes,
     startNodeId: "n1",
   };

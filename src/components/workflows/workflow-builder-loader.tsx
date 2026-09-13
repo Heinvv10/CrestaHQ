@@ -41,6 +41,9 @@ export function WorkflowBuilderLoader({
   const [trackedLinks, setTrackedLinks] = useState<
     { id: string; name: string }[]
   >([]);
+  const [bookingPages, setBookingPages] = useState<
+    { slug: string; name: string }[]
+  >([]);
   const [whatsappTemplates, setWhatsappTemplates] = useState<
     WhatsappTemplateOption[]
   >([]);
@@ -97,6 +100,21 @@ export function WorkflowBuilderLoader({
       }
       try {
         const snap = await getDocs(
+          collection(getFirebaseDb(), "subAccounts", saId, "bookingPages")
+        );
+        if (alive) {
+          setBookingPages(
+            snap.docs.map((doc) => ({
+              slug: doc.id,
+              name: (doc.data().name as string) || doc.id,
+            }))
+          );
+        }
+      } catch {
+        /* booking pages are optional — picker just shows "Any booking page" */
+      }
+      try {
+        const snap = await getDocs(
           query(
             collection(
               getFirebaseDb(),
@@ -146,6 +164,7 @@ export function WorkflowBuilderLoader({
       initial={initial}
       forms={forms}
       trackedLinks={trackedLinks}
+      bookingPages={bookingPages}
       readiness={readiness}
       whatsappTemplates={whatsappTemplates}
       whatsappSenders={whatsappSenders}

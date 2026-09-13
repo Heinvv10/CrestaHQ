@@ -152,6 +152,38 @@ supply as real markup ourselves, which is legally required to render as a
 link. This closes a hole that predates custom fields —
 `{{contact.firstName}}` reached the HTML body raw as well.
 
+## Events: status
+
+**Booking-page events are not exposed on v1.** The events routes match an
+event's `mode` against the key's, and booking-page (and voice) bookings
+carry no `mode`, so `GET`/`PATCH`/`DELETE /v1/events/:id` 404 them. Every
+event v1 can reach is a manual event (created via `POST /v1/events` or the
+dashboard). Booking reschedules, `awaiting_payment` and mark-paid are
+dashboard-only.
+
+`PATCH /v1/events/:id` writes `title`/`contact_id`/`location`/`notes`/
+`start_at`/`end_at` as plain field patches. `status` goes through
+[lib/server/event-status-service.ts](../../src/lib/server/event-status-service.ts),
+the same chokepoint as the dashboard's mark-status action — a raw write here
+used to let an API key un-cancel an event or skip the activity row, trigger
+and cancel email.
+
+- **Transitions:** `scheduled` → `completed`/`no_show`/`cancelled`;
+  `completed` ↔ `no_show` as a correction either direction; `cancelled` is
+  always final. Anything else is refused with **`409`**
+  `invalid_status_transition` before any field in the PATCH is written.
+  A failed status write is a `500` `internal_error`.
+- **Side effects** (activity row, the `booking.*` workflow trigger, and the
+  visitor email on a cancel) run against the event *after* the rest of the
+  PATCH is applied, so changing `contact_id` and `status` together notifies
+  and enrols the new contact.
+- **Test mode:** a `mode: "test"` event gets the validated status write
+  only — no activity row, no trigger, no email.
+- **Not atomic.** The transition is checked, the other fields are written,
+  then the status change re-checks against the stored event. If another
+  writer changes the status in between, the PATCH can return `409` after
+  its other fields were already written. Re-`GET` the event and retry.
+
 ## Webhooks
 
 Outbound webhooks let the sub-account react to platform events (contact created, deal moved, event booked, …) without polling.

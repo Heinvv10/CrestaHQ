@@ -67,6 +67,23 @@ describe("booking-page routes with a calendar type", () => {
     });
   });
 
+  it("keeps each host's date-specific hours and the page's new rules through host resolution", async () => {
+    const closed = [{ date: "2026-12-24", ranges: [] }];
+    const res = await create({
+      bufferBeforeMinutes: 10,
+      slotIntervalMinutes: 15,
+      dateOverrides: [{ date: "2026-12-25", ranges: [] }],
+      hosts: [{ uid: "a", name: "a", dateOverrides: closed }],
+    });
+    expect(res.status).toBe(200);
+    expect(stored()).toMatchObject({
+      bufferBeforeMinutes: 10,
+      slotIntervalMinutes: 15,
+      dateOverrides: [{ date: "2026-12-25", ranges: [] }],
+      hosts: [{ uid: "a", name: "A", dateOverrides: closed }],
+    });
+  });
+
   it("refuses a collective page left with one active host", async () => {
     const res = await create({
       calendarType: "collective",

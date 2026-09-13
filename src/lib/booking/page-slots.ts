@@ -9,6 +9,7 @@ import type {
   BookingHost,
   BookingPage,
   BookingService,
+  DateOverride,
   WorkingHour,
 } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -135,12 +136,32 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
     sized = { ...page, durationMinutes: minutes };
   }
 
+  // Buffers: a slot [S, E) needs `bufferBeforeMinutes` free before it and
+  // `bufferMinutes` (after) free after it — i.e. [S − before, E + after)
+  // must not overlap any busy [s, e). Padding busy to [s − after,
+  // e + before) is the same test, so it covers every busy source the
+  // resolver feeds in. This page's OWN bookings also keep their buffers:
+  // the new slot must not overlap [s − before, e + after) either, and the
+  // two tests together pad by max(before, after) on both sides.
+  const before = (page.bufferBeforeMinutes ?? 0) * 60_000;
+  const after = page.bufferMinutes * 60_000;
+  const both = Math.max(before, after);
+  const pad = (b: HostBusy): HostBusy => {
+    const own = b.bookingPageSlug === page.slug;
+    return {
+      ...b,
+      startAt: new Date(b.startAt.getTime() - (own ? both : after)),
+      endAt: new Date(b.endAt.getTime() + (own ? both : before)),
+    };
+  };
+
   // Class pages: the page's own bookings are seats, not busy time.
   const seats = type === "class" ? Math.max(1, page.seatsPerSlot ?? 1) : null;
   const seatBusy =
     seats === null ? [] : input.busy.filter((b) => b.bookingPageSlug === page.slug);
-  const busy =
-    seats === null ? input.busy : input.busy.filter((b) => b.bookingPageSlug !== page.slug);
+  const busy = (
+    seats === null ? input.busy : input.busy.filter((b) => b.bookingPageSlug !== page.slug)
+  ).map(pad);
 
   // Collective and class combine per-host results first (intersection, seat
   // count), so the day cap applies after — a slot dropped by that step must
@@ -148,7 +169,11 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   // the calculator (per host in team mode).
   const capAfter = type === "collective" || seats !== null;
   const base = capAfter ? { ...sized, maxPerDay: null } : sized;
-  const run = (b: BusyEvent[], hours?: WorkingHour[]) =>
+  const run = (
+    b: BusyEvent[],
+    hours?: WorkingHour[],
+    host?: Pick<BookingHost, "workingHours" | "dateOverrides">,
+  ) =>
     computeAvailability({
       page: base,
       now: input.now,
@@ -157,6 +182,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
       busy: b,
       ignoreMinNotice: input.ignoreMinNotice,
       workingHoursOverride: hours && hours.length > 0 ? hours : undefined,
+      dateOverrides: mergeOverrides(page.dateOverrides, host),
     });
 
   let slots: PageSlot[];
@@ -166,7 +192,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
     // the legacy single shared schedule, where every event blocks.
     slots = run(busy).map((s) => ({ ...s, hostUids: [] }));
   } else {
-    const hosts: Array<Pick<BookingHost, "uid" | "workingHours">> = moving
+    const hosts: Array<Pick<BookingHost, "uid" | "workingHours" | "dateOverrides">> = moving
       ? moving.hostUids.map((uid) => pageHosts.find((h) => h.uid === uid) ?? { uid })
       : pageHosts.filter((h) => input.onlyHostUid == null || h.uid === input.onlyHostUid);
     const perHost = hosts.map((h) => ({
@@ -174,12 +200,13 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
       slots: run(
         busy.filter((b) => b.hostUids.length === 0 || b.hostUids.includes(h.uid)),
         h.workingHours,
+        h,
       ),
     }));
     slots = combine(perHost, moving || type === "collective" ? "all" : "any");
   }
 
-  if (seats !== null) slots = applySeats(slots, seatBusy, seats);
+  if (seats !== null) slots = applySeats(slots, seatBusy, seats, pad);
   if (capAfter && page.maxPerDay != null) {
     const max = page.maxPerDay;
     slots = groupSlotsByLocalDate(slots, page.timezone).flatMap((d) =>
@@ -187,6 +214,28 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
     );
   }
   return slots;
+}
+
+/**
+ * One date-override list for a schedule (host absent ⇒ the page's own).
+ *  - A page entry that CLOSES a date (empty ranges) closes it for everyone.
+ *  - A host's own entry beats any page entry that changes hours.
+ *  - A page entry that changes hours applies only to hosts on the page
+ *    hours; a host with custom weekly hours keeps them.
+ */
+function mergeOverrides(
+  pageOverrides: DateOverride[] | undefined,
+  host: Pick<BookingHost, "workingHours" | "dateOverrides"> | undefined,
+): DateOverride[] {
+  const byDate = new Map<string, DateOverride>();
+  const customWeekly = (host?.workingHours?.length ?? 0) > 0;
+  for (const o of pageOverrides ?? []) {
+    if (o.ranges.length === 0 || !customWeekly) byDate.set(o.date, o);
+  }
+  for (const o of host?.dateOverrides ?? []) {
+    if (byDate.get(o.date)?.ranges.length !== 0) byDate.set(o.date, o);
+  }
+  return [...byDate.values()];
 }
 
 /**
@@ -213,16 +262,24 @@ function combine(
 
 /**
  * Class seats: bookings from this page starting at the slot's exact instant
- * take a seat; one from this page that overlaps at any other start (the page
- * was re-timed since) blocks the slot outright.
+ * take a seat; one from this page at any other start blocks the slot when
+ * it overlaps it, buffers included (`pad`).
  */
-function applySeats(slots: PageSlot[], seatBusy: HostBusy[], seats: number): PageSlot[] {
+function applySeats(
+  slots: PageSlot[],
+  seatBusy: HostBusy[],
+  seats: number,
+  pad: (b: HostBusy) => HostBusy,
+): PageSlot[] {
   return slots.flatMap((s) => {
     let taken = 0;
     for (const b of seatBusy) {
-      if (b.endAt <= s.startAt || b.startAt >= s.endAt) continue;
-      if (b.startAt.getTime() !== s.startAt.getTime()) return [];
-      taken++;
+      if (b.startAt.getTime() === s.startAt.getTime()) {
+        taken++;
+        continue;
+      }
+      const p = pad(b);
+      if (p.endAt > s.startAt && p.startAt < s.endAt) return [];
     }
     return taken < seats ? [{ ...s, seatsLeft: seats - taken }] : [];
   });

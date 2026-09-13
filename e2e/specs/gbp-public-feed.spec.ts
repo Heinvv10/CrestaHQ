@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
-import { readEnv } from "../lib/env";
+import { DEFAULT_BASE_URL, readEnv } from "../lib/env";
 import {
   feedPath,
   gbpLifecycle,
@@ -28,7 +28,7 @@ gbpLifecycle(test);
 test.setTimeout(240_000);
 
 const VELO = "https://www.velocityfibre.co.za";
-const APP = "http://127.0.0.1:3100";
+const APP = DEFAULT_BASE_URL;
 
 /**
  * A second, real origin for the embed: a throwaway HTTP server on a free
