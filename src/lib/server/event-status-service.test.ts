@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   recordBookingActivity: vi.fn(),
   emailIsConfigured: vi.fn(),
   sendEmail: vi.fn(),
+  renderBookingCancelledEmail: vi.fn(),
 }));
 vi.mock("@/lib/booking/lifecycle", () => ({
   fireBookingTrigger: m.fireBookingTrigger,
@@ -18,7 +19,7 @@ vi.mock("@/lib/comms/resend", () => ({
   tenantFrom: () => "test@example.com",
 }));
 vi.mock("@/lib/booking/email", () => ({
-  renderBookingCancelledEmail: () => ({ subject: "", text: "", html: "" }),
+  renderBookingCancelledEmail: m.renderBookingCancelledEmail,
 }));
 
 const STATUSES: EventStatus[] = [
@@ -80,6 +81,7 @@ beforeEach(() => {
   updatedPatch = null;
   recordsExist = false;
   m.emailIsConfigured.mockReturnValue(false);
+  m.renderBookingCancelledEmail.mockReturnValue({ subject: "", text: "", html: "" });
 });
 
 describe("isValidStatusTransition — every from→to pair", () => {
@@ -195,6 +197,16 @@ describe("changeEventStatus — test mode", () => {
     expect(m.recordBookingActivity).toHaveBeenCalled();
     expect(m.fireBookingTrigger).toHaveBeenCalled();
     expect(m.sendEmail).toHaveBeenCalled();
+  });
+
+  it("labels a service booking's cancel email with its service and its own length", async () => {
+    await changeEventStatus({ ...cancellable("live"), serviceName: "Consult" }, "cancelled");
+    expect(m.renderBookingCancelledEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        page: expect.objectContaining({ name: expect.stringMatching(/ \(Consult\)$/), durationMinutes: 30 }),
+      }),
+      "by_operator",
+    );
   });
 
   it("an event with no mode (booking page) is live", async () => {

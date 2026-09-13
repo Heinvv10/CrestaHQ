@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 import { CheckCheck } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
+import { subscribeToNotes } from "@/lib/firestore/contacts";
+import { mergeThreadItems, type ThreadItem } from "@/lib/conversations/thread-items";
 import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { EmailMessageDoc } from "@/types/email";
@@ -11,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import type { MessageDoc } from "@/types/messages";
 import type { ConversationChannel } from "@/types/conversations";
 import type { ConversationTheme } from "@/hooks/use-conversation-theme";
+import type { Note } from "@/types/contacts";
+import { ThreadNote } from "./thread-note";
 
 type ChannelMessage =
   | (MessageDoc & { channel: ConversationChannel })
@@ -47,6 +51,11 @@ type MetaMessageDoc = MessageDoc & { channel?: ConversationChannel };
  * When `sessionId` is passed (a web-chat conversation), it instead reads that
  * session's transcript at `subAccounts/{subAccountId}/webChatSessions/{id}/
  * messages` — web-chat messages live under the session, not a contact.
+ *
+ * Internal notes (SP2 T2) — the contact's `notes` rows, the same ones its
+ * timeline shows — are interleaved by time whenever there is a contact,
+ * including a web-chat session that has captured one. They are rendered as
+ * notes, never as bubbles.
  */
 export function ConversationThread({
   contactId,
@@ -74,6 +83,9 @@ export function ConversationThread({
   const [waReady, setWaReady] = useState(false);
   const [metaReady, setMetaReady] = useState(false);
   const [webReady, setWebReady] = useState(false);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [notesReady, setNotesReady] = useState(false);
+  const [notesError, setNotesError] = useState(false);
   const isWebChat = !!sessionId && !!subAccountId;
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
@@ -163,11 +175,30 @@ export function ConversationThread({
     };
   }, [contactId, isWebChat, sessionId, subAccountId]);
 
-  const merged = useMemo<ChannelMessage[]>(() => {
+  // Notes live on the contact, so they follow `contactId` for both modes.
+  useEffect(() => {
+    if (!contactId) return;
+    return subscribeToNotes(
+      contactId,
+      (list) => {
+        setNotes(list);
+        setNotesReady(true);
+        setNotesError(false);
+      },
+      () => {
+        setNotesReady(true);
+        setNotesError(true);
+      }
+    );
+  }, [contactId]);
+
+  const merged = useMemo<ThreadItem<ChannelMessage>[]>(() => {
+    const threadNotes = contactId ? notes : [];
     if (isWebChat) {
-      return web
-        .map((m) => ({ ...m, channel: "web-chat" as const }))
-        .sort((a, b) => toMillis(a.createdAt) - toMillis(b.createdAt));
+      return mergeThreadItems(
+        web.map((m) => ({ ...m, channel: "web-chat" as const })),
+        threadNotes
+      );
     }
     const all: ChannelMessage[] = [
       ...email.map((m) => ({ ...m, channel: "email" as const })),
@@ -178,13 +209,12 @@ export function ConversationThread({
         channel: (m.channel ?? "messenger") as ConversationChannel,
       })),
     ];
-    all.sort((a, b) => toMillis(a.createdAt) - toMillis(b.createdAt));
-    return all;
-  }, [sms, wa, meta, web, email, isWebChat]);
+    return mergeThreadItems(all, threadNotes);
+  }, [sms, wa, meta, web, email, isWebChat, notes, contactId]);
 
-  const hydrated = isWebChat
-    ? webReady
-    : smsReady && waReady && metaReady && emailReady;
+  const hydrated =
+    (!contactId || notesReady) &&
+    (isWebChat ? webReady : smsReady && waReady && metaReady && emailReady);
 
   useEffect(() => {
     if (scrollerRef.current) {
@@ -199,6 +229,11 @@ export function ConversationThread({
           Email messages could not be loaded. Refresh to try again.
         </p>
       )}
+      {notesError && (
+        <p role="alert" className="text-destructive text-xs">
+          Internal notes could not be loaded. Refresh to try again.
+        </p>
+      )}
       {!hydrated ? (
         <div className="space-y-2">
           <div className="bg-muted h-12 w-2/3 animate-pulse rounded-lg" />
@@ -211,14 +246,18 @@ export function ConversationThread({
           </p>
         </div>
       ) : (
-        merged.map((m) => (
-          <ChannelBubble
-            key={`${m.channel}:${m.id}`}
-            message={m}
-            theme={theme}
-            onEmailReply={onEmailReply}
-          />
-        ))
+        merged.map((item) =>
+          item.kind === "note" ? (
+            <ThreadNote key={item.key} note={item.note} />
+          ) : (
+            <ChannelBubble
+              key={item.key}
+              message={item.message}
+              theme={theme}
+              onEmailReply={onEmailReply}
+            />
+          )
+        )
       )}
     </div>
   );
@@ -362,13 +401,4 @@ function ChannelBubble({
       </div>
     </div>
   );
-}
-
-function toMillis(v: unknown): number {
-  if (!v) return 0;
-  if (v instanceof Date) return v.getTime();
-  const maybe = v as { toDate?: () => Date; seconds?: number };
-  if (typeof maybe.toDate === "function") return maybe.toDate().getTime();
-  if (typeof maybe.seconds === "number") return maybe.seconds * 1000;
-  return 0;
 }

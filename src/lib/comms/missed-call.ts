@@ -7,6 +7,7 @@ import { reconcileContactFromCapture } from "@/lib/comms/ai/capture";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { renderMergeTags } from "@/lib/messaging/merge-tags";
 import type { MissedCallConfig, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 
@@ -93,20 +94,25 @@ export async function resolveVoiceRoute(
 }
 
 /**
- * Render the text-back body. Supports a tiny, self-contained tag set so a
+ * Render the text-back body through the shared merge-tag renderer, so a
  * missed caller (often a brand-new contact with no name) never sees a broken
  * template: {{contact.firstName}} / {{firstName}} and
- * {{workspace.name}} / {{businessName}}. Unknown tags collapse to empty.
+ * {{workspace.name}} / {{businessName}} keep working (same signature and
+ * output as the old replace chain), {{contact.first_name}} /
+ * {{business.name}} work too, and any other tag — or one without a value —
+ * collapses to empty. Only the caller's first name is passed in, so the
+ * other {{contact.*}} tags always collapse here.
  */
 export function renderMissedCallMessage(
   body: string,
   ctx: { firstName: string; businessName: string },
 ): string {
-  return body
-    .replace(/\{\{\s*(contact\.)?firstName\s*\}\}/gi, ctx.firstName)
-    .replace(/\{\{\s*(workspace\.name|businessName)\s*\}\}/gi, ctx.businessName)
-    .replace(/\{\{[^}]*\}\}/g, "") // drop any other/unknown tag
-    .replace(/\s{2,}/g, " ")
+  return renderMergeTags(
+    body,
+    { contact: { name: ctx.firstName }, businessName: ctx.businessName },
+    { unknown: "drop" },
+  )
+    .text.replace(/\s{2,}/g, " ")
     .trim();
 }
 

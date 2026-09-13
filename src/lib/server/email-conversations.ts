@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { FieldPath, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
+import { contactMirror } from "@/lib/server/conversation-mirror";
 import { validEmail } from "@/lib/comms/smtp";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { EmailMessageDoc } from "@/types/email";
@@ -318,6 +319,14 @@ export async function recordEmailMessage(
           : GLOBAL_TERRITORY_ID,
         contactName: contact?.name || email,
         contactPhone: contact?.phone || null,
+        // Owner + email mirrored off the contact (SP2 T1/I9), exactly as the
+        // SMS/WhatsApp upsert does. A contact created by THIS transaction has
+        // no owner yet and its address is the one we matched on.
+        ...contactMirror(
+          contactSnap.exists
+            ? (contact as Record<string, unknown>)
+            : { email }
+        ),
         channelsSeen: FieldValue.arrayUnion("email"),
         updatedAt: FieldValue.serverTimestamp(),
       };
@@ -325,7 +334,8 @@ export async function recordEmailMessage(
         Object.assign(patch, {
           createdAt: occurredAt,
           status: "open",
-          assigneeUid: null,
+          // assigneeUid + contactEmail are set by the mirror above on every
+          // message — re-stamping null here would undo them on create.
           botMode: "off",
           botPausedUntil: null,
           pendingDraft: null,

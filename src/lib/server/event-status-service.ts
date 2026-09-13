@@ -12,6 +12,7 @@ import {
   fireBookingTrigger,
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
 import { eventStatus } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
@@ -259,10 +260,7 @@ async function runStatusSideEffects(
         businessName: sub.name ?? "Booking",
         businessLogoUrl: sub.logoUrl,
         page: {
-          name: page?.name ?? event.title ?? "Meeting",
-          durationMinutes:
-            page?.durationMinutes ??
-            Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
+          ...bookedEventLabel(page, event, startAt, endAt),
           timezone: page?.timezone ?? "UTC",
           payment: page?.payment ?? null,
           confirmationMessage: page?.confirmationMessage ?? "",

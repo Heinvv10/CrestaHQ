@@ -794,8 +794,18 @@ service cloud.firestore {
     // One doc per contact (doc id == contactId). Written server-side by
     // lib/server/conversations-service.ts on every message. Members read;
     // creates + content updates are server-only. Clients may flip only the
-    // operator-facing fields (mark-read / mark-unread, status, assignment, bot
-    // controls, star) — never tenancy or denormalized content.
+    // operator-facing fields (mark-read / mark-unread, status, bot controls,
+    // star) — never tenancy or denormalized content.
+    //
+    // `assigneeUid` is deliberately NOT in that list (SP2 T1): the
+    // conversation's owner is a server-maintained MIRROR of the contact's
+    // `assignedToUid`, which is the source of truth. The owner picker writes
+    // the CONTACT (PATCH /api/contacts/{id}) and lib/server/conversation-mirror
+    // pushes the value onto the conversation. A client able to write it here
+    // is exactly how the two would diverge — a thread filed under one owner
+    // and the contact profile showing another, with no way to tell which is
+    // right. `contactEmail` (I9, inbox search) is denormalized like
+    // contactName / contactPhone and stays server-only for the same reason.
     //
     // `starred` (SP2 I6) is a shared per-conversation flag toggled from the
     // inbox row and thread header. It is display-only (nothing server-side
@@ -816,7 +826,7 @@ service cloud.firestore {
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
-          ['unreadCount', 'status', 'assigneeUid', 'botMode', 'botPausedUntil', 'pendingDraft', 'starred', 'updatedAt']
+          ['unreadCount', 'status', 'botMode', 'botPausedUntil', 'pendingDraft', 'starred', 'updatedAt']
         )
         && request.resource.data.get("starred", false) is bool;
       allow delete: if canAdminSub(
@@ -872,6 +882,20 @@ service cloud.firestore {
         resource.data.agencyId
       ) && tenantFieldsLockedOnUpdate();
       allow delete: if false;
+    }
+
+    // ---------- snippets (GHL "Snippets", SP2 T3) ----------
+    // Saved replies, sub-account scoped (agencyId / subAccountId /
+    // createdByUid on every doc). Server-only, like customFields and
+    // pipelines: the management page and the composer read and write
+    // through /api/sub-accounts/[id]/snippets, which checks membership,
+    // stamps the tenant keys from the route (never the body) and validates
+    // name/body/subject/folder. Closing the client path means that
+    // validation cannot be bypassed with a direct SDK write, and a malformed
+    // snippet can never reach another member's composer. Explicit here so
+    // the collection's stance is on record; default-deny would do the same.
+    match /snippets/{snippetId} {
+      allow read, write: if false;
     }
 
     match /contacts/{contactId} {
@@ -1165,11 +1189,14 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
+      // hostUids / serviceId / serviceName are written by the booking
+      // routes only (Admin SDK): hostUids is busy time for every listed
+      // host, so a client must not be able to set or change it.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      ) && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName"]);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1179,9 +1206,10 @@ service cloud.firestore {
           resource.data.subAccountId,
           resource.data.agencyId
         )
-        // `mode` decides v1 exposure and whether status changes fire real
-        // triggers/email — server-set only, never flipped from a client.
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mode']);
+        // Server-set only. `mode` also decides v1 exposure and whether a
+        // status change fires real triggers/email.
+        && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode"]);
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
