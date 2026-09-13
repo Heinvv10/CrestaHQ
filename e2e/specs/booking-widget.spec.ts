@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
 import { adminDb } from "../lib/admin";
 import { baseURL, readEnv } from "../lib/env";
-import { ensureBookingPage, ownerUid } from "../lib/seed";
+import { ensureWidgetBookingPage, ownerUid } from "../lib/seed";
 
 /**
  * SP3 (e) — the embeddable booking widget (W1) and the reschedule/cancel
@@ -49,7 +49,7 @@ test("the booking widget embeds on a third-party site, books, redirects the TOP 
   // a same-frame (broken) redirect and a top-window (correct) redirect are
   // both easy to tell apart from where `page.url()` ends up.
   const redirectTarget = `${EXAMPLE}/thanks`;
-  const slug = await ensureBookingPage(
+  const slug = await ensureWidgetBookingPage(
     env.E2E_AGENCY_ID,
     saId,
     uid,

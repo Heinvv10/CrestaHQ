@@ -15,6 +15,8 @@ import type { ConversationChannel } from "@/types/conversations";
 import type { ConversationTheme } from "@/hooks/use-conversation-theme";
 import type { Note } from "@/types/contacts";
 import { ThreadNote } from "./thread-note";
+import { ThreadScheduled } from "./thread-scheduled";
+import { useScheduledMessages } from "@/hooks/use-scheduled-messages";
 
 type ChannelMessage =
   | (MessageDoc & { channel: ConversationChannel })
@@ -56,6 +58,11 @@ type MetaMessageDoc = MessageDoc & { channel?: ConversationChannel };
  * timeline shows — are interleaved by time whenever there is a contact,
  * including a web-chat session that has captured one. They are rendered as
  * notes, never as bubbles.
+ *
+ * Scheduled messages (SP2 T5) — pending, sending, failed or unconfirmed — are
+ * interleaved at their send time for contact threads, as dashed items with
+ * Cancel (pending) or Dismiss (failed / unconfirmed). Sent ones are left out
+ * (the real message row shows instead), as are cancelled and dismissed ones.
  */
 export function ConversationThread({
   contactId,
@@ -63,14 +70,18 @@ export function ConversationThread({
   subAccountId,
   theme = "standard",
   onEmailReply,
+  scheduleTimeZone = "UTC",
 }: {
   contactId: string;
   onEmailReply?: (message: EmailMessageDoc) => void;
   /** Web-chat only: read the session transcript instead of contact threads. */
   sessionId?: string | null;
-  /** Required alongside sessionId to locate the session doc. */
+  /** Required alongside sessionId to locate the session doc; for a contact
+   *  thread it scopes the scheduled-messages read. */
   subAccountId?: string;
   theme?: ConversationTheme;
+  /** Zone scheduled times are shown in (see lib/conversations/schedule-time). */
+  scheduleTimeZone?: string;
 }) {
   const [email, setEmail] = useState<EmailMessageDoc[]>([]);
   const [emailReady, setEmailReady] = useState(false);
@@ -192,6 +203,12 @@ export function ConversationThread({
     );
   }, [contactId]);
 
+  const scheduledRead = useScheduledMessages(
+    isWebChat ? null : subAccountId,
+    isWebChat ? null : contactId,
+    email.length + sms.length + wa.length + meta.length
+  );
+
   const merged = useMemo<ThreadItem<ChannelMessage>[]>(() => {
     const threadNotes = contactId ? notes : [];
     if (isWebChat) {
@@ -209,8 +226,11 @@ export function ConversationThread({
         channel: (m.channel ?? "messenger") as ConversationChannel,
       })),
     ];
-    return mergeThreadItems(all, threadNotes);
-  }, [sms, wa, meta, web, email, isWebChat, notes, contactId]);
+    const scheduled = scheduledRead.messages.filter(
+      (m) => m.status !== "sent" && m.status !== "cancelled"
+    );
+    return mergeThreadItems(all, threadNotes, scheduled);
+  }, [sms, wa, meta, web, email, isWebChat, notes, contactId, scheduledRead.messages]);
 
   const hydrated =
     (!contactId || notesReady) &&
@@ -223,7 +243,11 @@ export function ConversationThread({
   }, [merged.length]);
 
   return (
-    <div ref={scrollerRef} className="flex-1 space-y-2 overflow-y-auto p-4">
+    <div
+      ref={scrollerRef}
+      data-testid="conversation-thread"
+      className="flex-1 space-y-2 overflow-y-auto p-4"
+    >
       {emailError && (
         <p role="alert" className="text-destructive text-xs">
           Email messages could not be loaded. Refresh to try again.
@@ -232,6 +256,11 @@ export function ConversationThread({
       {notesError && (
         <p role="alert" className="text-destructive text-xs">
           Internal notes could not be loaded. Refresh to try again.
+        </p>
+      )}
+      {scheduledRead.error && (
+        <p role="alert" className="text-destructive text-xs">
+          Scheduled messages could not be loaded. Refresh to try again.
         </p>
       )}
       {!hydrated ? (
@@ -249,6 +278,13 @@ export function ConversationThread({
         merged.map((item) =>
           item.kind === "note" ? (
             <ThreadNote key={item.key} note={item.note} />
+          ) : item.kind === "scheduled" ? (
+            <ThreadScheduled
+              key={item.key}
+              message={item.scheduled}
+              timeZone={scheduleTimeZone}
+              onRemove={scheduledRead.remove}
+            />
           ) : (
             <ChannelBubble
               key={item.key}

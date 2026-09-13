@@ -326,3 +326,40 @@ describe("applySnapshot — pipeline ids do not cross sub-accounts", () => {
     expect(wf.nodes.n1.config).toEqual({ stage: "proposal", pipelineId: null });
   });
 });
+
+describe("applySnapshot — booking page slugs do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+
+  it("nulls trigger.bookingPageSlug on a booking.* trigger", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [
+          {
+            sourceId: "wf_src",
+            name: "Page-pinned",
+            status: "active",
+            trigger: {
+              type: "booking.no_show",
+              filters: { all: [] },
+              bookingPageSlug: "src_page",
+            },
+            startNodeId: "n1",
+            nodes: {
+              n1: { id: "n1", type: "add_tag", config: { tag: "x" }, next: null },
+            },
+          },
+        ] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const wf = written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      trigger: { type: string; bookingPageSlug: string | null };
+    };
+    expect(wf.trigger.bookingPageSlug).toBeNull();
+    expect(wf.trigger.type).toBe("booking.no_show");
+  });
+});

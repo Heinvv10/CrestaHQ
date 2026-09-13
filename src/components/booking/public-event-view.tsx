@@ -8,7 +8,7 @@ import {
   Loader2,
   XCircle,
 } from "lucide-react";
-import type { EventStatus } from "@/types/events";
+import { eventStatusLabel, type EventStatus } from "@/types/events";
 
 /**
  * Public-facing event-management surface. Shows the attendee a summary
@@ -534,14 +534,14 @@ function StatusBadge({
   if (status === "cancelled") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-2.5 py-0.5 text-xs font-medium text-rose-700 dark:text-rose-400">
-        Cancelled
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "awaiting_payment") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-        Awaiting payment
+        {eventStatusLabel(status)}
       </span>
     );
   }
@@ -555,13 +555,13 @@ function StatusBadge({
   if (status === "no_show") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:text-zinc-400">
-        No-show
+        {eventStatusLabel(status)}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-      Confirmed
+      {eventStatusLabel(status)}
     </span>
   );
 }

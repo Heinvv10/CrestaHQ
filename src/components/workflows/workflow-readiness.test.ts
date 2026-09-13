@@ -47,6 +47,7 @@ async function render(
         saId: "sa1",
         forms: [],
         trackedLinks: [],
+        bookingPages: [],
         whatsappSenders: [],
         whatsappTemplates: [],
         readiness: {

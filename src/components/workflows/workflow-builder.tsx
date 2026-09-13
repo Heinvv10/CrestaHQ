@@ -78,6 +78,9 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "booking.created",
   "booking.cancelled",
   "booking.rescheduled",
+  "booking.confirmed",
+  "booking.showed",
+  "booking.no_show",
   "quote.accepted",
   "quote.paid",
   "message.received",
@@ -179,6 +182,7 @@ export function WorkflowBuilder({
   initial,
   forms,
   trackedLinks,
+  bookingPages,
   readiness,
   whatsappTemplates,
   whatsappSenders,
@@ -187,6 +191,7 @@ export function WorkflowBuilder({
   initial: BuilderInitial;
   forms: { id: string; name: string }[];
   trackedLinks: { id: string; name: string }[];
+  bookingPages: { slug: string; name: string }[];
   readiness: BuilderReadiness;
   whatsappTemplates: WhatsappTemplateOption[];
   whatsappSenders: WhatsappSenderOption[];
@@ -394,6 +399,31 @@ export function WorkflowBuilder({
                 setTrigger({ ...trigger, pipelineId: n.pipelineId, toStage: n.stageId })
               }
             />
+          )}
+
+          {(trigger.type === "booking.created" ||
+            trigger.type === "booking.cancelled" ||
+            trigger.type === "booking.rescheduled" ||
+            trigger.type === "booking.confirmed" ||
+            trigger.type === "booking.showed" ||
+            trigger.type === "booking.no_show") && (
+            <select
+              value={trigger.bookingPageSlug ?? ""}
+              onChange={(e) =>
+                setTrigger({
+                  ...trigger,
+                  bookingPageSlug: e.target.value || null,
+                })
+              }
+              className="border-input bg-background mt-2 h-9 w-full rounded-md border px-2 text-sm"
+            >
+              <option value="">Any booking page</option>
+              {bookingPages.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
           )}
 
           {trigger.type === "message.received" && (

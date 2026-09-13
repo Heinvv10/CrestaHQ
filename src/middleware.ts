@@ -214,6 +214,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   /^\/api\/social\/publish\/step$/,
   // GHL migration drain — QStash callback, signature-verified in the route.
   /^\/api\/import\/ghl\/step$/,
+  // Scheduled conversation message worker (SP2 T5) — QStash callback,
+  // signature-verified inside the route (same model as /api/workflows/step).
+  /^\/api\/scheduled-messages\/fire$/,
   // WhatsApp template approval poll: /api/sub-accounts/{id}/whatsapp-templates/poll
   // QStash callback, signature-verified inside the route.
   /^\/api\/sub-accounts\/[^/]+\/whatsapp-templates\/poll$/,
