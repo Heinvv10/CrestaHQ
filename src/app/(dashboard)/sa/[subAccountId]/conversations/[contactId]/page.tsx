@@ -334,7 +334,7 @@ export default function ConversationDetailPage() {
               contact={contact}
               availableChannels={availableChannels}
               channelOptions={channelOptions}
-              defaultChannel={conversation?.lastChannel ?? "sms"}
+              defaultChannel={conversation?.lastChannel ?? null}
             />
           )}
         </>

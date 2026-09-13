@@ -177,3 +177,35 @@ it("with no reachable channel, still lists every reason", async () => {
   expect(container.textContent).toContain("No channel can reach this contact");
   expect(container.querySelector("form")).toBeNull();
 });
+
+it("a blocked WhatsApp gets no window badge and no template picker, even with the window closed", async () => {
+  m.window.mockReturnValue({ provider: "cloud", state: { kind: "closed", lastInboundAt: null } });
+  const options = [
+    opt("email", "No email address"),
+    opt("sms"),
+    opt("whatsapp", "Opted out of WhatsApp"),
+    opt("messenger", "Turned off by your agency"),
+    opt("instagram", "Turned off by your agency"),
+  ];
+  await mount("whatsapp", options);
+  expect(pill("whatsapp").getAttribute("aria-pressed")).toBe("true");
+  expect(m.window).toHaveBeenLastCalledWith("c1", false);
+  expect(q("wa-window-state")).toBeNull();
+  expect(q("wa-template-picker")).toBeNull();
+  expect(textarea().placeholder).toContain("Opted out of WhatsApp");
+});
+
+it("with no conversation (no last-used channel), opens on the first available", async () => {
+  await act(async () =>
+    root.render(
+      createElement(ConversationComposer, {
+        contact,
+        channelOptions: OPTIONS,
+        availableChannels: ["whatsapp"],
+        defaultChannel: null,
+      }),
+    ),
+  );
+  expect(pill("whatsapp").getAttribute("aria-pressed")).toBe("true");
+  expect(textarea().disabled).toBe(false);
+});

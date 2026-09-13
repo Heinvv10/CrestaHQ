@@ -69,7 +69,8 @@ export function ConversationComposer({
   /** Every channel with its availability + reason (SP2 T7). Without it, only
    *  `availableChannels` are listed. */
   channelOptions?: ChannelOption[];
-  defaultChannel: ConversationChannel;
+  /** The thread's last-used channel; null when there is no conversation. */
+  defaultChannel: ConversationChannel | null;
 }) {
   const options: ChannelOption[] =
     channelOptions ??
@@ -111,10 +112,17 @@ export function ConversationComposer({
     isEmail: channel === "email",
     replying: !!emailReply,
   });
-  const waWindow = useWhatsappWindow(
+  // The selected channel may be one this contact cannot be reached on (kept
+  // selected on purpose, see `initial`): nothing sends until another is
+  // picked, and a blocked WhatsApp gets no window badge or template picker —
+  // the template route would refuse that contact too.
+  const blockedReason =
+    options.find((o) => o.channel === channel && !o.available)?.reason ?? null;
+  const liveWindow = useWhatsappWindow(
     contact.id,
-    mode === "reply" && channel === "whatsapp",
+    mode === "reply" && channel === "whatsapp" && !blockedReason,
   );
+  const waWindow = blockedReason ? null : liveWindow;
   const switcher = (
     <ChannelSwitcher
       options={options}
@@ -176,10 +184,6 @@ export function ConversationComposer({
   // SP2 T8 — free-form text is refused by the route outside the window; say
   // so here instead of letting the operator find out on Send.
   const windowClosed = channel === "whatsapp" && waWindow?.state.kind === "closed";
-  // The selected channel may be one this contact cannot be reached on (kept
-  // selected on purpose, see `initial`): nothing sends until another is picked.
-  const blockedReason =
-    options.find((o) => o.channel === channel && !o.available)?.reason ?? null;
   const disabled =
     optedOut || sending || !hasIdentity || windowClosed || !!blockedReason;
 
