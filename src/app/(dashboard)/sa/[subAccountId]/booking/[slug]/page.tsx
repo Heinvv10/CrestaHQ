@@ -19,6 +19,7 @@ import {
 } from "@/lib/firestore/booking-pages";
 import { Button } from "@/components/ui/button";
 import { BookingPageEditor } from "@/components/booking/booking-page-editor";
+import { BookingEmbedDialog } from "@/components/booking/booking-embed-dialog";
 import { toDate } from "@/lib/format";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -156,6 +157,9 @@ export default function EditBookingPagePage() {
               <ExternalLink className="mr-1 h-3.5 w-3.5" />
               Open
             </Button>
+          )}
+          {page.status === "published" && (
+            <BookingEmbedDialog subAccountId={subAccountId} slug={page.slug} />
           )}
         </div>
       </header>
