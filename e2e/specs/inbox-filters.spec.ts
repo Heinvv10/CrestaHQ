@@ -270,6 +270,9 @@ test("split-pane inbox: tabs, scope, filters, star, mark unread, sort", async ({
       })
       .toBe(true);
     await tab("Starred").click();
+    // Reload only once the tab has reached the URL — reloading while
+    // router.replace is still in flight reloads the old query.
+    await expect(page).toHaveURL(/[?&]tab=starred/);
     await page.reload();
     await expect(tab("Starred")).toHaveAttribute("aria-selected", "true", {
       timeout: 30_000,
@@ -302,7 +305,7 @@ test("split-pane inbox: tabs, scope, filters, star, mark unread, sort", async ({
     // --- I1 mobile: thread alone, Back returns to the list ----------------
     await page.setViewportSize({ width: 400, height: 800 });
     await expect(list).toBeHidden();
-    await header.getByRole("link", { name: "Back to conversations" }).click();
+    await header.getByRole("button", { name: "Back to conversations" }).click();
     await expect(list).toBeVisible();
     await expect(page.getByText("Select a conversation")).toBeHidden();
   } finally {
