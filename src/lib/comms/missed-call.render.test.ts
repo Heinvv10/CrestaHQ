@@ -11,10 +11,7 @@ vi.mock("@/lib/server/conversations-service", () => ({
 }));
 import { DEFAULT_MCTB_MESSAGE, renderMissedCallMessage } from "./missed-call";
 
-const ctx = {
-  contact: { name: "  Thabo  Mokoena " },
-  businessName: "Velo Desk",
-};
+const ctx = { firstName: "Thabo", businessName: "Velo Desk" };
 
 describe("renderMissedCallMessage (legacy text-back tags through the shared renderer)", () => {
   it("renders the legacy aliases, case-insensitively", () => {
@@ -30,15 +27,12 @@ describe("renderMissedCallMessage (legacy text-back tags through the shared rend
     expect(
       renderMissedCallMessage(
         "Hi {{firstName}}, {{businessName}} here.  {{foo}} {{}}",
-        {
-          contact: { name: "" },
-          businessName: "Velo Desk",
-        }
+        { firstName: "", businessName: "Velo Desk" }
       )
     ).toBe("Hi , Velo Desk here.");
   });
 
-  it("canonical tags work, and a missing canonical value is dropped", () => {
+  it("canonical tags work, and a tag with no value is dropped", () => {
     expect(
       renderMissedCallMessage(
         "{{contact.first_name}} {{contact.email}} at {{business.name}}",

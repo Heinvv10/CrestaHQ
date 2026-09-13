@@ -59,13 +59,17 @@ export function ConversationComposer({
     : (availableChannels[0] ?? "sms");
   const [channel, setChannel] = useState<ConversationChannel>(initial);
   const [subject, setSubject] = useState("");
+  const [mode, setMode] = useState<ComposerMode>("reply");
   useEffect(() => {
     setSubject(emailReplyFields(emailReply).subject);
-    if (emailReply) setChannel("email");
+    if (emailReply) {
+      setChannel("email");
+      // Reply on an email while writing an internal note means "reply".
+      setMode("reply");
+    }
   }, [emailReply]);
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
-  const [mode, setMode] = useState<ComposerMode>("reply");
   const toggle = <ComposerModeToggle mode={mode} onChange={setMode} />;
 
   const merge = useMergeTagComposer({

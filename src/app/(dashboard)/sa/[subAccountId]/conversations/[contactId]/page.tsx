@@ -314,7 +314,14 @@ export default function ConversationDetailPage() {
               trailing={ownerPicker}
             />
           )}
-          <ConversationThread key={conversationId} contactId={conversationId} theme={theme} onEmailReply={availableChannels.includes("email") ? setEmailReply : undefined} />
+          <ConversationThread key={conversationId} contactId={conversationId} theme={theme} onEmailReply={
+              availableChannels.includes("email")
+                ? // A fresh object per click, so clicking Reply on the SAME
+                  // email again (e.g. after switching the composer to an
+                  // internal note) still reaches the composer's effect.
+                  (m) => setEmailReply({ ...m })
+                : undefined
+            } />
           {conversation?.pendingDraft && contact && (
             <ConversationDraftCard
               conversationId={conversationId}

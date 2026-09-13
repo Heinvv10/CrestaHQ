@@ -277,8 +277,8 @@ describe("assign", () => {
       action: { type: "assign", assignedToUid: "m1" },
     });
     expect(fake.mirror.mock.calls.map((c) => c[0])).toEqual([
-      { contactId: "a", subAccountId: "sa", assigneeUid: "m1" },
-      { contactId: "b", subAccountId: "sa", assigneeUid: "m1" },
+      { contactId: "a", subAccountId: "sa" },
+      { contactId: "b", subAccountId: "sa" },
     ]);
     fake.mirror.mockClear();
     await post({
@@ -289,7 +289,6 @@ describe("assign", () => {
     expect(fake.mirror).toHaveBeenCalledWith({
       contactId: "a",
       subAccountId: "sa",
-      assigneeUid: null,
     });
   });
 

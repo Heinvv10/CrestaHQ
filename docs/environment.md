@@ -110,6 +110,14 @@ Without these two vars, `/api/comms/email/send` returns **503** and the Email bu
 
 Without these three, `/api/comms/sms/send` returns 503. SMS opt-out (STOP/START) also requires the inbound webhook URL configured on the Twilio number — see the Onboarding Guide below.
 
+**Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER` / `WHATSAPP_SETTINGS_PROVIDER`):
+
+| Var | Purpose |
+|---|---|
+| `SMS_PROVIDER` | `fake` swaps Twilio for a deterministic fake at the ONE seam `sendSmsForSubAccount` uses to place a send (`src/lib/comms/sms/select.ts`) — every SMS path (missed-call text-back, workflows, manual send) benefits, and returns a deterministic `sid` recording nothing else, save for one magic failing number (`+15005550001`) that always throws. Unset/anything else = real Twilio. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]`; otherwise the send throws `SmsFakeRefusedError` rather than falling back. |
+| `SMS_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
+| `SMS_FAKE_AGENCY_ID` | Required with `SMS_PROVIDER=fake`: the fake sends only for sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake send silently no-op-ing for a real tenant's SMS. |
+
 ## Required for automations (disables cleanly if missing)
 | Var | Source |
 |---|---|
@@ -240,7 +248,7 @@ Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth c
 | `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
 | `GBP_SYNC_SCHEDULE_ENABLED` | `1` = register the 6-hourly Google Business Profile review sync (`leadstack-gbp-sync`, `0 */6 * * *` → `/api/cron/gbp-sync`) with the other QStash schedules at cold start, and let the Google Business page say "Syncs automatically every 6 hours". Unset/anything else = no schedule; the page says automatic sync is not scheduled, the sync cron answers `not_scheduled` and syncs nobody (a leftover QStash schedule is harmless), and only Sync now syncs. Retention does NOT depend on this flag: the daily `leadstack-gbp-retention` schedule (`/api/cron/gbp-retention`, Firestore only, no Google calls) is always registered. Turning it on in production is an owner step ([gbp-reviews.md](features/gbp-reviews.md)). |
 
-`scripts/deploy-velo.sh` runs `scripts/gbp-deploy-check.mjs` twice. **Before building** it refuses when any `.env*` file in the deploy dir contains the text `GBP_PROVIDER`, `GBP_FAKE_`, `WHATSAPP_SETTINGS_PROVIDER` or `WHATSAPP_FAKE_` anywhere (comments included), when a deploy-shell variable is named so, when `NEXT_PUBLIC_APP_URL` is *defined* more than once in `.env.production`, or when it is defined in any other env file (`.env.example` exempt; comment lines never count as definitions). **After building** it extracts the URL literal inlined into each fake-provider check (GBP's and the WhatsApp settings fake's) in each server chunk and refuses unless every one equals the app URL `sed` read from `.env.production`, that URL parses and is not loopback, and both checks were found. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
+`scripts/deploy-velo.sh` runs `scripts/gbp-deploy-check.mjs` twice. **Before building** it refuses when any `.env*` file in the deploy dir contains the text `GBP_PROVIDER`, `GBP_FAKE_`, `WHATSAPP_SETTINGS_PROVIDER`, `WHATSAPP_FAKE_`, `SMS_PROVIDER` or `SMS_FAKE_` anywhere (comments included), when a deploy-shell variable is named so, when `NEXT_PUBLIC_APP_URL` is *defined* more than once in `.env.production`, or when it is defined in any other env file (`.env.example` exempt; comment lines never count as definitions). **After building** it extracts the URL literal inlined into each fake-provider check (GBP's, the WhatsApp settings fake's, and the SMS fake's) in each server chunk and refuses unless every one equals the app URL `sed` read from `.env.production`, that URL parses and is not loopback, and all three checks were found. Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
 
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |

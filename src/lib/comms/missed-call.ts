@@ -7,10 +7,7 @@ import { reconcileContactFromCapture } from "@/lib/comms/ai/capture";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
-import {
-  renderMergeTags,
-  type MergeTagContext,
-} from "@/lib/messaging/merge-tags";
+import { renderMergeTags } from "@/lib/messaging/merge-tags";
 import type { MissedCallConfig, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 
@@ -100,15 +97,21 @@ export async function resolveVoiceRoute(
  * Render the text-back body through the shared merge-tag renderer, so a
  * missed caller (often a brand-new contact with no name) never sees a broken
  * template: {{contact.firstName}} / {{firstName}} and
- * {{workspace.name}} / {{businessName}} keep working, the canonical
- * {{contact.*}} / {{business.name}} tags work too, and any tag without a
- * value — or unknown — collapses to empty.
+ * {{workspace.name}} / {{businessName}} keep working (same signature and
+ * output as the old replace chain), {{contact.first_name}} /
+ * {{business.name}} work too, and any other tag — or one without a value —
+ * collapses to empty. Only the caller's first name is passed in, so the
+ * other {{contact.*}} tags always collapse here.
  */
 export function renderMissedCallMessage(
   body: string,
-  ctx: MergeTagContext,
+  ctx: { firstName: string; businessName: string },
 ): string {
-  return renderMergeTags(body, ctx, { unknown: "drop" })
+  return renderMergeTags(
+    body,
+    { contact: { name: ctx.firstName }, businessName: ctx.businessName },
+    { unknown: "drop" },
+  )
     .text.replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -186,6 +189,7 @@ export async function handleMissedCall(input: {
   // Load the contact for opt-out + merge context.
   const contactSnap = await db.doc(`contacts/${contactId}`).get();
   const contact = contactSnap.data() as Contact | undefined;
+  const firstName = (contact?.name ?? "").trim().split(/\s+/)[0] ?? "";
 
   // call.missed — the miss itself is the event (Conversations webhook
   // category + speed-to-lead push), independent of whether the text-back
@@ -231,7 +235,7 @@ export async function handleMissedCall(input: {
 
   const bodyText = renderMissedCallMessage(
     missedCall.messageBody?.trim() || DEFAULT_MCTB_MESSAGE,
-    { contact: contact ?? null, businessName: subAccount.name ?? "" },
+    { firstName, businessName: subAccount.name ?? "" },
   );
 
   let smsSid: string | undefined;

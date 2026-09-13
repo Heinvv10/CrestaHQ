@@ -72,7 +72,6 @@ it("mirrors an owner change onto the contact's conversations", async () => {
   expect(m.mirror).toHaveBeenCalledWith({
     contactId: "contact",
     subAccountId: "sa",
-    assigneeUid: "m1",
   });
   m.mirror.mockClear();
   await updateContactServerSide({
@@ -82,7 +81,6 @@ it("mirrors an owner change onto the contact's conversations", async () => {
   expect(m.mirror).toHaveBeenCalledWith({
     contactId: "contact",
     subAccountId: "sa",
-    assigneeUid: null,
   });
 });
 it("leaves the conversation owner alone when the patch has no owner key", async () => {

@@ -123,3 +123,40 @@ it("Reply mode still posts to the send route (the toggle does not break it)", as
   expect(m.fetch.mock.calls[0][0]).toBe("/api/comms/sms/send");
   expect(m.addNote).not.toHaveBeenCalled();
 });
+
+it("Reply on an email while in note mode switches back to Reply — even the same email twice", async () => {
+  const contact = { id: "c1", email: "c@x.co" } as Contact;
+  const email = {
+    contactId: "c1",
+    subject: "Question",
+    messageId: "<m@x>",
+    references: [],
+    inReplyTo: null,
+  };
+  const render = (emailReply: unknown) =>
+    act(async () =>
+      root.render(
+        createElement(ConversationComposer, {
+          contact,
+          availableChannels: ["sms", "email"],
+          defaultChannel: "sms",
+          emailReply: emailReply as never,
+        })
+      )
+    );
+  await render(null);
+  await clickTab("Internal note");
+  expect(container.querySelector('[data-testid="internal-note-composer"]')).not.toBeNull();
+  await render(email);
+  expect(container.querySelector('[data-testid="internal-note-composer"]')).toBeNull();
+  const subject = container.querySelector(
+    'input[aria-label="Email subject"]'
+  ) as HTMLInputElement;
+  expect(subject.value).toBe("Re: Question");
+  // Back to note mode, then Reply on the same email again (the page hands a
+  // fresh copy per click).
+  await clickTab("Internal note");
+  await render({ ...email });
+  expect(container.querySelector('[data-testid="internal-note-composer"]')).toBeNull();
+  expect(container.textContent).toContain("Send via Email");
+});

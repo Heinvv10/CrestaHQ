@@ -33,13 +33,10 @@ export function itemMillis(v: unknown): number {
 export function mergeThreadItems<
   M extends { id: string; channel: string; createdAt?: unknown },
 >(messages: M[], notes: Note[]): ThreadItem<M>[] {
+  // Notes go in FIRST: Array.sort is stable, so building messages first would
+  // put a same-millisecond message ahead of a note without any tie-break, and
+  // the tie-break below would be untested decoration.
   const items: ThreadItem<M>[] = [
-    ...messages.map((m) => ({
-      kind: "message" as const,
-      key: `${m.channel}:${m.id}`,
-      at: itemMillis(m.createdAt),
-      message: m,
-    })),
     ...notes.map((n) => ({
       kind: "note" as const,
       key: `note:${n.id}`,
@@ -48,6 +45,12 @@ export function mergeThreadItems<
       // the oldest — without this it would jump to the top of the thread.
       at: n.createdAt ? itemMillis(n.createdAt) : Number.POSITIVE_INFINITY,
       note: n,
+    })),
+    ...messages.map((m) => ({
+      kind: "message" as const,
+      key: `${m.channel}:${m.id}`,
+      at: itemMillis(m.createdAt),
+      message: m,
     })),
   ];
   items.sort(
