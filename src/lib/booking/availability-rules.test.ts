@@ -108,21 +108,36 @@ describe("date overrides", () => {
     expect(starts(slots(p))).toEqual(["09-15 09:00"]);
   });
 
-  it("host override beats page override beats weekly hours (host custom hours included)", () => {
+  it("a page override that changes hours: host's own override wins; custom weekly hours are kept; others follow the page", () => {
+    const C: BookingHost = { uid: "c", name: "Cy" };
     const p = page({
       hosts: [
         { ...A, dateOverrides: [{ date: MON, ranges: [range("15:00", "16:00")] }] },
         { ...B, workingHours: [{ dayOfWeek: 1, startMinute: 600, endMinute: 660 }] },
+        C,
       ],
       dateOverrides: [{ date: MON, ranges: [range("13:00", "14:00")] }],
     });
     const out = slots(p, [], {}, `${MON}T23:59:00Z`);
     expect(out.map((s) => [starts([s])[0], s.hostUids])).toEqual([
-      ["09-14 13:00", ["b"]],
-      ["09-14 13:30", ["b"]],
-      ["09-14 15:00", ["a"]],
+      ["09-14 10:00", ["b"]], // Bob keeps his custom weekly 10–11
+      ["09-14 10:30", ["b"]],
+      ["09-14 13:00", ["c"]], // Cy has page hours, so the page override
+      ["09-14 13:30", ["c"]],
+      ["09-14 15:00", ["a"]], // Ann's own override
       ["09-14 15:30", ["a"]],
     ]);
+  });
+
+  it("a page override that CLOSES a date closes it for every host, own overrides and custom hours included", () => {
+    const p = page({
+      hosts: [
+        { ...A, dateOverrides: [{ date: MON, ranges: [range("15:00", "16:00")] }] },
+        { ...B, workingHours: [{ dayOfWeek: 1, startMinute: 600, endMinute: 660 }] },
+      ],
+      dateOverrides: [{ date: MON, ranges: [] }],
+    });
+    expect(slots(p, [], {}, `${MON}T23:59:00Z`)).toEqual([]);
   });
 
   it("a host's closed date removes only that host", () => {

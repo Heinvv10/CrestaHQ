@@ -159,7 +159,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   const run = (
     b: BusyEvent[],
     hours?: WorkingHour[],
-    host?: Pick<BookingHost, "dateOverrides">,
+    host?: Pick<BookingHost, "workingHours" | "dateOverrides">,
   ) =>
     computeAvailability({
       page: base,
@@ -169,7 +169,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
       busy: b,
       ignoreMinNotice: input.ignoreMinNotice,
       workingHoursOverride: hours && hours.length > 0 ? hours : undefined,
-      dateOverrides: mergeOverrides(page.dateOverrides, host?.dateOverrides),
+      dateOverrides: mergeOverrides(page.dateOverrides, host),
     });
 
   let slots: PageSlot[];
@@ -204,16 +204,24 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
 }
 
 /**
- * One date-override list for a schedule: the host's entry for a date beats
- * the page's; dates neither lists fall back to weekly hours.
+ * One date-override list for a schedule (host absent ⇒ the page's own).
+ *  - A page entry that CLOSES a date (empty ranges) closes it for everyone.
+ *  - A host's own entry beats any page entry that changes hours.
+ *  - A page entry that changes hours applies only to hosts on the page
+ *    hours; a host with custom weekly hours keeps them.
  */
 function mergeOverrides(
   pageOverrides: DateOverride[] | undefined,
-  hostOverrides: DateOverride[] | undefined,
+  host: Pick<BookingHost, "workingHours" | "dateOverrides"> | undefined,
 ): DateOverride[] {
   const byDate = new Map<string, DateOverride>();
-  for (const o of pageOverrides ?? []) byDate.set(o.date, o);
-  for (const o of hostOverrides ?? []) byDate.set(o.date, o);
+  const customWeekly = (host?.workingHours?.length ?? 0) > 0;
+  for (const o of pageOverrides ?? []) {
+    if (o.ranges.length === 0 || !customWeekly) byDate.set(o.date, o);
+  }
+  for (const o of host?.dateOverrides ?? []) {
+    if (byDate.get(o.date)?.ranges.length !== 0) byDate.set(o.date, o);
+  }
   return [...byDate.values()];
 }
 
