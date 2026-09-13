@@ -46,6 +46,10 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     ["WhatsApp graph, even — production never needs the name", "WHATSAPP_SETTINGS_PROVIDER=graph"],
     ["any WHATSAPP_FAKE_*", "WHATSAPP_FAKE_AGENCY_ID=abc"],
     ["WHATSAPP_FAKE_* commented out", "# WHATSAPP_FAKE_ALLOW_PROD_BUILD=1"],
+    ["the SMS fake", "SMS_PROVIDER=fake"],
+    ["SMS twilio, even — production never needs the name", "SMS_PROVIDER=twilio"],
+    ["any SMS_FAKE_*", "SMS_FAKE_AGENCY_ID=abc"],
+    ["SMS_FAKE_* commented out", "# SMS_FAKE_ALLOW_PROD_BUILD=1"],
   ])("%s", (_label, line) => {
     expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}${line}\n` }), {}).join()).toContain(".env.production");
   });
@@ -63,6 +67,8 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GBP_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { WHATSAPP_SETTINGS_PROVIDER: "graph" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { WHATSAPP_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { SMS_PROVIDER: "twilio" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { SMS_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
   });
 
   it("fails closed on an unreadable env file", () => {
@@ -123,7 +129,7 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
 
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
-    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_/);
+    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_/);
   });
 });
 
@@ -170,10 +176,14 @@ const INLINED_FN_SHAPE = (url: string) =>
 /** The WhatsApp settings fence (settings/mode.ts), minified the same way. */
 const WA_MODE_CODE = (url: string) =>
   `class n extends Error{constructor(e){super(\`WhatsApp fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.WHATSAPP_SETTINGS_PROVIDER)return"graph";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (WhatsApp fake)")}`;
-const server = (url: string, waUrl = url) => [
+/** The SMS fence (sms/mode.ts), minified the same way. */
+const SMS_MODE_CODE = (url: string) =>
+  `class n extends Error{constructor(e){super(\`SMS fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.SMS_PROVIDER)return"twilio";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (SMS fake)")}`;
+const server = (url: string, waUrl = url, smsUrl = url) => [
   { path: "chunks/a.js", text: MODE_CODE(url) },
   { path: "chunks/b.js", text: "unrelated" },
   { path: "chunks/wa.js", text: WA_MODE_CODE(waUrl) },
+  { path: "chunks/sms.js", text: SMS_MODE_CODE(smsUrl) },
 ];
 
 describe("(b) post-build: the inlined app URL", () => {
@@ -210,8 +220,14 @@ describe("(b) post-build: the inlined app URL", () => {
       inlinedUrlIsSafe("https://crm.crestahq.com", [
         { path: "c.js", text: INLINED_FN_SHAPE("https://crm.crestahq.com") },
         { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
+        { path: "sms.js", text: SMS_MODE_CODE("https://crm.crestahq.com") },
       ]),
     ).toEqual([]);
+  });
+
+  it("refuses when the SMS check is missing from the build (nothing proven for it)", () => {
+    const noSms = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/sms.js");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", noSms).join()).toContain("SMS fake-provider check was not found");
   });
 
   it("refuses when only the WhatsApp check carries a loopback literal", () => {
@@ -257,6 +273,7 @@ describe("(b) post-build: the inlined app URL", () => {
       inlinedUrlIsSafe("https://crm.crestahq.com", [
         { path: "c.js", text: withLiteral(String.raw`"https:\/\/crm.crestahq.com"`) },
         { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
+        { path: "sms.js", text: SMS_MODE_CODE("https://crm.crestahq.com") },
       ]),
     ).toEqual([]);
     expect(
@@ -310,6 +327,7 @@ describe("CLI", () => {
     fs.mkdirSync(path.join(dir, ".next/server/chunks"), { recursive: true });
     fs.writeFileSync(path.join(dir, ".next/server/chunks/x.js"), MODE_CODE("https://crm.crestahq.com"));
     fs.writeFileSync(path.join(dir, ".next/server/chunks/wa.js"), WA_MODE_CODE("https://crm.crestahq.com"));
+    fs.writeFileSync(path.join(dir, ".next/server/chunks/sms.js"), SMS_MODE_CODE("https://crm.crestahq.com"));
     expect(run("post", dir, "https://crm.crestahq.com").status).toBe(0);
     expect(run("post", dir, "http://127.0.0.1:3100").status).toBe(1);
   });
