@@ -71,7 +71,7 @@ describe("DateOverridesEditor", () => {
     expect(latest.map((o) => o.date)).toEqual(["2026-12-01", "2026-12-20"]);
   });
 
-  it("adds a range after the latest one, and not past midnight", () => {
+  it("adds a range after the latest one, ending by 23:59 (a time input can't show 24:00)", () => {
     mount([{ date: "2026-12-01", ranges: [{ startMinute: 540, endMinute: 1020 }] }]);
     act(() => button("Add another range").click());
     expect(latest[0].ranges).toEqual([
@@ -80,7 +80,12 @@ describe("DateOverridesEditor", () => {
     ]);
     act(() => root.unmount());
     root = createRoot(host);
-    mount([{ date: "2026-12-01", ranges: [{ startMinute: 1380, endMinute: 1440 }] }]);
+    mount([{ date: "2026-12-01", ranges: [{ startMinute: 1350, endMinute: 1410 }] }]);
+    act(() => button("Add another range").click());
+    expect(latest[0].ranges[1]).toEqual({ startMinute: 1410, endMinute: 1439 });
+    act(() => root.unmount());
+    root = createRoot(host);
+    mount([{ date: "2026-12-01", ranges: [{ startMinute: 1380, endMinute: 1439 }] }]);
     expect(button("Add another range").disabled).toBe(true);
   });
 

@@ -19,6 +19,8 @@ import type { DateOverride } from "@/types/booking";
 const TIME_CLASS =
   "h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 const DEFAULT_RANGE = { startMinute: 9 * 60, endMinute: 17 * 60 };
+/** 23:59 — the latest end a time input can display. */
+const LAST_MINUTE = 1439;
 
 /** The first date from today (in the page's timezone) not already listed. */
 function nextFreeDate(taken: Set<string>, timezone: string): string {
@@ -38,7 +40,7 @@ export function DateOverridesEditor({
   timezone,
   disabled,
   label = "Date-specific hours",
-  hint = "Change the hours for one date, or mark it unavailable. Replaces the weekly hours for that date only.",
+  hint = "Change one date's hours or mark it unavailable. Unavailable closes the date for every host; changed hours apply to hosts on the page hours (a host with custom weekly hours keeps them unless they have their own entry for that date).",
 }: {
   value: DateOverride[];
   onChange: (next: DateOverride[]) => void;
@@ -159,14 +161,15 @@ export function DateOverridesEditor({
               variant="ghost"
               size="sm"
               onClick={() => {
-                // The new range starts where the latest one ends.
+                // The new range starts where the latest one ends and stops by
+                // 23:59 — a time input can't show 24:00.
                 const start = Math.max(...o.ranges.map((x) => x.endMinute));
                 update(i, {
                   ...o,
-                  ranges: [...o.ranges, { startMinute: start, endMinute: Math.min(start + 60, 1440) }],
+                  ranges: [...o.ranges, { startMinute: start, endMinute: Math.min(start + 60, LAST_MINUTE) }],
                 });
               }}
-              disabled={disabled || Math.max(...o.ranges.map((x) => x.endMinute)) >= 1440}
+              disabled={disabled || Math.max(...o.ranges.map((x) => x.endMinute)) >= LAST_MINUTE}
               className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
             >
               <Plus className="mr-1 h-3 w-3" />

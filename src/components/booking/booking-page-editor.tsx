@@ -815,7 +815,7 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
                         timezone={form.timezone}
                         disabled={saving}
                         label={`Date-specific hours for ${m.name}`}
-                        hint="Beats the page's date-specific hours for the same date."
+                        hint="Beats the page's changed hours for the same date — but not a date the page marks unavailable."
                       />
                     </div>
                   )}
