@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { deleteConnectionForRemovedMember } from "@/lib/google-calendar/connection";
 
 /**
  * Sub-account-level member management.
@@ -149,6 +150,9 @@ export async function DELETE(
     db.doc(`userMemberships/${targetUid}/subAccounts/${subAccountId}`),
   );
   await batch.commit();
+  // Their Google Calendar tokens go with them (best-effort; busy and push
+  // also refuse a non-member's connection).
+  await deleteConnectionForRemovedMember(subAccountId, targetUid);
 
   // 1.5. Push hygiene — drop the removed member's notification pref for
   // this sub-account so their settings toggle list doesn't keep a stale

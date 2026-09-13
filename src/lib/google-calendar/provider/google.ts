@@ -8,7 +8,6 @@ import { GCAL_SCOPES } from "../scopes";
 import {
   GCAL_EVENT_ID_RE,
   type GcalEvent,
-  type GcalEventInput,
   type GcalProvider,
 } from "./types";
 
@@ -25,7 +24,8 @@ const REQUEST_TIMEOUT_MS = 5_000;
 /** 250 events per page × 10 pages is far beyond any real two-week window. */
 const MAX_PAGES = 10;
 
-function init(accessToken: string, method = "GET", body?: unknown): RequestInit {
+function init(accessToken: string, method = "GET", body?: unknown, signal?: AbortSignal): RequestInit {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   return {
     method,
     headers: {
@@ -33,7 +33,7 @@ function init(accessToken: string, method = "GET", body?: unknown): RequestInit 
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   };
 }
 
@@ -47,14 +47,14 @@ export const googleGcalProvider: GcalProvider = {
     return buildGoogleOAuthUrl({ redirectUri, state, scope: GCAL_SCOPES.join(" ") });
   },
   exchangeCode,
-  refresh,
+  refresh: (refreshToken, signal) => refresh(refreshToken, signal),
 
   async userEmail(accessToken) {
     const body = (await fetchJson(USERINFO, init(accessToken))) as { email?: unknown } | null;
     return typeof body?.email === "string" && body.email ? body.email : null;
   },
 
-  async listEvents(accessToken, { timeMin, timeMax }) {
+  async listEvents(accessToken, { timeMin, timeMax }, signal) {
     const items: GcalEvent[] = [];
     let timeZone: string | null = null;
     let pageToken: string | null = null;
@@ -67,7 +67,7 @@ export const googleGcalProvider: GcalProvider = {
         maxResults: "250",
       });
       if (pageToken) params.set("pageToken", pageToken);
-      const body = (await fetchJson(`${EVENTS}?${params}`, init(accessToken))) as {
+      const body = (await fetchJson(`${EVENTS}?${params}`, init(accessToken, "GET", undefined, signal))) as {
         items?: unknown;
         timeZone?: unknown;
         nextPageToken?: unknown;
@@ -83,21 +83,20 @@ export const googleGcalProvider: GcalProvider = {
     throw new GbpProviderError("malformed");
   },
 
-  async insertEvent(accessToken, input: GcalEventInput) {
-    const body = (await fetchJson(EVENTS, init(accessToken, "POST", input))) as { id?: unknown } | null;
-    if (typeof body?.id !== "string" || !GCAL_EVENT_ID_RE.test(body.id)) {
-      throw new GbpProviderError("malformed");
-    }
-    return body.id;
-  },
-
-  async patchEvent(accessToken, eventId, input) {
-    await fetchJson(eventUrl(eventId), init(accessToken, "PATCH", input));
-  },
-
-  async deleteEvent(accessToken, eventId) {
+  async putEvent(accessToken, eventId, input, signal) {
+    const url = eventUrl(eventId);
     try {
-      await fetchJson(eventUrl(eventId), init(accessToken, "DELETE"));
+      await fetchJson(EVENTS, init(accessToken, "POST", { id: eventId, ...input }, signal));
+    } catch (err) {
+      // Our id already exists (an earlier push, or a racing one): overwrite.
+      if (!(err instanceof GbpProviderError && err.status === 409)) throw err;
+      await fetchJson(url, init(accessToken, "PATCH", input, signal));
+    }
+  },
+
+  async deleteEvent(accessToken, eventId, signal) {
+    try {
+      await fetchJson(eventUrl(eventId), init(accessToken, "DELETE", undefined, signal));
     } catch (err) {
       // Google answers 410 Gone for an event already deleted; that is the
       // same outcome as 404 for every caller.

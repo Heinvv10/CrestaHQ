@@ -143,6 +143,7 @@ function batch() {
   const b = {
     set: (ref: Ref, data: Record<string, unknown>, opts?: { merge?: boolean }) =>
       (pending.push(() => ref.set(data, opts)), b),
+    update: (ref: Ref, data: Record<string, unknown>) => (pending.push(() => ref.update(data)), b),
     delete: (ref: Ref) => (pending.push(() => ref.delete()), b),
     commit: async () => {
       for (const apply of pending) await apply();
@@ -161,7 +162,7 @@ export const adminMock = () => ({
 });
 
 export const firestoreMock = () => ({
-  FieldValue: { serverTimestamp: () => "SERVER_TS" },
+  FieldValue: { serverTimestamp: () => "SERVER_TS", delete: () => "DELETE_FIELD" },
 });
 
 /** Fresh docs: an admin, a plain member, and an admin of a DIFFERENT sub. */

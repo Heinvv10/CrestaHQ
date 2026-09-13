@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/event-status-service";
 import { eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
+import { removeBookingFromGoogle } from "@/lib/google-calendar/push";
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   const snap = await getAdminDb().doc(`events/${params.id}`).get();
@@ -109,6 +110,8 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   if (d.subAccountId !== ctx.subAccountId || d.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
+  // Its Google copies first — nothing would find them after the delete.
+  await removeBookingFromGoogle(params.id);
   await ref.delete();
   void emitWebhookEvent({
     subAccountId: ctx.subAccountId,

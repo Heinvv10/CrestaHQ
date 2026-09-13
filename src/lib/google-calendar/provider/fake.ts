@@ -23,7 +23,7 @@ import type { GcalEvent, GcalEventInput, GcalProvider } from "./types";
  * tokens stop working, as at Google).
  */
 
-export type FakeGcalOp = "exchangeCode" | "refresh" | "listEvents" | "insertEvent" | "patchEvent" | "deleteEvent";
+export type FakeGcalOp = "exchangeCode" | "refresh" | "listEvents" | "putEvent" | "deleteEvent";
 
 export interface FakeGcalEvent extends GcalEvent {
   description?: string;
@@ -110,7 +110,7 @@ export function createFakeGcalProvider(
 
   const toEvent = (id: string, input: GcalEventInput): FakeGcalEvent => ({
     id,
-    status: "confirmed",
+    status: input.status,
     summary: input.summary,
     description: input.description,
     location: input.location,
@@ -159,19 +159,9 @@ export function createFakeGcalProvider(
       return { items: calendar.events.filter(overlaps), timeZone: "UTC" };
     },
 
-    async insertEvent(accessToken, input) {
-      const calendar = await authed(accessToken, "insertEvent");
-      const id = `fakegevt${next()}`;
-      calendar.events = [...calendar.events, toEvent(id, input)];
-      await save(calendar);
-      return id;
-    },
-
-    async patchEvent(accessToken, eventId, input) {
-      const calendar = await authed(accessToken, "patchEvent");
-      const i = calendar.events.findIndex((e) => e.id === eventId);
-      if (i < 0) throw new GbpProviderError("not_found", { status: 404 });
-      calendar.events[i] = toEvent(eventId, input);
+    async putEvent(accessToken, eventId, input) {
+      const calendar = await authed(accessToken, "putEvent");
+      calendar.events = [...calendar.events.filter((e) => e.id !== eventId), toEvent(eventId, input)];
       await save(calendar);
     },
 

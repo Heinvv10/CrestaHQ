@@ -159,6 +159,7 @@ export async function GET(
     now,
     fromInstant,
     toInstant,
+    extraHostUids: movingEvent?.hostUids,
   });
 
   let slots: PageSlot[];

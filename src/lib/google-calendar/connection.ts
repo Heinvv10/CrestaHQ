@@ -25,9 +25,18 @@ export interface GoogleCalendarConnection {
   /** "revoked" once Google answered invalid_grant — the card says Reconnect. */
   status: "connected" | "revoked";
   connectedAt: Date;
-  /** Fixed text per failure kind; never a Google response body or a token. */
+  /**
+   * Reading busy time / the token failed. Fixed text per failure kind; never
+   * a Google response body or a token. A later successful read clears it.
+   */
   lastError: string | null;
   lastErrorAt: Date | null;
+  /**
+   * Writing a booking to Google failed. Kept apart from `lastError` so a busy
+   * read that works never hides a booking that is missing from Google.
+   */
+  lastPushError?: string | null;
+  lastPushErrorAt?: Date | null;
 }
 
 /** Refresh when less than this is left on the cached access token. */
@@ -58,6 +67,51 @@ export class GoogleCalendarTimeoutError extends Error {
   }
 }
 
+/**
+ * Run `work` with a time budget. On expiry the signal ABORTS the in-flight
+ * Google calls (not just the wait for them) and the promise rejects with
+ * GoogleCalendarTimeoutError.
+ */
+export async function withBudget<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ac = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      ac.abort();
+      reject(new GoogleCalendarTimeoutError(ms));
+    }, ms);
+  });
+  try {
+    return await Promise.race([work(ac.signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The uids Google sync may act for: an ACTIVE member of the sub-account, or
+ * the owner of its agency (who reaches every sub-account without a member
+ * row). A removed member's connection is never used.
+ */
+export async function isActiveMember(subAccountId: string, uid: string): Promise<boolean> {
+  const db = getAdminDb();
+  const member = await db.doc(`subAccounts/${subAccountId}/subAccountMembers/${uid}`).get();
+  if (member.exists && member.data()?.status === "active") return true;
+  const agencyId = (await db.doc(`subAccounts/${subAccountId}`).get()).data()?.agencyId;
+  if (typeof agencyId !== "string" || !agencyId) return false;
+  return (await db.doc(`agencies/${agencyId}`).get()).data()?.ownerUid === uid;
+}
+
+/** Member removal: drop their calendar connection. Best-effort, never throws. */
+export async function deleteConnectionForRemovedMember(subAccountId: string, uid: string): Promise<void> {
+  try {
+    await getAdminDb().doc(gcalConnectionPath(subAccountId, uid)).delete();
+  } catch (err) {
+    const kind = err instanceof Error ? err.name : typeof err;
+    console.error(`[google-calendar] removed-member cleanup failed sa=${subAccountId} uid=${uid} kind=${kind}`);
+  }
+}
+
 /** What the card shows for a failure. Fixed per kind — safe to store and render. */
 export function describeFailure(err: unknown): string {
   if (err instanceof GoogleCalendarTimeoutError) {
@@ -72,28 +126,37 @@ export function describeFailure(err: unknown): string {
       case "permission_denied":
         return "Google refused calendar access. Reconnect and allow calendar access.";
       case "rate_limited":
-        return "Google Calendar is rate-limiting requests; it will be retried on the next booking.";
+        return "Google Calendar is rate-limiting requests.";
       case "not_found":
         return "Google Calendar could not find the event.";
       default:
-        return "Couldn't reach Google Calendar; it will be retried on the next booking.";
+        return "Couldn't reach Google Calendar.";
     }
   }
-  return "Couldn't reach Google Calendar; it will be retried on the next booking.";
+  return "Couldn't reach Google Calendar.";
 }
 
-/** Best-effort: record a failure on the connection. Never throws. */
+/**
+ * Best-effort: record a failure on the connection — a busy/token failure in
+ * `lastError`, a booking write in `lastPushError`. Never throws.
+ */
 export async function recordConnectionError(
   subAccountId: string,
   uid: string,
   err: unknown,
+  kind: "busy" | "push" = "busy",
 ): Promise<void> {
+  const at = new Date();
+  const fields =
+    kind === "push"
+      ? { lastPushError: describeFailure(err), lastPushErrorAt: at }
+      : { lastError: describeFailure(err), lastErrorAt: at };
   try {
     await getAdminDb()
       .doc(gcalConnectionPath(subAccountId, uid))
       // update, not set: a member who disconnected meanwhile must not get a
       // stub connection doc back.
-      .update({ lastError: describeFailure(err), lastErrorAt: new Date() });
+      .update(fields);
   } catch (writeErr) {
     const kind = writeErr instanceof Error ? writeErr.name : typeof writeErr;
     console.error(`[google-calendar] could not record error sa=${subAccountId} uid=${uid} kind=${kind}`);
@@ -109,6 +172,7 @@ async function accessToken(
   conn: GoogleCalendarConnection,
   provider: GcalProvider,
   force: boolean,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!force && conn.accessTokenExpiresAt - Date.now() > REFRESH_MARGIN_MS) {
     return conn.accessToken;
@@ -116,9 +180,15 @@ async function accessToken(
   const ref = getAdminDb().doc(gcalConnectionPath(conn.subAccountId, conn.uid));
   let tokens;
   try {
-    tokens = await provider.refresh(conn.refreshToken);
+    tokens = await provider.refresh(conn.refreshToken, signal);
   } catch (err) {
-    if (err instanceof GbpProviderError && err.kind === "revoked") {
+    // Only the grant that failed is revoked: a member who reconnected
+    // meanwhile has a new refresh token that must not be marked dead.
+    if (
+      err instanceof GbpProviderError &&
+      err.kind === "revoked" &&
+      (await ref.get()).data()?.refreshToken === conn.refreshToken
+    ) {
       await ref.update({ status: "revoked", lastError: describeFailure(err), lastErrorAt: new Date() });
     }
     throw err;
@@ -142,11 +212,12 @@ export async function withGoogleToken<T>(
   conn: GoogleCalendarConnection,
   provider: GcalProvider,
   fn: (accessToken: string) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   try {
-    return await fn(await accessToken(conn, provider, false));
+    return await fn(await accessToken(conn, provider, false, signal));
   } catch (err) {
     if (!(err instanceof GbpProviderError) || err.kind !== "auth_expired") throw err;
-    return fn(await accessToken(conn, provider, true));
+    return fn(await accessToken(conn, provider, true, signal));
   }
 }

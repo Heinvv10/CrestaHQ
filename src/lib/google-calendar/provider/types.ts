@@ -44,6 +44,8 @@ export interface GcalEventList {
 
 /** What LeadStack writes for a booking. */
 export interface GcalEventInput {
+  /** Always "confirmed": re-writing an event the member deleted restores it (ruling 9). */
+  status: "confirmed";
   summary: string;
   description: string;
   location: string;
@@ -59,7 +61,7 @@ export interface GcalProvider {
   authorizeUrl(opts: { redirectUri: string; state: string }): string;
   exchangeCode(code: string, redirectUri: string): Promise<GoogleTokens>;
   /** `refreshToken` on the result is non-null only when Google rotated it. */
-  refresh(refreshToken: string): Promise<GoogleTokens>;
+  refresh(refreshToken: string, signal?: AbortSignal): Promise<GoogleTokens>;
   /** The Google account's email, for "Connected as …". Null when absent. */
   userEmail(accessToken: string): Promise<string | null>;
 
@@ -68,13 +70,17 @@ export interface GcalProvider {
   listEvents(
     accessToken: string,
     window: { timeMin: Date; timeMax: Date },
+    signal?: AbortSignal,
   ): Promise<GcalEventList>;
-  /** Returns the new Google event id. */
-  insertEvent(accessToken: string, input: GcalEventInput): Promise<string>;
-  patchEvent(accessToken: string, eventId: string, input: GcalEventInput): Promise<void>;
+  /**
+   * Create the event under OUR id, or — when that id already exists (409) —
+   * overwrite it. Idempotent, so two racing pushes can never duplicate.
+   */
+  putEvent(accessToken: string, eventId: string, input: GcalEventInput, signal?: AbortSignal): Promise<void>;
   /** Throws `not_found` for an event that is already gone. */
-  deleteEvent(accessToken: string, eventId: string): Promise<void>;
+  deleteEvent(accessToken: string, eventId: string, signal?: AbortSignal): Promise<void>;
 }
 
 /** Google event ids are base32hex; anchored so an id can't smuggle a path. */
 export const GCAL_EVENT_ID_RE = /^[A-Za-z0-9_-]{1,1024}$/;
+
