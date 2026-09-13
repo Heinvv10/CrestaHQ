@@ -22,6 +22,7 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Who moved the booking. Threaded through so the activity-timeline row can
@@ -144,6 +145,7 @@ export async function runRescheduleSideEffects(args: {
   const db = getAdminDb();
   const { event, page, newRawToken, publicEventUrl, startAt, endAt, actor } =
     args;
+  await pushBookingToGoogle(event.id);
 
   // Re-publish reminder callbacks with a fresh schedule nonce so the
   // QStash dedup key doesn't collapse onto the previous ones.
