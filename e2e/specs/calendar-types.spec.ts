@@ -11,9 +11,11 @@ import { deleteScoped } from "../lib/guard";
  * slots, and a team booking rescheduled into a time only ANOTHER host is
  * busy for (the reschedule route used to refuse it).
  *
- * Every page opens tomorrow (UTC) 09:00–12:00 only, with 30-min slots and no
- * minimum notice, and the browser runs in UTC — so "9:00 AM" is always a
- * real, bookable slot. Hosts are two seeded fixture members.
+ * Every page opens tomorrow (UTC) 21:00–24:00 only, with 30-min slots and no
+ * minimum notice, and the browser runs in UTC — so "9:00 PM" is always a
+ * real, bookable slot. Evening, because a hostless page is blocked by ANY
+ * event in the sub-account and other specs book the shared fixture in
+ * business hours. Hosts are two seeded fixture members.
  */
 
 test.use({ timezoneId: "UTC", locale: "en-US" });
@@ -50,7 +52,7 @@ async function seedPage(slug: string, over: Record<string, unknown>) {
       durationMinutes: 30,
       bufferMinutes: 0,
       workingHours: [
-        { dayOfWeek: tomorrow.getUTCDay(), startMinute: 540, endMinute: 720 },
+        { dayOfWeek: tomorrow.getUTCDay(), startMinute: 1260, endMinute: 1440 },
       ],
       timezone: "UTC",
       visibleDays: 2,
@@ -200,20 +202,20 @@ test("round robin, optimize for availability: the high-priority host gets it", a
     ],
   });
   await page.goto(`/b/${sa}/${slug}`);
-  await bookOnPublicPage(page, "9:00 AM");
+  await bookOnPublicPage(page, "9:00 PM");
   await expect.poll(async () => (await pageEvents(slug))[0]?.assignedToUid).toBe(HOST_B.uid);
 });
 
 test("collective: a time one host is busy for is not offered", async ({ page }) => {
   const slug = `${PREFIX}col-${stamp}`;
   await seedPage(slug, { calendarType: "collective", hosts: [HOST_A, HOST_B] });
-  await seedBusy("09:00", "09:30", HOST_B);
+  await seedBusy("21:00", "21:30", HOST_B);
 
   await page.goto(`/b/${sa}/${slug}`);
-  await expect(page.getByRole("button", { name: time("9:30 AM") })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("button", { name: time("9:00 AM") })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: time("9:30 PM") })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: time("9:00 PM") })).toHaveCount(0);
 
-  await bookOnPublicPage(page, "9:30 AM");
+  await bookOnPublicPage(page, "9:30 PM");
   await expect.poll(async () => (await pageEvents(slug))[0]?.hostUids).toEqual([
     HOST_A.uid,
     HOST_B.uid,
@@ -223,18 +225,18 @@ test("collective: a time one host is busy for is not offered", async ({ page }) 
 test("class: seats count down per booking, then the time is full", async ({ page }) => {
   const slug = `${PREFIX}class-${stamp}`;
   await seedPage(slug, { calendarType: "class", seatsPerSlot: 2 });
-  const nine = page.getByRole("button", { name: time("9:00 AM") });
+  const nine = page.getByRole("button", { name: time("9:00 PM") });
 
   await page.goto(`/b/${sa}/${slug}`);
   await expect(nine).toContainText("2 seats left", { timeout: 30_000 });
-  await bookOnPublicPage(page, "9:00 AM");
+  await bookOnPublicPage(page, "9:00 PM");
 
   await page.goto(`/b/${sa}/${slug}`);
   await expect(nine).toContainText("1 seat left", { timeout: 30_000 });
-  await bookOnPublicPage(page, "9:00 AM");
+  await bookOnPublicPage(page, "9:00 PM");
 
   await page.goto(`/b/${sa}/${slug}`);
-  await expect(page.getByRole("button", { name: time("9:30 AM") })).toContainText("2 seats left", {
+  await expect(page.getByRole("button", { name: time("9:30 PM") })).toContainText("2 seats left", {
     timeout: 30_000,
   });
   await expect(nine).toHaveCount(0);
@@ -253,29 +255,29 @@ test("service: the picked service sizes the slots and is stamped on the booking"
 
   await page.goto(`/b/${sa}/${slug}`);
   await page.getByRole("button", { name: /^E2E Cut/ }).click();
-  await expect(page.getByRole("button", { name: time("10:00 AM") })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("button", { name: time("9:30 AM") })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: time("10:00 PM") })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: time("9:30 PM") })).toHaveCount(0);
 
   await page.getByRole("button", { name: /^E2E Trim/ }).click();
-  await expect(page.getByRole("button", { name: time("9:30 AM") })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: time("9:30 PM") })).toBeVisible({ timeout: 30_000 });
 
   await page.getByRole("button", { name: /^E2E Cut/ }).click();
-  await bookOnPublicPage(page, "10:00 AM");
+  await bookOnPublicPage(page, "10:00 PM");
   await expect.poll(async () => (await pageEvents(slug))[0]?.serviceId).toBe("cut");
   const [ev] = await pageEvents(slug);
-  expect((ev.endAt as Timestamp).toDate().toISOString()).toBe(at("11:00").toISOString());
+  expect((ev.endAt as Timestamp).toDate().toISOString()).toBe(at("23:00").toISOString());
 });
 
 test("a team booking reschedules into a time only another host is busy for", async ({ page }) => {
   const slug = `${PREFIX}team-${stamp}`;
   // A legacy team page — no calendarType — is round robin.
   await seedPage(slug, { hosts: [HOST_A, HOST_B] });
-  await seedBusy("10:00", "10:30", HOST_B);
+  await seedBusy("22:00", "22:30", HOST_B);
 
   // Bob is busier, so the booking goes to Ann.
   const res = await page.request.post(`/api/booking/${sa}/${slug}/book`, {
     data: {
-      slot: { startAt: at("09:00").toISOString(), endAt: at("09:30").toISOString() },
+      slot: { startAt: at("21:00").toISOString(), endAt: at("21:30").toISOString() },
       name: `E2E Cal Visitor ${stamp}`,
       email: `e2e-cal-${stamp}@example.com`,
       phone: "+27600000000",
@@ -287,11 +289,11 @@ test("a team booking reschedules into a time only another host is busy for", asy
 
   await page.goto(publicEventUrl);
   await page.getByRole("button", { name: "Reschedule" }).click();
-  await page.getByRole("button", { name: time("10:00 AM") }).click();
+  await page.getByRole("button", { name: time("10:00 PM") }).click();
   await page.getByRole("button", { name: "Confirm new time" }).click();
   await expect(page.getByText(/Rescheduled\./)).toBeVisible({ timeout: 30_000 });
 
   const moved = await adminDb().doc(`events/${eventId}`).get();
-  expect((moved.data()?.startAt as Timestamp).toDate().toISOString()).toBe(at("10:00").toISOString());
+  expect((moved.data()?.startAt as Timestamp).toDate().toISOString()).toBe(at("22:00").toISOString());
   expect(moved.data()?.assignedToUid).toBe(HOST_A.uid);
 });
