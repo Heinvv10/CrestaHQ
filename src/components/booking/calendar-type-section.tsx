@@ -28,6 +28,15 @@ type Setter = <K extends keyof BookingPageFormData>(
   value: BookingPageFormData[K],
 ) => void;
 
+/**
+ * A fresh service id. Random, never `service-N`: a booking keeps the id of the
+ * service it was made for, so a deleted service's id must not come back on a
+ * new one.
+ */
+export function newServiceId(): string {
+  return `svc_${crypto.randomUUID().slice(0, 8)}`;
+}
+
 /** Defaults a freshly picked type needs to pass validation. */
 export function typeDefaults(
   type: CalendarType,
@@ -38,8 +47,28 @@ export function typeDefaults(
     seatsPerSlot: type === "class" ? 10 : null,
     services:
       type === "service"
-        ? [{ id: "service-1", name: "Consultation", durationMinutes, description: null }]
+        ? [{ id: newServiceId(), name: "Consultation", durationMinutes, description: null }]
         : null,
+  };
+}
+
+/**
+ * The type fields after switching to `next`: the new type's own (kept when
+ * already set, else defaulted), and null for every field it doesn't use — so
+ * stale seats, services or distribution never ride along.
+ */
+export function fieldsForType(
+  form: BookingPageFormData,
+  next: CalendarType,
+): Pick<BookingPageFormData, "calendarType" | "seatsPerSlot" | "services" | "distribution"> {
+  const d = typeDefaults(next, form.durationMinutes);
+  const services = form.services ?? [];
+  return {
+    calendarType: next,
+    seatsPerSlot: next === "class" ? (form.seatsPerSlot ?? d.seatsPerSlot) : null,
+    services: next === "service" ? (services.length > 0 ? services : d.services) : null,
+    distribution:
+      next === "round_robin" || next === "service" ? (form.distribution ?? null) : null,
   };
 }
 
@@ -69,10 +98,11 @@ export function CalendarTypeSection({
   const services = form.services ?? [];
 
   function changeType(next: CalendarType) {
-    const d = typeDefaults(next, form.durationMinutes);
-    set("calendarType", next);
-    set("seatsPerSlot", form.seatsPerSlot ?? d.seatsPerSlot);
-    set("services", services.length > 0 ? services : d.services);
+    const f = fieldsForType(form, next);
+    set("calendarType", f.calendarType);
+    set("seatsPerSlot", f.seatsPerSlot);
+    set("services", f.services);
+    set("distribution", f.distribution);
   }
 
   function setService(i: number, patch: Partial<BookingService>) {
@@ -80,12 +110,9 @@ export function CalendarTypeSection({
   }
 
   function addService() {
-    const ids = new Set(services.map((s) => s.id));
-    let n = services.length + 1;
-    while (ids.has(`service-${n}`)) n++;
     set("services", [
       ...services,
-      { id: `service-${n}`, name: "", durationMinutes: form.durationMinutes, description: null },
+      { id: newServiceId(), name: "", durationMinutes: form.durationMinutes, description: null },
     ]);
   }
 
