@@ -37,6 +37,23 @@ export const DISMISSABLE_STATUSES: readonly ScheduledMessageStatus[] = [
  * point as overdue.
  */
 export const LATE_DELIVERY_LIMIT_MS = 15 * 60_000;
+
+/**
+ * How long a message may sit in "sending" before it is treated as unconfirmed.
+ * A send finishes in seconds; one still "sending" after this was claimed by a
+ * worker that died mid-send (a deploy restart), so nothing will ever finish
+ * it. Its outcome is unknown — the same state as "unconfirmed" — and it can
+ * then be dismissed.
+ */
+export const STALE_SENDING_MS = 15 * 60_000;
+
+/** A "sending" message whose claim (or, lacking one, send time) is older than STALE_SENDING_MS. */
+export function isStaleSending(
+  m: { status: string; claimedAtMs: number | null; sendAtMs: number },
+  nowMs: number
+): boolean {
+  return m.status === "sending" && nowMs - (m.claimedAtMs ?? m.sendAtMs) > STALE_SENDING_MS;
+}
 export const LATE_DELIVERY_REASON = "Delivered late by the scheduler — not sent.";
 export const UNCONFIRMED_LABEL =
   "Not confirmed sent — check the conversation before resending";
@@ -75,4 +92,6 @@ export interface ScheduledMessageView {
   failureCode: string | null;
   createdByUid: string;
   createdAt: string | null;
+  /** When the worker claimed it (pending → sending); null until then. */
+  claimedAt: string | null;
 }

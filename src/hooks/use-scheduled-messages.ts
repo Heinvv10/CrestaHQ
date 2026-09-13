@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { ScheduledMessageView } from "@/types/scheduled-messages";
+import { isStaleSending, type ScheduledMessageView } from "@/types/scheduled-messages";
+import { viewTimes } from "@/lib/conversations/scheduled-item";
 
 /**
  * A contact's scheduled messages (SP2 T5), read through the server API — the
@@ -30,6 +31,22 @@ export function scheduledMessagesUrl(subAccountId: string, contactId: string, id
   const base = scheduledMessagesBase(subAccountId);
   const q = `contactId=${encodeURIComponent(contactId)}`;
   return id ? `${base}/${encodeURIComponent(id)}?${q}` : `${base}?${q}`;
+}
+
+/**
+ * True while something can still change on its own: a pending message, or one
+ * sending right now. A stale "sending" one (its worker died mid-send) will
+ * never change, so it does not keep the thread polling.
+ */
+export function needsPolling(
+  messages: Pick<ScheduledMessageView, "status" | "sendAt" | "claimedAt">[],
+  nowMs: number
+): boolean {
+  return messages.some(
+    (m) =>
+      m.status === "pending" ||
+      (m.status === "sending" && !isStaleSending(viewTimes(m), nowMs))
+  );
 }
 
 export function useScheduledMessages(
@@ -78,7 +95,7 @@ export function useScheduledMessages(
     return () => window.removeEventListener(EVENT, onChange);
   }, [contactId, refresh]);
 
-  const waiting = messages.some((m) => m.status === "pending" || m.status === "sending");
+  const waiting = needsPolling(messages, Date.now());
   useEffect(() => {
     if (!waiting) return;
     const timer = setInterval(refresh, POLL_MS);

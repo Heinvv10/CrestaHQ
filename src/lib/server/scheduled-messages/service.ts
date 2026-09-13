@@ -8,6 +8,7 @@ import { refuse, type SendRefusal } from "@/lib/server/conversation-send/types";
 import type { Contact } from "@/types/contacts";
 import {
   DISMISSABLE_STATUSES,
+  isStaleSending,
   type ScheduledMessageChannel,
   type ScheduledMessageStatus,
   type ScheduledMessageView,
@@ -119,14 +120,18 @@ export async function scheduleConversationMessage(input: {
  * Take a message off the thread:
  *   - pending → cancelled (it will not fire);
  *   - failed / unconfirmed → dismissed (hidden; the doc stays as the record);
- *   - anything else — sending, sent, cancelled — is refused.
+ *   - sending whose claim is older than STALE_SENDING_MS → dismissed (the
+ *     worker died mid-send; nothing will finish it);
+ *   - anything else — fresh sending, sent, cancelled — is refused.
  */
 export async function cancelScheduledMessage(input: {
   contactId: string;
   subAccountId: string;
   id: string;
   actorUid: string;
+  nowMs?: number;
 }): Promise<{ ok: true; action: "cancelled" | "dismissed" } | SendRefusal> {
+  const nowMs = input.nowMs ?? Date.now();
   const db = getAdminDb();
   const ref = db.doc(`${scheduledMessagesPath(input.contactId)}/${input.id}`);
   return db.runTransaction(async (tx) => {
@@ -135,7 +140,11 @@ export async function cancelScheduledMessage(input: {
     if (!snap.exists || data?.subAccountId !== input.subAccountId) {
       return refuse(404, "Scheduled message not found.");
     }
-    if (DISMISSABLE_STATUSES.includes(data.status) && !data.dismissedAt) {
+    const stale = isStaleSending(
+      { status: data.status, claimedAtMs: millisOrNull(data.claimedAt), sendAtMs: millis(data.sendAt) },
+      nowMs
+    );
+    if ((DISMISSABLE_STATUSES.includes(data.status) || stale) && !data.dismissedAt) {
       tx.update(ref, {
         dismissedByUid: input.actorUid,
         dismissedAt: FieldValue.serverTimestamp(),
@@ -158,6 +167,8 @@ export async function cancelScheduledMessage(input: {
 
 const millis = (v: unknown): number =>
   v instanceof Timestamp ? v.toMillis() : v instanceof Date ? v.getTime() : 0;
+const millisOrNull = (v: unknown): number | null =>
+  v instanceof Timestamp || v instanceof Date ? millis(v) : null;
 
 const iso = (v: unknown): string | null =>
   v instanceof Timestamp ? v.toDate().toISOString() : v instanceof Date ? v.toISOString() : null;
@@ -197,5 +208,6 @@ export async function listScheduledMessages(
       failureCode: (data.failureCode as string | null) ?? null,
       createdByUid: String(data.createdByUid ?? ""),
       createdAt: iso(data.createdAt),
+      claimedAt: iso(data.claimedAt),
     }));
 }

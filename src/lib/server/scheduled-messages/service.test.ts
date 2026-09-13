@@ -126,42 +126,71 @@ describe("scheduleConversationMessage", () => {
   });
 });
 
-describe("cancelScheduledMessage", () => {
-  const seed = (id: string, status: string, subAccountId = "sa1") =>
-    mem.seed(`contacts/c1/scheduledMessages/${id}`, { subAccountId, status });
-  const cancel = (id: string, subAccountId = "sa1") =>
-    cancelScheduledMessage({ contactId: "c1", subAccountId, id, actorUid: "u2" });
-
-  it("cancels a pending message and records who", async () => {
-    seed("s1", "pending");
-    expect(await cancel("s1")).toEqual({ ok: true, action: "cancelled" });
-    expect(mem.read("contacts/c1/scheduledMessages/s1")).toMatchObject({
-      status: "cancelled",
-      cancelledByUid: "u2",
+describe("cancelScheduledMessage — cancel vs dismiss", () => {
+  const MIN = 60_000;
+  const seed = (
+    id: string,
+    status: string,
+    times: { sendAgo?: number; claimAgo?: number | null } = {},
+    subAccountId = "sa1"
+  ) =>
+    mem.seed(`contacts/c1/scheduledMessages/${id}`, {
+      subAccountId,
+      status,
+      sendAt: new Date(NOW - (times.sendAgo ?? 0)),
+      ...(times.claimAgo === undefined || times.claimAgo === null
+        ? {}
+        : { claimedAt: new Date(NOW - times.claimAgo) }),
     });
+  const cancel = (id: string, subAccountId = "sa1") =>
+    cancelScheduledMessage({ contactId: "c1", subAccountId, id, actorUid: "u2", nowMs: NOW });
+  const row = (id: string) => mem.read(`contacts/c1/scheduledMessages/${id}`);
+
+  it("pending → cancelled (not dismissed), recording who", async () => {
+    seed("s1", "pending", { sendAgo: -3600_000 });
+    expect(await cancel("s1")).toEqual({ ok: true, action: "cancelled" });
+    expect(row("s1")).toMatchObject({ status: "cancelled", cancelledByUid: "u2" });
+    expect(row("s1")?.dismissedAt).toBeUndefined();
   });
 
-  it.each(["failed", "unconfirmed"])("dismisses a %s message, keeping its status as the record", async (status) => {
+  it.each(["failed", "unconfirmed"])("%s → dismissed, keeping its status as the record", async (status) => {
     seed("s1", status);
     expect(await cancel("s1")).toEqual({ ok: true, action: "dismissed" });
-    expect(mem.read("contacts/c1/scheduledMessages/s1")).toMatchObject({
-      status,
-      dismissedByUid: "u2",
-    });
+    expect(row("s1")).toMatchObject({ status, dismissedByUid: "u2" });
     expect(await cancel("s1")).toMatchObject({ ok: false, status: 409 });
   });
 
-  it.each(["sending", "sent", "cancelled"])("refuses once it is %s", async (status) => {
-    seed("s1", status);
+  it("a FRESH sending message is refused — its send may be in flight right now", async () => {
+    seed("s1", "sending", { sendAgo: 60 * MIN, claimAgo: 5 * MIN });
     expect(await cancel("s1")).toMatchObject({ ok: false, status: 409 });
-    expect(mem.read("contacts/c1/scheduledMessages/s1")?.status).toBe(status);
+    expect(row("s1")?.dismissedAt).toBeUndefined();
+  });
+
+  it("a STALE sending message (claimed >15 min ago; the worker died) → dismissed", async () => {
+    seed("s1", "sending", { sendAgo: 20 * MIN, claimAgo: 16 * MIN });
+    expect(await cancel("s1")).toEqual({ ok: true, action: "dismissed" });
+    expect(row("s1")).toMatchObject({ status: "sending", dismissedByUid: "u2" });
+  });
+
+  it("with no claim time, staleness falls back to the send time", async () => {
+    seed("fresh", "sending", { sendAgo: 5 * MIN });
+    seed("stale", "sending", { sendAgo: 16 * MIN });
+    expect(await cancel("fresh")).toMatchObject({ ok: false, status: 409 });
+    expect(await cancel("stale")).toEqual({ ok: true, action: "dismissed" });
+  });
+
+  it.each(["sent", "cancelled"])("%s is refused", async (status) => {
+    seed("s1", status, { sendAgo: 60 * MIN });
+    expect(await cancel("s1")).toMatchObject({ ok: false, status: 409 });
+    expect(row("s1")?.status).toBe(status);
+    expect(row("s1")?.dismissedAt).toBeUndefined();
   });
 
   it("404s a message of another sub-account, or none", async () => {
-    seed("s1", "pending", "sa-other");
+    seed("s1", "pending", {}, "sa-other");
     expect(await cancel("s1")).toMatchObject({ ok: false, status: 404 });
     expect(await cancel("missing")).toMatchObject({ ok: false, status: 404 });
-    expect(mem.read("contacts/c1/scheduledMessages/s1")?.status).toBe("pending");
+    expect(row("s1")?.status).toBe("pending");
   });
 });
 
@@ -187,6 +216,12 @@ describe("listScheduledMessages", () => {
     expect(ids).toContain("inflight");
   });
 
+  it("carries the claim time, so the thread can tell a stuck send from a live one", async () => {
+    seedAt("stuck", "sending", NOW - 20 * 60_000, { claimedAt: new Date(NOW - 16 * 60_000) });
+    const [view] = await listScheduledMessages("c1", "sa1");
+    expect(view.claimedAt).toBe(new Date(NOW - 16 * 60_000).toISOString());
+  });
+
   it("leaves dismissed messages out", async () => {
     seedAt("f1", "failed", NOW, { dismissedAt: new Date(NOW) });
     seedAt("f2", "failed", NOW);
@@ -203,5 +238,6 @@ describe("listScheduledMessages", () => {
     const list = await listScheduledMessages("c1", "sa1");
     expect(list.map((x) => x.body)).toEqual(["sooner", "See you at 3"]);
     expect(list[0].sendAt).toBe(new Date(NOW + 3600_000).toISOString());
+    expect(list[0].claimedAt).toBeNull();
   });
 });

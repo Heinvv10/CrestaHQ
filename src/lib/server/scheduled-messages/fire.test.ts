@@ -128,6 +128,8 @@ describe("fireScheduledMessage — idempotency", () => {
       expect.objectContaining({ contactId: "c1", channel: "sms", direction: "outbound" })
     );
     expect(doc("s1")).toMatchObject({ status: "sent", sentMessageId: "SM1" });
+    // The claim time is what lets the thread spot a send stuck by a dead worker.
+    expect(doc("s1").claimedAt).toBeInstanceOf(Date);
   });
 
   it("a second delivery is a no-op — sequential", async () => {

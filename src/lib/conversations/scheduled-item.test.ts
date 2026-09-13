@@ -40,3 +40,33 @@ describe("scheduledItemState", () => {
     expect(state("sending", 0)).toEqual({ tone: "sending", label: "Sending…", action: null });
   });
 });
+
+describe("scheduledItemState — a send stuck in 'sending'", () => {
+  const sending = (sendOffsetMs: number, claimOffsetMs: number | null) =>
+    scheduledItemState(
+      {
+        status: "sending",
+        sendAt: at(sendOffsetMs),
+        claimedAt: claimOffsetMs === null ? null : at(claimOffsetMs),
+      },
+      "WHEN",
+      NOW
+    );
+
+  it("claimed more than 15 minutes ago: unconfirmed, dismissable", () => {
+    expect(sending(-20 * 60_000, -16 * 60_000)).toEqual({
+      tone: "unconfirmed",
+      label: "Not confirmed sent — check the conversation before resending (scheduled for WHEN)",
+      action: "dismiss",
+    });
+  });
+
+  it("claimed a minute ago is still sending, however old the send time", () => {
+    expect(sending(-60 * 60_000, -60_000).tone).toBe("sending");
+  });
+
+  it("no claim time recorded: falls back to the send time", () => {
+    expect(sending(-16 * 60_000, null).tone).toBe("unconfirmed");
+    expect(sending(-60_000, null).tone).toBe("sending");
+  });
+});

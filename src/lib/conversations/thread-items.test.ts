@@ -71,6 +71,7 @@ describe("mergeThreadItems — scheduled messages (SP2 T5)", () => {
     failureCode: null,
     createdByUid: "u",
     createdAt: null,
+    claimedAt: null,
   });
 
   it("places each at its send time — a pending one after everything already said", () => {
