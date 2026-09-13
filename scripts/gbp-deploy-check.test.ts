@@ -54,6 +54,8 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     ["GCAL google, even — production never needs the name", "GCAL_PROVIDER=google"],
     ["any GCAL_FAKE_*", "GCAL_FAKE_AGENCY_ID=abc"],
     ["GCAL_FAKE_* commented out", "# GCAL_FAKE_ALLOW_PROD_BUILD=1"],
+    ["the E2E booking rate-limit bypass", "E2E_DISABLE_BOOKING_RATE_LIMITS=1"],
+    ["E2E_DISABLE_BOOKING_RATE_LIMITS commented out", "# E2E_DISABLE_BOOKING_RATE_LIMITS=1"],
   ])("%s", (_label, line) => {
     expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}${line}\n` }), {}).join()).toContain(".env.production");
   });
@@ -75,6 +77,7 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { SMS_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GCAL_PROVIDER: "google" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GCAL_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { E2E_DISABLE_BOOKING_RATE_LIMITS: "1" })).not.toEqual([]);
   });
 
   it("fails closed on an unreadable env file", () => {
@@ -135,7 +138,7 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
 
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
-    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_/);
+    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_|E2E_DISABLE_BOOKING_RATE_LIMITS/);
   });
 });
 

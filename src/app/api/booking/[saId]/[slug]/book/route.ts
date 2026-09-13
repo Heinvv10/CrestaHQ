@@ -24,6 +24,7 @@ import {
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
 import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
+import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
@@ -78,6 +79,7 @@ import type { SubAccountDoc } from "@/types/tenancy";
  */
 
 // ── Soft rate limits (per IP + per sub-account, in-memory LRU) ──
+// Skipped entirely when bookingRateLimitsDisabled() is true (E2E only).
 const IP_HOURLY_CAP = 10;
 const SUB_HOURLY_CAP = 100;
 const WINDOW_MS = 60 * 60_000;
@@ -89,6 +91,7 @@ function pushAndCheck(
   key: string,
   cap: number,
 ): boolean {
+  if (bookingRateLimitsDisabled()) return false;
   const now = Date.now();
   const cutoff = now - WINDOW_MS;
   const arr = (bucket.get(key) ?? []).filter((t) => t >= cutoff);
