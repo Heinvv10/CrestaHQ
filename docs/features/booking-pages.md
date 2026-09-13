@@ -25,6 +25,8 @@ A page's `calendarType` (absent on legacy pages ⇒ `pageCalendarType()` derives
 
 Every caller that offers or re-verifies a slot — availability API, book route and reschedule route (inside their transactions), voice agent — goes through `resolvePageAvailability` ([src/lib/booking/resolve-availability.ts](../../src/lib/booking/resolve-availability.ts)); the rules are pure in [page-slots.ts](../../src/lib/booking/page-slots.ts). Reschedule re-verifies the event as it was booked (`MovingEvent`): all of its own host(s) — one no longer on the page keeps the page hours — its service, or its own length when that service is gone. A hostless booking on a page that has since gained hosts keeps the legacy shared schedule (every event blocks). The reschedule view's `excludeEventId` is honoured only for an event booked on that page. Voice refuses service pages (no service step on a call).
 
+**Rollout:** the host readers (per-host `.ics` feed, round-robin load, reassign conflict check) query `events(subAccountId, hostUids CONTAINS, startAt)` through `queryHostEvents`. Deploy `firestore.indexes.json` and let that index finish building BEFORE shipping this code; until it does, the collective half of each read fails (logged) and only owned bookings are seen.
+
 ## Send flow
 
 1. **Public page** (`/b/[subAccountId]/[slug]`) — server-renders the page config; the client fetches slots from the availability endpoint below.
