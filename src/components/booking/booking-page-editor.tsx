@@ -504,7 +504,19 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         description="How long meetings run, how far ahead visitors can book, and when you're available."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Duration" htmlFor="duration">
+          <Field
+            label={
+              calendarType === "service"
+                ? "Default length for new services"
+                : "Duration"
+            }
+            htmlFor="duration"
+            hint={
+              calendarType === "service"
+                ? "Each service's own length sets its slots."
+                : undefined
+            }
+          >
             <select
               id="duration"
               value={form.durationMinutes}
