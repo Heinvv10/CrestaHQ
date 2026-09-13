@@ -1,7 +1,9 @@
 import { eventHostUids } from "@/lib/booking/page-slots";
 import { utcFromWallClock } from "@/lib/booking/availability";
+import { detectTimezone } from "@/lib/booking/defaults";
 import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
 import type { CalendarEvent, EventStatus } from "@/types/events";
+import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
  * Pure predicates for the appointments list (SP3 f) — tabs, the filter
@@ -220,6 +222,19 @@ export function dateInputToToMs(value: string, tz: string): number | null {
  * matches. A naive `toISOString()`/browser-local render would drift from
  * the filter the moment the viewer isn't in that same zone.
  */
+/**
+ * The one timezone both the date-range filter and the Appointment time
+ * column use: the sub-account's own `timezone` (the same field
+ * recurring-invoices reads via `sub?.timezone ?? "UTC"`), falling back to
+ * the operator's browser tz only while the sub-account doc hasn't loaded
+ * yet (or, defensively, if it somehow has no timezone at all).
+ */
+export function resolveAppointmentsTimezone(
+  subAccount: Pick<SubAccountDoc, "timezone"> | null,
+): string {
+  return subAccount?.timezone || detectTimezone();
+}
+
 export function formatAppointmentTime(date: Date, tz: string): string {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: tz,

@@ -12,6 +12,7 @@ import {
   matchesFilters,
   matchesSearch,
   matchesTab,
+  resolveAppointmentsTimezone,
   sortAppointments,
   EMPTY_APPOINTMENT_FILTERS,
   type AppointmentFilters,
@@ -323,6 +324,30 @@ describe("sortAppointments", () => {
       expect(sortAppointments([early, late], tab).map((e) => e.id)).toEqual(["late", "early"]);
     },
   );
+});
+
+describe("resolveAppointmentsTimezone", () => {
+  it("uses the sub-account's own timezone when set — and that value drives both parse and render", () => {
+    // A tz deliberately far from any host machine's default, so this only
+    // passes if resolveAppointmentsTimezone's return value is what actually
+    // reaches both functions — not some other (e.g. browser) zone.
+    const tz = resolveAppointmentsTimezone({ timezone: "Pacific/Kiritimati" });
+    expect(tz).toBe("Pacific/Kiritimati");
+
+    const fromMs = dateInputToFromMs("2026-09-13", tz)!;
+    // Kiritimati is UTC+14: 2026-09-13T00:00 there is 2026-09-12T10:00Z.
+    expect(new Date(fromMs).toISOString()).toBe("2026-09-12T10:00:00.000Z");
+    expect(formatAppointmentTime(new Date(fromMs), tz)).toContain("13");
+  });
+
+  it("falls back to the browser tz when the sub-account has none loaded yet", () => {
+    expect(resolveAppointmentsTimezone(null)).toBe(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+    expect(resolveAppointmentsTimezone({ timezone: "" } as never)).toBe(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+  });
 });
 
 describe("date range parsing/rendering — same timezone both ways", () => {

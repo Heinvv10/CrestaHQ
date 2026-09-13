@@ -11,7 +11,6 @@ import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { subscribeToContacts } from "@/lib/firestore/contacts";
 import { subscribeToEvents } from "@/lib/firestore/events";
 import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
-import { detectTimezone } from "@/lib/booking/defaults";
 import { toDate } from "@/lib/format";
 import {
   applyStatusChange,
@@ -29,6 +28,7 @@ import {
   matchesFilters,
   matchesSearch,
   matchesTab,
+  resolveAppointmentsTimezone,
   sortAppointments,
   EMPTY_APPOINTMENT_FILTERS,
   type AppointmentFilters,
@@ -79,15 +79,11 @@ const PAGE_SIZE = 25;
 
 export default function AppointmentsListPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, saPath } = useSubAccount();
+  const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
   const { members } = useSubAccountMembers(subAccountId);
-  // No stored per-sub-account timezone field exists today — the operator's
-  // own browser tz (same fallback the booking-page create form uses) is the
-  // one consistent zone both the date-range filter and the Appointment time
-  // column read/write, so they never disagree with each other.
-  const tz = useMemo(() => detectTimezone(), []);
+  const tz = resolveAppointmentsTimezone(subAccount);
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
