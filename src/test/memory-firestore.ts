@@ -11,7 +11,7 @@ import { FieldValue } from "firebase-admin/firestore";
  * it, not before. */
 
 type Data = Record<string, unknown>;
-type WhereOp = "==" | "!=" | "in" | "array-contains";
+type WhereOp = "==" | "!=" | "in" | "array-contains" | ">=" | "<=";
 
 const DELETE = Symbol("delete");
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -105,6 +105,16 @@ function matches(data: Data, field: string, op: WhereOp, value: unknown): boolea
       return Array.isArray(actual) && actual.includes(value);
     case "!=": // Firestore: a missing field never matches an inequality
       return actual !== undefined && actual !== value;
+    case ">=":
+    case "<=": {
+      // Range filters compare instants: Date and Timestamp are one type here,
+      // as in Firestore. A missing field never matches.
+      const ms = (v: unknown) =>
+        v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : v;
+      const [a, b] = [ms(actual), ms(value)];
+      if (a === undefined || typeof a !== typeof b) return false;
+      return op === ">=" ? (a as number) >= (b as number) : (a as number) <= (b as number);
+    }
   }
 }
 

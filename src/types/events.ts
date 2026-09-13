@@ -96,6 +96,15 @@ export interface CalendarEvent {
    * lookup. Null when unassigned.
    */
   assignedToName?: string | null;
+  /**
+   * Collective bookings only: every host in the meeting. The event is busy
+   * time for each of them (and for `assignedToUid`, the first host). Absent
+   * on every other event. Written by the server only.
+   */
+  hostUids?: string[] | null;
+  /** Service bookings only: the service the visitor picked, snapshotted. */
+  serviceId?: string | null;
+  serviceName?: string | null;
   /** Set when transitioning to `cancelled`. */
   cancelledAt?: Timestamp | FieldValue | null;
   /** True when the visitor cancelled via /e/[token]; false/undefined when the operator did. */

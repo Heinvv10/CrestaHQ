@@ -7,21 +7,19 @@ import type { BookingHost } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
 
 /**
- * Server-side helpers for booking-page **team mode** (round-robin).
- *
- * A booking page may carry a `hosts: BookingHost[]` list. When non-empty the
- * page runs in team mode: availability is the union of each host's free time
- * and each booking is auto-assigned to the least-loaded free host. These
- * helpers cover the two server touch-points — resolving the host list against
- * live membership on save, and picking the host at book time.
+ * Server-side helpers for booking-page hosts: resolving the host list against
+ * live membership on save, host notification contacts, and the upcoming-load
+ * counts round-robin assignment reads. The assignment itself is pure and
+ * lives in `page-slots.ts`.
  */
 
 /**
  * Resolve a requested host list against the sub-account's live membership:
  * keep only uids that are ACTIVE members, re-snapshot each `name` from the
  * member doc (never trust the client-supplied name), preserve request order,
- * per-host `workingHours` overrides, and drop removed/unknown members. Called
- * from the booking-page POST/PATCH routes after shape validation.
+ * per-host `workingHours` overrides and `priority`, and drop removed/unknown
+ * members. Called from the booking-page POST/PATCH routes after shape
+ * validation.
  */
 export async function resolveBookingHosts(
   subAccountId: string,
@@ -54,6 +52,7 @@ export async function resolveBookingHosts(
     if (h.workingHours && h.workingHours.length > 0) {
       resolved.workingHours = h.workingHours;
     }
+    if (h.priority) resolved.priority = h.priority;
     out.push(resolved);
   }
   return out;
@@ -125,26 +124,4 @@ export async function loadHostUpcomingCounts(
     }),
   );
   return counts;
-}
-
-/**
- * Pick the least-loaded host from an already-filtered list of hosts that are
- * free at the chosen slot. Tiebreak: the page's host order (first wins).
- * Returns null when the list is empty (caller treats as 409 — slot full).
- */
-export function pickLeastLoadedHost(
-  freeHosts: BookingHost[],
-  loadByHost: Map<string, number>,
-): BookingHost | null {
-  if (freeHosts.length === 0) return null;
-  let best = freeHosts[0];
-  let bestLoad = loadByHost.get(best.uid) ?? 0;
-  for (let i = 1; i < freeHosts.length; i++) {
-    const load = loadByHost.get(freeHosts[i].uid) ?? 0;
-    if (load < bestLoad) {
-      best = freeHosts[i];
-      bestLoad = load;
-    }
-  }
-  return best;
 }

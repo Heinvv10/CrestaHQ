@@ -15,9 +15,8 @@ import type { BookingPage, WorkingHour } from "@/types/booking";
  *   3. Subtract the offset from the guess to land on the real UTC
  *      instant whose wall-clock in the target tz matches what we want.
  *
- * Used by both the public availability API (Slice 3) and the book POST
- * (Slice 4 — re-verifies a chosen slot is actually still bookable
- * inside a Firestore transaction).
+ * Per-type rules (hosts, collective, class seats, services) sit on top of
+ * this in `page-slots.ts`; callers go through `resolve-availability.ts`.
  */
 
 export interface SlotCandidate {
@@ -292,100 +291,17 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
   return out;
 }
 
-/** A busy event tagged with its assigned host (null = shared/unassigned). */
-export interface BusyEventWithHost extends BusyEvent {
-  assignedToUid: string | null;
-}
-
-/**
- * Team-mode availability: the UNION of each host's free slots. A slot is
- * offered while **any** host is free. Shared/unassigned busy events
- * (`assignedToUid == null`, e.g. manual whole-business calendar entries)
- * block every host; a host's own bookings block only that host. Each host's
- * slots come from the same pure `computeAvailability`, so working-hours /
- * duration / min-notice / per-day-cap logic is identical to single mode —
- * `maxPerDay` simply becomes per-host.
- *
- * Returns the same `SlotCandidate[]` shape as `computeAvailability`. In the
- * default (pooled) mode host identity is intentionally not exposed and
- * assignment happens at book time. When `onlyHostUid` is set (named-host
- * selection), only that host's free time is returned — the customer picked
- * them, so the offered slots ARE that host's, and the same call at book-time
- * re-verify guarantees the committed slot matches what was shown. Each host's
- * own `workingHours` override (when set) is applied, so a host with custom
- * hours only offers slots inside their own window.
- */
-export function computeUnionAvailability(input: {
-  page: BookingPage;
-  now: Date;
-  fromInstant?: Date;
-  toInstant?: Date;
-  busy: BusyEventWithHost[];
-  hostUids: string[];
-  /**
-   * When set, compute ONLY this host's availability (named-host selection).
-   * Must be one of `hostUids`; an unknown uid yields no slots. Absent/null ⇒
-   * the pooled union across every host (today's behavior).
-   */
-  onlyHostUid?: string | null;
-}): SlotCandidate[] {
-  const sharedBusy: BusyEvent[] = input.busy
-    .filter((b) => b.assignedToUid == null)
-    .map((b) => ({ startAt: b.startAt, endAt: b.endAt }));
-
-  const byHost = new Map<string, BusyEvent[]>();
-  for (const uid of input.hostUids) byHost.set(uid, []);
-  for (const b of input.busy) {
-    if (b.assignedToUid != null && byHost.has(b.assignedToUid)) {
-      byHost.get(b.assignedToUid)!.push({ startAt: b.startAt, endAt: b.endAt });
-    }
-  }
-
-  // Per-host working-hours override lookup. An absent or empty array means
-  // "inherit page hours" — computeAvailability handles the fallback.
-  const hoursByHost = new Map<string, WorkingHour[] | undefined>();
-  for (const h of input.page.hosts ?? []) hoursByHost.set(h.uid, h.workingHours);
-
-  // Narrow to the requested host when named-selection is in play.
-  const uids =
-    input.onlyHostUid != null
-      ? input.hostUids.filter((u) => u === input.onlyHostUid)
-      : input.hostUids;
-
-  // Dedupe by start instant — two hosts free at the same time = one offered slot.
-  const seen = new Map<number, SlotCandidate>();
-  for (const uid of uids) {
-    const hostBusy = byHost.get(uid) ?? [];
-    const override = hoursByHost.get(uid);
-    const slots = computeAvailability({
-      page: input.page,
-      now: input.now,
-      fromInstant: input.fromInstant,
-      toInstant: input.toInstant,
-      busy: [...sharedBusy, ...hostBusy],
-      workingHoursOverride:
-        override && override.length > 0 ? override : undefined,
-    });
-    for (const s of slots) {
-      if (!seen.has(s.startAt.getTime())) seen.set(s.startAt.getTime(), s);
-    }
-  }
-  return [...seen.values()].sort(
-    (a, b) => a.startAt.getTime() - b.startAt.getTime(),
-  );
-}
-
 /**
  * Helper: group a slot list into per-day buckets keyed by the date
  * label in the page's tz (e.g. "2026-05-30"). Used by the public page
  * to render slots organised by day without round-tripping to the
  * formatter for every row.
  */
-export function groupSlotsByLocalDate(
-  slots: SlotCandidate[],
+export function groupSlotsByLocalDate<T extends SlotCandidate>(
+  slots: T[],
   tz: string,
-): Array<{ dateKey: string; slots: SlotCandidate[] }> {
-  const groups = new Map<string, SlotCandidate[]>();
+): Array<{ dateKey: string; slots: T[] }> {
+  const groups = new Map<string, T[]>();
   for (const s of slots) {
     const wc = wallClockInTz(s.startAt, tz);
     const key = `${wc.year}-${String(wc.month).padStart(2, "0")}-${String(wc.day).padStart(2, "0")}`;

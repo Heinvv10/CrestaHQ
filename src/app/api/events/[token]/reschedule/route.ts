@@ -10,11 +10,11 @@ import {
   tenantFrom,
 } from "@/lib/comms/resend";
 import {
-  computeAvailability,
   isSlotAvailable,
-  type BusyEvent,
   type SlotCandidate,
 } from "@/lib/booking/availability";
+import { eventHostUids } from "@/lib/booking/page-slots";
+import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import {
   buildEventPublicUrl,
   hashEventToken,
@@ -138,35 +138,20 @@ export async function POST(
       }
       const page = pageSnap.data() as BookingPage;
 
-      // Busy events for the new slot's window — re-uses the same
-      // pattern as the book route.
-      const lookbackMs = 8 * 60 * 60_000;
-      const queryFrom = new Date(newStart.getTime() - lookbackMs);
-      const queryTo = new Date(newEnd.getTime() + 1000);
-      const busySnap = await txn.get(
-        db
-          .collection("events")
-          .where("subAccountId", "==", event.subAccountId)
-          .where("startAt", ">=", queryFrom)
-          .where("startAt", "<=", queryTo),
-      );
-      const busy: BusyEvent[] = [];
-      for (const d of busySnap.docs) {
-        if (d.id === eventRef.id) continue; // exclude our own slot
-        const e = d.data() as CalendarEvent;
-        const s = e.status ?? "scheduled";
-        if (s !== "scheduled" && s !== "awaiting_payment") continue;
-        const s2 = (e.startAt as { toDate?: () => Date } | null)?.toDate?.();
-        const e2 = (e.endAt as { toDate?: () => Date } | null)?.toDate?.();
-        if (!(s2 instanceof Date) || !(e2 instanceof Date)) continue;
-        busy.push({ startAt: s2, endAt: e2 });
-      }
-      const free = computeAvailability({
+      // Re-verify through the same resolver the booking used, for this
+      // event's own host(s) and service, with its current slot not busy. A
+      // team booking is checked against its host's calendar only — not
+      // every host's (and a collective one against all of its hosts).
+      const free = await resolvePageAvailability({
+        subAccountId: event.subAccountId,
         page,
         now: new Date(),
         fromInstant: new Date(newStart.getTime() - 1),
         toInstant: new Date(newEnd.getTime() + 1),
-        busy,
+        excludeEventId: eventRef.id,
+        restrictToHostUids: eventHostUids(event),
+        serviceId: event.serviceId ?? null,
+        txn,
       });
       const candidate: SlotCandidate = { startAt: newStart, endAt: newEnd };
       if (!isSlotAvailable(candidate, free)) {
