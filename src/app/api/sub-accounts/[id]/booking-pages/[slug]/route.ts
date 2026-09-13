@@ -78,18 +78,20 @@ export async function PATCH(
       ? { ...(body as Record<string, unknown>), slug }
       : { slug };
 
-  const validated = validateBookingPageFormData(bodyWithSlug);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
-  }
-  const data = validated.value;
-
   const db = getAdminDb();
   const ref = db.doc(`subAccounts/${subAccountId}/bookingPages/${slug}`);
   const snap = await ref.get();
   if (!snap.exists) {
     return NextResponse.json({ error: "Booking page not found" }, { status: 404 });
   }
+  const storedType = (snap.data() as BookingPage).calendarType;
+
+  // A body without a type has its type fields checked against the stored one.
+  const validated = validateBookingPageFormData(bodyWithSlug, storedType);
+  if (!validated.ok) {
+    return NextResponse.json({ error: validated.error }, { status: 400 });
+  }
+  const data = validated.value;
 
   // Same payment gate as create — guard against requiring payment when
   // No payment rail connected. Edits that toggle payment on still need this.
@@ -111,7 +113,7 @@ export async function PATCH(
   const hosts = await resolveBookingHosts(subAccountId, data.hosts);
   // A body without a type keeps the stored one — check hosts against that.
   const hostsOk = validateCalendarTypeHosts(
-    data.calendarType ?? (snap.data() as BookingPage).calendarType,
+    data.calendarType ?? storedType,
     hosts.length,
   );
   if (!hostsOk.ok) {

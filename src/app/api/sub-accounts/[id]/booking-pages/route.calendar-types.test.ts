@@ -92,4 +92,29 @@ describe("booking-page routes with a calendar type", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("a PATCH without a type keeps a legacy team page's distribution", async () => {
+    // Pre-SP3 page: hosts, no calendarType — derived round robin.
+    await create({ hosts: [{ uid: "a", name: "a" }] });
+    expect(stored()?.calendarType).toBeUndefined();
+    const res = await PATCH(
+      req("PATCH", body({ hosts: [{ uid: "a", name: "a" }], distribution: "availability" })),
+      { params: Promise.resolve({ id: "sa1", slug: "team" }) },
+    );
+    expect(res.status).toBe(200);
+    expect(stored()).toMatchObject({ distribution: "availability" });
+    expect(stored()?.calendarType).toBeUndefined();
+  });
+
+  it("a PATCH without a type validates type fields against the stored type", async () => {
+    await create({ calendarType: "class", seatsPerSlot: 5 });
+    const patch = (extra: object) =>
+      PATCH(req("PATCH", body(extra)), { params: Promise.resolve({ id: "sa1", slug: "team" }) });
+    expect((await patch({ seatsPerSlot: 1 })).status).toBe(400);
+    expect((await patch({ seatsPerSlot: 8 })).status).toBe(200);
+    expect(stored()).toMatchObject({ calendarType: "class", seatsPerSlot: 8 });
+    // Not sent ⇒ left as stored.
+    expect((await patch({})).status).toBe(200);
+    expect(stored()).toMatchObject({ seatsPerSlot: 8 });
+  });
 });

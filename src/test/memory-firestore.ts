@@ -62,6 +62,9 @@ function resolveValue(current: unknown, v: unknown): unknown {
 }
 
 function setPath(target: Data, path: string[], value: unknown): void {
+  // The app's Admin SDK runs with `ignoreUndefinedProperties` (admin.ts):
+  // an undefined field is skipped, not written.
+  if (value === undefined) return;
   const [head, ...rest] = path;
   if (rest.length === 0) {
     const next = resolveValue(target[head], value);

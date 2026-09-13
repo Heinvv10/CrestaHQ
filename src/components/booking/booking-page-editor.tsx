@@ -306,7 +306,9 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        // Always the effective type: a pre-SP3 page has none stored, and its
+        // derived type is what the editor showed (e.g. round-robin settings).
+        body: JSON.stringify({ ...form, calendarType }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
