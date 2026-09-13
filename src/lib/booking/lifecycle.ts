@@ -94,9 +94,9 @@ function defaultContent(
 }
 
 /**
- * Dispatch a workflow trigger. v1 ships the dispatch plumbing but no
- * recipe type subscribes to booking events yet — mirrors the quote
- * triggers' v1 caveat. Safe to call from any path.
+ * Dispatch a workflow trigger. Maps the legacy `event_*` literal to the
+ * matching Workflow Builder v2 `booking.*` trigger type and fires it —
+ * every `booking.*` trigger is live and enrols contacts today.
  *
  * Always passes `{ eventId, bookingPageSlug }` as trigger context so the
  * Workflow Builder engine's per-page filter (`WorkflowTrigger.bookingPageSlug`)
