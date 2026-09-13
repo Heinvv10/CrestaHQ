@@ -28,7 +28,7 @@ export interface SeedResult {
 
 const ADD_TAG_NODE_ID = "e2e-add-tag";
 
-async function ownerUid(agencyId: string): Promise<string> {
+export async function ownerUid(agencyId: string): Promise<string> {
   const snap = await adminDb().doc(`agencies/${agencyId}`).get();
   const uid = snap.data()?.ownerUid;
   if (typeof uid !== "string" || !uid) {
@@ -199,6 +199,65 @@ async function ensureMarkerContact(
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
+}
+
+export const FIXTURE_BOOKING_SLUG = "e2e-fixture-booking";
+
+/**
+ * A published booking page wide open every day/hour so the availability
+ * calculator always has a next slot, regardless of when the suite runs.
+ * `redirectUrl` is passed in (rather than fixed) because the booking-widget
+ * spec needs it to point at a same-run throwaway HTTP server — re-pointed
+ * on every run the same way `ensureWorkflow` re-points its form binding.
+ */
+export async function ensureBookingPage(
+  agencyId: string,
+  subAccountId: string,
+  createdByUid: string,
+  redirectUrl: string,
+): Promise<string> {
+  const db = adminDb();
+  const ref = db.doc(
+    `subAccounts/${subAccountId}/bookingPages/${FIXTURE_BOOKING_SLUG}`,
+  );
+  const wideOpen = [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+    dayOfWeek: dayOfWeek as 0 | 1 | 2 | 3 | 4 | 5 | 6,
+    startMinute: 0,
+    endMinute: 1440,
+  }));
+  await ref.set({
+    id: FIXTURE_BOOKING_SLUG,
+    slug: FIXTURE_BOOKING_SLUG,
+    name: "E2E fixture — 30 min booking",
+    description: "",
+    status: "published",
+    durationMinutes: 30,
+    bufferMinutes: 0,
+    workingHours: wideOpen,
+    timezone: "UTC",
+    visibleDays: 14,
+    minNoticeHours: 0,
+    maxPerDay: null,
+    intakeFields: [],
+    hosts: [],
+    allowHostSelection: false,
+    logoUrl: null,
+    accentColor: null,
+    meetingUrl: null,
+    confirmationMessage: "Thanks — see you then.",
+    redirectUrl,
+    redirectAppendParams: true,
+    remindersEnabled: false,
+    reminderOffsetsMinutes: [],
+    payment: null,
+    defaultTerritoryId: null,
+    agencyId,
+    subAccountId,
+    createdByUid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return FIXTURE_BOOKING_SLUG;
 }
 
 export async function ensureSeed(): Promise<SeedResult> {
