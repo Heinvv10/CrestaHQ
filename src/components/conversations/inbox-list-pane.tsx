@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useParams,
   usePathname,
@@ -16,6 +16,7 @@ import {
   buildInboxView,
   inboxFiltersToQuery,
   parseInboxFilters,
+  reconcileUrlQuery,
   type InboxFilters,
 } from "@/lib/conversations/inbox-filters";
 import { ConversationList } from "@/components/conversations/conversation-list";
@@ -41,14 +42,28 @@ export function InboxListPane() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  // Local state is the source of truth, seeded from the URL once and mirrored
-  // back to it on every change. Deriving filters from useSearchParams alone
+  // Local state is the source of truth, seeded from the URL, mirrored back to
+  // it on every change, and re-synced when the URL changes from outside. Deriving filters from useSearchParams alone
   // raced: a second change made before router.replace landed was built on the
   // stale query and silently reverted the first.
   const [filters, setFilterState] = useState<InboxFilters>(() =>
     parseInboxFilters(searchParams)
   );
   const query = inboxFiltersToQuery(filters);
+  // Queries this pane wrote that the URL has not echoed yet — see
+  // reconcileUrlQuery. Lets a navigation from outside (sidebar link,
+  // notification) reset the filters without a late echo undoing a newer
+  // change made here.
+  const pendingWrites = useRef<string[]>([]);
+  useEffect(() => {
+    const urlFilters = parseInboxFilters(searchParams);
+    const decision = reconcileUrlQuery(
+      inboxFiltersToQuery(urlFilters),
+      pendingWrites.current
+    );
+    pendingWrites.current = decision.pending;
+    if (decision.adopt) setFilterState(urlFilters);
+  }, [searchParams]);
 
   useEffect(() => {
     if (authLoading || !user || !subAccountId || !territory.ready) {
@@ -76,14 +91,23 @@ export function InboxListPane() {
     return () => unsub();
   }, [user, subAccountId, authLoading, territory.ready, territory.filter]);
 
+  const activeId = params.contactId ?? null;
   const view = useMemo(
-    () => buildInboxView(conversations, filters, user?.uid ?? null, search),
-    [conversations, filters, user?.uid, search]
+    () =>
+      buildInboxView(
+        conversations,
+        filters,
+        user?.uid ?? null,
+        search,
+        activeId
+      ),
+    [conversations, filters, user?.uid, search, activeId]
   );
 
   function setFilters(next: InboxFilters) {
     setFilterState(next);
     const qs = inboxFiltersToQuery(next);
+    pendingWrites.current = [...pendingWrites.current, qs];
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
 
@@ -112,7 +136,7 @@ export function InboxListPane() {
             conversations={view.rows}
             basePath={saPath("/conversations")}
             query={query}
-            activeId={params.contactId ?? null}
+            activeId={activeId}
             filtered={filtered}
           />
         )}

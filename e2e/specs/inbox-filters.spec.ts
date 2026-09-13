@@ -157,6 +157,32 @@ test("split-pane inbox: tabs, scope, filters, star, mark unread, sort", async ({
     });
   }
   const convo = (l: Letter) => db.doc(`conversations/${ids[l]}`);
+  // An orphan: a conversation whose contact doc does not exist (e.g. the
+  // contact was deleted). Named outside the A-E pattern so the row lists
+  // above ignore it; it still matches the stamp search.
+  const orphanName = `E2E Orphan ${stamp}`;
+  const orphanRef = db.doc(`conversations/e2e-orphan-${stamp}`);
+  await orphanRef.set({
+    agencyId: env.E2E_AGENCY_ID,
+    subAccountId: sa,
+    territoryId: "global",
+    contactId: `e2e-orphan-${stamp}`,
+    contactName: orphanName,
+    contactPhone: null,
+    channelsSeen: ["sms"],
+    lastChannel: "sms",
+    lastDirection: "outbound",
+    lastMessagePreview: "orphan",
+    lastMessageAt: Timestamp.fromMillis(stamp - 10 * 60_000),
+    unreadCount: 0,
+    status: "open",
+    assigneeUid: null,
+    botMode: "off",
+    botPausedUntil: null,
+    pendingDraft: null,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
 
   const list = page.getByTestId("inbox-list");
   const shown = () => listedLetters(page, stamp);
@@ -280,8 +306,10 @@ test("split-pane inbox: tabs, scope, filters, star, mark unread, sort", async ({
     await list
       .getByRole("textbox", { name: "Search conversations" })
       .fill(String(stamp));
-    await expectRows(["B", "C"]);
+    // A is not starred but is still the open thread, so it stays listed.
+    await expectRows(["A", "B", "C"]);
     await row("C").getByRole("link").click();
+    await expectRows(["B", "C"]);
     await expect(header.getByRole("heading", { name: name("C") })).toBeVisible({
       timeout: 30_000,
     });
@@ -291,7 +319,63 @@ test("split-pane inbox: tabs, scope, filters, star, mark unread, sort", async ({
         timeout: 15_000,
       })
       .toBe(false);
+    // C no longer matches Starred, but it is the open thread, so it stays.
+    await expectRows(["B", "C"]);
+
+    // --- The open row stays listed on a tab it no longer matches ----------
+    // A and C were read on open; B is the only unread row left.
+    await tab("Unread").click();
+    await expectRows(["B", "C"]);
+    await row("B").getByRole("link").click();
+    await expect(header.getByRole("heading", { name: name("B") })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect
+      .poll(async () => (await convo("B").get()).data()?.unreadCount, {
+        timeout: 15_000,
+      })
+      .toBe(0);
     await expectRows(["B"]);
+    await expect(row("B").getByRole("link")).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    await expect(unreadBadge).toHaveCount(0);
+
+    // --- Contact details stay reachable at lg (1024-1279px) ---------------
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await header.getByRole("button", { name: "Details" }).click();
+    await expect(
+      page.getByRole("button", { name: "Hide details" })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Hide details" }).click();
+    await expect(
+      page.getByRole("button", { name: "Hide details" })
+    ).toHaveCount(0);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    // --- A URL change from outside the pane resets the filters ------------
+    await expect(page).toHaveURL(/[?&]tab=unread/);
+    await page
+      .locator(`a[href="/sa/${sa}/conversations"]`)
+      .filter({ visible: true })
+      .first()
+      .click();
+    await expect(page).toHaveURL(new RegExp(`/sa/${sa}/conversations$`));
+    await expect(tab("All")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Select a conversation")).toBeVisible();
+    await expectRows(["A", "B", "C", "D", "E"]);
+
+    // --- A conversation whose contact is gone shows a not-found state ------
+    await list
+      .getByTestId("conversation-row")
+      .filter({ hasText: orphanName })
+      .getByRole("link")
+      .click();
+    await expect(page.getByTestId("thread-not-found")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("Loading conversation…")).toHaveCount(0);
 
     // --- I1: a web_ (session-keyed) thread opens in the split view --------
     await tab("All").click();
@@ -310,6 +394,7 @@ test("split-pane inbox: tabs, scope, filters, star, mark unread, sort", async ({
     await expect(page.getByText("Select a conversation")).toBeHidden();
   } finally {
     for (const l of Object.keys(ids) as Letter[]) await deleteScoped(convo(l));
+    await deleteScoped(orphanRef);
     for (const id of contactIds) await deleteScoped(db.doc(`contacts/${id}`));
   }
 });

@@ -7,12 +7,9 @@ import {
   ArrowLeft,
   ExternalLink,
   Globe,
-  MailOpen,
   MessagesSquare,
-  PanelRight,
   Smartphone,
 } from "lucide-react";
-import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useConversationTheme } from "@/hooks/use-conversation-theme";
@@ -21,7 +18,6 @@ import { metaCanInstagramDm } from "@/lib/comms/meta-capabilities";
 import { subscribeToContact } from "@/lib/firestore/contacts";
 import {
   markConversationRead,
-  markConversationUnread,
   subscribeToConversation,
 } from "@/lib/firestore/conversations";
 import { Button } from "@/components/ui/button";
@@ -31,7 +27,10 @@ import { WebChatComposer } from "@/components/conversations/web-chat-composer";
 import { ConversationAiControls } from "@/components/conversations/conversation-ai-controls";
 import { ConversationDraftCard } from "@/components/conversations/conversation-draft-card";
 import { ConversationContactPanel } from "@/components/conversations/conversation-contact-panel";
-import { StarToggle } from "@/components/conversations/star-toggle";
+import {
+  DetailsToggle,
+  ThreadTriageActions,
+} from "@/components/conversations/thread-header-actions";
 import type { EmailMessageDoc } from "@/types/email";
 import type { Contact } from "@/types/contacts";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
@@ -62,8 +61,8 @@ export default function ConversationDetailPage() {
   const [convReady, setConvReady] = useState(false);
   const [contactLoading, setContactLoading] = useState(!isWebChat);
   // Right-hand contact panel — collapsed by default; remembered across
-  // conversations via localStorage (xl+ only: under xl the split view's list
-  // pane leaves no room for it).
+  // conversations via localStorage. lg+ only: it overlays the thread on lg
+  // (the split view's list pane leaves no room) and docks beside it on xl.
   const [panelOpen, setPanelOpen] = useState(false);
 
   useEffect(() => {
@@ -109,10 +108,20 @@ export default function ConversationDetailPage() {
       return;
     }
     setContactLoading(true);
-    const unsubContact = subscribeToContact(contactIdToLoad, (c) => {
-      setContact(c);
-      setContactLoading(false);
-    });
+    const unsubContact = subscribeToContact(
+      contactIdToLoad,
+      (c) => {
+        setContact(c);
+        setContactLoading(false);
+      },
+      // A deleted contact surfaces as a rules refusal, not an empty snapshot
+      // (the read rule needs resource.data). Stop loading either way so the
+      // pane shows the not-found state instead of spinning forever.
+      () => {
+        setContact(null);
+        setContactLoading(false);
+      },
+    );
     return () => unsubContact();
   }, [contactIdToLoad, user, authLoading]);
 
@@ -166,19 +175,12 @@ export default function ConversationDetailPage() {
     ? contact?.phone || contact?.email || "Live web chat"
     : contact?.email || contact?.phone || "";
 
-  const loading = isWebChat ? !convReady : contactLoading || !contact;
-
-  async function markUnread() {
-    try {
-      await markConversationUnread(conversationId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't mark unread.");
-    }
-  }
+  const loading = isWebChat ? !convReady : contactLoading;
+  const listHref = `${saPath("/conversations")}${listQuery ? `?${listQuery}` : ""}`;
 
   return (
     // Sized by the conversations layout's right pane (split view on lg+).
-    <div className="flex min-w-0 flex-1 gap-4">
+    <div className="relative flex min-w-0 flex-1 gap-4">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border bg-card">
         <header
           data-testid="thread-header"
@@ -188,11 +190,7 @@ export default function ConversationDetailPage() {
           <Button
             variant="ghost"
             size="icon"
-            render={
-              <Link
-                href={`${saPath("/conversations")}${listQuery ? `?${listQuery}` : ""}`}
-              />
-            }
+            render={<Link href={listHref} />}
             aria-label="Back to conversations"
             className="lg:hidden"
           >
@@ -214,22 +212,10 @@ export default function ConversationDetailPage() {
         </div>
         <div className="flex shrink-0 items-center gap-1 sm:gap-3">
           {conversation && (
-            <>
-              <StarToggle
-                conversationId={conversationId}
-                starred={conversation.starred === true}
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={markUnread}
-                disabled={(conversation.unreadCount ?? 0) > 0}
-                aria-label="Mark as unread"
-                title="Mark as unread"
-              >
-                <MailOpen className="h-4 w-4" />
-              </Button>
-            </>
+            <ThreadTriageActions
+              conversationId={conversationId}
+              conversation={conversation}
+            />
           )}
           <button
             type="button"
@@ -257,19 +243,7 @@ export default function ConversationDetailPage() {
               />
             </span>
           </button>
-          {contact && (
-            <Button
-              variant={panelOpen ? "secondary" : "outline"}
-              size="sm"
-              onClick={togglePanel}
-              aria-pressed={panelOpen}
-              className="hidden xl:inline-flex"
-              title="Show contact details + activity"
-            >
-              <PanelRight className="mr-1 h-3.5 w-3.5" />
-              Details
-            </Button>
-          )}
+          {contact && <DetailsToggle open={panelOpen} onToggle={togglePanel} />}
           {contact && (
             <Button
               variant="outline"
@@ -286,6 +260,18 @@ export default function ConversationDetailPage() {
       {loading ? (
         <div className="flex flex-1 items-center justify-center">
           <p className="text-sm text-muted-foreground">Loading conversation…</p>
+        </div>
+      ) : !isWebChat && !contact ? (
+        <div
+          data-testid="thread-not-found"
+          className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center"
+        >
+          <p className="text-sm font-medium">
+            This contact no longer exists or you can&apos;t access it.
+          </p>
+          <Link href={listHref} className="text-sm text-primary hover:underline">
+            Back to conversations
+          </Link>
         </div>
       ) : isWebChat ? (
         <>
@@ -341,7 +327,7 @@ export default function ConversationDetailPage() {
       </div>
 
       {panelOpen && contact && (
-        <aside className="hidden w-[340px] shrink-0 overflow-hidden rounded-2xl border bg-card xl:block">
+        <aside className="absolute inset-y-0 right-0 z-20 hidden w-[340px] shrink-0 overflow-hidden rounded-2xl border bg-card shadow-xl lg:block xl:static xl:shadow-none">
           <ConversationContactPanel contact={contact} onClose={togglePanel} />
         </aside>
       )}

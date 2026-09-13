@@ -5,6 +5,7 @@ import {
   buildInboxView,
   inboxFiltersToQuery,
   parseInboxFilters,
+  reconcileUrlQuery,
   sortConversations,
   type InboxFilters,
 } from "./inbox-filters";
@@ -172,5 +173,66 @@ describe("URL round-trip", () => {
         new URLSearchParams("tab=bogus&scope=x&channel=fax&direction=up&sort=z")
       )
     ).toEqual(DEFAULT_INBOX_FILTERS);
+  });
+});
+
+describe("active conversation exemption", () => {
+  const withActive = (f: Partial<InboxFilters>, activeId: string | null) =>
+    buildInboxView(LIST, { ...DEFAULT_INBOX_FILTERS, ...f }, ME, "", activeId);
+
+  it("keeps the open conversation on a tab it no longer matches", () => {
+    // b is read: without the exemption it would vanish from Unread.
+    expect(ids(withActive({ tab: "unread" }, "b").rows)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(ids(withActive({ tab: "unread" }, null).rows)).toEqual(["a", "c"]);
+  });
+
+  it("exempts only the tab, not scope / channel / direction", () => {
+    expect(ids(withActive({ scope: "mine" }, "b").rows)).toEqual(["a", "e"]);
+    expect(ids(withActive({ channel: "sms" }, "b").rows)).toEqual(["c"]);
+  });
+
+  it("does not change the tab counts", () => {
+    expect(withActive({ tab: "unread" }, "b").counts.unread).toBe(2);
+  });
+});
+
+describe("reconcileUrlQuery", () => {
+  it("adopts a query the pane did not write (external navigation)", () => {
+    expect(reconcileUrlQuery("", ["tab=unread"])).toEqual({
+      adopt: true,
+      pending: [],
+    });
+    expect(reconcileUrlQuery("tab=starred", [])).toEqual({
+      adopt: true,
+      pending: [],
+    });
+  });
+
+  it("ignores the echo of its own write and drops it", () => {
+    expect(reconcileUrlQuery("tab=unread", ["tab=unread"])).toEqual({
+      adopt: false,
+      pending: [],
+    });
+  });
+
+  it("a late echo of an older write does not revert a newer one", () => {
+    // scope=unassigned was written, then scope reset + channel=whatsapp —
+    // the first echo must not be adopted over the second write.
+    const pending = ["scope=unassigned", "channel=whatsapp"];
+    expect(reconcileUrlQuery("scope=unassigned", pending)).toEqual({
+      adopt: false,
+      pending: ["channel=whatsapp"],
+    });
+  });
+
+  it("a skipped intermediate echo is dropped with the newer one", () => {
+    expect(reconcileUrlQuery("b", ["a", "b"])).toEqual({
+      adopt: false,
+      pending: [],
+    });
   });
 });

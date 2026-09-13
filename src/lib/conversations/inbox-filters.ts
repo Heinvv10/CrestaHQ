@@ -81,6 +81,24 @@ export function inboxFiltersToQuery(f: InboxFilters): string {
   return q.toString();
 }
 
+/**
+ * Decide whether a URL query the pane observes is an echo of its own write or
+ * a navigation from outside (sidebar link, notification, manual edit).
+ * `pending` is every query the pane has written that the URL has not yet
+ * caught up with, oldest first. An echo drops itself and everything older (a
+ * router may skip intermediate replaces); anything else is external and is
+ * adopted, discarding the pending writes it overrides. Adopting a stale echo
+ * would revert the operator's newer change — the race this exists to avoid.
+ */
+export function reconcileUrlQuery(
+  urlQuery: string,
+  pending: string[]
+): { adopt: boolean; pending: string[] } {
+  const idx = pending.indexOf(urlQuery);
+  if (idx >= 0) return { adopt: false, pending: pending.slice(idx + 1) };
+  return { adopt: true, pending: [] };
+}
+
 function isUnread(c: ConversationDoc): boolean {
   return (c.unreadCount ?? 0) > 0;
 }
@@ -133,12 +151,18 @@ export interface InboxView {
   counts: Record<InboxTab, number>;
 }
 
-/** Filtered + sorted rows for the active tab, plus a count per tab. */
+/**
+ * Filtered + sorted rows for the active tab, plus a count per tab. The open
+ * conversation (`activeId`) is exempt from the TAB test only: opening a row
+ * from Unread marks it read, and without the exemption it would vanish from
+ * under the operator. Scope / channel / direction / search still apply.
+ */
 export function buildInboxView(
   list: ConversationDoc[],
   f: InboxFilters,
   uid: string | null,
-  search: string
+  search: string,
+  activeId: string | null = null
 ): InboxView {
   const scoped = applyNonTabFilters(list, f, uid, search);
   const counts = {
@@ -147,7 +171,7 @@ export function buildInboxView(
     starred: scoped.filter((c) => matchesTab(c, "starred")).length,
   };
   const rows = sortConversations(
-    scoped.filter((c) => matchesTab(c, f.tab)),
+    scoped.filter((c) => matchesTab(c, f.tab) || c.id === activeId),
     f.sort
   );
   return { rows, counts };
