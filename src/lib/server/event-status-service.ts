@@ -13,7 +13,7 @@ import {
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
-import { eventStatus } from "@/types/events";
+import { eventStatus, isValidStatusTransition } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
 import type { AutomationTriggerType } from "@/types";
 import type { BookingPage } from "@/types/booking";
@@ -41,21 +41,10 @@ import type { SubAccountDoc } from "@/types/tenancy";
  */
 
 /**
- * Every valid `current → next` flip, exported so tests can exercise it
- * directly against every from→to pair without hitting a route.
+ * Re-exported from types/events.ts (the pure, client-safe home for the
+ * transition table) so existing imports of this module keep working.
  */
-export function isValidStatusTransition(
-  current: EventStatus,
-  next: EventStatus,
-): boolean {
-  if (current === next) return true;
-  if (current === "cancelled") return false; // always final
-  if (current === "completed") return next === "no_show"; // correction
-  if (current === "no_show") return next === "completed"; // correction
-  if (current === "awaiting_payment") return next === "cancelled";
-  // current === "scheduled"
-  return next === "completed" || next === "no_show" || next === "cancelled";
-}
+export { isValidStatusTransition };
 
 export interface StatusChangeOutcome {
   ok: boolean;
