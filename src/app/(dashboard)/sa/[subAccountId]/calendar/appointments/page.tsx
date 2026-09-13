@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Search } from "lucide-react";
@@ -11,14 +11,25 @@ import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { subscribeToContacts } from "@/lib/firestore/contacts";
 import { subscribeToEvents } from "@/lib/firestore/events";
 import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
+import { detectTimezone } from "@/lib/booking/defaults";
 import { toDate } from "@/lib/format";
+import {
+  applyStatusChange,
+  createSingleFlightGuard,
+} from "@/components/calendar/appointment-status-action";
 import {
   appointmentCalendarLabel,
   appointmentOwnerLabel,
+  canOfferStatusActions,
+  canRescheduleAppointment,
+  dateInputToFromMs,
+  dateInputToToMs,
+  formatAppointmentTime,
   hasActiveFilters,
   matchesFilters,
   matchesSearch,
   matchesTab,
+  sortAppointments,
   EMPTY_APPOINTMENT_FILTERS,
   type AppointmentFilters,
   type AppointmentTab,
@@ -34,6 +45,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   eventStatus,
   eventStatusLabel,
@@ -62,6 +83,11 @@ export default function AppointmentsListPage() {
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
   const { members } = useSubAccountMembers(subAccountId);
+  // No stored per-sub-account timezone field exists today — the operator's
+  // own browser tz (same fallback the booking-page create form uses) is the
+  // one consistent zone both the date-range filter and the Appointment time
+  // column read/write, so they never disagree with each other.
+  const tz = useMemo(() => detectTimezone(), []);
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -75,6 +101,11 @@ export default function AppointmentsListPage() {
   );
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
+  const [busyEventId, setBusyEventId] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<CalendarEvent | null>(null);
+  // Stable across renders — guards against a second click landing before
+  // React has repainted the row's disabled button.
+  const statusGuard = useRef(createSingleFlightGuard()).current;
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
@@ -116,6 +147,12 @@ export default function AppointmentsListPage() {
     return m;
   }, [bookingPages]);
 
+  const memberNameByUid = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const member of members) m.set(member.uid, member.displayName);
+    return m;
+  }, [members]);
+
   const now = Date.now();
   const tabbedEvents = useMemo(
     () => events.filter((e) => matchesTab(e, tab, now)),
@@ -123,12 +160,13 @@ export default function AppointmentsListPage() {
   );
 
   const visibleEvents = useMemo(() => {
-    return tabbedEvents.filter((e) => {
+    const filtered = tabbedEvents.filter((e) => {
       if (!matchesFilters(e, filters)) return false;
       const contactName = e.contactId ? (contactsById.get(e.contactId)?.name ?? "") : "";
       return matchesSearch(e, contactName, search);
     });
-  }, [tabbedEvents, filters, contactsById, search]);
+    return sortAppointments(filtered, tab);
+  }, [tabbedEvents, filters, contactsById, search, tab]);
 
   const counts = useMemo(
     () => ({
@@ -145,18 +183,18 @@ export default function AppointmentsListPage() {
   }, [tab, filters, search]);
 
   async function changeStatus(event: CalendarEvent, next: EventStatus) {
-    try {
-      const res = await fetch(`/api/events/by-id/${event.id}/mark-status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: next }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Couldn't update.");
-      toast.success(`Marked ${eventStatusLabel(next).toLowerCase()}.`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't update.");
-    }
+    setBusyEventId(event.id);
+    const outcome = await statusGuard.run(event.id, () => applyStatusChange(event.id, next));
+    setBusyEventId(null);
+    if (outcome.skipped) return; // already in flight for this row
+    toast[outcome.result.toast.kind](outcome.result.toast.message);
+  }
+
+  async function confirmCancel() {
+    if (!cancelTarget) return;
+    const target = cancelTarget;
+    setCancelTarget(null);
+    await changeStatus(target, "cancelled");
   }
 
   return (
@@ -194,6 +232,7 @@ export default function AppointmentsListPage() {
         onChange={setFilters}
         bookingPages={bookingPages}
         members={members}
+        tz={tz}
       />
 
       {loading ? (
@@ -225,8 +264,14 @@ export default function AppointmentsListPage() {
                   event={event}
                   contact={event.contactId ? (contactsById.get(event.contactId) ?? null) : null}
                   calendarLabel={appointmentCalendarLabel(event, bookingPageNameBySlug)}
+                  ownerLabel={appointmentOwnerLabel(event, memberNameByUid)}
+                  tz={tz}
                   saPath={saPath}
-                  onChangeStatus={(next) => changeStatus(event, next)}
+                  busy={busyEventId === event.id}
+                  onChangeStatus={(next) => {
+                    if (next === "cancelled") setCancelTarget(event);
+                    else void changeStatus(event, next);
+                  }}
                   onEdit={() => setSelectedEvent(event)}
                 />
               ))}
@@ -255,6 +300,28 @@ export default function AppointmentsListPage() {
         contacts={contacts}
         event={selectedEvent}
       />
+
+      <AlertDialog
+        open={!!cancelTarget}
+        onOpenChange={(o) => {
+          if (!o) setCancelTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel this booking?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The visitor is notified by email.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep it</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmCancel()}>
+              Cancel booking
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -264,11 +331,13 @@ function FilterPanel({
   onChange,
   bookingPages,
   members,
+  tz,
 }: {
   filters: AppointmentFilters;
   onChange: (next: AppointmentFilters) => void;
   bookingPages: BookingPage[];
   members: { uid: string; displayName: string }[];
+  tz: string;
 }) {
   const STATUSES: EventStatus[] = [
     "scheduled",
@@ -278,14 +347,12 @@ function FilterPanel({
     "no_show",
   ];
 
-  function dateInputToMs(value: string, endOfDay: boolean): number | null {
-    if (!value) return null;
-    const d = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`);
-    return Number.isNaN(d.getTime()) ? null : d.getTime();
-  }
+  /** Render an epoch ms back to a `<input type="date">` value, in `tz` — the
+   *  same zone dateInputToFromMs/dateInputToToMs parsed it in, so re-opening
+   *  the picker shows the date the filter is actually applying. */
   function msToDateInput(ms: number | null): string {
     if (ms === null) return "";
-    return new Date(ms).toISOString().slice(0, 10);
+    return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date(ms));
   }
 
   return (
@@ -356,17 +423,13 @@ function FilterPanel({
         type="date"
         aria-label="From date"
         value={msToDateInput(filters.fromMs)}
-        onChange={(e) =>
-          onChange({ ...filters, fromMs: dateInputToMs(e.target.value, false) })
-        }
+        onChange={(e) => onChange({ ...filters, fromMs: dateInputToFromMs(e.target.value, tz) })}
       />
       <Input
         type="date"
         aria-label="To date"
         value={msToDateInput(filters.toMs)}
-        onChange={(e) =>
-          onChange({ ...filters, toMs: dateInputToMs(e.target.value, true) })
-        }
+        onChange={(e) => onChange({ ...filters, toMs: dateInputToToMs(e.target.value, tz) })}
       />
 
       {hasActiveFilters(filters) && (
@@ -386,29 +449,28 @@ function AppointmentRow({
   event,
   contact,
   calendarLabel,
+  ownerLabel,
+  tz,
   saPath,
+  busy,
   onChangeStatus,
   onEdit,
 }: {
   event: CalendarEvent;
   contact: Contact | null;
   calendarLabel: string;
+  ownerLabel: string;
+  tz: string;
   saPath: (path: string) => string;
+  busy: boolean;
   onChangeStatus: (next: EventStatus) => void;
   onEdit: () => void;
 }) {
   const status = eventStatus(event);
   const start = toDate(event.startAt);
-  const whenLabel = start
-    ? new Intl.DateTimeFormat(undefined, {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      }).format(start)
-    : "—";
-  const isBookingPage = event.source === "booking_page";
+  const whenLabel = start ? formatAppointmentTime(start, tz) : "—";
+  const offerStatusActions = canOfferStatusActions(event);
+  const canReschedule = canRescheduleAppointment(event);
 
   return (
     <tr className="border-b last:border-b-0 hover:bg-muted/20">
@@ -437,26 +499,35 @@ function AppointmentRow({
       </td>
       <td className="p-3 whitespace-nowrap">{whenLabel}</td>
       <td className="p-3">{calendarLabel}</td>
-      <td className="p-3">{appointmentOwnerLabel(event)}</td>
+      <td className="p-3">{ownerLabel}</td>
       <td className="p-3 text-right">
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <Button type="button" variant="ghost" size="icon">
-                <MoreHorizontal className="h-4 w-4" />
+              <Button type="button" variant="ghost" size="icon" disabled={busy}>
+                {busy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <MoreHorizontal className="h-4 w-4" />
+                )}
               </Button>
             }
           />
           <DropdownMenuContent align="end">
-            {STATUS_ACTIONS.filter(
-              (a) => a.status !== status && isValidStatusTransition(status, a.status),
-            ).map((a) => (
-              <DropdownMenuItem key={a.status} onClick={() => onChangeStatus(a.status)}>
-                {a.label}
-              </DropdownMenuItem>
-            ))}
+            {/* Status actions match the operator dialog's BookingActionsPanel:
+                only a booking-page event has a lifecycle to flip — flipping a
+                manual event's status here would still email a "visitor" and
+                fire booking.* workflow triggers with nothing behind them. */}
+            {offerStatusActions &&
+              STATUS_ACTIONS.filter(
+                (a) => a.status !== status && isValidStatusTransition(status, a.status),
+              ).map((a) => (
+                <DropdownMenuItem key={a.status} onClick={() => onChangeStatus(a.status)}>
+                  {a.label}
+                </DropdownMenuItem>
+              ))}
             <DropdownMenuItem onClick={onEdit}>
-              {isBookingPage ? "Reschedule" : "Edit"}
+              {canReschedule ? "Reschedule" : "Edit"}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
