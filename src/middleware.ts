@@ -345,11 +345,17 @@ export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
  * reads back as "the caller's identity" with no further check. On an
  * invalid/missing session those two branches used to call `NextResponse
  * .next()` with no `request` override, which forwards the ORIGINAL request
- * object — including any `x-user-uid` a caller sent itself. No route
- * currently trusts an identity header on a public path, but a public path
- * is exactly the one place a client fully controls that header, so this is
- * a strip-at-the-edge default rather than depending on every future public
- * route remembering not to read it.
+ * object — including any `x-user-uid` a caller sent itself.
+ *
+ * This was exploitable, not just theoretical: `/api/forms` is a PUBLIC_PATH
+ * (needed for the unauthenticated submit endpoint), and
+ * `DELETE /api/forms/[id]` trusts `x-user-uid` via `requireSubAccountMember`
+ * to authorize the delete. Before this fix, anyone who knew (or guessed) an
+ * active member's Firebase uid could set that header on an otherwise
+ * session-less request and delete that member's forms + submissions —
+ * no password, no session cookie, nothing else verified. See
+ * src/app/api/forms/[id]/route.test.ts for the regression test through the
+ * real route.
  */
 export function withoutIdentityHeaders(request: NextRequest): NextResponse {
   const headers = new Headers(request.headers);
