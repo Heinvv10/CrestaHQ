@@ -14,7 +14,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useConversationTheme } from "@/hooks/use-conversation-theme";
 import { cn } from "@/lib/utils";
-import { metaCanInstagramDm } from "@/lib/comms/meta-capabilities";
+import { composerChannelOptions } from "@/lib/conversations/channel-availability";
 import { subscribeToContact } from "@/lib/firestore/contacts";
 import {
   markConversationRead,
@@ -34,7 +34,6 @@ import {
 } from "@/components/conversations/thread-header-actions";
 import type { EmailMessageDoc } from "@/types/email";
 import type { Contact } from "@/types/contacts";
-import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import {
   parseWebChatConversationId,
   type ConversationChannel,
@@ -133,39 +132,19 @@ export default function ConversationDetailPage() {
     if (conversationId) void markConversationRead(conversationId);
   }, [conversationId]);
 
-  const availableChannels: ConversationChannel[] = [];
-  if (subAccount?.emailProvider === "smtp" && subAccount.smtpConfig?.verifiedAt) availableChannels.push("email");
-  if (subAccount?.twilioConfig?.enabled) availableChannels.push("sms");
-  // Rail-agnostic on purpose: asking a bridge or Cloud workspace for a Twilio
-  // number is not a stricter check, it is the wrong one, and it hides the
-  // composer on a workspace that is correctly connected.
-  if (
-    whatsappSenderConfigured(subAccount) &&
-    subAccount?.whatsappEnabledByAgency === true
-  ) {
-    availableChannels.push("whatsapp");
-  }
-  // BETA Meta channels — offered only when the agency gate is on, a Page is
-  // connected, this contact has a Meta identity, and they've actually used the
-  // channel (so we never expose a reply path the recipient can't receive).
-  // Instagram additionally needs the IG messaging scope on the stored token —
-  // it's declinable independently of Messenger's, so Messenger working never
-  // implies IG replies will.
-  if (
-    subAccount?.metaInboxEnabledByAgency === true &&
-    subAccount?.metaConfig?.connected &&
-    contact?.metaUserId
-  ) {
-    for (const ch of conversation?.channelsSeen ?? []) {
-      if (
-        (ch === "messenger" ||
-          (ch === "instagram" && metaCanInstagramDm(subAccount.metaConfig))) &&
-        !availableChannels.includes(ch)
-      ) {
-        availableChannels.push(ch);
-      }
-    }
-  }
+  // SP2 T7 — every composer channel with its availability and, when it
+  // cannot be used, why (connection, agency gate, contact identity, opt-out,
+  // Meta identity / prior use). One pure function owns the rule.
+  const channelOptions = contact
+    ? composerChannelOptions({
+        subAccount,
+        contact,
+        channelsSeen: conversation?.channelsSeen,
+      })
+    : [];
+  const availableChannels: ConversationChannel[] = channelOptions
+    .filter((o) => o.available)
+    .map((o) => o.channel);
 
   // Title/subtitle differ by mode. Web chat may be anonymous (no contact), so
   // fall back to the denormalized inbox label.
@@ -338,6 +317,7 @@ export default function ConversationDetailPage() {
               senderName={user?.displayName ?? null}
               contact={contact}
               availableChannels={availableChannels}
+              channelOptions={channelOptions}
               defaultChannel={conversation?.lastChannel ?? "sms"}
             />
           )}
