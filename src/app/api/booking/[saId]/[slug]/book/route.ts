@@ -28,6 +28,8 @@ import {
 } from "@/lib/booking/event-token";
 import { generateIcs } from "@/lib/booking/ics";
 import { reconcileBookingContact } from "@/lib/booking/contact-reconcile";
+import { loadGoogleBusy, mergeHostBusy } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 import {
   emitBookingWebhook,
   fireBookingTrigger,
@@ -282,6 +284,13 @@ export async function POST(
         now,
       )
     : new Map<string, number>();
+  // Hosts' Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const googleBusy = await loadGoogleBusy({
+    subAccountId: saId,
+    hostUids: hosts.map((h) => h.uid),
+    from: queryFrom,
+    to: queryTo,
+  });
 
   type CreatedPayload = {
     eventDocRef: FirebaseFirestore.DocumentReference;
@@ -333,6 +342,7 @@ export async function POST(
           occupyingByHost.set(host, arr);
         }
       }
+      mergeHostBusy(occupyingByHost, googleBusy);
 
       const candidate: SlotCandidate = { startAt: slotStart, endAt: slotEnd };
       let assignedToUid: string | null = null;
@@ -661,6 +671,8 @@ export async function POST(
       expiresAt: created.paymentHoldExpiresAt,
     });
   }
+
+  await pushBookingToGoogle(created.eventDocRef.id);
 
   // Activity + automation trigger.
   await recordBookingActivity(

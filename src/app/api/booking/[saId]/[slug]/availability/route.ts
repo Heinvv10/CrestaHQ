@@ -8,6 +8,7 @@ import {
   type BusyEventWithHost,
   type SlotCandidate,
 } from "@/lib/booking/availability";
+import { asHostBusy, loadGoogleBusy } from "@/lib/google-calendar/busy";
 import { eventStatus, eventOccupiesSlot } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -169,6 +170,18 @@ export async function GET(
       { status: 500 },
     );
   }
+
+  // Each host's Google busy time (SP3 G2) — fail open, never a transaction.
+  busy.push(
+    ...asHostBusy(
+      await loadGoogleBusy({
+        subAccountId: saId,
+        hostUids: (page.hosts ?? []).map((h) => h.uid),
+        from: queryFrom,
+        to: horizonEnd,
+      }),
+    ),
+  );
 
   const hosts = page.hosts ?? [];
   const teamMode = hosts.length > 0;

@@ -25,6 +25,8 @@ import {
 } from "@/lib/booking/lifecycle";
 import { renderBookingHostNotificationEmail } from "@/lib/booking/email";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { asHostBusy, loadGoogleBusy, mergeHostBusy } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 import { emitContactCreatedById } from "@/lib/server/contacts-service";
 import { eventOccupiesSlot, eventStatus } from "@/types/events";
 import { GLOBAL_TERRITORY_ID } from "@/types";
@@ -129,6 +131,17 @@ export async function listVoiceSlots(
     if (!(startAt instanceof Date) || !(endAt instanceof Date)) continue;
     busy.push({ startAt, endAt, assignedToUid: e.assignedToUid ?? null });
   }
+  // Each host's Google busy time (SP3 G2) — fail open.
+  busy.push(
+    ...asHostBusy(
+      await loadGoogleBusy({
+        subAccountId,
+        hostUids: (page.hosts ?? []).map((h) => h.uid),
+        from: queryFrom,
+        to: toInstant,
+      }),
+    ),
+  );
 
   const hosts = page.hosts ?? [];
   // Narrowing is only valid on opted-in pages and for a real host uid.
@@ -287,6 +300,13 @@ export async function bookVoiceSlot(input: {
         now,
       )
     : new Map<string, number>();
+  // Hosts' Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const googleBusy = await loadGoogleBusy({
+    subAccountId,
+    hostUids: hosts.map((h) => h.uid),
+    from: queryFrom,
+    to: queryTo,
+  });
 
   let created: {
     title: string;
@@ -323,6 +343,7 @@ export async function bookVoiceSlot(input: {
           occupyingByHost.set(host, arr);
         }
       }
+      mergeHostBusy(occupyingByHost, googleBusy);
 
       const candidate: SlotCandidate = { startAt: slotStart, endAt: slotEnd };
       let assignedToUid: string | null = null;
@@ -418,6 +439,8 @@ export async function bookVoiceSlot(input: {
     );
     return { ok: false, code: "error" };
   }
+
+  await pushBookingToGoogle(eventDocRef.id);
 
   // ── Post-write side effects (best-effort, same set as the route minus
   //    the email + reminder schedule — both email-based, waived in v1) ──

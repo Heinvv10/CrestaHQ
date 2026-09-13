@@ -16,6 +16,7 @@ import {
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -101,6 +102,7 @@ export async function POST(request: Request) {
 
   // Best-effort side effects.
   await runExpireSideEffects(expiredEvent);
+  await pushBookingToGoogle(ref.id);
 
   return NextResponse.json({ ok: true });
 }

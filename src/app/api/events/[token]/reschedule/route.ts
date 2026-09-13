@@ -28,6 +28,8 @@ import {
   scheduleEventReminders,
 } from "@/lib/booking/lifecycle";
 import { renderBookingConfirmationEmail } from "@/lib/booking/email";
+import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -104,6 +106,13 @@ export async function POST(
     newEnd: Date;
   };
 
+  // The host's Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const googleBusy = await loadGoogleBusyForEvent(
+    verified.eventId,
+    new Date(newStart.getTime() - 8 * 60 * 60_000),
+    new Date(newEnd.getTime() + 1000),
+  );
+
   let outcome: Outcome | null = null;
   try {
     outcome = await db.runTransaction(async (txn) => {
@@ -161,6 +170,7 @@ export async function POST(
         if (!(s2 instanceof Date) || !(e2 instanceof Date)) continue;
         busy.push({ startAt: s2, endAt: e2 });
       }
+      busy.push(...googleBusy);
       const free = computeAvailability({
         page,
         now: new Date(),
@@ -230,6 +240,7 @@ export async function POST(
     startAt: nsa,
     endAt: nea,
   });
+  await pushBookingToGoogle(event.id);
 
   return NextResponse.json({
     ok: true,

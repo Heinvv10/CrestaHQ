@@ -15,6 +15,7 @@ import {
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 import { eventStatus } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
 import type { AutomationTriggerType } from "@/types";
@@ -123,6 +124,7 @@ export async function POST(
   }
 
   const sideEffects = await runStatusSideEffects(event, next, reason);
+  if (next === "cancelled") await pushBookingToGoogle(eventId);
 
   return NextResponse.json({
     ok: true,
