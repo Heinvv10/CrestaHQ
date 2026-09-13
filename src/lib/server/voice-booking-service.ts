@@ -12,7 +12,7 @@ import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { assignBookingHosts, selectableHostUid } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
-import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
@@ -337,7 +337,7 @@ export async function bookVoiceSlot(input: {
     return { ok: false, code: "error" };
   }
 
-  await pushBookingToGoogle(eventDocRef.id);
+  pushBookingToGoogleAfterResponse(eventDocRef.id);
 
   // ── Post-write side effects (best-effort, same set as the route minus
   //    the email + reminder schedule — both email-based, waived in v1) ──

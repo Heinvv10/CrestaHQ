@@ -11,9 +11,10 @@ import { gcalAppConfigured } from "@/lib/google-calendar/provider/mode";
  * The CALLER's own Google Calendar connection on this sub-account.
  *
  *   GET    /api/sub-accounts/[id]/google-calendar
- *     → { configured, connected, status, googleEmail, lastError, lastErrorAt }
- *     Any active member; 403 `gate_off` while the agency gate is off. Never a
- *     token, and never another member's connection.
+ *     → { configured, connected, status, googleEmail, lastError, lastPushError }
+ *     Any active member. While the agency gate is off: { gateOff: true,
+ *     connected, googleEmail } only — enough for the card to offer Disconnect
+ *     on a connection left behind. Never a token, never another member's.
  *
  *   DELETE /api/sub-accounts/[id]/google-calendar
  *     UNGATED, so a member can always remove their connection after the gate
@@ -27,18 +28,21 @@ export async function GET(request: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   const access = await requireSubAccountMember(request, id);
   if (access instanceof NextResponse) return access;
-  if (!(await googleCalendarGateOn(id))) {
-    return NextResponse.json({ error: "gate_off" }, { status: 403 });
-  }
-
   const conn = await readConnection(id, access.uid);
+  if (!(await googleCalendarGateOn(id))) {
+    return NextResponse.json({
+      gateOff: true,
+      connected: !!conn,
+      googleEmail: conn?.googleEmail ?? null,
+    });
+  }
   return NextResponse.json({
     configured: gcalAppConfigured(),
     connected: conn?.status === "connected",
     status: conn?.status ?? null,
     googleEmail: conn?.googleEmail ?? null,
     lastError: conn?.lastError ?? null,
-    lastErrorAt: conn?.lastErrorAt ?? null,
+    lastPushError: conn?.lastPushError ?? null,
   });
 }
 

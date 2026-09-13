@@ -23,7 +23,7 @@ import {
 } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
-import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
@@ -633,7 +633,7 @@ export async function POST(
     });
   }
 
-  await pushBookingToGoogle(created.eventDocRef.id);
+  pushBookingToGoogleAfterResponse(created.eventDocRef.id);
 
   // Activity + automation trigger.
   await recordBookingActivity(

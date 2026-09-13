@@ -8,17 +8,21 @@ import { Button } from "@/components/ui/button";
 
 /**
  * The signed-in member's own Google Calendar connection (SP3 G1/G4), inside
- * Settings → Calendar sync. Self-gating on `googleCalendarEnabledByAgency`.
+ * Settings → Calendar sync. Self-gating on `googleCalendarEnabledByAgency`:
+ * while the gate is off it renders only a Disconnect for a connection the
+ * member still has stored, and nothing otherwise.
  * Reads only what GET /api/sub-accounts/[id]/google-calendar returns for the
  * caller — never a token, never a colleague's connection.
  */
 
 interface Status {
-  configured: boolean;
+  gateOff?: boolean;
+  configured?: boolean;
   connected: boolean;
-  status: "connected" | "revoked" | null;
+  status?: "connected" | "revoked" | null;
   googleEmail: string | null;
-  lastError: string | null;
+  lastError?: string | null;
+  lastPushError?: string | null;
 }
 
 /** The `?gcal=…` statuses the connect/callback routes redirect back with. */
@@ -56,6 +60,7 @@ function useGcalStatusToast(): void {
 
 export function GoogleCalendarCard() {
   const { subAccountId, subAccount } = useSubAccount();
+  // Re-fetch when the gate flips; the route answers either way.
   const gateOn = subAccount?.googleCalendarEnabledByAgency === true;
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,10 +81,11 @@ export function GoogleCalendarCard() {
   }, [subAccountId]);
 
   useEffect(() => {
-    if (gateOn) void load();
+    void load();
   }, [gateOn, load]);
 
-  if (!gateOn) return null;
+  if (status?.gateOff && !status.connected) return null;
+  if (!status && !gateOn) return null;
 
   function connect() {
     // Full-page nav so the OAuth redirect chain works.
@@ -128,7 +134,15 @@ export function GoogleCalendarCard() {
       </p>
 
       <div className="mt-3">
-        {error ? (
+        {status?.gateOff ? (
+          <div className="flex flex-wrap items-center justify-between gap-3" data-testid="gcal-gate-off">
+            <p className="text-xs text-muted-foreground">
+              Google Calendar sync is switched off by your agency. Your connection
+              {status.googleEmail ? ` (${status.googleEmail})` : ""} is still stored.
+            </p>
+            {disconnectButton}
+          </div>
+        ) : error ? (
           <p className="text-sm text-rose-700 dark:text-rose-400">{error}</p>
         ) : !status ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -157,7 +171,12 @@ export function GoogleCalendarCard() {
               </p>
               {status.lastError && (
                 <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="gcal-last-error">
-                  {status.lastError}
+                  Busy time: {status.lastError}
+                </p>
+              )}
+              {status.lastPushError && (
+                <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="gcal-last-push-error">
+                  Last booking not added: {status.lastPushError} Open the booking and use Retry sync.
                 </p>
               )}
             </div>

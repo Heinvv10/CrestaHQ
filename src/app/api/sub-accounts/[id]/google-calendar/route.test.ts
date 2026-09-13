@@ -207,11 +207,12 @@ describe("status + disconnect", () => {
     expect(await (await status("uid_admin")).json()).toMatchObject({ connected: false, status: null });
   });
 
-  it("GET is refused while the gate is off", async () => {
+  it("with the gate off, GET says only gateOff + the caller's stored connection (for Disconnect)", async () => {
     state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleCalendarEnabledByAgency: false });
-    const res = await status();
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "gate_off" });
+    const text = await (await status()).text();
+    expect(JSON.parse(text)).toEqual({ gateOff: true, connected: true, googleEmail: "host@example.com" });
+    expect(text).not.toMatch(TOKEN_MARKERS);
+    expect(await (await status("uid_admin")).json()).toEqual({ gateOff: true, connected: false, googleEmail: null });
   });
 
   it("DELETE is ungated, removes only the caller's doc, and never revokes at Google", async () => {

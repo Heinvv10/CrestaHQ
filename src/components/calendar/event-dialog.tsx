@@ -35,6 +35,7 @@ import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccount } from "@/context/sub-account-context";
 import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
+import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
 import {
   notifySkipDetail,
   saveBookingPageEdit,
@@ -285,6 +286,12 @@ export function EventDialog({
 
   async function handleDelete() {
     if (!event) return;
+    // Rules refuse deleting a booking still mirrored in a Google calendar —
+    // its Google copy would be orphaned. Cancelling removes it properly.
+    if (Object.keys((event as { googleEventIds?: Record<string, string> | null }).googleEventIds ?? {}).length > 0) {
+      toast.error("This booking is in a host's Google Calendar. Cancel it instead of deleting.");
+      return;
+    }
     if (!confirm(`Delete "${event.title}"?`)) return;
     setDeleting(true);
     try {
@@ -779,6 +786,7 @@ function BookingActionsPanel({
       {/* Reassign host — only renders while the booking is still live
           (not cancelled, not a completed/no_show correction target). */}
       {!terminal && !correctable && <BookingReassign event={event} />}
+      <GoogleSyncNotice event={event} />
     </div>
   );
 }
