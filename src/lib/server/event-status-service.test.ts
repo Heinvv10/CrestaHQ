@@ -5,14 +5,16 @@ import type { CalendarEvent, EventStatus } from "@/types/events";
 const m = vi.hoisted(() => ({
   fireBookingTrigger: vi.fn(),
   recordBookingActivity: vi.fn(),
+  emailIsConfigured: vi.fn(),
+  sendEmail: vi.fn(),
 }));
 vi.mock("@/lib/booking/lifecycle", () => ({
   fireBookingTrigger: m.fireBookingTrigger,
   recordBookingActivity: m.recordBookingActivity,
 }));
 vi.mock("@/lib/comms/resend", () => ({
-  emailIsConfigured: () => false,
-  sendEmail: vi.fn(),
+  emailIsConfigured: m.emailIsConfigured,
+  sendEmail: m.sendEmail,
   tenantFrom: () => "test@example.com",
 }));
 vi.mock("@/lib/booking/email", () => ({
@@ -28,18 +30,25 @@ const STATUSES: EventStatus[] = [
 ];
 
 let updatedPatch: Record<string, unknown> | null;
+/** When true, the contact + sub-account docs exist so a cancel email CAN send. */
+let recordsExist: boolean;
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
     collection: () => ({
       doc: () => ({
-        get: async () => ({ exists: false }),
+        get: async () => ({
+          exists: recordsExist,
+          data: () => ({ name: "Visitor", email: "visitor@example.com" }),
+        }),
         update: async (patch: Record<string, unknown>) => {
           updatedPatch = patch;
         },
       }),
     }),
-    doc: () => ({ get: async () => ({ exists: false }) }),
+    doc: () => ({
+      get: async () => ({ exists: recordsExist, data: () => ({ name: "Biz" }) }),
+    }),
   }),
 }));
 
@@ -69,6 +78,8 @@ function event(status: EventStatus): CalendarEvent {
 beforeEach(() => {
   vi.clearAllMocks();
   updatedPatch = null;
+  recordsExist = false;
+  m.emailIsConfigured.mockReturnValue(false);
 });
 
 describe("isValidStatusTransition — every from→to pair", () => {
@@ -151,5 +162,66 @@ describe("changeEventStatus", () => {
     expect(updatedPatch?.status).toBe("cancelled");
     expect(updatedPatch?.cancelReason).toBe("no longer needed");
     expect(m.fireBookingTrigger).toHaveBeenCalledWith(expect.anything(), "event_cancelled");
+  });
+
+  it("names the refusal neutrally — no dashboard-only wording on the shared message", async () => {
+    const outcome = await changeEventStatus(event("cancelled"), "completed");
+    expect(outcome.error).toBe("This event was cancelled — its status can't change.");
+    expect(outcome.error).not.toMatch(/operator/i);
+  });
+});
+
+describe("changeEventStatus — test mode", () => {
+  const ts = (iso: string) => ({ toDate: () => new Date(iso) }) as never;
+  function cancellable(mode: "live" | "test" | undefined): CalendarEvent {
+    return {
+      ...event("scheduled"),
+      mode,
+      startAt: ts("2030-01-01T10:00:00Z"),
+      endAt: ts("2030-01-01T10:30:00Z"),
+    };
+  }
+
+  beforeEach(() => {
+    // Everything a cancel email needs is present, so only the mode gate
+    // can stop it.
+    recordsExist = true;
+    m.emailIsConfigured.mockReturnValue(true);
+  });
+
+  it("control: a live event with the same fixture DOES record, trigger and email", async () => {
+    const outcome = await changeEventStatus(cancellable("live"), "cancelled");
+    expect(outcome.emailSent).toBe(true);
+    expect(m.recordBookingActivity).toHaveBeenCalled();
+    expect(m.fireBookingTrigger).toHaveBeenCalled();
+    expect(m.sendEmail).toHaveBeenCalled();
+  });
+
+  it("an event with no mode (booking page) is live", async () => {
+    const outcome = await changeEventStatus(cancellable(undefined), "cancelled");
+    expect(outcome.emailSent).toBe(true);
+    expect(m.fireBookingTrigger).toHaveBeenCalled();
+  });
+
+  it("a test-mode event gets the status write only: no activity, no trigger, no email", async () => {
+    const outcome = await changeEventStatus(cancellable("test"), "cancelled");
+    expect(outcome).toMatchObject({
+      ok: true,
+      httpStatus: 200,
+      status: "cancelled",
+      emailSent: false,
+      emailSkipReason: "test_mode",
+    });
+    expect(updatedPatch?.status).toBe("cancelled");
+    expect(m.recordBookingActivity).not.toHaveBeenCalled();
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+    expect(m.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a test-mode completed flip fires no trigger either", async () => {
+    await changeEventStatus({ ...cancellable("test") }, "completed");
+    expect(updatedPatch?.status).toBe("completed");
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+    expect(m.recordBookingActivity).not.toHaveBeenCalled();
   });
 });

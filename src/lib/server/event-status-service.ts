@@ -17,7 +17,11 @@ import { eventStatus } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
 import type { AutomationTriggerType } from "@/types";
 import type { BookingPage } from "@/types/booking";
-import type { CalendarEvent, EventStatus } from "@/types/events";
+import type {
+  CalendarEvent,
+  EventNotifySkipReason,
+  EventStatus,
+} from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 
@@ -57,6 +61,24 @@ export function isValidStatusTransition(
   return next === "completed" || next === "no_show" || next === "cancelled";
 }
 
+/**
+ * Why `current → next` is refused, or null when it's allowed. Worded for
+ * both surfaces that show it (the dashboard toast and the v1 API error).
+ */
+export function statusTransitionError(
+  current: EventStatus,
+  next: EventStatus,
+): string | null {
+  if (isValidStatusTransition(current, next)) return null;
+  if (current === "cancelled") {
+    return "This event was cancelled — its status can't change.";
+  }
+  if (current === "awaiting_payment") {
+    return "Mark as paid first if the visitor paid, or cancel to release the slot.";
+  }
+  return "That status change isn't allowed.";
+}
+
 export interface StatusChangeOutcome {
   ok: boolean;
   /** HTTP status the caller should respond with. */
@@ -83,13 +105,8 @@ export async function changeEventStatus(
   if (current === next) {
     return { ok: true, httpStatus: 200, status: next, noop: true };
   }
-  if (!isValidStatusTransition(current, next)) {
-    const error =
-      current === "cancelled"
-        ? "This event was cancelled — operators can't flip past it."
-        : current === "awaiting_payment"
-          ? "Mark as paid first if the visitor paid, or cancel to release the slot."
-          : "That status change isn't allowed.";
+  const error = statusTransitionError(current, next);
+  if (error) {
     return { ok: false, httpStatus: 409, error };
   }
 
@@ -109,6 +126,20 @@ export async function changeEventStatus(
     return { ok: false, httpStatus: 500, error: "Couldn't update event." };
   }
 
+  // A test-mode event (v1 `lsk_test_*` key) gets the validated status write
+  // only — no activity row, no workflow trigger, no email. The public API
+  // promises test mode never fires real automations or messages, and the
+  // workflow engine itself has no mode gate. Undefined mode = live
+  // (booking-page / voice / client-written events carry none).
+  if ((event.mode ?? "live") !== "live") {
+    return {
+      ok: true,
+      httpStatus: 200,
+      status: next,
+      emailSent: false,
+      emailSkipReason: "test_mode",
+    };
+  }
   const sideEffects = await runStatusSideEffects(event, next, reason);
   return {
     ok: true,
@@ -121,27 +152,8 @@ export async function changeEventStatus(
 
 interface SideEffectResult {
   emailSent: boolean;
-  /**
-   * Why the cancellation email did NOT send. Surfaced back to the
-   * operator UI so the toast can be honest. Values:
-   *   - `not_cancelled`         status flip wasn't a cancellation
-   *   - `no_contact`            event has no linked contact
-   *   - `email_not_configured`  RESEND_API_KEY / EMAIL_FROM missing
-   *   - `no_contact_email`      contact record has no email field
-   *   - `contact_opted_out`     contact.emailOptedOut === true
-   *   - `missing_records`       contact / sub-account doc not found
-   *   - `bad_timestamps`        event's startAt/endAt unreadable
-   *   - `send_failed`           Resend returned an error
-   */
-  emailSkipReason?:
-    | "not_cancelled"
-    | "no_contact"
-    | "email_not_configured"
-    | "no_contact_email"
-    | "contact_opted_out"
-    | "missing_records"
-    | "bad_timestamps"
-    | "send_failed";
+  /** Why the cancellation email did NOT send — surfaced to the operator toast. */
+  emailSkipReason?: EventNotifySkipReason;
 }
 
 async function runStatusSideEffects(
