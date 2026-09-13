@@ -30,6 +30,10 @@ const fake = vi.hoisted(() => ({
   deleteContact: vi.fn(),
   webhook: vi.fn(),
   limit: { ok: true, retryAfterSec: 0 },
+  mirror: vi.fn(),
+}));
+vi.mock("@/lib/server/conversation-mirror", () => ({
+  mirrorContactAssignee: fake.mirror,
 }));
 vi.mock("@/lib/contacts/bulk-rate-limit", () => ({
   checkBulkRateLimit: () => fake.limit,
@@ -126,6 +130,7 @@ beforeEach(() => {
   fake.deleteContact.mockReset().mockResolvedValue({ status: "deleted" });
   fake.webhook.mockReset();
   fake.limit = { ok: true, retryAfterSec: 0 };
+  fake.mirror.mockReset().mockResolvedValue(1);
 });
 
 it("returns 429 with Retry-After once the per-user limiter trips, writing nothing", async () => {
@@ -260,6 +265,47 @@ describe("assign", () => {
     });
     expect(bad.status).toBe(400);
     expect(fake.batches).toHaveLength(0);
+  });
+
+  it("mirrors the new owner onto every selected contact's conversation (SP2 T1)", async () => {
+    seed("a");
+    seed("b");
+    fake.members.add("m1");
+    await post({
+      subAccountId: "sa",
+      ids: ["a", "b"],
+      action: { type: "assign", assignedToUid: "m1" },
+    });
+    expect(fake.mirror.mock.calls.map((c) => c[0])).toEqual([
+      { contactId: "a", subAccountId: "sa", assigneeUid: "m1" },
+      { contactId: "b", subAccountId: "sa", assigneeUid: "m1" },
+    ]);
+    fake.mirror.mockClear();
+    await post({
+      subAccountId: "sa",
+      ids: ["a"],
+      action: { type: "assign", assignedToUid: null },
+    });
+    expect(fake.mirror).toHaveBeenCalledWith({
+      contactId: "a",
+      subAccountId: "sa",
+      assigneeUid: null,
+    });
+  });
+
+  it("does not mirror on a tag action or a refused assign", async () => {
+    seed("a");
+    await post({
+      subAccountId: "sa",
+      ids: ["a"],
+      action: { type: "add_tag", tag: "vip" },
+    });
+    await post({
+      subAccountId: "sa",
+      ids: ["a"],
+      action: { type: "assign", assignedToUid: "stranger" },
+    });
+    expect(fake.mirror).not.toHaveBeenCalled();
   });
 
   it("null unassigns", async () => {

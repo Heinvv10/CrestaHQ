@@ -59,6 +59,7 @@ const LIST: ConversationDoc[] = [
     lastChannel: "email",
     lastDirection: "outbound",
     assigneeUid: "uid-other",
+    contactEmail: "Billing@Acme.example",
   }),
   convo("d", { at: 200, lastChannel: "web-chat", lastDirection: "outbound" }),
 ];
@@ -125,6 +126,13 @@ describe("buildInboxView", () => {
     expect(ids(view({}, "NAME B").rows)).toEqual(["b"]);
     expect(ids(view({}, "5550101").rows)).toEqual(["a"]);
     expect(view({ tab: "unread" }, "name b").counts.unread).toBe(0);
+  });
+
+  it("search matches the mirrored contact email (I9)", () => {
+    expect(ids(view({}, "billing@acme").rows)).toEqual(["b"]);
+    expect(ids(view({}, "ACME.EXAMPLE").rows)).toEqual(["b"]);
+    // Rows without the mirror (pre-backfill) simply do not match on email.
+    expect(ids(view({}, "nobody@").rows)).toEqual([]);
   });
 
   it("oldest sort reverses the order", () => {

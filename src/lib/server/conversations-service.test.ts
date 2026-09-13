@@ -72,3 +72,33 @@ it("does not write cross-tenant contact previews", async () => {
   await upsertConversationForMessage(input);
   expect(m.writes).not.toHaveBeenCalled();
 });
+// SP2 T1/I9 — every SMS/WhatsApp/Meta/web-chat message re-stamps the owner +
+// email mirror from the contact (the source of truth).
+it("mirrors the contact's owner and email onto the conversation", async () => {
+  m.contact = { ...m.contact, assignedToUid: "u-owner", email: "a@b.co" };
+  await upsertConversationForMessage(input);
+  expect(m.writes).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ assigneeUid: "u-owner", contactEmail: "a@b.co" }),
+    expect.anything()
+  );
+});
+it("does not stamp a null owner over the mirror on create", async () => {
+  // The fake conversation doc does not exist → this is the create branch.
+  m.contact = { ...m.contact, assignedToUid: "u-owner" };
+  await upsertConversationForMessage(input);
+  expect(m.writes.mock.calls[0][1].assigneeUid).toBe("u-owner");
+});
+it("an anonymous web-chat row starts with an empty mirror", async () => {
+  await upsertConversationForMessage({
+    ...input,
+    contactId: null,
+    conversationKey: "web_s1",
+    channel: "web-chat",
+  });
+  expect(m.writes).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ assigneeUid: null, contactEmail: null }),
+    expect.anything()
+  );
+});

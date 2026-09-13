@@ -7,6 +7,11 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { emailReplyFields } from "./email-reply";
+import {
+  ComposerModeToggle,
+  InternalNoteComposer,
+  type ComposerMode,
+} from "./internal-note-composer";
 import type { EmailMessageDoc } from "@/types/email";
 import { Textarea } from "@/components/ui/textarea";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
@@ -30,6 +35,9 @@ const LABEL: Record<ConversationChannel, string> = {
  * (/api/comms/sms/send, /api/comms/whatsapp/send) — the snapshot listener in
  * ConversationThread surfaces the new row. Defaults to the channel the contact
  * last used; the operator can switch when more than one is available.
+ *
+ * The "Internal note" mode (SP2 T2) swaps the whole form for
+ * InternalNoteComposer, which never calls a send route.
  */
 export function ConversationComposer({
   contact,
@@ -56,6 +64,8 @@ export function ConversationComposer({
   }, [emailReply]);
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
+  const [mode, setMode] = useState<ComposerMode>("reply");
+  const toggle = <ComposerModeToggle mode={mode} onChange={setMode} />;
 
   // "Ask for review" — only when a review link is configured. Inserts the
   // rendered review message into the composer (free-form) so the operator can
@@ -78,9 +88,14 @@ export function ConversationComposer({
     setBody((prev) => (prev.trim() ? `${prev.trim()} ${msg}` : msg));
   }
 
+  if (mode === "note") {
+    return <InternalNoteComposer contactId={contact.id} toggle={toggle} />;
+  }
+
   if (availableChannels.length === 0) {
     return (
       <div className="text-muted-foreground border-t px-4 py-3 text-xs">
+        {toggle}
         No messaging channel is configured for this sub-account. Connect a
         sender in Settings to reply here.
       </div>
@@ -178,6 +193,7 @@ export function ConversationComposer({
 
   return (
     <form onSubmit={handleSubmit} className="border-t px-4 py-3">
+      {toggle}
       {availableChannels.length > 1 && (
         <div className="mb-2 flex gap-1">
           {availableChannels.map((ch) => (

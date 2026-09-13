@@ -27,6 +27,7 @@ import { WebChatComposer } from "@/components/conversations/web-chat-composer";
 import { ConversationAiControls } from "@/components/conversations/conversation-ai-controls";
 import { ConversationDraftCard } from "@/components/conversations/conversation-draft-card";
 import { ConversationContactPanel } from "@/components/conversations/conversation-contact-panel";
+import { ConversationOwner } from "@/components/conversations/conversation-owner";
 import {
   DetailsToggle,
   ThreadTriageActions,
@@ -176,6 +177,10 @@ export default function ConversationDetailPage() {
     : contact?.email || contact?.phone || "";
 
   const loading = isWebChat ? !convReady : contactLoading;
+  // SP2 T1 — writes the contact; the server mirrors it onto the conversation.
+  const ownerPicker = contact ? (
+    <ConversationOwner id="thread-owner" contact={contact} />
+  ) : null;
   const listHref = `${saPath("/conversations")}${listQuery ? `?${listQuery}` : ""}`;
 
   return (
@@ -276,7 +281,10 @@ export default function ConversationDetailPage() {
       ) : isWebChat ? (
         <>
           {conversation && (
-            <ConversationAiControls conversation={conversation} />
+            <ConversationAiControls
+              conversation={conversation}
+              trailing={ownerPicker}
+            />
           )}
           <ConversationThread
             contactId={conversation?.contactId ?? ""}
@@ -301,7 +309,10 @@ export default function ConversationDetailPage() {
       ) : (
         <>
           {conversation && (
-            <ConversationAiControls conversation={conversation} />
+            <ConversationAiControls
+              conversation={conversation}
+              trailing={ownerPicker}
+            />
           )}
           <ConversationThread key={conversationId} contactId={conversationId} theme={theme} onEmailReply={availableChannels.includes("email") ? setEmailReply : undefined} />
           {conversation?.pendingDraft && contact && (

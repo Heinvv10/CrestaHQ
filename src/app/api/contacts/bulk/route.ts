@@ -8,6 +8,7 @@ import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { isAssignableMember } from "@/lib/server/assignee";
 import { checkBulkRateLimit } from "@/lib/contacts/bulk-rate-limit";
 import { fireTagsAdded } from "@/lib/server/contacts-service";
+import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
 import {
   deleteContactServerSide,
   type ContactBlocker,
@@ -175,6 +176,26 @@ export async function POST(request: Request) {
       batch.update(snap.ref, { ...patch, updatedAt: FieldValue.serverTimestamp() });
     }
     await batch.commit();
+  }
+
+  // Owner mirror (SP2 T1) — the single-contact PATCH mirrors inside
+  // updateContactServerSide; this route writes its own batch, so it mirrors
+  // its own. Without it a bulk assign would leave the inbox scope filter
+  // showing the old owner.
+  // One query per contact, so run them 25 at a time — a 5000-contact
+  // selection done one by one would outlast the request.
+  if (action.type === "assign") {
+    for (let i = 0; i < updates.length; i += 25) {
+      await Promise.all(
+        updates.slice(i, i + 25).map(({ snap }) =>
+          mirrorContactAssignee({
+            contactId: snap.id,
+            subAccountId,
+            assigneeUid: action.assignedToUid,
+          })
+        )
+      );
+    }
   }
 
   // Same announcements the single-contact update makes: contact.updated per

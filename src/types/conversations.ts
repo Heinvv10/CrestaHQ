@@ -114,6 +114,14 @@ export interface ConversationDoc {
   territoryId?: string | null;
   contactName: string;
   contactPhone: string | null;
+  /**
+   * Mirror of `contact.email` (SP2 I9) so the inbox search matches on address
+   * without loading every contact. Same staleness contract as contactName /
+   * contactPhone: refreshed by the conversation upserts, not by a contact
+   * edit. Absent on rows written before SP2 (see
+   * scripts/backfill-conversation-owner-email.ts).
+   */
+  contactEmail?: string | null;
   /** Channels this thread has carried, e.g. ["sms","whatsapp"]. */
   channelsSeen: ConversationChannel[];
   /** Channel of the most recent message — the composer's default. */
@@ -126,6 +134,12 @@ export interface ConversationDoc {
   /** Incremented server-side on inbound; reset to 0 client-side on open. */
   unreadCount: number;
   status: ConversationStatus;
+  /**
+   * Server-maintained mirror of `contact.assignedToUid` (SP2 T1). The contact
+   * is the source of truth; this exists only so the inbox scope filter can
+   * work over the list without N contact reads. Not client-writable — see
+   * lib/server/conversation-mirror.ts and the conversations rule.
+   */
   assigneeUid: string | null;
   /**
    * Shared per conversation (not per user), toggled from the inbox row and
