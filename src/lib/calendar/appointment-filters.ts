@@ -1,3 +1,5 @@
+import { eventHostUids } from "@/lib/booking/page-slots";
+import { utcFromWallClock } from "@/lib/booking/availability";
 import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 
@@ -12,7 +14,7 @@ export type AppointmentTab = "upcoming" | "cancelled" | "all";
 export interface AppointmentFilters {
   /** One booking page's slug, or null = any (includes manual events). */
   bookingPageSlug: string | null;
-  /** One member's uid (the assigned host), or null = any. */
+  /** One host's uid — matches if they co-host the event (eventHostUids). */
   hostUid: string | null;
   status: EventStatus | null;
   /**
@@ -48,18 +50,18 @@ export function hasActiveFilters(filters: AppointmentFilters): boolean {
   );
 }
 
-function eventStartMs(event: Pick<CalendarEvent, "startAt">): number | null {
+export function eventStartMs(event: Pick<CalendarEvent, "startAt">): number | null {
   const d = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
   return d instanceof Date ? d.getTime() : null;
 }
 
 /**
  * Tab membership. "Upcoming" = still occupying a slot (scheduled or
- * awaiting_payment) AND starting at/after `nowMs` — a past-but-still-
- * "scheduled" booking that hasn't been marked yet falls out of Upcoming
- * once its time passes, matching the bookings-list page's existing
- * "Past" bucket semantics. "Cancelled" is exactly the cancelled status.
- * "All" is unfiltered.
+ * awaiting_payment) AND starting at/after `nowMs` (a booking starting
+ * exactly now still counts) — a past-but-still-"scheduled" booking that
+ * hasn't been marked yet falls out of Upcoming once its time passes,
+ * matching the bookings-list page's existing "Past" bucket semantics.
+ * "Cancelled" is exactly the cancelled status. "All" is unfiltered.
  */
 export function matchesTab(
   event: CalendarEvent,
@@ -84,7 +86,7 @@ export function matchesFilters(
   ) {
     return false;
   }
-  if (filters.hostUid !== null && event.assignedToUid !== filters.hostUid) {
+  if (filters.hostUid !== null && !eventHostUids(event).includes(filters.hostUid)) {
     return false;
   }
   if (filters.status !== null && eventStatus(event) !== filters.status) {
@@ -101,6 +103,28 @@ export function matchesFilters(
     return false;
   }
   return true;
+}
+
+/**
+ * Only a booking-page event has a lifecycle to flip — offering
+ * Mark completed/no-show/Cancel on a manual event would still email a
+ * "visitor" and fire booking.* workflow triggers with nothing behind
+ * them (see the operator dialog's BookingActionsPanel, which is
+ * gated the same way).
+ */
+export function canOfferStatusActions(event: Pick<CalendarEvent, "source">): boolean {
+  return eventSource(event) === "booking_page";
+}
+
+/**
+ * "Reschedule" (vs. plain "Edit") only makes sense for a booking-page
+ * event that's still holding a slot — a cancelled/completed/no-show
+ * booking, or a manual event, gets the generic "Edit" wording instead.
+ */
+export function canRescheduleAppointment(
+  event: Pick<CalendarEvent, "source" | "status">,
+): boolean {
+  return eventSource(event) === "booking_page" && eventOccupiesSlot(eventStatus(event));
 }
 
 /** Title + contact-name search, case-insensitive substring. */
@@ -127,13 +151,82 @@ export function appointmentCalendarLabel(
 }
 
 /**
- * "Owner" column. Only a single assignee is ever denormalized onto an
- * event (`assignedToUid`/`assignedToName`, set by the least-loaded-host
- * pick at book time) — there is no per-event "collective" host list to
- * render, even for a collective-mode booking page.
+ * "Owner" column. Lists every host the event occupies (`eventHostUids` —
+ * a collective booking keeps all of its co-hosts), resolved to display
+ * names via the sub-account roster; falls back to the event's own
+ * denormalized `assignedToName` for a uid the roster doesn't have (a
+ * removed member), then "—" when there's no host at all.
  */
 export function appointmentOwnerLabel(
-  event: Pick<CalendarEvent, "assignedToName">,
+  event: Pick<CalendarEvent, "assignedToUid" | "assignedToName" | "hostUids">,
+  memberNameByUid: ReadonlyMap<string, string>,
 ): string {
-  return event.assignedToName || "—";
+  const uids = eventHostUids(event);
+  if (uids.length === 0) return event.assignedToName || "—";
+  const names = uids.map((uid) => {
+    if (memberNameByUid.has(uid)) return memberNameByUid.get(uid)!;
+    if (uid === event.assignedToUid && event.assignedToName) return event.assignedToName;
+    return null;
+  });
+  const resolved = names.filter((n): n is string => n !== null);
+  return resolved.length > 0 ? resolved.join(", ") : event.assignedToName || "—";
+}
+
+/**
+ * Sort order for the table: Upcoming reads soonest-first (ascending) so
+ * the next appointment is at the top; Cancelled and All read most-recent-
+ * first (descending) so "Load more" pages further back in time, matching
+ * how an operator scans a history list.
+ */
+export function sortAppointments(
+  events: CalendarEvent[],
+  tab: AppointmentTab,
+): CalendarEvent[] {
+  const withMs = events.map((event) => ({ event, ms: eventStartMs(event) ?? 0 }));
+  withMs.sort((a, b) => (tab === "upcoming" ? a.ms - b.ms : b.ms - a.ms));
+  return withMs.map((x) => x.event);
+}
+
+/**
+ * Parse a `<input type="date">` value ("YYYY-MM-DD") as the START of that
+ * calendar day in `tz`, e.g. the "From" filter: 2026-09-13 in
+ * Africa/Johannesburg means 2026-09-13T00:00:00+02:00. Returns null for
+ * an empty/unparseable value.
+ */
+export function dateInputToFromMs(value: string, tz: string): number | null {
+  const parts = value.split("-").map(Number);
+  const [year, month, day] = parts;
+  if (!year || !month || !day || parts.length !== 3) return null;
+  return utcFromWallClock(year, month, day, 0, tz).getTime();
+}
+
+/**
+ * Parse a `<input type="date">` value as the END of that calendar day in
+ * `tz`, inclusive — the instant just before the next day's midnight, so a
+ * "To" of 2026-09-13 keeps every appointment that starts anywhere in
+ * 2026-09-13 local time.
+ */
+export function dateInputToToMs(value: string, tz: string): number | null {
+  const parts = value.split("-").map(Number);
+  const [year, month, day] = parts;
+  if (!year || !month || !day || parts.length !== 3) return null;
+  return utcFromWallClock(year, month, day + 1, 0, tz).getTime() - 1;
+}
+
+/**
+ * Render an appointment's start time in `tz` — the SAME zone
+ * dateInputToFromMs/dateInputToToMs parse the range filter in, so a
+ * booking shown as "13 Sep" is also the one a From/To of 2026-09-13
+ * matches. A naive `toISOString()`/browser-local render would drift from
+ * the filter the moment the viewer isn't in that same zone.
+ */
+export function formatAppointmentTime(date: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
