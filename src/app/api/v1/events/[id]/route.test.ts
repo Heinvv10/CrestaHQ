@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * PATCH /api/v1/events/:id — before the shared event-status-service and
- * reschedule module, this route wrote `status`/`startAt`/`endAt` raw: an
- * API key could un-cancel a booking (re-occupying its slot), jump straight
- * from awaiting_payment to completed, or move a booking-page event's time
- * with zero trigger/activity/email bookkeeping. This asserts the tightened
- * contract.
+ * PATCH /api/v1/events/:id — before the shared event-status-service, this
+ * route wrote `status` raw: an API key could un-cancel an event or skip the
+ * activity row, trigger and cancel email. Runs the REAL service (only its
+ * outbound edges are mocked) so the route→service seam is what's tested:
+ * transition refusal, test-mode gating, and post-patch side effects.
  */
 
 const CTX = {
@@ -21,12 +20,14 @@ const CTX = {
 };
 
 let eventDoc: Record<string, unknown>;
-const setCalls: Record<string, unknown>[] = [];
+/** Every write that reached Firestore, route `set` and service `update` alike. */
+const writes: Record<string, unknown>[] = [];
+let updateThrows: boolean;
 
 const m = vi.hoisted(() => ({
-  changeEventStatus: vi.fn(),
-  rescheduleWithoutAvailabilityCheck: vi.fn(),
-  runRescheduleSideEffects: vi.fn(),
+  fireBookingTrigger: vi.fn(),
+  recordBookingActivity: vi.fn(),
+  sendEmail: vi.fn(),
 }));
 
 vi.mock("@/lib/api/auth", () => ({
@@ -44,33 +45,47 @@ vi.mock("@/lib/api/auth", () => ({
     },
 }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn() }));
-vi.mock("@/lib/server/event-status-service", () => ({
-  changeEventStatus: m.changeEventStatus,
+vi.mock("@/lib/booking/lifecycle", () => ({
+  fireBookingTrigger: m.fireBookingTrigger,
+  recordBookingActivity: m.recordBookingActivity,
 }));
-vi.mock("@/lib/booking/reschedule", () => ({
-  RescheduleRejected: class RescheduleRejected extends Error {
-    constructor(
-      public readonly httpStatus: number,
-      message: string,
-    ) {
-      super(message);
-    }
-  },
-  rescheduleWithoutAvailabilityCheck: m.rescheduleWithoutAvailabilityCheck,
-  runRescheduleSideEffects: m.runRescheduleSideEffects,
+vi.mock("@/lib/comms/resend", () => ({
+  // Configured, so only the mode gate can stop a cancel email.
+  emailIsConfigured: () => true,
+  sendEmail: m.sendEmail,
+  tenantFrom: () => "test@example.com",
 }));
-vi.mock("@/lib/booking/event-token", () => ({
-  buildEventPublicUrl: (t: string) => `https://example.com/e/${t}`,
+vi.mock("@/lib/booking/email", () => ({
+  renderBookingCancelledEmail: () => ({ subject: "Cancelled", text: "", html: "" }),
 }));
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
     doc: (path: string) => ({
-      get: async () => ({ exists: path === "events/evt1", data: () => eventDoc }),
+      get: async () =>
+        path === "events/evt1"
+          ? { exists: true, id: "evt1", data: () => ({ ...eventDoc }) }
+          : { exists: path === "subAccounts/sa1", data: () => ({ name: "Biz" }) },
       set: async (data: Record<string, unknown>) => {
-        setCalls.push(data);
+        writes.push(data);
         Object.assign(eventDoc, data);
       },
+    }),
+    collection: (name: string) => ({
+      doc: (id: string) => ({
+        get: async () => ({
+          exists: name === "contacts",
+          data: () => ({ name: `Contact ${id}`, email: `${id}@example.com` }),
+        }),
+        update: async (patch: Record<string, unknown>) => {
+          if (updateThrows) throw new Error("firestore down");
+          if (name !== "events" || id !== "evt1") {
+            throw new Error(`unexpected update on ${name}/${id}`);
+          }
+          writes.push(patch);
+          Object.assign(eventDoc, patch);
+        },
+      }),
     }),
   }),
 }));
@@ -87,16 +102,21 @@ function patch(body: unknown) {
   );
 }
 
+type ErrorBody = { error: { type: string; code: string; message: string } };
+
 beforeEach(() => {
   vi.clearAllMocks();
-  setCalls.length = 0;
+  writes.length = 0;
+  updateThrows = false;
+  CTX.mode = "live";
+  // A manual event as events-service / v1 POST store it: no `id` field.
   eventDoc = {
-    id: "evt1",
     subAccountId: "sa1",
+    agencyId: "ag1",
     mode: "live",
-    source: "booking_page",
-    bookingPageSlug: "page-a",
-    status: "cancelled",
+    source: "manual",
+    status: "scheduled",
+    title: "Call",
     contactId: "c1",
     startAt: { toDate: () => new Date("2030-01-01T10:00:00Z") },
     endAt: { toDate: () => new Date("2030-01-01T10:30:00Z") },
@@ -104,79 +124,89 @@ beforeEach(() => {
 });
 
 describe("PATCH /api/v1/events/:id — status", () => {
-  it("rejects an invalid transition (cancelled -> scheduled) with 409 via the shared service", async () => {
-    m.changeEventStatus.mockResolvedValue({
-      ok: false,
-      httpStatus: 409,
-      error: "This event was cancelled — operators can't flip past it.",
-    });
-    const res = await patch({ status: "scheduled" });
+  it("refuses cancelled -> scheduled with 409 and writes NOTHING, not even the other fields", async () => {
+    eventDoc.status = "cancelled";
+    const res = await patch({ status: "scheduled", title: "Renamed" });
     expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: { code: string; message: string } };
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error.type).toBe("invalid_request");
     expect(body.error.code).toBe("invalid_status_transition");
-    expect(m.changeEventStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "evt1" }),
-      "scheduled",
-    );
-    // No raw status write happened outside the service.
-    expect(setCalls.some((c) => "status" in c)).toBe(false);
+    expect(body.error.message).not.toMatch(/operator/i);
+    expect(writes).toEqual([]);
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
   });
 
-  it("applies a valid status change through the service, not a raw write", async () => {
-    eventDoc.status = "scheduled";
-    m.changeEventStatus.mockResolvedValue({ ok: true, httpStatus: 200, status: "completed" });
+  it("applies a valid change on a live event: status written, activity + trigger fired", async () => {
     const res = await patch({ status: "completed" });
     expect(res.status).toBe(200);
-    expect(m.changeEventStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "evt1" }),
-      "completed",
+    expect(eventDoc.status).toBe("completed");
+    expect(m.recordBookingActivity).toHaveBeenCalled();
+    expect(m.fireBookingTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "evt1", contactId: "c1" }),
+      "event_completed",
     );
+  });
+
+  it("control: a live cancel emails the visitor", async () => {
+    await patch({ status: "cancelled" });
+    expect(m.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "c1@example.com" }),
+    );
+  });
+
+  it("test-mode key on a test-mode event: status written, no activity, no trigger, no email", async () => {
+    CTX.mode = "test";
+    eventDoc.mode = "test";
+    const res = await patch({ status: "cancelled" });
+    expect(res.status).toBe(200);
+    expect(eventDoc.status).toBe("cancelled");
+    expect(m.recordBookingActivity).not.toHaveBeenCalled();
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+    expect(m.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("changing contact_id and status together notifies and enrols the NEW contact", async () => {
+    const res = await patch({ contact_id: "c2", status: "cancelled" });
+    expect(res.status).toBe(200);
+    expect(m.fireBookingTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ contactId: "c2" }),
+      "event_cancelled",
+    );
+    expect(m.recordBookingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ contactId: "c2" }),
+      "booking_cancelled",
+      expect.anything(),
+    );
+    expect(m.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "c2@example.com" }),
+    );
+  });
+
+  it("maps a failed status write to a 500 internal_error, not invalid_request", async () => {
+    updateThrows = true;
+    const res = await patch({ status: "completed" });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error.type).toBe("internal_error");
   });
 });
 
-describe("PATCH /api/v1/events/:id — reschedule", () => {
-  it("routes a real time change on a scheduled booking-page event through the shared reschedule function", async () => {
-    eventDoc.status = "scheduled";
-    m.rescheduleWithoutAvailabilityCheck.mockResolvedValue({
-      event: { ...eventDoc, publicTokenHash: "hash1" },
-      newToken: "tok1",
-    });
+describe("PATCH /api/v1/events/:id — time + exposure", () => {
+  it("writes start_at/end_at as plain fields", async () => {
     const res = await patch({ start_at: "2030-01-01T12:00:00Z", end_at: "2030-01-01T12:30:00Z" });
     expect(res.status).toBe(200);
-    expect(m.rescheduleWithoutAvailabilityCheck).toHaveBeenCalledWith(
-      "evt1",
-      new Date("2030-01-01T12:00:00Z"),
-      new Date("2030-01-01T12:30:00Z"),
-    );
-    expect(m.runRescheduleSideEffects).toHaveBeenCalledWith(
-      expect.objectContaining({ actor: "api" }),
-    );
-    // Not written via the raw merge path.
-    expect(setCalls.some((c) => "startAt" in c)).toBe(false);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].startAt).toEqual(new Date("2030-01-01T12:00:00Z"));
+    expect(writes[0].endAt).toEqual(new Date("2030-01-01T12:30:00Z"));
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
   });
 
-  it("does NOT stamp/trigger a time patch that doesn't actually change the time", async () => {
-    eventDoc.status = "scheduled";
-    const res = await patch({ start_at: "2030-01-01T10:00:00Z", end_at: "2030-01-01T10:30:00Z" });
-    expect(res.status).toBe(200);
-    expect(m.rescheduleWithoutAvailabilityCheck).not.toHaveBeenCalled();
-    expect(setCalls.some((c) => "startAt" in c)).toBe(true);
-  });
-
-  it("writes a manual event's time as a raw field, no reschedule bookkeeping", async () => {
-    eventDoc.source = "manual";
-    eventDoc.status = "scheduled";
+  it("does not expose a booking-page event (it carries no mode)", async () => {
+    delete eventDoc.mode;
+    eventDoc.source = "booking_page";
+    eventDoc.bookingPageSlug = "page-a";
     const res = await patch({ start_at: "2030-01-01T12:00:00Z", end_at: "2030-01-01T12:30:00Z" });
-    expect(res.status).toBe(200);
-    expect(m.rescheduleWithoutAvailabilityCheck).not.toHaveBeenCalled();
-    expect(setCalls.some((c) => "startAt" in c)).toBe(true);
-  });
-
-  it("does not reschedule a cancelled booking-page event's time — raw write instead", async () => {
-    eventDoc.status = "cancelled";
-    const res = await patch({ start_at: "2030-01-01T12:00:00Z", end_at: "2030-01-01T12:30:00Z" });
-    expect(res.status).toBe(200);
-    expect(m.rescheduleWithoutAvailabilityCheck).not.toHaveBeenCalled();
-    expect(setCalls.some((c) => "startAt" in c)).toBe(true);
+    expect(res.status).toBe(404);
+    expect(writes).toEqual([]);
   });
 });
