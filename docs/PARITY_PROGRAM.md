@@ -78,11 +78,11 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 **Known gaps:** saved smart lists, bulk tag/assign/delete, multiple pipelines, stage automation hooks, company objects, contact activity timeline parity, GHL-style custom-field folders.
 **Depends on:** SP0.
 
-### SP2 — Conversations / unified inbox (email, SMS, FB/IG)
+### SP2 — Conversations / unified inbox (email, SMS, WhatsApp, FB/IG)
 **GHL surface:** Conversations tab, unread/starred/all filters, assignment, internal notes, templates/snippets, scheduled messages, email threading, missed-call text-back.
 **CrestaHQ today:** email + SMS from contact profile, FB/IG DM beta behind gate, missed-call route exists.
 **Known gaps:** a true inbox surface with filters and assignment, snippets, scheduling, email threading, Meta App Review for FB/IG publish scopes.
-**Excluded:** ~~WhatsApp channel (bridge programme owns it; the seam is built).~~ Struck 2026-09-11 — the WhatsApp *settings* surface is SP15; the WhatsApp *inbox* rail stays in SP2 once SP15's sender header exists.
+**WhatsApp is in scope** (Cloud + bridge rails) — the earlier exclusion ~~WhatsApp channel (bridge programme owns it; the seam is built)~~ is struck (2026-09-13). The WhatsApp *settings* surface is SP15. Ledger: [docs/parity/sp2.md](parity/sp2.md).
 **Depends on:** SP0.
 
 ### SP3 — Calendars & booking
