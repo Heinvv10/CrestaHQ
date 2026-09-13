@@ -104,13 +104,17 @@ export function EventDialog({
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
+  // Status as last changed from the actions panel. The surfaces that open
+  // this dialog pass a snapshot `event` that doesn't update, so without this
+  // the time lock below would miss a status flipped while the dialog is open.
+  const [panelStatus, setPanelStatus] = useState<EventStatus | null>(null);
   // A cancelled / completed / no-show booking no longer holds a slot, so the
   // reschedule endpoint refuses to move it — lock the time instead of
   // letting Save 409.
   const timeLocked =
     !!event &&
     eventSource(event) === "booking_page" &&
-    !eventOccupiesSlot(eventStatus(event));
+    !eventOccupiesSlot(panelStatus ?? eventStatus(event));
 
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
@@ -157,6 +161,7 @@ export function EventDialog({
       setNotes("");
     }
     setErrors({});
+    setPanelStatus(null);
   }, [open, event, defaultDate]);
 
   async function handleSubmit(e: FormEvent) {
@@ -313,7 +318,7 @@ export function EventDialog({
 
         {isBookingPageEvent && event && (
           <div className="px-4 pt-4">
-            <BookingActionsPanel event={event} />
+            <BookingActionsPanel event={event} onStatusChange={setPanelStatus} />
           </div>
         )}
 
@@ -554,7 +559,13 @@ export function EventDialog({
  * the calendar's onSnapshot subscription picks up the canonical state
  * once Firestore syncs.
  */
-function BookingActionsPanel({ event }: { event: CalendarEvent }) {
+function BookingActionsPanel({
+  event,
+  onStatusChange,
+}: {
+  event: CalendarEvent;
+  onStatusChange: (status: EventStatus) => void;
+}) {
   const status = eventStatus(event);
   const startAt = toDate(event.startAt);
   const isPast = startAt ? startAt.getTime() < Date.now() : false;
@@ -579,6 +590,7 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
         throw new Error(data.error ?? "Couldn't mark as paid.");
       }
       setLocalStatus("scheduled");
+      onStatusChange("scheduled");
       toast.success("Marked as paid. Confirmation sent.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Action failed.");
@@ -614,6 +626,7 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
         throw new Error(data.error ?? "Couldn't update.");
       }
       setLocalStatus(next);
+      onStatusChange(next);
       // For cancel: tell the operator what ACTUALLY happened to the
       // visitor notification — not just "Visitor notified" optimistically.
       if (next === "cancelled") {
