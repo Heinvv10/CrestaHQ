@@ -17,7 +17,7 @@ import type { SubAccountMemberDoc } from "@/types/tenancy";
  * Resolve a requested host list against the sub-account's live membership:
  * keep only uids that are ACTIVE members, re-snapshot each `name` from the
  * member doc (never trust the client-supplied name), preserve request order,
- * per-host `workingHours` overrides and `priority`, and drop removed/unknown
+ * per-host `workingHours`, `dateOverrides` and `priority`, and drop removed/unknown
  * members. Called from the booking-page POST/PATCH routes after shape
  * validation.
  */
@@ -53,6 +53,9 @@ export async function resolveBookingHosts(
       resolved.workingHours = h.workingHours;
     }
     if (h.priority) resolved.priority = h.priority;
+    if (h.dateOverrides && h.dateOverrides.length > 0) {
+      resolved.dateOverrides = h.dateOverrides;
+    }
     out.push(resolved);
   }
   return out;

@@ -45,7 +45,8 @@ export class BusyQueryError extends Error {
 }
 
 // Look back by the longest plausible single event so one that started
-// before the window but is still running is seen as busy.
+// before the window but is still running is seen as busy. (It also covers
+// the before-buffer, which pads busy intervals forward by at most 60 min.)
 const BUSY_LOOKBACK_MS = 8 * 60 * 60_000;
 
 export async function resolvePageAvailability(
@@ -55,9 +56,15 @@ export async function resolvePageAvailability(
   const queryFrom = new Date(
     (opts.fromInstant ?? now).getTime() - BUSY_LOOKBACK_MS,
   );
-  const queryTo =
-    opts.toInstant ??
-    new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000);
+  // Read past the window by the after-buffer: an event starting that soon
+  // after the last slot still blocks it.
+  const queryTo = new Date(
+    (
+      opts.toInstant ??
+      new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000)
+    ).getTime() +
+      opts.page.bufferMinutes * 60_000,
+  );
 
   const busy = await loadEventBusy(
     opts.subAccountId,

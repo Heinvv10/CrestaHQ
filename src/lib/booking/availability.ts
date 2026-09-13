@@ -1,4 +1,4 @@
-import type { BookingPage, WorkingHour } from "@/types/booking";
+import type { BookingPage, DateOverride, WorkingHour } from "@/types/booking";
 
 /**
  * Pure slot-availability calculator. Given a booking page, a "now"
@@ -65,6 +65,12 @@ export interface AvailabilityInput {
    * only offers slots inside their own window. Absent ⇒ use the page hours.
    */
   workingHoursOverride?: WorkingHour[];
+  /**
+   * Date-specific hours ("YYYY-MM-DD" in the page tz). A listed date uses
+   * these ranges instead of its weekday's hours; empty ranges = closed.
+   * The caller resolves host-vs-page precedence and passes one list.
+   */
+  dateOverrides?: DateOverride[];
 }
 
 /**
@@ -160,16 +166,18 @@ export function utcFromWallClock(
 /**
  * Iterate the candidate slot starts within a single working-hour range
  * on a specific calendar day (year-month-day in the page's tz). Steps
- * by `step` minutes; the last slot must fully fit inside the range.
+ * by the page's slot interval (legacy: duration + buffer); the last slot
+ * must fully fit inside the range.
  */
 function* slotsForRange(
   page: BookingPage,
   year: number,
   month: number,
   day: number,
-  range: WorkingHour,
+  range: { startMinute: number; endMinute: number },
 ): Generator<SlotCandidate> {
-  const step = page.durationMinutes + page.bufferMinutes;
+  const step =
+    page.slotIntervalMinutes ?? page.durationMinutes + page.bufferMinutes;
   // Last legal start: range.endMinute − durationMinutes.
   const lastStartMinute = range.endMinute - page.durationMinutes;
   for (let m = range.startMinute; m <= lastStartMinute; m += step) {
@@ -206,7 +214,14 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
     ? new Date(Math.min(input.toInstant.getTime(), horizonEnd.getTime()))
     : horizonEnd;
 
-  if (fromInstant >= toInstant || workingHours.length === 0) {
+  const overrides = new Map(
+    (input.dateOverrides ?? []).map((o) => [o.date, o.ranges]),
+  );
+  const anyOpenOverride = [...overrides.values()].some((r) => r.length > 0);
+  if (
+    fromInstant >= toInstant ||
+    (workingHours.length === 0 && !anyOpenOverride)
+  ) {
     return [];
   }
 
@@ -262,7 +277,10 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
     const wc = wallClockInTz(cursor, page.timezone);
     const dayKey = `${wc.year}-${String(wc.month).padStart(2, "0")}-${String(wc.day).padStart(2, "0")}`;
     const dayMax = page.maxPerDay ?? Infinity;
-    for (const range of rangesByDow.get(wc.dayOfWeek) ?? []) {
+    // A date override replaces that weekday's hours for this date only.
+    const dayRanges =
+      overrides.get(dayKey) ?? rangesByDow.get(wc.dayOfWeek) ?? [];
+    for (const range of dayRanges) {
       for (const slot of slotsForRange(
         page,
         wc.year,
