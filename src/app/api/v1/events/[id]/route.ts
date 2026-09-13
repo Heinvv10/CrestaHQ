@@ -9,6 +9,21 @@ import {
   parseEventPatch,
   serializeEventForApi,
 } from "@/lib/api/serializers/events";
+import { buildEventPublicUrl } from "@/lib/booking/event-token";
+import {
+  RescheduleRejected,
+  rescheduleWithoutAvailabilityCheck,
+  runRescheduleSideEffects,
+} from "@/lib/booking/reschedule";
+import { changeEventStatus } from "@/lib/server/event-status-service";
+import { eventSource, eventStatus } from "@/types/events";
+import type { BookingPage } from "@/types/booking";
+import type { CalendarEvent } from "@/types/events";
+
+function toDateOrNull(v: unknown): Date | null {
+  const d = (v as { toDate?: () => Date } | null)?.toDate?.();
+  return d instanceof Date ? d : null;
+}
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   const snap = await getAdminDb().doc(`events/${params.id}`).get();
@@ -37,25 +52,102 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
+  const event: CalendarEvent = { ...(existing as CalendarEvent), id: params.id };
 
-  const writePatch: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (patch.title !== undefined) writePatch.title = patch.title;
-  if (patch.startAt !== undefined) writePatch.startAt = patch.startAt;
-  if (patch.endAt !== undefined) writePatch.endAt = patch.endAt;
-  // Same "rescheduled" bookkeeping as the public reschedule endpoint —
-  // this is the only other path that can move a booking-page event's time.
-  if (patch.startAt !== undefined || patch.endAt !== undefined) {
-    writePatch.rescheduledAt = FieldValue.serverTimestamp();
-    writePatch.rescheduleCount = FieldValue.increment(1);
+  // Status changes go through the same transition table + side effects as
+  // the operator mark-status route — bypassing this let an API key un-cancel
+  // a booking (re-occupying its slot) or jump straight from awaiting_payment
+  // to completed, with no activity row, trigger, or cancel email.
+  if (patch.status !== undefined) {
+    const outcome = await changeEventStatus(event, patch.status);
+    if (!outcome.ok) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        "invalid_status_transition",
+        outcome.error!,
+        { status: outcome.httpStatus },
+      );
+    }
   }
-  if (patch.contactId !== undefined) writePatch.contactId = patch.contactId;
-  if (patch.location !== undefined) writePatch.location = patch.location;
-  if (patch.notes !== undefined) writePatch.notes = patch.notes;
-  if (patch.status !== undefined) writePatch.status = patch.status;
 
-  await ref.set(writePatch, { merge: true });
+  const otherPatch: Record<string, unknown> = {};
+  if (patch.title !== undefined) otherPatch.title = patch.title;
+  if (patch.contactId !== undefined) otherPatch.contactId = patch.contactId;
+  if (patch.location !== undefined) otherPatch.location = patch.location;
+  if (patch.notes !== undefined) otherPatch.notes = patch.notes;
+
+  // startAt/endAt: a booking-page event still holding a slot gets the full
+  // reschedule bookkeeping (stamps + trigger + reminders + visitor email) —
+  // and only when the time actually changes. A manual event, or a time-only
+  // edit on a booking that's already cancelled/completed, is a plain field
+  // write with no bookkeeping, same as title/location/notes.
+  if (patch.startAt !== undefined || patch.endAt !== undefined) {
+    const currentStart = toDateOrNull(event.startAt);
+    const currentEnd = toDateOrNull(event.endAt);
+    const newStart = patch.startAt ?? currentStart ?? new Date(0);
+    const newEnd = patch.endAt ?? currentEnd ?? new Date(0);
+    const timeChanged =
+      !currentStart ||
+      !currentEnd ||
+      currentStart.getTime() !== newStart.getTime() ||
+      currentEnd.getTime() !== newEnd.getTime();
+    // Status read BEFORE any patch.status change above — combining a time
+    // move with a status flip in one call is an edge case; the reschedule
+    // eligibility check uses the state the caller found the event in.
+    const statusBefore = eventStatus(event);
+
+    if (
+      timeChanged &&
+      eventSource(event) === "booking_page" &&
+      (statusBefore === "scheduled" || statusBefore === "awaiting_payment")
+    ) {
+      try {
+        const rescheduled = await rescheduleWithoutAvailabilityCheck(
+          params.id,
+          newStart,
+          newEnd,
+        );
+        const pageSnap = rescheduled.event.bookingPageSlug
+          ? await getAdminDb()
+              .doc(
+                `subAccounts/${rescheduled.event.subAccountId}/bookingPages/${rescheduled.event.bookingPageSlug}`,
+              )
+              .get()
+          : null;
+        const page = (pageSnap?.data() as BookingPage | undefined) ?? undefined;
+        await runRescheduleSideEffects({
+          event: rescheduled.event,
+          page,
+          newRawToken: rescheduled.newToken,
+          publicEventUrl: buildEventPublicUrl(rescheduled.newToken),
+          startAt: newStart,
+          endAt: newEnd,
+          actor: "api",
+        });
+      } catch (err) {
+        if (err instanceof RescheduleRejected) {
+          return apiError(
+            ctx,
+            "invalid_request",
+            "invalid_reschedule",
+            err.message,
+            { status: err.httpStatus },
+          );
+        }
+        throw err;
+      }
+    } else {
+      otherPatch.startAt = newStart;
+      otherPatch.endAt = newEnd;
+    }
+  }
+
+  if (Object.keys(otherPatch).length > 0) {
+    otherPatch.updatedAt = FieldValue.serverTimestamp();
+    await ref.set(otherPatch, { merge: true });
+  }
+
   const fresh = await ref.get();
   return apiOk(ctx, {
     event: serializeEventForApi(fresh.id, fresh.data()!, ctx.mode),

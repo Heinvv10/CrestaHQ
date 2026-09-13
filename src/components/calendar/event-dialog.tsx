@@ -164,8 +164,40 @@ export function EventDialog({
     setSaving(true);
     try {
       if (isEdit && event) {
-        // Plain edit has no webhook event — stays a client-side write.
-        await updateEvent(event.id, payload);
+        if (eventSource(event) === "booking_page") {
+          // A booking-page event's time carries reschedule bookkeeping
+          // (rescheduledAt/Count, the booking.rescheduled trigger, reminder
+          // reschedule, visitor email) that a bare client write can't do —
+          // route any actual time change through the operator endpoint.
+          // Non-time fields still save as a plain client write.
+          const { startAt, endAt, ...rest } = payload;
+          await updateEvent(event.id, rest);
+          const origStart = toDate(event.startAt);
+          const origEnd = toDate(event.endAt);
+          const timeChanged =
+            !origStart ||
+            !origEnd ||
+            origStart.getTime() !== startAt.getTime() ||
+            origEnd.getTime() !== endAt.getTime();
+          if (timeChanged) {
+            const res = await fetch(`/api/events/by-id/${event.id}/reschedule`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                startAt: startAt.toISOString(),
+                endAt: endAt.toISOString(),
+              }),
+            });
+            if (!res.ok) {
+              const b = (await res.json().catch(() => ({}))) as { error?: string };
+              toast.error(b.error ?? "Couldn't reschedule. Try again.");
+              return;
+            }
+          }
+        } else {
+          // Plain edit has no webhook event — stays a client-side write.
+          await updateEvent(event.id, payload);
+        }
         toast.success("Event updated");
       } else {
         // Create goes through the server so event.created fires.
