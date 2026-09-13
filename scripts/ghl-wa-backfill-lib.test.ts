@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  assertCreateMissingContactsUsage,
-  assertWriteConfirmed,
   bodyHash,
-  buildMissingContactDoc,
+  dedupeById,
   isAlreadyPresent,
   isWhatsAppMessage,
   normalizeMessage,
@@ -59,6 +57,18 @@ describe("normalizeMessage", () => {
 
   it("rejects a direction that is neither inbound nor outbound", () => {
     expect(normalizeMessage({ ...base, direction: "sideways" })).toBeNull();
+  });
+});
+
+describe("dedupeById", () => {
+  it("drops a repeated id, keeping the first occurrence", () => {
+    const rows = [{ id: "a", body: "1" }, { id: "b", body: "2" }, { id: "a", body: "1-again" }];
+    expect(dedupeById(rows)).toEqual([{ id: "a", body: "1" }, { id: "b", body: "2" }]);
+  });
+
+  it("keeps rows with no usable id (left for normalizeMessage to drop)", () => {
+    const rows = [{ id: undefined, body: "x" }, { body: "y" }];
+    expect(dedupeById(rows)).toHaveLength(2);
   });
 });
 
@@ -130,18 +140,22 @@ describe("isAlreadyPresent", () => {
 });
 
 describe("normalizePhoneForMatch", () => {
-  it("normalizes a South African national number to E.164", () => {
-    expect(normalizePhoneForMatch("082 123 4567")).toBe("+27821234567");
+  it("normalizes a South African national number to E.164 when no default country is set", () => {
+    expect(normalizePhoneForMatch("082 123 4567", null)).toBe("+27821234567");
+  });
+
+  it("honours an explicit sub-account defaultPhoneCountry", () => {
+    expect(normalizePhoneForMatch("0821234567", "ZA")).toBe("+27821234567");
   });
 
   it("parses an international number regardless of the default country", () => {
-    expect(normalizePhoneForMatch("+14155552671")).toBe("+14155552671");
+    expect(normalizePhoneForMatch("+14155552671", null)).toBe("+14155552671");
   });
 
   it("returns null for junk or empty input rather than a guess", () => {
-    expect(normalizePhoneForMatch("not a phone")).toBeNull();
-    expect(normalizePhoneForMatch("")).toBeNull();
-    expect(normalizePhoneForMatch(null)).toBeNull();
+    expect(normalizePhoneForMatch("not a phone", null)).toBeNull();
+    expect(normalizePhoneForMatch("", null)).toBeNull();
+    expect(normalizePhoneForMatch(null, null)).toBeNull();
   });
 });
 
@@ -164,60 +178,6 @@ describe("partitionByResolution", () => {
   });
 });
 
-describe("assertCreateMissingContactsUsage", () => {
-  it("is a no-op when the flag is off, regardless of unresolved count", () => {
-    expect(() => assertCreateMissingContactsUsage(false, 0)).not.toThrow();
-    expect(() => assertCreateMissingContactsUsage(false, 5)).not.toThrow();
-  });
-
-  it("is a no-op when the flag is on and there is something to create", () => {
-    expect(() => assertCreateMissingContactsUsage(true, 5)).not.toThrow();
-  });
-
-  it("throws when the flag is on but nothing is unresolved", () => {
-    expect(() => assertCreateMissingContactsUsage(true, 0)).toThrow(/nothing to create/);
-  });
-});
-
-describe("buildMissingContactDoc", () => {
-  it("carries agencyId/subAccountId/createdByUid and the GHL external-id stamp", () => {
-    const doc = buildMissingContactDoc({
-      ghlContactId: "ghl-c1",
-      phone: "+27821234567",
-      agencyId: "agency1",
-      subAccountId: "sa1",
-    });
-    expect(doc).toMatchObject({
-      agencyId: "agency1",
-      subAccountId: "sa1",
-      phone: "+27821234567",
-      externalId: "ghl-c1",
-      externalSource: "ghl",
-      createdByUid: "import:ghl-wa-backfill",
-    });
-  });
-
-  it("never writes a null phone as a string 'null'", () => {
-    const doc = buildMissingContactDoc({
-      ghlContactId: "ghl-c2",
-      phone: null,
-      agencyId: "agency1",
-      subAccountId: "sa1",
-    });
-    expect(doc.phone).toBe("");
-  });
-});
-
-describe("assertWriteConfirmed", () => {
-  it("throws when --confirm is absent", () => {
-    expect(() => assertWriteConfirmed(12, null)).toThrow(/requires --confirm/);
-  });
-
-  it("throws when --confirm does not match the fresh count", () => {
-    expect(() => assertWriteConfirmed(12, 11)).toThrow(/does not match/);
-  });
-
-  it("passes when --confirm matches exactly", () => {
-    expect(() => assertWriteConfirmed(12, 12)).not.toThrow();
-  });
-});
+// parseArgs, classifyContactLookupStatus, assertWriteMatchesApprovedReport,
+// buildConversationPreview and decideConversationAdvance are tested in
+// ghl-wa-backfill-guards.test.ts, alongside the module that defines them.
