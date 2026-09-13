@@ -146,7 +146,9 @@ function applyNonTabFilters(
     if (!q) return true;
     return (
       (c.contactName ?? "").toLowerCase().includes(q) ||
-      (c.contactPhone ?? "").toLowerCase().includes(q)
+      (c.contactPhone ?? "").toLowerCase().includes(q) ||
+      // I9: the address, mirrored onto the row by the upserts.
+      (c.contactEmail ?? "").toLowerCase().includes(q)
     );
   });
 }

@@ -289,6 +289,12 @@ export interface Note {
   content: string;
   createdBy: string;
   createdAt: Timestamp | FieldValue | null;
+  /**
+   * Where the note was written. `"conversation"` = the inbox composer's
+   * Internal note mode (SP2 T2). Absent on notes from the contact page and on
+   * every note written before SP2.
+   */
+  source?: "conversation";
 }
 
 /**

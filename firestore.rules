@@ -794,8 +794,18 @@ service cloud.firestore {
     // One doc per contact (doc id == contactId). Written server-side by
     // lib/server/conversations-service.ts on every message. Members read;
     // creates + content updates are server-only. Clients may flip only the
-    // operator-facing fields (mark-read / mark-unread, status, assignment, bot
-    // controls, star) — never tenancy or denormalized content.
+    // operator-facing fields (mark-read / mark-unread, status, bot controls,
+    // star) — never tenancy or denormalized content.
+    //
+    // `assigneeUid` is deliberately NOT in that list (SP2 T1): the
+    // conversation's owner is a server-maintained MIRROR of the contact's
+    // `assignedToUid`, which is the source of truth. The owner picker writes
+    // the CONTACT (PATCH /api/contacts/{id}) and lib/server/conversation-mirror
+    // pushes the value onto the conversation. A client able to write it here
+    // is exactly how the two would diverge — a thread filed under one owner
+    // and the contact profile showing another, with no way to tell which is
+    // right. `contactEmail` (I9, inbox search) is denormalized like
+    // contactName / contactPhone and stays server-only for the same reason.
     //
     // `starred` (SP2 I6) is a shared per-conversation flag toggled from the
     // inbox row and thread header. It is display-only (nothing server-side
@@ -816,7 +826,7 @@ service cloud.firestore {
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
-          ['unreadCount', 'status', 'assigneeUid', 'botMode', 'botPausedUntil', 'pendingDraft', 'starred', 'updatedAt']
+          ['unreadCount', 'status', 'botMode', 'botPausedUntil', 'pendingDraft', 'starred', 'updatedAt']
         )
         && request.resource.data.get("starred", false) is bool;
       allow delete: if canAdminSub(

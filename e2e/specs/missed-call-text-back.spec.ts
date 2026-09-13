@@ -89,10 +89,13 @@ test("settings UI enables MCTB and persists the config even though the Twilio we
     voiceWebhookConfigured: false,
   });
 
-  await page.screenshot({
-    path: "docs/parity/evidence/sp2/g-missed-call/01-settings-enabled.png",
-    fullPage: true,
-  });
+  // Evidence only on request — an unconditional screenshot rewrites the
+  // committed PNG on every local run and dirties the tree.
+  if (process.env.SP2_EVIDENCE)
+    await page.screenshot({
+      path: "docs/parity/evidence/sp2/g-missed-call/01-settings-enabled.png",
+      fullPage: true,
+    });
 });
 
 test("a signed no-answer status callback reconciles the caller, texts back for real (via the fake SMS provider), and is idempotent on retry", async ({ request, page }) => {
@@ -161,12 +164,17 @@ test("a signed no-answer status callback reconciles the caller, texts back for r
 
   // 4) Visible in the fixture inbox.
   await page.goto(conversationsPath());
-  await page.getByPlaceholder("Search by name or phone").fill(FAKE_CALLER_NUMBER);
+  // By accessible name, not placeholder — the placeholder is copy (SP2 b
+  // changed it to name the email search).
+  await page
+    .getByRole("textbox", { name: "Search conversations" })
+    .fill(FAKE_CALLER_NUMBER);
   await expect(page.getByText(FAKE_CALLER_NUMBER)).toBeVisible({ timeout: 30_000 });
-  await page.screenshot({
-    path: "docs/parity/evidence/sp2/g-missed-call/02-inbox-thread.png",
-    fullPage: true,
-  });
+  if (process.env.SP2_EVIDENCE)
+    await page.screenshot({
+      path: "docs/parity/evidence/sp2/g-missed-call/02-inbox-thread.png",
+      fullPage: true,
+    });
 });
 
 test("a fresh callSid for the same caller is a second, independent claim", async ({ request }) => {

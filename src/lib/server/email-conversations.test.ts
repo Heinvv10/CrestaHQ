@@ -453,3 +453,36 @@ it("ignores a parent's contact whose address has since changed instead of failin
   m.rows.set("contacts/b", { ...m.rows.get("contacts/b"), email: "moved@example.com" });
   expect((await recordRawInbound(replyFrom("friend@example.com"))).contactId).toBe("a");
 });
+// SP2 T1/I9 — the email rail must stamp the same owner + email mirror the
+// SMS/WhatsApp upsert does, or email threads fall out of "Assigned to me"
+// and the address search.
+it("mirrors the contact's owner and email onto the conversation", async () => {
+  m.rows.set("contacts/owned", {
+    subAccountId: "sa",
+    agencyId: "agency",
+    email: "friend@example.com",
+    name: "Friend",
+    assignedToUid: "u-owner",
+  });
+  await recordEmailMessage(input);
+  expect(m.rows.get("conversations/owned")).toMatchObject({
+    assigneeUid: "u-owner",
+    contactEmail: "friend@example.com",
+  });
+  // An owner change on the contact is re-stamped by the next message.
+  m.rows.set("contacts/owned", {
+    ...m.rows.get("contacts/owned"),
+    assignedToUid: null,
+  });
+  await recordEmailMessage({ ...input, messageId: "<two@example.com>" });
+  expect(m.rows.get("conversations/owned")).toMatchObject({
+    assigneeUid: null,
+  });
+});
+it("a contact born from this mail starts unassigned with its address mirrored", async () => {
+  const { contactId } = await recordEmailMessage(input);
+  expect(m.rows.get(`conversations/${contactId}`)).toMatchObject({
+    assigneeUid: null,
+    contactEmail: "friend@example.com",
+  });
+});
