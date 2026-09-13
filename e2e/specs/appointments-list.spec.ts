@@ -143,6 +143,13 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   });
 
   await page.goto(`/sa/${subAccountId}/calendar/appointments`);
+  const searchBox = page.getByPlaceholder("Search by title or contact…");
+
+  // The fixture tenant accumulates events across e2e runs, so the table can
+  // exceed the page size — scope every tab/filter assertion below to just
+  // this run's 3 events via the shared stamp, or a row pushed past "Load
+  // more" would read as "missing" instead of "wrongly filtered".
+  await searchBox.fill(String(stamp));
 
   // --- tabs ---------------------------------------------------------
   // Default tab is Upcoming: the two scheduled-and-future events, not the
@@ -166,7 +173,7 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   await expect(page.getByText(titleCancelled, { exact: true })).toBeVisible();
   await expect(page.getByText(titleManual, { exact: true })).toBeVisible();
 
-  // --- Calendar filter (still on the All tab) ------------------------
+  // --- Calendar filter (still on the All tab, still stamp-scoped) ----
   await page.getByLabel("Calendar").selectOption({ label: "E2E Fixture Page X" });
   await expect(page.getByText(titleUpcoming, { exact: true })).toBeVisible({
     timeout: 15_000,
@@ -175,15 +182,21 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   await expect(page.getByText(titleManual, { exact: true })).toHaveCount(0);
   await page.getByLabel("Calendar").selectOption({ label: "Any calendar" });
 
-  // --- search ---------------------------------------------------------
-  await page.getByPlaceholder("Search by title or contact…").fill(`E2E Appt Manual ${stamp}`);
+  // --- search (narrower than the stamp: one contact's name) ----------
+  await searchBox.fill(`E2E Appt Manual ${stamp}`);
   await expect(page.getByText(titleManual, { exact: true })).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText(titleUpcoming, { exact: true })).toHaveCount(0);
-  await page.getByPlaceholder("Search by title or contact…").fill("");
 
   // --- row-menu status change ------------------------------------------
+  // On the All tab (not Upcoming): marking the booking "completed" makes
+  // it stop occupying a slot, so it would drop OUT of the Upcoming tab the
+  // moment the status flips — the row itself would vanish rather than
+  // showing the updated badge in place. All never filters by status, so
+  // the row stays put and we can watch its badge change.
+  await page.getByRole("tab", { name: /^All/ }).click();
+  await searchBox.fill(String(stamp));
   const upcomingRow = page.locator("tr").filter({ hasText: titleUpcoming });
   await expect(upcomingRow).toBeVisible({ timeout: 15_000 });
   await upcomingRow.getByRole("button").last().click();
