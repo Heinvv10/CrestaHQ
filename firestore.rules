@@ -1189,11 +1189,14 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
+      // hostUids / serviceId / serviceName are written by the booking
+      // routes only (Admin SDK): hostUids is busy time for every listed
+      // host, so a client must not be able to set or change it.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      ) && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName"]);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1202,7 +1205,9 @@ service cloud.firestore {
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
-        );
+        )
+        && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(["hostUids", "serviceId", "serviceName"]);
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,

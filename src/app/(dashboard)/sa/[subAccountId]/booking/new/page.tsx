@@ -1,9 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { BookingPageEditor } from "@/components/booking/booking-page-editor";
+import { CalendarTypePicker } from "@/components/booking/calendar-type-picker";
+import type { CalendarType } from "@/types/booking";
 
 /**
  * Create a new booking page. Editor is hydrated with sensible defaults
@@ -11,9 +14,12 @@ import { BookingPageEditor } from "@/components/booking/booking-page-editor";
  * timezone). Admin-only — non-admins land here via the "New" button on
  * the list page, which is hidden for collaborators; but defense-in-depth
  * matters, so we render a locked message rather than relying on UI gating.
+ *
+ * First step is the calendar-type picker; the editor opens preset to it.
  */
 export default function NewBookingPagePage() {
   const { saPath, isAdmin } = useSubAccount();
+  const [type, setType] = useState<CalendarType | null>(null);
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6">
@@ -39,8 +45,10 @@ export default function NewBookingPagePage() {
           Booking pages are sub-account admin only. Ask an admin to create
           one for you.
         </div>
+      ) : type === null ? (
+        <CalendarTypePicker onPick={setType} />
       ) : (
-        <BookingPageEditor mode="new" />
+        <BookingPageEditor mode="new" initialType={type} />
       )}
     </div>
   );

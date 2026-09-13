@@ -1,0 +1,6 @@
+EVENT FydMl3Zh9eAlOtU7bKEs SP3 reminder probe (temporary — delete me) — Voiceprobe 2026-09-13T10:15:00.000Z scheduled booking_page contact 1qDYqqCaeBYnUENxtvNE notes Booked by phone via the AI voice agent. tenancy true true
+  CONTACT Voiceprobe +27000000002  voice
+  ACT booking_page_booked Meeting booked: "SP3 reminder probe (temporary — delete me) — Voiceprobe".
+EVENT nqcPzw7wn5fR8rRlWU9C SP3 reminder probe (temporary — delete me) — SP3 Reminder Probe 2026-09-13T10:30:00.000Z scheduled booking_page contact WGAc9Wj7aENMiLdzC6uX notes  tenancy true true
+  CONTACT SP3 Reminder Probe +27000000001 <owner plus-address> booking-page
+  ACT booking_page_booked Meeting booked: "SP3 reminder probe (temporary — delete me) — SP3 Reminder Probe".
