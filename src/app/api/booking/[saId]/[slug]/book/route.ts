@@ -22,6 +22,8 @@ import {
   selectableHostUid,
 } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
@@ -297,6 +299,14 @@ export async function POST(
           now,
         )
       : new Map<string, number>();
+  // Hosts' Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId: saId,
+    page,
+    now,
+    fromInstant: new Date(slotStart.getTime() - 1),
+    toInstant: new Date(slotEnd.getTime() + 1),
+  });
 
   type CreatedPayload = {
     eventDocRef: FirebaseFirestore.DocumentReference;
@@ -328,6 +338,7 @@ export async function POST(
         toInstant: new Date(slotEnd.getTime() + 1),
         onlyHostUid: selectedHostUid,
         serviceId: service?.id ?? null,
+        externalBusy,
         txn,
       });
       const candidate: SlotCandidate = { startAt: slotStart, endAt: slotEnd };
@@ -621,6 +632,8 @@ export async function POST(
       expiresAt: created.paymentHoldExpiresAt,
     });
   }
+
+  await pushBookingToGoogle(created.eventDocRef.id);
 
   // Activity + automation trigger.
   await recordBookingActivity(

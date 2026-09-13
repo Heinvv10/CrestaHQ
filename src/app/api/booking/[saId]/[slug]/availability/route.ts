@@ -16,6 +16,7 @@ import {
   resolvePageAvailability,
   type ResolveAvailabilityOptions,
 } from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 
@@ -151,6 +152,15 @@ export async function GET(
   const allowHostSelection = hostSelectionEnabled(page);
   const selectedHostUid = selectableHostUid(page, url.searchParams.get("host"));
 
+  // Hosts' Google busy time (SP3 G2) — fail open, never in a transaction.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId: saId,
+    page,
+    now,
+    fromInstant,
+    toInstant,
+  });
+
   let slots: PageSlot[];
   try {
     slots = await resolvePageAvailability({
@@ -162,6 +172,7 @@ export async function GET(
       onlyHostUid: selectedHostUid,
       movingEvent,
       serviceId,
+      externalBusy,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown";

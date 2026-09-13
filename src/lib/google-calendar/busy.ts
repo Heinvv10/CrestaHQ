@@ -1,11 +1,8 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import {
-  utcFromWallClock,
-  type BusyEvent,
-  type BusyEventWithHost,
-} from "@/lib/booking/availability";
+import { utcFromWallClock } from "@/lib/booking/availability";
+import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import {
   GoogleCalendarTimeoutError,
@@ -135,40 +132,52 @@ export async function loadGoogleBusy(input: {
   return perHost.flat();
 }
 
-/** The same intervals in the host-tagged shape today's availability callers build. */
-export function asHostBusy(busy: GoogleBusyInterval[]): BusyEventWithHost[] {
-  return busy.flatMap((b) =>
-    b.hostUids.map((uid) => ({ startAt: b.startAt, endAt: b.endAt, assignedToUid: uid })),
-  );
+/**
+ * Google busy for a booking page's hosts over the window
+ * `resolvePageAvailability` will read (same defaults, padded by the page's
+ * buffers) — the resolver's `externalBusy`. Load it OUTSIDE any transaction.
+ */
+export async function loadGoogleBusyForPage(input: {
+  subAccountId: string;
+  page: BookingPage;
+  now?: Date;
+  fromInstant?: Date;
+  toInstant?: Date;
+}): Promise<GoogleBusyInterval[]> {
+  const { page } = input;
+  const now = input.now ?? new Date();
+  const padMs = Math.max(page.bufferMinutes ?? 0, page.bufferBeforeMinutes ?? 0) * 60_000;
+  const from = input.fromInstant ?? now;
+  const to = input.toInstant ?? new Date(now.getTime() + page.visibleDays * 24 * 60 * 60_000);
+  return loadGoogleBusy({
+    subAccountId: input.subAccountId,
+    hostUids: (page.hosts ?? []).map((h) => h.uid),
+    from: new Date(from.getTime() - padMs),
+    to: new Date(to.getTime() + padMs),
+  });
 }
 
-/** Add host-tagged Google busy into a per-host busy map (the book/voice re-verify shape). */
-export function mergeHostBusy(
-  byHost: Map<string, BusyEvent[]>,
-  busy: GoogleBusyInterval[],
-): void {
-  for (const b of asHostBusy(busy)) {
-    const uid = b.assignedToUid as string;
-    byHost.set(uid, [...(byHost.get(uid) ?? []), { startAt: b.startAt, endAt: b.endAt }]);
-  }
-}
-
-/** Google busy for the hosts of an existing event, around a new slot (reschedule). */
+/**
+ * Reschedule: the page is read inside the caller's transaction, so this
+ * pre-reads the event and its page to load Google busy before it. Fail open.
+ */
 export async function loadGoogleBusyForEvent(
   eventId: string,
-  from: Date,
-  to: Date,
+  fromInstant: Date,
+  toInstant: Date,
 ): Promise<GoogleBusyInterval[]> {
   try {
-    const snap = await getAdminDb().collection("events").doc(eventId).get();
-    const e = snap.data() as (CalendarEvent & { hostUids?: unknown }) | undefined;
-    if (!e?.subAccountId) return [];
-    const hostUids = Array.isArray(e.hostUids)
-      ? e.hostUids.filter((u): u is string => typeof u === "string")
-      : e.assignedToUid
-        ? [e.assignedToUid]
-        : [];
-    return await loadGoogleBusy({ subAccountId: e.subAccountId, hostUids, from, to });
+    const db = getAdminDb();
+    const e = (await db.collection("events").doc(eventId).get()).data() as CalendarEvent | undefined;
+    if (!e?.subAccountId || !e.bookingPageSlug) return [];
+    const pageSnap = await db.doc(`subAccounts/${e.subAccountId}/bookingPages/${e.bookingPageSlug}`).get();
+    if (!pageSnap.exists) return [];
+    return await loadGoogleBusyForPage({
+      subAccountId: e.subAccountId,
+      page: pageSnap.data() as BookingPage,
+      fromInstant,
+      toInstant,
+    });
   } catch (err) {
     console.warn(`[google-calendar] event busy skipped (fail open) event=${eventId}`, err);
     return [];

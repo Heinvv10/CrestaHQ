@@ -14,7 +14,7 @@ vi.mock("./provider/select", () => ({ getGcalProviderFor: vi.fn(async () => prov
 
 import { SUB, SUB_PATH, resetHarness, state } from "@/test/google-oauth-harness";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
-import { asHostBusy, busyFromGoogleEvents, loadGoogleBusy } from "./busy";
+import { busyFromGoogleEvents, loadGoogleBusy } from "./busy";
 import { withGoogleToken, type GoogleCalendarConnection } from "./connection";
 import { pushBookingToGoogle } from "./push";
 import type { GcalEvent, GcalProvider } from "./provider/types";
@@ -30,7 +30,6 @@ function stubProvider() {
     authorizeUrl: vi.fn(),
     exchangeCode: vi.fn(),
     refresh: vi.fn(async () => ({ accessToken: "fresh", refreshToken: null, expiresAt: Date.now() + 3600_000, scopes: [] })),
-    revoke: vi.fn(),
     userEmail: vi.fn(),
     listEvents: vi.fn(async () => ({ items: [], timeZone: "UTC" })),
     insertEvent: vi.fn(async () => `g${++n}`),
@@ -172,8 +171,8 @@ describe("loadGoogleBusy — fail open", () => {
       items: [{ id: "1", start: { dateTime: at(9).toISOString() }, end: { dateTime: at(10).toISOString() } }],
     }));
     const busy = await load(["host_a", "host_b", "host_c"]);
-    expect(busy.map((b) => b.hostUids[0]).sort()).toEqual(["host_a", "host_b"]);
-    expect(asHostBusy(busy)[0]).toMatchObject({ assignedToUid: expect.any(String), startAt: at(9) });
+    expect(busy.map((b) => b.hostUids).sort()).toEqual([["host_a"], ["host_b"]]);
+    expect(busy[0]).toMatchObject({ startAt: at(9), endAt: at(10) });
   });
 
   it("reads nothing with the gate off or with no hosts (hostless page)", async () => {
@@ -287,6 +286,16 @@ describe("pushBookingToGoogle (G3)", () => {
     expect(provider.insertEvent).toHaveBeenCalledTimes(2);
     expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_c", "g_c");
     expect(Object.keys(event().googleEventIds as object).sort()).toEqual(["host_a", "host_b"]);
+  });
+
+  it("a reassign moves the Google copy: deleted for the old host, inserted for the new", async () => {
+    connect("host_a");
+    connect("host_b");
+    seedEvent({ assignedToUid: "host_b", googleEventIds: { host_a: "g_a" } });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_a");
+    expect(provider.insertEvent).toHaveBeenCalledWith("a-host_b", expect.anything());
+    expect(event().googleEventIds).toEqual({ host_b: "g1" });
   });
 
   it("skips a host with no connection; a failure lands on the event and the connection, never thrown", async () => {
