@@ -3,13 +3,14 @@ import {
   FAKE_CALLER_NUMBER,
   FAKE_FORWARD_TO,
   FAKE_FROM_NUMBER,
+  FAKE_SMS_FAIL_TO,
   activitiesFor,
   claimDoc,
   conversationFor,
+  conversationsPath,
   findContactByPhone,
   messagesFor,
   missedCallLifecycle,
-  primaryId,
   primaryRef,
   purgeCaller,
   settingsPath,
@@ -25,15 +26,22 @@ import {
  *     (`/api/sub-accounts/[id]/missed-call`), which best-effort calls the
  *     real Twilio API to point the number's Voice URL at us. With fake
  *     credentials that call fails — the route persists the config anyway
- *     and surfaces the failure, which the UI must show.
+ *     and surfaces the failure, which the UI must show. (That call is
+ *     Twilio's number-configuration API, a different seam from the SMS
+ *     send below — it is out of scope for the fake and stays a real,
+ *     harmlessly-failing call.)
  *  2. The real webhook routes — a signed Voice webhook (routing) followed by
  *     a signed status callback with a no-answer DialCallStatus, which is
- *     what actually fires `handleMissedCall`.
- *
- * There is no fake SMS provider in this codebase (unlike WhatsApp settings'
- * fake), so the text-back send hits real Twilio with fake credentials and
- * fails authentication — the spec asserts that failure is RECORDED (contact
- * reconciled, activity logged, claim written), never that a text was sent.
+ *     what actually fires `handleMissedCall`. The SMS leg now goes through
+ *     the fenced fake SMS provider (SMS_PROVIDER=fake,
+ *     src/lib/comms/sms/select.ts — same fence shape as the GBP and
+ *     WhatsApp settings fakes), so this proves the FULL chain: message row
+ *     written, conversation upserted, and the thread visible in the inbox
+ *     UI — not just that a send was attempted.
+ *  3. One send-failure case: a caller whose number is the fake's one magic
+ *     failing number provokes a scripted send failure, proving that path
+ *     is still recorded (not swallowed) end to end.
+ *  4. A bad X-Twilio-Signature is refused (403) with nothing written.
  */
 
 test.skip(!!process.env.PLAYWRIGHT_BASE_URL, "drives the fixture's own webhook routes; not safe against a shared deployment");
@@ -42,10 +50,16 @@ missedCallLifecycle(test);
 
 const CALL_SID_1 = "CAe2emissedcall00000000000000001";
 const CALL_SID_2 = "CAe2emissedcall00000000000000002";
+const CALL_SID_FAIL = "CAe2emissedcall00000000000000fa1";
+const CALL_SID_BAD_SIG = "CAe2emissedcall0000000000000bad1";
+const FAIL_CALLER = FAKE_SMS_FAIL_TO;
+const BAD_SIG_CALLER = "+15005550009"; // Twilio magic "not owned" number — never a real person
 
 test.afterAll(async () => {
   await purgeCaller(FAKE_CALLER_NUMBER, CALL_SID_1);
   await purgeCaller(FAKE_CALLER_NUMBER, CALL_SID_2);
+  await purgeCaller(FAIL_CALLER, CALL_SID_FAIL);
+  await purgeCaller(BAD_SIG_CALLER, CALL_SID_BAD_SIG);
 });
 
 test("settings UI enables MCTB and persists the config even though the Twilio webhook auto-config fails", async ({ page }) => {
@@ -81,7 +95,7 @@ test("settings UI enables MCTB and persists the config even though the Twilio we
   });
 });
 
-test("a signed no-answer status callback reconciles the caller, texts back (recorded as failed), and is idempotent on retry", async ({ request, page }) => {
+test("a signed no-answer status callback reconciles the caller, texts back for real (via the fake SMS provider), and is idempotent on retry", async ({ request, page }) => {
   const to = FAKE_FROM_NUMBER;
 
   // 1) The inbound VOICE webhook — resolves the route and returns TwiML that
@@ -120,17 +134,21 @@ test("a signed no-answer status callback reconciles the caller, texts back (reco
   const activities = await activitiesFor(contactId);
   expect(activities).toHaveLength(1);
   expect(activities[0]).toMatchObject({ type: "missed_call" });
-  // No fake SMS provider: fake Twilio creds → the send fails auth. The
-  // failure must be recorded, never silently dropped.
-  expect(activities[0].content as string).toMatch(/failed to send/i);
+  expect(activities[0].content as string).toMatch(/Auto-text sent/i);
 
+  // The fake SMS provider actually "sent" — the full chain now proves out:
+  // a message row with the RENDERED text (merge tags resolved, none left raw)...
   const messages = await messagesFor(contactId);
-  expect(messages).toHaveLength(0); // no message row on a failed send
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatchObject({ direction: "outbound", status: "sent" });
+  const body = messages[0].body as string;
+  expect(body).not.toMatch(/\{\{/); // no unresolved merge tag reached the customer
+  expect(body).toContain("E2E Fixture Primary"); // {{businessName}}
+  expect(messages[0].twilioMessageSid as string).toMatch(/^SMfake\d{8}$/);
 
-  // The conversation index still updates from the missed-call activity path?
-  // No — upsertConversationForMessage is only reached on a SUCCESSFUL send in
-  // handleMissedCall, so with the send failing there is no conversation doc.
-  expect(await conversationFor(contactId)).toBeNull();
+  // ...and the conversation index upserted for the inbox.
+  const conv = await conversationFor(contactId);
+  expect(conv).toMatchObject({ lastChannel: "sms", lastDirection: "outbound" });
 
   // 3) A second identical status callback is a no-op (idempotent per callSid).
   const retryRes = await request.post("/api/webhooks/twilio/voice/status", {
@@ -139,11 +157,14 @@ test("a signed no-answer status callback reconciles the caller, texts back (reco
   });
   expect(retryRes.status()).toBe(200);
   expect(await activitiesFor(contactId)).toHaveLength(1);
-  expect(await messagesFor(contactId)).toHaveLength(0);
+  expect(await messagesFor(contactId)).toHaveLength(1);
 
-  await page.goto(`/sa/${primaryId()}/contacts/${contactId}`);
+  // 4) Visible in the fixture inbox.
+  await page.goto(conversationsPath());
+  await page.getByPlaceholder("Search by name or phone").fill(FAKE_CALLER_NUMBER);
+  await expect(page.getByText(FAKE_CALLER_NUMBER)).toBeVisible({ timeout: 30_000 });
   await page.screenshot({
-    path: "docs/parity/evidence/sp2/g-missed-call/02-contact-activity.png",
+    path: "docs/parity/evidence/sp2/g-missed-call/02-inbox-thread.png",
     fullPage: true,
   });
 });
@@ -167,4 +188,46 @@ test("a fresh callSid for the same caller is a second, independent claim", async
   const activities = await activitiesFor((contact as { id: string }).id);
   // CALL_SID_1's activity plus this one.
   expect(activities.length).toBeGreaterThanOrEqual(2);
+});
+
+test("a send failure (the fake's one magic failing number) is recorded, not swallowed", async ({ request }) => {
+  const statusParams = {
+    To: FAKE_FROM_NUMBER,
+    From: FAIL_CALLER,
+    CallSid: CALL_SID_FAIL,
+    DialCallStatus: "no-answer",
+  };
+  const sig = signMissedCallRequest("/api/webhooks/twilio/voice/status", statusParams);
+  const res = await request.post("/api/webhooks/twilio/voice/status", {
+    headers: twilioHeaders(sig.signature),
+    data: sig.body,
+  });
+  expect(res.status()).toBe(200);
+
+  const contact = await findContactByPhone(FAIL_CALLER);
+  expect(contact).toBeTruthy();
+  const contactId = (contact as { id: string }).id;
+
+  const activities = await activitiesFor(contactId);
+  expect(activities).toHaveLength(1);
+  expect(activities[0].content as string).toMatch(/failed to send/i);
+  expect(await messagesFor(contactId)).toHaveLength(0);
+  expect(await conversationFor(contactId)).toBeNull();
+});
+
+test("a bad X-Twilio-Signature is refused (403) and writes nothing", async ({ request }) => {
+  const statusParams = {
+    To: FAKE_FROM_NUMBER,
+    From: BAD_SIG_CALLER,
+    CallSid: CALL_SID_BAD_SIG,
+    DialCallStatus: "no-answer",
+  };
+  const res = await request.post("/api/webhooks/twilio/voice/status", {
+    headers: twilioHeaders("this-is-not-a-valid-signature"),
+    data: new URLSearchParams(statusParams).toString(),
+  });
+  expect(res.status()).toBe(403);
+
+  expect(await claimDoc(CALL_SID_BAD_SIG)).toBeNull();
+  expect(await findContactByPhone(BAD_SIG_CALLER)).toBeNull();
 });

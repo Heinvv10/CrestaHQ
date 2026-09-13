@@ -6,13 +6,24 @@ import { assertFixtureSubAccount, deleteScoped } from "./guard";
 
 /**
  * SP2 row C5 — Missed Call Text Back fixtures for the E2E spec, fixture
- * PRIMARY only. `handleMissedCall`'s SMS send hits the real Twilio API with
- * FAKE credentials (there is no fake SMS provider in this codebase, unlike
- * WhatsApp settings' fake) — that call always fails auth, so the spec
- * proves the failure is *recorded*, never that a text was delivered.
+ * PRIMARY only. `handleMissedCall`'s SMS send goes through the fenced fake
+ * SMS provider (SMS_PROVIDER=fake, src/lib/comms/sms/select.ts — the same
+ * fence shape as the GBP and WhatsApp settings fakes), so the spec proves
+ * the FULL chain: message row, conversation upsert, inbox UI, and the
+ * activity saying "sent" — not just that a send was attempted.
+ * `FAKE_SMS_FAIL_TO` (re-exported from the fake) is Twilio's own magic
+ * "invalid" number; a caller with that number provokes the fake's one
+ * scripted failure so the send-failure path stays covered too.
  * Numbers below are Twilio's documented "magic" test numbers; never a real
  * phone or real credentials.
  */
+
+/**
+ * Mirrors src/lib/comms/sms/fake.ts's FAKE_SMS_FAIL_TO. Not imported directly:
+ * that module (like every server-only lib) throws when loaded outside
+ * Next's server bundler, which Playwright's plain Node runtime is not.
+ */
+export const FAKE_SMS_FAIL_TO = "+15005550001";
 
 export const FAKE_ACCOUNT_SID = "AC00000000000000000000000000e2e1";
 export const FAKE_AUTH_TOKEN = "e2e_fake_auth_token_missed_call";
@@ -145,3 +156,4 @@ export async function purgeCaller(phone: string, callSid: string) {
 }
 
 export const settingsPath = () => `/sa/${primaryId()}/dashboard/settings`;
+export const conversationsPath = () => `/sa/${primaryId()}/conversations`;
