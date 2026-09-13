@@ -44,6 +44,16 @@ directly, including their subject and body. The message ID prevents a Sent-folde
 copy from appearing twice. Select an email to reply with the original thread
 headers, or compose a new email with a subject.
 
+**How threads are grouped.** A conversation belongs to a contact, and an email
+joins the contact whose email address matches the correspondent (the sender of
+incoming mail, each recipient of sent mail). Reply headers (`In-Reply-To`,
+`References`) are kept on every message and sent on every reply, so mail apps
+thread them, but they do not move mail between contacts: a reply from a different
+address — an alias, a colleague, a forward — appears under that address's own
+contact. Headers only choose between contacts that share one address, so a reply
+lands with the contact whose message it answers. Replying to "Quote" sends
+"Re: Quote"; an existing "Re:" is not repeated.
+
 Authentication emails such as community sign-in links are excluded from automatic
 CRM archiving so their login tokens are not exposed to other workspace members.
 

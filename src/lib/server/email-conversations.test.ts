@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { parseMailboxMessage } from "@/lib/comms/imap";
 const m = vi.hoisted(() => ({
   rows: new Map<string, Record<string, unknown>>(),
 }));
@@ -347,4 +348,108 @@ it("does not make legacy unassigned contacts globally visible", async () => {
   expect(m.rows.get("conversations/known")).toMatchObject({
     territoryId: null,
   });
+});
+
+// ---- Threading: how an inbound reply finds its conversation ---------------
+// Conversations are keyed by contact, and an inbound mail's contact is found
+// by the SENDER'S ADDRESS. In-Reply-To/References are stored on the row and
+// only break a tie between contacts sharing that address.
+const SENT_ID = "<sent@desk.example.com>";
+async function recordRawInbound(raw: string) {
+  const { date: _date, archive: _archive, ...fields } =
+    await parseMailboxMessage(Buffer.from(raw));
+  return recordEmailMessage({
+    ...fields,
+    subAccountId: "sa",
+    direction: "inbound",
+    occurredAt: new Date("2026-09-09"),
+    historical: false,
+  });
+}
+const replyFrom = (from: string) =>
+  [
+    `From: Friend <${from}>`,
+    "To: me@example.com",
+    "Subject: Re: Quote",
+    "Message-ID: <reply@friend.example.com>",
+    `In-Reply-To: ${SENT_ID}`,
+    `References: <root@desk.example.com> ${SENT_ID}`,
+    "",
+    "Sounds good.",
+  ].join("\r\n");
+async function sendFrom(contactId: string) {
+  await recordEmailMessage({
+    ...input,
+    contactId,
+    direction: "outbound",
+    subject: "Quote",
+    body: "Here is the quote.",
+    from: "me@example.com",
+    to: ["friend@example.com"],
+    messageId: SENT_ID,
+    occurredAt: new Date("2026-09-08"),
+  });
+}
+const emailRows = (contactId: string) =>
+  [...m.rows.keys()].filter((k) =>
+    k.startsWith(`contacts/${contactId}/emailMessages/`)
+  );
+it("an inbound reply parsed from raw mail lands in the conversation it answers, headers kept", async () => {
+  m.rows.set("contacts/known", {
+    subAccountId: "sa",
+    agencyId: "agency",
+    email: "friend@example.com",
+  });
+  await sendFrom("known");
+  expect((await recordRawInbound(replyFrom("friend@example.com"))).contactId).toBe("known");
+  expect(emailRows("known")).toHaveLength(2);
+  const inbound = emailRows("known")
+    .map((k) => m.rows.get(k)!)
+    .find((row) => row.direction === "inbound");
+  expect(inbound).toMatchObject({
+    subject: "Re: Quote",
+    messageId: "<reply@friend.example.com>",
+    inReplyTo: SENT_ID,
+    references: ["<root@desk.example.com>", SENT_ID],
+  });
+  expect(m.rows.get("conversations/known")).toMatchObject({
+    lastDirection: "inbound",
+    unreadCount: 1,
+  });
+});
+it("when two contacts share the address, a reply follows the contact its parent was sent from", async () => {
+  for (const id of ["a", "b"])
+    m.rows.set(`contacts/${id}`, {
+      subAccountId: "sa",
+      agencyId: "agency",
+      email: "friend@example.com",
+    });
+  await sendFrom("b");
+  expect((await recordRawInbound(replyFrom("friend@example.com"))).contactId).toBe("b");
+  expect(emailRows("a")).toHaveLength(0);
+});
+it("a reply from a different address starts that address's own contact, even when it references our mail", async () => {
+  m.rows.set("contacts/known", {
+    subAccountId: "sa",
+    agencyId: "agency",
+    email: "friend@example.com",
+  });
+  await sendFrom("known");
+  const { contactId } = await recordRawInbound(replyFrom("alias@example.com"));
+  expect(contactId).not.toBe("known");
+  expect(m.rows.get(`contacts/${contactId}`)).toMatchObject({
+    email: "alias@example.com",
+  });
+  expect(emailRows("known")).toHaveLength(1);
+});
+it("ignores a parent's contact whose address has since changed instead of failing the import", async () => {
+  for (const id of ["a", "b"])
+    m.rows.set(`contacts/${id}`, {
+      subAccountId: "sa",
+      agencyId: "agency",
+      email: "friend@example.com",
+    });
+  await sendFrom("b");
+  m.rows.set("contacts/b", { ...m.rows.get("contacts/b"), email: "moved@example.com" });
+  expect((await recordRawInbound(replyFrom("friend@example.com"))).contactId).toBe("a");
 });
