@@ -176,7 +176,7 @@ export function GoogleCalendarCard() {
               )}
               {status.lastPushError && (
                 <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="gcal-last-push-error">
-                  Last booking change not synced: {status.lastPushError}. Open the booking and use Retry sync.
+                  {status.lastPushError} Open the booking and use Retry sync.
                 </p>
               )}
             </div>

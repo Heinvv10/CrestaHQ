@@ -170,7 +170,7 @@ export async function recordConnectionError(
     kind === "busy"
       ? { lastError: describeFailure(err), lastErrorAt: at }
       : {
-          lastPushError: `${kind === "remove" ? "Couldn't remove a booking from your Google Calendar" : "Couldn't add or update a booking in your Google Calendar"}: ${describeFailure(err, "push")}`,
+          lastPushError: `${kind === "remove" ? "A booking change wasn't removed from your Google Calendar" : "A booking change wasn't synced to your Google Calendar"}: ${describeFailure(err, "push")}`,
           lastPushErrorAt: at,
         };
   try {

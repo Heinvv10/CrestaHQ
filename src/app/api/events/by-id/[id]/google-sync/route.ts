@@ -26,12 +26,18 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (access instanceof NextResponse) return access;
 
   // One retry per event per 30 s: each is a round of Google calls per host.
-  const last = (snap.data()?.googleSyncRetryAt as { toMillis?: () => number } | Date | undefined) ?? null;
-  const lastMs = last instanceof Date ? last.getTime() : (last?.toMillis?.() ?? 0);
-  if (Date.now() - lastMs < RETRY_COOLDOWN_MS) {
+  // Read and stamp in one transaction so two concurrent clicks can't both pass.
+  const allowed = await getAdminDb().runTransaction(async (txn) => {
+    const cur = await txn.get(ref);
+    const last = (cur.data()?.googleSyncRetryAt as { toMillis?: () => number } | Date | undefined) ?? null;
+    const lastMs = last instanceof Date ? last.getTime() : (last?.toMillis?.() ?? 0);
+    if (Date.now() - lastMs < RETRY_COOLDOWN_MS) return false;
+    txn.update(ref, { googleSyncRetryAt: new Date() });
+    return true;
+  });
+  if (!allowed) {
     return NextResponse.json({ error: "Retried moments ago — wait 30 seconds." }, { status: 429 });
   }
-  await ref.update({ googleSyncRetryAt: new Date() });
 
   await pushBookingToGoogle(id);
   const after = (await ref.get()).data();
