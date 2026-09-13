@@ -73,6 +73,29 @@ export interface AvailabilityInput {
   dateOverrides?: DateOverride[];
 }
 
+// One formatter per timezone: constructing Intl.DateTimeFormat is the
+// expensive part, and slot generation calls wallClockInTz per candidate.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatterFor(tz: string): Intl.DateTimeFormat {
+  let fmt = formatters.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      weekday: "short",
+    });
+    formatters.set(tz, fmt);
+  }
+  return fmt;
+}
+
 /**
  * Returns the wall-clock fields a UTC instant displays in the given
  * IANA timezone. Useful for "what day of the week is `instant` in tz?".
@@ -90,18 +113,7 @@ function wallClockInTz(
   dayOfWeek: WorkingHour["dayOfWeek"];
 } {
   // Intl.DateTimeFormat returns parts in the target tz.
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    weekday: "short",
-  });
-  const parts = fmt.formatToParts(instant);
+  const parts = formatterFor(tz).formatToParts(instant);
   const get = (type: string) =>
     parts.find((p) => p.type === type)?.value ?? "0";
   const year = Number(get("year"));
@@ -234,22 +246,18 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
     rangesByDow.get(r.dayOfWeek)!.push(r);
   }
 
-  // Walk one calendar day at a time in the page's tz. We start by
-  // finding the tz-day that fromInstant lives in, then step day-by-day
-  // until we pass toInstant. The day pointer is a simple {y, m, d}
-  // triple — increment via UTC math (always 24h), but re-derive the
-  // tz-day fields on each step so DST doesn't drift us off.
+  // Walk the page's LOCAL calendar dates, from the date fromInstant falls
+  // on to the date toInstant falls on. The pointer is a pure calendar date
+  // (a UTC-midnight Date used only for y/m/d/weekday arithmetic), so it is
+  // right for every offset (−12..+14) and across DST; each slot's real
+  // instant comes from utcFromWallClock. (Anchoring on noon UTC instead
+  // skipped "today" for UTC+12..+14.)
   const startWc = wallClockInTz(fromInstant, page.timezone);
-  // Anchor each step on an instant at noon UTC of the JS Date for the
-  // year/month/day — far enough from midnight in either direction that
-  // DST shifts can't land us on the wrong wall-clock day.
   let cursor = new Date(
-    Date.UTC(startWc.year, startWc.month - 1, startWc.day, 12, 0, 0),
+    Date.UTC(startWc.year, startWc.month - 1, startWc.day),
   );
   const endWc = wallClockInTz(toInstant, page.timezone);
-  const endAnchor = new Date(
-    Date.UTC(endWc.year, endWc.month - 1, endWc.day, 12, 0, 0),
-  );
+  const endDate = new Date(Date.UTC(endWc.year, endWc.month - 1, endWc.day));
 
   const out: SlotCandidate[] = [];
   // Track per-tz-day count for maxPerDay. Key: "YYYY-MM-DD" in tz.
@@ -273,9 +281,14 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
   // Hard cap iterations as a defensive bound — visibleDays is already
   // bounded to 90 by the validator, but belt-and-suspenders.
   let safety = 100;
-  while (cursor <= endAnchor && safety-- > 0) {
-    const wc = wallClockInTz(cursor, page.timezone);
-    const dayKey = `${wc.year}-${String(wc.month).padStart(2, "0")}-${String(wc.day).padStart(2, "0")}`;
+  while (cursor <= endDate && safety-- > 0) {
+    const wc = {
+      year: cursor.getUTCFullYear(),
+      month: cursor.getUTCMonth() + 1,
+      day: cursor.getUTCDate(),
+      dayOfWeek: cursor.getUTCDay() as WorkingHour["dayOfWeek"],
+    };
+    const dayKey = cursor.toISOString().slice(0, 10);
     const dayMax = page.maxPerDay ?? Infinity;
     // A date override replaces that weekday's hours for this date only.
     const dayRanges =
@@ -300,8 +313,7 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
         dayCounts.set(dayKey, count + 1);
       }
     }
-    // Advance one calendar day. 24h step from noon UTC stays at noon UTC
-    // across DST transitions (DST shifts the wall clock, not UTC).
+    // Next calendar date (UTC-midnight arithmetic has no DST).
     cursor = new Date(cursor.getTime() + 24 * 60 * 60_000);
   }
 

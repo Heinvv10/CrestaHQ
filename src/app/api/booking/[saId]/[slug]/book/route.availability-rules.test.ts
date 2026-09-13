@@ -45,6 +45,15 @@ describe("book-time re-verify", () => {
     expect((await book("p", slot("11:00", "11:30"))).status).toBe(200);
   });
 
+  it("books on a UTC+12 page (the re-verify walks the right local date)", async () => {
+    // Tue 2026-09-15 09:00 in Auckland (NZST, +12) = Mon 21:00Z.
+    seedPage("nz", {
+      timezone: "Pacific/Auckland",
+      workingHours: [{ dayOfWeek: 2, startMinute: 540, endMinute: 600 }],
+    });
+    expect((await book("nz", slot("21:00", "21:30"))).status).toBe(200);
+  });
+
   it("honours a closed date and an off-grid interval start", async () => {
     seedPage("closed", { dateOverrides: [{ date: "2026-09-14", ranges: [] }] });
     expect((await book("closed", slot("09:00", "09:30"))).status).toBe(409);
