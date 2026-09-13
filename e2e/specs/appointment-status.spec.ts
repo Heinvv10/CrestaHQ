@@ -131,6 +131,24 @@ test("mark no-show, correct to showed, and the page-pinned workflow only enrols 
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("button", { name: "Mark no-show" })).toBeVisible();
+
+  // Save order: a changed time goes through the reschedule route FIRST, and
+  // a refused reschedule saves nothing — not even the title edited beside it.
+  await page.route("**/api/events/by-id/*/reschedule", (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "E2E refused reschedule" }),
+    }),
+  );
+  await dialog.locator("#ev-title").fill(`E2E Renamed ${stamp}`);
+  await dialog.locator("#ev-start").fill("01:00");
+  await dialog.locator("#ev-end").fill("01:30");
+  await dialog.getByRole("button", { name: "Save Changes" }).click();
+  await expect(page.getByText("E2E refused reschedule")).toBeVisible({ timeout: 15_000 });
+  const eventXUnsaved = await adminDb().doc(`events/${eventXId}`).get();
+  expect(eventXUnsaved.data()?.title).toBe(`E2E Status Booking X ${stamp}`);
+  await page.unroute("**/api/events/by-id/*/reschedule");
   await dialog.getByRole("button", { name: "Mark no-show" }).click();
   await expect(dialog.getByText("No-show", { exact: true })).toBeVisible({
     timeout: 15_000,
@@ -156,6 +174,12 @@ test("mark no-show, correct to showed, and the page-pinned workflow only enrols 
   });
   const eventXAfter = await adminDb().doc(`events/${eventXId}`).get();
   expect(eventXAfter.data()?.status).toBe("completed");
+  // A finished booking can't be moved: the time inputs lock with a hint.
+  await expect(dialog.locator("#ev-start")).toBeDisabled();
+  await expect(dialog.locator("#ev-date")).toBeDisabled();
+  await expect(
+    dialog.getByText("Finished or cancelled bookings can't be moved — rebook instead."),
+  ).toBeVisible();
 
   await page.keyboard.press("Escape");
 

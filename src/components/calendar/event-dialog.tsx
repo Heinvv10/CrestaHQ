@@ -37,11 +37,13 @@ import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
 import { toDate } from "@/lib/format";
 import {
+  eventOccupiesSlot,
   eventSource,
   eventStatus,
   eventStatusLabel,
   type CalendarEvent,
   type EventFormData,
+  type EventNotifySkipReason,
   type EventStatus,
 } from "@/types/events";
 import type { Contact } from "@/types/contacts";
@@ -71,6 +73,21 @@ function fromInputs(date: string, time: string): Date {
   return new Date(`${date}T${time}:00`);
 }
 
+/** Operator-facing reason the visitor wasn't emailed, for the toasts below. */
+function notifySkipDetail(reason: EventNotifySkipReason | undefined): string {
+  return reason === "email_not_configured"
+    ? "Resend isn't configured on this deployment"
+    : reason === "no_contact_email"
+      ? "the visitor's contact record has no email address"
+      : reason === "contact_opted_out"
+        ? "the visitor opted out of email"
+        : reason === "send_failed"
+          ? "the email send failed (check Vercel logs)"
+          : reason === "test_mode"
+            ? "this is a test-mode event"
+            : "couldn't reach the visitor by email";
+}
+
 function roundedNowHour(): Date {
   const d = new Date();
   d.setMinutes(0, 0, 0);
@@ -87,6 +104,13 @@ export function EventDialog({
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
+  // A cancelled / completed / no-show booking no longer holds a slot, so the
+  // reschedule endpoint refuses to move it — lock the time instead of
+  // letting Save 409.
+  const timeLocked =
+    !!event &&
+    eventSource(event) === "booking_page" &&
+    !eventOccupiesSlot(eventStatus(event));
 
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
@@ -169,16 +193,18 @@ export function EventDialog({
           // (rescheduledAt/Count, the booking.rescheduled trigger, reminder
           // reschedule, visitor email) that a bare client write can't do —
           // route any actual time change through the operator endpoint.
-          // Non-time fields still save as a plain client write.
+          // It goes FIRST: if the reschedule is refused, nothing is saved.
+          // Non-time fields then save as a plain client write.
           const { startAt, endAt, ...rest } = payload;
-          await updateEvent(event.id, rest);
           const origStart = toDate(event.startAt);
           const origEnd = toDate(event.endAt);
           const timeChanged =
-            !origStart ||
-            !origEnd ||
-            origStart.getTime() !== startAt.getTime() ||
-            origEnd.getTime() !== endAt.getTime();
+            !timeLocked &&
+            (!origStart ||
+              !origEnd ||
+              origStart.getTime() !== startAt.getTime() ||
+              origEnd.getTime() !== endAt.getTime());
+          let rescheduleWarning: string | null = null;
           if (timeChanged) {
             const res = await fetch(`/api/events/by-id/${event.id}/reschedule`, {
               method: "POST",
@@ -188,11 +214,35 @@ export function EventDialog({
                 endAt: endAt.toISOString(),
               }),
             });
+            const b = (await res.json().catch(() => ({}))) as {
+              error?: string;
+              notifyEmailSent?: boolean;
+              notifyEmailSkipReason?: EventNotifySkipReason;
+            };
             if (!res.ok) {
-              const b = (await res.json().catch(() => ({}))) as { error?: string };
-              toast.error(b.error ?? "Couldn't reschedule. Try again.");
+              toast.error(b.error ?? "Couldn't reschedule. Nothing was saved.");
               return;
             }
+            // The reschedule rotated the visitor's manage link — if they
+            // weren't emailed the new one, the operator has to know.
+            if (!b.notifyEmailSent) {
+              rescheduleWarning = `Rescheduled — the visitor wasn't emailed (${notifySkipDetail(
+                b.notifyEmailSkipReason,
+              )}); their old manage link no longer works.`;
+            }
+          }
+          try {
+            await updateEvent(event.id, rest);
+          } catch (err) {
+            if (!timeChanged) throw err;
+            console.error(err);
+            toast.error("Rescheduled, but the other changes didn't save. Try again.");
+            return;
+          }
+          if (rescheduleWarning) {
+            toast.warning(rescheduleWarning);
+            onOpenChange(false);
+            return;
           }
         } else {
           // Plain edit has no webhook event — stays a client-side write.
@@ -294,6 +344,7 @@ export function EventDialog({
               value={date}
               onChange={(e) => setDate(e.target.value)}
               aria-invalid={!!errors.date}
+              disabled={timeLocked}
             />
             {errors.date && (
               <p className="text-xs text-destructive">{errors.date}</p>
@@ -311,6 +362,7 @@ export function EventDialog({
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
                 aria-invalid={!!errors.startTime}
+                disabled={timeLocked}
               />
               {errors.startTime && (
                 <p className="text-xs text-destructive">{errors.startTime}</p>
@@ -326,12 +378,18 @@ export function EventDialog({
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
                 aria-invalid={!!errors.endTime}
+                disabled={timeLocked}
               />
               {errors.endTime && (
                 <p className="text-xs text-destructive">{errors.endTime}</p>
               )}
             </div>
           </div>
+          {timeLocked && (
+            <p className="-mt-2 text-[11px] text-muted-foreground">
+              Finished or cancelled bookings can&apos;t be moved — rebook instead.
+            </p>
+          )}
 
           <div className="space-y-1.5">
             <Label htmlFor="ev-contact">Contact</Label>
@@ -550,15 +608,7 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
         ok?: boolean;
         error?: string;
         notifyEmailSent?: boolean;
-        notifyEmailSkipReason?:
-          | "not_cancelled"
-          | "no_contact"
-          | "email_not_configured"
-          | "no_contact_email"
-          | "contact_opted_out"
-          | "missing_records"
-          | "bad_timestamps"
-          | "send_failed";
+        notifyEmailSkipReason?: EventNotifySkipReason;
       };
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "Couldn't update.");
@@ -570,18 +620,9 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
         if (data.notifyEmailSent) {
           toast.success("Cancelled. Visitor notified by email.");
         } else {
-          const reason = data.notifyEmailSkipReason;
-          const detail =
-            reason === "email_not_configured"
-              ? "Resend isn't configured on this deployment"
-              : reason === "no_contact_email"
-                ? "the visitor's contact record has no email address"
-                : reason === "contact_opted_out"
-                  ? "the visitor opted out of email"
-                  : reason === "send_failed"
-                    ? "the email send failed (check Vercel logs)"
-                    : "couldn't reach the visitor by email";
-          toast.warning(`Cancelled, but ${detail}. Reach out manually.`);
+          toast.warning(
+            `Cancelled, but ${notifySkipDetail(data.notifyEmailSkipReason)}. Reach out manually.`,
+          );
         }
       } else {
         toast.success(label);
