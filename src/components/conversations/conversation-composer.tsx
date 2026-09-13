@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Loader2, Send } from "lucide-react";
-import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { emailReplyFields } from "./email-reply";
 import { ComposerInserts } from "./composer-inserts";
+import { useMergeTagComposer } from "./use-merge-tag-composer";
 import {
   ComposerModeToggle,
   InternalNoteComposer,
@@ -17,13 +17,6 @@ import type { EmailMessageDoc } from "@/types/email";
 import { Textarea } from "@/components/ui/textarea";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { cn } from "@/lib/utils";
-import { DEFAULT_REVIEW_SMS_TEMPLATE } from "@/lib/reviews/constants";
-import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
-import {
-  renderMergeTags,
-  type MergeTagContext,
-} from "@/lib/messaging/merge-tags";
-import { insertAtCursor } from "@/lib/messaging/insert-at-cursor";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 
@@ -61,7 +54,6 @@ export function ConversationComposer({
   availableChannels: ConversationChannel[];
   defaultChannel: ConversationChannel;
 }) {
-  const { subAccount } = useSubAccount();
   const initial = availableChannels.includes(defaultChannel)
     ? defaultChannel
     : (availableChannels[0] ?? "sms");
@@ -74,53 +66,18 @@ export function ConversationComposer({
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [mode, setMode] = useState<ComposerMode>("reply");
-  // Merge tags Send refused on (SP2 T4); cleared as soon as the text changes.
-  const [unresolved, setUnresolved] = useState<string[]>([]);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
   const toggle = <ComposerModeToggle mode={mode} onChange={setMode} />;
 
-  // "Ask for review" — only when a review link is configured. Inserts the
-  // rendered review message into the composer (free-form) so the operator can
-  // tweak it and send on the current channel. For WhatsApp this works WITHOUT an
-  // approved template because the customer's recent inbound keeps the 24h window
-  // open (the send route 409s if it has closed).
-  const reviewCfg = subAccount?.googleReviewConfig ?? null;
-  // The configured link only, through the canonical seam — never a listing's proposal.
-  const reviewUrl = resolveReviewUrl(subAccount).configured;
-  const reviewConfigured = !!reviewUrl;
-
-  const mergeContext: MergeTagContext = {
+  const merge = useMergeTagComposer({
     contact,
-    businessName: subAccount?.name ?? "",
-    userName: senderName,
-    reviewUrl: reviewCfg?.reviewUrl,
-  };
-
-  function insertReviewMessage() {
-    if (!reviewCfg || !reviewUrl) return;
-    const msg = renderMergeTags(
-      reviewCfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-      mergeContext
-    ).text;
-    // Preserve anything the operator already typed (e.g. a thank-you).
-    setBody((prev) => (prev.trim() ? `${prev.trim()} ${msg}` : msg));
-  }
-
-  function insertIntoBody(text: string) {
-    const el = bodyRef.current;
-    const next = insertAtCursor(
-      body,
-      text,
-      el && document.activeElement === el ? el.selectionStart : null,
-      el && document.activeElement === el ? el.selectionEnd : null
-    );
-    setBody(next.value);
-    setUnresolved([]);
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(next.caret, next.caret);
-    });
-  }
+    senderName,
+    body,
+    setBody,
+    subject,
+    setSubject,
+    isEmail: channel === "email",
+    replying: !!emailReply,
+  });
 
   if (mode === "note") {
     return <InternalNoteComposer contactId={contact.id} toggle={toggle} />;
@@ -179,29 +136,9 @@ export function ConversationComposer({
       toast.error(`This contact opted out of ${LABEL[channel]}.`);
       return;
     }
-    // Ruling 5: never ship a raw tag. Typed tags that DO resolve are filled in
-    // and Send stops once, so the operator sees the exact text before it goes.
-    const renderedBody = renderMergeTags(trimmed, mergeContext);
-    const renderedSubject = renderMergeTags(
-      isEmail ? subject.trim() : "",
-      mergeContext
-    );
-    const missing = [...renderedBody.unresolved, ...renderedSubject.unresolved];
-    if (missing.length) {
-      setUnresolved([...new Set(missing)]);
-      return;
-    }
-    if (
-      renderedBody.text !== trimmed ||
-      (isEmail && renderedSubject.text !== subject.trim())
-    ) {
-      setBody(renderedBody.text);
-      if (isEmail) setSubject(renderedSubject.text);
-      toast.info(
-        "Merge fields filled in. Check the message, then press Send again."
-      );
-      return;
-    }
+    // Ruling 5: never ship a raw tag — and never rewrite what the operator
+    // sees. Any `{{…}}` left blocks Send (see useMergeTagComposer).
+    if (merge.blockSend()) return;
     setSending(true);
     try {
       const res = await fetch(endpoint, {
@@ -257,7 +194,10 @@ export function ConversationComposer({
             <button
               key={ch}
               type="button"
-              onClick={() => setChannel(ch)}
+              onClick={() => {
+                setChannel(ch);
+                merge.reset();
+              }}
               className={cn(
                 "rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
                 channel === ch
@@ -290,7 +230,7 @@ export function ConversationComposer({
             value={subject}
             onChange={(e) => {
               setSubject(e.target.value);
-              setUnresolved([]);
+              merge.reset();
             }}
             disabled={disabled}
             required
@@ -298,11 +238,11 @@ export function ConversationComposer({
         </div>
       )}
       <Textarea
-        ref={bodyRef}
+        {...merge.textareaProps}
         value={body}
         onChange={(e) => {
           setBody(e.target.value);
-          setUnresolved([]);
+          merge.reset();
         }}
         placeholder={
           optedOut
@@ -319,34 +259,22 @@ export function ConversationComposer({
         disabled={disabled}
         className="min-h-[60px] resize-none px-3 py-2 text-sm"
       />
-      {unresolved.length > 0 && (
-        <p
-          role="alert"
-          data-testid="merge-error"
-          className="text-destructive mt-1 text-xs"
-        >
-          Not sent: no value for {unresolved.join(", ")}. Fill it in or remove
-          it.
-        </p>
-      )}
+      {merge.notice}
       <div className="mt-2 flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1">
           <ComposerInserts
-            mergeContext={mergeContext}
+            mergeContext={merge.mergeContext}
             emailActive={isEmail}
             disabled={disabled}
-            onInsert={insertIntoBody}
-            onSubject={(s) => {
-              setSubject(s);
-              setUnresolved([]);
-            }}
+            onInsert={merge.insertIntoBody}
+            onSubject={merge.applySnippetSubject}
           />
-          {reviewConfigured && (
+          {merge.reviewConfigured && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={insertReviewMessage}
+              onClick={merge.insertReviewMessage}
               disabled={sending}
               title="Insert a Google review request into the reply"
             >

@@ -81,6 +81,11 @@ export const MERGE_FIELDS: ReadonlyArray<{ tag: string; label: string }> = [
 // way the old per-alias regexes did.
 const TAG = /\{\{([^{}]*)\}\}/g;
 
+/** Every `{{…}}` left in `text`, as written, de-duplicated, in order. */
+export function findMergeTags(text: string): string[] {
+  return [...new Set(text.match(TAG) ?? [])];
+}
+
 export function renderMergeTags(
   template: string,
   ctx: MergeTagContext,

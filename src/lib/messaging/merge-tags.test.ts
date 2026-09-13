@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findMergeTags,
   MERGE_FIELDS,
   renderMergeTags,
   type MergeTagContext,
@@ -117,6 +118,17 @@ describe("legacy aliases", () => {
 
   it("matches the inner tag of triple braces, like the old regexes", () => {
     expect(render("{{{firstName}}}").text).toBe("{Thabo}");
+  });
+});
+
+describe("findMergeTags", () => {
+  it("lists every tag left in the text, known or not, once, in order", () => {
+    expect(
+      findMergeTags(
+        "{{ contact.name }} {{foo}} x {{contact.name}} {{ contact.name }} {}"
+      )
+    ).toEqual(["{{ contact.name }}", "{{foo}}", "{{contact.name}}"]);
+    expect(findMergeTags("no tags {here} }} {{")).toEqual([]);
   });
 });
 

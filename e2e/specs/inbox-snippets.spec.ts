@@ -14,7 +14,9 @@ import { deleteScoped } from "../lib/guard";
  *       when there are.
  *   T4  an inserted snippet shows the contact's first name, never the raw
  *       tag (ruling 5); an email snippet also fills the subject; a message
- *       with an unresolved tag is refused before any send route is called.
+ *       that still holds any tag is refused before any send route is called
+ *       and is never rewritten by Send — only the operator's explicit
+ *       "Fill merge fields" renders it.
  *
  * Every /api/comms/* request is intercepted and ABORTED, so nothing is sent.
  * Twilio and SMTP config are fixture values that could not deliver anyway.
@@ -252,19 +254,39 @@ test("snippets: manage, insert rendered, refuse unresolved tags", async ({
     );
     await expect(textarea).toHaveValue(`Dear ${name}, the quote is attached.`);
 
-    // --- T4: an unresolved tag blocks Send, visibly ------------------------
+    // --- T4: any tag left blocks Send; Send never rewrites the message ----
+    const mergeError = page.getByTestId("merge-error");
+    const sendSms = composer.getByRole("button", { name: "Send via SMS" });
     await composer.getByRole("button", { name: "SMS", exact: true }).click();
     await textarea.fill("Hi {{contact.company}}");
-    await composer.getByRole("button", { name: "Send via SMS" }).click();
-    await expect(page.getByTestId("merge-error")).toContainText(
-      "no value for {{contact.company}}"
-    );
+    await sendSms.click();
+    await expect(mergeError).toContainText("{{contact.company}}");
+    await expect(
+      mergeError.getByRole("button", { name: "Fill merge fields" })
+    ).toHaveCount(0);
     await shot("03-unresolved-tag-blocks-send.png");
+    await sendSms.click();
+    await expect(textarea).toHaveValue("Hi {{contact.company}}");
+
+    // A typed tag that resolves is still refused until the operator fills it.
+    await textarea.fill("Hi {{contact.first_name}}");
+    await sendSms.click();
+    await expect(mergeError).toContainText("{{contact.first_name}}");
+    await expect(textarea).toHaveValue("Hi {{contact.first_name}}");
     await page.waitForTimeout(2_000);
     expect(
       sends,
-      "an unresolved tag must never reach a send route"
+      "a message holding a tag must never reach a send route"
     ).toHaveLength(1);
+    await mergeError.getByRole("button", { name: "Fill merge fields" }).click();
+    await expect(textarea).toHaveValue(`Hi ${first}`);
+    await expect(mergeError).toHaveCount(0);
+    await sendSms.click();
+    await expect.poll(() => sends.length, { timeout: 15_000 }).toBe(2);
+    expect(sends[1].body).toEqual({
+      contactId: contactRef.id,
+      body: `Hi ${first}`,
+    });
 
     // --- T3: edit + delete --------------------------------------------------
     await page.goto(`/sa/${sa}/conversations/snippets`);
