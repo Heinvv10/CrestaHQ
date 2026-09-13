@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Info,
 } from "lucide-react";
+import { pageCalendarType } from "@/lib/booking/calendar-types";
+import { PublicServicePicker } from "@/components/booking/public-service-picker";
 import type { BookingPage, IntakeField } from "@/types/booking";
 
 /**
@@ -26,7 +28,8 @@ import type { BookingPage, IntakeField } from "@/types/booking";
  * lets the visitor switch back to the page's tz if they prefer.
  */
 
-type SlotISO = { startAt: string; endAt: string };
+/** `seatsLeft` is present on class pages only. */
+type SlotISO = { startAt: string; endAt: string; seatsLeft?: number };
 
 interface Branding {
   name: string;
@@ -99,6 +102,11 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
   const [hosts, setHosts] = useState<{ uid: string; name: string }[]>([]);
   const [allowHostSelection, setAllowHostSelection] = useState(false);
   const [selectedHostUid, setSelectedHostUid] = useState<string | null>(null);
+  // Service pages: nothing to show until the visitor picks a service.
+  const isServicePage = pageCalendarType(page) === "service";
+  const [serviceId, setServiceId] = useState<string | null>(null);
+  const service = (page.services ?? []).find((s) => s.id === serviceId) ?? null;
+  const durationMinutes = service?.durationMinutes ?? page.durationMinutes;
   const [confirmation, setConfirmation] = useState<{
     status: "scheduled" | "awaiting_payment";
     paymentUrl: string | null;
@@ -119,12 +127,18 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
   // page.visibleDays". A `host` param narrows to that person; the response
   // carries the host roster only when the page opted into selection.
   useEffect(() => {
+    if (isServicePage && !serviceId) {
+      setSlots([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    const qs = selectedHostUid
-      ? `?host=${encodeURIComponent(selectedHostUid)}`
-      : "";
+    const params = new URLSearchParams();
+    if (selectedHostUid) params.set("host", selectedHostUid);
+    if (serviceId) params.set("serviceId", serviceId);
+    const qs = params.toString() ? `?${params}` : "";
     fetch(`/api/booking/${subAccountId}/${page.slug}/availability${qs}`, {
       cache: "no-store",
     })
@@ -160,7 +174,7 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [subAccountId, page.slug, selectedHostUid]);
+  }, [subAccountId, page.slug, selectedHostUid, isServicePage, serviceId]);
 
   // Bucket slots by day in the viewer's tz. Re-derives when viewerTz
   // changes — the same UTC instant can sit on different calendar days
@@ -236,7 +250,7 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
           )}
           <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
-            {page.durationMinutes} minutes
+            {durationMinutes} minutes
             {page.payment && (
               <>
                 <span className="mx-1">·</span>
@@ -291,9 +305,22 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
           </div>
         )}
 
+        {isServicePage && (
+          <PublicServicePicker
+            services={page.services ?? []}
+            selectedId={serviceId}
+            onPick={(id) => {
+              setServiceId(id);
+              setActiveDay(null);
+              setSelectedSlot(null);
+            }}
+            accentStyle={accentStyle}
+          />
+        )}
+
         {/* ── Slot picker ──────────────────────────────────── */}
         <section className="space-y-4">
-          {loading ? (
+          {isServicePage && !serviceId ? null : loading ? (
             <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed py-12 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading available
               times…
@@ -358,6 +385,11 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
                       style={isSelected ? accentStyle : undefined}
                     >
                       {formatTimeInTz(s.startAt, viewerTz)}
+                      {s.seatsLeft !== undefined && (
+                        <span className="block text-[10px] font-normal opacity-80">
+                          {s.seatsLeft} {s.seatsLeft === 1 ? "seat" : "seats"} left
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -395,6 +427,8 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
             slug={page.slug}
             slot={selectedSlot}
             hostUid={selectedHostUid}
+            serviceId={serviceId}
+            durationMinutes={durationMinutes}
             viewerTz={viewerTz}
             page={page}
             accentStyle={accentStyle}
@@ -422,6 +456,8 @@ function IntakeFormSection({
   slug,
   slot,
   hostUid,
+  serviceId,
+  durationMinutes,
   viewerTz,
   page,
   accentStyle,
@@ -432,6 +468,9 @@ function IntakeFormSection({
   slot: SlotISO;
   /** Chosen host uid (named selection), or null for "anyone available". */
   hostUid: string | null;
+  /** Service pages: the picked service. */
+  serviceId: string | null;
+  durationMinutes: number;
   viewerTz: string;
   page: Props["page"];
   accentStyle: React.CSSProperties;
@@ -480,6 +519,7 @@ function IntakeFormSection({
             phone: phone.trim(),
             extras,
             ...(hostUid ? { hostUid } : {}),
+            ...(serviceId ? { serviceId } : {}),
           }),
         },
       );
@@ -520,7 +560,7 @@ function IntakeFormSection({
             minute: "2-digit",
           }).format(new Date(slot.startAt))}
         </span>
-        <span className="text-muted-foreground"> · {page.durationMinutes} min</span>
+        <span className="text-muted-foreground"> · {durationMinutes} min</span>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">

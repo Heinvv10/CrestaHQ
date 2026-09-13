@@ -177,6 +177,11 @@ test("mark no-show, correct to showed, and the page-pinned workflow only enrols 
   // A finished booking can't be moved: the time inputs lock with a hint.
   await expect(dialog.locator("#ev-start")).toBeDisabled();
   await expect(dialog.locator("#ev-date")).toBeDisabled();
+  // ...and the 01:00 edited in the refused save above is replaced by the
+  // booking's real time, not left on screen for Save to silently ignore.
+  const realStart = (eventXAfter.data()?.startAt as { toDate: () => Date }).toDate();
+  const hhmm = `${String(realStart.getHours()).padStart(2, "0")}:${String(realStart.getMinutes()).padStart(2, "0")}`;
+  await expect(dialog.locator("#ev-start")).toHaveValue(hhmm);
   await expect(
     dialog.getByText("Finished or cancelled bookings can't be moved — rebook instead."),
   ).toBeVisible();

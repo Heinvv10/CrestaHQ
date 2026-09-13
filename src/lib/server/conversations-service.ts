@@ -5,6 +5,10 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
+  contactMirror,
+  type ConversationMirror,
+} from "@/lib/server/conversation-mirror";
+import {
   fireWorkflowTrigger,
   resumeWaitingRunsOnReply,
 } from "@/lib/workflows/engine";
@@ -76,11 +80,21 @@ function toMillis(v: unknown): number | null {
   return typeof ts?.toMillis === "function" ? ts.toMillis() : null;
 }
 
-async function contactTerritory(
+/**
+ * The authoritative contact fields this conversation copies: its territory
+ * (access control) and the SP2 mirror (owner + email — see
+ * lib/server/conversation-mirror.ts). Read together in the transaction, so one
+ * contact read serves all three and the mirror is re-stamped on every message
+ * — which is what makes it self-healing.
+ *
+ * An anonymous web-chat row has no contact: global territory, empty mirror.
+ */
+async function contactDenorm(
   tx: FirebaseFirestore.Transaction,
   input: { contactId: string | null; subAccountId: string; agencyId: string }
-): Promise<string | null> {
-  if (!input.contactId) return GLOBAL_TERRITORY_ID;
+): Promise<{ territoryId: string | null; mirror: ConversationMirror | null }> {
+  if (!input.contactId)
+    return { territoryId: GLOBAL_TERRITORY_ID, mirror: null };
   const contact = (
     await tx.get(getAdminDb().doc(`contacts/${input.contactId}`))
   ).data();
@@ -90,7 +104,10 @@ async function contactTerritory(
     contact.agencyId !== input.agencyId
   )
     throw new Error("Conversation contact tenant mismatch.");
-  return contact.territoryId ?? null;
+  return {
+    territoryId: contact.territoryId ?? null,
+    mirror: contactMirror(contact),
+  };
 }
 
 export async function upsertConversationForMessage(
@@ -116,10 +133,14 @@ export async function upsertConversationForMessage(
 
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      const territoryId = await contactTerritory(tx, input);
+      const { territoryId, mirror } = await contactDenorm(tx, input);
 
       const patch: Record<string, unknown> = {
         territoryId,
+        // Owner + email mirrored off the contact on every message (SP2 T1/I9).
+        // Only when there IS a contact — an anonymous web-chat row has nobody
+        // to mirror, and stamping null would fight nothing.
+        ...(mirror ?? {}),
         contactId: input.contactId,
         subAccountId: input.subAccountId,
         agencyId: input.agencyId,
@@ -159,7 +180,12 @@ export async function upsertConversationForMessage(
         // Stamp immutable defaults once.
         patch.createdAt = FieldValue.serverTimestamp();
         patch.status = "open";
-        patch.assigneeUid = null;
+        // assigneeUid / contactEmail come from the mirror above; an anonymous
+        // web-chat row has no contact, so it starts empty.
+        if (!mirror) {
+          patch.assigneeUid = null;
+          patch.contactEmail = null;
+        }
         patch.botMode = "auto"; // reserved for Phase 2
         patch.botPausedUntil = null;
         // First-ever message is outbound → no unread yet.
@@ -307,11 +333,12 @@ export async function setConversationDraft(input: {
     if (!docId) return;
     const db = getAdminDb();
     await db.runTransaction(async (tx) => {
-      const territoryId = await contactTerritory(tx, input);
+      const { territoryId, mirror } = await contactDenorm(tx, input);
       tx.set(
         db.doc(`conversations/${docId}`),
         {
           territoryId,
+          ...(mirror ?? {}),
           contactId: input.contactId,
           subAccountId: input.subAccountId,
           agencyId: input.agencyId,

@@ -146,7 +146,7 @@ export function InboxToolbar({
         <Input
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Search by name or phone"
+          placeholder="Search by name, phone or email"
           aria-label="Search conversations"
           className="pl-8"
         />

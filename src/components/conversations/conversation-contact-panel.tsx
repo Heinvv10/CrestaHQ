@@ -18,6 +18,7 @@ import { ContactDeals } from "@/components/contacts/contact-deals";
 import { ContactTasks } from "@/components/contacts/contact-tasks";
 import { ActivityTimeline } from "@/components/contacts/activity-timeline";
 import { AddNoteInput } from "@/components/contacts/add-note-input";
+import { ConversationOwner } from "@/components/conversations/conversation-owner";
 import type { Contact } from "@/types/contacts";
 import { contactDisplayName } from "@/lib/contacts/display-name";
 
@@ -72,6 +73,7 @@ export function ConversationContactPanel({
           <h3 className="truncate text-base font-semibold">
             {contactDisplayName(contact, "Unnamed contact")}
           </h3>
+          <ConversationOwner id="details-owner" contact={contact} />
           <dl className="space-y-2.5 rounded-xl border bg-background p-3 text-sm">
             {contact.email && (
               <Row icon={<Mail className="h-3.5 w-3.5" />} label="Email">

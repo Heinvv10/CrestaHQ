@@ -14,7 +14,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useConversationTheme } from "@/hooks/use-conversation-theme";
 import { cn } from "@/lib/utils";
-import { metaCanInstagramDm } from "@/lib/comms/meta-capabilities";
+import { composerChannelOptions } from "@/lib/conversations/channel-availability";
 import { subscribeToContact } from "@/lib/firestore/contacts";
 import {
   markConversationRead,
@@ -27,13 +27,14 @@ import { WebChatComposer } from "@/components/conversations/web-chat-composer";
 import { ConversationAiControls } from "@/components/conversations/conversation-ai-controls";
 import { ConversationDraftCard } from "@/components/conversations/conversation-draft-card";
 import { ConversationContactPanel } from "@/components/conversations/conversation-contact-panel";
+import { ConversationOwner } from "@/components/conversations/conversation-owner";
 import {
   DetailsToggle,
   ThreadTriageActions,
 } from "@/components/conversations/thread-header-actions";
 import type { EmailMessageDoc } from "@/types/email";
 import type { Contact } from "@/types/contacts";
-import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { scheduleTimeZone } from "@/lib/conversations/schedule-time";
 import {
   parseWebChatConversationId,
   type ConversationChannel,
@@ -88,10 +89,23 @@ export default function ConversationDetailPage() {
   // Conversation index doc — subscribed for both modes by its doc id.
   useEffect(() => {
     if (authLoading || !user || !conversationId) return;
-    const unsubConv = subscribeToConversation(conversationId, (c) => {
-      setConversation(c);
-      setConvReady(true);
-    });
+    // Not ready until THIS id's doc arrives, so a thread switch never opens
+    // the composer on the previous thread's channel.
+    setConvReady(false);
+    const unsubConv = subscribeToConversation(
+      conversationId,
+      (c) => {
+        setConversation(c);
+        setConvReady(true);
+      },
+      // A contact with no conversation doc yet reads as a rules refusal (the
+      // read rule needs resource.data). Settle as "no conversation" so the
+      // composer, which waits on this, still renders.
+      () => {
+        setConversation(null);
+        setConvReady(true);
+      },
+    );
     return () => unsubConv();
   }, [conversationId, user, authLoading]);
 
@@ -132,39 +146,19 @@ export default function ConversationDetailPage() {
     if (conversationId) void markConversationRead(conversationId);
   }, [conversationId]);
 
-  const availableChannels: ConversationChannel[] = [];
-  if (subAccount?.emailProvider === "smtp" && subAccount.smtpConfig?.verifiedAt) availableChannels.push("email");
-  if (subAccount?.twilioConfig?.enabled) availableChannels.push("sms");
-  // Rail-agnostic on purpose: asking a bridge or Cloud workspace for a Twilio
-  // number is not a stricter check, it is the wrong one, and it hides the
-  // composer on a workspace that is correctly connected.
-  if (
-    whatsappSenderConfigured(subAccount) &&
-    subAccount?.whatsappEnabledByAgency === true
-  ) {
-    availableChannels.push("whatsapp");
-  }
-  // BETA Meta channels — offered only when the agency gate is on, a Page is
-  // connected, this contact has a Meta identity, and they've actually used the
-  // channel (so we never expose a reply path the recipient can't receive).
-  // Instagram additionally needs the IG messaging scope on the stored token —
-  // it's declinable independently of Messenger's, so Messenger working never
-  // implies IG replies will.
-  if (
-    subAccount?.metaInboxEnabledByAgency === true &&
-    subAccount?.metaConfig?.connected &&
-    contact?.metaUserId
-  ) {
-    for (const ch of conversation?.channelsSeen ?? []) {
-      if (
-        (ch === "messenger" ||
-          (ch === "instagram" && metaCanInstagramDm(subAccount.metaConfig))) &&
-        !availableChannels.includes(ch)
-      ) {
-        availableChannels.push(ch);
-      }
-    }
-  }
+  // SP2 T7 — every composer channel with its availability and, when it
+  // cannot be used, why (connection, agency gate, contact identity, opt-out,
+  // Meta identity / prior use). One pure function owns the rule.
+  const channelOptions = contact
+    ? composerChannelOptions({
+        subAccount,
+        contact,
+        channelsSeen: conversation?.channelsSeen,
+      })
+    : [];
+  const availableChannels: ConversationChannel[] = channelOptions
+    .filter((o) => o.available)
+    .map((o) => o.channel);
 
   // Title/subtitle differ by mode. Web chat may be anonymous (no contact), so
   // fall back to the denormalized inbox label.
@@ -176,6 +170,10 @@ export default function ConversationDetailPage() {
     : contact?.email || contact?.phone || "";
 
   const loading = isWebChat ? !convReady : contactLoading;
+  // SP2 T1 — writes the contact; the server mirrors it onto the conversation.
+  const ownerPicker = contact ? (
+    <ConversationOwner id="thread-owner" contact={contact} />
+  ) : null;
   const listHref = `${saPath("/conversations")}${listQuery ? `?${listQuery}` : ""}`;
 
   return (
@@ -276,7 +274,10 @@ export default function ConversationDetailPage() {
       ) : isWebChat ? (
         <>
           {conversation && (
-            <ConversationAiControls conversation={conversation} />
+            <ConversationAiControls
+              conversation={conversation}
+              trailing={ownerPicker}
+            />
           )}
           <ConversationThread
             contactId={conversation?.contactId ?? ""}
@@ -301,9 +302,24 @@ export default function ConversationDetailPage() {
       ) : (
         <>
           {conversation && (
-            <ConversationAiControls conversation={conversation} />
+            <ConversationAiControls
+              conversation={conversation}
+              trailing={ownerPicker}
+            />
           )}
-          <ConversationThread key={conversationId} contactId={conversationId} theme={theme} onEmailReply={availableChannels.includes("email") ? setEmailReply : undefined} />
+          {/* Prefixed: the composer below is keyed by the same id, and two
+              siblings sharing a key left a stale duplicate thread on screen. */}
+          <ConversationThread key={`thread-${conversationId}`} contactId={conversationId} theme={theme}
+            subAccountId={subAccountId}
+            scheduleTimeZone={scheduleTimeZone(subAccount?.timezone)}
+            onEmailReply={
+              availableChannels.includes("email")
+                ? // A fresh object per click, so clicking Reply on the SAME
+                  // email again (e.g. after switching the composer to an
+                  // internal note) still reaches the composer's effect.
+                  (m) => setEmailReply({ ...m })
+                : undefined
+            } />
           {conversation?.pendingDraft && contact && (
             <ConversationDraftCard
               conversationId={conversationId}
@@ -312,14 +328,19 @@ export default function ConversationDetailPage() {
               draft={conversation.pendingDraft}
             />
           )}
-          {contact && (
+          {/* Waits for the conversation doc: the opening channel is its
+              lastChannel, and a composer mounted before it would start on
+              the fallback instead (SP2 T7). */}
+          {contact && convReady && (
             <ConversationComposer
               key={contact.id}
               emailReply={emailReply?.contactId === contact.id ? emailReply : null}
               onClearEmailReply={() => setEmailReply(null)}
+              senderName={user?.displayName ?? null}
               contact={contact}
               availableChannels={availableChannels}
-              defaultChannel={conversation?.lastChannel ?? "sms"}
+              channelOptions={channelOptions}
+              defaultChannel={conversation?.lastChannel ?? null}
             />
           )}
         </>

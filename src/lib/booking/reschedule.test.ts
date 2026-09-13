@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
   scheduleEventReminders: vi.fn(),
   sendEmail: vi.fn(),
   emailIsConfigured: vi.fn(),
+  renderBookingConfirmationEmail: vi.fn(),
 }));
 vi.mock("@/lib/booking/lifecycle", () => ({
   fireBookingTrigger: m.fireBookingTrigger,
@@ -18,7 +19,7 @@ vi.mock("@/lib/comms/resend", () => ({
   tenantFrom: () => "test@example.com",
 }));
 vi.mock("@/lib/booking/email", () => ({
-  renderBookingConfirmationEmail: () => ({ subject: "Confirmed: x", text: "", html: "" }),
+  renderBookingConfirmationEmail: m.renderBookingConfirmationEmail,
 }));
 vi.mock("@/lib/booking/ics", () => ({ generateIcs: () => "" }));
 vi.mock("@/lib/booking/event-token", () => ({
@@ -75,6 +76,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   txnUpdates.length = 0;
   m.emailIsConfigured.mockReturnValue(false);
+  m.renderBookingConfirmationEmail.mockReturnValue({ subject: "Confirmed: x", text: "", html: "" });
   pageDoc = { name: "Intro call", remindersEnabled: false };
   contactDoc = { name: "Visitor", email: "visitor@example.com" };
   subDoc = { name: "Biz" };
@@ -274,6 +276,21 @@ describe("runRescheduleSideEffects", () => {
       arrange();
       const out = await runRescheduleSideEffects({ ...args, actor: "operator" } as never);
       expect(out).toEqual({ emailSent: false, emailSkipReason: reason });
+    });
+
+    it("labels a service booking with its service and its own length", async () => {
+      await runRescheduleSideEffects({
+        ...args,
+        event: { ...args.event, serviceName: "Consult" },
+        page: { name: "Intro call", durationMinutes: 15 } as never,
+        endAt: new Date("2030-01-01T11:00:00Z"),
+        actor: "operator",
+      } as never);
+      expect(m.renderBookingConfirmationEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page: expect.objectContaining({ name: "Intro call (Consult)", durationMinutes: 60 }),
+        }),
+      );
     });
 
     it("reports no_contact for an event with no linked contact", async () => {

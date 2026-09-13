@@ -12,6 +12,7 @@ import {
   getVoiceBookingContext,
   listVoiceSlots,
 } from "@/lib/server/voice-booking-service";
+import { hostSelectionEnabled } from "@/lib/booking/page-slots";
 import type { BookingHost, BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -485,7 +486,7 @@ function invalidHostResult(page: BookingPage): string {
 
 /** True when this page exposes named-host selection to the caller. */
 function hostSelectionOn(page: BookingPage): boolean {
-  return page.allowHostSelection === true && (page.hosts?.length ?? 0) > 0;
+  return hostSelectionEnabled(page);
 }
 
 function buildBookingToolsBlock(page: BookingPage): string {
