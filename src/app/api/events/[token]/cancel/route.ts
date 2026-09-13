@@ -25,6 +25,7 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Public cancel endpoint. The HMAC token IS the credential; we don't
@@ -93,6 +94,7 @@ export async function POST(
 
   if (cancelledEvent) {
     await runSideEffects(cancelledEvent);
+    await pushBookingToGoogle(ref.id);
   }
 
   return NextResponse.json({ ok: true });

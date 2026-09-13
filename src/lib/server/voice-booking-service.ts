@@ -11,6 +11,8 @@ import {
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { assignBookingHosts, selectableHostUid } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
@@ -118,6 +120,8 @@ export async function listVoiceSlots(
     now,
     toInstant,
     onlyHostUid: selectableHostUid(page, hostUid),
+    // Hosts' Google busy time (SP3 G2) — fail open.
+    externalBusy: await loadGoogleBusyForPage({ subAccountId, page, now, toInstant }),
   });
   // Cap by day (not a flat total) so multiple days are always represented.
   const byDay = groupSlotsByLocalDate(slots, page.timezone);
@@ -245,6 +249,14 @@ export async function bookVoiceSlot(input: {
           now,
         )
       : new Map<string, number>();
+  // Hosts' Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId,
+    page,
+    now,
+    fromInstant: new Date(slotStart.getTime() - 1),
+    toInstant: new Date(slotEnd.getTime() + 1),
+  });
 
   let created: {
     title: string;
@@ -267,6 +279,7 @@ export async function bookVoiceSlot(input: {
         // conflicts, not the moving min-notice window (see the flag's
         // doc). Prevents the false "slot just got taken" on live calls.
         ignoreMinNotice: true,
+        externalBusy,
         txn,
       });
       const candidate: SlotCandidate = { startAt: slotStart, endAt: slotEnd };
@@ -323,6 +336,8 @@ export async function bookVoiceSlot(input: {
     );
     return { ok: false, code: "error" };
   }
+
+  pushBookingToGoogleAfterResponse(eventDocRef.id);
 
   // ── Post-write side effects (best-effort, same set as the route minus
   //    the email + reminder schedule — both email-based, waived in v1) ──

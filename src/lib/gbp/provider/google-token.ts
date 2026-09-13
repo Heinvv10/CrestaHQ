@@ -21,13 +21,18 @@ function credentials(): { client_id: string; client_secret: string } {
   };
 }
 
-async function postForm(url: string, body: URLSearchParams): Promise<{ res: Response; data: unknown }> {
+async function postForm(
+  url: string,
+  body: URLSearchParams,
+  signal?: AbortSignal,
+): Promise<{ res: Response; data: unknown }> {
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
+      ...(signal ? { signal } : {}),
     });
   } catch {
     throw new GbpProviderError("transient");
@@ -36,8 +41,8 @@ async function postForm(url: string, body: URLSearchParams): Promise<{ res: Resp
   return { res, data };
 }
 
-async function postToken(body: URLSearchParams): Promise<GoogleTokens> {
-  const { res, data } = await postForm(TOKEN_ENDPOINT, body);
+async function postToken(body: URLSearchParams, signal?: AbortSignal): Promise<GoogleTokens> {
+  const { res, data } = await postForm(TOKEN_ENDPOINT, body, signal);
   const d = (data ?? {}) as {
     access_token?: unknown;
     refresh_token?: unknown;
@@ -83,13 +88,14 @@ export function exchangeCode(code: string, redirectUri: string): Promise<GoogleT
  * Mint a fresh access token. `refreshToken` on the result is non-null only
  * when Google rotated it — the caller must then persist the new one.
  */
-export function refresh(refreshToken: string): Promise<GoogleTokens> {
+export function refresh(refreshToken: string, signal?: AbortSignal): Promise<GoogleTokens> {
   return postToken(
     new URLSearchParams({
       refresh_token: refreshToken,
       ...credentials(),
       grant_type: "refresh_token",
     }),
+    signal,
   );
 }
 

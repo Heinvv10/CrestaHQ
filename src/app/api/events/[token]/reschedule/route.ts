@@ -20,6 +20,7 @@ import {
   verifyEventToken,
 } from "@/lib/booking/event-token";
 import { runRescheduleSideEffects } from "@/lib/booking/reschedule";
+import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -100,6 +101,13 @@ export async function POST(
     newEnd: Date;
   };
 
+  // The page hosts' Google busy (SP3 G2), loaded BEFORE the transaction.
+  const externalBusy = await loadGoogleBusyForEvent(
+    verified.eventId,
+    new Date(newStart.getTime() - 1),
+    new Date(newEnd.getTime() + 1),
+  );
+
   let outcome: Outcome | null = null;
   try {
     outcome = await db.runTransaction(async (txn) => {
@@ -149,6 +157,7 @@ export async function POST(
         toInstant: new Date(newEnd.getTime() + 1),
         movingEvent: movingEventOf(eventRef.id, event),
         serviceId: event.serviceId ?? null,
+        externalBusy,
         txn,
       });
       const candidate: SlotCandidate = { startAt: newStart, endAt: newEnd };

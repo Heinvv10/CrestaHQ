@@ -55,7 +55,9 @@ export type AgencyGateField =
   | "webinar1EnabledByAgency"
   // Google Business Profile OAuth connection — standalone for the same reason
   // as Webinar1: an outside account link is an explicit per-client decision.
-  | "googleEnabledByAgency";
+  | "googleEnabledByAgency"
+  // Per-member Google Calendar sync — standalone for the same reason.
+  | "googleCalendarEnabledByAgency";
 
 export interface ApplyGatesResult {
   /** True when a live Resend sending domain was removed by the email disable. */

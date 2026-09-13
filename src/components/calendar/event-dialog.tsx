@@ -35,6 +35,7 @@ import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccount } from "@/context/sub-account-context";
 import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
+import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
 import {
   notifySkipDetail,
   saveBookingPageEdit,
@@ -288,7 +289,23 @@ export function EventDialog({
     if (!confirm(`Delete "${event.title}"?`)) return;
     setDeleting(true);
     try {
-      await deleteEvent(event.id);
+      // The rules refuse a client delete of an event mirrored in a host's
+      // Google Calendar; the server route takes the Google copy down first.
+      if (Object.keys((event as { googleEventIds?: Record<string, string> | null }).googleEventIds ?? {}).length > 0) {
+        const res = await fetch(`/api/events/by-id/${event.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+          // Still in a host's Google Calendar: not deleted. The dialog's
+          // Retry sync notice stays available.
+          if (data.error === "google_removal_failed" && data.message) {
+            toast.error(data.message);
+            return;
+          }
+          throw new Error(`delete failed (${res.status})`);
+        }
+      } else {
+        await deleteEvent(event.id);
+      }
       toast.success("Event deleted");
       onOpenChange(false);
     } catch (err) {
@@ -779,6 +796,7 @@ function BookingActionsPanel({
       {/* Reassign host — only renders while the booking is still live
           (not cancelled, not a completed/no_show correction target). */}
       {!terminal && !correctable && <BookingReassign event={event} />}
+      <GoogleSyncNotice event={event} />
     </div>
   );
 }

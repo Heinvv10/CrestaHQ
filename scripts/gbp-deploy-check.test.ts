@@ -50,6 +50,12 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     ["SMS twilio, even — production never needs the name", "SMS_PROVIDER=twilio"],
     ["any SMS_FAKE_*", "SMS_FAKE_AGENCY_ID=abc"],
     ["SMS_FAKE_* commented out", "# SMS_FAKE_ALLOW_PROD_BUILD=1"],
+    ["the Google Calendar fake", "GCAL_PROVIDER=fake"],
+    ["GCAL google, even — production never needs the name", "GCAL_PROVIDER=google"],
+    ["any GCAL_FAKE_*", "GCAL_FAKE_AGENCY_ID=abc"],
+    ["GCAL_FAKE_* commented out", "# GCAL_FAKE_ALLOW_PROD_BUILD=1"],
+    ["the E2E booking rate-limit bypass", "E2E_DISABLE_BOOKING_RATE_LIMITS=1"],
+    ["E2E_DISABLE_BOOKING_RATE_LIMITS commented out", "# E2E_DISABLE_BOOKING_RATE_LIMITS=1"],
   ])("%s", (_label, line) => {
     expect(mentionsFakeKeys(tmp({ ".env.production": `${CLEAN}${line}\n` }), {}).join()).toContain(".env.production");
   });
@@ -69,6 +75,9 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { WHATSAPP_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { SMS_PROVIDER: "twilio" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { SMS_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GCAL_PROVIDER: "google" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GCAL_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { E2E_DISABLE_BOOKING_RATE_LIMITS: "1" })).not.toEqual([]);
   });
 
   it("fails closed on an unreadable env file", () => {
@@ -129,7 +138,7 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
 
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
-    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_/);
+    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_|E2E_DISABLE_BOOKING_RATE_LIMITS/);
   });
 });
 
@@ -179,11 +188,15 @@ const WA_MODE_CODE = (url: string) =>
 /** The SMS fence (sms/mode.ts), minified the same way. */
 const SMS_MODE_CODE = (url: string) =>
   `class n extends Error{constructor(e){super(\`SMS fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.SMS_PROVIDER)return"twilio";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (SMS fake)")}`;
-const server = (url: string, waUrl = url, smsUrl = url) => [
+/** The Google Calendar fence (google-calendar/provider/mode.ts), minified the same way. */
+const GCAL_MODE_CODE = (url: string) =>
+  `class n extends Error{constructor(e){super(\`Google Calendar fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.GCAL_PROVIDER)return"google";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (Google Calendar fake)")}`;
+const server = (url: string, waUrl = url, smsUrl = url, gcalUrl = url) => [
   { path: "chunks/a.js", text: MODE_CODE(url) },
   { path: "chunks/b.js", text: "unrelated" },
   { path: "chunks/wa.js", text: WA_MODE_CODE(waUrl) },
   { path: "chunks/sms.js", text: SMS_MODE_CODE(smsUrl) },
+  { path: "chunks/gcal.js", text: GCAL_MODE_CODE(gcalUrl) },
 ];
 
 describe("(b) post-build: the inlined app URL", () => {
@@ -221,6 +234,7 @@ describe("(b) post-build: the inlined app URL", () => {
         { path: "c.js", text: INLINED_FN_SHAPE("https://crm.crestahq.com") },
         { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
         { path: "sms.js", text: SMS_MODE_CODE("https://crm.crestahq.com") },
+        { path: "gcal.js", text: GCAL_MODE_CODE("https://crm.crestahq.com") },
       ]),
     ).toEqual([]);
   });
@@ -228,6 +242,18 @@ describe("(b) post-build: the inlined app URL", () => {
   it("refuses when the SMS check is missing from the build (nothing proven for it)", () => {
     const noSms = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/sms.js");
     expect(inlinedUrlIsSafe("https://crm.crestahq.com", noSms).join()).toContain("SMS fake-provider check was not found");
+  });
+
+  it("refuses when the Google Calendar check is missing from the build (nothing proven for it)", () => {
+    const noGcal = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/gcal.js");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", noGcal).join()).toContain("Google Calendar fake-provider check was not found");
+  });
+
+  it("refuses when only the Google Calendar check carries a loopback literal", () => {
+    const files = server("https://crm.crestahq.com", undefined, undefined, "http://127.0.0.1:3100");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", files).join()).toContain(
+      "Google Calendar fake-provider check is not NEXT_PUBLIC_APP_URL",
+    );
   });
 
   it("refuses when only the WhatsApp check carries a loopback literal", () => {
@@ -274,6 +300,7 @@ describe("(b) post-build: the inlined app URL", () => {
         { path: "c.js", text: withLiteral(String.raw`"https:\/\/crm.crestahq.com"`) },
         { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
         { path: "sms.js", text: SMS_MODE_CODE("https://crm.crestahq.com") },
+        { path: "gcal.js", text: GCAL_MODE_CODE("https://crm.crestahq.com") },
       ]),
     ).toEqual([]);
     expect(
@@ -328,6 +355,7 @@ describe("CLI", () => {
     fs.writeFileSync(path.join(dir, ".next/server/chunks/x.js"), MODE_CODE("https://crm.crestahq.com"));
     fs.writeFileSync(path.join(dir, ".next/server/chunks/wa.js"), WA_MODE_CODE("https://crm.crestahq.com"));
     fs.writeFileSync(path.join(dir, ".next/server/chunks/sms.js"), SMS_MODE_CODE("https://crm.crestahq.com"));
+    fs.writeFileSync(path.join(dir, ".next/server/chunks/gcal.js"), GCAL_MODE_CODE("https://crm.crestahq.com"));
     expect(run("post", dir, "https://crm.crestahq.com").status).toBe(0);
     expect(run("post", dir, "http://127.0.0.1:3100").status).toBe(1);
   });

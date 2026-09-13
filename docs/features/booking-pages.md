@@ -80,6 +80,10 @@ Pages with `priceCents > 0` mint a `holdUntil` window on the event at book time.
 
 **Decision: mark-status applies identically to manual (non-booking-page) calendar events with a linked contact.** There is no separate code path — a manual event's `bookingPageSlug` is `null`, so it fires `booking.showed`/`booking.no_show`/`booking.cancelled` with `bookingPageSlug: null` in the trigger context, which a page-filtered workflow never matches (only an unfiltered one fires). This was a deliberate scope decision, not an oversight.
 
+## Google Calendar sync
+
+When the agency enables `googleCalendarEnabledByAgency`, each host can connect their own Google Calendar: their Google busy time blocks their slots (availability, book, reschedule and voice all read it, fail open), and every booking assigned to them is pushed to their primary calendar after book / reschedule / cancel / payment expiry / mark-paid / reassign. Hostless pages are unaffected. See [Google Calendar sync](google-calendar-sync.md).
+
 ## Setup contract
 
 **No new env vars.** Reuses `RESEND_API_KEY` + `EMAIL_FROM` (confirmations), `AUTOMATIONS_TOKEN_SECRET` (HMAC for the public reschedule/cancel tokens), `QSTASH_*` (reminder + payment-expiry schedules), `NEXT_PUBLIC_APP_URL` (public URL construction). Booking pages are public so `/b` + `/api/booking` are in middleware's `PUBLIC_PATHS`. Reuses the per-sub-account dedicated sending domain when configured — confirmation emails go out from the tenant brand.
