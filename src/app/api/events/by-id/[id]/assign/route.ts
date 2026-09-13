@@ -5,6 +5,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -148,25 +149,23 @@ export async function POST(
     }
     targetName = (member.displayName || member.email || "Host").slice(0, 120);
 
-    // Soft conflict check (skipped with force). Uses the
-    // events(subAccountId, assignedToUid, startAt) composite index.
+    // Soft conflict check (skipped with force) against every booking the
+    // target attends — owned or collective.
     const start = tsToDate(event.startAt);
     const end = tsToDate(event.endAt);
     if (!force && start && end) {
       try {
         const lookbackMs = 8 * 60 * 60_000;
-        const snap = await db
-          .collection("events")
-          .where("subAccountId", "==", event.subAccountId)
-          .where("assignedToUid", "==", targetUid)
-          .where(
-            "startAt",
-            ">=",
-            Timestamp.fromDate(new Date(start.getTime() - lookbackMs)),
-          )
-          .where("startAt", "<=", Timestamp.fromDate(new Date(end.getTime() + 1000)))
-          .get();
-        const clash = snap.docs.some((d) => {
+        const docs = await queryHostEvents(event.subAccountId, targetUid, (q) =>
+          q
+            .where(
+              "startAt",
+              ">=",
+              Timestamp.fromDate(new Date(start.getTime() - lookbackMs)),
+            )
+            .where("startAt", "<=", Timestamp.fromDate(new Date(end.getTime() + 1000))),
+        );
+        const clash = docs.some((d) => {
           if (d.id === eventId) return false;
           const e = d.data() as CalendarEvent;
           if (!eventOccupiesSlot(eventStatus(e))) return false;

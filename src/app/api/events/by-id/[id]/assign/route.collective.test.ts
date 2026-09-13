@@ -66,6 +66,15 @@ describe("reassign", () => {
     expect(mem.read("events/col")).toMatchObject({ assignedToUid: "a", hostUids: ["a", "b"] });
   });
 
+  it("warns when the target is a host on an overlapping collective booking", async () => {
+    // c is not its owner, but attends it.
+    seedEvent("col", { assignedToUid: "b", hostUids: ["b", "c"] });
+    seedEvent("rr", { assignedToUid: "a", assignedToName: "A" });
+    const res = await reassign("rr", "c");
+    expect(await res.json()).toMatchObject({ ok: false, needsConfirm: true });
+    expect(mem.read("events/rr")).toMatchObject({ assignedToUid: "a" });
+  });
+
   it("still moves a one-host booking", async () => {
     seedEvent("rr", { assignedToUid: "a", assignedToName: "A" });
     const res = await reassign("rr", "c");
