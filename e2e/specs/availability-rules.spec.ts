@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
+import { assertWindowsClear } from "../lib/booking-windows";
 import { deleteScoped } from "../lib/guard";
 
 /**
@@ -118,6 +119,11 @@ const members = () => adminDb().collection(`subAccounts/${sa}/subAccountMembers`
 
 test.beforeAll(async () => {
   await purge();
+  await assertWindowsClear(
+    sa,
+    [TOMORROW, DAY_AFTER].map((d) => [at(d, "21:00"), new Date(at(d, "21:00").getTime() + 3 * 3600_000)]),
+    (e) => String(e.bookingPageSlug ?? "").startsWith(PREFIX) || e.title === "E2E Avail busy",
+  );
   await members().doc(HOST.uid).set({
     uid: HOST.uid,
     subAccountId: sa,
