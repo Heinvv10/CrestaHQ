@@ -1196,7 +1196,10 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      ) && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName"]);
+      )
+        // Server-set only — the dashboard creates through /api/events. `mode`
+        // decides v1 exposure and whether status changes fire side effects.
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode"]);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
