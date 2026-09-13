@@ -82,7 +82,7 @@ test("mark no-show, correct to showed, and the page-pinned workflow only enrols 
   const agencyId = env.E2E_AGENCY_ID;
   const subAccountId = env.E2E_SUBACCOUNT_ID;
   const stamp = Date.now();
-  const { pageXSlug, pageYSlug, noShowWorkflowId } =
+  const { pageXSlug, pageYSlug, noShowWorkflowId, controlWorkflowId } =
     await ensureBookingStatusSeed();
 
   const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
@@ -174,9 +174,23 @@ test("mark no-show, correct to showed, and the page-pinned workflow only enrols 
     timeout: 15_000,
   });
 
-  // Give the (fire-and-forget) trigger dispatch a beat, then assert it
-  // never landed — a workflow pinned to page X must not fire for page Y.
-  await page.waitForTimeout(3_000);
+  // The dispatch is fire-and-forget, so poll the unfiltered CONTROL
+  // workflow (same trigger, no page filter) until it enrols — that proves
+  // dispatch actually happened for this no-show, rather than a fixed sleep
+  // that can't tell "the filter worked" apart from "nothing fired yet".
+  const controlRunQuery = () =>
+    adminDb()
+      .collection("workflowRuns")
+      .where("subAccountId", "==", subAccountId)
+      .where("workflowId", "==", controlWorkflowId)
+      .where("contactId", "==", contactYId)
+      .limit(1)
+      .get();
+  await expect
+    .poll(async () => (await controlRunQuery()).empty, { timeout: 30_000 })
+    .toBe(false);
+
+  // Only now assert the page-X-pinned workflow never fired for page Y.
   const yRun = await adminDb()
     .collection("workflowRuns")
     .where("subAccountId", "==", subAccountId)
