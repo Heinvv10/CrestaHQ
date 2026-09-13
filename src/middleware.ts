@@ -339,6 +339,26 @@ export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
 }
 
 /**
+ * Forward a public-path request WITHOUT `x-user-uid` / `x-user-email` — the
+ * headers `handleValidToken` stamps from the verified Firebase token, which
+ * every route/helper under src/lib/auth/*, src/lib/comms/route-auth.ts etc.
+ * reads back as "the caller's identity" with no further check. On an
+ * invalid/missing session those two branches used to call `NextResponse
+ * .next()` with no `request` override, which forwards the ORIGINAL request
+ * object — including any `x-user-uid` a caller sent itself. No route
+ * currently trusts an identity header on a public path, but a public path
+ * is exactly the one place a client fully controls that header, so this is
+ * a strip-at-the-edge default rather than depending on every future public
+ * route remembering not to read it.
+ */
+export function withoutIdentityHeaders(request: NextRequest): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.delete("x-user-uid");
+  headers.delete("x-user-email");
+  return NextResponse.next({ request: { headers } });
+}
+
+/**
  * Vanity funnel subdomains (Labs): `{name}.{app domain}` serves the claimed
  * funnel at its root. Extracts the subdomain from the Host header, or null.
  *
@@ -430,7 +450,7 @@ export default function middleware(request: NextRequest) {
 
       // Allow public paths without authentication
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       // Redirect unauthenticated users to login for protected paths
@@ -441,7 +461,7 @@ export default function middleware(request: NextRequest) {
 
       // On error, allow public paths and redirect protected paths
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       return NextResponse.redirect(loginRedirectUrl(request, pathname));

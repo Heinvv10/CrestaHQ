@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { NextRequest } from "next/server";
-import { isPublicPath, loginRedirectUrl } from "./middleware";
+import { isPublicPath, loginRedirectUrl, withoutIdentityHeaders } from "./middleware";
 
 /**
  * Regression test for the logged-out redirect.
@@ -136,5 +136,62 @@ describe("isPublicPath — scheduled messages (SP2 T5)", () => {
     expect(isPublicPath("/api/scheduled-messages/fire/x")).toBe(false);
     expect(isPublicPath("/api/sub-accounts/sa1/scheduled-messages")).toBe(false);
     expect(isPublicPath("/api/sub-accounts/sa1/scheduled-messages/m1")).toBe(false);
+  });
+});
+
+describe("isPublicPath — the /e/[token] reschedule + cancel actions (SP3 widget)", () => {
+  it("lets a logged-out visitor's reschedule/cancel POST through — the HMAC token is the credential", () => {
+    expect(isPublicPath("/api/events/abc123/reschedule")).toBe(true);
+    expect(isPublicPath("/api/events/abc123/cancel")).toBe(true);
+    // Token content is opaque to the matcher — dots/hyphens included, same
+    // shape hashEventToken/issueEventToken actually produce.
+    expect(isPublicPath("/api/events/tok.en-123/reschedule")).toBe(true);
+  });
+
+  it("does not widen into the STAFF /by-id/* admin routes, which share the /api/events prefix", () => {
+    expect(isPublicPath("/api/events/by-id/evt1/reschedule")).toBe(false);
+    expect(isPublicPath("/api/events/by-id/evt1/mark-status")).toBe(false);
+    expect(isPublicPath("/api/events/by-id/evt1/assign")).toBe(false);
+    expect(isPublicPath("/api/events/by-id/evt1/mark-paid")).toBe(false);
+  });
+
+  it("stays closed on the bare collection, a trailing slash, and an extra segment", () => {
+    expect(isPublicPath("/api/events")).toBe(false);
+    expect(isPublicPath("/api/events/abc123/reschedule/")).toBe(false);
+    expect(isPublicPath("/api/events/abc123/reschedule/extra")).toBe(false);
+  });
+});
+
+describe("withoutIdentityHeaders", () => {
+  function requestWithHeaders(entries: Record<string, string>): NextRequest {
+    return { headers: new Headers(entries) } as unknown as NextRequest;
+  }
+
+  it("strips a caller-forged x-user-uid / x-user-email before forwarding to a public route", () => {
+    const forged = requestWithHeaders({
+      "x-user-uid": "attacker-uid",
+      "x-user-email": "attacker@evil.example",
+      "x-forwarded-for": "203.0.113.1",
+    });
+    const res = withoutIdentityHeaders(forged);
+    const overridden = res.headers.get("x-middleware-override-headers") ?? "";
+    const overriddenNames = overridden.split(",").map((n) => n.trim());
+    expect(overriddenNames).not.toContain("x-user-uid");
+    expect(overriddenNames).not.toContain("x-user-email");
+    expect(res.headers.get("x-middleware-request-x-user-uid")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-user-email")).toBeNull();
+    // A harmless, non-identity header still reaches the route — this isn't
+    // a blanket header wipe, only the two identity ones.
+    expect(overriddenNames).toContain("x-forwarded-for");
+    expect(res.headers.get("x-middleware-request-x-forwarded-for")).toBe(
+      "203.0.113.1",
+    );
+  });
+
+  it("is a no-op when the request never carried the identity headers", () => {
+    const clean = requestWithHeaders({ "x-forwarded-for": "203.0.113.1" });
+    const res = withoutIdentityHeaders(clean);
+    expect(res.headers.get("x-middleware-request-x-user-uid")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-user-email")).toBeNull();
   });
 });
