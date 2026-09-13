@@ -183,6 +183,11 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   await expect(page.getByText(titleManual, { exact: true })).toBeVisible();
   await expect(page.getByText(titleCancelled, { exact: true })).toHaveCount(0);
 
+  await page.screenshot({
+    path: "docs/parity/evidence/sp3/f-appointments/upcoming-tab.png",
+    fullPage: true,
+  });
+
   await page.getByRole("tab", { name: /Cancelled/ }).click();
   await expect(page.getByText(titleCancelled, { exact: true })).toBeVisible({
     timeout: 15_000,
@@ -228,10 +233,16 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   await expect(cancelableRow).toBeVisible({ timeout: 15_000 });
   await cancelableRow.getByRole("button").last().click();
   await page.getByRole("menuitem", { name: "Cancel" }).click();
-  await expect(page.getByRole("alertdialog")).toBeVisible({ timeout: 5_000 });
+  const alertDialog = page.getByRole("alertdialog");
+  await expect(alertDialog).toBeVisible({ timeout: 5_000 });
+  await expect(alertDialog.getByText("Cancel this booking?")).toBeVisible();
   await expect(
-    page.getByText("Cancel this booking? The visitor is notified by email."),
+    alertDialog.getByText("The visitor is notified by email."),
   ).toBeVisible();
+  await page.screenshot({
+    path: "docs/parity/evidence/sp3/f-appointments/cancel-alertdialog.png",
+    fullPage: true,
+  });
 
   // Dismissing leaves the booking untouched.
   await page.getByRole("button", { name: "Keep it" }).click();
