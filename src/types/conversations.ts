@@ -127,6 +127,11 @@ export interface ConversationDoc {
   unreadCount: number;
   status: ConversationStatus;
   assigneeUid: string | null;
+  /**
+   * Shared per conversation (not per user), toggled from the inbox row and
+   * the thread header. Absent on docs written before SP2 = not starred.
+   */
+  starred?: boolean;
   /** AI mode for this conversation. Default "auto". */
   botMode: ConversationBotMode;
   /** When set + in the future, the bot stays quiet (human took over). */

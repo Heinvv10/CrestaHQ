@@ -216,7 +216,7 @@ that are expensive to rediscover:
 **Page width:** every dashboard page wraps *all* its top-level returns (including
 loading / locked / empty / not-found states) in a centered container — `/agency/*`
 uses `max-w-5xl`; `/sa/[id]/*` uses `max-w-5xl` for data surfaces and `max-w-3xl` for
-forms, settings, and chat. Pipeline is the only full-bleed page. Don't invent a new
+forms, settings, and chat. Pipeline and Conversations are the only full-bleed pages. Don't invent a new
 width — the one carve-out (`max-w-6xl` for an agency page whose tables genuinely need
 the columns) and the full rule are in
 [docs/architecture/key-architecture.md](docs/architecture/key-architecture.md).

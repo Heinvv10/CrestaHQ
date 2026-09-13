@@ -116,6 +116,8 @@ async function mergeConversation(
         ((tc.unreadCount as number) ?? 0) + ((sc.unreadCount as number) ?? 0),
       updatedAt: FieldValue.serverTimestamp(),
     };
+    // A star on either side survives the merge (SP2 I6).
+    if (tc.starred === true || sc.starred === true) patch.starred = true;
     // Adopt the stub's "last message" fields only when they're newer.
     if (tsMillis(sc.lastMessageAt) > tsMillis(tc.lastMessageAt)) {
       patch.lastChannel = sc.lastChannel;
