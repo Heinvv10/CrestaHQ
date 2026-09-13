@@ -17,8 +17,9 @@ import type { ActivityType } from "@/types/contacts";
  *   POST /api/events/by-id/[id]/assign
  *   body: { assignedToUid: string | null, force?: boolean }
  *
- * Booking-page events only. Allowed for a sub-account admin (incl. agency
- * owner) OR the current assignee. The target must be an active member and —
+ * Booking-page events only, and not collective ones (409 — every host
+ * attends those). Allowed for a sub-account admin (incl. agency owner) OR
+ * the current assignee. The target must be an active member and —
  * when the page still lists hosts — one of the page's configured hosts. A
  * soft conflict check warns when the target already has an overlapping
  * booking; pass `force: true` to proceed anyway.
@@ -72,6 +73,18 @@ export async function POST(
     return NextResponse.json(
       { error: "Only booking-page events can be reassigned." },
       { status: 400 },
+    );
+  }
+
+  // A collective booking belongs to every host in `hostUids` (each one is
+  // busy for it); moving just the owner would leave the list stale.
+  if ((event.hostUids ?? []).length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          "This is a collective booking with every host attending — it can't be reassigned. Cancel and rebook it instead.",
+      },
+      { status: 409 },
     );
   }
 
