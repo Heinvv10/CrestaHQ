@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   AlertTriangle,
   Bot,
+  CalendarSync,
   FlaskConical,
   Globe,
   CreditCard,
@@ -98,6 +99,8 @@ export function SubAccountManageDialog({
   const initialWebinar1Hidden =
     subAccount?.webinar1HiddenWhenDisabled !== false;
   const initialGoogle = subAccount?.googleEnabledByAgency === true;
+  const initialGoogleCalendar =
+    subAccount?.googleCalendarEnabledByAgency === true;
   // Workspace Assistant is opt-in like every other gate — off unless
   // explicitly enabled (legacy/unset reads as off).
   const initialAiSuite = subAccount?.aiSuiteEnabledByAgency === true;
@@ -144,6 +147,9 @@ export function SubAccountManageDialog({
   const [webinar1Enabled, setWebinar1Enabled] = useState(initialWebinar1);
   const [webinar1Hidden, setWebinar1Hidden] = useState(initialWebinar1Hidden);
   const [googleEnabled, setGoogleEnabled] = useState(initialGoogle);
+  const [googleCalendarEnabled, setGoogleCalendarEnabled] = useState(
+    initialGoogleCalendar
+  );
   const [missedCallEnabled, setMissedCallEnabled] = useState(initialMissedCall);
   const [aiSuiteEnabled, setAiSuiteEnabled] = useState(initialAiSuite);
   const [aiSuiteModel, setAiSuiteModel] = useState<"opus" | "sonnet">(
@@ -279,6 +285,7 @@ export function SubAccountManageDialog({
   const webinar1Dirty = webinar1Enabled !== initialWebinar1;
   const webinar1HiddenDirty = webinar1Hidden !== initialWebinar1Hidden;
   const googleDirty = googleEnabled !== initialGoogle;
+  const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
   const missedCallDirty = missedCallEnabled !== initialMissedCall;
   const aiSuiteDirty = aiSuiteEnabled !== initialAiSuite;
   const aiSuiteModelDirty = aiSuiteModel !== initialAiSuiteModel;
@@ -310,6 +317,7 @@ export function SubAccountManageDialog({
     webinar1Dirty ||
     webinar1HiddenDirty ||
     googleDirty ||
+    googleCalendarDirty ||
     missedCallDirty ||
     aiSuiteDirty ||
     aiSuiteModelDirty ||
@@ -354,6 +362,7 @@ export function SubAccountManageDialog({
         webinar1Enabled?: boolean;
         webinar1HiddenWhenDisabled?: boolean;
         googleEnabled?: boolean;
+        googleCalendarEnabled?: boolean;
         missedCallTextBackEnabled?: boolean;
         aiSuiteEnabled?: boolean;
         aiSuiteModel?: "opus" | "sonnet";
@@ -389,6 +398,9 @@ export function SubAccountManageDialog({
         payload.webinar1HiddenWhenDisabled = webinar1Hidden;
       }
       if (googleDirty) payload.googleEnabled = googleEnabled;
+      if (googleCalendarDirty) {
+        payload.googleCalendarEnabled = googleCalendarEnabled;
+      }
       if (missedCallDirty)
         payload.missedCallTextBackEnabled = missedCallEnabled;
       if (aiSuiteDirty) payload.aiSuiteEnabled = aiSuiteEnabled;
@@ -538,6 +550,13 @@ export function SubAccountManageDialog({
           googleEnabled
             ? "Google Business Profile enabled."
             : "Google Business Profile disabled. The connection is preserved; re-enabling resumes instantly."
+        );
+      }
+      if (googleCalendarDirty) {
+        parts.push(
+          googleCalendarEnabled
+            ? "Google Calendar sync enabled."
+            : "Google Calendar sync disabled. Members' connections are preserved; re-enabling resumes instantly."
         );
       }
       if (missedCallDirty) {
@@ -999,6 +1018,24 @@ export function SubAccountManageDialog({
             Disabling hides the card and refuses new connects; the stored
             connection is preserved, so re-enabling resumes instantly.
             Disconnecting stays available either way.
+          </GateToggle>
+
+          <GateToggle
+            checked={googleCalendarEnabled}
+            onChange={setGoogleCalendarEnabled}
+            disabled={saving}
+            icon={
+              <CalendarSync className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
+            }
+            title="Google Calendar sync"
+          >
+            When enabled, each member of this sub-account can connect their own
+            Google Calendar (Settings → Calendar sync). Bookings assigned to
+            them are added to their primary Google calendar, and their Google
+            busy time blocks those slots on booking pages. Disabling hides the
+            card, refuses new connects and stops the sync; connections are
+            preserved, so re-enabling resumes instantly. Disconnecting stays
+            available either way.
           </GateToggle>
 
           <GateToggle

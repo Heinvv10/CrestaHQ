@@ -455,6 +455,16 @@ export interface SubAccountDoc {
    */
   googleEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for per-member Google Calendar sync (Settings →
+   * Calendar sync → Google Calendar; see lib/google-calendar). Opt-in: `false`
+   * at creation, read `=== true`. Standalone (not plan-managed) like the
+   * Business Profile gate — linking staff Google accounts is an explicit
+   * per-client decision. While off the card is hidden, connect refuses, and
+   * booking pages neither read Google busy time nor push bookings. No
+   * tear-down: members' connections are preserved; disconnect stays ungated.
+   */
+  googleCalendarEnabledByAgency?: boolean;
+  /**
    * Non-secret display metadata for the connected Google account (see
    * {@link GoogleConnectionMeta}). Null/absent until connected.
    *

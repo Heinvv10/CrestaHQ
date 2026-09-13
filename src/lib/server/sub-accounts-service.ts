@@ -221,6 +221,7 @@ export async function createSubAccountForAgency(
       // decision, same reasoning as Payments.
       webinar1EnabledByAgency: false,
       googleEnabledByAgency: false,
+      googleCalendarEnabledByAgency: false,
       webinar1ConnectionMeta: null,
       // Workspace Assistant ships OFF like every other gate (opt-in) — the
       // agency owner enables it per sub-account from the Manage dialog.
