@@ -101,6 +101,10 @@ function isoDayKeyInTz(iso: string, tz: string): string {
 }
 
 export function PublicEventView(props: Props) {
+  // Reschedule rotates the token server-side; this tab's own next action
+  // (cancel, or a second reschedule) must use the NEW one, or it 404s as
+  // "Invalid link" against the now-stale token still sitting in `props`.
+  const [token, setToken] = useState(props.token);
   const [viewerTz, setViewerTz] = useState(props.timezone);
   const [status, setStatus] = useState<EventStatus>(props.status);
   const [currentStart, setCurrentStart] = useState(props.startAt);
@@ -123,7 +127,7 @@ export function PublicEventView(props: Props) {
     setError(null);
     setPayingCard(true);
     try {
-      const res = await fetch(`/api/events/${props.token}/pay`, {
+      const res = await fetch(`/api/events/${token}/pay`, {
         method: "POST",
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -215,7 +219,7 @@ export function PublicEventView(props: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/events/${props.token}/cancel`, {
+      const res = await fetch(`/api/events/${token}/cancel`, {
         method: "POST",
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -243,7 +247,7 @@ export function PublicEventView(props: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/events/${props.token}/reschedule`, {
+      const res = await fetch(`/api/events/${token}/reschedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ slot: selectedSlot }),
@@ -264,10 +268,14 @@ export function PublicEventView(props: Props) {
       setSlots([]);
       setMode("view");
       setDoneMessage("Rescheduled. We've emailed an updated confirmation.");
-      // Token rotates on reschedule — replace the URL in-place so a
-      // subsequent reschedule/cancel from this tab uses the new token.
-      if (data.newToken && typeof window !== "undefined") {
-        window.history.replaceState(null, "", `/e/${data.newToken}`);
+      // Token rotates on reschedule — update state (so this tab's own next
+      // action uses it) and replace the URL in-place (so a page reload or a
+      // copied link does too).
+      if (data.newToken) {
+        setToken(data.newToken);
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", `/e/${data.newToken}`);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reschedule failed.");

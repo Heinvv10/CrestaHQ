@@ -42,6 +42,16 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // Booking widget loader: same pattern as /widget.js — long-cache,
+        // any origin, so the <script> tag works on any buyer's site.
+        source: "/booking-embed.js",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=300, s-maxage=300" },
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+        ],
+      },
+      {
         // Google reviews embed script — the same pattern as /widget.js. This
         // is static code; the DATA it fetches (/api/public/gbp/feed/…) has
         // its own per-widget origin allow-list and never answers `*`.

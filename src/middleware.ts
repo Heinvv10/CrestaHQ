@@ -100,6 +100,8 @@ const PUBLIC_PATHS = [
   "/embed",
   // Widget loader JS — public static file served from /public.
   "/widget.js",
+  // Booking widget loader JS — public static file served from /public.
+  "/booking-embed.js",
   // PWA — the manifest is fetched by the browser without credentials on
   // every page (including /login), and the service worker script must be
   // publicly fetchable for registration. Both are harmless to expose:
@@ -250,6 +252,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // is the HMAC event token, re-hashed and compared against the stored
   // `publicTokenHash` inside the route.
   /^\/api\/events\/[^/]+\/pay$/,
+  // Public reschedule + cancel, the /e/[token] page's own POSTs. Same
+  // token-hash security as /pay above. Without this an anonymous visitor's
+  // click 307s to /login instead of rescheduling/cancelling — the page
+  // itself is public (`/e` above) but its actions were not.
+  /^\/api\/events\/[^/]+\/reschedule$/,
+  /^\/api\/events\/[^/]+\/cancel$/,
   // Calendar subscription feed: /api/sub-accounts/{id}/calendar.ics
   // Token-gated inside the route via verifyCalendarFeedToken — Google /
   // Apple / Outlook pollers are unauthenticated, so session-cookie auth
@@ -328,6 +336,32 @@ export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
     }
   }
   return url;
+}
+
+/**
+ * Forward a public-path request WITHOUT `x-user-uid` / `x-user-email` — the
+ * headers `handleValidToken` stamps from the verified Firebase token, which
+ * every route/helper under src/lib/auth/*, src/lib/comms/route-auth.ts etc.
+ * reads back as "the caller's identity" with no further check. On an
+ * invalid/missing session those two branches used to call `NextResponse
+ * .next()` with no `request` override, which forwards the ORIGINAL request
+ * object — including any `x-user-uid` a caller sent itself.
+ *
+ * This was exploitable, not just theoretical: `/api/forms` is a PUBLIC_PATH
+ * (needed for the unauthenticated submit endpoint), and
+ * `DELETE /api/forms/[id]` trusts `x-user-uid` via `requireSubAccountMember`
+ * to authorize the delete. Before this fix, anyone who knew (or guessed) an
+ * active member's Firebase uid could set that header on an otherwise
+ * session-less request and delete that member's forms + submissions —
+ * no password, no session cookie, nothing else verified. See
+ * src/app/api/forms/[id]/route.test.ts for the regression test through the
+ * real route.
+ */
+export function withoutIdentityHeaders(request: NextRequest): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.delete("x-user-uid");
+  headers.delete("x-user-email");
+  return NextResponse.next({ request: { headers } });
 }
 
 /**
@@ -422,7 +456,7 @@ export default function middleware(request: NextRequest) {
 
       // Allow public paths without authentication
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       // Redirect unauthenticated users to login for protected paths
@@ -433,7 +467,7 @@ export default function middleware(request: NextRequest) {
 
       // On error, allow public paths and redirect protected paths
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       return NextResponse.redirect(loginRedirectUrl(request, pathname));
