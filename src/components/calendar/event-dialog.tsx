@@ -35,6 +35,11 @@ import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccount } from "@/context/sub-account-context";
 import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
+import {
+  notifySkipDetail,
+  saveBookingPageEdit,
+  type TimeBaseline,
+} from "@/components/calendar/booking-edit-save";
 import { toDate } from "@/lib/format";
 import {
   eventOccupiesSlot,
@@ -73,21 +78,6 @@ function fromInputs(date: string, time: string): Date {
   return new Date(`${date}T${time}:00`);
 }
 
-/** Operator-facing reason the visitor wasn't emailed, for the toasts below. */
-function notifySkipDetail(reason: EventNotifySkipReason | undefined): string {
-  return reason === "email_not_configured"
-    ? "Resend isn't configured on this deployment"
-    : reason === "no_contact_email"
-      ? "the visitor's contact record has no email address"
-      : reason === "contact_opted_out"
-        ? "the visitor opted out of email"
-        : reason === "send_failed"
-          ? "the email send failed (check Vercel logs)"
-          : reason === "test_mode"
-            ? "this is a test-mode event"
-            : "couldn't reach the visitor by email";
-}
-
 function roundedNowHour(): Date {
   const d = new Date();
   d.setMinutes(0, 0, 0);
@@ -108,6 +98,9 @@ export function EventDialog({
   // this dialog pass a snapshot `event` that doesn't update, so without this
   // the time lock below would miss a status flipped while the dialog is open.
   const [panelStatus, setPanelStatus] = useState<EventStatus | null>(null);
+  // Time the server holds after a reschedule made from this dialog, so a
+  // retry after a failed field write doesn't re-POST the same move.
+  const [timeBaseline, setTimeBaseline] = useState<TimeBaseline | null>(null);
   // A cancelled / completed / no-show booking no longer holds a slot, so the
   // reschedule endpoint refuses to move it — lock the time instead of
   // letting Save 409.
@@ -162,7 +155,21 @@ export function EventDialog({
     }
     setErrors({});
     setPanelStatus(null);
+    setTimeBaseline(null);
   }, [open, event, defaultDate]);
+
+  // When the lock engages on a booking whose time the operator had edited,
+  // put the booking's real time back rather than leave an edited value on
+  // screen that Save will silently ignore.
+  useEffect(() => {
+    if (!timeLocked || !event) return;
+    const start = timeBaseline?.startAt ?? toDate(event.startAt);
+    const end = timeBaseline?.endAt ?? toDate(event.endAt);
+    if (!start || !end) return;
+    setDate(toDateInput(start));
+    setStartTime(toTimeInput(start));
+    setEndTime(toTimeInput(end));
+  }, [timeLocked, event, timeBaseline]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -194,58 +201,48 @@ export function EventDialog({
     try {
       if (isEdit && event) {
         if (eventSource(event) === "booking_page") {
-          // A booking-page event's time carries reschedule bookkeeping
-          // (rescheduledAt/Count, the booking.rescheduled trigger, reminder
-          // reschedule, visitor email) that a bare client write can't do —
-          // route any actual time change through the operator endpoint.
-          // It goes FIRST: if the reschedule is refused, nothing is saved.
-          // Non-time fields then save as a plain client write.
-          const { startAt, endAt, ...rest } = payload;
-          const origStart = toDate(event.startAt);
-          const origEnd = toDate(event.endAt);
-          const timeChanged =
-            !timeLocked &&
-            (!origStart ||
-              !origEnd ||
-              origStart.getTime() !== startAt.getTime() ||
-              origEnd.getTime() !== endAt.getTime());
-          let rescheduleWarning: string | null = null;
-          if (timeChanged) {
-            const res = await fetch(`/api/events/by-id/${event.id}/reschedule`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                startAt: startAt.toISOString(),
-                endAt: endAt.toISOString(),
-              }),
-            });
-            const b = (await res.json().catch(() => ({}))) as {
-              error?: string;
-              notifyEmailSent?: boolean;
-              notifyEmailSkipReason?: EventNotifySkipReason;
-            };
-            if (!res.ok) {
-              toast.error(b.error ?? "Couldn't reschedule. Nothing was saved.");
-              return;
-            }
-            // The reschedule rotated the visitor's manage link — if they
-            // weren't emailed the new one, the operator has to know.
-            if (!b.notifyEmailSent) {
-              rescheduleWarning = `Rescheduled — the visitor wasn't emailed (${notifySkipDetail(
-                b.notifyEmailSkipReason,
-              )}); their old manage link no longer works.`;
-            }
-          }
-          try {
-            await updateEvent(event.id, rest);
-          } catch (err) {
-            if (!timeChanged) throw err;
-            console.error(err);
-            toast.error("Rescheduled, but the other changes didn't save. Try again.");
+          const { startAt, endAt, ...fields } = payload;
+          const result = await saveBookingPageEdit({
+            eventId: event.id,
+            baseline: timeBaseline ?? {
+              startAt: toDate(event.startAt),
+              endAt: toDate(event.endAt),
+            },
+            startAt,
+            endAt,
+            timeLocked,
+            fields,
+            reschedule: async (id, start, end) => {
+              const res = await fetch(`/api/events/by-id/${id}/reschedule`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  startAt: start.toISOString(),
+                  endAt: end.toISOString(),
+                }),
+              });
+              return { ok: res.ok, body: await res.json().catch(() => ({})) };
+            },
+            updateFields: updateEvent,
+          });
+          if (result.kind === "reschedule_refused") {
+            toast.error(result.error);
             return;
           }
-          if (rescheduleWarning) {
-            toast.warning(rescheduleWarning);
+          setTimeBaseline(result.baseline);
+          if (result.kind === "fields_failed") {
+            console.error(result.error);
+            toast.error(
+              !result.rescheduled
+                ? "Couldn't save event. Try again."
+                : result.warning
+                  ? `${result.warning} The other changes didn't save — try again.`
+                  : "Rescheduled, but the other changes didn't save. Try again.",
+            );
+            return;
+          }
+          if (result.warning) {
+            toast.warning(result.warning);
             onOpenChange(false);
             return;
           }
