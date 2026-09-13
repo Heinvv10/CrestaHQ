@@ -93,3 +93,32 @@ describe("external busy", () => {
     expect(startsOf(slots)[0]).toBe("09:30");
   });
 });
+
+describe("external busy and buffers", () => {
+  it("gets only the new slot's buffers, never a same-page booking's", async () => {
+    // 15-min after-buffer at a 15-min interval; external busy 10:00–10:30.
+    const slots = await resolvePageAvailability({
+      subAccountId: "sa1",
+      page: seedPage("p", { bufferMinutes: 15, slotIntervalMinutes: 15 }),
+      now: NOW,
+      toInstant: DAY_END,
+      externalBusy: [{ startAt: at("10:00"), endAt: at("10:30"), hostUids: [] }],
+    });
+    const starts = startsOf(slots);
+    expect(starts).not.toContain("09:30"); // its after-buffer runs into 10:00
+    expect(starts).toContain("09:15");
+    expect(starts).toContain("10:30"); // a same-page booking would forbid this
+  });
+
+  it("a same-page booking at the same time keeps its buffers (contrast)", async () => {
+    seedEvent("own", "10:00", "10:30", { bookingPageSlug: "p" });
+    const slots = await resolvePageAvailability({
+      subAccountId: "sa1",
+      page: seedPage("p", { bufferMinutes: 15, slotIntervalMinutes: 15 }),
+      now: NOW,
+      toInstant: DAY_END,
+    });
+    expect(startsOf(slots)).not.toContain("10:30");
+    expect(startsOf(slots)).toContain("10:45");
+  });
+});
