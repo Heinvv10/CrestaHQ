@@ -157,6 +157,26 @@ export async function recordEmailMessage(
     const contactByEmail: Record<string, string> = {
       ...(index?.contactByEmail ?? {}),
     };
+    // A reply names the message it answers. When that message is on file, its
+    // index says which contact holds this correspondent's thread — the tie-break
+    // when several contacts share one address. Grouping stays by address: a
+    // parent's contact is only used for the SAME address, never to pull mail from
+    // another sender into someone else's conversation.
+    const parentId = input.inReplyTo || input.references?.at(-1);
+    const parent =
+      parentId && parentId !== messageId
+        ? (
+            await tx.get(
+              db.doc(
+                `subAccounts/${input.subAccountId}/emailMessageIndex/${hash(parentId)}`
+              )
+            )
+          ).data()
+        : undefined;
+    const threadContactByEmail: Record<string, string> =
+      parent?.subAccountId === input.subAccountId && parent.agencyId === agencyId
+        ? (parent.contactByEmail ?? {})
+        : {};
     const pending: {
       ref: FirebaseFirestore.DocumentReference;
       data: Record<string, unknown>;
@@ -170,6 +190,20 @@ export async function recordEmailMessage(
       if (indexedId && explicitId && indexedId !== explicitId)
         throw new Error("Message already belongs to another contact.");
       let matchId: string | undefined = indexedId;
+      const threadId = threadContactByEmail[email];
+      if (!explicitId && !matchId && threadId) {
+        const threadContact = (
+          await tx.get(db.doc(`contacts/${threadId}`))
+        ).data();
+        if (
+          threadContact?.subAccountId === input.subAccountId &&
+          threadContact.agencyId === agencyId &&
+          String(threadContact.email ?? "")
+            .trim()
+            .toLowerCase() === email
+        )
+          matchId = threadId;
+      }
       if (!explicitId && !matchId) {
         const matches = await tx.get(
           db
