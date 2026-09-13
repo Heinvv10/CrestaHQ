@@ -1,6 +1,6 @@
 # SP2 — Conversations / unified inbox
 
-**Date:** 2026-09-13 · **Status: all SP2 build PRs merged 2026-09-13 ((a)–(g), (v)); nothing deployed — #1000 browser proof follows the next approved deploy** · **Depends on:** SP0 (merged), SP1 (merged — contact owner `assignedToUid`) · **Blocks:** SP6 (send actions), SP7 (per-channel personas), SP14 (Velocity cannot triage in LeadStack until V1 lands).
+**Date:** 2026-09-13 · **Status: all SP2 build PRs merged 2026-09-13 ((a)–(g), (v)); deployed to crm.crestahq.com 2026-09-13 21:14 SAST (`ecfe6d3`, Hein-approved) and walked on #1000 — see "Live on #1000" below** · **Depends on:** SP0 (merged), SP1 (merged — contact owner `assignedToUid`) · **Blocks:** SP6 (send actions), SP7 (per-channel personas), SP14 (Velocity cannot triage in LeadStack until V1 lands).
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP2. Model ledger: [sp1.md](sp1.md).
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`) and the E2E fixture tenant. Never write Blitz/Velocity/Vortex data — V1 (Velocity backfill) writes only after Hein approves a dry-run count.
@@ -121,6 +121,22 @@ Columns: GHL behaviour (observed 2026-09-13 in the CrestaHQ location `jEr9SOZnEy
 
 **Rollback:** every PR is additive. Reverting (a) restores the list page; `starred` fields are ignored by old code. Reverting (b) leaves `assigneeUid` mirrors that nothing reads. Reverting (d) leaves pending `scheduledMessages` that nothing fires — cancel them before reverting.
 
+## Live on #1000 (2026-09-13, after the `ecfe6d3` deploy)
+
+Walked in Chrome on crm.crestahq.com, sub-account #1000; nothing was sent, and every test change was reverted (star, owner, snippet deleted, test note removed). Screenshots: `evidence/sp2/prod-1000/`.
+
+| Row | Shown live | Evidence |
+|---|---|---|
+| I1 I2 I4 I8 I9 | Split-pane inbox, Unread/All/Starred tabs, scope/channel/direction/sort, search by name/phone/email, Conversations/Snippets tab strip | `01-split-pane-inbox.jpg` |
+| I3 I6 T1 | Star from the thread header; owner set from the thread bar mirrors to the details panel; "Assigned to me" lists exactly that thread | `03-star-owner-assigned-to-me.jpg` |
+| T2 | Internal note renders in the thread as "Internal note · not sent" and on the contact's Activity timeline | `04-internal-note-not-sent.jpg`, `08-note-on-contact-timeline.jpg` |
+| T7 | Every channel listed with its reason ("Email · No email address", "WhatsApp · Not connected", …) | `02-wa-thread-channel-reasons.jpg` |
+| T3 T4 | Snippets table; a snippet inserted into an email reply rendered ("Hi hein, thanks for getting in touch with CrestaHQ.") | `05-snippets-table.jpg`, `06-*.jpg` |
+| T6 | Reply on an email card → "Replying to RE: …" with an `RE:` subject | `06-snippet-rendered-email-reply-threading.jpg` |
+| T5 | Send button menu → Send later panel ("Times are in Africa/Johannesburg (GMT+2). Up to 7 days ahead."); not booked | `07-send-later-panel.jpg` |
+
+**Not shown live (and why):** T8 WhatsApp window + template picker — #1000 has no WhatsApp sender connected (fixture-proven, #112 E2E); C5 missed-call — #1000 has no dedicated Twilio number (fixture-proven, #104); C4 FB/IG — Meta App Review; T5 an actual scheduled fire — booking would send to a real contact (worker proven by #111 E2E + unit tests); V1 — the Velocity write awaits Hein.
+
 ## Review log (2026-09-13)
 
 Every PR had a blind review team (fresh agents, diff + CLAUDE.md only; an adversarial reviewer on each security- or send-path change; a browser pass on every UI PR against a local standalone build on the fixture tenant). The code is the source of truth; this is the why.
@@ -135,7 +151,6 @@ Every PR had a blind review team (fresh agents, diff + CLAUDE.md only; an advers
 
 - **Velocity WhatsApp backfill (V1):** dry run 294 fetched · 18 present · **136 writable** · 80 GHL contacts with no LeadStack contact carry 140 more messages (reported only). Approved report `~/.local/share/crestahq/ghl-wa-backfill-report-2026-09-13.json` on velo-server; the exact `--write --confirm 136` command is in PR #102's comments. The 140 need a decision (create the contacts or leave them).
 - **Owner/email mirror backfill** for the client sub-accounts (dry run): Blitz 5052 scanned / 21 email mirrors, Velocity 3889 / 3, Vortex 58 / 54 — `scripts/backfill-conversation-owner-email.ts --write --sub-account <id>`.
-- **Deploy** (after 17:00 Mon–Fri): then the #1000 browser proof for every row above.
 - **Missed-call text-back live:** #1000 has no dedicated Twilio number (`twilioConfig: null`, gate off).
 - **Scheduling beyond 7 days:** needs the production Upstash plan confirmed (Free plan max delay is 7 days).
 - **Live email route and opted-out contacts:** the live `/api/comms/email/send` has never refused an `emailOptedOut` contact server-side (scheduled sends now do). Unchanged, flagged.
