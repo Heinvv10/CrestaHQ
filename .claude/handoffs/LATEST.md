@@ -1,31 +1,52 @@
-# Handoff — 2026-09-11 (GBP reviews & reputation, 4 stacked PRs)
+> **There is a second open handoff:** `.claude/handoffs/2026-09-13-wave1-goals.md` (wave-1 parity goals; lives in the shared checkout). Read it if continuing that work.
 
-**Project:** CrestaHQ (`Heinvv10/CrestaHQ`). Supersedes `.claude/handoffs/2026-09-04-1653.md` (already archived; identical to the previous LATEST).
-**Goal:** `/home/hein/Downloads/CrestaHQ-GBP-REVIEWS-GOAL-v2.md` (overrides v1 `…-AUTONOMOUS-GOAL.md`).
+# Handoff — 2026-09-13 19:35 SAST
 
-## State (proof, not narrative)
-| PR | Branch | Base | Status |
-|---|---|---|---|
-| #77 | `feat/gbp-1-provider` | `main` (e5aa873) | open · CI green (lint/tsc/test/build, Playwright, secret scan) · 7 blind review rounds, last APPROVE |
-| #78 | `feat/gbp-2-sync` | PR 1 | open (head f680eea) · local gate green (1788 tests, Playwright 12/1 skipped, gitleaks clean) · 6 blind review rounds, last APPROVE · CI green (lint/tsc/test/build, Playwright, secret scan) |
-| #79 | `feat/gbp-3-public-feed` | PR 2 | open (head 9084e81) · local gate green (1951 tests, Playwright 14/1 skipped, gitleaks clean) · 4 blind review rounds, last APPROVE · CI green (lint/tsc/test/build, Playwright, secret scan) |
-| PR 4 | `feat/gbp-4-inbox-reply` | PR 3 | opened with this commit (head after 730f09d) · local gate green (2089 tests, Playwright 16/1 skipped, gitleaks clean) · review team + 3 fix-round reviews, last APPROVE · CI pending at handoff |
+**Project:** CrestaHQ (LeadStack CRM)
+**Branch:** docs/sp2-ledger-status (worktree `/home/hein/Workspace/CrestaHQ-wt-sp2docs`) — ledger + this handoff
+**Session goal:** SP2 — Conversations / unified inbox at GHL parity (ledger, build (a)–(g), Velocity WA backfill, FB/IG behind the gate), under the Level-3 merge boundary, no deploy.
 
-Worktrees: `/home/hein/Workspace/CrestaHQ-wt-gbp-{reviews,2,3,4}`. Orchestration record: `/home/hein/Workspace/.gbp-orch/` (backup
-`~/.local/share/gbp-orch-backup/`). Push / `gh` need `env -u GITHUB_TOKEN` (the session token is a different account).
+## Status
+All SP2 build PRs are merged to `main`, the last being (f) channel switcher #112 (`a7dd3aa`). Nothing is deployed: production crm.crestahq.com still runs the pre-SP2 inbox, so the "#1000 shown in browser" half of done follows the next approved deploy. Production Firestore rules are byte-identical to `main` `a7dd3aa` (verified after #112) and indexes were redeployed from main; no open PR touches rules. The ledger `docs/parity/sp2.md` carries per-row status, the review log, what waits on Hein, and follow-ups.
 
-## Proof
-- Browser proof (fixture data only): `docs/features/gbp-reviews/proof/` — PR 1 connect/pick/revoke/reconnect GIF + 7 screenshots; PR 3 six flow GIFs + screenshots; PR 4 reply + review-link GIFs + 6 screenshots.
-- Review logs, mutation tables and gate logs: `/home/hein/Workspace/.gbp-orch/` (rev1–4-results.md, pr1–4-mutations.md); also embedded in each PR body.
+## What got done this session
+- #101 ledger (`docs/parity/sp2.md`, GHL side-by-side screenshots in `docs/parity/evidence/sp2/ghl/`), WhatsApp exclusion struck in `docs/PARITY_PROGRAM.md`.
+- #105 (a) split-pane inbox: Unread/All/Starred tabs, scope, channel + direction filters, star, mark unread, sort; Conversations is the second full-bleed page.
+- #106 (b) conversation owner = contact owner, mirrored server-side in a transaction; internal notes (contact notes, `source: "conversation"`); email search (`contactEmail` mirror); `assigneeUid` removed from client-writable rules.
+- #108 (c) snippets (server-only `snippets/{id}`, `/sa/[id]/conversations/snippets`) + one merge-tag renderer (`src/lib/messaging/merge-tags.ts`); Send never rewrites text; caret-in-same-commit fix (`src/hooks/use-caret-insert.ts`).
+- #111 (d) Send later: send logic extracted to `src/lib/server/conversation-send/*` (live routes byte-identical, parity tests), `contacts/{id}/scheduledMessages`, QStash worker `/api/scheduled-messages/fire` (claim txn, 15-min late cutoff, `unconfirmed` status, 7-day max, stale-sending dismiss).
+- #103 (e) email threading proven end to end + 3 fixes. #104 (g) missed-call text-back unit + E2E with a fenced fake SMS provider (`src/lib/comms/sms/`, deploy guard extended).
+- #102 (v) Velocity WA backfill script (`scripts/ghl-wa-backfill*.ts`) — dry run only.
+- #113 `E2E_PORT` so local E2E runs stop colliding with CI on `:3100`.
+- #112 (f) channel switcher with reasons + WhatsApp 24h window + template picker; send-template now updates the conversation after a successful send.
+- Rules deployed by hand after #105/#106/#108 and as a union with SP3 #109. #1000 owner/email mirror backfill run (206 written).
 
-## Owner approvals outstanding (none executed)
-- Sign off the v2 §5 deviation (fake provider allowed in the production BUILD for CI only; production refused by the inlined-URL fence + both deploy checks).
-- Before the first deploy after merge: run the `sudo -u velo` check block in `docs/features/gbp-reviews.md`.
-- Set `TRUST_CF_CONNECTING_IP=1` in `/home/velo/crestahq-config/.env.production` BEFORE the next deploy (deploy-velo.sh refuses without it).
-- Deploy registers `leadstack-gbp-retention` (daily, Firestore-only); `GBP_SYNC_SCHEDULE_ENABLED=1` enables the 6-hourly Google sync.
-- The `/r/[token]` fix (PR 4) makes the Google review button appear on feedback links customers already received — needs explicit OK before deploy.
-- `gcloud services list --available --project crestahq-app | grep mybusiness.googleapis.com` (v4 approval, case 4-6894000042302).
-- Live proof with Hein present; Velocity website cutover.
+## What's next
+1. Merge the ledger/handoff PR from `docs/sp2-ledger-status` if it isn't merged yet.
+2. Any future `firebase deploy`: check open PRs touching `firestore.rules` FIRST as its own step, deploy the union (memory `feedback_rules_deploy_check_then_deploy`).
+3. After Hein approves a deploy (after 17:00 Mon–Fri): deploy, then walk every SP2 row on #1000 in the browser and add screenshots under `docs/parity/evidence/sp2/prod-1000/`.
 
-## Four states
-fixtures-tested ✅ / real-Google-tested ❌ / deployed ❌ / Velocity-connected ❌
+## Open questions / blockers
+- **Velocity WA backfill write:** 136 writable (dry run); 80 unknown GHL contacts carry 140 more (create them or not?). Approved report `~/.local/share/crestahq/ghl-wa-backfill-report-2026-09-13.json`; exact command in PR #102 comments. Hein's call.
+- **Owner/email mirror backfill** for Blitz (21) / Velocity (3) / Vortex (54) — dry run only; `scripts/backfill-conversation-owner-email.ts --write --sub-account <id>`. Hein's call.
+- **Missed-call live:** #1000 has no dedicated Twilio number (`twilioConfig: null`, gate off).
+- **FB/IG live:** Meta App Review for app 1400409065548643 — not submitted.
+- **Upstash plan:** scheduling capped at 7 days until the prod plan's max delay is confirmed.
+- **Live email route** never refused `emailOptedOut` contacts server-side (scheduled sends do) — flagged, unchanged.
+
+## Context the next session needs
+- The shared checkout `/home/hein/Workspace/CrestaHQ` holds another session's uncommitted changes, including edits to `src/components/auth/login-form.tsx` (drops `safeRedirect` → open redirect) and `src/lib/api/webhooks/signing.ts` (reverts the byte-length `timingSafeEqual` guard). A security scanner flagged them. They are NOT on `main` — never commit them.
+- `gh` GraphQL fails and `gh api --jq`/`-F body=@` intermittently returned "unexpected end of JSON"; `curl` with the Heinvv10 token (`env -u GITHUB_TOKEN -u GH_TOKEN gh auth token --user Heinvv10`) worked every time. GitHub returned one transient 500 on PR create.
+- Local E2E: use `E2E_PORT=31xx NEXT_PUBLIC_APP_URL=http://127.0.0.1:31xx` (build + run), CI's fake-provider env, and throwaway QStash values with `QSTASH_URL=http://127.0.0.1:9` — `.env.local` holds PRODUCTION QStash + Firebase keys. The (f) builder ran some early local specs with `.env.local` QStash as-is (loopback app URL; schedule registration skips loopback); not audited for stray publishes from the other inbox specs.
+- The fixture sub-account is shared with every CI E2E run and other sessions (SP3 is active): contacts vanish mid-run when CI's teardown purges. `pgrep -af playwright` false-matches CI's `next build`; use `pgrep -u gha-crestahq -f "playwright test"`.
+- Two main-CI failures were host networking on velo-server (Docker interface attach + DNS timeouts during Firebase sign-in), proven from traces + journal — not code.
+- Browser reviewers must kill the child `next-server`, not just the parent node (one left `:3200` held for an hour).
+- DO NOT RESURRECT: `--create-missing-contacts` in the backfill script — removed after review (it could create unconfirmed duplicate contacts; the phone lookup swallowed 401/403/429).
+- DO NOT RESURRECT: Send-time merge-tag re-render / implicit "fill then stop" in the composer — replaced by an explicit one-shot "Fill merge fields"; the re-render rewrote contact text that looked like a tag.
+
+## Git state
+- **Uncommitted:** clean in `CrestaHQ-wt-sp2docs` apart from this handoff.
+- **Worktrees of this session:** `CrestaHQ-wt-sp2docs` (this branch); `CrestaHQ-wt-sp2` and `CrestaHQ-wt-sp2f` are merged and removable.
+
+## Where to resume
+Read this file and `docs/parity/sp2.md` ("Waiting on Hein" + "Follow-ups"). Nothing is deployed: start from Hein's deploy approval, then the #1000 browser walk.
