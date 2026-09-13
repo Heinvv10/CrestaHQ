@@ -12,7 +12,10 @@ import {
   requireSubAccountAdmin,
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
-import { validateBookingPageFormData } from "@/lib/booking/validation";
+import {
+  validateBookingPageFormData,
+  validateCalendarTypeHosts,
+} from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
@@ -106,6 +109,14 @@ export async function PATCH(
   // Resolve hosts against live membership (active members only + fresh name
   // snapshot) — same as create, so a renamed/removed member is reconciled.
   const hosts = await resolveBookingHosts(subAccountId, data.hosts);
+  // A body without a type keeps the stored one — check hosts against that.
+  const hostsOk = validateCalendarTypeHosts(
+    data.calendarType ?? (snap.data() as BookingPage).calendarType,
+    hosts.length,
+  );
+  if (!hostsOk.ok) {
+    return NextResponse.json({ error: hostsOk.error }, { status: 400 });
+  }
 
   // territoryId on the config doc stays stable across edits — operators
   // change it via the territory-retag route (future), not the booking

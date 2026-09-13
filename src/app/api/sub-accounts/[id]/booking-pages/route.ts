@@ -11,7 +11,10 @@ import {
   requireSubAccountAdmin,
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
-import { validateBookingPageFormData } from "@/lib/booking/validation";
+import {
+  validateBookingPageFormData,
+  validateCalendarTypeHosts,
+} from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
@@ -102,6 +105,10 @@ export async function POST(
   // Resolve the requested hosts against live membership — keep only active
   // members + re-snapshot their display names (don't trust client names).
   const hosts = await resolveBookingHosts(subAccountId, data.hosts);
+  const hostsOk = validateCalendarTypeHosts(data.calendarType, hosts.length);
+  if (!hostsOk.ok) {
+    return NextResponse.json({ error: hostsOk.error }, { status: 400 });
+  }
 
   // Doc id == slug → atomic uniqueness check via create().
   const ref = db.doc(
