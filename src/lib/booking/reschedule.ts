@@ -63,7 +63,9 @@ export async function rescheduleWithoutAvailabilityCheck(
     if (!snap.exists) {
       throw new RescheduleRejected(404, "Event not found.");
     }
-    const event = snap.data() as CalendarEvent;
+    // Id from the path: the side effects key reminders, the activity row
+    // and the trigger off `event.id`, and not every event doc stores one.
+    const event = { ...snap.data(), id: eventRef.id } as CalendarEvent;
     if (eventSource(event) !== "booking_page") {
       throw new RescheduleRejected(
         400,

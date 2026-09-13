@@ -25,13 +25,25 @@ vi.mock("@/lib/booking/email", () => ({
 
 let eventDoc: Record<string, unknown>;
 let updatedPatch: Record<string, unknown> | null;
+/** Doc paths `update()` was called on — proves the write hit the real event. */
+let updatedPaths: string[];
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
-    collection: () => ({
-      doc: () => ({
-        get: async () => ({ exists: true, data: () => eventDoc }),
+    collection: (name: string) => ({
+      // Honours its argument: only `events/evt1` exists, and a doc built
+      // from an undefined id is a different (missing) doc, exactly as in
+      // Firestore — so a caller that loses the id is caught here.
+      doc: (id: string) => ({
+        get: async () => ({
+          exists: name === "events" && id === "evt1",
+          data: () => eventDoc,
+        }),
         update: async (patch: Record<string, unknown>) => {
+          if (typeof id !== "string" || id.length === 0) {
+            throw new Error(`update on an invalid doc id: ${String(id)}`);
+          }
+          updatedPaths.push(`${name}/${id}`);
           updatedPatch = patch;
         },
       }),
@@ -55,9 +67,11 @@ function post(status: EventStatus) {
 beforeEach(() => {
   vi.clearAllMocks();
   updatedPatch = null;
+  updatedPaths = [];
   m.access.mockResolvedValue({ uid: "u1", agencyId: "ag1" });
+  // Realistic manual-or-booking fixture: NO stored `id` field — the
+  // events-service and v1 POST creates never write one.
   eventDoc = {
-    id: "evt1",
     agencyId: "ag1",
     subAccountId: "sa1",
     contactId: "c1",
@@ -127,5 +141,12 @@ describe("POST mark-status — trigger firing", () => {
       expect.objectContaining({ id: "evt1" }),
       "event_cancelled",
     );
+  });
+
+  it("writes to the event at its path id even though the doc stores no `id` field", async () => {
+    eventDoc.status = "scheduled";
+    const res = await post("completed");
+    expect(res.status).toBe(200);
+    expect(updatedPaths).toEqual(["events/evt1"]);
   });
 });

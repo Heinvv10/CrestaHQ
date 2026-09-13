@@ -101,6 +101,12 @@ describe("rescheduleWithoutAvailabilityCheck", () => {
     },
   );
 
+  it("returns the event with its path id even when the doc stores no `id` field", async () => {
+    delete eventDoc!.id;
+    const result = await rescheduleWithoutAvailabilityCheck("evt1", newStart, newEnd);
+    expect(result.event.id).toBe("evt1");
+  });
+
   it.each(["scheduled", "awaiting_payment"])(
     "writes startAt/endAt + reschedule bookkeeping for a %s booking-page event",
     async (status) => {
