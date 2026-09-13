@@ -14,8 +14,10 @@ import {
   type SlotCandidate,
 } from "@/lib/booking/availability";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
-import { eventHostUids } from "@/lib/booking/page-slots";
-import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
+import {
+  movingEventOf,
+  resolvePageAvailability,
+} from "@/lib/booking/resolve-availability";
 import {
   buildEventPublicUrl,
   hashEventToken,
@@ -139,18 +141,18 @@ export async function POST(
       }
       const page = pageSnap.data() as BookingPage;
 
-      // Re-verify through the same resolver the booking used, for this
-      // event's own host(s) and service, with its current slot not busy. A
+      // Re-verify through the same resolver the booking used, as a moved
+      // booking: its own host(s) and service, its current slot not busy. A
       // team booking is checked against its host's calendar only — not
-      // every host's (and a collective one against all of its hosts).
+      // every host's (and a collective one against all of its hosts); a
+      // hostless one against every event, as it was booked.
       const free = await resolvePageAvailability({
         subAccountId: event.subAccountId,
         page,
         now: new Date(),
         fromInstant: new Date(newStart.getTime() - 1),
         toInstant: new Date(newEnd.getTime() + 1),
-        excludeEventId: eventRef.id,
-        restrictToHostUids: eventHostUids(event),
+        movingEvent: movingEventOf(eventRef.id, event),
         serviceId: event.serviceId ?? null,
         txn,
       });

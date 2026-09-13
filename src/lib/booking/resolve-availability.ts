@@ -5,6 +5,7 @@ import {
   computePageSlots,
   eventHostUids,
   type HostBusy,
+  type MovingEvent,
   type PageSlot,
   type PageSlotsInput,
 } from "@/lib/booking/page-slots";
@@ -24,12 +25,16 @@ import type { CalendarEvent } from "@/types/events";
  */
 
 export interface ResolveAvailabilityOptions
-  extends Omit<PageSlotsInput, "busy" | "now"> {
+  extends Omit<PageSlotsInput, "busy" | "now" | "movingEvent"> {
   subAccountId: string;
   /** Defaults to the current instant. */
   now?: Date;
-  /** Never counted as busy — the event being rescheduled. */
-  excludeEventId?: string | null;
+  /**
+   * Reschedule: the booking being moved — never counted as busy, and slots
+   * are its own (`MovingEvent`). Build it with `movingEventOf` from an event
+   * the caller has checked belongs to this page.
+   */
+  movingEvent?: (MovingEvent & { id: string }) | null;
   /**
    * Read busy events inside this transaction, so a book/reschedule write
    * conflicts with any concurrent booking that changes what it read.
@@ -63,7 +68,7 @@ export async function resolvePageAvailability(
     opts.subAccountId,
     queryFrom,
     queryTo,
-    opts.excludeEventId ?? null,
+    opts.movingEvent?.id ?? null,
     opts.txn,
   );
 
@@ -75,9 +80,24 @@ export async function resolvePageAvailability(
     busy,
     ignoreMinNotice: opts.ignoreMinNotice,
     onlyHostUid: opts.onlyHostUid,
-    restrictToHostUids: opts.restrictToHostUids,
+    movingEvent: opts.movingEvent,
     serviceId: opts.serviceId,
   });
+}
+
+/** The `movingEvent` for a booking being rescheduled. */
+export function movingEventOf(
+  id: string,
+  e: CalendarEvent,
+): MovingEvent & { id: string } {
+  const start = toDate(e.startAt);
+  const end = toDate(e.endAt);
+  return {
+    id,
+    hostUids: eventHostUids(e),
+    // 0 when malformed: a service page then offers nothing rather than guess.
+    durationMinutes: start && end ? (end.getTime() - start.getTime()) / 60_000 : 0,
+  };
 }
 
 /** Occupying events in the sub-account starting inside [from, to]. */
