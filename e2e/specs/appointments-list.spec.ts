@@ -2,28 +2,107 @@ import { FieldValue } from "firebase-admin/firestore";
 import { expect, test } from "@playwright/test";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
+import { deleteScoped } from "../lib/guard";
 import { ensureBookingStatusSeed } from "../lib/seed";
 
 /**
- * SP3 (f) — appointments list, driven through the real UI:
+ * SP3 (f) - appointments list, driven through the real UI:
  *   1. Tabs (Upcoming / Cancelled / All) bucket correctly.
  *   2. The Calendar filter narrows to one booking page.
  *   3. Search matches by contact name.
  *   4. A row-menu status change (Mark completed) updates the badge AND
  *      the Firestore doc.
- *   5. A manual event's row menu offers no status actions (H1) — only a
+ *   5. A manual event's row menu offers no status actions (H1) - only a
  *      booking-page event has a lifecycle to flip.
  *   6. Cancel goes through an in-app AlertDialog (H2), never a native
  *      window.confirm (which freezes browser automation): dismissing it
  *      leaves the booking untouched, confirming it cancels for real.
+ *
+ * Fixture hygiene: every event here is assigned to ONE fixture host
+ * (HOST) - an event with no host is "shared busy" and blocks EVERY
+ * hostless booking page's every slot (see eventHostUids in
+ * lib/booking/page-slots.ts + how loadEventBusy in
+ * lib/booking/resolve-availability.ts feeds it into computeAvailability).
+ * An earlier version left a hostless "E2E Appt Manual Meeting" event
+ * uncleaned and it broke availability-rules.spec on main (Tuesday 21:00
+ * hidden). Seeded at 09:00-12:00 UTC "tomorrow", away from
+ * calendar-types.spec.ts's own 21:00-24:00 UTC window, and purged before
+ * (crash recovery) AND after every run.
  */
 
-async function ensureContact(
-  agencyId: string,
-  subAccountId: string,
-  createdByUid: string,
-  name: string,
-): Promise<string> {
+const PREFIX = "e2e-appt-";
+const HOST = { uid: `${PREFIX}host`, name: "E2E Appt Host" };
+
+const env = readEnv();
+const agencyId = env.E2E_AGENCY_ID;
+const subAccountId = env.E2E_SUBACCOUNT_ID;
+
+const now = new Date();
+const tomorrow = new Date(
+  Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+);
+const at = (hhmm: string) =>
+  new Date(`${tomorrow.toISOString().slice(0, 10)}T${hhmm}:00Z`);
+
+function members() {
+  return adminDb().collection(`subAccounts/${subAccountId}/subAccountMembers`);
+}
+
+// Standard Firestore "starts with" range trick: appending the highest
+// BMP codepoint sorts after every normal title/name, so [prefix, end)
+// matches everything this spec ever named, across any stamp.
+const TITLE_PREFIX = "E2E Appt ";
+const TITLE_PREFIX_END = TITLE_PREFIX + "";
+
+/**
+ * Every contact/event this spec made, in this run or an earlier crashed
+ * one. Filters by title/name range ONLY (no subAccountId equality) —
+ * combining them needs a composite index that doesn't exist on this
+ * project; a single-field range query is auto-indexed. `deleteScoped`
+ * independently re-verifies subAccountId/agencyId before deleting, so
+ * scoping isn't weakened, just moved from the query to the guard.
+ */
+async function purge() {
+  const events = await adminDb()
+    .collection("events")
+    .where("title", ">=", TITLE_PREFIX)
+    .where("title", "<", TITLE_PREFIX_END)
+    .get();
+  for (const d of events.docs) {
+    if (d.data().subAccountId === subAccountId) await deleteScoped(d.ref);
+  }
+
+  const contacts = await adminDb()
+    .collection("contacts")
+    .where("name", ">=", TITLE_PREFIX)
+    .where("name", "<", TITLE_PREFIX_END)
+    .get();
+  for (const d of contacts.docs) {
+    if (d.data().subAccountId === subAccountId) await deleteScoped(d.ref);
+  }
+}
+
+test.beforeAll(async () => {
+  await purge();
+  await members().doc(HOST.uid).set({
+    uid: HOST.uid,
+    subAccountId,
+    agencyId,
+    role: "collaborator",
+    status: "active",
+    email: `${HOST.uid}@example.com`,
+    displayName: HOST.name,
+    addedAt: new Date(),
+    addedByUid: "e2e",
+  });
+});
+
+test.afterAll(async () => {
+  await purge();
+  await deleteScoped(members().doc(HOST.uid));
+});
+
+async function ensureContact(createdByUid: string, name: string): Promise<string> {
   const ref = await adminDb().collection("contacts").add({
     name,
     email: "",
@@ -47,8 +126,6 @@ async function ensureContact(
 }
 
 async function createEvent(opts: {
-  agencyId: string;
-  subAccountId: string;
   createdByUid: string;
   contactId: string;
   title: string;
@@ -65,12 +142,17 @@ async function createEvent(opts: {
     contactId: opts.contactId,
     location: "",
     notes: "",
-    agencyId: opts.agencyId,
-    subAccountId: opts.subAccountId,
+    agencyId,
+    subAccountId,
     createdByUid: opts.createdByUid,
     status: opts.status,
     source: opts.source,
     bookingPageSlug: opts.bookingPageSlug ?? null,
+    // Every fixture event belongs to HOST - never "shared busy". See the
+    // file-level comment.
+    assignedToUid: HOST.uid,
+    assignedToName: HOST.name,
+    hostUids: [HOST.uid],
     territoryId: "global",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -82,39 +164,16 @@ async function createEvent(opts: {
 test("tabs, calendar filter, search, and a row-menu status change all work", async ({
   page,
 }) => {
-  const env = readEnv();
-  const agencyId = env.E2E_AGENCY_ID;
-  const subAccountId = env.E2E_SUBACCOUNT_ID;
-  const stamp = Date.now();
   const { pageXSlug, pageYSlug } = await ensureBookingStatusSeed();
 
   const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
   const uid = ownerSnap.data()?.ownerUid as string;
+  const stamp = Date.now();
 
-  const contactUpcoming = await ensureContact(
-    agencyId,
-    subAccountId,
-    uid,
-    `E2E Appt Upcoming ${stamp}`,
-  );
-  const contactCancelled = await ensureContact(
-    agencyId,
-    subAccountId,
-    uid,
-    `E2E Appt Cancelled ${stamp}`,
-  );
-  const contactManual = await ensureContact(
-    agencyId,
-    subAccountId,
-    uid,
-    `E2E Appt Manual ${stamp}`,
-  );
-  const contactCancelable = await ensureContact(
-    agencyId,
-    subAccountId,
-    uid,
-    `E2E Appt Cancelable ${stamp}`,
-  );
+  const contactUpcoming = await ensureContact(uid, `E2E Appt Upcoming ${stamp}`);
+  const contactCancelled = await ensureContact(uid, `E2E Appt Cancelled ${stamp}`);
+  const contactManual = await ensureContact(uid, `E2E Appt Manual ${stamp}`);
+  const contactCancelable = await ensureContact(uid, `E2E Appt Cancelable ${stamp}`);
 
   const titleUpcoming = `E2E Appt Upcoming Booking ${stamp}`;
   const titleCancelled = `E2E Appt Cancelled Booking ${stamp}`;
@@ -122,45 +181,37 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   const titleCancelable = `E2E Appt Cancelable Booking ${stamp}`;
 
   const upcomingEventId = await createEvent({
-    agencyId,
-    subAccountId,
     createdByUid: uid,
     contactId: contactUpcoming,
     title: titleUpcoming,
     status: "scheduled",
-    startAt: new Date(Date.now() + 24 * 60 * 60_000), // tomorrow
+    startAt: at("09:00"),
     bookingPageSlug: pageXSlug,
     source: "booking_page",
   });
   await createEvent({
-    agencyId,
-    subAccountId,
     createdByUid: uid,
     contactId: contactCancelled,
     title: titleCancelled,
     status: "cancelled",
-    startAt: new Date(Date.now() + 24 * 60 * 60_000),
+    startAt: at("09:30"),
     bookingPageSlug: pageYSlug,
     source: "booking_page",
   });
   await createEvent({
-    agencyId,
-    subAccountId,
     createdByUid: uid,
     contactId: contactManual,
     title: titleManual,
     status: "scheduled",
-    startAt: new Date(Date.now() + 48 * 60 * 60_000),
+    startAt: at("10:00"),
     source: "manual",
   });
   const cancelableEventId = await createEvent({
-    agencyId,
-    subAccountId,
     createdByUid: uid,
     contactId: contactCancelable,
     title: titleCancelable,
     status: "scheduled",
-    startAt: new Date(Date.now() + 24 * 60 * 60_000),
+    startAt: at("10:30"),
     bookingPageSlug: pageXSlug,
     source: "booking_page",
   });
@@ -169,7 +220,7 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   const searchBox = page.getByPlaceholder("Search by title or contact…");
 
   // The fixture tenant accumulates events across e2e runs, so the table can
-  // exceed the page size — scope every tab/filter assertion below to just
+  // exceed the page size - scope every tab/filter assertion below to just
   // this run's 3 events via the shared stamp, or a row pushed past "Load
   // more" would read as "missing" instead of "wrongly filtered".
   await searchBox.fill(String(stamp));
@@ -267,7 +318,7 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   // --- row-menu status change ------------------------------------------
   // On the All tab (not Upcoming): marking the booking "completed" makes
   // it stop occupying a slot, so it would drop OUT of the Upcoming tab the
-  // moment the status flips — the row itself would vanish rather than
+  // moment the status flips - the row itself would vanish rather than
   // showing the updated badge in place. All never filters by status, so
   // the row stays put and we can watch its badge change.
   await page.getByRole("tab", { name: /^All/ }).click();
