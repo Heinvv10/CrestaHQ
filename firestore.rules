@@ -968,6 +968,16 @@ service cloud.firestore {
         ) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']);
         allow create, delete: if false;
       }
+      // Scheduled messages ("Send later", SP2 T5). Server-only in BOTH
+      // directions: the scheduling API books them, the QStash worker fires
+      // them, and the thread reads them through
+      // GET /api/sub-accounts/[id]/scheduled-messages (Admin SDK, authorised
+      // like the send routes). A browser must never be able to book, edit or
+      // un-cancel a message that a worker will later send to a real person,
+      // and nothing reads them client-side, so reads stay closed too.
+      match /scheduledMessages/{scheduledId} {
+        allow read, write: if false;
+      }
       // BETA Facebook Messenger + Instagram DM chat thread — same model as the
       // SMS / WhatsApp threads above. Populated server-side by the Meta inbound
       // webhook + the /api/comms/meta/send route. Reads are member-scoped;

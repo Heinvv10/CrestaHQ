@@ -7,6 +7,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { emailReplyFields } from "./email-reply";
+import { SendLaterMenu, type SendLaterRequest } from "./send-later-menu";
 import {
   ComposerModeToggle,
   InternalNoteComposer,
@@ -130,6 +131,18 @@ export function ConversationComposer({
       ? !!contact.metaUserId
       : !!contact.phone;
   const disabled = optedOut || sending || !hasIdentity;
+
+  // SP2 T5 — what "Send later" books: the same payload Send would post.
+  function scheduleRequest(): SendLaterRequest | null {
+    const trimmed = body.trim();
+    if (!trimmed || (isEmail && !subject.trim()) || channel === "web-chat") return null;
+    return {
+      contactId: contact.id,
+      channel,
+      body: trimmed,
+      ...(isEmail ? { ...emailReplyFields(emailReply), subject: subject.trim() } : {}),
+    };
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -275,18 +288,25 @@ export function ConversationComposer({
         ) : (
           <span />
         )}
-        <Button
-          type="submit"
-          size="sm"
+        <SendLaterMenu
           disabled={!body.trim() || (isEmail && !subject.trim()) || disabled}
+          buildRequest={scheduleRequest}
+          onScheduled={() => setBody("")}
         >
-          {sending ? (
-            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Send className="mr-1 h-3.5 w-3.5" />
-          )}
-          Send via {LABEL[channel]}
-        </Button>
+          <Button
+            type="submit"
+            size="sm"
+            className="rounded-r-none"
+            disabled={!body.trim() || (isEmail && !subject.trim()) || disabled}
+          >
+            {sending ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="mr-1 h-3.5 w-3.5" />
+            )}
+            Send via {LABEL[channel]}
+          </Button>
+        </SendLaterMenu>
       </div>
     </form>
   );
