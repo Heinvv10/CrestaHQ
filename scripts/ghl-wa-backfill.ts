@@ -11,10 +11,14 @@
  *
  * `--write --confirm <n> --approved-report <path>` is implemented but is a
  * second, deliberate step (see `assertWriteMatchesApprovedReport` in
- * ghl-wa-backfill-lib.ts): the write run recomputes the missing set fresh and
- * refuses unless it EXACTLY matches the ids in the approved dry-run report,
- * not just a count. Do not pass it without Hein's explicit go-ahead on a
- * specific report file.
+ * ghl-wa-backfill-guards.ts): the write run recomputes the missing set fresh
+ * and refuses unless it EXACTLY matches the ids in the approved dry-run
+ * report, not just a count. `--approved-report` is read and validated BEFORE
+ * this run's own report is written to `--out`, and `--out` is refused if it
+ * names the same file as `--approved-report` (`assertDistinctReportPaths`) —
+ * otherwise a write run could overwrite the approved artifact with its own
+ * fresh output and then "validate" against itself. Do not pass `--write`
+ * without Hein's explicit go-ahead on a specific report file.
  *
  * Unresolved contacts (no importMappings entry, and no phone match) are
  * REPORTED ONLY — ids and message counts. This script never creates a
@@ -39,9 +43,12 @@ import path from "node:path";
 import { cert, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { missingTotal, unresolvedMissingTotal } from "./ghl-wa-backfill-lib.ts";
-import { assertWriteMatchesApprovedReport, parseArgs } from "./ghl-wa-backfill-guards.ts";
+import { assertDistinctReportPaths, assertWriteMatchesApprovedReport, parseArgs } from "./ghl-wa-backfill-guards.ts";
 import { VELOCITY_LOCATION_ID, WINDOW_END, WINDOW_START, fetchAllMessages, resolveVelocityToken } from "./ghl-wa-backfill-client.ts";
 import { VELOCITY_SUB_ACCOUNT_ID, checkWatchdogActive, runDryRun, runWrite } from "./ghl-wa-backfill-io.ts";
+// Relative import (see ghl-wa-backfill-lib.ts) — logs the ACTUAL country code
+// phone matching uses, not just the raw field value.
+import { coercePhoneCountry } from "../src/lib/contacts/phone.ts";
 
 const VELOCITY_AGENCY_ID_ENV = "VELOCITY_AGENCY_ID"; // resolved from the sub-account doc at runtime instead of hardcoding
 
@@ -70,6 +77,41 @@ async function main() {
   const outPath =
     args.out ??
     path.join(os.tmpdir(), `ghl-wa-backfill-velocity-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+
+  // Read + validate --approved-report FIRST — before any GHL/Firestore call,
+  // and well before this run's own report is ever written to --out. This is
+  // the fix for the self-approval bug (blind review of 2e42c22): writing
+  // outPath before reading approvedReport meant `--out X --approved-report
+  // X` overwrote the approved artifact with THIS run's fresh output, and the
+  // set check then passed vacuously against itself. `assertDistinctReportPaths`
+  // additionally refuses outright when the two paths are the same file,
+  // regardless of read/write order — defense in depth, not a replacement.
+  let approvedIds: string[] | null = null;
+  if (args.write) {
+    if (!args.approvedReport) {
+      console.error("--write requires --approved-report <path-to-dry-run-json> in addition to --confirm.");
+      process.exit(1);
+      return;
+    }
+    try {
+      assertDistinctReportPaths(outPath, args.approvedReport);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+      return;
+    }
+    try {
+      approvedIds = await readApprovedReport(args.approvedReport);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+      return;
+    }
+    console.log(
+      `Approved report loaded from ${args.approvedReport} (${approvedIds.length} message id(s)) — ` +
+        "will validate against a fresh dry run before writing anything.",
+    );
+  }
 
   const resolvedToken = await resolveVelocityToken();
   if (!resolvedToken) {
@@ -105,11 +147,18 @@ async function main() {
     process.exit(1);
     return;
   }
-  const defaultPhoneCountry = (subAccount?.defaultPhoneCountry as string | null | undefined) ?? null;
+  // A blank string (unset-but-present field) must fall back to ZA exactly
+  // like a genuinely absent field — an empty-string default would otherwise
+  // reach `coercePhoneCountry` as a truthy-looking raw value that still
+  // fails its own regex and silently resolves to ITS "US" default, not ours.
+  const rawDefaultPhoneCountry = (subAccount?.defaultPhoneCountry as string | null | undefined) ?? null;
+  const defaultPhoneCountry = rawDefaultPhoneCountry?.trim() ? rawDefaultPhoneCountry : null;
+  const resolvedPhoneCountry = coercePhoneCountry(defaultPhoneCountry ?? "ZA");
   console.log(
-    defaultPhoneCountry
+    (defaultPhoneCountry
       ? `Sub-account defaultPhoneCountry: ${defaultPhoneCountry}`
-      : "Sub-account has no defaultPhoneCountry set — using ZA as the phone-fallback default.",
+      : "Sub-account has no defaultPhoneCountry set (or it's blank) — falling back to ZA.") +
+      ` Phone-fallback matching will use: ${resolvedPhoneCountry}.`,
   );
 
   const watchdog = await checkWatchdogActive(db, subAccount);
@@ -136,7 +185,7 @@ async function main() {
 
   let dryRun;
   try {
-    dryRun = await runDryRun(db, resolvedToken.token, raw, defaultPhoneCountry);
+    dryRun = await runDryRun(db, resolvedToken.token, raw, defaultPhoneCountry, watchdog);
   } catch (err) {
     console.error("Dry run failed (a contact-phone lookup returned something other than 404) — aborting.");
     console.error(err instanceof Error ? err.message : String(err));
@@ -167,21 +216,11 @@ async function main() {
   );
 
   if (args.write) {
-    if (!args.approvedReport) {
-      console.error("--write requires --approved-report <path-to-dry-run-json> in addition to --confirm.");
-      process.exit(1);
-      return;
-    }
-    let approvedIds: string[];
+    // approvedIds was already read (and validated non-null by the guard
+    // above, which exits if --approved-report is missing) before outPath was
+    // written — see the block near the top of main().
     try {
-      approvedIds = await readApprovedReport(args.approvedReport);
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-      return;
-    }
-    try {
-      assertWriteMatchesApprovedReport(report.missingGhlMessageIds, approvedIds, args.confirm);
+      assertWriteMatchesApprovedReport(report.missingGhlMessageIds, approvedIds ?? [], args.confirm);
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
@@ -195,7 +234,7 @@ async function main() {
     );
   } else {
     console.log(
-      `Dry run only. To write, get this report approved, then re-run with: ` +
+      `Dry run only. To write, get this report approved, then re-run with a DIFFERENT --out (or none) and: ` +
         `--write --confirm ${missingTotal(dryRun.counts)} --approved-report ${outPath}`,
     );
   }

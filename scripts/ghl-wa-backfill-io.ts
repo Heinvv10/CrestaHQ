@@ -121,6 +121,21 @@ export async function resolveUnresolvedByPhone(
   return out;
 }
 
+/** Plain (non-transactional) read of the fields `decideConversationAdvance` needs. */
+async function readConversationAdvanceState(
+  db: Firestore,
+  contactId: string,
+): Promise<{ exists: boolean; currentLastMessageAtMs: number | null; watchdogAlertedAtMs: number | null }> {
+  const snap = await db.doc(`conversations/${contactId}`).get();
+  if (!snap.exists) return { exists: false, currentLastMessageAtMs: null, watchdogAlertedAtMs: null };
+  const data = snap.data() ?? {};
+  return {
+    exists: true,
+    currentLastMessageAtMs: (data.lastMessageAt as Timestamp | undefined)?.toMillis?.() ?? null,
+    watchdogAlertedAtMs: (data.watchdogAlertedAt as Timestamp | undefined)?.toMillis?.() ?? null,
+  };
+}
+
 async function readExistingMessages(db: Firestore, leadstackContactId: string): Promise<ExistingMessage[]> {
   const snap = await db.collection(`contacts/${leadstackContactId}/whatsappMessages`).get();
   return snap.docs.map((d) => {
@@ -180,6 +195,7 @@ export async function runDryRun(
   token: string,
   rawMessages: GhlExportMessage[],
   defaultPhoneCountry: string | null,
+  watchdog: WatchdogStatus,
 ): Promise<DryRunResult> {
   const whatsapp = rawMessages.filter(isWhatsAppMessage);
   const normalized = whatsapp.map(normalizeMessage).filter((m): m is NormalizedGhlMessage => m !== null);
@@ -226,13 +242,23 @@ export async function runDryRun(
   const { resolved: missing, unresolved: unresolvedMissing } = partitionByResolution(candidates);
   const touchedContacts = new Set(missing.map((m) => m.leadstackContactId));
 
-  // Conversations whose lastMessageAt would move forward.
+  // Conversations whose lastMessageAt would move forward — uses the SAME
+  // decideConversationAdvance decision `--write` applies, so this count
+  // matches what a write would actually do: a missing conversation doc, or
+  // one that would arm the watchdog, is not counted as "advancing" here
+  // either (see runWrite, which skips both cases explicitly).
   let conversationsAdvancing = 0;
   for (const contactId of touchedContacts) {
     const maxMissingMs = Math.max(...missing.filter((m) => m.leadstackContactId === contactId).map((m) => m.createdAtMs));
-    const convoSnap = await db.doc(`conversations/${contactId}`).get();
-    const currentLastMs = (convoSnap.data()?.lastMessageAt as Timestamp | undefined)?.toMillis?.() ?? 0;
-    if (maxMissingMs > currentLastMs) conversationsAdvancing += 1;
+    const state = await readConversationAdvanceState(db, contactId);
+    if (!state.exists) continue;
+    const decision = decideConversationAdvance({
+      currentLastMessageAtMs: state.currentLastMessageAtMs,
+      watchdogAlertedAtMs: state.watchdogAlertedAtMs,
+      watchdogActive: watchdog.active,
+      newestMissingMs: maxMissingMs,
+    });
+    if (decision.advance) conversationsAdvancing += 1;
   }
 
   const counts: DryRunCounts = {
@@ -323,7 +349,6 @@ export async function runWrite(
         watchdogAlertedAtMs,
         watchdogActive: watchdog.active,
         newestMissingMs: newest.createdAtMs,
-        newestMissingDirection: newest.direction,
       });
       if (!decision.advance) return decision.reason;
       tx.set(

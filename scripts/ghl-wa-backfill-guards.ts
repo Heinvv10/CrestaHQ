@@ -5,7 +5,7 @@
  * Still pure — no Firestore, no network — so every guard is directly
  * unit-testable and mutation-checkable.
  */
-import type { Direction } from "./ghl-wa-backfill-lib.ts";
+import path from "node:path";
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing — validating, never silently ignoring a bad flag.
@@ -19,8 +19,6 @@ export interface ParsedArgs {
 }
 
 const KNOWN_FLAGS = new Set(["--out", "--write", "--confirm", "--approved-report"]);
-/** Flags that take a value (as opposed to `--write`, a bare boolean). */
-const VALUE_FLAGS = new Set(["--out", "--confirm", "--approved-report"]);
 
 /** True for a non-negative integer with no surrounding whitespace, decimals, or sign. */
 function isStrictNonNegativeInt(s: string): boolean {
@@ -44,7 +42,6 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       out.write = true;
       continue;
     }
-    if (!VALUE_FLAGS.has(flag)) continue; // unreachable given KNOWN_FLAGS, kept for exhaustiveness
     const value = argv[i + 1];
     if (value === undefined || KNOWN_FLAGS.has(value)) {
       throw new Error(`${flag} requires a value.`);
@@ -132,6 +129,28 @@ export function assertWriteMatchesApprovedReport(
   }
 }
 
+/**
+ * Refuses when `--out` and `--approved-report` name the same file. Without
+ * this, `--write --confirm N --approved-report X --out X` writes THIS run's
+ * fresh report to X, then reads X back as "the approved report" — the set
+ * check then trivially passes against itself, approving whatever the write
+ * run just computed rather than what Hein actually reviewed. Compared by
+ * normalized absolute path (not `fs.realpath`, which would throw for `--out`
+ * before it exists) — this catches the exploit (the literal same path
+ * passed twice) even though it won't catch two different paths that happen
+ * to resolve to the same file through a symlink.
+ */
+export function assertDistinctReportPaths(outPath: string, approvedReportPath: string): void {
+  const a = path.resolve(outPath);
+  const b = path.resolve(approvedReportPath);
+  if (a === b) {
+    throw new Error(
+      `--out and --approved-report both resolve to ${a} — this run's own report would overwrite the ` +
+        "approved one before (or instead of) actually reading it. Pass a different --out path (or omit it).",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Conversation-update decision — forward-only, watchdog-aware.
 // ---------------------------------------------------------------------------
@@ -151,7 +170,6 @@ export interface ConversationAdvanceInput {
   /** Whether the Inbox Follow-up Watchdog is active for this sub-account (labs gate + agency gate + agent doc `enabled`, ALL true). */
   watchdogActive: boolean;
   newestMissingMs: number;
-  newestMissingDirection: Direction;
 }
 
 export type ConversationAdvanceDecision =

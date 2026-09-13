@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertDistinctReportPaths,
   assertWriteMatchesApprovedReport,
   buildConversationPreview,
   classifyContactLookupStatus,
@@ -84,6 +85,20 @@ describe("assertWriteMatchesApprovedReport", () => {
   });
 });
 
+describe("assertDistinctReportPaths", () => {
+  it("throws when --out and --approved-report are the identical literal path", () => {
+    expect(() => assertDistinctReportPaths("/tmp/report.json", "/tmp/report.json")).toThrow(/both resolve to/);
+  });
+
+  it("throws when the two paths normalize to the same absolute path", () => {
+    expect(() => assertDistinctReportPaths("/tmp/./x/../report.json", "/tmp/report.json")).toThrow(/both resolve to/);
+  });
+
+  it("passes for genuinely distinct paths", () => {
+    expect(() => assertDistinctReportPaths("/tmp/a.json", "/tmp/b.json")).not.toThrow();
+  });
+});
+
 describe("buildConversationPreview", () => {
   it("passes short bodies through unchanged", () => {
     expect(buildConversationPreview("hi")).toBe("hi");
@@ -107,7 +122,6 @@ describe("decideConversationAdvance", () => {
     watchdogAlertedAtMs: null as number | null,
     watchdogActive: false,
     newestMissingMs: 2000,
-    newestMissingDirection: "inbound" as const,
   };
 
   it("refuses when the backfilled message is not newer than the current lastMessageAt", () => {

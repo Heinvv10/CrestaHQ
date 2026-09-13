@@ -3,8 +3,8 @@
  * docs/parity/sp2.md). Kept dependency-free (no Firestore, no network) so it
  * can be unit-tested directly. `ghl-wa-backfill-guards.ts` holds the
  * write-time/CLI guards (split out to keep both files under ~300 lines);
- * `ghl-wa-backfill-io.ts` does the Firestore/GHL calls; `ghl-wa-backfill.ts`
- * is the thin CLI entry point.
+ * `ghl-wa-backfill-client.ts` is the GHL HTTP side, `ghl-wa-backfill-io.ts`
+ * the Firestore side; `ghl-wa-backfill.ts` is the thin CLI entry point.
  */
 import { createHash } from "node:crypto";
 // Relative import (not `@/lib/...`) because `node --experimental-strip-types`
