@@ -138,10 +138,15 @@ export async function departedHostMessage(
   if (onPage.size === 0) return null;
   for (const uid of eventHostUids(event)) {
     if (onPage.has(uid)) continue;
-    const snap = await getAdminDb()
-      .doc(`subAccounts/${event.subAccountId}/subAccountMembers/${uid}`)
-      .get();
-    if ((snap.data() as SubAccountMemberDoc | undefined)?.status === "active") continue;
+    // Events are client-writable: a uid that isn't one path segment would
+    // make `.doc()` throw. It can't name an active member, so it's refused.
+    const readable = typeof uid === "string" && uid !== "" && !uid.includes("/");
+    const snap = readable
+      ? await getAdminDb()
+          .doc(`subAccounts/${event.subAccountId}/subAccountMembers/${uid}`)
+          .get()
+      : null;
+    if ((snap?.data() as SubAccountMemberDoc | undefined)?.status === "active") continue;
     const who =
       uid === event.assignedToUid && event.assignedToName
         ? event.assignedToName

@@ -157,13 +157,13 @@ export function utcFromWallClock(
   return new Date(guess.getTime() - offset);
 }
 
+const MAX_SLOTS_PER_RANGE = 24 * 60;
+
 /**
  * Iterate the candidate slot starts within a single working-hour range
  * on a specific calendar day (year-month-day in the page's tz). Steps
  * by `step` minutes; the last slot must fully fit inside the range.
  */
-const MAX_SLOTS_PER_RANGE = 24 * 60;
-
 function* slotsForRange(
   page: BookingPage,
   year: number,

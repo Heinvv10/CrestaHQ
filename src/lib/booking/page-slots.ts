@@ -55,6 +55,14 @@ export interface PageSlotsInput {
 }
 
 /**
+ * Bounds on a slot length taken from an event rather than a validated page:
+ * no service is shorter than 5 min, and the resolver only looks back 8 h for
+ * running events, so nothing longer is sized reliably.
+ */
+export const MIN_SLOT_MINUTES = 5;
+export const MAX_SLOT_MINUTES = 8 * 60;
+
+/**
  * A booking being rescheduled. Its slots are its own, whatever the page has
  * become since it was booked:
  *  - with hosts: every one of them must be free (a collective booking keeps
@@ -66,14 +74,6 @@ export interface PageSlotsInput {
  *  - on a service page whose service is gone (or that it pre-dates), it is
  *    sized by its own length.
  */
-/**
- * Bounds on a slot length taken from an event rather than a validated page:
- * no service is shorter than 5 min, and the resolver only looks back 8 h for
- * running events, so nothing longer is sized reliably.
- */
-export const MIN_SLOT_MINUTES = 5;
-export const MAX_SLOT_MINUTES = 8 * 60;
-
 export interface MovingEvent {
   /** `eventHostUids(event)`. */
   hostUids: string[];
