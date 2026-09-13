@@ -352,6 +352,21 @@ describe("date range parsing/rendering — same timezone both ways", () => {
     expect(dateInputToFromMs("not-a-date", "UTC")).toBeNull();
   });
 
+  it("formatAppointmentTime must honor the given tz, not the host's default", () => {
+    // Deliberately hostile to the host machine's own zone: force the
+    // process default to UTC so a formatter that silently fell back to it
+    // (dropped the `timeZone` option) reads a different calendar day than
+    // the Africa/Johannesburg (+2) render this asserts.
+    const originalTZ = process.env.TZ;
+    process.env.TZ = "UTC";
+    try {
+      const fromMs = dateInputToFromMs("2026-09-13", "Africa/Johannesburg")!; // 2026-09-12T22:00:00Z
+      expect(formatAppointmentTime(new Date(fromMs), "Africa/Johannesburg")).toContain("13");
+    } finally {
+      process.env.TZ = originalTZ;
+    }
+  });
+
   it("a naive toISOString render drifts from the tz-aware parse (the bug this guards against)", () => {
     // Africa/Johannesburg is UTC+2: 2026-09-13T00:00:00+02:00 is
     // 2026-09-12T22:00:00Z. A naive `.toISOString()` render of that
