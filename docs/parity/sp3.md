@@ -1,6 +1,6 @@
 # SP3 — Calendars & booking
 
-**Date:** 2026-09-13 · **Status: ledger written, build not started** · **Depends on:** SP0 (merged) · **Blocks:** SP11 (appointment reports), SP14.
+**Date:** 2026-09-13 · **Status: building — (a) #108 in review, (c) #107 in review, (e) building; R1/R2 done** · **Depends on:** SP0 (merged) · **Blocks:** SP11 (appointment reports), SP14.
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP3. Model ledger: [sp1.md](sp1.md). Feature spec: [booking-pages.md](../features/booking-pages.md).
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`) and the E2E fixture tenant. Never Blitz/Velocity/Vortex.
@@ -82,8 +82,31 @@ Rows marked ⚠ were not exercised in GHL: its calendar editor stopped respondin
 
 | # | Item | Today | Plan | Status |
 |---|---|---|---|---|
-| R1 | Voice booking | "built, unverified" (`voice-booking-service.ts`) | Drive a real booking through the Vapi tool path against #1000 and record what actually happens | not started |
-| R2 | Reminders fire from QStash | Scheduled at book time (`lifecycle.ts:222`) | Book a slot on #1000 whose T-1h reminder falls inside the session; show the QStash message and the email delivery | not started |
+| R1 | Voice booking | "built, unverified" (`voice-booking-service.ts`) | Drive a real booking through the Vapi tool path against #1000 and record what actually happens | **cannot run in production; code path proven** — see below |
+| R2 | Reminders fire from QStash | Scheduled at book time (`lifecycle.ts:222`) | Book a slot on #1000 whose T-1h reminder falls inside the session; show the QStash message and the email delivery | **proven 2026-09-13** — see below |
+
+**R1 — what actually happened (2026-09-13).**
+- **Production cannot take a voice call at all.** In the running `crestahq` process, `VAPI_API_KEY`, `VAPI_WEBHOOK_SECRET`, `VAPI_PUBLIC_BASE_URL` and `OPENROUTER_API_KEY` are present but empty. `/api/webhooks/vapi/llm/[id]` therefore returns 401 to every request (`authorize()` needs a non-empty secret), and `callAi()` throws "OPENROUTER_API_KEY is not set". This is wider than voice: no AI reply on any channel can run on crm.crestahq.com. #1000 also has no `aiAgent/*` config. Fixing it needs Hein's OpenRouter key and Vapi credentials.
+- **The booking code path works.** Tested with `origin/main` `371e163`, built locally, running against production Firestore for #1000. QStash, mail and SMS were disabled, and only the LLM was replaced, by a scripted responder that emits the same markers the real model is told to. A temporary voice agent and a temporary published page were used; both have since been deleted. What happened:
+  - The webhook received the caller turn. The model emitted `[[slots]]`.
+  - The service returned busy-aware slots. It left out 12:30, which the R2 probe had already booked, and anything inside min notice.
+  - The model emitted `[[book start=… name="Voiceprobe"]]`, and the book ran in a transaction.
+  - It created event `FydMl3Zh9eAlOtU7bKEs`: `scheduled`, `booking_page`, notes "Booked by phone via the AI voice agent".
+  - It created a contact matched on caller-ID phone (`source: voice`) and a `booking_page_booked` activity.
+  - The confirmation was spoken. By v1 design, a voice booking sends no email and schedules no reminder.
+  - Evidence: `evidence/sp3/runtime/r1-voice-marker-loop.txt` and `r1-r2-firestore.txt`.
+- **Not exercised:** the telephony leg (Vapi to our webhook) and a real model's behaviour.
+- **Open risk:** Cloudflare returned `403 error code: 1010` to Python's default user agent on crm.crestahq.com. Whether it lets Vapi's webhook user agent through has not been checked.
+
+**R2 — proven on #1000 (2026-09-13).**
+- Published a temporary page. Booked 12:30 SAST through the real public page at 10:57, with the attendee address being one Hein controls.
+- The book route published QStash message `msg_7YoJx…` for the T-1h offset, with `notBefore` 11:30:01. The T-24h offset was correctly skipped because it was already in the past.
+- QStash log: `CREATED` 10:57:14 → `ACTIVE` 11:30:01 → `DELIVERED` 11:30:08, HTTP 200, to `https://crm.crestahq.com/api/events/reminder/step`.
+- The "Reminder: … in 1 hour" email arrived at 11:30, after the 10:57 confirmation.
+- Evidence: `evidence/sp3/runtime/r2-qstash-log.txt`, `r2-reminder-email-inbox.png` and `r2-probe-booked.jpg`.
+- Probe page, events, contacts and conversation were deleted afterwards.
+- Gap noted: a sent reminder leaves no trace in the CRM (no activity row), so an operator cannot see it happened. Candidate for a follow-up.
+- Visual defect noted: the selected slot button on the public page renders blank.
 
 ---
 
