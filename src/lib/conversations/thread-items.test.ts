@@ -57,3 +57,40 @@ describe("mergeThreadItems (SP2 T2)", () => {
     expect(items.at(-1)?.key).toBe("note:pending");
   });
 });
+
+describe("mergeThreadItems — scheduled messages (SP2 T5)", () => {
+  const scheduled = (id: string, ms: number) => ({
+    id,
+    contactId: "c1",
+    channel: "sms" as const,
+    body: id,
+    subject: null,
+    sendAt: new Date(ms).toISOString(),
+    status: "pending" as const,
+    failureReason: null,
+    failureCode: null,
+    createdByUid: "u",
+    createdAt: null,
+    claimedAt: null,
+  });
+
+  it("places each at its send time — a pending one after everything already said", () => {
+    const items = mergeThreadItems(
+      [msg("m1", 100), msg("m3", 300)],
+      [note("n2", 200)],
+      [scheduled("s9", 900), scheduled("s2", 250)]
+    );
+    expect(items.map((i) => i.key)).toEqual([
+      "sms:m1",
+      "note:n2",
+      "scheduled:s2",
+      "sms:m3",
+      "scheduled:s9",
+    ]);
+  });
+
+  it("same millisecond: message, then note, then the booking", () => {
+    const items = mergeThreadItems([msg("m", 100)], [note("n", 100)], [scheduled("s", 100)]);
+    expect(items.map((i) => i.kind)).toEqual(["message", "note", "scheduled"]);
+  });
+});

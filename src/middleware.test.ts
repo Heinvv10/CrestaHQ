@@ -125,3 +125,16 @@ describe("isPublicPath — the WhatsApp settings routes (SP15)", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/whatsapp/message-links")).toBe(false);
   });
 });
+
+describe("isPublicPath — scheduled messages (SP2 T5)", () => {
+  it("lets QStash reach the signed fire worker (the signature is its auth)", () => {
+    expect(isPublicPath("/api/scheduled-messages/fire")).toBe(true);
+  });
+
+  it("keeps booking, listing and cancelling behind a session", () => {
+    expect(isPublicPath("/api/scheduled-messages")).toBe(false);
+    expect(isPublicPath("/api/scheduled-messages/fire/x")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/scheduled-messages")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/scheduled-messages/m1")).toBe(false);
+  });
+});

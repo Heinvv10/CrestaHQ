@@ -35,12 +35,20 @@ import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccount } from "@/context/sub-account-context";
 import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
+import {
+  notifySkipDetail,
+  saveBookingPageEdit,
+  type TimeBaseline,
+} from "@/components/calendar/booking-edit-save";
 import { toDate } from "@/lib/format";
 import {
+  eventOccupiesSlot,
   eventSource,
   eventStatus,
+  eventStatusLabel,
   type CalendarEvent,
   type EventFormData,
+  type EventNotifySkipReason,
   type EventStatus,
 } from "@/types/events";
 import type { Contact } from "@/types/contacts";
@@ -86,6 +94,20 @@ export function EventDialog({
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
+  // Status as last changed from the actions panel. The surfaces that open
+  // this dialog pass a snapshot `event` that doesn't update, so without this
+  // the time lock below would miss a status flipped while the dialog is open.
+  const [panelStatus, setPanelStatus] = useState<EventStatus | null>(null);
+  // Time the server holds after a reschedule made from this dialog, so a
+  // retry after a failed field write doesn't re-POST the same move.
+  const [timeBaseline, setTimeBaseline] = useState<TimeBaseline | null>(null);
+  // A cancelled / completed / no-show booking no longer holds a slot, so the
+  // reschedule endpoint refuses to move it — lock the time instead of
+  // letting Save 409.
+  const timeLocked =
+    !!event &&
+    eventSource(event) === "booking_page" &&
+    !eventOccupiesSlot(panelStatus ?? eventStatus(event));
 
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
@@ -132,7 +154,22 @@ export function EventDialog({
       setNotes("");
     }
     setErrors({});
+    setPanelStatus(null);
+    setTimeBaseline(null);
   }, [open, event, defaultDate]);
+
+  // When the lock engages on a booking whose time the operator had edited,
+  // put the booking's real time back rather than leave an edited value on
+  // screen that Save will silently ignore.
+  useEffect(() => {
+    if (!timeLocked || !event) return;
+    const start = timeBaseline?.startAt ?? toDate(event.startAt);
+    const end = timeBaseline?.endAt ?? toDate(event.endAt);
+    if (!start || !end) return;
+    setDate(toDateInput(start));
+    setStartTime(toTimeInput(start));
+    setEndTime(toTimeInput(end));
+  }, [timeLocked, event, timeBaseline]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -163,8 +200,56 @@ export function EventDialog({
     setSaving(true);
     try {
       if (isEdit && event) {
-        // Plain edit has no webhook event — stays a client-side write.
-        await updateEvent(event.id, payload);
+        if (eventSource(event) === "booking_page") {
+          const { startAt, endAt, ...fields } = payload;
+          const result = await saveBookingPageEdit({
+            eventId: event.id,
+            baseline: timeBaseline ?? {
+              startAt: toDate(event.startAt),
+              endAt: toDate(event.endAt),
+            },
+            startAt,
+            endAt,
+            timeLocked,
+            fields,
+            reschedule: async (id, start, end) => {
+              const res = await fetch(`/api/events/by-id/${id}/reschedule`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  startAt: start.toISOString(),
+                  endAt: end.toISOString(),
+                }),
+              });
+              return { ok: res.ok, body: await res.json().catch(() => ({})) };
+            },
+            updateFields: updateEvent,
+          });
+          if (result.kind === "reschedule_refused") {
+            toast.error(result.error);
+            return;
+          }
+          setTimeBaseline(result.baseline);
+          if (result.kind === "fields_failed") {
+            console.error(result.error);
+            toast.error(
+              !result.rescheduled
+                ? "Couldn't save event. Try again."
+                : result.warning
+                  ? `${result.warning} The other changes didn't save — try again.`
+                  : "Rescheduled, but the other changes didn't save. Try again.",
+            );
+            return;
+          }
+          if (result.warning) {
+            toast.warning(result.warning);
+            onOpenChange(false);
+            return;
+          }
+        } else {
+          // Plain edit has no webhook event — stays a client-side write.
+          await updateEvent(event.id, payload);
+        }
         toast.success("Event updated");
       } else {
         // Create goes through the server so event.created fires.
@@ -230,7 +315,7 @@ export function EventDialog({
 
         {isBookingPageEvent && event && (
           <div className="px-4 pt-4">
-            <BookingActionsPanel event={event} />
+            <BookingActionsPanel event={event} onStatusChange={setPanelStatus} />
           </div>
         )}
 
@@ -261,6 +346,7 @@ export function EventDialog({
               value={date}
               onChange={(e) => setDate(e.target.value)}
               aria-invalid={!!errors.date}
+              disabled={timeLocked}
             />
             {errors.date && (
               <p className="text-xs text-destructive">{errors.date}</p>
@@ -278,6 +364,7 @@ export function EventDialog({
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
                 aria-invalid={!!errors.startTime}
+                disabled={timeLocked}
               />
               {errors.startTime && (
                 <p className="text-xs text-destructive">{errors.startTime}</p>
@@ -293,12 +380,18 @@ export function EventDialog({
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
                 aria-invalid={!!errors.endTime}
+                disabled={timeLocked}
               />
               {errors.endTime && (
                 <p className="text-xs text-destructive">{errors.endTime}</p>
               )}
             </div>
           </div>
+          {timeLocked && (
+            <p className="-mt-2 text-[11px] text-muted-foreground">
+              Finished or cancelled bookings can&apos;t be moved — rebook instead.
+            </p>
+          )}
 
           <div className="space-y-1.5">
             <Label htmlFor="ev-contact">Contact</Label>
@@ -463,7 +556,13 @@ export function EventDialog({
  * the calendar's onSnapshot subscription picks up the canonical state
  * once Firestore syncs.
  */
-function BookingActionsPanel({ event }: { event: CalendarEvent }) {
+function BookingActionsPanel({
+  event,
+  onStatusChange,
+}: {
+  event: CalendarEvent;
+  onStatusChange: (status: EventStatus) => void;
+}) {
   const status = eventStatus(event);
   const startAt = toDate(event.startAt);
   const isPast = startAt ? startAt.getTime() < Date.now() : false;
@@ -488,6 +587,7 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
         throw new Error(data.error ?? "Couldn't mark as paid.");
       }
       setLocalStatus("scheduled");
+      onStatusChange("scheduled");
       toast.success("Marked as paid. Confirmation sent.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Action failed.");
@@ -517,38 +617,22 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
         ok?: boolean;
         error?: string;
         notifyEmailSent?: boolean;
-        notifyEmailSkipReason?:
-          | "not_cancelled"
-          | "no_contact"
-          | "email_not_configured"
-          | "no_contact_email"
-          | "contact_opted_out"
-          | "missing_records"
-          | "bad_timestamps"
-          | "send_failed";
+        notifyEmailSkipReason?: EventNotifySkipReason;
       };
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "Couldn't update.");
       }
       setLocalStatus(next);
+      onStatusChange(next);
       // For cancel: tell the operator what ACTUALLY happened to the
       // visitor notification — not just "Visitor notified" optimistically.
       if (next === "cancelled") {
         if (data.notifyEmailSent) {
           toast.success("Cancelled. Visitor notified by email.");
         } else {
-          const reason = data.notifyEmailSkipReason;
-          const detail =
-            reason === "email_not_configured"
-              ? "Resend isn't configured on this deployment"
-              : reason === "no_contact_email"
-                ? "the visitor's contact record has no email address"
-                : reason === "contact_opted_out"
-                  ? "the visitor opted out of email"
-                  : reason === "send_failed"
-                    ? "the email send failed (check Vercel logs)"
-                    : "couldn't reach the visitor by email";
-          toast.warning(`Cancelled, but ${detail}. Reach out manually.`);
+          toast.warning(
+            `Cancelled, but ${notifySkipDetail(data.notifyEmailSkipReason)}. Reach out manually.`,
+          );
         }
       } else {
         toast.success(label);
@@ -560,10 +644,10 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
     }
   }
 
-  const terminal =
-    localStatus === "cancelled" ||
-    localStatus === "completed" ||
-    localStatus === "no_show";
+  // "cancelled" is truly final; "completed"/"no_show" can still be
+  // corrected into each other but never into anything else.
+  const terminal = localStatus === "cancelled";
+  const correctable = localStatus === "completed" || localStatus === "no_show";
 
   return (
     <div className="space-y-3 rounded-xl border bg-muted/30 p-3">
@@ -573,6 +657,12 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
           From booking page
         </span>
         <BookingStatusBadge status={localStatus} />
+        {!!event.rescheduleCount && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">
+            <CalendarClock className="h-3 w-3" />
+            Rescheduled
+          </span>
+        )}
         {event.assignedToName && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:text-indigo-400">
             <User className="h-3 w-3" />
@@ -634,27 +724,61 @@ function BookingActionsPanel({ event }: { event: CalendarEvent }) {
               </Button>
             </>
           )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setStatus("cancelled", "Cancelled. Visitor notified.")}
-            disabled={busy !== null}
-            className="text-destructive hover:bg-destructive/5 hover:text-destructive"
-          >
-            {busy === "cancelled" ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <XCircle className="mr-1 h-3.5 w-3.5" />
-            )}
-            Cancel booking
-          </Button>
+          {localStatus === "completed" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setStatus("no_show", "Corrected to no-show.")}
+              disabled={busy !== null}
+            >
+              {busy === "no_show" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <UserX className="mr-1 h-3.5 w-3.5" />
+              )}
+              Correct to no-show
+            </Button>
+          )}
+          {localStatus === "no_show" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setStatus("completed", "Corrected to attended.")}
+              disabled={busy !== null}
+            >
+              {busy === "completed" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+              )}
+              Correct to attended
+            </Button>
+          )}
+          {!correctable && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setStatus("cancelled", "Cancelled. Visitor notified.")}
+              disabled={busy !== null}
+              className="text-destructive hover:bg-destructive/5 hover:text-destructive"
+            >
+              {busy === "cancelled" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <XCircle className="mr-1 h-3.5 w-3.5" />
+              )}
+              Cancel booking
+            </Button>
+          )}
         </div>
       )}
 
-      {/* Reassign host — only renders for team bookings the caller can
-          reassign (booking-page event with hosts + admin/current host). */}
-      {!terminal && <BookingReassign event={event} />}
+      {/* Reassign host — only renders while the booking is still live
+          (not cancelled, not a completed/no_show correction target). */}
+      {!terminal && !correctable && <BookingReassign event={event} />}
     </div>
   );
 }
@@ -663,34 +787,34 @@ function BookingStatusBadge({ status }: { status: EventStatus }) {
   if (status === "awaiting_payment") {
     return (
       <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-        Awaiting payment
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "cancelled") {
     return (
       <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-400">
-        Cancelled
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "completed") {
     return (
       <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-        Completed
+        {eventStatusLabel(status)}
       </span>
     );
   }
   if (status === "no_show") {
     return (
       <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-700 dark:text-zinc-400">
-        No-show
+        {eventStatusLabel(status)}
       </span>
     );
   }
   return (
     <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-      Confirmed
+      {eventStatusLabel(status)}
     </span>
   );
 }

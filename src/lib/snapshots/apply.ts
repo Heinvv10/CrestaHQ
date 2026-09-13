@@ -182,6 +182,10 @@ export async function applySnapshot(
     // an unmapped form (absent = any pipeline; the operator re-pins it).
     const trigger = { ...config.trigger };
     if (trigger.pipelineId) trigger.pipelineId = null;
+    // A booking page slug is scoped to the SOURCE sub-account too — null it
+    // like an unmapped pipeline; the operator re-pins it to a page under
+    // the target sub-account.
+    if (trigger.bookingPageSlug) trigger.bookingPageSlug = null;
     if (trigger.formId) {
       const mapped = formIdMap.get(trigger.formId);
       if (mapped) {
