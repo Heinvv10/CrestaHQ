@@ -16,7 +16,7 @@ Code: [src/lib/google-calendar/](../../src/lib/google-calendar/). Agency gate: `
 - **Routes:**
   - `GET /api/sub-accounts/[id]/google-calendar/connect` — any active member, gate on. Redirects to Google with `access_type=offline` and `prompt=consent`.
   - `GET /api/sub-accounts/[id]/google-calendar` — returns the **caller's own** status (no tokens). Answers 403 `gate_off` while the gate is off.
-  - `DELETE /api/sub-accounts/[id]/google-calendar` — **ungated**. Revokes at Google best-effort, then deletes the doc. Events already written to Google stay there.
+  - `DELETE /api/sub-accounts/[id]/google-calendar` — **ungated**. Deletes the stored tokens only; it **never revokes at Google**. This is the same OAuth client as the Business Profile connection, and Google's revoke ends the app's whole grant for that Google account, so it could take the sub-account's GBP connection down with it. The card tells the member they can remove the app's access themselves at myaccount.google.com/permissions. Events already written to Google stay there.
 - **Callback:** it shares the one registered `/api/google/callback` with Business Profile. The signed OAuth state carries `p: "calendar"`. GBP states never carry `p`, so they keep their exact shape and behaviour. The callback hands calendar states to `lib/google-calendar/callback.ts`. That handler requires the finishing member to be the uid that started the flow. It redirects to Settings with `?gcal=<status>`.
 - **Tokens:** the cached access token is used while more than 60 s remain; otherwise it is refreshed, and a rotated refresh token is stored. A 401 from Google earns exactly one forced refresh. `invalid_grant` sets `status: "revoked"` and `lastError`, and the card then shows **Reconnect**.
 - **UI:** the Google Calendar card in Settings → Calendar sync ([google-calendar-card.tsx](../../src/components/settings/google-calendar-card.tsx)). It shows one of four states: Connect, "Connected as … (primary calendar)", Reconnect with the last error, or Disconnect. It is hidden while the gate is off.
@@ -33,14 +33,12 @@ Code: [src/lib/google-calendar/](../../src/lib/google-calendar/). Agency gate: `
 
 **It fails open (ruling 8).** When Google errors, times out or the grant is revoked, that host gets no Google busy time and the failure is written to their connection, where their card shows it. A later successful read clears the warning. Hostless pages get no Google busy time (ruling 2). Nothing is read while the gate is off.
 
-It is wired into these callers:
+It reaches every slot decision through `resolvePageAvailability`'s `externalBusy` input. `loadGoogleBusyForPage` loads it for the page's hosts over the resolver's own window (padded by the page's buffers), always before any transaction. The callers are:
 
-- the availability route;
-- the book route (loaded before the transaction, then merged into the per-host busy map);
-- the reschedule route (`loadGoogleBusyForEvent`: the event's own hosts, loaded before the transaction);
+- the public availability route;
+- the book route;
+- the token reschedule route (`loadGoogleBusyForEvent` pre-reads the event and its page, because the route reads the page inside its transaction);
 - the voice-booking service, for both listing and confirming.
-
-When #109's `resolvePageAvailability` lands, these calls move into its `externalBusy` input.
 
 ## Push (G3)
 
@@ -53,7 +51,14 @@ When #109's `resolvePageAvailability` lands, these calls move into its `external
 
 The Google event ids are stored in `googleEventIds: {[uid]: googleEventId}` on the event. A push never throws. Failures are written to `googleSyncError` on the event and to the host's connection. The client write rules lock `googleEventIds` and `googleSyncError`.
 
-It is called after book, reschedule, cancel (manage link), payment-hold expiry, operator cancel (`mark-status`), and a voice booking.
+It is called once per post-commit path:
+
+- book route and voice booking (new bookings);
+- `runRescheduleSideEffects` (token and operator reschedule);
+- `changeEventStatus` on a cancel (mark-status and the v1 API);
+- the manage-link cancel route and payment-hold expiry;
+- `markBookingPaidServerSide`;
+- the assign route. A reassign moves the Google copy: it is deleted from the old host's calendar and inserted on the new host's.
 
 Deleting an event in Google does **not** cancel the booking (ruling 9).
 
@@ -76,5 +81,5 @@ The deploy guard (`scripts/gbp-deploy-check.mjs`) refuses any `GCAL_PROVIDER` / 
 ## Known limits
 
 - Primary calendar only; no Outlook (G5, out of scope).
-- Events created or edited by hand on the Calendar page (client SDK) are not pushed. Only booking-flow events are.
-- Revoking at Google on disconnect ends the app's grant for that Google account. If the same Google account also holds the sub-account's Business Profile connection, that connection is affected too, and Reconnect restores it.
+- **Known gap:** events created, edited or deleted by hand on the Calendar page write through the client SDK and are not pushed. Only booking-flow events (including reassign) reach Google.
+- Disconnect does not revoke at Google (see Connection).

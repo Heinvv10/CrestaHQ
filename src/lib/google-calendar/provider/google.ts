@@ -2,7 +2,7 @@ import "server-only";
 
 import { buildGoogleOAuthUrl } from "@/lib/google/oauth";
 import { bearer, fetchJson } from "@/lib/gbp/provider/google-http";
-import { exchangeCode, refresh, revoke } from "@/lib/gbp/provider/google-token";
+import { exchangeCode, refresh } from "@/lib/gbp/provider/google-token";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import { GCAL_SCOPES } from "../scopes";
 import {
@@ -48,7 +48,6 @@ export const googleGcalProvider: GcalProvider = {
   },
   exchangeCode,
   refresh,
-  revoke,
 
   async userEmail(accessToken) {
     const body = (await fetchJson(USERINFO, init(accessToken))) as { email?: unknown } | null;

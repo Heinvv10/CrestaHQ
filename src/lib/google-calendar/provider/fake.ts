@@ -144,12 +144,6 @@ export function createFakeGcalProvider(
       return mint(false);
     },
 
-    async revoke(token) {
-      if (!mine("fake-gcal-refresh", token) && !mine("fake-gcal-access", token)) {
-        throw new GbpProviderError("revoked", { status: 400 });
-      }
-    },
-
     async userEmail(accessToken) {
       const calendar = await authed(accessToken, "listEvents");
       return calendar.email ?? FAKE_GCAL_EMAIL;

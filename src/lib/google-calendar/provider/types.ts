@@ -60,7 +60,6 @@ export interface GcalProvider {
   exchangeCode(code: string, redirectUri: string): Promise<GoogleTokens>;
   /** `refreshToken` on the result is non-null only when Google rotated it. */
   refresh(refreshToken: string): Promise<GoogleTokens>;
-  revoke(token: string): Promise<void>;
   /** The Google account's email, for "Connected as …". Null when absent. */
   userEmail(accessToken: string): Promise<string | null>;
 

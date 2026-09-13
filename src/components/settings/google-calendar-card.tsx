@@ -87,7 +87,7 @@ export function GoogleCalendarCard() {
   }
 
   async function disconnect() {
-    if (!confirm("Disconnect your Google Calendar? Access is revoked at Google; events already added stay in your calendar.")) return;
+    if (!confirm("Disconnect your Google Calendar? We stop syncing and delete our stored access; events already added stay in your calendar.")) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/google-calendar`, { method: "DELETE" });
@@ -114,7 +114,17 @@ export function GoogleCalendarCard() {
       <p className="mt-0.5 text-xs text-muted-foreground">
         Bookings assigned to you are added to your Google Calendar, and your
         Google busy time blocks those slots on booking pages. Only your
-        primary calendar is used.
+        primary calendar is used. Disconnecting stops the sync; to also remove
+        the app&apos;s access from your Google account, visit{" "}
+        <a
+          href="https://myaccount.google.com/permissions"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline-offset-2 hover:underline"
+        >
+          myaccount.google.com/permissions
+        </a>
+        .
       </p>
 
       <div className="mt-3">

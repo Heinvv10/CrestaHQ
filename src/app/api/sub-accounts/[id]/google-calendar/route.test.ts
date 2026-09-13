@@ -214,20 +214,14 @@ describe("status + disconnect", () => {
     expect(await res.json()).toEqual({ error: "gate_off" });
   });
 
-  it("DELETE is ungated: revokes at Google and removes only the caller's doc", async () => {
+  it("DELETE is ungated, removes only the caller's doc, and never revokes at Google", async () => {
     state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleCalendarEnabledByAgency: false });
     state.docs.set(CAL_PATH("uid_admin"), { uid: "uid_admin", refreshToken: "other" });
     stubGoogle(GOOGLE_OK);
     expect((await disconnect()).status).toBe(200);
-    expect(calls.some((u) => /revoke/.test(u))).toBe(true);
+    // Same OAuth client as GBP: a revoke would end the whole grant.
+    expect(calls).toEqual([]);
     expect(state.docs.has(CAL_PATH("uid_member"))).toBe(false);
     expect(state.docs.has(CAL_PATH("uid_admin"))).toBe(true);
-  });
-
-  it("DELETE still removes the doc when Google's revoke fails", async () => {
-    stubGoogle([{ match: /revoke/, status: 500, body: {} }]);
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect((await disconnect()).status).toBe(200);
-    expect(state.docs.has(CAL_PATH("uid_member"))).toBe(false);
   });
 });
