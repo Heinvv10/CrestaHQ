@@ -11,6 +11,7 @@ import type { CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
 import type { ActivityType } from "@/types/contacts";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Reassign a team booking to a different host.
@@ -203,6 +204,8 @@ export async function POST(
     console.error(`[events/assign] update failed event=${eventId}`, err);
     return NextResponse.json({ error: "Couldn't reassign." }, { status: 500 });
   }
+  // Move the Google copy: off the old host's calendar, onto the new one's.
+  await pushBookingToGoogle(eventId);
 
   // Timeline row (best-effort).
   if (event.contactId) {

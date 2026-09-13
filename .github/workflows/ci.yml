@@ -239,6 +239,18 @@ jobs:
       SMS_PROVIDER: fake
       SMS_FAKE_ALLOW_PROD_BUILD: "1"
       SMS_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The Google Calendar fake (SP3 PR d) — each member's "Google calendar"
+      # is a Firestore doc the specs seed and read — fenced exactly the same
+      # way (src/lib/google-calendar/provider/mode.ts); the deploy guard
+      # refuses these too.
+      GCAL_PROVIDER: fake
+      GCAL_FAKE_ALLOW_PROD_BUILD: "1"
+      GCAL_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The whole suite runs from one loopback client, so the public booking
+      # routes' per-IP rate limiters (src/lib/booking/rate-limit-e2e.ts) would
+      # otherwise 429 partway through. Fenced the same way (loopback app URL
+      # required); the deploy guard refuses this name too.
+      E2E_DISABLE_BOOKING_RATE_LIMITS: "1"
       # The GBP sync cron does nothing unless the schedule is enabled; the E2E
       # specs drive it with a signed POST. (Registering the schedule itself
       # fails harmlessly: the E2E QStash values are not Upstash credentials.)

@@ -25,6 +25,7 @@ import type {
 } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * The single place that flips an event's status. Used by BOTH the
@@ -115,6 +116,7 @@ export async function changeEventStatus(
     console.error("[event-status-service] update failed", err);
     return { ok: false, httpStatus: 500, error: "Couldn't update event." };
   }
+  if (next === "cancelled") await pushBookingToGoogle(event.id);
 
   // A test-mode event (v1 `lsk_test_*` key) gets the validated status write
   // only — no activity row, no workflow trigger, no email. The public API

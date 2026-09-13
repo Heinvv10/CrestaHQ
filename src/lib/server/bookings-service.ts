@@ -21,6 +21,7 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Bookings service — the single server-side path that confirms a booking held
@@ -110,6 +111,7 @@ export async function markBookingPaidServerSide(input: {
     publicTokenHash: newHash,
   };
   await runMarkPaidSideEffects({ event: updatedEvent, rawToken: newToken });
+  await pushBookingToGoogle(input.eventId);
 
   return {
     ok: true,

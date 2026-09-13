@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
  * gbp-deploy-check.mjs — keep the dev/CI-only fake providers (GBP, the
- * WhatsApp settings fake, and the SMS fake, all fenced the same way) out of a
- * production deploy. Two checks, neither of which parses or expands env files
+ * WhatsApp settings fake, the SMS fake and the Google Calendar fake, all
+ * fenced the same way) — plus the E2E booking rate-limit bypass, refused by
+ * name the same way — out of a production deploy. Two checks, neither of
+ * which parses or expands env files
  * (three earlier designs that emulated Next's env loader each had a bypass):
  *
  *   node scripts/gbp-deploy-check.mjs pre  <deploy-dir>
  *     Before any gate or build. Refuses if the RAW TEXT of any `.env*` file in
  *     the deploy dir contains `GBP_PROVIDER`, `GBP_FAKE_`,
- *     `WHATSAPP_SETTINGS_PROVIDER`, `WHATSAPP_FAKE_`, `SMS_PROVIDER` or
- *     `SMS_FAKE_` anywhere — any line, commented or not; production never
- *     needs these names (the defaults are Google, Meta and Twilio) — or if
- *     any deploy-shell variable is NAMED so.
+ *     `WHATSAPP_SETTINGS_PROVIDER`, `WHATSAPP_FAKE_`, `SMS_PROVIDER`,
+ *     `SMS_FAKE_`, `GCAL_PROVIDER`, `GCAL_FAKE_` or
+ *     `E2E_DISABLE_BOOKING_RATE_LIMITS` anywhere — any line, commented or not; production never
+ *     needs these names (the defaults are Google, Meta and Twilio, and booking
+ *     rate limits always apply) — or if any deploy-shell variable is NAMED so.
  *     Also refuses if NEXT_PUBLIC_APP_URL is DEFINED more than
  *     once in .env.production, or defined in any other env file (.env.example,
  *     which Next never loads, excepted; comments never count), so
@@ -24,10 +27,11 @@
  *
  *   node scripts/gbp-deploy-check.mjs post <deploy-dir> <app-url>
  *     After the build. Each app fence (src/lib/gbp/provider/mode.ts,
- *     src/lib/comms/whatsapp/settings/mode.ts and src/lib/comms/sms/mode.ts)
+ *     src/lib/comms/whatsapp/settings/mode.ts, src/lib/comms/sms/mode.ts and
+ *     src/lib/google-calendar/provider/mode.ts)
  *     allows its fake only when the app URL INLINED INTO THE BUILD is
  *     loopback, so this is the authoritative check: in every built server
- *     chunk carrying any one of the three checks, the string literal passed
+ *     chunk carrying any one of the four checks, the string literal passed
  *     to it is extracted and must EQUAL <app-url> exactly, parse, and have a
  *     host off the wide loopback block-list. A check whose literal cannot be
  *     read, or ANY check absent from the build, refuses (fail closed).
@@ -44,8 +48,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isLoopbackHostname } from "../src/lib/gbp/provider/loopback.mjs";
 
-const FAKE_NAME = /GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_/;
-const FAKE_VAR_NAME = /^(GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_)/;
+const FAKE_NAME =
+  /GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_|E2E_DISABLE_BOOKING_RATE_LIMITS/;
+const FAKE_VAR_NAME =
+  /^(GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_|E2E_DISABLE_BOOKING_RATE_LIMITS)/;
 /**
  * The refusal message each mode.ts throws from its app-loopback check — the
  * anchor the post-build scan finds it by. No message may be a substring of
@@ -55,6 +61,7 @@ export const CHECKS = [
   { label: "GBP", message: "NEXT_PUBLIC_APP_URL is not a loopback host" },
   { label: "WhatsApp", message: "NEXT_PUBLIC_APP_URL is not loopback (WhatsApp fake)" },
   { label: "SMS", message: "NEXT_PUBLIC_APP_URL is not loopback (SMS fake)" },
+  { label: "Google Calendar", message: "NEXT_PUBLIC_APP_URL is not loopback (Google Calendar fake)" },
 ];
 /**
  * The literal the build passed to a check: `…("<url>"))throw new X("<message>")`.
@@ -100,7 +107,7 @@ export function mentionsFakeKeys(dir, shellEnv) {
       continue;
     }
     if (FAKE_NAME.test(text)) {
-      problems.push(`${name}: mentions GBP_PROVIDER / GBP_FAKE_* / WHATSAPP_SETTINGS_PROVIDER / WHATSAPP_FAKE_* / SMS_PROVIDER / SMS_FAKE_*`);
+      problems.push(`${name}: mentions GBP_PROVIDER / GBP_FAKE_* / WHATSAPP_SETTINGS_PROVIDER / WHATSAPP_FAKE_* / SMS_PROVIDER / SMS_FAKE_* / GCAL_PROVIDER / GCAL_FAKE_* / E2E_DISABLE_BOOKING_RATE_LIMITS`);
     }
     // deploy-velo.sh reads NEXT_PUBLIC_APP_URL with sed (first line of
     // .env.production); Next takes the LAST definition and lets .env.local /
@@ -244,7 +251,7 @@ if (isMain) {
   }
   if (problems.length > 0) {
     for (const p of problems) console.error(`refused: ${p}`);
-    console.error("GBP deploy check refused. The fake providers (GBP, WhatsApp settings, SMS) are dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
+    console.error("GBP deploy check refused. The fake providers (GBP, WhatsApp settings, SMS, Google Calendar) and E2E_DISABLE_BOOKING_RATE_LIMITS are dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
     process.exit(1);
   }
   console.log(`GBP deploy check (${mode}): clean`);

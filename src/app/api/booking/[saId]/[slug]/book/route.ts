@@ -22,6 +22,9 @@ import {
   selectableHostUid,
 } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
+import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
@@ -76,6 +79,7 @@ import type { SubAccountDoc } from "@/types/tenancy";
  */
 
 // ── Soft rate limits (per IP + per sub-account, in-memory LRU) ──
+// Skipped entirely when bookingRateLimitsDisabled() is true (E2E only).
 const IP_HOURLY_CAP = 10;
 const SUB_HOURLY_CAP = 100;
 const WINDOW_MS = 60 * 60_000;
@@ -87,6 +91,7 @@ function pushAndCheck(
   key: string,
   cap: number,
 ): boolean {
+  if (bookingRateLimitsDisabled()) return false;
   const now = Date.now();
   const cutoff = now - WINDOW_MS;
   const arr = (bucket.get(key) ?? []).filter((t) => t >= cutoff);
@@ -297,6 +302,14 @@ export async function POST(
           now,
         )
       : new Map<string, number>();
+  // Hosts' Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId: saId,
+    page,
+    now,
+    fromInstant: new Date(slotStart.getTime() - 1),
+    toInstant: new Date(slotEnd.getTime() + 1),
+  });
 
   type CreatedPayload = {
     eventDocRef: FirebaseFirestore.DocumentReference;
@@ -328,6 +341,7 @@ export async function POST(
         toInstant: new Date(slotEnd.getTime() + 1),
         onlyHostUid: selectedHostUid,
         serviceId: service?.id ?? null,
+        externalBusy,
         txn,
       });
       const candidate: SlotCandidate = { startAt: slotStart, endAt: slotEnd };
@@ -621,6 +635,8 @@ export async function POST(
       expiresAt: created.paymentHoldExpiresAt,
     });
   }
+
+  pushBookingToGoogleAfterResponse(created.eventDocRef.id);
 
   // Activity + automation trigger.
   await recordBookingActivity(

@@ -138,6 +138,17 @@ describe("google OAuth state", () => {
     expect(verifyGoogleState(signRaw(b64(good)), NOW)).not.toBeNull();
   });
 
+  it("round-trips the calendar purpose, and refuses a forged or mixed one", () => {
+    const cal = signGoogleState({ ...CLAIMS, purpose: "calendar" }, NOW);
+    expect(verifyGoogleState(cal, NOW)).toEqual({ ...CLAIMS, returnTo: "settings", purpose: "calendar" });
+    const good = { s: "sa_1", u: "uid_admin", t: NOW, n: "x".repeat(32) };
+    // Signed by a key holder, but a purpose this deployment never issues.
+    for (const bad of [{ ...good, p: "calendar", r: "gbp" }, { ...good, p: "drive" }, { ...good, p: "" }, { ...good, p: 1 }]) {
+      expect(verifyGoogleState(signRaw(b64(bad)), NOW)).toBeNull();
+    }
+    expect(verifyGoogleState(signRaw(b64({ ...good, p: "calendar" })), NOW)?.purpose).toBe("calendar");
+  });
+
   it("rejects malformed states", () => {
     expect(verifyGoogleState("", NOW)).toBeNull();
     expect(verifyGoogleState("sa_1.nonce.sig", NOW)).toBeNull();

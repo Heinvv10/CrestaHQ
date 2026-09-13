@@ -242,6 +242,7 @@ export async function POST(request: Request) {
         paymentsEnabledByAgency: false,
         webinar1EnabledByAgency: false,
         googleEnabledByAgency: false,
+        googleCalendarEnabledByAgency: false,
         aiSuiteEnabledByAgency: false,
         metaConfig: null,
         stripeConnectionMeta: null,

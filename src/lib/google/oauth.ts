@@ -63,12 +63,14 @@ export function googleAppConfigured(): boolean {
 export function buildGoogleOAuthUrl(opts: {
   redirectUri: string;
   state: string;
+  /** Space-separated scopes. Absent ⇒ the Business Profile scope. */
+  scope?: string;
 }): string {
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID ?? "",
     redirect_uri: opts.redirectUri,
     response_type: "code",
-    scope: GOOGLE_SCOPE,
+    scope: opts.scope ?? GOOGLE_SCOPE,
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "false",
@@ -82,10 +84,12 @@ export function buildGoogleOAuthUrl(opts: {
 // callback can trust `state` came from our connect route (and names the right
 // sub-account) without persisting anything.
 //
-//   state = base64url(JSON {s, u, t, n, r?}) + "." + hex HMAC-SHA256("googlestate:" + payload)
+//   state = base64url(JSON {s, u, t, n, r?, p?}) + "." + hex HMAC-SHA256("googlestate:" + payload)
 //
 // s = sub-account, u = the uid that started the flow, t = issued-at (ms),
-// n = nonce, r = return page (allow-listed). `t` bounds how long a leaked state
+// n = nonce, r = return page (allow-listed), p = purpose: absent for the
+// Business Profile flow (so every GBP state keeps its exact shape), "calendar"
+// for a member's Google Calendar connection (lib/google-calendar). `t` bounds how long a leaked state
 // stays usable; `u` means a state leaked to another admin of the same
 // sub-account is useless to them. Without both, a state was replayable forever
 // by anyone who could pass the admin check.
@@ -98,6 +102,8 @@ export interface GoogleStateClaims {
   subAccountId: string;
   uid: string;
   returnTo: GoogleReturnTo;
+  /** Present only on a Google Calendar state; absent ⇒ Business Profile. */
+  purpose?: "calendar";
 }
 
 const STATE_MAX_AGE_MS = 10 * 60_000;
@@ -119,7 +125,12 @@ function stateHmac(secret: string, payload: string): string {
 }
 
 export function signGoogleState(
-  claims: { subAccountId: string; uid: string; returnTo?: GoogleReturnTo },
+  claims: {
+    subAccountId: string;
+    uid: string;
+    returnTo?: GoogleReturnTo;
+    purpose?: "calendar";
+  },
   now: number = Date.now(),
 ): string {
   // An empty key makes the HMAC forgeable by anyone who reads this file.
@@ -132,6 +143,7 @@ export function signGoogleState(
     n: crypto.randomBytes(16).toString("hex"),
   };
   if (claims.returnTo === "gbp") body.r = "gbp";
+  if (claims.purpose === "calendar") body.p = "calendar";
   const payload = Buffer.from(JSON.stringify(body)).toString("base64url");
   return `${payload}.${stateHmac(secret, payload)}`;
 }
@@ -162,15 +174,24 @@ export function verifyGoogleState(
     return null;
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-  const { s, u, t, n, r } = body as Record<string, unknown>;
+  const { s, u, t, n, r, p } = body as Record<string, unknown>;
   if (typeof s !== "string" || !s) return null;
   if (typeof u !== "string" || !u) return null;
   if (typeof t !== "number" || !Number.isFinite(t)) return null;
   if (typeof n !== "string" || !n) return null;
   if (r !== undefined && r !== "gbp") return null;
+  // A calendar connection always returns to Settings; any other purpose is
+  // not one this deployment issues.
+  if (p !== undefined && (p !== "calendar" || r !== undefined)) return null;
   if (now - t > STATE_MAX_AGE_MS) return null;
   if (t - now > STATE_MAX_SKEW_MS) return null;
-  return { subAccountId: s, uid: u, returnTo: r === "gbp" ? "gbp" : "settings" };
+  const claims: GoogleStateClaims = {
+    subAccountId: s,
+    uid: u,
+    returnTo: r === "gbp" ? "gbp" : "settings",
+  };
+  if (p === "calendar") claims.purpose = "calendar";
+  return claims;
 }
 
 /** The in-app page a Google flow returns to. Allow-listed by construction. */

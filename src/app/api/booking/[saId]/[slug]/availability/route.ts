@@ -16,6 +16,8 @@ import {
   resolvePageAvailability,
   type ResolveAvailabilityOptions,
 } from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
+import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 
@@ -37,11 +39,13 @@ import type { CalendarEvent } from "@/types/events";
  */
 
 // ── Soft rate limit: per-IP, in-memory LRU. Mirrors web-chat rate-limit ──
+// Skipped entirely when bookingRateLimitsDisabled() is true (E2E only).
 const HOURLY_CAP = 120; // ~2/min ought to be plenty for legit visitors
 const WINDOW_MS = 60 * 60_000;
 const ipHits = new Map<string, number[]>();
 
 function isRateLimited(ip: string): boolean {
+  if (bookingRateLimitsDisabled()) return false;
   const now = Date.now();
   const cutoff = now - WINDOW_MS;
   const arr = (ipHits.get(ip) ?? []).filter((t) => t >= cutoff);
@@ -151,6 +155,16 @@ export async function GET(
   const allowHostSelection = hostSelectionEnabled(page);
   const selectedHostUid = selectableHostUid(page, url.searchParams.get("host"));
 
+  // Hosts' Google busy time (SP3 G2) — fail open, never in a transaction.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId: saId,
+    page,
+    now,
+    fromInstant,
+    toInstant,
+    extraHostUids: movingEvent?.hostUids,
+  });
+
   let slots: PageSlot[];
   try {
     slots = await resolvePageAvailability({
@@ -162,6 +176,7 @@ export async function GET(
       onlyHostUid: selectedHostUid,
       movingEvent,
       serviceId,
+      externalBusy,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown";

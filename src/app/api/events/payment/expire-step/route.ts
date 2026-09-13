@@ -22,6 +22,7 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * QStash callback that auto-cancels an `awaiting_payment` event whose
@@ -102,6 +103,7 @@ export async function POST(request: Request) {
 
   // Best-effort side effects.
   await runExpireSideEffects(expiredEvent);
+  await pushBookingToGoogle(ref.id);
 
   return NextResponse.json({ ok: true });
 }

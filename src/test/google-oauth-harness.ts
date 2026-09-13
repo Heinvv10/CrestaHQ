@@ -66,11 +66,24 @@ function docRef(path: string) {
     update: async (data: Record<string, unknown>) => {
       const cur = state.docs.get(path);
       if (!cur) throw new Error(`NOT_FOUND: no document to update at ${path}`);
-      if (Object.keys(data).some((k) => k.includes("."))) {
-        throw new Error("harness: dotted update paths are not modelled");
-      }
       state.writes.push({ op: "update", path, data });
-      state.docs.set(path, { ...cur, ...data });
+      const next: Record<string, unknown> = { ...cur };
+      for (const [k, v] of Object.entries(data)) {
+        // Firestore semantics for a dotted path: one level of nesting, and
+        // FieldValue.delete() (the "DELETE_FIELD" sentinel) removes the key.
+        const [head, ...rest] = k.split(".");
+        if (rest.length === 0) {
+          if (v === "DELETE_FIELD") delete next[k];
+          else next[k] = v;
+          continue;
+        }
+        if (rest.length > 1) throw new Error("harness: only one level of dotted path is modelled");
+        const inner = { ...((next[head] as Record<string, unknown> | undefined) ?? {}) };
+        if (v === "DELETE_FIELD") delete inner[rest[0]];
+        else inner[rest[0]] = v;
+        next[head] = inner;
+      }
+      state.docs.set(path, next);
     },
     delete: async () => {
       state.writes.push({ op: "delete", path });
@@ -103,7 +116,7 @@ function collectionRef(path: string, filters: Array<[string, unknown]> = []) {
       if (op !== "==") throw new Error("harness: only == is modelled");
       return collectionRef(path, [...filters, [field, value]]);
     },
-    doc: () => docRef(`${path}/auto_${++autoId}`),
+    doc: (id?: string) => docRef(`${path}/${id ?? `auto_${++autoId}`}`),
     add: async (data: Record<string, unknown>) => {
       const id = `auto_${++autoId}`;
       const docPath = `${path}/${id}`;
@@ -143,6 +156,7 @@ function batch() {
   const b = {
     set: (ref: Ref, data: Record<string, unknown>, opts?: { merge?: boolean }) =>
       (pending.push(() => ref.set(data, opts)), b),
+    update: (ref: Ref, data: Record<string, unknown>) => (pending.push(() => ref.update(data)), b),
     delete: (ref: Ref) => (pending.push(() => ref.delete()), b),
     commit: async () => {
       for (const apply of pending) await apply();
@@ -161,7 +175,7 @@ export const adminMock = () => ({
 });
 
 export const firestoreMock = () => ({
-  FieldValue: { serverTimestamp: () => "SERVER_TS" },
+  FieldValue: { serverTimestamp: () => "SERVER_TS", delete: () => "DELETE_FIELD" },
 });
 
 /** Fresh docs: an admin, a plain member, and an admin of a DIFFERENT sub. */
