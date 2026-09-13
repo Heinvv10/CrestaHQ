@@ -53,7 +53,13 @@ interface Props {
   embedded?: boolean;
 }
 
-/** Message-type tag the booking-embed.js loader looks for on the parent. */
+/**
+ * Message-type tag the booking-embed.js loader looks for on the parent.
+ * Duplicated (not imported) in public/booking-embed.js's own
+ * RESIZE_MESSAGE_SOURCE — that file is a static asset served as-is, outside
+ * this app's module graph, so a shared import isn't possible. Keep both in
+ * sync by hand if this string ever changes.
+ */
 const RESIZE_MESSAGE_SOURCE = "leadstack-booking-embed";
 
 function detectBrowserTz(): string {

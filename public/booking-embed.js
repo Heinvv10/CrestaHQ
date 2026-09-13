@@ -23,8 +23,16 @@
   if (window.__leadstackBookingEmbedLoaded) return;
   window.__leadstackBookingEmbedLoaded = true;
 
+  // Duplicated (not imported) from src/components/booking/public-booking-view.tsx's
+  // own RESIZE_MESSAGE_SOURCE — this file is a static asset outside that
+  // module graph. Keep both in sync by hand if this string ever changes.
   var RESIZE_MESSAGE_SOURCE = "leadstack-booking-embed";
   var PLACEHOLDER_ATTR = "data-leadstack-booking";
+  // subAccountId/slug — both plain Firestore-doc-id-shaped segments. Rejects
+  // anything with a path separator inside a segment (e.g. "../evil") or a
+  // third segment, so the ref can never steer the iframe's src outside
+  // /embed/booking/<one>/<other>.
+  var REF_RE = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/;
 
   var scriptTag =
     document.currentScript ||
@@ -54,7 +62,7 @@
 
   function mount(el) {
     var ref = (el.getAttribute(PLACEHOLDER_ATTR) || "").trim();
-    if (!ref || ref.indexOf("/") === -1) return;
+    if (!REF_RE.test(ref)) return;
 
     var iframe = document.createElement("iframe");
     iframe.src = BASE + "/embed/booking/" + ref;
