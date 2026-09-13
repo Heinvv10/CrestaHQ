@@ -113,8 +113,25 @@ async function slotStarts(page: Page, slug: string): Promise<string[]> {
   return ((await res.json()).slots as { startAt: string }[]).map((s) => s.startAt);
 }
 
-test.beforeAll(purge);
+const HOST = { uid: "e2e-avail-host", name: "E2E Avail Host" };
+const members = () => adminDb().collection(`subAccounts/${sa}/subAccountMembers`);
+
+test.beforeAll(async () => {
+  await purge();
+  await members().doc(HOST.uid).set({
+    uid: HOST.uid,
+    subAccountId: sa,
+    agencyId: env.E2E_AGENCY_ID,
+    role: "collaborator",
+    status: "active",
+    email: `${HOST.uid}@example.com`,
+    displayName: HOST.name,
+    addedAt: new Date(),
+    addedByUid: "e2e",
+  });
+});
 test.afterEach(purge);
+test.afterAll(() => deleteScoped(members().doc(HOST.uid)));
 
 test("a date override closes a normally-open date and opens a normally-closed one", async ({ page }) => {
   const slug = `${PREFIX}override-${stamp}`;
@@ -224,4 +241,32 @@ test("the editor saves a date-specific closure", async ({ page }) => {
     })
     .toEqual([{ date: ymd(TOMORROW), ranges: [] }]);
   expect(await slotStarts(page, slug)).toEqual([]);
+});
+
+test("an existing page's availability rules survive reopening and saving in the editor", async ({ page }) => {
+  const slug = `${PREFIX}resave-${stamp}`;
+  const rules = {
+    bufferBeforeMinutes: 15,
+    slotIntervalMinutes: 25, // not one of the select's presets
+    dateOverrides: [
+      { date: ymd(TOMORROW), ranges: [] },
+      { date: ymd(DAY_AFTER), ranges: [{ startMinute: 1260, endMinute: 1320 }] },
+    ],
+    hosts: [
+      {
+        uid: HOST.uid,
+        name: HOST.name,
+        dateOverrides: [{ date: ymd(DAY_AFTER), ranges: [{ startMinute: 1290, endMinute: 1350 }] }],
+      },
+    ],
+  };
+  await seedPage(slug, rules);
+
+  await page.goto(`/sa/${sa}/booking/${slug}`);
+  await expect(page.locator("#slotInterval")).toHaveValue("25", { timeout: 30_000 });
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible({ timeout: 30_000 });
+
+  const saved = (await adminDb().doc(`subAccounts/${sa}/bookingPages/${slug}`).get()).data();
+  expect(saved).toMatchObject(rules);
 });
