@@ -20,6 +20,10 @@ import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
 import { Button } from "@/components/ui/button";
 import { BookingHelpDialog } from "@/components/booking/booking-help-dialog";
 import { DefaultBookingLinkCard } from "@/components/booking/default-booking-link-card";
+import {
+  calendarTypeLabel,
+  pageCalendarType,
+} from "@/lib/booking/calendar-types";
 import type { BookingPage } from "@/types/booking";
 
 /**
@@ -158,6 +162,12 @@ export default function BookingListPage() {
                     {p.name}
                   </Link>
                   <StatusPill status={p.status} />
+                  <span
+                    data-testid="calendar-type-badge"
+                    className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400"
+                  >
+                    {calendarTypeLabel(pageCalendarType(p))}
+                  </span>
                   {p.payment && (
                     <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
                       Deposit {p.payment.currency} {p.payment.amount}
