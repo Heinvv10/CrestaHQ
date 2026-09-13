@@ -113,13 +113,6 @@ test("creates a company, links a contact to it, and unlinks on delete", async ({
         { timeout: 30_000 },
       )
       .toBe(false);
-    // The unlink may commit after the company delete: wait for it too.
-    await expect
-      .poll(
-        async () => (await adminDb().doc(`contacts/${contactId}`).get()).data()?.companyId,
-        { timeout: 30_000 },
-      )
-      .toBeNull();
     const after = (await adminDb().doc(`contacts/${contactId}`).get()).data();
     expect(after, "contact was deleted with the company").toBeTruthy();
     expect(after?.companyId).toBeNull();
