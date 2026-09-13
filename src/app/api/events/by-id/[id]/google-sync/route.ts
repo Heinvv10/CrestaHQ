@@ -13,8 +13,10 @@ import { pushBookingToGoogle } from "@/lib/google-calendar/push";
  * Any active member of the event's sub-account. Runs the same push as every
  * booking path, with the same host checks (active members who are page hosts
  * or on the event's server-set hostUids) — a retry can reach no calendar a
- * normal push could not.
+ * normal push could not. One retry per event per 30 s (429 otherwise).
  */
+const RETRY_COOLDOWN_MS = 30_000;
+
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const ref = getAdminDb().collection("events").doc(id);
@@ -22,6 +24,14 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (!snap.exists) return NextResponse.json({ error: "Event not found" }, { status: 404 });
   const access = await requireSubAccountMember(request, snap.data()?.subAccountId as string);
   if (access instanceof NextResponse) return access;
+
+  // One retry per event per 30 s: each is a round of Google calls per host.
+  const last = (snap.data()?.googleSyncRetryAt as { toMillis?: () => number } | Date | undefined) ?? null;
+  const lastMs = last instanceof Date ? last.getTime() : (last?.toMillis?.() ?? 0);
+  if (Date.now() - lastMs < RETRY_COOLDOWN_MS) {
+    return NextResponse.json({ error: "Retried moments ago — wait 30 seconds." }, { status: 429 });
+  }
+  await ref.update({ googleSyncRetryAt: new Date() });
 
   await pushBookingToGoogle(id);
   const after = (await ref.get()).data();

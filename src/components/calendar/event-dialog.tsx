@@ -286,16 +286,17 @@ export function EventDialog({
 
   async function handleDelete() {
     if (!event) return;
-    // Rules refuse deleting a booking still mirrored in a Google calendar —
-    // its Google copy would be orphaned. Cancelling removes it properly.
-    if (Object.keys((event as { googleEventIds?: Record<string, string> | null }).googleEventIds ?? {}).length > 0) {
-      toast.error("This booking is in a host's Google Calendar. Cancel it instead of deleting.");
-      return;
-    }
     if (!confirm(`Delete "${event.title}"?`)) return;
     setDeleting(true);
     try {
-      await deleteEvent(event.id);
+      // The rules refuse a client delete of an event mirrored in a host's
+      // Google Calendar; the server route takes the Google copy down first.
+      if (Object.keys((event as { googleEventIds?: Record<string, string> | null }).googleEventIds ?? {}).length > 0) {
+        const res = await fetch(`/api/events/by-id/${event.id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error(`delete failed (${res.status})`);
+      } else {
+        await deleteEvent(event.id);
+      }
       toast.success("Event deleted");
       onOpenChange(false);
     } catch (err) {

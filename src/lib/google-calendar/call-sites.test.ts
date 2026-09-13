@@ -13,9 +13,11 @@ vi.mock("@/lib/comms/resend", async () => (await h()).bookingMocks.resend());
 vi.mock("@/lib/booking/lifecycle", async () => (await h()).bookingMocks.lifecycle());
 vi.mock("@/lib/booking/contact-reconcile", async () => (await h()).bookingMocks.reconcile());
 vi.mock("@/lib/automations/qstash", () => ({ verifyQStashSignature: async () => true }));
-vi.mock("@/lib/auth/require-tenancy", () => ({
-  requireSubAccountMember: async () => ({ uid: "a", subAccountId: "sa1", subAccountRole: "admin" }),
+const auth = vi.hoisted(() => ({
+  member: vi.fn(async (_req: Request, subAccountId: string) => ({ uid: "a", subAccountId, subAccountRole: "admin" })),
 }));
+vi.mock("@/lib/auth/require-tenancy", () => ({ requireSubAccountMember: auth.member }));
+vi.mock("@/lib/server/contacts-service", () => ({ emitContactCreatedById: async () => undefined }));
 const push = vi.hoisted(() => ({ now: vi.fn(async () => {}), later: vi.fn() }));
 vi.mock("@/lib/google-calendar/push", () => ({
   pushBookingToGoogle: push.now,
@@ -32,6 +34,7 @@ beforeEach(() => {
   resetBookingHarness();
   push.now.mockClear();
   push.later.mockClear();
+  auth.member.mockClear();
 });
 
 describe("push call sites", () => {
@@ -96,12 +99,37 @@ describe("push call sites", () => {
     expect(push.now).toHaveBeenCalledWith("e1");
   });
 
-  it("Retry sync (google-sync route)", async () => {
-    seedEvent("e1", "09:00", "09:30", { googleSyncError: { message: "Not in Ann's Google Calendar: x" } });
+  it("Retry sync (google-sync route): authorised against the EVENT's sub-account, then pushes; 30 s cooldown", async () => {
+    seedEvent("e1", "09:00", "09:30", { subAccountId: "sa_other", googleSyncError: { message: "Not in Ann's Google Calendar: x" } });
     const { POST } = await import("@/app/api/events/by-id/[id]/google-sync/route");
-    const res = await POST(new Request("http://x/api", { method: "POST" }), params("e1"));
-    expect(res.status).toBe(200);
+    const retry = (id = "e1") => POST(new Request("http://x/api", { method: "POST" }), params(id));
+    expect((await retry()).status).toBe(200);
+    expect(auth.member).toHaveBeenCalledWith(expect.any(Request), "sa_other");
     expect(push.now).toHaveBeenCalledWith("e1");
-    expect((await POST(new Request("http://x/api", { method: "POST" }), params("nope"))).status).toBe(404);
+    expect((await retry()).status).toBe(429);
+    expect(push.now).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(new Date(Date.now() + 31_000));
+    expect((await retry()).status).toBe(200);
+    expect((await retry("nope")).status).toBe(404);
+  });
+
+  it("voice booking → after the tool reply", async () => {
+    seedPage("p", { hosts: [{ uid: "a", name: "Ann" }] });
+    const { bookVoiceSlot } = await import("@/lib/server/voice-booking-service");
+    const res = await bookVoiceSlot({
+      subAccountId: "sa1", agencyId: "ag1", page: mem.read("subAccounts/sa1/bookingPages/p") as never,
+      startAtIso: new Date("2026-09-14T09:00:00Z").toISOString(), callerName: "C", callerPhone: "+27600000000", contactId: "c1",
+    });
+    expect(res.ok).toBe(true);
+    expect(push.later).toHaveBeenCalledWith((res as { eventId: string }).eventId);
+  });
+
+  it("manage-link cancel (token cancel route)", async () => {
+    const { issueEventToken } = await import("@/lib/booking/event-token");
+    const { token, hash } = issueEventToken("e1");
+    seedEvent("e1", "09:00", "09:30", { publicTokenHash: hash });
+    const { POST } = await import("@/app/api/events/[token]/cancel/route");
+    expect((await POST(new Request("http://x/api", { method: "POST" }), { params: Promise.resolve({ token }) })).status).toBe(200);
+    expect(push.now).toHaveBeenCalledWith("e1");
   });
 });

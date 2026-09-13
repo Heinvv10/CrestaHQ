@@ -1215,7 +1215,7 @@ service cloud.firestore {
       )
         // Server-set only — the dashboard creates through /api/events. `mode`
         // decides v1 exposure and whether status changes fire side effects.
-        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1228,7 +1228,7 @@ service cloud.firestore {
         // Server-set only. `mode` also decides v1 exposure and whether a
         // status change fires real triggers/email.
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
       // An event still mirrored in a Google calendar can't be deleted from
       // the client — its Google copy would be orphaned. Cancel it instead.
       allow delete: if canSeeScopedDoc(
