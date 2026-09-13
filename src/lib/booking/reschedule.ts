@@ -18,22 +18,23 @@ import {
 } from "@/lib/booking/lifecycle";
 import { eventSource, eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
-import type { CalendarEvent } from "@/types/events";
+import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
- * Who moved the booking. Threaded through so the activity-timeline row and
- * (eventually) any actor-specific copy can tell the three reschedule paths
- * apart: the public token-authenticated visitor endpoint, an authenticated
- * operator route, and the public v1 API.
+ * Who moved the booking. Threaded through so the activity-timeline row can
+ * tell the two reschedule paths apart: the public token-authenticated
+ * visitor endpoint and the authenticated operator route.
  */
-export type RescheduleActor = "visitor" | "operator" | "api";
+export type RescheduleActor = "visitor" | "operator";
 
 export class RescheduleRejected extends Error {
   constructor(
     public readonly httpStatus: number,
     message: string,
+    /** Machine-readable reason, when the caller needs to branch on it. */
+    public readonly code?: "no_change",
   ) {
     super(message);
   }
@@ -41,21 +42,23 @@ export class RescheduleRejected extends Error {
 
 /**
  * Move a booking-page event's time WITHOUT re-checking slot availability —
- * for the operator route and v1 API, both of which trust the caller to
- * have picked a sane time (GHL lets an operator override availability the
- * same way). The public visitor endpoint does its own availability-checked
- * transaction instead and stamps these same fields inline.
+ * for the operator route, which trusts the operator to have picked a sane
+ * time (GHL lets an operator override availability the same way). The
+ * public visitor endpoint does its own availability-checked transaction
+ * instead and stamps these same fields inline.
  *
- * Validates: the event exists, is a booking-page event (manual events have
- * no reschedule bookkeeping to apply), and is still in a slot-occupying
- * status (scheduled / awaiting_payment) — a cancelled or completed booking
- * can't be "rescheduled" back to life through this path.
+ * Validates, before anything is written or the token rotated: the event
+ * exists, is a booking-page event (manual events have no reschedule
+ * bookkeeping to apply), is still in a slot-occupying status (scheduled /
+ * awaiting_payment), its booking page still exists (same refusal as the
+ * public route — the reminders and email are built from it), and the time
+ * actually changes (400 `no_change`).
  */
 export async function rescheduleWithoutAvailabilityCheck(
   eventId: string,
   newStart: Date,
   newEnd: Date,
-): Promise<{ event: CalendarEvent; newToken: string }> {
+): Promise<{ event: CalendarEvent; newToken: string; page: BookingPage }> {
   const db = getAdminDb();
   const eventRef = db.collection("events").doc(eventId);
   return db.runTransaction(async (txn) => {
@@ -63,7 +66,9 @@ export async function rescheduleWithoutAvailabilityCheck(
     if (!snap.exists) {
       throw new RescheduleRejected(404, "Event not found.");
     }
-    const event = snap.data() as CalendarEvent;
+    // Id from the path: the side effects key reminders, the activity row
+    // and the trigger off `event.id`, and not every event doc stores one.
+    const event = { ...snap.data(), id: eventRef.id } as CalendarEvent;
     if (eventSource(event) !== "booking_page") {
       throw new RescheduleRejected(
         400,
@@ -77,6 +82,26 @@ export async function rescheduleWithoutAvailabilityCheck(
         "This booking can't be rescheduled anymore.",
       );
     }
+    if (!event.bookingPageSlug) {
+      throw new RescheduleRejected(409, "Reschedule isn't available for this booking.");
+    }
+    const pageSnap = await txn.get(
+      db.doc(`subAccounts/${event.subAccountId}/bookingPages/${event.bookingPageSlug}`),
+    );
+    if (!pageSnap.exists) {
+      throw new RescheduleRejected(
+        409,
+        "This booking's page no longer exists — cancel and rebook instead.",
+      );
+    }
+    const currentStart = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
+    const currentEnd = (event.endAt as { toDate?: () => Date } | null)?.toDate?.();
+    if (
+      currentStart?.getTime() === newStart.getTime() &&
+      currentEnd?.getTime() === newEnd.getTime()
+    ) {
+      throw new RescheduleRejected(400, "That's already the booking's time.", "no_change");
+    }
     const { token: newRawToken, hash: newHash } = issueEventToken(eventRef.id);
     txn.update(eventRef, {
       startAt: newStart,
@@ -89,6 +114,7 @@ export async function rescheduleWithoutAvailabilityCheck(
     return {
       event: { ...event, publicTokenHash: newHash },
       newToken: newRawToken,
+      page: pageSnap.data() as BookingPage,
     };
   });
 }
@@ -98,8 +124,12 @@ export async function rescheduleWithoutAvailabilityCheck(
  * which route wrote the new time: re-publish reminders with a fresh nonce,
  * record the activity row, fire `booking.rescheduled`, and mail the
  * visitor an updated confirmation + ICS. Extracted from the public
- * reschedule route so the operator route and v1 API get the identical
- * bookkeeping instead of a raw field write.
+ * reschedule route so the operator route gets the identical bookkeeping
+ * instead of a raw field write.
+ *
+ * Returns whether the "Updated:" email went out. It matters more than for
+ * other notifications: the token was just rotated, so a visitor who isn't
+ * emailed is left holding a dead manage link — the operator must be told.
  */
 export async function runRescheduleSideEffects(args: {
   event: CalendarEvent;
@@ -109,7 +139,7 @@ export async function runRescheduleSideEffects(args: {
   startAt: Date;
   endAt: Date;
   actor: RescheduleActor;
-}): Promise<void> {
+}): Promise<{ emailSent: boolean; emailSkipReason?: EventNotifySkipReason }> {
   const db = getAdminDb();
   const { event, page, newRawToken, publicEventUrl, startAt, endAt, actor } =
     args;
@@ -153,18 +183,31 @@ export async function runRescheduleSideEffects(args: {
 
   // Visitor confirmation email + ICS (UPDATE, sequence+1 so calendar
   // clients overwrite the existing entry).
-  if (!event.contactId) return;
+  if (!event.contactId) return { emailSent: false, emailSkipReason: "no_contact" };
+  let contact: Contact;
+  let sub: SubAccountDoc;
   try {
     const [contactSnap, subSnap] = await Promise.all([
       db.collection("contacts").doc(event.contactId).get(),
       db.doc(`subAccounts/${event.subAccountId}`).get(),
     ]);
-    if (!contactSnap.exists || !subSnap.exists) return;
-    const contact = contactSnap.data() as Contact;
-    const sub = subSnap.data() as SubAccountDoc;
-    if (!emailIsConfigured(sub)) return;
-    if (!contact.email || contact.emailOptedOut) return;
-
+    if (!contactSnap.exists || !subSnap.exists) {
+      return { emailSent: false, emailSkipReason: "missing_records" };
+    }
+    contact = contactSnap.data() as Contact;
+    sub = subSnap.data() as SubAccountDoc;
+  } catch (err) {
+    console.warn("[booking/reschedule] contact/sub-account read failed", err);
+    return { emailSent: false, emailSkipReason: "missing_records" };
+  }
+  if (!emailIsConfigured(sub)) {
+    return { emailSent: false, emailSkipReason: "email_not_configured" };
+  }
+  if (!contact.email) return { emailSent: false, emailSkipReason: "no_contact_email" };
+  if (contact.emailOptedOut) {
+    return { emailSent: false, emailSkipReason: "contact_opted_out" };
+  }
+  try {
     const rendered = renderBookingConfirmationEmail({
       recipientName: contact.name ?? "",
       businessName: sub.name ?? "Booking",
@@ -216,7 +259,7 @@ export async function runRescheduleSideEffects(args: {
         subAccount: sub,
         meter: { subAccountId: event.subAccountId },
       });
-      return;
+      return { emailSent: true };
     }
 
     // Through the shared wrapper (it supports attachments) so the
@@ -237,7 +280,9 @@ export async function runRescheduleSideEffects(args: {
         },
       ],
     });
+    return { emailSent: true };
   } catch (err) {
     console.warn("[booking/reschedule] confirmation send failed", err);
+    return { emailSent: false, emailSkipReason: "send_failed" };
   }
 }

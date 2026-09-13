@@ -51,7 +51,10 @@ export async function POST(
   if (!eventSnap.exists) {
     return NextResponse.json({ error: "Event not found" }, { status: 404 });
   }
-  const event = eventSnap.data() as CalendarEvent;
+  // Manual events (events-service, v1 POST) don't store an `id` field —
+  // only booking-page and voice bookings do. The service writes to
+  // `events/${event.id}`, so take the id from the path, not the doc.
+  const event = { ...eventSnap.data(), id: eventId } as CalendarEvent;
 
   const access = await requireSubAccountMember(request, event.subAccountId);
   if (access instanceof NextResponse) return access;

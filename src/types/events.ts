@@ -106,6 +106,13 @@ export interface CalendarEvent {
   rescheduledAt?: Timestamp | FieldValue | null;
   /** Number of times this event has been rescheduled. Undefined/0 = never. */
   rescheduleCount?: number;
+  /**
+   * API-key mode the event was created under. Set only by the v1 API and
+   * the server-side manual create; undefined (booking-page, voice, client
+   * writes) means live. A `"test"` event must never fire real automations
+   * or email — see event-status-service.
+   */
+  mode?: "live" | "test";
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
@@ -124,6 +131,31 @@ export type EventFormData = {
    */
   meetingUrl?: string | null;
 };
+
+/**
+ * Why a status change or reschedule did NOT email the visitor. Returned by
+ * the mark-status and operator reschedule routes so the dialog's toast can
+ * say what actually happened instead of assuming the email went out.
+ *   - `not_cancelled`         status flip wasn't a cancellation (mark-status only)
+ *   - `test_mode`             test-mode event — no real side effects
+ *   - `no_contact`            event has no linked contact
+ *   - `email_not_configured`  RESEND_API_KEY / EMAIL_FROM missing
+ *   - `no_contact_email`      contact record has no email field
+ *   - `contact_opted_out`     contact.emailOptedOut === true
+ *   - `missing_records`       contact / sub-account doc not found
+ *   - `bad_timestamps`        event's startAt/endAt unreadable
+ *   - `send_failed`           the send threw
+ */
+export type EventNotifySkipReason =
+  | "not_cancelled"
+  | "test_mode"
+  | "no_contact"
+  | "email_not_configured"
+  | "no_contact_email"
+  | "contact_opted_out"
+  | "missing_records"
+  | "bad_timestamps"
+  | "send_failed";
 
 /**
  * Read an event's lifecycle status with the legacy default applied.
