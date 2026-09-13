@@ -135,12 +135,15 @@ test("a member connects Google Calendar; busy blocks slots, bookings push and ca
   expect(booked.status()).toBe(200);
   const { eventId, publicEventUrl } = (await booked.json()) as { eventId: string; publicEventUrl: string };
   createdEvents.push(eventId);
-  const pushed = (await fakeEvents()).find(
-    (e) => (e.extendedProperties as { private?: { leadstackEventId?: string } } | undefined)?.private?.leadstackEventId === eventId,
-  );
+  // The book route pushes after its response (next/server `after()`).
+  const ours = (e: Record<string, unknown>) =>
+    (e.extendedProperties as { private?: { leadstackEventId?: string } } | undefined)?.private?.leadstackEventId === eventId;
+  await expect.poll(async () => (await fakeEvents()).some(ours), { timeout: 30_000 }).toBe(true);
+  const pushed = (await fakeEvents()).find(ours);
   expect(pushed).toMatchObject({ start: { dateTime: slot(11).startAt }, end: { dateTime: slot(11).endAt } });
-  const stored = (await adminDb().collection("events").doc(eventId).get()).data();
-  expect(stored?.googleEventIds).toEqual({ [ownerUid]: pushed?.id });
+  await expect
+    .poll(async () => (await adminDb().collection("events").doc(eventId).get()).data()?.googleEventIds, { timeout: 30_000 })
+    .toEqual({ [ownerUid]: pushed?.id });
 
   // --- Cancel through the manage link: the Google copy is deleted.
   await page.goto(new URL(publicEventUrl).pathname);
