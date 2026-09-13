@@ -91,6 +91,78 @@ describe("class", () => {
   });
 });
 
+const viewStarts = async (slug: string, eventId: string) => {
+  const { GET } = await import("@/app/api/booking/[saId]/[slug]/availability/route");
+  const res = await GET(new Request(`http://x/api?excludeEventId=${eventId}`), {
+    params: Promise.resolve({ saId: "sa1", slug }),
+  });
+  expect(res.status).toBe(200);
+  return ((await res.json()).slots as { startAt: string }[]).map((s) => s.startAt);
+};
+
+describe("a hostless booking on a page that has since gained hosts", () => {
+  it("cannot move onto another host's booking; every event still blocks it", async () => {
+    seedPage("grew", { hosts: [A, B] });
+    const token = seedBooking("mine", "grew", "09:00", "09:30");
+    seedEvent("bobs", "10:00", "10:30", { assignedToUid: "b" });
+
+    expect(await viewStarts("grew", "mine")).not.toContain(at("10:00").toISOString());
+    expect((await move(token, "10:00", "10:30")).status).toBe(409);
+    expect((await move(token, "10:30", "11:00")).status).toBe(200);
+  });
+});
+
+describe("a booking whose host is no longer on the page", () => {
+  it("still moves, on its own host's calendar and the page hours", async () => {
+    seedPage("left", { hosts: [B] });
+    const token = seedBooking("mine", "left", "09:00", "09:30", { assignedToUid: "a" });
+    seedEvent("anns", "11:00", "11:30", { assignedToUid: "a" });
+    seedEvent("bobs", "10:00", "10:30", { assignedToUid: "b" });
+
+    const view = await viewStarts("left", "mine");
+    expect(view).toContain(at("10:00").toISOString());
+    expect(view).not.toContain(at("11:00").toISOString());
+    expect((await move(token, "11:00", "11:30")).status).toBe(409);
+    const res = await move(token, "10:00", "10:30");
+    expect(res.status).toBe(200);
+    expect(mem.read("events/mine")?.assignedToUid).toBe("a");
+  });
+});
+
+describe("a service booking whose service was deleted", () => {
+  it("moves by its own length", async () => {
+    seedPage("svc", {
+      calendarType: "service",
+      services: [{ id: "trim", name: "Trim", durationMinutes: 30, description: null }],
+    });
+    const token = seedBooking("mine", "svc", "09:00", "10:00", { serviceId: "cut" });
+
+    const today = (await viewStarts("svc", "mine")).filter((s) => s.startsWith("2026-09-14"));
+    expect(today).toEqual([at("09:00").toISOString(), at("10:00").toISOString(), at("11:00").toISOString()]);
+    expect((await move(token, "11:00", "11:30")).status).toBe(409); // not the page's 30 min
+    expect((await move(token, "10:00", "11:00")).status).toBe(200);
+  });
+
+  it("a booking from before the page offered services moves by its own length", async () => {
+    seedPage("svc2", {
+      calendarType: "service",
+      services: [{ id: "trim", name: "Trim", durationMinutes: 30, description: null }],
+    });
+    const token = seedBooking("mine", "svc2", "09:00", "10:00");
+    expect((await move(token, "11:00", "12:00")).status).toBe(200);
+  });
+});
+
+describe("the reschedule view's excludeEventId", () => {
+  it("is ignored for an event booked on another page", async () => {
+    seedPage("solo");
+    seedPage("elsewhere");
+    seedEvent("theirs", "10:00", "10:30", { bookingPageSlug: "elsewhere" });
+    // Naming someone else's booking must not free its time on this page.
+    expect(await viewStarts("solo", "theirs")).not.toContain(at("10:00").toISOString());
+  });
+});
+
 describe("legacy hostless page", () => {
   it("is still blocked by any event in the sub-account", async () => {
     seedPage("solo");

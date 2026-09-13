@@ -49,13 +49,29 @@ export interface PageSlotsInput {
   ignoreMinNotice?: boolean;
   /** Named-host selection — pass `selectableHostUid()`'s result, never raw input. */
   onlyHostUid?: string | null;
-  /**
-   * Reschedule: only these hosts (the event's own). Empty/absent ⇒ every page
-   * host. A restriction naming no current host yields no slots.
-   */
-  restrictToHostUids?: string[] | null;
+  /** Reschedule: the booking being moved. Absent ⇒ a new booking. */
+  movingEvent?: MovingEvent | null;
   /** Service pages: required; slots are sized to that service. */
   serviceId?: string | null;
+}
+
+/**
+ * A booking being rescheduled. Its slots are its own, whatever the page has
+ * become since it was booked:
+ *  - with hosts: every one of them must be free (a collective booking keeps
+ *    all of its hosts). A host still on the page keeps their own hours; one
+ *    no longer on it is checked against their busy on the page hours.
+ *    `onlyHostUid` is ignored.
+ *  - hostless: the legacy shared schedule — every event blocks, page hours —
+ *    because the booking stays shared busy for every host wherever it lands.
+ *  - on a service page whose service is gone (or that it pre-dates), it is
+ *    sized by its own length.
+ */
+export interface MovingEvent {
+  /** `eventHostUids(event)`. */
+  hostUids: string[];
+  /** endAt − startAt. */
+  durationMinutes: number;
 }
 
 /** Every host an event occupies: `hostUids` ∪ `assignedToUid`. */
@@ -96,14 +112,15 @@ export function pageService(
 }
 
 export function computePageSlots(input: PageSlotsInput): PageSlot[] {
-  const { page } = input;
+  const { page, movingEvent: moving } = input;
   const type = pageCalendarType(page);
 
   let sized = page;
   if (type === "service") {
-    const service = pageService(page, input.serviceId);
-    if (!service) return [];
-    sized = { ...page, durationMinutes: service.durationMinutes };
+    const minutes =
+      pageService(page, input.serviceId)?.durationMinutes ?? moving?.durationMinutes;
+    if (!minutes) return [];
+    sized = { ...page, durationMinutes: minutes };
   }
 
   // Buffers: a slot [S, E) needs `bufferBeforeMinutes` free before it and
@@ -153,16 +170,14 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
 
   let slots: PageSlot[];
   const pageHosts = page.hosts ?? [];
-  if (pageHosts.length === 0) {
-    // Hostless (legacy single shared schedule): every event blocks.
+  if (pageHosts.length === 0 || moving?.hostUids.length === 0) {
+    // Hostless page, or a hostless booking being moved (see `MovingEvent`):
+    // the legacy single shared schedule, where every event blocks.
     slots = run(busy).map((s) => ({ ...s, hostUids: [] }));
   } else {
-    const restrict = input.restrictToHostUids ?? [];
-    const hosts = pageHosts.filter(
-      (h) =>
-        (restrict.length === 0 || restrict.includes(h.uid)) &&
-        (input.onlyHostUid == null || h.uid === input.onlyHostUid),
-    );
+    const hosts: Array<Pick<BookingHost, "uid" | "workingHours">> = moving
+      ? moving.hostUids.map((uid) => pageHosts.find((h) => h.uid === uid) ?? { uid })
+      : pageHosts.filter((h) => input.onlyHostUid == null || h.uid === input.onlyHostUid);
     const perHost = hosts.map((h) => ({
       uid: h.uid,
       slots: run(
@@ -171,7 +186,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
         h,
       ),
     }));
-    slots = combine(perHost, type === "collective" ? "all" : "any");
+    slots = combine(perHost, moving || type === "collective" ? "all" : "any");
   }
 
   if (seats !== null) slots = applySeats(slots, seatBusy, seats, pad);

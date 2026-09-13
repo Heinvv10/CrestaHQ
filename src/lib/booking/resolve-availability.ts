@@ -5,6 +5,7 @@ import {
   computePageSlots,
   eventHostUids,
   type HostBusy,
+  type MovingEvent,
   type PageSlot,
   type PageSlotsInput,
 } from "@/lib/booking/page-slots";
@@ -19,17 +20,34 @@ import type { CalendarEvent } from "@/types/events";
  * and host rules via `computePageSlots`.
  *
  * Busy time is a list of intervals tagged with the hosts they occupy
- * (`HostBusy`), so another source — e.g. a host's external calendar — adds
- * intervals here, tagged with that host, and no caller changes.
+ * (`HostBusy`), so another source — e.g. a host's external calendar — is
+ * passed in as `externalBusy`, tagged with that host, and merges the same way.
  */
 
+/** Busy time from outside LeadStack (e.g. a host's Google calendar). */
+export interface ExternalBusy {
+  startAt: Date;
+  endAt: Date;
+  /** Hosts it occupies — see `HostBusy.hostUids` (empty ⇒ everyone). */
+  hostUids: string[];
+}
+
 export interface ResolveAvailabilityOptions
-  extends Omit<PageSlotsInput, "busy" | "now"> {
+  extends Omit<PageSlotsInput, "busy" | "now" | "movingEvent"> {
   subAccountId: string;
   /** Defaults to the current instant. */
   now?: Date;
-  /** Never counted as busy — the event being rescheduled. */
-  excludeEventId?: string | null;
+  /**
+   * Reschedule: the booking being moved — never counted as busy, and slots
+   * are its own (`MovingEvent`). Build it with `movingEventOf` from an event
+   * the caller has checked belongs to this page.
+   */
+  movingEvent?: (MovingEvent & { id: string }) | null;
+  /**
+   * Pre-loaded external busy time. Load it OUTSIDE any transaction: an
+   * external call inside one is repeated on every contention retry.
+   */
+  externalBusy?: ExternalBusy[];
   /**
    * Read busy events inside this transaction, so a book/reschedule write
    * conflicts with any concurrent booking that changes what it read.
@@ -75,9 +93,12 @@ export async function resolvePageAvailability(
     opts.subAccountId,
     queryFrom,
     queryTo,
-    opts.excludeEventId ?? null,
+    opts.movingEvent?.id ?? null,
     opts.txn,
   );
+  for (const b of opts.externalBusy ?? []) {
+    busy.push({ ...b, bookingPageSlug: null });
+  }
 
   return computePageSlots({
     page: opts.page,
@@ -87,9 +108,24 @@ export async function resolvePageAvailability(
     busy,
     ignoreMinNotice: opts.ignoreMinNotice,
     onlyHostUid: opts.onlyHostUid,
-    restrictToHostUids: opts.restrictToHostUids,
+    movingEvent: opts.movingEvent,
     serviceId: opts.serviceId,
   });
+}
+
+/** The `movingEvent` for a booking being rescheduled. */
+export function movingEventOf(
+  id: string,
+  e: CalendarEvent,
+): MovingEvent & { id: string } {
+  const start = toDate(e.startAt);
+  const end = toDate(e.endAt);
+  return {
+    id,
+    hostUids: eventHostUids(e),
+    // 0 when malformed: a service page then offers nothing rather than guess.
+    durationMinutes: start && end ? (end.getTime() - start.getTime()) / 60_000 : 0,
+  };
 }
 
 /** Occupying events in the sub-account starting inside [from, to]. */

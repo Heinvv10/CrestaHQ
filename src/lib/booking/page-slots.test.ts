@@ -109,13 +109,57 @@ describe("round robin", () => {
     expect(starts(out)[0]).toBe("09:30");
   });
 
-  it("a reschedule restriction checks the event's own host only", () => {
+});
+
+describe("a moved booking (reschedule)", () => {
+  const rr = page({ hosts: [A, B] });
+  const moving = (hostUids: string[], durationMinutes = 30) => ({
+    movingEvent: { hostUids, durationMinutes },
+  });
+
+  it("is checked against its own host only", () => {
     const b1 = [busy("10:00", "10:30", ["b"]), busy("11:00", "11:30", ["a"])];
-    const out = slots(rr, b1, { restrictToHostUids: ["a"] });
+    const out = slots(rr, b1, moving(["a"]));
     expect(starts(out)).toContain("10:00"); // Bob busy, Ann free → Ann's slot
     expect(starts(out)).not.toContain("11:00"); // Ann busy → gone for her
-    const none = slots(rr, b1, { restrictToHostUids: ["gone"] });
-    expect(none).toEqual([]);
+    expect(out.every((s) => s.hostUids.join() === "a")).toBe(true);
+  });
+
+  it("a hostless booking on a page that since gained hosts: every event blocks", () => {
+    // Ann is free at 10:00, but the booking has no host — it would land on
+    // Bob's time under "any host", and stay shared busy for everyone.
+    const out = slots(rr, [busy("10:00", "10:30", ["b"])], moving([]));
+    expect(starts(out)).not.toContain("10:00");
+    expect(starts(out)).toContain("10:30");
+    expect(out.every((s) => s.hostUids.length === 0)).toBe(true);
+  });
+
+  it("a hostless booking uses page hours, not a host's own", () => {
+    const p = page({
+      hosts: [{ ...A, workingHours: [{ dayOfWeek: 1, startMinute: 540, endMinute: 600 }] }],
+    });
+    expect(starts(slots(p, [], moving([])))).toHaveLength(6);
+  });
+
+  it("a host no longer on the page keeps the booking, on page hours", () => {
+    const p = page({ hosts: [B] });
+    const b1 = [busy("10:00", "10:30", ["b"]), busy("11:00", "11:30", ["a"])];
+    const out = slots(p, b1, moving(["a"]));
+    expect(starts(out)).toContain("10:00"); // only Bob is busy then
+    expect(starts(out)).not.toContain("11:00"); // Ann is busy
+    expect(starts(out)).toHaveLength(5);
+    expect(out[0].hostUids).toEqual(["a"]);
+  });
+
+  it("a collective booking needs every one of its hosts, whatever the page is now", () => {
+    const out = slots(rr, [busy("10:00", "10:30", ["b"])], moving(["a", "b"]));
+    expect(starts(out)).not.toContain("10:00");
+    expect(out[0].hostUids).toEqual(["a", "b"]);
+  });
+
+  it("ignores a named-host narrowing", () => {
+    const out = slots(rr, [], { ...moving(["a"]), onlyHostUid: "b" });
+    expect(out[0].hostUids).toEqual(["a"]);
   });
 });
 
@@ -208,6 +252,15 @@ describe("service", () => {
   it("offers nothing without a known service", () => {
     expect(slots(svc, [], { serviceId: "nope" })).toEqual([]);
     expect(slots(svc, [])).toEqual([]);
+  });
+
+  it("a moved booking whose service is gone is sized by its own length", () => {
+    const movingEvent = { hostUids: [], durationMinutes: 90 };
+    const out = slots(svc, [], { serviceId: "deleted", movingEvent });
+    expect(starts(out)).toEqual(["09:00", "10:30"]);
+    expect(out[0].endAt.getTime() - out[0].startAt.getTime()).toBe(90 * 60_000);
+    // A service that still exists sizes it, as for a new booking.
+    expect(starts(slots(svc, [], { serviceId: "cut", movingEvent }))).toHaveLength(3);
   });
 });
 

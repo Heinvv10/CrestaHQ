@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import {
-  eventHostUids,
   hostSelectionEnabled,
   pageService,
   selectableHostUid,
@@ -12,7 +11,9 @@ import {
 } from "@/lib/booking/page-slots";
 import {
   BusyQueryError,
+  movingEventOf,
   resolvePageAvailability,
+  type ResolveAvailabilityOptions,
 } from "@/lib/booking/resolve-availability";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -117,22 +118,23 @@ export async function GET(
   }
 
   // Reschedule view: the attendee's own event is not busy, and the slots are
-  // the ones the reschedule route will accept — that event's own host(s) and
-  // service. Only an event booked on THIS page narrows anything.
-  let restrictToHostUids: string[] | null = null;
+  // the ones the reschedule route will accept — that event's own host(s),
+  // service and length. Only an event booked on THIS page is excluded or
+  // narrows anything: naming someone else's booking must not free its time.
+  let movingEvent: ResolveAvailabilityOptions["movingEvent"] = null;
   let eventServiceId: string | null = null;
   if (excludeEventId && !excludeEventId.includes("/")) {
     const evSnap = await db.collection("events").doc(excludeEventId).get();
     const ev = evSnap.exists ? (evSnap.data() as CalendarEvent) : null;
     if (ev && ev.subAccountId === saId && ev.bookingPageSlug === slug) {
-      restrictToHostUids = eventHostUids(ev);
+      movingEvent = movingEventOf(evSnap.id, ev);
       eventServiceId = ev.serviceId ?? null;
     }
   }
 
   const type = pageCalendarType(page);
-  const serviceId = eventServiceId ?? url.searchParams.get("serviceId");
-  if (type === "service" && !pageService(page, serviceId)) {
+  const serviceId = movingEvent ? eventServiceId : url.searchParams.get("serviceId");
+  if (type === "service" && !movingEvent && !pageService(page, serviceId)) {
     return NextResponse.json(
       { error: "Pick a service first." },
       { status: 400 },
@@ -154,9 +156,8 @@ export async function GET(
       now,
       fromInstant,
       toInstant,
-      excludeEventId,
       onlyHostUid: selectedHostUid,
-      restrictToHostUids,
+      movingEvent,
       serviceId,
     });
   } catch (err) {
@@ -206,7 +207,10 @@ export async function GET(
     })),
     timezone: page.timezone,
     durationMinutes:
-      pageService(page, serviceId)?.durationMinutes ?? page.durationMinutes,
+      pageService(page, serviceId)?.durationMinutes ??
+      (type === "service" && movingEvent
+        ? movingEvent.durationMinutes
+        : page.durationMinutes),
     // Only expose the roster + applied selection on opted-in pages. Absent on
     // every other page so a pooled page can't be probed for staff names.
     ...(allowHostSelection

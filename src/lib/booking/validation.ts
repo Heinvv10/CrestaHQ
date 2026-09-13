@@ -554,21 +554,23 @@ export function validateCalendarTypeHosts(
  * The type-specific fields. Each is null on a type it doesn't belong to, so
  * a full-replace PATCH that changes the type clears the old type's fields.
  * Undefined values are skipped on write (`ignoreUndefinedProperties`).
+ *
+ * No type in the body (a legacy caller, or a pre-SP3 page): the fields that
+ * ARE sent are validated against the stored type — or, on a page that has
+ * none, the type derived from the body's hosts — and the rest are left as
+ * stored.
  */
 function validateCalendarTypeFields(
-  type: CalendarType | undefined,
+  sent: CalendarType | undefined,
+  stored: CalendarType | undefined,
   b: Record<string, unknown>,
   hostCount: number,
 ): Validated<
   Pick<BookingPageFormData, "distribution" | "seatsPerSlot" | "services">
 > {
-  // No type sent (legacy caller): leave every type field as stored.
-  if (type === undefined) {
-    return {
-      ok: true,
-      value: { distribution: undefined, seatsPerSlot: undefined, services: undefined },
-    };
-  }
+  const type = sent ?? stored ?? (hostCount > 0 ? "round_robin" : "personal");
+  const given = (k: "distribution" | "seatsPerSlot" | "services") =>
+    sent !== undefined || b[k] !== undefined;
   const hostsOk = validateCalendarTypeHosts(type, hostCount);
   if (!hostsOk.ok) return hostsOk;
 
@@ -581,7 +583,7 @@ function validateCalendarTypeFields(
   }
 
   let seatsPerSlot: number | null = null;
-  if (type === "class") {
+  if (type === "class" && given("seatsPerSlot")) {
     const n = b.seatsPerSlot;
     if (typeof n !== "number" || !Number.isInteger(n) || n < 2 || n > MAX_SEATS_PER_SLOT) {
       return {
@@ -593,12 +595,19 @@ function validateCalendarTypeFields(
   }
 
   let services: BookingService[] | null = null;
-  if (type === "service") {
+  if (type === "service" && given("services")) {
     const v = validateServices(b.services);
     if (!v.ok) return v;
     services = v.value;
   }
-  return { ok: true, value: { distribution, seatsPerSlot, services } };
+  return {
+    ok: true,
+    value: {
+      distribution: given("distribution") ? distribution : undefined,
+      seatsPerSlot: given("seatsPerSlot") ? seatsPerSlot : undefined,
+      services: given("services") ? services : undefined,
+    },
+  };
 }
 
 export function validatePayment(
@@ -830,6 +839,8 @@ export function validateConfirmationMessage(
  */
 export function validateBookingPageFormData(
   body: unknown,
+  /** PATCH: the page's stored `calendarType`, for a body that sends none. */
+  storedCalendarType?: CalendarType,
 ): Validated<BookingPageFormData> {
   if (typeof body !== "object" || body === null) {
     return { ok: false, error: "Invalid request body." };
@@ -883,6 +894,7 @@ export function validateBookingPageFormData(
   if (!calendarType.ok) return calendarType;
   const typeFields = validateCalendarTypeFields(
     calendarType.value,
+    storedCalendarType,
     b,
     hosts.value.length,
   );

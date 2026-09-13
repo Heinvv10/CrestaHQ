@@ -25,6 +25,21 @@ describe("calendar type", () => {
     });
   });
 
+  it("absent: a sent type field is validated against the stored or derived type", () => {
+    // Legacy team page: derived round robin keeps the distribution.
+    const rr = check({ hosts: [host("a")], distribution: "availability" });
+    expect(rr.ok && rr.value).toMatchObject({ calendarType: undefined, distribution: "availability" });
+    expect(check({ hosts: [host("a")], distribution: "random" })).toMatchObject({ ok: false });
+    // Legacy hostless page: derived personal has no distribution.
+    const solo = check({ distribution: "availability" });
+    expect(solo.ok && solo.value.distribution).toBeNull();
+    // A stored type wins over the derived one.
+    const cls = validateBookingPageFormData({ ...base, seatsPerSlot: 4 }, "class");
+    expect(cls.ok && cls.value.seatsPerSlot).toBe(4);
+    expect(validateBookingPageFormData({ ...base, seatsPerSlot: 1 }, "class")).toMatchObject({ ok: false });
+    expect(validateBookingPageFormData({ ...base }, "class").ok).toBe(true);
+  });
+
   it("rejects an unknown type", () => {
     expect(check({ calendarType: "rentals" })).toMatchObject({ ok: false });
   });

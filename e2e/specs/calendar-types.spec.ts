@@ -297,3 +297,62 @@ test("a team booking reschedules into a time only another host is busy for", asy
   expect((moved.data()?.startAt as Timestamp).toDate().toISOString()).toBe(at("22:00").toISOString());
   expect(moved.data()?.assignedToUid).toBe(HOST_A.uid);
 });
+
+test("a hostless booking on a page that has since gained hosts can't move onto a host's booking", async ({ page }) => {
+  const slug = `${PREFIX}grew-${stamp}`;
+  // Booked while the page was hostless, so the event carries no host.
+  await seedPage(slug, {});
+  const res = await page.request.post(`/api/booking/${sa}/${slug}/book`, {
+    data: {
+      slot: { startAt: at("21:00").toISOString(), endAt: at("21:30").toISOString() },
+      name: `E2E Cal Visitor ${stamp}`,
+      email: `e2e-cal-${stamp}@example.com`,
+      phone: "+27600000000",
+    },
+  });
+  expect(res.status()).toBe(200);
+  const { publicEventUrl, eventId } = (await res.json()) as { publicEventUrl: string; eventId: string };
+  expect((await pageEvents(slug))[0].assignedToUid).toBeNull();
+
+  // Now the page has hosts, and Bob is busy at 22:00 while Ann is free.
+  await adminDb().doc(`subAccounts/${sa}/bookingPages/${slug}`).update({ hosts: [HOST_A, HOST_B] });
+  await seedBusy("22:00", "22:30", HOST_B);
+
+  await page.goto(publicEventUrl);
+  await page.getByRole("button", { name: "Reschedule" }).click();
+  await expect(page.getByRole("button", { name: time("10:30 PM") })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: time("10:00 PM") })).toHaveCount(0);
+
+  // The route refuses it too, not only the view. Posted from the page, as
+  // its own reschedule button does.
+  const token = new URL(publicEventUrl).pathname.split("/").pop();
+  const status = await page.evaluate(
+    async ({ token, slot }) =>
+      (
+        await fetch(`/api/events/${token}/reschedule`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slot }),
+          redirect: "manual",
+        })
+      ).status,
+    { token, slot: { startAt: at("22:00").toISOString(), endAt: at("22:30").toISOString() } },
+  );
+  expect(status).toBe(409);
+  const ev = await adminDb().doc(`events/${eventId}`).get();
+  expect((ev.data()?.startAt as Timestamp).toDate().toISOString()).toBe(at("21:00").toISOString());
+});
+
+test("a pre-SP3 team page saves its meeting distribution from the editor", async ({ page }) => {
+  const slug = `${PREFIX}legacy-${stamp}`;
+  // No calendarType: the editor shows it as round robin.
+  await seedPage(slug, { hosts: [HOST_A, HOST_B] });
+
+  await page.goto(`/sa/${sa}/booking/${slug}`);
+  await page.getByLabel("Optimize for availability").check();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible({ timeout: 30_000 });
+
+  const doc = await adminDb().doc(`subAccounts/${sa}/bookingPages/${slug}`).get();
+  expect(doc.data()).toMatchObject({ calendarType: "round_robin", distribution: "availability" });
+});

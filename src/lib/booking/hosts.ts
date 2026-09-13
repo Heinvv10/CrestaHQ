@@ -90,30 +90,50 @@ export async function loadHostNotifyContact(
 }
 
 /**
+ * Every event `uid` attends in the sub-account — the two sources of
+ * `eventHostUids`: the ones they own (`assignedToUid`) and the collective ones
+ * listing them in `hostUids` — merged by id. `refine` adds the same range /
+ * order / limit to both queries. Needs the composite indexes
+ * events(subAccountId, assignedToUid, startAt) and
+ * events(subAccountId, hostUids CONTAINS, startAt).
+ */
+export async function queryHostEvents(
+  subAccountId: string,
+  uid: string,
+  refine: (q: FirebaseFirestore.Query) => FirebaseFirestore.Query,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const events = getAdminDb()
+    .collection("events")
+    .where("subAccountId", "==", subAccountId);
+  const [owned, listed] = await Promise.all([
+    refine(events.where("assignedToUid", "==", uid)).get(),
+    refine(events.where("hostUids", "array-contains", uid)).get(),
+  ]);
+  const byId = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+  for (const d of [...owned.docs, ...listed.docs]) byId.set(d.id, d);
+  return [...byId.values()];
+}
+
+/**
  * Count each host's upcoming occupying bookings — a load proxy for the
- * least-loaded tiebreak. One bounded query per host; runs BEFORE the book
- * transaction (slightly stale is fine, fairness doesn't need transactional
- * accuracy). Requires the `events(subAccountId, assignedToUid, startAt)`
- * composite index.
+ * least-loaded tiebreak. A collective booking counts for each of its hosts.
+ * Runs BEFORE the book transaction (slightly stale is fine, fairness doesn't
+ * need transactional accuracy). Indexes: see `queryHostEvents`.
  */
 export async function loadHostUpcomingCounts(
   subAccountId: string,
   hostUids: string[],
   now: Date,
 ): Promise<Map<string, number>> {
-  const db = getAdminDb();
   const counts = new Map<string, number>();
   await Promise.all(
     hostUids.map(async (uid) => {
       try {
-        const snap = await db
-          .collection("events")
-          .where("subAccountId", "==", subAccountId)
-          .where("assignedToUid", "==", uid)
-          .where("startAt", ">=", now)
-          .get();
+        const docs = await queryHostEvents(subAccountId, uid, (q) =>
+          q.where("startAt", ">=", now),
+        );
         let n = 0;
-        for (const d of snap.docs) {
+        for (const d of docs) {
           const e = d.data() as CalendarEvent;
           if (eventOccupiesSlot(eventStatus(e))) n++;
         }

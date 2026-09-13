@@ -20,10 +20,10 @@ A page's `calendarType` (absent on legacy pages ⇒ `pageCalendarType()` derives
 | `personal` | One host: that host's events + unassigned events block. No host: every event in the sub-account blocks (legacy single schedule) | Stamps the host |
 | `round_robin` | Union of each host's free time | One host: `distribution` `equal` (least loaded, then `priority`) or `availability` (priority, then load); page order last |
 | `collective` | Intersection — every host free (each host's own hours) | Every host: `hostUids[]`, `assignedToUid` = first. Blocks each listed host everywhere |
-| `class` | Same-page bookings at the slot start are seats (`seatsPerSlot` ≥2); the day cap counts offered slots after full ones drop | One event per attendee |
+| `class` | Same-page bookings at the slot start are seats (`seatsPerSlot` ≥2); the day cap counts offered slots after full ones drop | One event per attendee. A hostless class page's seats carry no host, so each one is shared busy — it blocks every host's other pages for that time |
 | `service` | Sized to the picked service (`services[]`, 1–20) | As round robin; stamps `serviceId`/`serviceName` |
 
-Every caller that offers or re-verifies a slot — availability API, book route and reschedule route (inside their transactions), voice agent — goes through `resolvePageAvailability` ([src/lib/booking/resolve-availability.ts](../../src/lib/booking/resolve-availability.ts)); the rules are pure in [page-slots.ts](../../src/lib/booking/page-slots.ts). Reschedule re-verifies for the event's own host(s) and service. Voice refuses service pages (no service step on a call).
+Every caller that offers or re-verifies a slot — availability API, book route and reschedule route (inside their transactions), voice agent — goes through `resolvePageAvailability` ([src/lib/booking/resolve-availability.ts](../../src/lib/booking/resolve-availability.ts)); the rules are pure in [page-slots.ts](../../src/lib/booking/page-slots.ts). Reschedule re-verifies the event as it was booked (`MovingEvent`): all of its own host(s) — one no longer on the page keeps the page hours — its service, or its own length when that service is gone. A hostless booking on a page that has since gained hosts keeps the legacy shared schedule (every event blocks). The reschedule view's `excludeEventId` is honoured only for an event booked on that page. Voice refuses service pages (no service step on a call).
 
 ## Availability rules (SP3)
 
