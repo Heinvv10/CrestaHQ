@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Loader2, Send } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { emailReplyFields } from "./email-reply";
+import { ComposerInserts } from "./composer-inserts";
 import {
   ComposerModeToggle,
   InternalNoteComposer,
@@ -18,6 +19,11 @@ import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { cn } from "@/lib/utils";
 import { DEFAULT_REVIEW_SMS_TEMPLATE } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
+import {
+  renderMergeTags,
+  type MergeTagContext,
+} from "@/lib/messaging/merge-tags";
+import { insertAtCursor } from "@/lib/messaging/insert-at-cursor";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 
@@ -45,8 +51,11 @@ export function ConversationComposer({
   defaultChannel,
   emailReply = null,
   onClearEmailReply,
+  senderName = null,
 }: {
   emailReply?: EmailMessageDoc | null;
+  /** The signed-in member's display name, for `{{user.name}}`. */
+  senderName?: string | null;
   onClearEmailReply?: () => void;
   contact: Contact;
   availableChannels: ConversationChannel[];
@@ -65,6 +74,9 @@ export function ConversationComposer({
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [mode, setMode] = useState<ComposerMode>("reply");
+  // Merge tags Send refused on (SP2 T4); cleared as soon as the text changes.
+  const [unresolved, setUnresolved] = useState<string[]>([]);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
   const toggle = <ComposerModeToggle mode={mode} onChange={setMode} />;
 
   // "Ask for review" — only when a review link is configured. Inserts the
@@ -77,15 +89,37 @@ export function ConversationComposer({
   const reviewUrl = resolveReviewUrl(subAccount).configured;
   const reviewConfigured = !!reviewUrl;
 
+  const mergeContext: MergeTagContext = {
+    contact,
+    businessName: subAccount?.name ?? "",
+    userName: senderName,
+    reviewUrl: reviewCfg?.reviewUrl,
+  };
+
   function insertReviewMessage() {
     if (!reviewCfg || !reviewUrl) return;
-    const firstName = (contact.name ?? "").trim().split(/\s+/)[0] ?? "";
-    const msg = (reviewCfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE)
-      .replace(/\{\{\s*firstName\s*\}\}/g, firstName)
-      .replace(/\{\{\s*businessName\s*\}\}/g, subAccount?.name ?? "")
-      .replace(/\{\{\s*reviewUrl\s*\}\}/g, reviewCfg.reviewUrl);
+    const msg = renderMergeTags(
+      reviewCfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
+      mergeContext
+    ).text;
     // Preserve anything the operator already typed (e.g. a thank-you).
     setBody((prev) => (prev.trim() ? `${prev.trim()} ${msg}` : msg));
+  }
+
+  function insertIntoBody(text: string) {
+    const el = bodyRef.current;
+    const next = insertAtCursor(
+      body,
+      text,
+      el && document.activeElement === el ? el.selectionStart : null,
+      el && document.activeElement === el ? el.selectionEnd : null
+    );
+    setBody(next.value);
+    setUnresolved([]);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(next.caret, next.caret);
+    });
   }
 
   if (mode === "note") {
@@ -143,6 +177,29 @@ export function ConversationComposer({
     }
     if (optedOut) {
       toast.error(`This contact opted out of ${LABEL[channel]}.`);
+      return;
+    }
+    // Ruling 5: never ship a raw tag. Typed tags that DO resolve are filled in
+    // and Send stops once, so the operator sees the exact text before it goes.
+    const renderedBody = renderMergeTags(trimmed, mergeContext);
+    const renderedSubject = renderMergeTags(
+      isEmail ? subject.trim() : "",
+      mergeContext
+    );
+    const missing = [...renderedBody.unresolved, ...renderedSubject.unresolved];
+    if (missing.length) {
+      setUnresolved([...new Set(missing)]);
+      return;
+    }
+    if (
+      renderedBody.text !== trimmed ||
+      (isEmail && renderedSubject.text !== subject.trim())
+    ) {
+      setBody(renderedBody.text);
+      if (isEmail) setSubject(renderedSubject.text);
+      toast.info(
+        "Merge fields filled in. Check the message, then press Send again."
+      );
       return;
     }
     setSending(true);
@@ -231,15 +288,22 @@ export function ConversationComposer({
             aria-label="Email subject"
             placeholder="Subject"
             value={subject}
-            onChange={(e) => setSubject(e.target.value)}
+            onChange={(e) => {
+              setSubject(e.target.value);
+              setUnresolved([]);
+            }}
             disabled={disabled}
             required
           />
         </div>
       )}
       <Textarea
+        ref={bodyRef}
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => {
+          setBody(e.target.value);
+          setUnresolved([]);
+        }}
         placeholder={
           optedOut
             ? `Contact opted out of ${LABEL[channel]}`
@@ -255,22 +319,42 @@ export function ConversationComposer({
         disabled={disabled}
         className="min-h-[60px] resize-none px-3 py-2 text-sm"
       />
+      {unresolved.length > 0 && (
+        <p
+          role="alert"
+          data-testid="merge-error"
+          className="text-destructive mt-1 text-xs"
+        >
+          Not sent: no value for {unresolved.join(", ")}. Fill it in or remove
+          it.
+        </p>
+      )}
       <div className="mt-2 flex items-center justify-between gap-2">
-        {reviewConfigured ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={insertReviewMessage}
-            disabled={sending}
-            title="Insert a Google review request into the reply"
-          >
-            <GoogleGIcon className="mr-1 h-3.5 w-3.5" />
-            Ask for review
-          </Button>
-        ) : (
-          <span />
-        )}
+        <div className="flex flex-wrap items-center gap-1">
+          <ComposerInserts
+            mergeContext={mergeContext}
+            emailActive={isEmail}
+            disabled={disabled}
+            onInsert={insertIntoBody}
+            onSubject={(s) => {
+              setSubject(s);
+              setUnresolved([]);
+            }}
+          />
+          {reviewConfigured && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={insertReviewMessage}
+              disabled={sending}
+              title="Insert a Google review request into the reply"
+            >
+              <GoogleGIcon className="mr-1 h-3.5 w-3.5" />
+              Ask for review
+            </Button>
+          )}
+        </div>
         <Button
           type="submit"
           size="sm"

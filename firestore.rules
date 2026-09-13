@@ -884,6 +884,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---------- snippets (GHL "Snippets", SP2 T3) ----------
+    // Saved replies, sub-account scoped (agencyId / subAccountId /
+    // createdByUid on every doc). Server-only, like customFields and
+    // pipelines: the management page and the composer read and write
+    // through /api/sub-accounts/[id]/snippets, which checks membership,
+    // stamps the tenant keys from the route (never the body) and validates
+    // name/body/subject/folder. Closing the client path means that
+    // validation cannot be bypassed with a direct SDK write, and a malformed
+    // snippet can never reach another member's composer. Explicit here so
+    // the collection's stance is on record; default-deny would do the same.
+    match /snippets/{snippetId} {
+      allow read, write: if false;
+    }
+
     match /contacts/{contactId} {
       // Reads honor territory scoping when enabled — collaborators only
       // see contacts whose `territoryId` is in their assigned list (or
