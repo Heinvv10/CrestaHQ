@@ -3,14 +3,15 @@ import "server-only";
 import crypto from "node:crypto";
 import { after } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventHostUids } from "@/lib/booking/page-slots";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { BookingPage } from "@/types/booking";
 import { eventOccupiesSlot, eventStatus, type CalendarEvent } from "@/types/events";
 import {
+  activeGoogleHosts,
   describeFailure,
   gcalConnectionPath,
-  isActiveMember,
   readConnection,
   recordConnectionError,
   withBudget,
@@ -28,10 +29,10 @@ import type { GcalEventInput } from "./provider/types";
  * eligible host; a cancelled one — and any host no longer on the event — has
  * its Google copy deleted. Completed / no-show events are left alone.
  *
- * Eligible hosts (S1): the event's hosts that are ACTIVE members AND either
- * a current host of its booking page or on its server-set `hostUids`. A
- * hostless page, or a manual event, pushes nowhere. Anyone else is skipped
- * and the skip is recorded on the event.
+ * Eligible hosts: the event's own hosts (`assignedToUid` ∪ `hostUids`, both
+ * server-set — the rules lock them from clients) that are ACTIVE members —
+ * the same rule busy loading uses (`activeGoogleHosts`). A host who left the
+ * sub-account is skipped and the skip is recorded on the event.
  *
  * Writes use a deterministic Google id per (event, host) and are idempotent,
  * so racing pushes can't duplicate. After the Google calls the event is read
@@ -86,18 +87,16 @@ async function loadPage(e: SyncedEvent): Promise<BookingPage | null> {
   return snap.exists ? (snap.data() as BookingPage) : null;
 }
 
-async function eligibleHosts(
-  e: SyncedEvent,
-  page: BookingPage | null,
-): Promise<{ eligible: string[]; skipped: string[] }> {
-  const allowed = new Set([...(page?.hosts ?? []).map((h) => h.uid), ...(e.hostUids ?? [])]);
-  const eligible: string[] = [];
-  const skipped: string[] = [];
-  for (const uid of eventHostUids(e)) {
-    if (allowed.has(uid) && (await isActiveMember(e.subAccountId, uid))) eligible.push(uid);
-    else skipped.push(uid);
-  }
-  return { eligible, skipped };
+async function eligibleHosts(e: SyncedEvent): Promise<{ eligible: string[]; skipped: string[] }> {
+  const candidates = eventHostUids(e);
+  const eligible = await activeGoogleHosts(e.subAccountId, candidates);
+  return { eligible, skipped: candidates.filter((uid) => !eligible.includes(uid)) };
+}
+
+/** An early return must not leave a stale failure showing on the event. */
+async function clearSyncError(ref: FirebaseFirestore.DocumentReference, e: SyncedEvent): Promise<null> {
+  if (e.googleSyncError) await ref.update({ googleSyncError: null });
+  return null;
 }
 
 function input(eventId: string, e: SyncedEvent, start: Date, end: Date): GcalEventInput {
@@ -128,22 +127,25 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
   const end = toDate(e.endAt);
   const status = eventStatus(e);
   const live = !removeAll && eventOccupiesSlot(status);
-  if (!live && !removeAll && status !== "cancelled") return null;
+  // Completed / no-show: the meeting happened, its Google copy stays.
+  if (!live && !removeAll && status !== "cancelled") return clearSyncError(ref, e);
   if (live && (!start || !end)) return null;
 
   const page = live ? await loadPage(e) : null;
-  const { eligible, skipped } = live ? await eligibleHosts(e, page) : { eligible: [], skipped: [] };
-  if (eligible.length === 0 && skipped.length === 0 && Object.keys(prior).length === 0) return null;
+  const { eligible, skipped } = live ? await eligibleHosts(e) : { eligible: [], skipped: [] };
+  if (eligible.length === 0 && skipped.length === 0 && Object.keys(prior).length === 0) {
+    return clearSyncError(ref, e);
+  }
   // Writing needs the gate. Removing what we already wrote does not, so a gate
   // switched off never strands a cancelled booking in someone's calendar.
-  if (live && !(await googleCalendarGateOn(sa))) return null;
+  if (live && !(await googleCalendarGateOn(sa))) return clearSyncError(ref, e);
 
   const hostName = (uid: string) =>
     page?.hosts?.find((h) => h.uid === uid)?.name ??
     (e.assignedToUid === uid ? e.assignedToName : null) ??
     "a host";
   const failures: string[] = skipped.map(
-    (uid) => `Not in ${hostName(uid)}'s Google Calendar: not an active host of this booking page.`,
+    (uid) => `Not in ${hostName(uid)}'s Google Calendar: no longer an active member of this sub-account.`,
   );
   const ids: Record<string, string> = { ...prior };
 
@@ -161,7 +163,7 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
         await getAdminDb().doc(gcalConnectionPath(sa, uid)).update({ lastPushError: null, lastPushErrorAt: null });
       }
     } catch (err) {
-      failures.push(`Not in ${hostName(uid)}'s Google Calendar: ${describeFailure(err)}`);
+      failures.push(`Not in ${hostName(uid)}'s Google Calendar: ${describeFailure(err, "push")}`);
       await recordConnectionError(sa, uid, err, "push");
     }
   };
@@ -186,8 +188,8 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
       });
       delete ids[uid];
     } catch (err) {
-      failures.push(`Still in ${hostName(uid)}'s Google Calendar: ${describeFailure(err)}`);
-      await recordConnectionError(sa, uid, err, "push");
+      failures.push(`Still in ${hostName(uid)}'s Google Calendar: ${describeFailure(err, "push")}`);
+      await recordConnectionError(sa, uid, err, "remove");
     }
   };
 
@@ -238,6 +240,42 @@ export function pushBookingToGoogleAfterResponse(eventId: string): void {
     after(() => pushBookingToGoogle(eventId));
   } catch {
     void pushBookingToGoogle(eventId);
+  }
+}
+
+/**
+ * Member removal, BEFORE their tokens are deleted: take their Google copies
+ * of upcoming bookings down (nothing could reach them afterwards). The next
+ * push for each booking then records them as no longer a member. Never throws.
+ */
+export async function removeMemberGoogleCopies(subAccountId: string, uid: string): Promise<void> {
+  try {
+    const conn = await readConnection(subAccountId, uid);
+    if (!conn || conn.status !== "connected") return;
+    const docs = await queryHostEvents(subAccountId, uid, (q) => q.where("startAt", ">=", new Date()));
+    const provider = await getGcalProviderFor(subAccountId, uid);
+    for (const d of docs) {
+      const gid = (d.data() as SyncedEvent).googleEventIds?.[uid];
+      if (!gid) continue;
+      try {
+        await withBudget(GOOGLE_PUSH_TIMEOUT_MS, (signal) =>
+          withGoogleToken(conn, provider, async (t) => {
+            try {
+              await provider.deleteEvent(t, gid, signal);
+            } catch (err) {
+              if (!isNotFound(err)) throw err;
+            }
+          }, signal),
+        );
+        const ids = { ...((d.data() as SyncedEvent).googleEventIds ?? {}) };
+        delete ids[uid];
+        await d.ref.update({ googleEventIds: ids });
+      } catch (err) {
+        console.warn(`[google-calendar] removed-member copy left sa=${subAccountId} event=${d.id}`, err instanceof Error ? err.name : typeof err);
+      }
+    }
+  } catch (err) {
+    console.error(`[google-calendar] removed-member cleanup failed sa=${subAccountId}`, err instanceof Error ? err.name : typeof err);
   }
 }
 

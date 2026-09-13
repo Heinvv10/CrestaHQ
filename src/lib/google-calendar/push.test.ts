@@ -4,11 +4,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/google-oauth-harness")).adminMock());
 vi.mock("./provider/select", () => ({ getGcalProviderFor: vi.fn(async () => provider) }));
+// Upcoming bookings a host attends: the harness's events, by assignee.
+vi.mock("@/lib/booking/hosts", async () => {
+  const { state: s, adminMock } = await import("@/test/google-oauth-harness");
+  const db = adminMock().getAdminDb();
+  return {
+    queryHostEvents: async (_sa: string, uid: string) =>
+      [...s.docs.keys()]
+        .filter((p) => p.startsWith("events/") && s.docs.get(p)?.assignedToUid === uid)
+        .map((p) => ({ id: p.split("/")[1], data: () => s.docs.get(p), ref: db.doc(p) })),
+  };
+});
 
-import { SUB_PATH, state } from "@/test/google-oauth-harness";
+import { SUB, SUB_PATH, state } from "@/test/google-oauth-harness";
 import { EVENT, at, conn, connect, event, resetGcal, seedEvent, setGate, stubProvider, ts, type StubProvider } from "@/test/gcal-harness";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
-import { googleEventIdFor, pushBookingToGoogle, removeBookingFromGoogle } from "./push";
+import { googleEventIdFor, pushBookingToGoogle, removeBookingFromGoogle, removeMemberGoogleCopies } from "./push";
 
 let provider: StubProvider;
 const gid = (uid: string) => googleEventIdFor("ev_1", uid);
@@ -116,13 +127,14 @@ describe("pushBookingToGoogle", () => {
   });
 });
 
-describe("who may be written to (S1/S2)", () => {
-  it("skips a spoofed assignee who is not a host of the page, and records it", async () => {
+describe("who may be written to", () => {
+  it("skips an assignee who is not an active member, and records it", async () => {
     connect("mallory");
+    state.docs.delete(`${SUB_PATH}/subAccountMembers/mallory`);
     seedEvent({ assignedToUid: "mallory" });
     await pushBookingToGoogle("ev_1");
     expect(provider.putEvent).not.toHaveBeenCalled();
-    expect((event().googleSyncError as { message: string }).message).toMatch(/not an active host/);
+    expect((event().googleSyncError as { message: string }).message).toMatch(/no longer an active member/);
   });
 
   it("skips a host who was removed from the sub-account", async () => {
@@ -133,17 +145,51 @@ describe("who may be written to (S1/S2)", () => {
     expect(provider.putEvent).not.toHaveBeenCalled();
   });
 
-  it("a hostless page pushes nowhere", async () => {
+  it("an active host taken off the page but still assigned keeps their copy — a reschedule MOVES it", async () => {
+    connect("host_x");
+    seedEvent({ assignedToUid: "host_x", googleEventIds: { host_x: "g_x" }, startAt: ts(at(14)), endAt: ts(at(14, 30)) });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    expect(provider.putEvent).toHaveBeenCalledWith("a-host_x", "g_x", expect.objectContaining({ start: { dateTime: at(14).toISOString() } }), expect.any(AbortSignal));
+    expect(event().googleEventIds).toEqual({ host_x: "g_x" });
+  });
+
+  it("a hostless page's assigned booking pushes to its assignee", async () => {
     connect("host_a");
     seedEvent({}, []);
     await pushBookingToGoogle("ev_1");
-    expect(provider.putEvent).not.toHaveBeenCalled();
+    expect(provider.putEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.anything(), expect.any(AbortSignal));
+  });
+});
+
+describe("a stale googleSyncError is cleared when there is nothing to do", () => {
+  const STALE = { googleSyncError: { message: "old failure", at: new Date() } };
+  it.each([
+    ["completed", { status: "completed" }],
+    ["cancelled with no Google copy", { status: "cancelled" }],
+  ])("%s", async (_l, over) => {
+    connect("host_a");
+    seedEvent({ ...STALE, ...over });
+    await pushBookingToGoogle("ev_1");
+    expect(event().googleSyncError).toBeNull();
   });
 
-  it("a collective event's server-set hostUids qualify even when the page no longer lists them", async () => {
-    connect("host_z");
-    seedEvent({ hostUids: ["host_z"], assignedToUid: "host_z" });
+  it("gate off", async () => {
+    connect("host_a");
+    setGate(false);
+    seedEvent(STALE);
     await pushBookingToGoogle("ev_1");
-    expect(provider.putEvent).toHaveBeenCalledWith("a-host_z", gid("host_z"), expect.anything(), expect.any(AbortSignal));
+    expect(event().googleSyncError).toBeNull();
+    expect(provider.putEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("removeMemberGoogleCopies", () => {
+  it("deletes the member's copies of upcoming bookings and drops their ids", async () => {
+    connect("host_a");
+    seedEvent({ googleEventIds: { host_a: "g_a", host_b: "g_b" } });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_a", expect.any(AbortSignal));
+    expect(event().googleEventIds).toEqual({ host_b: "g_b" });
   });
 });

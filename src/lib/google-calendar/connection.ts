@@ -102,6 +102,19 @@ export async function isActiveMember(subAccountId: string, uid: string): Promise
   return (await db.doc(`agencies/${agencyId}`).get()).data()?.ownerUid === uid;
 }
 
+/**
+ * THE eligibility rule for Google sync, shared by busy loading and push: of
+ * the candidate hosts (a page's hosts, a booking's assignedToUid ∪ hostUids —
+ * all server-set), keep the active members. Unique, order kept.
+ */
+export async function activeGoogleHosts(subAccountId: string, uids: string[]): Promise<string[]> {
+  const unique = [...new Set(uids.filter(Boolean))];
+  // A uid that can't even name a document (a "/" in it) is simply not
+  // eligible — it must not take the other hosts down with it.
+  const active = await Promise.all(unique.map((uid) => isActiveMember(subAccountId, uid).catch(() => false)));
+  return unique.filter((_, i) => active[i]);
+}
+
 /** Member removal: drop their calendar connection. Best-effort, never throws. */
 export async function deleteConnectionForRemovedMember(subAccountId: string, uid: string): Promise<void> {
   try {
@@ -112,10 +125,15 @@ export async function deleteConnectionForRemovedMember(subAccountId: string, uid
   }
 }
 
-/** What the card shows for a failure. Fixed per kind — safe to store and render. */
-export function describeFailure(err: unknown): string {
+/**
+ * What the card shows for a failure. Fixed per kind — safe to store and
+ * render. `kind` only changes the timeout text: a push never mentions busy.
+ */
+export function describeFailure(err: unknown, kind: "busy" | "push" = "busy"): string {
   if (err instanceof GoogleCalendarTimeoutError) {
-    return "Google Calendar didn't answer in time; your Google busy time was skipped.";
+    return kind === "busy"
+      ? "Google Calendar didn't answer in time; your Google busy time was skipped."
+      : "Google Calendar didn't answer in time.";
   }
   if (err instanceof GbpProviderError) {
     switch (err.kind) {
@@ -138,19 +156,23 @@ export function describeFailure(err: unknown): string {
 
 /**
  * Best-effort: record a failure on the connection — a busy/token failure in
- * `lastError`, a booking write in `lastPushError`. Never throws.
+ * `lastError`, a booking write in `lastPushError` (adding/updating and
+ * removing worded apart). Never throws.
  */
 export async function recordConnectionError(
   subAccountId: string,
   uid: string,
   err: unknown,
-  kind: "busy" | "push" = "busy",
+  kind: "busy" | "push" | "remove" = "busy",
 ): Promise<void> {
   const at = new Date();
   const fields =
-    kind === "push"
-      ? { lastPushError: describeFailure(err), lastPushErrorAt: at }
-      : { lastError: describeFailure(err), lastErrorAt: at };
+    kind === "busy"
+      ? { lastError: describeFailure(err), lastErrorAt: at }
+      : {
+          lastPushError: `${kind === "remove" ? "Couldn't remove a booking from your Google Calendar" : "Couldn't add or update a booking in your Google Calendar"}: ${describeFailure(err, "push")}`,
+          lastPushErrorAt: at,
+        };
   try {
     await getAdminDb()
       .doc(gcalConnectionPath(subAccountId, uid))

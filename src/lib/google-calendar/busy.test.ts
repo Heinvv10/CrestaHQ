@@ -123,6 +123,18 @@ describe("loadGoogleBusy — fail open", () => {
     expect(conn("host_a").lastError).toMatch(/didn't answer in time/);
   });
 
+  it("a read that completes AFTER its budget expired does not clear the timeout it caused", async () => {
+    vi.useFakeTimers();
+    connect("host_a", { lastError: "old", lastErrorAt: new Date() });
+    // Ignores the abort (as a slow socket can) and answers at 4s.
+    provider.listEvents.mockImplementation(() => new Promise((r) => setTimeout(() => r(oneHour()), 4_000)));
+    const pending = load();
+    await vi.advanceTimersByTimeAsync(3_001);
+    expect(await pending).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(conn("host_a").lastError).toMatch(/didn't answer in time/);
+  });
+
   it("a successful read clears a stale lastError — never a push error", async () => {
     connect("host_a", { lastError: "old", lastErrorAt: new Date(), lastPushError: "push failed", lastPushErrorAt: new Date() });
     await load();

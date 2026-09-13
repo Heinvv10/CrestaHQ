@@ -171,12 +171,12 @@ export function GoogleCalendarCard() {
               </p>
               {status.lastError && (
                 <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="gcal-last-error">
-                  Busy time: {status.lastError}
+                  Busy time not read: {status.lastError}
                 </p>
               )}
               {status.lastPushError && (
                 <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="gcal-last-push-error">
-                  Last booking not added: {status.lastPushError} Open the booking and use Retry sync.
+                  Last booking change not synced: {status.lastPushError}. Open the booking and use Retry sync.
                 </p>
               )}
             </div>

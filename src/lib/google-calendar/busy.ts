@@ -6,8 +6,8 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import { eventHostUids } from "@/lib/booking/page-slots";
 import {
+  activeGoogleHosts,
   gcalConnectionPath,
-  isActiveMember,
   readConnection,
   recordConnectionError,
   withBudget,
@@ -80,9 +80,6 @@ async function hostBusy(
 ): Promise<GoogleBusyInterval[]> {
   try {
     return await withBudget(GOOGLE_BUSY_TIMEOUT_MS, async (signal) => {
-      // A removed member's connection is never read (their doc is deleted on
-      // removal; this covers anything left behind).
-      if (!(await isActiveMember(subAccountId, uid))) return [];
       const conn = await readConnection(subAccountId, uid);
       if (!conn || conn.status !== "connected") return [];
       const provider = await getGcalProviderFor(subAccountId, uid);
@@ -115,12 +112,20 @@ export async function loadGoogleBusy(input: {
   from: Date;
   to: Date;
 }): Promise<GoogleBusyInterval[]> {
-  const uids = [...new Set(input.hostUids)];
-  if (uids.length === 0) return [];
+  if (input.hostUids.length === 0) return [];
   try {
     if (!(await googleCalendarGateOn(input.subAccountId))) return [];
   } catch (err) {
     console.warn(`[google-calendar] gate read failed (fail open) sa=${input.subAccountId}`, err);
+    return [];
+  }
+  // A removed member's connection is never read (their doc is deleted on
+  // removal; this covers anything left behind).
+  let uids: string[];
+  try {
+    uids = await activeGoogleHosts(input.subAccountId, input.hostUids);
+  } catch (err) {
+    console.warn(`[google-calendar] host check failed (fail open) sa=${input.subAccountId}`, err);
     return [];
   }
   const window = { timeMin: input.from, timeMax: input.to };
