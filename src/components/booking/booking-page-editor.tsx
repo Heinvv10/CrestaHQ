@@ -609,6 +609,12 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
               className="flex h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
             >
               <option value="">Every duration + buffer after</option>
+              {form.slotIntervalMinutes != null &&
+                !(INTERVALS as readonly number[]).includes(form.slotIntervalMinutes) && (
+                  <option value={form.slotIntervalMinutes}>
+                    Every {form.slotIntervalMinutes} minutes
+                  </option>
+                )}
               {INTERVALS.map((d) => (
                 <option key={d} value={d}>
                   Every {d} minutes
@@ -655,6 +661,7 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         <DateOverridesEditor
           value={form.dateOverrides ?? []}
           onChange={(next) => set("dateOverrides", next)}
+          timezone={form.timezone}
           disabled={saving}
         />
 
@@ -805,6 +812,7 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
                       <DateOverridesEditor
                         value={host!.dateOverrides ?? []}
                         onChange={(next) => setHostDateOverrides(m.uid, next)}
+                        timezone={form.timezone}
                         disabled={saving}
                         label={`Date-specific hours for ${m.name}`}
                         hint="Beats the page's date-specific hours for the same date."

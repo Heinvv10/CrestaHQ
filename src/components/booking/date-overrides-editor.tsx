@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,8 +20,11 @@ const TIME_CLASS =
   "h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 const DEFAULT_RANGE = { startMinute: 9 * 60, endMinute: 17 * 60 };
 
-function nextFreeDate(taken: Set<string>): string {
-  const d = new Date();
+/** The first date from today (in the page's timezone) not already listed. */
+function nextFreeDate(taken: Set<string>, timezone: string): string {
+  // en-CA formats as YYYY-MM-DD.
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
+  const d = new Date(`${today}T00:00:00Z`);
   for (;;) {
     const key = d.toISOString().slice(0, 10);
     if (!taken.has(key)) return key;
@@ -31,29 +35,34 @@ function nextFreeDate(taken: Set<string>): string {
 export function DateOverridesEditor({
   value,
   onChange,
+  timezone,
   disabled,
   label = "Date-specific hours",
   hint = "Change the hours for one date, or mark it unavailable. Replaces the weekly hours for that date only.",
 }: {
   value: DateOverride[];
   onChange: (next: DateOverride[]) => void;
+  /** The page's timezone — "Add date" starts from today there. */
+  timezone: string;
   disabled?: boolean;
   label?: string;
   hint?: string;
 }) {
-  const sorted = [...value].sort((a, b) => a.date.localeCompare(b.date));
+  // Rows keep their position (keyed by index) while being edited — no
+  // re-sort, so typing a date never remounts the row. The server sorts.
+  const [collision, setCollision] = useState<number | null>(null);
 
-  function update(date: string, next: DateOverride) {
-    onChange(sorted.map((o) => (o.date === date ? next : o)));
+  function update(i: number, next: DateOverride) {
+    onChange(value.map((o, n) => (n === i ? next : o)));
   }
 
   return (
     <div className="space-y-2" role="group" aria-label={label}>
       <p className="text-sm font-medium">{label}</p>
       <p className="text-[11px] text-muted-foreground">{hint}</p>
-      {sorted.map((o) => (
+      {value.map((o, i) => (
         <div
-          key={o.date}
+          key={i}
           data-testid="date-override"
           className="space-y-1.5 rounded-lg border bg-background px-3 py-2"
         >
@@ -64,8 +73,13 @@ export function DateOverridesEditor({
               value={o.date}
               onChange={(e) => {
                 const date = e.target.value;
-                if (!date || value.some((x) => x.date === date)) return;
-                update(o.date, { ...o, date });
+                if (!date) return;
+                if (value.some((x, n) => n !== i && x.date === date)) {
+                  setCollision(i);
+                  return;
+                }
+                setCollision(null);
+                update(i, { ...o, date });
               }}
               disabled={disabled}
               className={TIME_CLASS}
@@ -75,7 +89,7 @@ export function DateOverridesEditor({
                 type="checkbox"
                 checked={o.ranges.length === 0}
                 onChange={(e) =>
-                  update(o.date, { ...o, ranges: e.target.checked ? [] : [DEFAULT_RANGE] })
+                  update(i, { ...o, ranges: e.target.checked ? [] : [DEFAULT_RANGE] })
                 }
                 disabled={disabled}
                 className="h-3.5 w-3.5"
@@ -86,7 +100,10 @@ export function DateOverridesEditor({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => onChange(sorted.filter((x) => x.date !== o.date))}
+              onClick={() => {
+                setCollision(null);
+                onChange(value.filter((_, n) => n !== i));
+              }}
               disabled={disabled}
               aria-label={`Remove ${o.date}`}
               className="ml-auto text-muted-foreground hover:text-destructive"
@@ -94,8 +111,13 @@ export function DateOverridesEditor({
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
           </div>
-          {o.ranges.map((r, i) => (
-            <div key={i} className="flex items-center gap-1.5">
+          {collision === i && (
+            <p role="alert" className="text-[11px] text-destructive">
+              That date is already listed — edit its row instead.
+            </p>
+          )}
+          {o.ranges.map((r, ri) => (
+            <div key={ri} className="flex items-center gap-1.5">
               {(["startMinute", "endMinute"] as const).map((k, j) => (
                 <span key={k} className="flex items-center gap-1.5">
                   {j === 1 && <span className="text-xs text-muted-foreground">to</span>}
@@ -106,8 +128,8 @@ export function DateOverridesEditor({
                     onChange={(e) => {
                       const m = hhmmToMinutes(e.target.value);
                       if (m === null) return;
-                      const ranges = o.ranges.map((x, n) => (n === i ? { ...x, [k]: m } : x));
-                      update(o.date, { ...o, ranges });
+                      const ranges = o.ranges.map((x, n) => (n === ri ? { ...x, [k]: m } : x));
+                      update(i, { ...o, ranges });
                     }}
                     disabled={disabled}
                     className={TIME_CLASS}
@@ -120,7 +142,7 @@ export function DateOverridesEditor({
                   variant="ghost"
                   size="sm"
                   onClick={() =>
-                    update(o.date, { ...o, ranges: o.ranges.filter((_, n) => n !== i) })
+                    update(i, { ...o, ranges: o.ranges.filter((_, n) => n !== ri) })
                   }
                   disabled={disabled}
                   aria-label="Remove this range"
@@ -136,13 +158,15 @@ export function DateOverridesEditor({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() =>
-                update(o.date, {
+              onClick={() => {
+                // The new range starts where the latest one ends.
+                const start = Math.max(...o.ranges.map((x) => x.endMinute));
+                update(i, {
                   ...o,
-                  ranges: [...o.ranges, { startMinute: 18 * 60, endMinute: 20 * 60 }],
-                })
-              }
-              disabled={disabled}
+                  ranges: [...o.ranges, { startMinute: start, endMinute: Math.min(start + 60, 1440) }],
+                });
+              }}
+              disabled={disabled || Math.max(...o.ranges.map((x) => x.endMinute)) >= 1440}
               className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
             >
               <Plus className="mr-1 h-3 w-3" />
@@ -157,8 +181,11 @@ export function DateOverridesEditor({
         size="sm"
         onClick={() =>
           onChange([
-            ...sorted,
-            { date: nextFreeDate(new Set(value.map((o) => o.date))), ranges: [DEFAULT_RANGE] },
+            ...value,
+            {
+              date: nextFreeDate(new Set(value.map((o) => o.date)), timezone),
+              ranges: [DEFAULT_RANGE],
+            },
           ])
         }
         disabled={disabled}
