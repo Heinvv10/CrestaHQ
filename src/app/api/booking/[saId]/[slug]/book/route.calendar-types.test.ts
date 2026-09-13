@@ -118,7 +118,11 @@ describe("service", () => {
     expect((await book("svc", { slot: slot("09:00", "10:00") })).status).toBe(400);
     expect((await book("svc", { serviceId: "cut", slot: slot("09:00", "09:30") })).status).toBe(409);
     expect((await book("svc", { serviceId: "cut", slot: slot("09:00", "10:00") })).status).toBe(200);
-    expect(pageEvents("svc")[0]).toMatchObject({ serviceId: "cut", serviceName: "Cut" });
+    expect(pageEvents("svc")[0]).toMatchObject({
+      serviceId: "cut",
+      serviceName: "Cut",
+      title: "svc (Cut) — Visitor",
+    });
   });
 });
 

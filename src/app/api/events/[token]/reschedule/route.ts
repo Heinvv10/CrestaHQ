@@ -13,6 +13,7 @@ import {
   isSlotAvailable,
   type SlotCandidate,
 } from "@/lib/booking/availability";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventHostUids } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import {
@@ -297,10 +298,7 @@ async function runRescheduleSideEffects(args: {
       businessName: sub.name ?? "Booking",
       businessLogoUrl: sub.logoUrl,
       page: {
-        name: page?.name ?? event.title ?? "Meeting",
-        durationMinutes:
-          page?.durationMinutes ??
-          Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
+        ...bookedEventLabel(page, event, startAt, endAt),
         timezone: page?.timezone ?? "UTC",
         payment: page?.payment ?? null,
         confirmationMessage: page?.confirmationMessage ?? "",

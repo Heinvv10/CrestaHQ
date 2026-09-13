@@ -1,4 +1,5 @@
 import type { BookingPage, CalendarType } from "@/types/booking";
+import type { CalendarEvent } from "@/types/events";
 
 /**
  * GHL-style calendar types for booking pages. Client-safe (the editor, the
@@ -53,4 +54,24 @@ export function pageCalendarType(
 
 export function calendarTypeLabel(type: CalendarType): string {
   return CALENDAR_TYPES.find((t) => t.value === type)?.label ?? type;
+}
+
+/**
+ * What a booking's emails, invite and manage page call it, and how long it
+ * is. A service booking shows its service and its own length (end − start):
+ * the page's `durationMinutes` is only the default for new services. Every
+ * other booking keeps the page's name and duration, as before.
+ */
+export function bookedEventLabel(
+  page: Pick<BookingPage, "name" | "durationMinutes"> | null | undefined,
+  event: Partial<Pick<CalendarEvent, "title" | "serviceName">>,
+  startAt: Date,
+  endAt: Date,
+): { name: string; durationMinutes: number } {
+  const name = page?.name ?? event.title ?? "Meeting";
+  const actual = Math.round((endAt.getTime() - startAt.getTime()) / 60_000);
+  if (event.serviceName) {
+    return { name: `${name} (${event.serviceName})`, durationMinutes: actual };
+  }
+  return { name, durationMinutes: page?.durationMinutes ?? Math.max(15, actual) };
 }

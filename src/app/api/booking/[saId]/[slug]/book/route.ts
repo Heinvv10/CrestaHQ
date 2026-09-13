@@ -12,7 +12,10 @@ import {
 } from "@/lib/comms/resend";
 import { buildPaypalAmountUrl } from "@/lib/paypal/payment-link";
 import { isSlotAvailable, type SlotCandidate } from "@/lib/booking/availability";
-import { pageCalendarType } from "@/lib/booking/calendar-types";
+import {
+  bookedEventLabel,
+  pageCalendarType,
+} from "@/lib/booking/calendar-types";
 import {
   assignBookingHosts,
   pageService,
@@ -260,7 +263,13 @@ export async function POST(
       { status: 400 },
     );
   }
-  const durationMinutes = service?.durationMinutes ?? page.durationMinutes;
+  // Emails, invite and title name the service and its own length.
+  const { name: bookedName, durationMinutes } = bookedEventLabel(
+    page,
+    { serviceName: service?.name ?? null },
+    slotStart,
+    slotEnd,
+  );
 
   // ── Transactional create with re-verify ─────────────────────────
   // Re-resolve availability around the requested slot inside the
@@ -372,7 +381,7 @@ export async function POST(
         }
       }
 
-      const title = `${page.name} — ${name}`;
+      const title = `${bookedName} — ${name}`;
       // Mint token now so we can store hash atomically.
       const { token, hash } = issueEventToken(eventDocRef.id);
 
@@ -469,7 +478,7 @@ export async function POST(
             businessName: sub.name ?? "Booking",
             businessLogoUrl: sub.logoUrl,
             page: {
-              name: page.name,
+              name: bookedName,
               durationMinutes,
               timezone: page.timezone,
               payment: page.payment,
@@ -485,7 +494,7 @@ export async function POST(
             businessName: sub.name ?? "Booking",
             businessLogoUrl: sub.logoUrl,
             page: {
-              name: page.name,
+              name: bookedName,
               durationMinutes,
               timezone: page.timezone,
               payment: page.payment,
@@ -561,7 +570,7 @@ export async function POST(
             businessName: sub.name ?? "Booking",
             businessLogoUrl: sub.logoUrl,
             page: {
-              name: page.name,
+              name: bookedName,
               durationMinutes,
               timezone: page.timezone,
             },
