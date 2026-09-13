@@ -103,7 +103,7 @@ function collectionRef(path: string, filters: Array<[string, unknown]> = []) {
       if (op !== "==") throw new Error("harness: only == is modelled");
       return collectionRef(path, [...filters, [field, value]]);
     },
-    doc: () => docRef(`${path}/auto_${++autoId}`),
+    doc: (id?: string) => docRef(`${path}/${id ?? `auto_${++autoId}`}`),
     add: async (data: Record<string, unknown>) => {
       const id = `auto_${++autoId}`;
       const docPath = `${path}/${id}`;

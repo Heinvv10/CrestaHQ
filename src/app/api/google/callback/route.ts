@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
 import { reverifyListingAfterReconnect } from "@/lib/gbp/listing-events";
+import { completeCalendarConnect } from "@/lib/google-calendar/callback";
 import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
   GOOGLE_SCOPE,
@@ -60,6 +61,12 @@ export async function GET(request: Request) {
     );
   const verified = state ? verifyGoogleState(state) : null;
   if (!verified) return badState();
+  // A member's Google Calendar connection shares this one registered redirect
+  // URI. Its own handler owns every step after the signature check; a state
+  // without the purpose claim (every GBP state) never reaches it.
+  if (verified.purpose === "calendar") {
+    return completeCalendarConnect(request, verified);
+  }
   const id = verified.subAccountId;
 
   // Now that we trust the sub-account id (HMAC-authenticated), gate on the
