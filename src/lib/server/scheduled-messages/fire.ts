@@ -1,20 +1,25 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible } from "@/lib/comms/route-auth";
 import { sendConversationMessage } from "@/lib/server/conversation-send";
-import type {
-  ScheduledMessageChannel,
-  ScheduledMessageStatus,
+import {
+  LATE_DELIVERY_LIMIT_MS,
+  LATE_DELIVERY_REASON,
+  type ScheduledMessageChannel,
+  type ScheduledMessageStatus,
 } from "@/types/scheduled-messages";
 import { scheduledMessagesPath, scheduledSendBlock } from "./service";
 
 export type FireResult =
   | { outcome: "skipped"; reason: string }
   | { outcome: "sent"; messageId: string }
-  | { outcome: "failed"; reason: string };
+  /** Refused before anything went out. */
+  | { outcome: "failed"; reason: string }
+  /** Attempted; whether it reached the contact is unknown. */
+  | { outcome: "unconfirmed"; reason: string };
 
 interface ScheduledDoc {
   subAccountId: string;
@@ -24,20 +29,20 @@ interface ScheduledDoc {
   subject: string | null;
   inReplyTo: string | null;
   references: string[] | null;
+  sendAt: Timestamp;
   status: ScheduledMessageStatus;
 }
-
-const UNKNOWN_OUTCOME =
-  "The send stopped with an error, so it may or may not have gone out — check the thread before sending it again.";
 
 /**
  * Fire one scheduled message (the QStash worker's body).
  *
  * Idempotent: the message is claimed pending → sending in a transaction, and
  * only the delivery that wins the claim sends. A redelivery, a cancelled or an
- * already-sent message is a no-op. Once claimed it is never retried — a send
- * whose outcome is unknown is recorded as failed with that said plainly,
- * rather than risking a second message to a real person.
+ * already-sent message is a no-op. Once claimed it is never retried.
+ *
+ * A delivery more than LATE_DELIVERY_LIMIT_MS after `sendAt` is recorded as
+ * failed inside the same transaction and sends nothing: a message timed for
+ * 3pm is not the same message at 6pm.
  *
  * Ruling 6: everything is re-evaluated now, not trusted from booking time —
  * the contact still exists and is still reachable by the person who booked
@@ -46,10 +51,17 @@ const UNKNOWN_OUTCOME =
  * run), plus scheduledSendBlock. A WhatsApp free-form message whose window
  * has closed is refused by the dispatcher and recorded as failed — never
  * converted to a template.
+ *
+ * Outcomes are split by what is actually known. A refusal before any provider
+ * call is "failed" (certainly not sent). A provider failure — a 502 from the
+ * send service, a WhatsApp result the provider marked AMBIGUOUS, or a throw
+ * mid-send — is "unconfirmed": a timeout can follow delivery, and calling it
+ * "not sent" would invite the operator to send it twice.
  */
 export async function fireScheduledMessage(
   contactId: string,
-  id: string
+  id: string,
+  nowMs: number = Date.now()
 ): Promise<FireResult> {
   const db = getAdminDb();
   const ref = db.doc(`${scheduledMessagesPath(contactId)}/${id}`);
@@ -59,6 +71,15 @@ export async function fireScheduledMessage(
     if (!snap.exists) return null;
     const doc = snap.data() as ScheduledDoc;
     if (doc.status !== "pending") return doc.status;
+    if (nowMs - (doc.sendAt?.toMillis?.() ?? nowMs) > LATE_DELIVERY_LIMIT_MS) {
+      tx.update(ref, {
+        status: "failed" satisfies ScheduledMessageStatus,
+        failureReason: LATE_DELIVERY_REASON,
+        failureCode: "delivered_late",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return "late" as const;
+    }
     tx.update(ref, {
       status: "sending" satisfies ScheduledMessageStatus,
       claimedAt: FieldValue.serverTimestamp(),
@@ -67,17 +88,22 @@ export async function fireScheduledMessage(
     return doc;
   });
   if (claimed === null) return { outcome: "skipped", reason: "missing" };
+  if (claimed === "late") return { outcome: "failed", reason: LATE_DELIVERY_REASON };
   if (typeof claimed === "string") return { outcome: "skipped", reason: `status:${claimed}` };
   const doc = claimed;
 
-  const fail = async (reason: string, code: string | null = null): Promise<FireResult> => {
+  const record = async (
+    status: "failed" | "unconfirmed",
+    reason: string,
+    code: string | null = null
+  ): Promise<FireResult> => {
     await ref.update({
-      status: "failed" satisfies ScheduledMessageStatus,
+      status: status satisfies ScheduledMessageStatus,
       failureReason: reason,
       failureCode: code,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { outcome: "failed", reason };
+    return { outcome: status, reason };
   };
 
   let contact;
@@ -85,20 +111,21 @@ export async function fireScheduledMessage(
     contact = await requireContactAccessible(doc.createdByUid, contactId);
   } catch (err) {
     console.error("[scheduled-messages/fire] contact re-check threw", err);
-    return fail("Couldn't re-check the contact before sending, so it was not sent.");
+    return record("failed", "Couldn't re-check the contact before sending, so it was not sent.");
   }
   if (contact instanceof NextResponse) {
-    return fail(
+    return record(
+      "failed",
       contact.status === 404
         ? "The contact no longer exists."
         : "The person who scheduled this message no longer has access to this contact."
     );
   }
   if (contact.subAccountId !== doc.subAccountId) {
-    return fail("The contact is no longer in this sub-account.");
+    return record("failed", "The contact is no longer in this sub-account.");
   }
   const blocked = scheduledSendBlock(doc.channel, contact);
-  if (blocked) return fail(blocked.error, blocked.code ?? null);
+  if (blocked) return record("failed", blocked.error, blocked.code ?? null);
 
   const user = await getAdminAuth().getUser(doc.createdByUid).catch(() => null);
 
@@ -121,11 +148,16 @@ export async function fireScheduledMessage(
     });
   } catch (err) {
     console.error("[scheduled-messages/fire] send threw", err);
-    const detail = err instanceof Error ? ` (${err.message})` : "";
-    return fail(`${UNKNOWN_OUTCOME}${detail}`);
+    return record(
+      "unconfirmed",
+      err instanceof Error ? err.message : "The send stopped with an error."
+    );
   }
 
-  if (!outcome.ok) return fail(outcome.error, outcome.code ?? null);
+  if (!outcome.ok) {
+    const unknown = outcome.status === 502 || outcome.outcomeUnknown === true;
+    return record(unknown ? "unconfirmed" : "failed", outcome.error, outcome.code ?? null);
+  }
   await ref.update({
     status: "sent" satisfies ScheduledMessageStatus,
     sentMessageId: outcome.messageId,

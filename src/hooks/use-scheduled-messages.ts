@@ -85,18 +85,24 @@ export function useScheduledMessages(
     return () => clearInterval(timer);
   }, [waiting, refresh]);
 
-  const cancel = useCallback(
+  /** Cancel a pending message, or dismiss a failed / unconfirmed one. */
+  const remove = useCallback(
     async (id: string) => {
       if (!subAccountId || !contactId) return;
       try {
         const res = await fetch(scheduledMessagesUrl(subAccountId, contactId, id), {
           method: "DELETE",
         });
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        if (!res.ok) throw new Error(data.error ?? `Couldn't cancel (HTTP ${res.status}).`);
-        toast.success("Scheduled message cancelled.");
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          action?: "cancelled" | "dismissed";
+        };
+        if (!res.ok) throw new Error(data.error ?? `Couldn't update (HTTP ${res.status}).`);
+        toast.success(
+          data.action === "dismissed" ? "Dismissed." : "Scheduled message cancelled."
+        );
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Couldn't cancel.");
+        toast.error(err instanceof Error ? err.message : "Couldn't update.");
       } finally {
         refresh();
       }
@@ -104,5 +110,5 @@ export function useScheduledMessages(
     [subAccountId, contactId, refresh]
   );
 
-  return { messages, error, cancel };
+  return { messages, error, remove };
 }

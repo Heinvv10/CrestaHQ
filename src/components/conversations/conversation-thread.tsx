@@ -59,10 +59,10 @@ type MetaMessageDoc = MessageDoc & { channel?: ConversationChannel };
  * including a web-chat session that has captured one. They are rendered as
  * notes, never as bubbles.
  *
- * Scheduled messages (SP2 T5) — pending, sending or failed — are interleaved
- * at their send time for contact threads, as dashed "Scheduled for …" items
- * with Cancel. Sent ones are left out (the real message row shows instead),
- * as are cancelled ones.
+ * Scheduled messages (SP2 T5) — pending, sending, failed or unconfirmed — are
+ * interleaved at their send time for contact threads, as dashed items with
+ * Cancel (pending) or Dismiss (failed / unconfirmed). Sent ones are left out
+ * (the real message row shows instead), as are cancelled and dismissed ones.
  */
 export function ConversationThread({
   contactId,
@@ -227,7 +227,7 @@ export function ConversationThread({
       })),
     ];
     const scheduled = scheduledRead.messages.filter(
-      (m) => m.status === "pending" || m.status === "sending" || m.status === "failed"
+      (m) => m.status !== "sent" && m.status !== "cancelled"
     );
     return mergeThreadItems(all, threadNotes, scheduled);
   }, [sms, wa, meta, web, email, isWebChat, notes, contactId, scheduledRead.messages]);
@@ -283,7 +283,7 @@ export function ConversationThread({
               key={item.key}
               message={item.scheduled}
               timeZone={scheduleTimeZone}
-              onCancel={scheduledRead.cancel}
+              onRemove={scheduledRead.remove}
             />
           ) : (
             <ChannelBubble

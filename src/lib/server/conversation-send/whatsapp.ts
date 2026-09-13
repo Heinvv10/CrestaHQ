@@ -126,8 +126,15 @@ export async function sendConversationWhatsapp(
     });
 
     if (!result.ok) {
+      // Marks every refusal below whose delivery the provider could not rule
+      // out. Invisible in the route's response (sendOutcomeResponse sends only
+      // error/code); the scheduled worker reads it.
+      const waRefuse = (status: number, error: string, code?: string): SendRefusal => {
+        const r = refuse(status, error, code);
+        return result.providerOutcome === "AMBIGUOUS" ? { ...r, outcomeUnknown: true } : r;
+      };
       if (result.error === WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE) {
-        return refuse(
+        return waRefuse(
           409,
           `WhatsApp's ${windowHours}-hour messaging window is closed — the contact hasn't messaged within that time. Re-opening the conversation requires an approved message template.`,
           "session_window_closed"
@@ -140,7 +147,7 @@ export async function sendConversationWhatsapp(
       // delivered. An AMBIGUOUS result carrying one would turn this branch
       // into an invitation to double-message a real person.
       if (result.providerErrorCode && result.providerOutcome === "DEFINITELY_REJECTED") {
-        return refuse(
+        return waRefuse(
           400,
           // Generic: these codes cover the message body (`text_too_long`) as
           // well as the file.
@@ -153,7 +160,7 @@ export async function sendConversationWhatsapp(
       // try again, which is the one thing these rails exist to prevent.
       if (result.refusedBy) {
         const refusal = WA_REFUSAL_MESSAGES[result.refusedBy];
-        return refuse(
+        return waRefuse(
           WA_REFUSAL_STATUS,
           // Falls back to the provider's own words: an unmapped code is a rail
           // we have not worded yet, and the raw reason beats "couldn't send".
@@ -161,7 +168,7 @@ export async function sendConversationWhatsapp(
           result.refusedBy
         );
       }
-      return refuse(502, result.error ?? "Failed to send WhatsApp message");
+      return waRefuse(502, result.error ?? "Failed to send WhatsApp message");
     }
     sid = result.messageId ?? "";
   } catch (err) {

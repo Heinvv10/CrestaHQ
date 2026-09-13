@@ -6,8 +6,10 @@ import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
 import { cancelScheduledMessage } from "@/lib/server/scheduled-messages/service";
 
 /**
- * DELETE ?contactId= — cancel a scheduled message while it is still pending.
- * The doc is kept (status "cancelled") as the record of what was not sent.
+ * DELETE ?contactId= — take a scheduled message off the thread: a pending one
+ * is cancelled (it will not fire); a failed or unconfirmed one is dismissed.
+ * Never allowed once it is sending or sent. The doc is kept either way as the
+ * record. Answers `{ ok, action: "cancelled" | "dismissed" }`.
  */
 export async function DELETE(
   request: Request,
@@ -33,5 +35,5 @@ export async function DELETE(
     actorUid: auth.uid,
   });
   if (!result.ok) return sendOutcomeResponse(result);
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, action: result.action });
 }

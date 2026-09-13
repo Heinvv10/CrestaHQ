@@ -1,4 +1,4 @@
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { expect, test, type Page } from "@playwright/test";
 import { adminDb } from "../lib/admin";
 import { baseURL, FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
@@ -23,6 +23,8 @@ import { signQStashBody } from "../lib/qstash";
  *      message row + conversation index are written, the doc is "sent", and
  *      the thread shows the message. A second delivery is a no-op, and the
  *      cancelled one cannot be fired.
+ *   5. A delivery 20 minutes after its time is refused as late (no message
+ *      row); the thread shows it failed with the reason, and it is dismissed.
  */
 
 test.skip(
@@ -78,10 +80,12 @@ test("send later from the thread: book, cancel one, fire one through the signed 
   expect(ownerUid, "fixture agency has no ownerUid").toBeTruthy();
 
   const saRef = db.doc(`subAccounts/${sa}`);
+  // Captured before the try so `finally` knows what to restore; every WRITE
+  // happens inside the try, so a failure part-way through still restores.
   const previousTwilio = (await saRef.get()).data()?.twilioConfig ?? null;
-  await saRef.update({ twilioConfig: FIXTURE_TWILIO });
-
-  const contactRef = await db.collection("contacts").add({
+  const contactRef = db.collection("contacts").doc();
+  const contactId = contactRef.id;
+  const contactDoc = {
     name,
     email: "",
     phone,
@@ -100,8 +104,7 @@ test("send later from the thread: book, cancel one, fire one through the signed 
     territoryId: "global",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
-  });
-  const contactId = contactRef.id;
+  };
   const scheduledCol = contactRef.collection("scheduledMessages");
   const byBody = async (body: string) => {
     const snap = await scheduledCol.where("body", "==", body).get();
@@ -164,10 +167,31 @@ test("send later from the thread: book, cancel one, fire one through the signed 
   };
 
   try {
+    await saRef.update({ twilioConfig: FIXTURE_TWILIO });
+    await contactRef.set(contactDoc);
     await page.goto(`/sa/${sa}/conversations/${contactId}`);
     await expect(page.getByTestId("thread-header").getByRole("heading", { name })).toBeVisible({
       timeout: 30_000,
     });
+
+    // --- phone width: the picker is a sheet that fits the screen ----------
+    const desktop = page.viewportSize()!;
+    await page.setViewportSize({ width: 400, height: 800 });
+    await page.getByPlaceholder(/Reply via SMS/).fill("width check");
+    await page.getByRole("button", { name: "More send options" }).click();
+    await page.getByRole("menuitem", { name: "Send later…" }).click();
+    const sheet = await page.getByTestId("send-later-panel").boundingBox();
+    expect(sheet).not.toBeNull();
+    expect(sheet!.x).toBeGreaterThanOrEqual(0);
+    expect(sheet!.x + sheet!.width).toBeLessThanOrEqual(400);
+    expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(800);
+    if (process.env.SP2_EVIDENCE)
+      await page.screenshot({
+        path: "docs/parity/evidence/sp2/d-scheduled-send/05-send-later-phone.png",
+      });
+    await page.getByTestId("send-later-panel").getByRole("button", { name: "Close" }).click();
+    await page.getByPlaceholder(/Reply via SMS/).fill("");
+    await page.setViewportSize(desktop);
 
     const cancelId = await book(cancelBody);
     const fireId = await book(fireBody);
@@ -250,8 +274,62 @@ test("send later from the thread: book, cancel one, fire one through the signed 
       reason: "status:cancelled",
     });
     expect((await contactRef.collection("messages").get()).size).toBe(1);
+
+    // --- a delivery 20 minutes late sends nothing; the thread says so -------
+    // (Seeded directly: the API refuses to book a time in the past. Same shape
+    // the API writes.)
+    const lateBody = `E2E scheduled (late) ${stamp}`;
+    const lateRef = scheduledCol.doc();
+    await lateRef.set({
+      agencyId: env.E2E_AGENCY_ID,
+      subAccountId: sa,
+      createdByUid: ownerUid,
+      contactId,
+      channel: "sms",
+      body: lateBody,
+      subject: null,
+      inReplyTo: null,
+      references: null,
+      sendAt: Timestamp.fromMillis(Date.now() - 20 * 60_000),
+      status: "pending",
+      failureReason: null,
+      failureCode: null,
+      qstashMessageId: `e2e_late_${stamp}`,
+      sentMessageId: null,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    const late = await deliver(lateRef.id);
+    expect(late.status()).toBe(200);
+    expect(await late.json()).toMatchObject({
+      outcome: "failed",
+      reason: "Delivered late by the scheduler — not sent.",
+    });
+    expect((await lateRef.get()).data()).toMatchObject({
+      status: "failed",
+      failureCode: "delivered_late",
+    });
+    expect((await contactRef.collection("messages").get()).size).toBe(1);
+
+    // --- the failed one shows with its reason, and can be dismissed ---------
+    await page.reload();
+    const lateItem = items.filter({ hasText: lateBody });
+    await expect(lateItem).toHaveAttribute("data-status", "failed", { timeout: 30_000 });
+    await expect(lateItem).toContainText("Delivered late by the scheduler");
+    if (process.env.SP2_EVIDENCE)
+      await page.screenshot({
+        path: "docs/parity/evidence/sp2/d-scheduled-send/04-late-delivery-failed.png",
+      });
+    await lateItem.getByRole("button", { name: "Dismiss" }).click();
+    await expect(lateItem).toHaveCount(0, { timeout: 15_000 });
+    await expect.poll(async () => !!(await lateRef.get()).data()?.dismissedAt, {
+      timeout: 15_000,
+    }).toBe(true);
+    expect((await lateRef.get()).data()?.status).toBe("failed");
   } finally {
     await saRef.update({ twilioConfig: previousTwilio });
+    // deleteScoped re-reads and asserts fixture scope; a contact that was
+    // never written is a no-op.
     await deleteScoped(db.doc(`conversations/${contactId}`));
     await deleteScoped(contactRef);
   }

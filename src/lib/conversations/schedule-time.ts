@@ -5,6 +5,7 @@ import {
   utcMsToWallClock,
   wallClockToUtcMs,
 } from "@/lib/deal-config";
+import { SCHEDULE_MAX_DAYS, SCHEDULE_MIN_LEAD_MS } from "@/types/scheduled-messages";
 
 /**
  * "Send later" times are picked and shown in the SUB-ACCOUNT's timezone (the
@@ -43,4 +44,33 @@ export function formatInZone(iso: string, timeZone: string): string {
     minute: "2-digit",
   });
   return `${text} ${timeZoneAbbreviation(timeZone, ms)}`;
+}
+
+/**
+ * The picker's value → the instant to book, or the reason it cannot be booked
+ * — the API's own bounds (parseScheduleRequest), checked BEFORE anything is
+ * sent so an out-of-range time is refused on screen, never snapped or
+ * submitted.
+ */
+export function checkSendLaterValue(
+  value: string,
+  timeZone: string,
+  nowMs: number
+): { ok: true; iso: string } | { ok: false; error: string } {
+  const iso = value ? wallClockToIso(value, timeZone) : null;
+  if (!iso) return { ok: false, error: "Pick a date and time." };
+  const ms = Date.parse(iso);
+  if (ms < nowMs + SCHEDULE_MIN_LEAD_MS) {
+    return { ok: false, error: "Pick a time at least a minute from now." };
+  }
+  if (ms > nowMs + SCHEDULE_MAX_DAYS * 86_400_000) {
+    return { ok: false, error: `Messages can be scheduled up to ${SCHEDULE_MAX_DAYS} days ahead.` };
+  }
+  return { ok: true, iso };
+}
+
+/** "Africa/Johannesburg (SAST)", or just "UTC" when the two would repeat. */
+export function zoneLabel(timeZone: string, atMs: number): string {
+  const abbr = timeZoneAbbreviation(timeZone, atMs);
+  return abbr === timeZone ? timeZone : `${timeZone} (${abbr})`;
 }

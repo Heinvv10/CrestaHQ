@@ -17,6 +17,8 @@ const m = vi.hoisted(() => ({
   wa: vi.fn(),
   upsert: vi.fn(),
   dispatch: vi.fn(),
+  /** When set, the next dispatch returns this instead of running for real. */
+  dispatchResult: null as Record<string, unknown> | null,
   claims: { status: "active", agencyRole: "owner", agencyId: "ag1" } as Record<string, unknown>,
   userExists: true,
 }));
@@ -42,6 +44,7 @@ vi.mock("@/lib/comms/whatsapp/send-dispatch", async (importOriginal) => {
     ...real,
     dispatchWhatsappSend: (input: Parameters<typeof real.dispatchWhatsappSend>[0]) => {
       m.dispatch(input);
+      if (m.dispatchResult) return Promise.resolve(m.dispatchResult as never);
       return real.dispatchWhatsappSend(input);
     },
   };
@@ -90,6 +93,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.claims = { status: "active", agencyRole: "owner", agencyId: "ag1" };
   m.userExists = true;
+  m.dispatchResult = null;
   m.sms.mockResolvedValue({ sid: "SM1", mode: "dedicated", from: TWILIO.fromNumber });
   m.wa.mockResolvedValue({ sid: "WA1", from: `whatsapp:${TWILIO.whatsappFromNumber}` });
   mem.seed("subAccounts/sa1", {
@@ -266,12 +270,72 @@ describe("fireScheduledMessage — re-evaluated at fire time (ruling 6)", () => 
     expect(m.sms).not.toHaveBeenCalled();
   });
 
-  it("a send that throws after the claim is failed with 'outcome unknown', never retried", async () => {
+  it("a send that throws after the claim is UNCONFIRMED, never retried", async () => {
     seedScheduled("s1");
     m.upsert.mockRejectedValueOnce(new Error("index write failed"));
-    const result = await fireScheduledMessage("c1", "s1");
-    expect(result).toMatchObject({ outcome: "failed", reason: expect.stringMatching(/may or may not have gone out/) });
+    expect(await fireScheduledMessage("c1", "s1")).toEqual({
+      outcome: "unconfirmed",
+      reason: "index write failed",
+    });
+    expect(doc("s1").status).toBe("unconfirmed");
     expect(await fireScheduledMessage("c1", "s1")).toMatchObject({ outcome: "skipped" });
+    expect(m.sms).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fireScheduledMessage — outcome unknown vs certainly not sent", () => {
+  it("a provider failure (502 from the send service) is UNCONFIRMED, not failed", async () => {
+    seedScheduled("s1");
+    m.sms.mockRejectedValueOnce(new Error("socket hang up"));
+    expect(await fireScheduledMessage("c1", "s1")).toEqual({
+      outcome: "unconfirmed",
+      reason: "socket hang up",
+    });
+    expect(doc("s1")).toMatchObject({ status: "unconfirmed", failureReason: "socket hang up" });
+  });
+
+  it("a WhatsApp refusal the provider marked AMBIGUOUS is UNCONFIRMED even when it is not a 502", async () => {
+    seedScheduled("w1", { channel: "whatsapp" });
+    m.dispatchResult = {
+      ok: false,
+      provider: "bridge",
+      refusedBy: "consecutive_cap",
+      error: "bridge timed out",
+      providerOutcome: "AMBIGUOUS",
+    };
+    expect((await fireScheduledMessage("c1", "w1")).outcome).toBe("unconfirmed");
+    expect(doc("w1")).toMatchObject({ status: "unconfirmed", failureCode: "consecutive_cap" });
+  });
+
+  it("the same refusal marked DEFINITELY_REJECTED is failed", async () => {
+    seedScheduled("w1", { channel: "whatsapp" });
+    m.dispatchResult = {
+      ok: false,
+      provider: "bridge",
+      refusedBy: "consecutive_cap",
+      error: "cap",
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+    expect((await fireScheduledMessage("c1", "w1")).outcome).toBe("failed");
+  });
+});
+
+describe("fireScheduledMessage — late delivery", () => {
+  it("more than 15 minutes after sendAt: failed as delivered late, nothing sent", async () => {
+    seedScheduled("s1", { sendAt: Timestamp.fromMillis(Date.now() - 16 * 60_000) });
+    expect(await fireScheduledMessage("c1", "s1")).toEqual({
+      outcome: "failed",
+      reason: "Delivered late by the scheduler — not sent.",
+    });
+    expect(m.sms).not.toHaveBeenCalled();
+    expect(doc("s1")).toMatchObject({ status: "failed", failureCode: "delivered_late" });
+    expect(await fireScheduledMessage("c1", "s1")).toMatchObject({ outcome: "skipped" });
+    expect(m.sms).not.toHaveBeenCalled();
+  });
+
+  it("within 15 minutes of sendAt it still sends", async () => {
+    seedScheduled("s1", { sendAt: Timestamp.fromMillis(Date.now() - 14 * 60_000) });
+    expect((await fireScheduledMessage("c1", "s1")).outcome).toBe("sent");
     expect(m.sms).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,10 +2,9 @@
 
 import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ChevronDown, Clock, Loader2 } from "lucide-react";
+import { ChevronDown, Clock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,12 +15,8 @@ import {
   announceScheduledChange,
   scheduledMessagesBase,
 } from "@/hooks/use-scheduled-messages";
-import {
-  defaultSendLaterValue,
-  scheduleTimeZone,
-  wallClockToIso,
-} from "@/lib/conversations/schedule-time";
-import { timeZoneAbbreviation } from "@/lib/deal-config";
+import { scheduleTimeZone } from "@/lib/conversations/schedule-time";
+import { SendLaterPanel } from "./send-later-panel";
 
 /** What the composer would send right now, minus the time. */
 export interface SendLaterRequest {
@@ -50,27 +45,18 @@ export function SendLaterMenu({
 }: {
   children: ReactNode;
   disabled: boolean;
-  /** Null when there is nothing sendable (empty body, missing subject). */
+  /** Null when there is nothing sendable (empty body, missing subject, raw tag). */
   buildRequest: () => SendLaterRequest | null;
   onScheduled: () => void;
 }) {
   const { subAccountId, subAccount } = useSubAccount();
   const zone = scheduleTimeZone(subAccount?.timezone);
   const [open, setOpen] = useState(false);
-  const [value, setValue] = useState("");
-  const [saving, setSaving] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
-  function openPicker() {
-    setValue(defaultSendLaterValue(Date.now(), zone));
-    setOpen(true);
-  }
-
-  async function schedule() {
+  async function schedule(sendAt: string): Promise<boolean> {
     const request = buildRequest();
-    const sendAt = wallClockToIso(value, zone);
-    if (!request || !sendAt || saving) return;
-    setSaving(true);
+    if (!request) return false;
     try {
       const res = await fetch(scheduledMessagesBase(subAccountId), {
         method: "POST",
@@ -82,15 +68,15 @@ export function SendLaterMenu({
         throw new Error(data.error ?? `Couldn't schedule (HTTP ${res.status}).`);
       }
       toast.success("Message scheduled.");
-      setOpen(false);
       onScheduled();
+      return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't schedule.");
+      return false;
     } finally {
       // Refresh the thread either way: a booking the scheduler refused is
       // recorded as failed and should be visible, not silently dropped.
-      if (request) announceScheduledChange(request.contactId);
-      setSaving(false);
+      announceScheduledChange(request.contactId);
     }
   }
 
@@ -119,52 +105,19 @@ export function SendLaterMenu({
           >
             Send now
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={openPicker}>
+          <DropdownMenuItem onClick={() => setOpen(true)}>
             <Clock className="mr-1 h-3.5 w-3.5" />
             Send later…
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       {open && (
-        <div
-          data-testid="send-later-panel"
-          className="bg-popover absolute right-0 bottom-full z-30 mb-2 w-72 space-y-2 rounded-lg border p-3 text-sm shadow-lg"
-        >
-          <label className="block text-xs font-medium" htmlFor="send-later-at">
-            Send at
-          </label>
-          <Input
-            id="send-later-at"
-            type="datetime-local"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            // Enter inside the composer's form would submit it — i.e. send
-            // NOW. In this field it can only mean "schedule".
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void schedule();
-              }
-            }}
-          />
-          <p className="text-muted-foreground text-[11px]">
-            Times are in {zone} ({timeZoneAbbreviation(zone, Date.now())}).
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-              Close
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={disabled || saving || !wallClockToIso(value, zone)}
-              onClick={schedule}
-            >
-              {saving && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
-              Schedule
-            </Button>
-          </div>
-        </div>
+        <SendLaterPanel
+          zone={zone}
+          disabled={disabled}
+          onSchedule={schedule}
+          onClose={() => setOpen(false)}
+        />
       )}
     </div>
   );

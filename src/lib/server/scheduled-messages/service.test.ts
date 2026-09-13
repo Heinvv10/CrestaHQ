@@ -99,6 +99,22 @@ describe("scheduleConversationMessage", () => {
     expect(rows()).toHaveLength(0);
   });
 
+  it("booked is booked: a failed qstashMessageId write is logged, never a 5xx that invites a rebooking", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The doc vanishes between publish and the bookkeeping write, so that
+    // write throws (NOT_FOUND) — the publish itself succeeded.
+    m.publish.mockImplementation(async (input: { body: { scheduledMessageId: string } }) => {
+      await mem.db.doc(`contacts/c1/scheduledMessages/${input.body.scheduledMessageId}`).delete();
+      return { messageId: "msg_2" };
+    });
+    await expect(book()).resolves.toEqual({ ok: true, id: expect.any(String) });
+    expect(err).toHaveBeenCalledWith(
+      "[scheduled-messages] booked; qstashMessageId write failed",
+      expect.any(Error)
+    );
+    err.mockRestore();
+  });
+
   it("a publish QStash refuses leaves a FAILED doc, never a pending one nothing will fire", async () => {
     m.publish.mockResolvedValue(null);
     expect(await book()).toMatchObject({ ok: false, status: 502 });
@@ -118,14 +134,24 @@ describe("cancelScheduledMessage", () => {
 
   it("cancels a pending message and records who", async () => {
     seed("s1", "pending");
-    expect(await cancel("s1")).toEqual({ ok: true });
+    expect(await cancel("s1")).toEqual({ ok: true, action: "cancelled" });
     expect(mem.read("contacts/c1/scheduledMessages/s1")).toMatchObject({
       status: "cancelled",
       cancelledByUid: "u2",
     });
   });
 
-  it.each(["sending", "sent", "failed", "cancelled"])("refuses once it is %s", async (status) => {
+  it.each(["failed", "unconfirmed"])("dismisses a %s message, keeping its status as the record", async (status) => {
+    seed("s1", status);
+    expect(await cancel("s1")).toEqual({ ok: true, action: "dismissed" });
+    expect(mem.read("contacts/c1/scheduledMessages/s1")).toMatchObject({
+      status,
+      dismissedByUid: "u2",
+    });
+    expect(await cancel("s1")).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it.each(["sending", "sent", "cancelled"])("refuses once it is %s", async (status) => {
     seed("s1", status);
     expect(await cancel("s1")).toMatchObject({ ok: false, status: 409 });
     expect(mem.read("contacts/c1/scheduledMessages/s1")?.status).toBe(status);
@@ -140,6 +166,33 @@ describe("cancelScheduledMessage", () => {
 });
 
 describe("listScheduledMessages", () => {
+  const seedAt = (id: string, status: string, ms: number, extra: Record<string, unknown> = {}) =>
+    mem.seed(`contacts/c1/scheduledMessages/${id}`, {
+      subAccountId: "sa1",
+      status,
+      body: id,
+      sendAt: new Date(ms),
+      ...extra,
+    });
+
+  it("a long history never pushes a pending message off the list", async () => {
+    // 150 sent in the past AND 150 cancelled bookings further out than the
+    // pending one — either would crowd it out of a single capped query.
+    for (let i = 0; i < 150; i++) seedAt(`old${i}`, "sent", NOW - (i + 1) * 60_000);
+    for (let i = 0; i < 150; i++) seedAt(`later${i}`, "cancelled", NOW + (i + 10) * 3600_000);
+    seedAt("live", "pending", NOW + 3600_000);
+    seedAt("inflight", "sending", NOW - 30_000);
+    const ids = (await listScheduledMessages("c1", "sa1")).map((x) => x.id);
+    expect(ids).toContain("live");
+    expect(ids).toContain("inflight");
+  });
+
+  it("leaves dismissed messages out", async () => {
+    seedAt("f1", "failed", NOW, { dismissedAt: new Date(NOW) });
+    seedAt("f2", "failed", NOW);
+    expect((await listScheduledMessages("c1", "sa1")).map((x) => x.id)).toEqual(["f2"]);
+  });
+
   it("lists the sub-account's messages soonest first, as ISO times", async () => {
     await book(undefined, { ...request, sendAt: new Date(NOW + 3 * 3600_000) });
     await book(undefined, { ...request, body: "sooner", sendAt: new Date(NOW + 3600_000) });

@@ -100,6 +100,20 @@ it("409 session_window_closed, naming the configured window", async () => {
   });
 });
 
+it("an AMBIGUOUS rail refusal answers exactly as before — no internal flag leaks into the body", async () => {
+  m.dispatch.mockResolvedValue({
+    ok: false,
+    provider: "bridge",
+    refusedBy: "some_future_rail",
+    error: "bridge timed out",
+    providerOutcome: "AMBIGUOUS",
+  });
+  expect(await post(ok)).toEqual({
+    status: 409,
+    json: { error: "bridge timed out", code: "some_future_rail" },
+  });
+});
+
 it("429 on quota, 502 on a throw", async () => {
   m.dispatch.mockRejectedValueOnce(new UsageQuotaExceededError("whatsappMessages"));
   expect((await post(ok)).status).toBe(429);

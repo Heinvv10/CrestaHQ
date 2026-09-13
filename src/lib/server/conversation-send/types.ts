@@ -25,6 +25,12 @@ export interface SendRefusal {
   status: number;
   error: string;
   code?: string;
+  /**
+   * The provider could not say whether the message was delivered (a WhatsApp
+   * result marked AMBIGUOUS). Never serialised into a route response — the
+   * scheduled-message worker reads it to avoid recording "not sent".
+   */
+  outcomeUnknown?: true;
 }
 
 export interface SendSuccess {

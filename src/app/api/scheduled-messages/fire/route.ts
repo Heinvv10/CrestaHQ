@@ -6,14 +6,16 @@ import {
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
 import { fireScheduledMessage } from "@/lib/server/scheduled-messages/fire";
+import { FIRE_PATH } from "@/lib/server/scheduled-messages/service";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Scheduled-message worker (SP2 T5) — QStash callback published by
  * POST /api/sub-accounts/[id]/scheduled-messages at the message's sendAt.
- * Public path; security is the Upstash signature, verified exactly as the
- * workflow step worker does. Idempotent (fireScheduledMessage claims the
+ * Public path; security is the Upstash signature, bound to THIS route's URL
+ * (as the GBP sync cron does), so a genuine QStash signature minted for any
+ * other callback cannot be replayed here. Idempotent (fireScheduledMessage claims the
  * message before sending), so a redelivery is a no-op. Every outcome after the
  * claim answers 200: a retry could not do anything but skip.
  */
@@ -30,7 +32,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing signature" }, { status: 401 });
   }
   const rawBody = await request.text();
-  if (!(await verifyQStashSignature(signature, rawBody))) {
+  // The same URL publishCallback builds (NEXT_PUBLIC_APP_URL + FIRE_PATH), so
+  // the JWT's `sub` must name this route exactly.
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
+  const url = appUrl ? `${appUrl}${FIRE_PATH}` : null;
+  if (!url || !(await verifyQStashSignature(signature, rawBody, url))) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 

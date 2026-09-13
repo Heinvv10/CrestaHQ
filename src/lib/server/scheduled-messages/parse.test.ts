@@ -55,7 +55,7 @@ describe("parseScheduleRequest", () => {
     ["numeric time", { ...base, sendAt: NOW + 3600_000 }],
     ["a time in the past", { ...base, sendAt: at(-60_000) }],
     ["less than a minute ahead", { ...base, sendAt: at(59_000) }],
-    ["more than 90 days ahead", { ...base, sendAt: at(90 * 86_400_000 + 60_000) }],
+    ["more than 7 days ahead (QStash Free max delay)", { ...base, sendAt: at(7 * 86_400_000 + 60_000) }],
     ["an email without a subject", { ...base, channel: "email", subject: " " }],
     ["an email subject carrying a header", { ...base, channel: "email", subject: "Hi\r\nBcc: x@y.z" }],
     ["an email with a malformed In-Reply-To", { ...base, channel: "email", subject: "Hi", inReplyTo: "<1234567>" }],
@@ -63,8 +63,8 @@ describe("parseScheduleRequest", () => {
     expect(parseScheduleRequest(raw, NOW).ok).toBe(false);
   });
 
-  it("accepts the edges: exactly one minute and exactly 90 days ahead", () => {
+  it("accepts the edges: exactly one minute and exactly 7 days ahead", () => {
     expect(parseScheduleRequest({ ...base, sendAt: at(60_000) }, NOW).ok).toBe(true);
-    expect(parseScheduleRequest({ ...base, sendAt: at(90 * 86_400_000) }, NOW).ok).toBe(true);
+    expect(parseScheduleRequest({ ...base, sendAt: at(7 * 86_400_000) }, NOW).ok).toBe(true);
   });
 });

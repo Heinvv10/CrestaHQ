@@ -6,10 +6,11 @@ import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { precheckConversationMessage } from "@/lib/server/conversation-send";
 import { refuse, type SendRefusal } from "@/lib/server/conversation-send/types";
 import type { Contact } from "@/types/contacts";
-import type {
-  ScheduledMessageChannel,
-  ScheduledMessageStatus,
-  ScheduledMessageView,
+import {
+  DISMISSABLE_STATUSES,
+  type ScheduledMessageChannel,
+  type ScheduledMessageStatus,
+  type ScheduledMessageView,
 } from "@/types/scheduled-messages";
 import type { ScheduleRequest } from "./parse";
 
@@ -100,20 +101,32 @@ export async function scheduleConversationMessage(input: {
     });
     return refuse(502, "Couldn't schedule the message. Please try again.");
   }
-  await ref.update({
-    qstashMessageId: published.messageId,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  // Best-effort: the message IS booked — QStash holds it and the doc is
+  // pending. Failing the request here would invite a second booking of the
+  // same message; the id is bookkeeping only (nothing reads it to fire).
+  try {
+    await ref.update({
+      qstashMessageId: published.messageId,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error("[scheduled-messages] booked; qstashMessageId write failed", err);
+  }
   return { ok: true, id: ref.id };
 }
 
-/** Cancel a pending message. Anything else has already fired (or failed). */
+/**
+ * Take a message off the thread:
+ *   - pending → cancelled (it will not fire);
+ *   - failed / unconfirmed → dismissed (hidden; the doc stays as the record);
+ *   - anything else — sending, sent, cancelled — is refused.
+ */
 export async function cancelScheduledMessage(input: {
   contactId: string;
   subAccountId: string;
   id: string;
   actorUid: string;
-}): Promise<{ ok: true } | SendRefusal> {
+}): Promise<{ ok: true; action: "cancelled" | "dismissed" } | SendRefusal> {
   const db = getAdminDb();
   const ref = db.doc(`${scheduledMessagesPath(input.contactId)}/${input.id}`);
   return db.runTransaction(async (tx) => {
@@ -121,6 +134,14 @@ export async function cancelScheduledMessage(input: {
     const data = snap.data();
     if (!snap.exists || data?.subAccountId !== input.subAccountId) {
       return refuse(404, "Scheduled message not found.");
+    }
+    if (DISMISSABLE_STATUSES.includes(data.status) && !data.dismissedAt) {
+      tx.update(ref, {
+        dismissedByUid: input.actorUid,
+        dismissedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { ok: true as const, action: "dismissed" as const };
     }
     if (data.status !== "pending") {
       return refuse(409, `This message is already ${String(data.status)}.`);
@@ -131,26 +152,39 @@ export async function cancelScheduledMessage(input: {
       cancelledAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { ok: true as const };
+    return { ok: true as const, action: "cancelled" as const };
   });
 }
+
+const millis = (v: unknown): number =>
+  v instanceof Timestamp ? v.toMillis() : v instanceof Date ? v.getTime() : 0;
 
 const iso = (v: unknown): string | null =>
   v instanceof Timestamp ? v.toDate().toISOString() : v instanceof Date ? v.toISOString() : null;
 
-/** A contact's scheduled messages, soonest first. */
+const RECENT_LIMIT = 100;
+
+/**
+ * A contact's scheduled messages, soonest first, dismissed ones left out.
+ * Two reads so a long history can never push a live one off the list: every
+ * pending/sending message (unbounded — they are few by construction), plus the
+ * most recent RECENT_LIMIT of the rest by send time.
+ */
 export async function listScheduledMessages(
   contactId: string,
   subAccountId: string
 ): Promise<ScheduledMessageView[]> {
-  const snap = await getAdminDb()
-    .collection(scheduledMessagesPath(contactId))
-    .orderBy("sendAt", "asc")
-    .limit(100)
-    .get();
-  return snap.docs
-    .map((d) => ({ id: d.id, data: d.data() }))
-    .filter(({ data }) => data.subAccountId === subAccountId)
+  const col = getAdminDb().collection(scheduledMessagesPath(contactId));
+  const [live, recent] = await Promise.all([
+    col.where("status", "in", ["pending", "sending"]).get(),
+    col.orderBy("sendAt", "desc").limit(RECENT_LIMIT).get(),
+  ]);
+  const byId = new Map<string, FirebaseFirestore.DocumentData>();
+  for (const d of [...live.docs, ...recent.docs]) byId.set(d.id, d.data());
+  return [...byId.entries()]
+    .map(([id, data]) => ({ id, data }))
+    .filter(({ data }) => data.subAccountId === subAccountId && !data.dismissedAt)
+    .sort((a, b) => millis(a.data.sendAt) - millis(b.data.sendAt))
     .map(({ id, data }) => ({
       id,
       contactId: String(data.contactId),
