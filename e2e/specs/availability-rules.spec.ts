@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
+import { assertWindowsClear } from "../lib/booking-windows";
 import { deleteScoped } from "../lib/guard";
 
 /**
@@ -116,43 +117,13 @@ async function slotStarts(page: Page, slug: string): Promise<string[]> {
 const HOST = { uid: "e2e-avail-host", name: "E2E Avail Host" };
 const members = () => adminDb().collection(`subAccounts/${sa}/subAccountMembers`);
 
-/**
- * Fail fast, by name, if another spec left a busy event in this spec's
- * evening windows. The pages here are hostless, so ANY occupying event in
- * the sub-account blocks them — a leak shows up as a wrong slot count that
- * looks like a product bug (it did once: "E2E Appt Manual Meeting"s left
- * at now + 2 days by another spec, run in the evening).
- */
-async function assertWindowsClear() {
-  const from = at(TOMORROW, "21:00").getTime() - 8 * 3600_000;
-  const to = at(DAY_AFTER, "21:00").getTime() + 3 * 3600_000;
-  const snap = await adminDb()
-    .collection("events")
-    .where("subAccountId", "==", sa)
-    .where("startAt", ">=", Timestamp.fromMillis(from))
-    .where("startAt", "<", Timestamp.fromMillis(to))
-    .get();
-  const windows = [TOMORROW, DAY_AFTER].map((d) => [at(d, "21:00").getTime(), at(d, "21:00").getTime() + 3 * 3600_000]);
-  const foreign = snap.docs
-    .map((d) => d.data())
-    .filter((e) => e.status === "scheduled" || e.status === "awaiting_payment" || e.status === undefined)
-    .filter((e) => {
-      const s = (e.startAt as Timestamp).toMillis();
-      const en = (e.endAt as Timestamp).toMillis();
-      return windows.some(([ws, we]) => s < we && en > ws);
-    });
-  if (foreign.length > 0) {
-    throw new Error(
-      `Fixture has busy events from another spec in this spec's evening windows — it will block these hostless pages: ${foreign
-        .map((e) => `"${e.title}" ${(e.startAt as Timestamp).toDate().toISOString()}`)
-        .join(", ")}. Fix that spec's cleanup.`,
-    );
-  }
-}
-
 test.beforeAll(async () => {
   await purge();
-  await assertWindowsClear();
+  await assertWindowsClear(
+    sa,
+    [TOMORROW, DAY_AFTER].map((d) => [at(d, "21:00"), new Date(at(d, "21:00").getTime() + 3 * 3600_000)]),
+    (e) => String(e.bookingPageSlug ?? "").startsWith(PREFIX) || e.title === "E2E Avail busy",
+  );
   await members().doc(HOST.uid).set({
     uid: HOST.uid,
     subAccountId: sa,
