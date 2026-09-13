@@ -39,13 +39,22 @@ test("creates a company, links a contact to it, and unlinks on delete", async ({
       timeout: 30_000,
     });
 
-    const created = await adminDb()
-      .collection("companies")
-      .where("subAccountId", "==", env.E2E_SUBACCOUNT_ID)
-      .where("name", "==", companyName)
-      .limit(1)
-      .get();
-    expect(created.empty, "company was not written to Firestore").toBe(false);
+    // The row renders from the client SDK's latency-compensated snapshot,
+    // BEFORE the server commit — so poll the admin read rather than read once.
+    const companyQuery = () =>
+      adminDb()
+        .collection("companies")
+        .where("subAccountId", "==", env.E2E_SUBACCOUNT_ID)
+        .where("name", "==", companyName)
+        .limit(1)
+        .get();
+    await expect
+      .poll(async () => (await companyQuery()).size, {
+        message: "company was not written to Firestore",
+        timeout: 30_000,
+      })
+      .toBeGreaterThan(0);
+    const created = await companyQuery();
     companyId = created.docs[0].id;
     const companyDoc = created.docs[0].data();
     expect(companyDoc.agencyId, "company missing agencyId").toBeTruthy();
@@ -68,13 +77,20 @@ test("creates a company, links a contact to it, and unlinks on delete", async ({
     await expect(page.locator("tr").filter({ hasText: contactName })).toBeVisible({
       timeout: 30_000,
     });
-    const contactSnap = await adminDb()
-      .collection("contacts")
-      .where("subAccountId", "==", env.E2E_SUBACCOUNT_ID)
-      .where("email", "==", contactEmail)
-      .limit(1)
-      .get();
-    expect(contactSnap.empty, "contact was not written to Firestore").toBe(false);
+    const contactQuery = () =>
+      adminDb()
+        .collection("contacts")
+        .where("subAccountId", "==", env.E2E_SUBACCOUNT_ID)
+        .where("email", "==", contactEmail)
+        .limit(1)
+        .get();
+    await expect
+      .poll(async () => (await contactQuery()).size, {
+        message: "contact was not written to Firestore",
+        timeout: 30_000,
+      })
+      .toBeGreaterThan(0);
+    const contactSnap = await contactQuery();
     contactId = contactSnap.docs[0].id;
     expect(contactSnap.docs[0].data().companyId).toBe(companyId);
     expect(contactSnap.docs[0].data().company).toBe(companyName);
@@ -97,6 +113,13 @@ test("creates a company, links a contact to it, and unlinks on delete", async ({
         { timeout: 30_000 },
       )
       .toBe(false);
+    // The unlink may commit after the company delete: wait for it too.
+    await expect
+      .poll(
+        async () => (await adminDb().doc(`contacts/${contactId}`).get()).data()?.companyId,
+        { timeout: 30_000 },
+      )
+      .toBeNull();
     const after = (await adminDb().doc(`contacts/${contactId}`).get()).data();
     expect(after, "contact was deleted with the company").toBeTruthy();
     expect(after?.companyId).toBeNull();
