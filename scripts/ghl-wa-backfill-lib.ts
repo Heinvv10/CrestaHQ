@@ -5,6 +5,7 @@
  * directly. `ghl-wa-backfill.ts` is the thin orchestration shell around this.
  */
 import { createHash } from "node:crypto";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 
 /** Narrow shape of one row from `GET /conversations/messages/export`. */
 export interface GhlExportMessage {
@@ -114,18 +115,112 @@ export function isAlreadyPresent(
   );
 }
 
+/**
+ * E.164 for match purposes only (never a write path — mirrors
+ * `normalizePhoneE164` in `src/lib/contacts/phone.ts`, reimplemented here so
+ * this script stays free of `@/` alias imports, which `node
+ * --experimental-strip-types` cannot resolve). Velocity Fibre is a South
+ * African fibre ISP, hence the "ZA" default for bare national numbers; a
+ * leading "+" always parses as its own country regardless.
+ */
+export function normalizePhoneForMatch(
+  raw: string | null | undefined,
+  defaultCountry: "ZA" = "ZA",
+): string | null {
+  const s = (raw ?? "").trim();
+  if (!s) return null;
+  const parsed = parsePhoneNumberFromString(s, defaultCountry);
+  return parsed?.isValid() ? parsed.number : null;
+}
+
 export interface DryRunCounts {
   fetched: number;
   alreadyPresent: number;
   missingInbound: number;
   missingOutbound: number;
   contactsTouched: number;
+  /** Ghl contacts with no LeadStack match after BOTH the importMappings lookup and the phone fallback. */
   contactsNotFound: number;
+  /** Missing messages that belong to a still-unresolved contact — excluded from a plain `--write`. */
+  unresolvedMissingInbound: number;
+  unresolvedMissingOutbound: number;
   conversationsAdvancing: number;
 }
 
+/** Missing messages for contacts that DO resolve — what a plain `--write` (no create-flag) writes. */
 export function missingTotal(counts: DryRunCounts): number {
   return counts.missingInbound + counts.missingOutbound;
+}
+
+/** Missing messages stuck on a still-unresolved contact — written only under `--create-missing-contacts`. */
+export function unresolvedMissingTotal(counts: DryRunCounts): number {
+  return counts.unresolvedMissingInbound + counts.unresolvedMissingOutbound;
+}
+
+/**
+ * Splits a batch of missing messages into those with a resolved LeadStack
+ * contact and those without. `--write` alone only ever touches `.resolved` —
+ * `.unresolved` requires `--create-missing-contacts` (see
+ * `assertCreateMissingContactsUsage`). Never mutates the input.
+ */
+export function partitionByResolution<T extends { leadstackContactId: string | null }>(
+  messages: readonly T[],
+): { resolved: (T & { leadstackContactId: string })[]; unresolved: T[] } {
+  const resolved: (T & { leadstackContactId: string })[] = [];
+  const unresolved: T[] = [];
+  for (const m of messages) {
+    if (m.leadstackContactId) resolved.push(m as T & { leadstackContactId: string });
+    else unresolved.push(m);
+  }
+  return { resolved, unresolved };
+}
+
+/**
+ * Guards contact creation. `--write` without `--create-missing-contacts` must
+ * never create a contact — unresolved messages are counted and skipped, not
+ * silently dropped, and never used as an excuse to fabricate a contact. This
+ * throws only when the flag is on AND there is nothing to create (a caller
+ * mistake, e.g. re-running after every contact already resolved) so the
+ * operator gets a clear signal rather than a silent no-op that looks like
+ * success.
+ */
+export function assertCreateMissingContactsUsage(
+  createMissingContacts: boolean,
+  unresolvedContactCount: number,
+): void {
+  if (createMissingContacts && unresolvedContactCount === 0) {
+    throw new Error(
+      "--create-missing-contacts was passed but every contact already resolves — nothing to create. Remove the flag.",
+    );
+  }
+}
+
+export interface MissingContactInput {
+  ghlContactId: string;
+  phone: string | null;
+  agencyId: string;
+  subAccountId: string;
+}
+
+/**
+ * Contact doc for a GHL contact backfilled with `--create-missing-contacts`,
+ * in the SAME shape the original bulk importer uses for a GHL-sourced
+ * contact (`externalId`/`externalSource`/`createdByUid`, see
+ * `src/lib/import/bulk-write.ts`), so it dedupes against any future real GHL
+ * contact import via the same `importMappings` key instead of double-writing.
+ */
+export function buildMissingContactDoc(input: MissingContactInput): Record<string, unknown> {
+  return {
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    name: "",
+    phone: input.phone ?? "",
+    externalId: input.ghlContactId,
+    externalSource: "ghl",
+    createdByUid: "import:ghl-wa-backfill",
+    mode: "live",
+    tags: ["ghl-wa-backfill"],
+  };
 }
 
 /**

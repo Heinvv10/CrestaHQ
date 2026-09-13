@@ -31,11 +31,16 @@ import path from "node:path";
 import { cert, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp, type Firestore } from "firebase-admin/firestore";
 import {
+  assertCreateMissingContactsUsage,
   assertWriteConfirmed,
+  buildMissingContactDoc,
   isAlreadyPresent,
   isWhatsAppMessage,
   missingTotal,
   normalizeMessage,
+  normalizePhoneForMatch,
+  partitionByResolution,
+  unresolvedMissingTotal,
   type DryRunCounts,
   type ExistingMessage,
   type GhlExportMessage,
@@ -58,18 +63,27 @@ const WINDOW_END = "2026-09-11T12:30:00.000Z";
 const CREATED_BY_UID = "import:ghl-wa-backfill";
 
 function parseArgs(argv: string[]) {
-  const out: { out: string | null; write: boolean; confirm: number | null } = {
+  const out: {
+    out: string | null;
+    write: boolean;
+    confirm: number | null;
+    createMissingContacts: boolean;
+  } = {
     out: null,
     write: false,
     confirm: null,
+    createMissingContacts: false,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--out") out.out = argv[++i] ?? null;
     else if (argv[i] === "--write") out.write = true;
     else if (argv[i] === "--confirm") out.confirm = Number(argv[++i]);
+    else if (argv[i] === "--create-missing-contacts") out.createMissingContacts = true;
   }
   return out;
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
 // GHL token resolution (mirrors ApexSignal/scripts/ghl-export/tokens.ts).
@@ -201,6 +215,8 @@ async function fetchAllMessages(token: string): Promise<GhlExportMessage[]> {
 interface ResolvedContact {
   ghlContactId: string;
   leadstackContactId: string | null;
+  /** For contacts still unresolved after both lookups — the phone read from GHL, for --create-missing-contacts. */
+  ghlPhone?: string | null;
 }
 
 /** `subAccounts/{id}/importMappings/ghl:contacts:{externalId}` — see src/types/import.ts. */
@@ -208,7 +224,7 @@ function mappingKey(externalId: string): string {
   return `ghl:contacts:${externalId}`.replace(/[/.#$[\]]/g, "_").slice(0, 300);
 }
 
-async function resolveContacts(db: Firestore, ghlContactIds: string[]): Promise<ResolvedContact[]> {
+async function resolveViaImportMappings(db: Firestore, ghlContactIds: string[]): Promise<ResolvedContact[]> {
   const mappingsCol = db.collection(`subAccounts/${VELOCITY_SUB_ACCOUNT_ID}/importMappings`);
   const refs = ghlContactIds.map((id) => mappingsCol.doc(mappingKey(id)));
   const out: ResolvedContact[] = [];
@@ -219,6 +235,58 @@ async function resolveContacts(db: Firestore, ghlContactIds: string[]): Promise<
       const ghlContactId = ghlContactIds[i + j];
       const leadstackContactId = snap.exists ? ((snap.data()?.leadstackId as string | undefined) ?? null) : null;
       out.push({ ghlContactId, leadstackContactId });
+    });
+  }
+  return out;
+}
+
+/** `GET /contacts/{id}` — read-only, used only for the phone-fallback lookup. */
+async function fetchGhlContactPhone(token: string, ghlContactId: string): Promise<string | null> {
+  try {
+    const body = await ghlGet(token, `/contacts/${ghlContactId}`, {});
+    const phone = (body as { contact?: { phone?: unknown } } | undefined)?.contact?.phone;
+    return typeof phone === "string" && phone.trim().length > 0 ? phone : null;
+  } catch (err) {
+    console.warn(`[phone-fallback] GET /contacts/${ghlContactId} failed: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+/**
+ * The Cloud webhook (live from 2026-09-11) creates contacts by phone, so a
+ * customer who first messaged AFTER the original bulk import may exist in
+ * LeadStack with no `importMappings` entry at all. For every GHL contact that
+ * importMappings missed, this fetches the GHL contact's phone (one GET each,
+ * throttled) and looks for an existing LeadStack contact with the same
+ * normalized phone under Velocity's sub-account. Read-only: found-by-phone
+ * contacts are reported as resolved but no mapping doc is written here (only
+ * `--write` persists one, see `runWrite`).
+ */
+async function resolveUnresolvedByPhone(
+  db: Firestore,
+  token: string,
+  unresolved: ResolvedContact[],
+): Promise<ResolvedContact[]> {
+  const out: ResolvedContact[] = [];
+  for (const r of unresolved) {
+    const rawPhone = await fetchGhlContactPhone(token, r.ghlContactId);
+    await sleep(120); // stay well under GHL's documented 10 req/s burst
+    const normalizedPhone = normalizePhoneForMatch(rawPhone);
+    if (!normalizedPhone) {
+      out.push({ ...r, ghlPhone: rawPhone });
+      continue;
+    }
+    const snap = await db
+      .collection("contacts")
+      .where("subAccountId", "==", VELOCITY_SUB_ACCOUNT_ID)
+      .where("phone", "==", normalizedPhone)
+      .limit(1)
+      .get();
+    const match = snap.docs[0];
+    out.push({
+      ghlContactId: r.ghlContactId,
+      leadstackContactId: match ? match.id : null,
+      ghlPhone: normalizedPhone,
     });
   }
   return out;
@@ -237,25 +305,44 @@ async function readExistingMessages(db: Firestore, leadstackContactId: string): 
   });
 }
 
+interface CandidateMessage extends NormalizedGhlMessage {
+  leadstackContactId: string | null;
+}
 interface MissingMessage extends NormalizedGhlMessage {
   leadstackContactId: string;
 }
 
 interface DryRunResult {
   counts: DryRunCounts;
+  /** Missing messages for contacts that DO resolve — what a plain `--write` sends. */
   missing: MissingMessage[];
+  /** Missing messages for contacts that do NOT resolve — needs `--create-missing-contacts`. */
+  unresolvedMissing: CandidateMessage[];
   contactsNotFoundIds: string[];
+  /** GHL contact id -> best-known phone, for `--create-missing-contacts`. */
+  unresolvedContactPhones: Map<string, string | null>;
 }
 
-async function runDryRun(db: Firestore, rawMessages: GhlExportMessage[]): Promise<DryRunResult> {
+async function runDryRun(db: Firestore, token: string, rawMessages: GhlExportMessage[]): Promise<DryRunResult> {
   const whatsapp = rawMessages.filter(isWhatsAppMessage);
   const normalized = whatsapp
     .map(normalizeMessage)
     .filter((m): m is NormalizedGhlMessage => m !== null);
 
   const uniqueContactIds = [...new Set(normalized.map((m) => m.ghlContactId))];
-  const resolved = await resolveContacts(db, uniqueContactIds);
+  const viaMapping = await resolveViaImportMappings(db, uniqueContactIds);
+  const stillUnresolved = viaMapping.filter((r) => !r.leadstackContactId);
+  console.log(
+    `${stillUnresolved.length} of ${uniqueContactIds.length} GHL contacts have no importMappings entry; ` +
+      "trying the phone fallback against Velocity's contacts...",
+  );
+  const viaPhone = await resolveUnresolvedByPhone(db, token, stillUnresolved);
+  const phoneResolvedCount = viaPhone.filter((r) => r.leadstackContactId).length;
+  console.log(`Phone fallback resolved ${phoneResolvedCount} of ${stillUnresolved.length}.`);
+
+  const resolved = [...viaMapping.filter((r) => r.leadstackContactId), ...viaPhone];
   const contactMap = new Map(resolved.map((r) => [r.ghlContactId, r.leadstackContactId]));
+  const phoneMap = new Map(viaPhone.map((r) => [r.ghlContactId, r.ghlPhone ?? null]));
 
   const contactsNotFoundIds = resolved.filter((r) => !r.leadstackContactId).map((r) => r.ghlContactId);
 
@@ -265,21 +352,26 @@ async function runDryRun(db: Firestore, rawMessages: GhlExportMessage[]): Promis
     existingByContact.set(r.leadstackContactId, await readExistingMessages(db, r.leadstackContactId));
   }
 
-  const missing: MissingMessage[] = [];
+  // A still-unresolved contact has no doc path to read existing messages
+  // from, so its rows are conservatively kept as candidates rather than
+  // checked against `isAlreadyPresent` — they can only be classified as
+  // "missing" or "already present" once a contact exists to check against.
   let alreadyPresent = 0;
-  const touchedContacts = new Set<string>();
-
+  const candidates: CandidateMessage[] = [];
   for (const m of normalized) {
     const leadstackContactId = contactMap.get(m.ghlContactId) ?? null;
-    if (!leadstackContactId) continue; // counted separately as contactsNotFoundIds
-    const existing = existingByContact.get(leadstackContactId) ?? [];
-    if (isAlreadyPresent(m, existing)) {
-      alreadyPresent += 1;
-      continue;
+    if (leadstackContactId) {
+      const existing = existingByContact.get(leadstackContactId) ?? [];
+      if (isAlreadyPresent(m, existing)) {
+        alreadyPresent += 1;
+        continue;
+      }
     }
-    missing.push({ ...m, leadstackContactId });
-    touchedContacts.add(leadstackContactId);
+    candidates.push({ ...m, leadstackContactId });
   }
+
+  const { resolved: missing, unresolved: unresolvedMissing } = partitionByResolution(candidates);
+  const touchedContacts = new Set(missing.map((m) => m.leadstackContactId));
 
   // Conversations whose lastMessageAt would move forward.
   let conversationsAdvancing = 0;
@@ -297,10 +389,12 @@ async function runDryRun(db: Firestore, rawMessages: GhlExportMessage[]): Promis
     missingOutbound: missing.filter((m) => m.direction === "outbound").length,
     contactsTouched: touchedContacts.size,
     contactsNotFound: contactsNotFoundIds.length,
+    unresolvedMissingInbound: unresolvedMissing.filter((m) => m.direction === "inbound").length,
+    unresolvedMissingOutbound: unresolvedMissing.filter((m) => m.direction === "outbound").length,
     conversationsAdvancing,
   };
 
-  return { counts, missing, contactsNotFoundIds };
+  return { counts, missing, unresolvedMissing, contactsNotFoundIds, unresolvedContactPhones: phoneMap };
 }
 
 // ---------------------------------------------------------------------------
@@ -308,10 +402,61 @@ async function runDryRun(db: Firestore, rawMessages: GhlExportMessage[]): Promis
 // the SP2 brief: Hein approves the write step separately after the count.
 // ---------------------------------------------------------------------------
 
-/** Caller (`main`) must call `assertWriteConfirmed` before invoking this. */
-async function runWrite(db: Firestore, result: DryRunResult, agencyId: string): Promise<void> {
+/**
+ * Caller (`main`) must call `assertWriteConfirmed` (and, when
+ * `createMissingContacts` is set, `assertCreateMissingContactsUsage`) before
+ * invoking this.
+ *
+ * Without `--create-missing-contacts`, `result.unresolvedMissing` is NEVER
+ * touched — those messages stay unwritten and are only counted. With it, one
+ * contact per still-unresolved GHL contact id is created first (same shape
+ * as the original bulk importer: agencyId/subAccountId/createdByUid, plus an
+ * `importMappings` entry so a later run treats it as already resolved), then
+ * its messages are written the same way as any other resolved contact's.
+ */
+async function runWrite(
+  db: Firestore,
+  result: DryRunResult,
+  agencyId: string,
+  createMissingContacts: boolean,
+): Promise<void> {
+  const writable: MissingMessage[] = [...result.missing];
+
+  if (createMissingContacts) {
+    const byGhlContact = new Map<string, CandidateMessage[]>();
+    for (const m of result.unresolvedMissing) {
+      const list = byGhlContact.get(m.ghlContactId) ?? [];
+      list.push(m);
+      byGhlContact.set(m.ghlContactId, list);
+    }
+    for (const [ghlContactId, msgs] of byGhlContact) {
+      const contactRef = db.collection("contacts").doc();
+      await contactRef.set({
+        ...buildMissingContactDoc({
+          ghlContactId,
+          phone: result.unresolvedContactPhones.get(ghlContactId) ?? null,
+          agencyId,
+          subAccountId: VELOCITY_SUB_ACCOUNT_ID,
+        }),
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
+      const mappingRef = db.doc(
+        `subAccounts/${VELOCITY_SUB_ACCOUNT_ID}/importMappings/${mappingKey(ghlContactId)}`,
+      );
+      await mappingRef.set({
+        entity: "contacts",
+        system: "ghl",
+        externalId: ghlContactId,
+        leadstackId: contactRef.id,
+        createdAt: Timestamp.now(),
+      });
+      for (const m of msgs) writable.push({ ...m, leadstackContactId: contactRef.id });
+    }
+  }
+
   const byContact = new Map<string, MissingMessage[]>();
-  for (const m of result.missing) {
+  for (const m of writable) {
     const list = byContact.get(m.leadstackContactId) ?? [];
     list.push(m);
     byContact.set(m.leadstackContactId, list);
@@ -422,7 +567,7 @@ async function main() {
   }
   console.log(`Fetched ${raw.length} raw export rows (all non-email channels, window-filtered by GHL).`);
 
-  const dryRun = await runDryRun(db, raw);
+  const dryRun = await runDryRun(db, resolvedToken.token, raw);
 
   const report = {
     generatedAt: new Date().toISOString(),
@@ -432,24 +577,38 @@ async function main() {
     counts: dryRun.counts,
     contactsNotFoundGhlIds: dryRun.contactsNotFoundIds,
     missingGhlMessageIds: dryRun.missing.map((m) => m.ghlMessageId),
+    unresolvedMissingGhlMessageIds: dryRun.unresolvedMissing.map((m) => m.ghlMessageId),
   };
   console.log(JSON.stringify(report.counts, null, 2));
   await (await import("node:fs/promises")).writeFile(outPath, JSON.stringify(report, null, 2));
   console.log(`Report written to ${outPath}`);
+  console.log(
+    `${dryRun.contactsNotFoundIds.length} GHL contacts still don't resolve after the phone fallback, ` +
+      `carrying ${unresolvedMissingTotal(dryRun.counts)} messages ` +
+      `(${dryRun.counts.unresolvedMissingInbound} inbound, ${dryRun.counts.unresolvedMissingOutbound} outbound). ` +
+      "These are excluded from a plain --write; only --create-missing-contacts includes them.",
+  );
 
   if (args.write) {
     try {
       assertWriteConfirmed(missingTotal(dryRun.counts), args.confirm);
+      assertCreateMissingContactsUsage(args.createMissingContacts, dryRun.contactsNotFoundIds.length);
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
-    console.log(`Confirmed — writing ${missingTotal(dryRun.counts)} messages...`);
-    await runWrite(db, dryRun, agencyId);
+    const writingUnresolvedNote = args.createMissingContacts
+      ? ` plus ${unresolvedMissingTotal(dryRun.counts)} for ${dryRun.contactsNotFoundIds.length} newly-created contacts`
+      : "";
+    console.log(`Confirmed — writing ${missingTotal(dryRun.counts)} messages${writingUnresolvedNote}...`);
+    await runWrite(db, dryRun, agencyId, args.createMissingContacts);
     console.log("Write complete.");
   } else {
     console.log(
-      `Dry run only. To write, re-run with: --write --confirm ${missingTotal(dryRun.counts)} (after Hein approves this count).`,
+      `Dry run only. To write (existing contacts only), re-run with: ` +
+        `--write --confirm ${missingTotal(dryRun.counts)} (after Hein approves this count). ` +
+        `Add --create-missing-contacts to also create the ${dryRun.contactsNotFoundIds.length} unresolved contacts ` +
+        "and their messages — a separate, explicit decision.",
     );
   }
 }

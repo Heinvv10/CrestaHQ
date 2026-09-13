@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertCreateMissingContactsUsage,
   assertWriteConfirmed,
   bodyHash,
+  buildMissingContactDoc,
   isAlreadyPresent,
   isWhatsAppMessage,
   normalizeMessage,
+  normalizePhoneForMatch,
+  partitionByResolution,
   type ExistingMessage,
   type NormalizedGhlMessage,
 } from "./ghl-wa-backfill-lib";
@@ -122,6 +126,85 @@ describe("isAlreadyPresent", () => {
 
   it("reports missing when existing is empty", () => {
     expect(isAlreadyPresent(candidate, [])).toBe(false);
+  });
+});
+
+describe("normalizePhoneForMatch", () => {
+  it("normalizes a South African national number to E.164", () => {
+    expect(normalizePhoneForMatch("082 123 4567")).toBe("+27821234567");
+  });
+
+  it("parses an international number regardless of the default country", () => {
+    expect(normalizePhoneForMatch("+14155552671")).toBe("+14155552671");
+  });
+
+  it("returns null for junk or empty input rather than a guess", () => {
+    expect(normalizePhoneForMatch("not a phone")).toBeNull();
+    expect(normalizePhoneForMatch("")).toBeNull();
+    expect(normalizePhoneForMatch(null)).toBeNull();
+  });
+});
+
+describe("partitionByResolution", () => {
+  it("splits resolved from unresolved without mutating input", () => {
+    const input = [
+      { id: "a", leadstackContactId: "ls1" },
+      { id: "b", leadstackContactId: null },
+      { id: "c", leadstackContactId: "ls2" },
+    ];
+    const { resolved, unresolved } = partitionByResolution(input);
+    expect(resolved.map((m) => m.id)).toEqual(["a", "c"]);
+    expect(unresolved.map((m) => m.id)).toEqual(["b"]);
+    expect(input).toHaveLength(3); // unchanged
+  });
+
+  it("handles an all-resolved or all-unresolved batch", () => {
+    expect(partitionByResolution([{ id: "a", leadstackContactId: "x" }]).unresolved).toEqual([]);
+    expect(partitionByResolution([{ id: "a", leadstackContactId: null }]).resolved).toEqual([]);
+  });
+});
+
+describe("assertCreateMissingContactsUsage", () => {
+  it("is a no-op when the flag is off, regardless of unresolved count", () => {
+    expect(() => assertCreateMissingContactsUsage(false, 0)).not.toThrow();
+    expect(() => assertCreateMissingContactsUsage(false, 5)).not.toThrow();
+  });
+
+  it("is a no-op when the flag is on and there is something to create", () => {
+    expect(() => assertCreateMissingContactsUsage(true, 5)).not.toThrow();
+  });
+
+  it("throws when the flag is on but nothing is unresolved", () => {
+    expect(() => assertCreateMissingContactsUsage(true, 0)).toThrow(/nothing to create/);
+  });
+});
+
+describe("buildMissingContactDoc", () => {
+  it("carries agencyId/subAccountId/createdByUid and the GHL external-id stamp", () => {
+    const doc = buildMissingContactDoc({
+      ghlContactId: "ghl-c1",
+      phone: "+27821234567",
+      agencyId: "agency1",
+      subAccountId: "sa1",
+    });
+    expect(doc).toMatchObject({
+      agencyId: "agency1",
+      subAccountId: "sa1",
+      phone: "+27821234567",
+      externalId: "ghl-c1",
+      externalSource: "ghl",
+      createdByUid: "import:ghl-wa-backfill",
+    });
+  });
+
+  it("never writes a null phone as a string 'null'", () => {
+    const doc = buildMissingContactDoc({
+      ghlContactId: "ghl-c2",
+      phone: null,
+      agencyId: "agency1",
+      subAccountId: "sa1",
+    });
+    expect(doc.phone).toBe("");
   });
 });
 
