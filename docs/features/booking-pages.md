@@ -34,6 +34,10 @@ Pages with `priceCents > 0` mint a `holdUntil` window on the event at book time.
 2. Dispatches into `fireTriggers()` with the matching `AutomationTriggerType` — so the booking events appear alongside form-submit, quote-accept, etc. in the automation engine. (Same caveat as Quotes: the v1 `instant_response` recipe doesn't handle these triggers yet; the dispatch plumbing is in place, recipe support is the missing piece.)
 3. Returns the lifecycle outcome so the calling route can include it in the response body.
 
+## Google Calendar sync
+
+When the agency enables `googleCalendarEnabledByAgency`, each host can connect their own Google Calendar: their Google busy time blocks their slots (availability, book, reschedule and voice all read it, fail open), and every booking assigned to them is pushed to their primary calendar after book / reschedule / cancel / payment expiry / operator cancel. Hostless pages are unaffected. See [Google Calendar sync](google-calendar-sync.md).
+
 ## Setup contract
 
 **No new env vars.** Reuses `RESEND_API_KEY` + `EMAIL_FROM` (confirmations), `AUTOMATIONS_TOKEN_SECRET` (HMAC for the public reschedule/cancel tokens), `QSTASH_*` (reminder + payment-expiry schedules), `NEXT_PUBLIC_APP_URL` (public URL construction). Booking pages are public so `/b` + `/api/booking` are in middleware's `PUBLIC_PATHS`. Reuses the per-sub-account dedicated sending domain when configured — confirmation emails go out from the tenant brand.
