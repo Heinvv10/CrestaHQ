@@ -10,6 +10,7 @@ import {
   type BookingPayment,
   type BookingService,
   type CalendarType,
+  type DateOverride,
   type IntakeField,
   type WorkingHour,
 } from "@/types/booking";
@@ -183,6 +184,62 @@ export function validateWorkingHours(
     }
   }
   return { ok: true, value: cleaned };
+}
+
+export const MAX_DATE_OVERRIDES = 366;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Date-specific hours: unique real calendar dates, each with sane
+ * non-overlapping ranges (validated like one weekday of working hours).
+ * Empty ranges = closed that date. Past dates are kept; the list is capped.
+ */
+export function validateDateOverrides(input: unknown): Validated<DateOverride[]> {
+  if (input === undefined || input === null) return { ok: true, value: [] };
+  if (!Array.isArray(input)) {
+    return { ok: false, error: "Date-specific hours must be a list." };
+  }
+  if (input.length > MAX_DATE_OVERRIDES) {
+    return { ok: false, error: `At most ${MAX_DATE_OVERRIDES} date-specific entries.` };
+  }
+  const out: DateOverride[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const date = typeof r.date === "string" ? r.date : "";
+    const m = DATE_RE.exec(date);
+    const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+    if (!d || d.toISOString().slice(0, 10) !== date) {
+      return { ok: false, error: "Each date-specific entry needs a real date (YYYY-MM-DD)." };
+    }
+    if (seen.has(date)) {
+      return { ok: false, error: `${date} is listed twice in date-specific hours.` };
+    }
+    seen.add(date);
+    if (!Array.isArray(r.ranges)) {
+      return { ok: false, error: `${date}: ranges must be a list (empty = closed).` };
+    }
+    const hours = validateWorkingHours(
+      r.ranges.map((x) => ({ ...(x as object), dayOfWeek: 0 })),
+    );
+    if (!hours.ok) return { ok: false, error: `${date}: ${hours.error}` };
+    out.push({
+      date,
+      ranges: hours.value.map(({ startMinute, endMinute }) => ({ startMinute, endMinute })),
+    });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return { ok: true, value: out };
+}
+
+/** Null/absent ⇒ legacy step (duration + buffer). */
+export function validateSlotInterval(input: unknown): Validated<number | null> {
+  if (input === undefined || input === null || input === "") return { ok: true, value: null };
+  const n = typeof input === "number" ? input : Number(input);
+  if (!Number.isInteger(n) || n < 5 || n > 240 || n % 5 !== 0) {
+    return { ok: false, error: "Slot interval must be 5–240 minutes, in steps of 5." };
+  }
+  return { ok: true, value: n };
 }
 
 /**
@@ -388,6 +445,11 @@ export function validateHosts(input: unknown): Validated<BookingHost[]> {
       }
       if (wh.value.length > 0) host.workingHours = wh.value;
     }
+    const overrides = validateDateOverrides(r.dateOverrides);
+    if (!overrides.ok) {
+      return { ok: false, error: `Host "${name || uid}": ${overrides.error}` };
+    }
+    if (overrides.value.length > 0) host.dateOverrides = overrides.value;
     cleaned.push(host);
   }
   return { ok: true, value: cleaned };
@@ -798,6 +860,10 @@ export function validateBookingPageFormData(
   if (!durationMinutes.ok) return durationMinutes;
   const bufferMinutes = validateBuffer(b.bufferMinutes);
   if (!bufferMinutes.ok) return bufferMinutes;
+  const bufferBeforeMinutes = validateBuffer(b.bufferBeforeMinutes ?? 0);
+  if (!bufferBeforeMinutes.ok) return bufferBeforeMinutes;
+  const slotIntervalMinutes = validateSlotInterval(b.slotIntervalMinutes);
+  if (!slotIntervalMinutes.ok) return slotIntervalMinutes;
   const workingHours = validateWorkingHours(b.workingHours);
   if (!workingHours.ok) return workingHours;
   if (workingHours.value.length === 0) {
@@ -806,6 +872,8 @@ export function validateBookingPageFormData(
       error: "Set at least one working-hour range before publishing.",
     };
   }
+  const dateOverrides = validateDateOverrides(b.dateOverrides);
+  if (!dateOverrides.ok) return dateOverrides;
   const timezone = validateTimezone(b.timezone);
   if (!timezone.ok) return timezone;
   const visibleDays = validateVisibleDays(b.visibleDays);
@@ -870,7 +938,10 @@ export function validateBookingPageFormData(
       status: status.value,
       durationMinutes: durationMinutes.value,
       bufferMinutes: bufferMinutes.value,
+      bufferBeforeMinutes: bufferBeforeMinutes.value,
+      slotIntervalMinutes: slotIntervalMinutes.value,
       workingHours: workingHours.value,
+      dateOverrides: dateOverrides.value,
       timezone: timezone.value,
       visibleDays: visibleDays.value,
       minNoticeHours: minNoticeHours.value,

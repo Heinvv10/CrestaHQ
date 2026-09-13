@@ -1,0 +1,74 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createMemoryFirestore } from "@/test/memory-firestore";
+
+/**
+ * Duplicating a page copies its availability rules — page and per-host
+ * date-specific hours, before-buffer and slot interval — through the real
+ * route, validator and host resolution.
+ */
+
+const mem = createMemoryFirestore();
+vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
+vi.mock("@/lib/auth/require-tenancy", () => ({
+  requireSubAccountAdmin: async () => ({ uid: "u1", agencyId: "ag1" }),
+}));
+
+const { POST } = await import("./route");
+
+const closed = [{ date: "2026-12-25", ranges: [] }];
+const short = [{ date: "2026-12-24", ranges: [{ startMinute: 540, endMinute: 600 }] }];
+
+beforeEach(() => {
+  mem.clear();
+  mem.seed("subAccounts/sa1", { agencyId: "ag1" });
+  mem.seed("subAccounts/sa1/subAccountMembers/a", { uid: "a", status: "active", displayName: "Ann" });
+  mem.seed("subAccounts/sa1/bookingPages/src", {
+    id: "src",
+    slug: "src",
+    name: "Source",
+    description: "",
+    status: "published",
+    durationMinutes: 30,
+    bufferMinutes: 10,
+    bufferBeforeMinutes: 15,
+    slotIntervalMinutes: 20,
+    workingHours: [{ dayOfWeek: 1, startMinute: 540, endMinute: 1020 }],
+    dateOverrides: closed,
+    timezone: "UTC",
+    visibleDays: 14,
+    minNoticeHours: 2,
+    maxPerDay: null,
+    intakeFields: [],
+    hosts: [{ uid: "a", name: "Ann", dateOverrides: short }],
+    logoUrl: null,
+    accentColor: null,
+    confirmationMessage: "",
+    remindersEnabled: true,
+    reminderOffsetsMinutes: [1440, 60],
+    payment: null,
+    territoryId: "global",
+    defaultTerritoryId: null,
+    agencyId: "ag1",
+    subAccountId: "sa1",
+    createdByUid: "u1",
+  });
+});
+
+describe("duplicate", () => {
+  it("copies date-specific hours (page and host), before-buffer and slot interval", async () => {
+    const res = await POST(new Request("http://x/api", { method: "POST" }), {
+      params: Promise.resolve({ id: "sa1", slug: "src" }),
+    });
+    expect(res.status).toBe(200);
+    const { slug } = (await res.json()) as { slug: string };
+    expect(slug).toBe("src-copy");
+    expect(mem.read(`subAccounts/sa1/bookingPages/${slug}`)).toMatchObject({
+      status: "draft",
+      bufferMinutes: 10,
+      bufferBeforeMinutes: 15,
+      slotIntervalMinutes: 20,
+      dateOverrides: closed,
+      hosts: [{ uid: "a", name: "Ann", dateOverrides: short }],
+    });
+  });
+});

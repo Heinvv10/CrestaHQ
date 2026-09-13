@@ -129,6 +129,14 @@ describe("a malformed duration or step", () => {
     expect(run({ durationMinutes, bufferMinutes })).toEqual([]);
   });
 
+  it.each([
+    ["zero interval", 0],
+    ["NaN interval", Number.NaN],
+    ["negative interval", -15],
+  ])("%s: no slots, even with a valid duration + buffer", (_label, slotIntervalMinutes) => {
+    expect(run({ durationMinutes: 30, bufferMinutes: 0, slotIntervalMinutes })).toEqual([]);
+  });
+
   it("a tiny step is capped per range instead of looping for ever", () => {
     const out = run({ durationMinutes: 0.001, visibleDays: 1 });
     expect(out.length).toBeLessThanOrEqual(2 * 24 * 60); // two calendar days touched

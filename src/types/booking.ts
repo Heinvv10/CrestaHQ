@@ -33,6 +33,16 @@ export interface WorkingHour {
 }
 
 /**
+ * Hours for one specific date, replacing that weekday's weekly hours for
+ * that date only. `date` is "YYYY-MM-DD" in the page's timezone; minutes are
+ * from midnight in that timezone. Empty `ranges` = closed all day.
+ */
+export interface DateOverride {
+  date: string;
+  ranges: { startMinute: number; endMinute: number }[];
+}
+
+/**
  * An extra question shown on the public booking form, beyond the
  * mandatory name / email / phone. v1 supports plain text, multi-line
  * text, and single-select. Operators usually want one or two ("What
@@ -78,6 +88,11 @@ export interface BookingHost {
    * on round-robin / service pages — see {@link BookingPage.distribution}.
    */
   priority?: 1 | 2 | 3;
+  /**
+   * This host's date-specific hours. For a listed date they beat the page's
+   * `dateOverrides`, which beat the weekly hours. Absent ⇒ none.
+   */
+  dateOverrides?: DateOverride[];
 }
 
 /**
@@ -131,9 +146,22 @@ export interface BookingPage {
 
   // ── Slot rules ─────────────────────────────────────────────────
   durationMinutes: number;
-  /** Gap between back-to-back meetings, in minutes. 0 allowed. */
+  /**
+   * After-buffer, in minutes (0 allowed): a slot needs this much free time
+   * after it. Pads every busy interval; also the legacy slot step
+   * (`duration + bufferMinutes`) when `slotIntervalMinutes` is unset.
+   */
   bufferMinutes: number;
+  /** Before-buffer: free minutes a slot needs before it. Absent ⇒ 0. */
+  bufferBeforeMinutes?: number;
+  /**
+   * Minutes between slot starts (5–240, multiple of 5). Absent/null ⇒
+   * `duration + bufferMinutes`, so legacy pages offer the same slots.
+   */
+  slotIntervalMinutes?: number | null;
   workingHours: WorkingHour[];
+  /** Date-specific hours for the whole page (see {@link DateOverride}). */
+  dateOverrides?: DateOverride[];
   /** IANA timezone, e.g. "Australia/Sydney". */
   timezone: string;
   /** Future window of bookable days from "now". Default 14. */
@@ -278,7 +306,10 @@ export type BookingPageFormData = Pick<
   | "status"
   | "durationMinutes"
   | "bufferMinutes"
+  | "bufferBeforeMinutes"
+  | "slotIntervalMinutes"
   | "workingHours"
+  | "dateOverrides"
   | "timezone"
   | "visibleDays"
   | "minNoticeHours"
