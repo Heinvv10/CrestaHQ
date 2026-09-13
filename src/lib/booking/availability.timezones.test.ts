@@ -8,6 +8,9 @@ import type { BookingPage } from "@/types/booking";
  * next local date: today was skipped, and a book-time re-verify (window =
  * slot ± 1 ms) walked the wrong date and found nothing, so every booking on
  * such a page was refused.
+ *
+ * Expected instants here come from utcFromWallClock (a round trip);
+ * availability.dst.test.ts pins DST days against hand-written instants.
  */
 
 function page(timezone: string): BookingPage {
@@ -85,7 +88,7 @@ describe.each(ZONES)("%s", (tz) => {
   });
 });
 
-describe("DST days in far-east and far-west zones", () => {
+describe("DST change days (round trip through utcFromWallClock)", () => {
   it.each([
     ["Pacific/Auckland", 2026, 9, 27], // NZDT starts 02:00 → 03:00
     ["Pacific/Auckland", 2026, 4, 5], // NZST resumes 03:00 → 02:00

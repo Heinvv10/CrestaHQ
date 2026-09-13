@@ -5,15 +5,14 @@ import type { BookingPage, DateOverride, WorkingHour } from "@/types/booking";
  * instant, a window to scan, and the list of busy events overlapping
  * that window, produce the array of free slot intervals (UTC).
  *
- * Timezone math uses `Intl.DateTimeFormat` to compute the page-tz
- * offset for any given UTC instant — so DST transitions are handled
- * naturally without an external date library. The trick:
- *
- *   1. Take a guess UTC instant that has the wall-clock fields we want.
- *   2. Format that guess in the target timezone to see what wall-clock
- *      the tz applies to it. The diff is the tz offset at that moment.
- *   3. Subtract the offset from the guess to land on the real UTC
- *      instant whose wall-clock in the target tz matches what we want.
+ * Timezone math uses `Intl.DateTimeFormat` to read the page-tz offset
+ * at an instant, so DST is handled without an external date library.
+ * A wall time on a local date converts using the offsets in force just
+ * before and just after that date (`localDay`): on an ordinary day they
+ * are equal; on a DST day each candidate is checked against the wall
+ * time it should show. A wall time inside a spring-forward gap does not
+ * exist (skipped for slots); a repeated fall-back time uses its first
+ * occurrence.
  *
  * Per-type rules (hosts, collective, class seats, services) sit on top of
  * this in `page-slots.ts`; callers go through `resolve-availability.ts`.
@@ -75,25 +74,74 @@ export interface AvailabilityInput {
 
 // One formatter per timezone: constructing Intl.DateTimeFormat is the
 // expensive part, and slot generation calls wallClockInTz per candidate.
-const formatters = new Map<string, Intl.DateTimeFormat>();
+// Spellings of one zone ("europe/london", "Europe/London") share the
+// formatter of its canonical name; both maps are capped (cleared when full)
+// because the zone string can come from request input.
+const formattersByName = new Map<string, Intl.DateTimeFormat>();
+const formattersByZone = new Map<string, Intl.DateTimeFormat>();
+const MAX_FORMATTERS = 500;
 
-function formatterFor(tz: string): Intl.DateTimeFormat {
-  let fmt = formatters.get(tz);
-  if (!fmt) {
-    fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-      weekday: "short",
-    });
-    formatters.set(tz, fmt);
+/** Exported for its cache test only. */
+export function formatterFor(tz: string): Intl.DateTimeFormat {
+  const hit = formattersByName.get(tz);
+  if (hit) return hit;
+  const created = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    weekday: "short",
+  });
+  const zone = created.resolvedOptions().timeZone;
+  const fmt = formattersByZone.get(zone) ?? created;
+  if (formattersByName.size >= MAX_FORMATTERS) {
+    formattersByName.clear();
+    formattersByZone.clear();
   }
+  formattersByZone.set(zone, fmt);
+  formattersByName.set(tz, fmt);
   return fmt;
+}
+
+/** `instant`'s wall clock in `tz`, read as if it were UTC (ms). */
+function wallAsUtc(instant: number, tz: string): number {
+  const wc = wallClockInTz(new Date(instant), tz);
+  return Date.UTC(wc.year, wc.month - 1, wc.day, wc.hour, wc.minute, wc.second);
+}
+
+/**
+ * One local date in `tz`: the UTC offsets in force 36 h either side of it
+ * (DST changes are months apart, so these are the offsets before and after
+ * any change on that date), and the instants showing a given wall minute.
+ */
+function localDay(year: number, month: number, day: number, tz: string) {
+  const midnight = Date.UTC(year, month - 1, day);
+  const noon = midnight + 12 * 3600_000;
+  const offsets = [...new Set([noon - 36 * 3600_000, noon + 36 * 3600_000].map((t) => wallAsUtc(t, tz) - t))];
+  return {
+    midnight,
+    /** Instants whose wall clock in `tz` is `minuteOfDay` on this date, earliest first. */
+    instants(minuteOfDay: number): number[] {
+      const wall = midnight + minuteOfDay * 60_000;
+      if (offsets.length === 1) return [wall - offsets[0]];
+      return offsets
+        .map((o) => wall - o)
+        .filter((t) => wallAsUtc(t, tz) === wall)
+        .sort((a, b) => a - b);
+    },
+    /** A wall minute that doesn't exist (spring-forward gap) → the pre-change offset, i.e. shifted forward. */
+    fallback(minuteOfDay: number): number {
+      return midnight + minuteOfDay * 60_000 - offsets[0];
+    },
+    /** Minutes from this date's local midnight to `instant`'s wall clock. */
+    wallMinute(instant: number): number {
+      return (wallAsUtc(instant, tz) - midnight) / 60_000;
+    },
+  };
 }
 
 /**
@@ -139,9 +187,10 @@ function wallClockInTz(
 }
 
 /**
- * Convert a wall-clock target in a tz back to its absolute UTC instant.
- * Uses the offset-at-guess trick documented in the file header so DST
- * is handled without external libs.
+ * Convert a wall-clock target in a tz back to its absolute UTC instant
+ * (see the file header). A repeated fall-back time gives its first
+ * occurrence; a time inside a spring-forward gap is shifted forward by
+ * the gap (02:30 on a 02:00→03:00 day gives 03:30).
  *
  * Exported for reuse (e.g. the AI Suite's create_event capability
  * interprets "2026-07-08 14:00" in the sub-account's timezone) — the
@@ -154,38 +203,20 @@ export function utcFromWallClock(
   minuteOfDay: number,
   tz: string,
 ): Date {
-  const hour = Math.floor(minuteOfDay / 60);
-  const minute = minuteOfDay % 60;
-  // Guess: treat the wall-clock fields as if they were UTC.
-  const guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
-  // What wall-clock does that guess actually display in the target tz?
-  const wc = wallClockInTz(guess, tz);
-  // Construct an "as-UTC" timestamp for what the tz showed.
-  const seenAsUtc = Date.UTC(
-    wc.year,
-    wc.month - 1,
-    wc.day,
-    wc.hour,
-    wc.minute,
-    wc.second,
-  );
-  // The difference is the tz's offset at the guess. Subtract it to get
-  // the real UTC instant whose tz-display equals the original target.
-  const offset = seenAsUtc - guess.getTime();
-  return new Date(guess.getTime() - offset);
+  const local = localDay(year, month, day, tz);
+  return new Date(local.instants(minuteOfDay)[0] ?? local.fallback(minuteOfDay));
 }
 
 /**
  * Iterate the candidate slot starts within a single working-hour range
- * on a specific calendar day (year-month-day in the page's tz). Steps
- * by the page's slot interval (legacy: duration + buffer); the last slot
- * must fully fit inside the range.
+ * on one local date. Steps by the page's slot interval (legacy: duration
+ * + buffer) in wall time. A slot lasts its duration in real time and must
+ * end inside the range in wall time; wall times that don't exist that day
+ * (spring-forward gap) are skipped, repeated ones use the first occurrence.
  */
 function* slotsForRange(
   page: BookingPage,
-  year: number,
-  month: number,
-  day: number,
+  local: ReturnType<typeof localDay>,
   range: { startMinute: number; endMinute: number },
 ): Generator<SlotCandidate> {
   const step =
@@ -193,9 +224,11 @@ function* slotsForRange(
   // Last legal start: range.endMinute − durationMinutes.
   const lastStartMinute = range.endMinute - page.durationMinutes;
   for (let m = range.startMinute; m <= lastStartMinute; m += step) {
-    const start = utcFromWallClock(year, month, day, m, page.timezone);
-    const end = new Date(start.getTime() + page.durationMinutes * 60_000);
-    yield { startAt: start, endAt: end };
+    const start = local.instants(m)[0];
+    if (start === undefined) continue;
+    const end = start + page.durationMinutes * 60_000;
+    if (local.wallMinute(end) > range.endMinute) continue;
+    yield { startAt: new Date(start), endAt: new Date(end) };
   }
 }
 
@@ -248,10 +281,9 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
 
   // Walk the page's LOCAL calendar dates, from the date fromInstant falls
   // on to the date toInstant falls on. The pointer is a pure calendar date
-  // (a UTC-midnight Date used only for y/m/d/weekday arithmetic), so it is
-  // right for every offset (−12..+14) and across DST; each slot's real
-  // instant comes from utcFromWallClock. (Anchoring on noon UTC instead
-  // skipped "today" for UTC+12..+14.)
+  // (a UTC-midnight Date used only for y/m/d/weekday arithmetic), so the
+  // walk is right for every offset (−12..+14); each slot's real instant
+  // comes from `localDay`, which handles that date's DST change.
   const startWc = wallClockInTz(fromInstant, page.timezone);
   let cursor = new Date(
     Date.UTC(startWc.year, startWc.month - 1, startWc.day),
@@ -289,18 +321,13 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
       dayOfWeek: cursor.getUTCDay() as WorkingHour["dayOfWeek"],
     };
     const dayKey = cursor.toISOString().slice(0, 10);
+    const local = localDay(wc.year, wc.month, wc.day, page.timezone);
     const dayMax = page.maxPerDay ?? Infinity;
     // A date override replaces that weekday's hours for this date only.
     const dayRanges =
       overrides.get(dayKey) ?? rangesByDow.get(wc.dayOfWeek) ?? [];
     for (const range of dayRanges) {
-      for (const slot of slotsForRange(
-        page,
-        wc.year,
-        wc.month,
-        wc.day,
-        range,
-      )) {
+      for (const slot of slotsForRange(page, local, range)) {
         // Window + min-notice filter.
         if (slot.startAt < fromInstant) continue;
         if (slot.endAt > toInstant) continue;
