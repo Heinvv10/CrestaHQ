@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
-import { FIXTURE_PRIMARY_NAME, readEnv } from "./env";
+import { FIXTURE_PRIMARY_NAME, appUrl, readEnv } from "./env";
 import { assertFixtureSubAccount, deleteScoped } from "./guard";
 import { signQStashBody } from "./qstash";
 
@@ -134,7 +134,7 @@ export async function resetManualCooldown(): Promise<void> {
 export async function runCron(request: APIRequestContext): Promise<{ processed: number; byStatus: Record<string, number> }> {
   const body = "{}";
   const res = await request.post("/api/cron/gbp-sync", {
-    headers: { "upstash-signature": signQStashBody("http://127.0.0.1:3100/api/cron/gbp-sync", body), "content-type": "application/json" },
+    headers: { "upstash-signature": signQStashBody(appUrl("/api/cron/gbp-sync"), body), "content-type": "application/json" },
     data: body,
   });
   expect(res.status()).toBe(200);

@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
-import { FIXTURE_PRIMARY_NAME, FIXTURE_SECONDARY_NAME, readEnv } from "./env";
+import { FIXTURE_PRIMARY_NAME, FIXTURE_SECONDARY_NAME, appUrl, readEnv } from "./env";
 import { assertFixtureSubAccount, deleteScoped } from "./guard";
 import { signQStashBody } from "./qstash";
 
@@ -84,7 +84,7 @@ async function clearAlerts(): Promise<void> {
 export async function runQualityCron(request: APIRequestContext): Promise<{ processed: number; alerted: number; recovered: number; failed: number }> {
   const body = "{}";
   const res = await request.post("/api/cron/whatsapp-quality", {
-    headers: { "upstash-signature": signQStashBody("http://127.0.0.1:3100/api/cron/whatsapp-quality", body), "content-type": "application/json" },
+    headers: { "upstash-signature": signQStashBody(appUrl("/api/cron/whatsapp-quality"), body), "content-type": "application/json" },
     data: body,
   });
   expect(res.status()).toBe(200);
