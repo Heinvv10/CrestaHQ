@@ -53,5 +53,6 @@ export default async function globalTeardown(): Promise<void> {
     // inbox-filters.spec.ts; left behind, they would outlive their contacts.
     await purge("conversations", subAccountId);
     await purge("companies", subAccountId);
+    await purge("snippets", subAccountId);
   }
 }

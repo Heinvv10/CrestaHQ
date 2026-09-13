@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NOW, at, resetBookingHarness, seedEvent, seedPage } from "@/test/booking-harness";
+import { NOW, at, mem, resetBookingHarness, seedEvent, seedPage } from "@/test/booking-harness";
 
 /**
  * The resolver's own contract: how a failing busy query surfaces (raw inside
@@ -14,7 +14,8 @@ vi.mock("@/lib/firebase/admin", async () => {
   return { getAdminDb: () => failingDb ?? m.db };
 });
 
-const { BusyQueryError, resolvePageAvailability } = await import("./resolve-availability");
+const { BusyQueryError, departedHostMessage, movingEventOf, resolvePageAvailability } =
+  await import("./resolve-availability");
 
 const A = { uid: "a", name: "Ann" };
 const B = { uid: "b", name: "Bob" };
@@ -120,5 +121,67 @@ describe("external busy and buffers", () => {
     });
     expect(startsOf(slots)).not.toContain("10:30");
     expect(startsOf(slots)).toContain("10:45");
+  });
+});
+
+describe("movingEventOf", () => {
+  const ev = (startIso: string, endIso: string) =>
+    movingEventOf("e", {
+      startAt: new Date(startIso),
+      endAt: new Date(endIso),
+      assignedToUid: "a",
+    } as never);
+
+  it("takes the event's own whole-minute length", () => {
+    expect(ev("2026-09-14T09:00:00Z", "2026-09-14T10:30:00Z")).toEqual({
+      id: "e",
+      hostUids: ["a"],
+      durationMinutes: 90,
+    });
+  });
+
+  it.each([
+    ["ends before it starts", "2026-09-14T09:00:00Z", "2026-09-14T08:00:00Z"],
+    ["zero length", "2026-09-14T09:00:00Z", "2026-09-14T09:00:00Z"],
+    ["1 ms", "2026-09-14T09:00:00.000Z", "2026-09-14T09:00:00.001Z"],
+    ["under 5 min", "2026-09-14T09:00:00Z", "2026-09-14T09:04:00Z"],
+    ["not whole minutes", "2026-09-14T09:00:00Z", "2026-09-14T09:30:30Z"],
+    ["over 8 h", "2026-09-14T09:00:00Z", "2026-09-14T17:01:00Z"],
+    ["a year", "2026-09-14T09:00:00Z", "2027-09-14T09:00:00Z"],
+  ])("%s: unknown length (0)", (_label, start, end) => {
+    expect(ev(start, end).durationMinutes).toBe(0);
+  });
+});
+
+describe("departedHostMessage", () => {
+  beforeEach(() => {
+    // Like the Admin SDK: a document path needs an even number of non-empty segments.
+    failingDb = {
+      doc: (path: string) => {
+        const parts = path.split("/");
+        if (parts.length % 2 !== 0 || parts.some((p) => p === "")) {
+          throw new Error(`invalid document path: ${path}`);
+        }
+        return mem.db.doc(path);
+      },
+    };
+  });
+
+  const page = { hosts: [B] };
+  const event = (over: object) =>
+    ({ subAccountId: "sa1", assignedToUid: null, assignedToName: null, ...over }) as never;
+
+  it.each([
+    ["a slash", { assignedToUid: "x/y", assignedToName: "Xy" }, "Xy"],
+    ["an empty collective host", { hostUids: ["", "b"] }, "Your host"],
+  ])("a host uid with %s is refused, not thrown", async (_label, over, who) => {
+    await expect(departedHostMessage(page, event(over))).resolves.toBe(
+      `${who} is no longer available — please contact the business to rebook.`,
+    );
+  });
+
+  it("an active member off the page is still fine", async () => {
+    mem.seed("subAccounts/sa1/subAccountMembers/a", { uid: "a", status: "active" });
+    await expect(departedHostMessage(page, event({ assignedToUid: "a" }))).resolves.toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
 import {
   serializeContactForApi,
@@ -292,6 +293,16 @@ export async function updateContactServerSide(opts: {
     });
   } else {
     await ref.update(update);
+  }
+
+  // Owner mirror (SP2 T1). This is the ONE chokepoint every contact PATCH
+  // goes through — dashboard and public API alike — so mirroring here covers
+  // both. Bulk assign writes its own batch and mirrors itself.
+  if (Object.prototype.hasOwnProperty.call(patch, "assignedToUid")) {
+    await mirrorContactAssignee({
+      contactId: opts.contactId,
+      subAccountId: existing.subAccountId as string,
+    });
   }
 
   const fresh = await ref.get();

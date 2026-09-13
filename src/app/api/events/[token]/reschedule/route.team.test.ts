@@ -114,6 +114,7 @@ describe("a hostless booking on a page that has since gained hosts", () => {
 
 describe("a booking whose host is no longer on the page", () => {
   it("still moves, on its own host's calendar and the page hours", async () => {
+    mem.seed("subAccounts/sa1/subAccountMembers/a", { uid: "a", status: "active" });
     seedPage("left", { hosts: [B] });
     const token = seedBooking("mine", "left", "09:00", "09:30", { assignedToUid: "a" });
     seedEvent("anns", "11:00", "11:30", { assignedToUid: "a" });
@@ -126,6 +127,34 @@ describe("a booking whose host is no longer on the page", () => {
     const res = await move(token, "10:00", "10:30");
     expect(res.status).toBe(200);
     expect(mem.read("events/mine")?.assignedToUid).toBe("a");
+  });
+});
+
+describe("a booking whose host has left the business", () => {
+  it.each([
+    ["no longer a member", null],
+    ["removed", { uid: "a", status: "removed" }],
+  ])("%s: refused with a clear 409, in the view and the move", async (_label, memberDoc) => {
+    if (memberDoc) mem.seed("subAccounts/sa1/subAccountMembers/a", memberDoc);
+    seedPage("left", { hosts: [B] });
+    const token = seedBooking("mine", "left", "09:00", "09:30", {
+      assignedToUid: "a",
+      assignedToName: "Ann",
+    });
+    const message = "Ann is no longer available — please contact the business to rebook.";
+
+    const { GET } = await import("@/app/api/booking/[saId]/[slug]/availability/route");
+    const view = await GET(new Request("http://x/api?excludeEventId=mine"), {
+      params: Promise.resolve({ saId: "sa1", slug: "left" }),
+    });
+    expect(view.status).toBe(409);
+    expect((await view.json()).error).toBe(message);
+
+    const res = await move(token, "10:00", "10:30");
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe(message);
+    const unmoved = mem.read("events/mine")?.startAt as { toMillis: () => number };
+    expect(unmoved.toMillis()).toBe(at("09:00").getTime());
   });
 });
 
@@ -150,6 +179,41 @@ describe("a service booking whose service was deleted", () => {
     });
     const token = seedBooking("mine", "svc2", "09:00", "10:00");
     expect((await move(token, "11:00", "12:00")).status).toBe(200);
+  });
+});
+
+describe("a malformed booking on a service page", () => {
+  it("ends before it starts: the view offers nothing and the move is refused, promptly", async () => {
+    seedPage("svc", {
+      calendarType: "service",
+      services: [{ id: "trim", name: "Trim", durationMinutes: 30, description: null }],
+    });
+    const token = seedBooking("bad", "svc", "10:00", "09:00", { serviceId: "gone" });
+    expect(await viewStarts("svc", "bad")).toEqual([]);
+    expect((await move(token, "10:00", "10:30")).status).toBe(409);
+  });
+});
+
+describe("the reschedule view's sizing", () => {
+  it("comes from the booking's own service, never the query's serviceId", async () => {
+    seedPage("svc", {
+      calendarType: "service",
+      services: [
+        { id: "cut", name: "Cut", durationMinutes: 60, description: null },
+        { id: "trim", name: "Trim", durationMinutes: 30, description: null },
+      ],
+    });
+    seedBooking("mine", "svc", "09:00", "10:00", { serviceId: "cut" });
+    seedBooking("old", "svc", "09:00", "10:30");
+    const { GET } = await import("@/app/api/booking/[saId]/[slug]/availability/route");
+    for (const id of ["mine", "old"]) {
+      const res = await GET(new Request(`http://x/api?excludeEventId=${id}&serviceId=trim`), {
+        params: Promise.resolve({ saId: "sa1", slug: "svc" }),
+      });
+      const body = (await res.json()) as { slots: { startAt: string; endAt: string }[]; durationMinutes: number };
+      const len = (Date.parse(body.slots[0].endAt) - Date.parse(body.slots[0].startAt)) / 60_000;
+      expect([id, len, body.durationMinutes]).toEqual(id === "mine" ? [id, 60, 60] : [id, 90, 90]);
+    }
   });
 });
 

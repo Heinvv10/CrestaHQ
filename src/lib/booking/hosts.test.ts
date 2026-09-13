@@ -7,9 +7,20 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  */
 
 const mem = createMemoryFirestore();
-vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { loadHostUpcomingCounts } = await import("./hosts");
+// Optionally fail the `hostUids array-contains` half (e.g. index not built).
+let failListed = false;
+type Q = { where: (f: string, op: string, v: unknown) => Q; get: () => Promise<unknown> };
+const failing: Q = { where: () => failing, get: () => Promise.reject(new Error("9 FAILED_PRECONDITION")) };
+const wrap = (q: Q): Q => ({
+  where: (f, op, v) => (failListed && op === "array-contains" ? failing : wrap(q.where(f, op, v))),
+  get: () => q.get(),
+});
+vi.mock("@/lib/firebase/admin", () => ({
+  getAdminDb: () => ({ collection: (p: string) => wrap(mem.db.collection(p) as unknown as Q) }),
+}));
+
+const { loadHostUpcomingCounts, queryHostEvents } = await import("./hosts");
 
 const NOW = new Date("2026-09-14T06:00:00Z");
 const seed = (id: string, extra: object) =>
@@ -21,7 +32,10 @@ const seed = (id: string, extra: object) =>
     ...extra,
   });
 
-beforeEach(() => mem.clear());
+beforeEach(() => {
+  mem.clear();
+  failListed = false;
+});
 
 describe("loadHostUpcomingCounts", () => {
   it("counts a collective booking for every one of its hosts, once each", async () => {
@@ -33,5 +47,15 @@ describe("loadHostUpcomingCounts", () => {
 
     const counts = await loadHostUpcomingCounts("sa1", ["a", "b", "c"], NOW);
     expect(Object.fromEntries(counts)).toEqual({ a: 1, b: 2, c: 0 });
+  });
+});
+
+describe("queryHostEvents", () => {
+  it("keeps the owned half when the collective half fails", async () => {
+    seed("owned", { assignedToUid: "b" });
+    seed("col", { assignedToUid: "a", hostUids: ["a", "b"] });
+    failListed = true;
+    const docs = await queryHostEvents("sa1", "b", (q) => q);
+    expect(docs.map((d) => d.id)).toEqual(["owned"]);
   });
 });

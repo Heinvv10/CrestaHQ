@@ -108,3 +108,35 @@ it("writes no star when neither side had one", async () => {
   seed({ starred: false }, {});
   expect(await link()).not.toHaveProperty("starred");
 });
+
+// SP2 T1/I9 + territory: when the survivor has no conversation, it ADOPTS the
+// stub's. Everything the conversation copies off its contact must then come
+// from the survivor, not the stub.
+it("an adopted conversation takes the survivor's owner, email and territory", async () => {
+  seed({ assigneeUid: "stub-owner", contactEmail: "stub@x.co", territoryId: "stub-territory" }, {});
+  fake.docs.delete("conversations/target");
+  fake.docs.set("contacts/target", {
+    ...TENANT,
+    name: "Target",
+    phone: "+27",
+    email: "target@x.co",
+    assignedToUid: "target-owner",
+    territoryId: "north",
+  });
+  expect(await link()).toMatchObject({
+    contactId: "target",
+    assigneeUid: "target-owner",
+    contactEmail: "target@x.co",
+    territoryId: "north",
+  });
+});
+
+it("an adopted conversation of an unassigned, territory-less survivor is cleared, not inherited", async () => {
+  seed({ assigneeUid: "stub-owner", contactEmail: "stub@x.co", territoryId: "stub-territory" }, {});
+  fake.docs.delete("conversations/target");
+  expect(await link()).toMatchObject({
+    assigneeUid: null,
+    contactEmail: null,
+    territoryId: null,
+  });
+});

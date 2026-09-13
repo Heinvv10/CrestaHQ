@@ -5,12 +5,16 @@ import {
   computePageSlots,
   eventHostUids,
   type HostBusy,
+  MAX_SLOT_MINUTES,
+  MIN_SLOT_MINUTES,
   type MovingEvent,
   type PageSlot,
   type PageSlotsInput,
 } from "@/lib/booking/page-slots";
 import { eventOccupiesSlot, eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
+import type { BookingPage } from "@/types/booking";
+import type { SubAccountMemberDoc } from "@/types/tenancy";
 
 /**
  * The one place a booking page's slots are computed or re-verified: the
@@ -64,7 +68,7 @@ export class BusyQueryError extends Error {
 
 // Look back by the longest plausible single event so one that started
 // before the window but is still running is seen as busy.
-const BUSY_LOOKBACK_MS = 8 * 60 * 60_000;
+const BUSY_LOOKBACK_MS = MAX_SLOT_MINUTES * 60_000;
 
 export async function resolvePageAvailability(
   opts: ResolveAvailabilityOptions,
@@ -118,12 +122,48 @@ export function movingEventOf(
 ): MovingEvent & { id: string } {
   const start = toDate(e.startAt);
   const end = toDate(e.endAt);
-  return {
-    id,
-    hostUids: eventHostUids(e),
-    // 0 when malformed: a service page then offers nothing rather than guess.
-    durationMinutes: start && end ? (end.getTime() - start.getTime()) / 60_000 : 0,
-  };
+  const minutes = start && end ? (end.getTime() - start.getTime()) / 60_000 : 0;
+  // Events are client-writable, so the length is untrusted: anything but a
+  // whole number of minutes in bounds is unknown (0), and a service page then
+  // offers nothing rather than size slots by it.
+  const ok =
+    Number.isInteger(minutes) &&
+    minutes >= MIN_SLOT_MINUTES &&
+    minutes <= MAX_SLOT_MINUTES;
+  return { id, hostUids: eventHostUids(e), durationMinutes: ok ? minutes : 0 };
+}
+
+/**
+ * Reschedule: a host of the booking who is off the page AND no longer an
+ * active member. Their page hours must not be offered for someone who has
+ * left, so the caller refuses with this message (409). Null when every host
+ * is on the page or still active — or the page is hostless, where the
+ * booking is on the shared schedule anyway.
+ */
+export async function departedHostMessage(
+  page: Pick<BookingPage, "hosts">,
+  event: CalendarEvent,
+): Promise<string | null> {
+  const onPage = new Set((page.hosts ?? []).map((h) => h.uid));
+  if (onPage.size === 0) return null;
+  for (const uid of eventHostUids(event)) {
+    if (onPage.has(uid)) continue;
+    // Events are client-writable: a uid that isn't one path segment would
+    // make `.doc()` throw. It can't name an active member, so it's refused.
+    const readable = typeof uid === "string" && uid !== "" && !uid.includes("/");
+    const snap = readable
+      ? await getAdminDb()
+          .doc(`subAccounts/${event.subAccountId}/subAccountMembers/${uid}`)
+          .get()
+      : null;
+    if ((snap?.data() as SubAccountMemberDoc | undefined)?.status === "active") continue;
+    const who =
+      uid === event.assignedToUid && event.assignedToName
+        ? event.assignedToName
+        : "Your host";
+    return `${who} is no longer available — please contact the business to rebook.`;
+  }
+  return null;
 }
 
 /** Occupying events in the sub-account starting inside [from, to]. */

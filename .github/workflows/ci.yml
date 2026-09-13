@@ -233,6 +233,12 @@ jobs:
       WHATSAPP_SETTINGS_PROVIDER: fake
       WHATSAPP_FAKE_ALLOW_PROD_BUILD: "1"
       WHATSAPP_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The SMS fake (SP2 missed-call E2E) swaps Twilio at the ONE seam
+      # sendSmsForSubAccount uses to place a send — fenced exactly the same
+      # way (src/lib/comms/sms/mode.ts); the deploy guard refuses these too.
+      SMS_PROVIDER: fake
+      SMS_FAKE_ALLOW_PROD_BUILD: "1"
+      SMS_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       # The GBP sync cron does nothing unless the schedule is enabled; the E2E
       # specs drive it with a signed POST. (Registering the schedule itself
       # fails harmlessly: the E2E QStash values are not Upstash credentials.)

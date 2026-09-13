@@ -105,12 +105,23 @@ export async function queryHostEvents(
   const events = getAdminDb()
     .collection("events")
     .where("subAccountId", "==", subAccountId);
-  const [owned, listed] = await Promise.all([
+  const [owned, listed] = await Promise.allSettled([
     refine(events.where("assignedToUid", "==", uid)).get(),
     refine(events.where("hostUids", "array-contains", uid)).get(),
   ]);
+  if (owned.status === "rejected") throw owned.reason;
   const byId = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
-  for (const d of [...owned.docs, ...listed.docs]) byId.set(d.id, d);
+  for (const d of owned.value.docs) byId.set(d.id, d);
+  if (listed.status === "fulfilled") {
+    for (const d of listed.value.docs) byId.set(d.id, d);
+  } else {
+    // Most likely the hostUids index isn't built yet: keep the owned half
+    // rather than lose every booking, and say so.
+    console.error(
+      `[booking/hosts] collective-host query failed sa=${subAccountId} uid=${uid}`,
+      listed.reason,
+    );
+  }
   return [...byId.values()];
 }
 

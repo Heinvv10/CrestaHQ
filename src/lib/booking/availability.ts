@@ -207,6 +207,8 @@ export function utcFromWallClock(
   return new Date(local.instants(minuteOfDay)[0] ?? local.fallback(minuteOfDay));
 }
 
+const MAX_SLOTS_PER_RANGE = 24 * 60;
+
 /**
  * Iterate the candidate slot starts within a single working-hour range
  * on one local date. Steps by the page's slot interval (legacy: duration
@@ -223,7 +225,13 @@ function* slotsForRange(
     page.slotIntervalMinutes ?? page.durationMinutes + page.bufferMinutes;
   // Last legal start: range.endMinute − durationMinutes.
   const lastStartMinute = range.endMinute - page.durationMinutes;
-  for (let m = range.startMinute; m <= lastStartMinute; m += step) {
+  // Capped: a day has 1440 minutes, so a sane step never gets near it, and a
+  // tiny one (malformed data) can't pin the event loop.
+  for (
+    let m = range.startMinute, i = 0;
+    m <= lastStartMinute && i < MAX_SLOTS_PER_RANGE;
+    m += step, i++
+  ) {
     const start = local.instants(m)[0];
     if (start === undefined) continue;
     const end = start + page.durationMinutes * 60_000;
@@ -266,6 +274,13 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
   if (
     fromInstant >= toInstant ||
     (workingHours.length === 0 && !anyOpenOverride)
+  ) {
+    return [];
+  }
+  // A zero, negative or NaN length or step would never advance the slot loop.
+  if (
+    !(page.durationMinutes > 0) ||
+    !((page.slotIntervalMinutes ?? page.durationMinutes + page.bufferMinutes) > 0)
   ) {
     return [];
   }

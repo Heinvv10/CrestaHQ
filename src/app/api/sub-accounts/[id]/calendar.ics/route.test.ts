@@ -9,7 +9,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-process.env.AUTOMATIONS_TOKEN_SECRET = "ics-route-test-secret-0123456789";
+process.env.AUTOMATIONS_TOKEN_SECRET = "test-secret";
 const { GET } = await import("./route");
 const { generateHostCalendarFeedToken } = await import("@/lib/booking/calendar-feed-token");
 

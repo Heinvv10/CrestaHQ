@@ -101,3 +101,36 @@ describe("DST in the page's timezone", () => {
     ]);
   });
 });
+
+describe("a malformed duration or step", () => {
+  const run = (over: Partial<BookingPage>) =>
+    computeAvailability({
+      page: {
+        ...page(),
+        timezone: "UTC",
+        workingHours: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+          dayOfWeek: d as 0,
+          startMinute: 0,
+          endMinute: 1440,
+        })),
+        ...over,
+      },
+      now: new Date("2026-09-14T00:00:00Z"),
+      busy: [],
+    });
+
+  it.each([
+    ["zero", 0, 0],
+    ["negative", -30, 0],
+    ["negative step", 30, -45],
+    ["zero length with a buffer", 0, 15],
+    ["NaN", Number.NaN, 0],
+  ])("%s: no slots, no loop", (_label, durationMinutes, bufferMinutes) => {
+    expect(run({ durationMinutes, bufferMinutes })).toEqual([]);
+  });
+
+  it("a tiny step is capped per range instead of looping for ever", () => {
+    const out = run({ durationMinutes: 0.001, visibleDays: 1 });
+    expect(out.length).toBeLessThanOrEqual(2 * 24 * 60); // two calendar days touched
+  });
+});

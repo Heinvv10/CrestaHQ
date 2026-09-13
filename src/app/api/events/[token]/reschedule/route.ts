@@ -15,6 +15,7 @@ import {
 } from "@/lib/booking/availability";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import {
+  departedHostMessage,
   movingEventOf,
   resolvePageAvailability,
 } from "@/lib/booking/resolve-availability";
@@ -140,6 +141,8 @@ export async function POST(
         );
       }
       const page = pageSnap.data() as BookingPage;
+      const departed = await departedHostMessage(page, event);
+      if (departed) throw new BadState(departed);
 
       // Re-verify through the same resolver the booking used, as a moved
       // booking: its own host(s) and service, its current slot not busy. A
