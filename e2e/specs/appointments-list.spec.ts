@@ -11,6 +11,11 @@ import { ensureBookingStatusSeed } from "../lib/seed";
  *   3. Search matches by contact name.
  *   4. A row-menu status change (Mark completed) updates the badge AND
  *      the Firestore doc.
+ *   5. A manual event's row menu offers no status actions (H1) — only a
+ *      booking-page event has a lifecycle to flip.
+ *   6. Cancel goes through an in-app AlertDialog (H2), never a native
+ *      window.confirm (which freezes browser automation): dismissing it
+ *      leaves the booking untouched, confirming it cancels for real.
  */
 
 async function ensureContact(
@@ -104,10 +109,17 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
     uid,
     `E2E Appt Manual ${stamp}`,
   );
+  const contactCancelable = await ensureContact(
+    agencyId,
+    subAccountId,
+    uid,
+    `E2E Appt Cancelable ${stamp}`,
+  );
 
   const titleUpcoming = `E2E Appt Upcoming Booking ${stamp}`;
   const titleCancelled = `E2E Appt Cancelled Booking ${stamp}`;
   const titleManual = `E2E Appt Manual Meeting ${stamp}`;
+  const titleCancelable = `E2E Appt Cancelable Booking ${stamp}`;
 
   const upcomingEventId = await createEvent({
     agencyId,
@@ -140,6 +152,17 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
     status: "scheduled",
     startAt: new Date(Date.now() + 48 * 60 * 60_000),
     source: "manual",
+  });
+  const cancelableEventId = await createEvent({
+    agencyId,
+    subAccountId,
+    createdByUid: uid,
+    contactId: contactCancelable,
+    title: titleCancelable,
+    status: "scheduled",
+    startAt: new Date(Date.now() + 24 * 60 * 60_000),
+    bookingPageSlug: pageXSlug,
+    source: "booking_page",
   });
 
   await page.goto(`/sa/${subAccountId}/calendar/appointments`);
@@ -188,6 +211,47 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
     timeout: 15_000,
   });
   await expect(page.getByText(titleUpcoming, { exact: true })).toHaveCount(0);
+
+  // --- H1: a manual event's row menu offers no status actions ----------
+  await searchBox.fill(String(stamp));
+  const manualRow = page.locator("tr").filter({ hasText: titleManual });
+  await expect(manualRow).toBeVisible({ timeout: 15_000 });
+  await manualRow.getByRole("button").last().click();
+  await expect(page.getByRole("menuitem", { name: "Edit" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Mark completed" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Mark no-show" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Cancel" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // --- H2: Cancel confirms through an in-app AlertDialog, not confirm() -
+  const cancelableRow = page.locator("tr").filter({ hasText: titleCancelable });
+  await expect(cancelableRow).toBeVisible({ timeout: 15_000 });
+  await cancelableRow.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Cancel" }).click();
+  await expect(page.getByRole("alertdialog")).toBeVisible({ timeout: 5_000 });
+  await expect(
+    page.getByText("Cancel this booking? The visitor is notified by email."),
+  ).toBeVisible();
+
+  // Dismissing leaves the booking untouched.
+  await page.getByRole("button", { name: "Keep it" }).click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  const untouched = await adminDb().doc(`events/${cancelableEventId}`).get();
+  expect(untouched.data()?.status).toBe("scheduled");
+
+  // Confirming actually cancels it.
+  await cancelableRow.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel booking" }).click();
+  await expect(cancelableRow.getByText("Cancelled", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect
+    .poll(
+      async () => (await adminDb().doc(`events/${cancelableEventId}`).get()).data()?.status,
+      { timeout: 15_000 },
+    )
+    .toBe("cancelled");
 
   // --- row-menu status change ------------------------------------------
   // On the All tab (not Upcoming): marking the booking "completed" makes
