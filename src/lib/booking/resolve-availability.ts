@@ -13,6 +13,8 @@ import {
 } from "@/lib/booking/page-slots";
 import { eventOccupiesSlot, eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
+import type { BookingPage } from "@/types/booking";
+import type { SubAccountMemberDoc } from "@/types/tenancy";
 
 /**
  * The one place a booking page's slots are computed or re-verified: the
@@ -119,6 +121,34 @@ export function movingEventOf(
     minutes >= MIN_SLOT_MINUTES &&
     minutes <= MAX_SLOT_MINUTES;
   return { id, hostUids: eventHostUids(e), durationMinutes: ok ? minutes : 0 };
+}
+
+/**
+ * Reschedule: a host of the booking who is off the page AND no longer an
+ * active member. Their page hours must not be offered for someone who has
+ * left, so the caller refuses with this message (409). Null when every host
+ * is on the page or still active — or the page is hostless, where the
+ * booking is on the shared schedule anyway.
+ */
+export async function departedHostMessage(
+  page: Pick<BookingPage, "hosts">,
+  event: CalendarEvent,
+): Promise<string | null> {
+  const onPage = new Set((page.hosts ?? []).map((h) => h.uid));
+  if (onPage.size === 0) return null;
+  for (const uid of eventHostUids(event)) {
+    if (onPage.has(uid)) continue;
+    const snap = await getAdminDb()
+      .doc(`subAccounts/${event.subAccountId}/subAccountMembers/${uid}`)
+      .get();
+    if ((snap.data() as SubAccountMemberDoc | undefined)?.status === "active") continue;
+    const who =
+      uid === event.assignedToUid && event.assignedToName
+        ? event.assignedToName
+        : "Your host";
+    return `${who} is no longer available — please contact the business to rebook.`;
+  }
+  return null;
 }
 
 /** Occupying events in the sub-account starting inside [from, to]. */

@@ -11,6 +11,7 @@ import {
 } from "@/lib/booking/page-slots";
 import {
   BusyQueryError,
+  departedHostMessage,
   movingEventOf,
   resolvePageAvailability,
   type ResolveAvailabilityOptions,
@@ -127,6 +128,8 @@ export async function GET(
     const evSnap = await db.collection("events").doc(excludeEventId).get();
     const ev = evSnap.exists ? (evSnap.data() as CalendarEvent) : null;
     if (ev && ev.subAccountId === saId && ev.bookingPageSlug === slug) {
+      const departed = await departedHostMessage(page, ev);
+      if (departed) return NextResponse.json({ error: departed }, { status: 409 });
       movingEvent = movingEventOf(evSnap.id, ev);
       eventServiceId = ev.serviceId ?? null;
     }
