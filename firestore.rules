@@ -794,8 +794,15 @@ service cloud.firestore {
     // One doc per contact (doc id == contactId). Written server-side by
     // lib/server/conversations-service.ts on every message. Members read;
     // creates + content updates are server-only. Clients may flip only the
-    // operator-facing fields (mark-read, status, assignment, bot controls) —
-    // never tenancy or denormalized content.
+    // operator-facing fields (mark-read / mark-unread, status, assignment, bot
+    // controls, star) — never tenancy or denormalized content.
+    //
+    // `starred` (SP2 I6) is a shared per-conversation flag toggled from the
+    // inbox row and thread header. It is display-only (nothing server-side
+    // reads it to send or route), so any member who can see the conversation
+    // may flip it; the type check keeps a non-bool out of the list filter.
+    // Absent on older docs, hence the get() default. Mark-unread
+    // (I7) writes unreadCount=1 through the existing key.
     match /conversations/{conversationId} {
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
@@ -809,8 +816,9 @@ service cloud.firestore {
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
-          ['unreadCount', 'status', 'assigneeUid', 'botMode', 'botPausedUntil', 'pendingDraft', 'updatedAt']
-        );
+          ['unreadCount', 'status', 'assigneeUid', 'botMode', 'botPausedUntil', 'pendingDraft', 'starred', 'updatedAt']
+        )
+        && request.resource.data.get("starred", false) is bool;
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId

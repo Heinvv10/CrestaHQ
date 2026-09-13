@@ -93,6 +93,32 @@ export async function markConversationRead(contactId: string): Promise<void> {
   }
 }
 
+/**
+ * Put a read conversation back in the Unread tab. Sets the counter to 1 — the
+ * real inbound count is gone once it was zeroed, and the badge only needs to
+ * be non-zero. The thread page marks read only when a thread is OPENED, so
+ * this survives staying on the thread.
+ */
+export async function markConversationUnread(
+  conversationId: string
+): Promise<void> {
+  await updateDoc(doc(getFirebaseDb(), CONVERSATIONS, conversationId), {
+    unreadCount: 1,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/** Star / unstar a conversation (shared across the sub-account's users). */
+export async function setConversationStarred(
+  conversationId: string,
+  starred: boolean
+): Promise<void> {
+  await updateDoc(doc(getFirebaseDb(), CONVERSATIONS, conversationId), {
+    starred,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 /** Set the per-conversation AI mode (off / suggest / auto). */
 export async function setConversationBotMode(
   contactId: string,

@@ -49,6 +49,9 @@ export default async function globalTeardown(): Promise<void> {
   ]) {
     await purge("workflowRuns", subAccountId);
     await purge("contacts", subAccountId);
+    // Inbox index rows (doc id == contactId, or web_{sessionId}) — seeded by
+    // inbox-filters.spec.ts; left behind, they would outlive their contacts.
+    await purge("conversations", subAccountId);
     await purge("companies", subAccountId);
   }
 }

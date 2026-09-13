@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   ExternalLink,
   Globe,
+  MailOpen,
   MessagesSquare,
   PanelRight,
   Smartphone,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useConversationTheme } from "@/hooks/use-conversation-theme";
@@ -19,6 +21,7 @@ import { metaCanInstagramDm } from "@/lib/comms/meta-capabilities";
 import { subscribeToContact } from "@/lib/firestore/contacts";
 import {
   markConversationRead,
+  markConversationUnread,
   subscribeToConversation,
 } from "@/lib/firestore/conversations";
 import { Button } from "@/components/ui/button";
@@ -28,6 +31,7 @@ import { WebChatComposer } from "@/components/conversations/web-chat-composer";
 import { ConversationAiControls } from "@/components/conversations/conversation-ai-controls";
 import { ConversationDraftCard } from "@/components/conversations/conversation-draft-card";
 import { ConversationContactPanel } from "@/components/conversations/conversation-contact-panel";
+import { StarToggle } from "@/components/conversations/star-toggle";
 import type { EmailMessageDoc } from "@/types/email";
 import type { Contact } from "@/types/contacts";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
@@ -49,6 +53,8 @@ export default function ConversationDetailPage() {
 
   const { user, loading: authLoading } = useAuth();
   const { subAccount, subAccountId, saPath } = useSubAccount();
+  // The list's filter query, carried back so "Back" returns to the same view.
+  const listQuery = useSearchParams().toString();
   const { theme, setTheme } = useConversationTheme();
   const [emailReply, setEmailReply] = useState<EmailMessageDoc | null>(null);
   const [contact, setContact] = useState<Contact | null>(null);
@@ -56,7 +62,8 @@ export default function ConversationDetailPage() {
   const [convReady, setConvReady] = useState(false);
   const [contactLoading, setContactLoading] = useState(!isWebChat);
   // Right-hand contact panel — collapsed by default; remembered across
-  // conversations via localStorage (desktop only; hidden under lg).
+  // conversations via localStorage (xl+ only: under xl the split view's list
+  // pane leaves no room for it).
   const [panelOpen, setPanelOpen] = useState(false);
 
   useEffect(() => {
@@ -109,7 +116,9 @@ export default function ConversationDetailPage() {
     return () => unsubContact();
   }, [contactIdToLoad, user, authLoading]);
 
-  // Reset the unread counter as soon as the operator opens the thread.
+  // Reset the unread counter as soon as the operator opens the thread. Keyed
+  // on the id ONLY: "Mark unread" below must survive staying on the thread,
+  // so this must not re-run when the doc's unreadCount changes.
   useEffect(() => {
     if (conversationId) void markConversationRead(conversationId);
   }, [conversationId]);
@@ -159,21 +168,33 @@ export default function ConversationDetailPage() {
 
   const loading = isWebChat ? !convReady : contactLoading || !contact;
 
+  async function markUnread() {
+    try {
+      await markConversationUnread(conversationId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't mark unread.");
+    }
+  }
+
   return (
-    <div
-      className={cn(
-        "mx-auto flex h-[calc(100vh-9rem)] min-h-[480px] w-full gap-4",
-        panelOpen ? "max-w-4xl lg:max-w-6xl xl:max-w-7xl" : "max-w-4xl",
-      )}
-    >
+    // Sized by the conversations layout's right pane (split view on lg+).
+    <div className="flex min-w-0 flex-1 gap-4">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border bg-card">
-        <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <header
+          data-testid="thread-header"
+          className="flex items-center justify-between gap-3 border-b px-4 py-3"
+        >
         <div className="flex min-w-0 items-center gap-3">
           <Button
             variant="ghost"
             size="icon"
-            render={<Link href={saPath("/conversations")} />}
+            render={
+              <Link
+                href={`${saPath("/conversations")}${listQuery ? `?${listQuery}` : ""}`}
+              />
+            }
             aria-label="Back to conversations"
+            className="lg:hidden"
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -185,13 +206,31 @@ export default function ConversationDetailPage() {
             )}
           </span>
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">{title}</h1>
+            <h2 className="truncate text-sm font-semibold">{title}</h2>
             <p className="truncate text-[11px] text-muted-foreground">
               {subtitle}
             </p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+          {conversation && (
+            <>
+              <StarToggle
+                conversationId={conversationId}
+                starred={conversation.starred === true}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={markUnread}
+                disabled={(conversation.unreadCount ?? 0) > 0}
+                aria-label="Mark as unread"
+                title="Mark as unread"
+              >
+                <MailOpen className="h-4 w-4" />
+              </Button>
+            </>
+          )}
           <button
             type="button"
             role="switch"
@@ -224,7 +263,7 @@ export default function ConversationDetailPage() {
               size="sm"
               onClick={togglePanel}
               aria-pressed={panelOpen}
-              className="hidden lg:inline-flex"
+              className="hidden xl:inline-flex"
               title="Show contact details + activity"
             >
               <PanelRight className="mr-1 h-3.5 w-3.5" />
@@ -302,7 +341,7 @@ export default function ConversationDetailPage() {
       </div>
 
       {panelOpen && contact && (
-        <aside className="hidden w-[340px] shrink-0 overflow-hidden rounded-2xl border bg-card lg:block">
+        <aside className="hidden w-[340px] shrink-0 overflow-hidden rounded-2xl border bg-card xl:block">
           <ConversationContactPanel contact={contact} onClose={togglePanel} />
         </aside>
       )}
