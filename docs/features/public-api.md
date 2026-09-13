@@ -152,6 +152,35 @@ supply as real markup ourselves, which is legally required to render as a
 link. This closes a hole that predates custom fields —
 `{{contact.firstName}}` reached the HTML body raw as well.
 
+## Events: status + reschedule
+
+`PATCH /v1/events/:id` writes `title`/`contact_id`/`location`/`notes` as
+plain field patches, but `status` and `start_at`/`end_at` route through the
+same server-side chokepoints the dashboard uses — a raw write here used to
+let an API key un-cancel a booking (re-occupying its slot) or jump straight
+from `awaiting_payment` to `completed` with no activity row, trigger, or
+cancel email.
+
+- **`status`** goes through [lib/server/event-status-service.ts](../../src/lib/server/event-status-service.ts)
+  (the same one the operator mark-status action uses): `scheduled` →
+  `completed`/`no_show`/`cancelled`; `completed` ↔ `no_show` as a correction
+  either direction; `cancelled` is always final. `awaiting_payment` only
+  ever exits via a paid confirmation — set it through the mark-paid flow,
+  not this route. Any other transition is refused with `400
+  invalid_status_transition` (a clear message names the reason, e.g. "Mark
+  as paid first…").
+- **`start_at` / `end_at`** get the full reschedule bookkeeping
+  (`rescheduledAt`/`rescheduleCount` stamps, a fresh reminder schedule, the
+  `booking.rescheduled` trigger, and a visitor confirmation email) via
+  [lib/booking/reschedule.ts](../../src/lib/booking/reschedule.ts) **only**
+  when the event is a booking-page event still holding a slot (`scheduled`
+  or `awaiting_payment`) AND the new time actually differs from the current
+  one. Slot availability is NOT re-checked — an API caller is trusted to
+  have picked a sane time, same as an operator overriding the calendar.
+  Every other case (a manual event, or a time-only edit on an
+  already-cancelled/completed booking) is a plain field write with no
+  bookkeeping.
+
 ## Webhooks
 
 Outbound webhooks let the sub-account react to platform events (contact created, deal moved, event booked, …) without polling.
