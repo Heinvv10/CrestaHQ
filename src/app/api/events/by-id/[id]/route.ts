@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGate } from "@/lib/auth/territory-filter";
-import { removeBookingFromGoogle } from "@/lib/google-calendar/push";
+import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
 
 /**
  * Delete a calendar event that is mirrored in a host's Google Calendar.
@@ -13,7 +13,8 @@ import { removeBookingFromGoogle } from "@/lib/google-calendar/push";
  *
  * The rules refuse a client delete while `googleEventIds` is non-empty (its
  * Google copy would be orphaned, and a completed / no-show booking can't be
- * cancelled first). This route takes the Google copies down, then deletes.
+ * cancelled first). This route takes the Google copies down, then deletes —
+ * and refuses (409 `google_removal_failed`) while any copy is left.
  * Same permission as the client delete it stands in for: an active member of
  * the event's own sub-account, within their territory scope.
  */
@@ -28,7 +29,10 @@ export async function DELETE(request: Request, ctx: { params: Promise<{ id: stri
   const gate = await territoryGate(access, event.territoryId ?? null);
   if (gate) return gate;
 
-  await removeBookingFromGoogle(id);
+  const removal = await removeBookingFromGoogleBeforeDelete(id);
+  if (!removal.ok) {
+    return NextResponse.json({ error: "google_removal_failed", message: removal.message }, { status: 409 });
+  }
   await ref.delete();
   return NextResponse.json({ ok: true });
 }

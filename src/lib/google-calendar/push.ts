@@ -2,6 +2,7 @@ import "server-only";
 
 import crypto from "node:crypto";
 import { after } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventHostUids } from "@/lib/booking/page-slots";
@@ -54,6 +55,9 @@ type SyncedEvent = CalendarEvent & GoogleSyncFields;
 
 /** Per-host budget for the whole Google leg, token refresh included. */
 export const GOOGLE_PUSH_TIMEOUT_MS = 5_000;
+/** Member removal: this many deletes at once, and no longer than this in all. */
+const MEMBER_CLEANUP_CONCURRENCY = 5;
+export const MEMBER_CLEANUP_TOTAL_MS = 20_000;
 
 /**
  * The Google event id for (booking, host): "ls" + 40 hex chars of sha256.
@@ -79,6 +83,14 @@ function fingerprint(e: SyncedEvent): string {
     toDate(e.endAt)?.getTime() ?? null,
     [...eventHostUids(e)].sort(),
   ]);
+}
+
+function hostLabel(e: SyncedEvent, page: BookingPage | null, uid: string): string {
+  return (
+    page?.hosts?.find((h) => h.uid === uid)?.name ??
+    (e.assignedToUid === uid ? e.assignedToName : null) ??
+    "a host"
+  );
 }
 
 async function loadPage(e: SyncedEvent): Promise<BookingPage | null> {
@@ -140,10 +152,7 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
   // switched off never strands a cancelled booking in someone's calendar.
   if (live && !(await googleCalendarGateOn(sa))) return clearSyncError(ref, e);
 
-  const hostName = (uid: string) =>
-    page?.hosts?.find((h) => h.uid === uid)?.name ??
-    (e.assignedToUid === uid ? e.assignedToName : null) ??
-    "a host";
+  const hostName = (uid: string) => hostLabel(e, page, uid);
   const failures: string[] = skipped.map(
     (uid) => `Not in ${hostName(uid)}'s Google Calendar: no longer an active member of this sub-account.`,
   );
@@ -244,6 +253,29 @@ export function pushBookingToGoogleAfterResponse(eventId: string): void {
 }
 
 /**
+ * For a route about to delete an event outright: take its Google copies down,
+ * then say whether any is LEFT. The caller must refuse the delete when one is
+ * — deleting would orphan a copy (customer name, notes) nothing could reach
+ * again, while telling the operator it was deleted.
+ */
+export async function removeBookingFromGoogleBeforeDelete(
+  eventId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await removeBookingFromGoogle(eventId);
+  const ref = getAdminDb().collection("events").doc(eventId);
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: true };
+  const e = snap.data() as SyncedEvent;
+  const left = Object.keys(e.googleEventIds ?? {});
+  if (left.length === 0) return { ok: true };
+  const page = await loadPage(e).catch(() => null);
+  const names = left.map((uid) => hostLabel(e, page, uid)).join(" and ");
+  const message = `Couldn't remove it from ${names}'s Google Calendar — try again.`;
+  if (!e.googleSyncError) await ref.update({ googleSyncError: { message, at: new Date() } });
+  return { ok: false, message };
+}
+
+/**
  * Member removal, BEFORE their tokens are deleted: take their Google copies
  * of upcoming bookings down (nothing could reach them afterwards). The next
  * push for each booking then records them as no longer a member. Never throws.
@@ -253,26 +285,36 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
     const conn = await readConnection(subAccountId, uid);
     if (!conn || conn.status !== "connected") return;
     const docs = await queryHostEvents(subAccountId, uid, (q) => q.where("startAt", ">=", new Date()));
+    const queue = docs.filter((d) => (d.data() as SyncedEvent).googleEventIds?.[uid]);
     const provider = await getGcalProviderFor(subAccountId, uid);
-    for (const d of docs) {
-      const gid = (d.data() as SyncedEvent).googleEventIds?.[uid];
-      if (!gid) continue;
-      try {
-        await withBudget(GOOGLE_PUSH_TIMEOUT_MS, (signal) =>
-          withGoogleToken(conn, provider, async (t) => {
-            try {
-              await provider.deleteEvent(t, gid, signal);
-            } catch (err) {
-              if (!isNotFound(err)) throw err;
-            }
-          }, signal),
-        );
-        const ids = { ...((d.data() as SyncedEvent).googleEventIds ?? {}) };
-        delete ids[uid];
-        await d.ref.update({ googleEventIds: ids });
-      } catch (err) {
-        console.warn(`[google-calendar] removed-member copy left sa=${subAccountId} event=${d.id}`, err instanceof Error ? err.name : typeof err);
+    const deadline = Date.now() + MEMBER_CLEANUP_TOTAL_MS;
+    const worker = async () => {
+      for (let d = queue.shift(); d; d = queue.shift()) {
+        const gid = (d.data() as SyncedEvent).googleEventIds![uid];
+        try {
+          await withBudget(Math.min(GOOGLE_PUSH_TIMEOUT_MS, Math.max(0, deadline - Date.now())), (signal) =>
+            withGoogleToken(conn, provider, async (t) => {
+              try {
+                await provider.deleteEvent(t, gid, signal);
+              } catch (err) {
+                if (!isNotFound(err)) throw err;
+              }
+            }, signal),
+          );
+          await d.ref.update({ [`googleEventIds.${uid}`]: FieldValue.delete() });
+        } catch (err) {
+          const e = d.data() as SyncedEvent;
+          const name = hostLabel(e, await loadPage(e).catch(() => null), uid);
+          await d.ref
+            .update({ googleSyncError: { message: `Still in ${name}'s Google Calendar: ${describeFailure(err, "push")}`, at: new Date() } })
+            .catch(() => undefined);
+        }
+        if (Date.now() >= deadline) break;
       }
+    };
+    await Promise.all(Array.from({ length: MEMBER_CLEANUP_CONCURRENCY }, worker));
+    if (queue.length > 0) {
+      console.warn(`[google-calendar] removed-member cleanup ran out of time sa=${subAccountId} left=${queue.length}`);
     }
   } catch (err) {
     console.error(`[google-calendar] removed-member cleanup failed sa=${subAccountId}`, err instanceof Error ? err.name : typeof err);

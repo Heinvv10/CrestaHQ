@@ -293,7 +293,16 @@ export function EventDialog({
       // Google Calendar; the server route takes the Google copy down first.
       if (Object.keys((event as { googleEventIds?: Record<string, string> | null }).googleEventIds ?? {}).length > 0) {
         const res = await fetch(`/api/events/by-id/${event.id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error(`delete failed (${res.status})`);
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+          // Still in a host's Google Calendar: not deleted. The dialog's
+          // Retry sync notice stays available.
+          if (data.error === "google_removal_failed" && data.message) {
+            toast.error(data.message);
+            return;
+          }
+          throw new Error(`delete failed (${res.status})`);
+        }
       } else {
         await deleteEvent(event.id);
       }

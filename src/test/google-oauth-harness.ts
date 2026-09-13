@@ -66,11 +66,24 @@ function docRef(path: string) {
     update: async (data: Record<string, unknown>) => {
       const cur = state.docs.get(path);
       if (!cur) throw new Error(`NOT_FOUND: no document to update at ${path}`);
-      if (Object.keys(data).some((k) => k.includes("."))) {
-        throw new Error("harness: dotted update paths are not modelled");
-      }
       state.writes.push({ op: "update", path, data });
-      state.docs.set(path, { ...cur, ...data });
+      const next: Record<string, unknown> = { ...cur };
+      for (const [k, v] of Object.entries(data)) {
+        // Firestore semantics for a dotted path: one level of nesting, and
+        // FieldValue.delete() (the "DELETE_FIELD" sentinel) removes the key.
+        const [head, ...rest] = k.split(".");
+        if (rest.length === 0) {
+          if (v === "DELETE_FIELD") delete next[k];
+          else next[k] = v;
+          continue;
+        }
+        if (rest.length > 1) throw new Error("harness: only one level of dotted path is modelled");
+        const inner = { ...((next[head] as Record<string, unknown> | undefined) ?? {}) };
+        if (v === "DELETE_FIELD") delete inner[rest[0]];
+        else inner[rest[0]] = v;
+        next[head] = inner;
+      }
+      state.docs.set(path, next);
     },
     delete: async () => {
       state.writes.push({ op: "delete", path });

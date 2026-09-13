@@ -5,21 +5,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/google-oauth-harness")).adminMock());
 vi.mock("./provider/select", () => ({ getGcalProviderFor: vi.fn(async () => provider) }));
 // Upcoming bookings a host attends: the harness's events, by assignee.
+vi.mock("firebase-admin/firestore", async () => (await import("@/test/google-oauth-harness")).firestoreMock());
+// Upcoming bookings a host attends: the harness's events, by assignee, with
+// the caller's refine APPLIED (a `>=` on a Timestamp field) — so a caller
+// that stopped asking for upcoming-only would see past bookings too.
 vi.mock("@/lib/booking/hosts", async () => {
   const { state: s, adminMock } = await import("@/test/google-oauth-harness");
   const db = adminMock().getAdminDb();
+  const ms = (v: unknown) => ((v as { toDate?: () => Date })?.toDate?.() ?? (v as Date)).getTime();
   return {
-    queryHostEvents: async (_sa: string, uid: string) =>
-      [...s.docs.keys()]
+    queryHostEvents: async (_sa: string, uid: string, refine: (q: unknown) => unknown) => {
+      const conds: Array<[string, string, Date]> = [];
+      const q = { where: (f: string, op: string, v: Date) => (conds.push([f, op, v]), q) };
+      refine(q);
+      return [...s.docs.keys()]
         .filter((p) => p.startsWith("events/") && s.docs.get(p)?.assignedToUid === uid)
-        .map((p) => ({ id: p.split("/")[1], data: () => s.docs.get(p), ref: db.doc(p) })),
+        .filter((p) => conds.every(([f, op, v]) => op !== ">=" || ms(s.docs.get(p)?.[f]) >= v.getTime()))
+        .map((p) => ({ id: p.split("/")[1], data: () => s.docs.get(p), ref: db.doc(p) }));
+    },
   };
 });
 
 import { SUB, SUB_PATH, state } from "@/test/google-oauth-harness";
 import { EVENT, at, conn, connect, event, resetGcal, seedEvent, setGate, stubProvider, ts, type StubProvider } from "@/test/gcal-harness";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
-import { googleEventIdFor, pushBookingToGoogle, removeBookingFromGoogle, removeMemberGoogleCopies } from "./push";
+import {
+  googleEventIdFor,
+  pushBookingToGoogle,
+  removeBookingFromGoogle,
+  removeBookingFromGoogleBeforeDelete,
+  removeMemberGoogleCopies,
+} from "./push";
 
 let provider: StubProvider;
 const gid = (uid: string) => googleEventIdFor("ev_1", uid);
@@ -185,11 +201,46 @@ describe("a stale googleSyncError is cleared when there is nothing to do", () =>
 });
 
 describe("removeMemberGoogleCopies", () => {
-  it("deletes the member's copies of upcoming bookings and drops their ids", async () => {
+  it("deletes the member's copies of UPCOMING bookings only, dropping just their id", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
     connect("host_a");
     seedEvent({ googleEventIds: { host_a: "g_a", host_b: "g_b" } });
+    state.docs.set("events/past", { ...event(), id: "past", startAt: ts(at(6)), endAt: ts(at(6, 30)), googleEventIds: { host_a: "g_past" } });
     await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    expect(provider.deleteEvent).toHaveBeenCalledTimes(1);
     expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_a", expect.any(AbortSignal));
     expect(event().googleEventIds).toEqual({ host_b: "g_b" });
+    expect(state.writes.find((w) => w.path === EVENT && w.op === "update")?.data).toEqual({ "googleEventIds.host_a": "DELETE_FIELD" });
+  });
+
+  it("records a copy it could not remove on that booking", async () => {
+    connect("host_a");
+    seedEvent({ startAt: ts(new Date(Date.now() + 86_400_000)), endAt: ts(new Date(Date.now() + 88_000_000)), googleEventIds: { host_a: "g_a" } });
+    provider.deleteEvent.mockRejectedValueOnce(new GbpProviderError("transient", { status: 503 }));
+    await removeMemberGoogleCopies(SUB, "host_a");
+    expect(event().googleEventIds).toEqual({ host_a: "g_a" });
+    expect((event().googleSyncError as { message: string }).message).toMatch(/^Still in HOST_A's Google Calendar/);
+  });
+});
+
+describe("removeBookingFromGoogleBeforeDelete", () => {
+  it("reports a copy it could not remove, naming the host, and records it", async () => {
+    connect("host_a");
+    seedEvent({ googleEventIds: { host_a: "g_a" } });
+    provider.deleteEvent.mockRejectedValueOnce(new GbpProviderError("transient", { status: 503 }));
+    expect(await removeBookingFromGoogleBeforeDelete("ev_1")).toEqual({
+      ok: false,
+      message: "Couldn't remove it from HOST_A's Google Calendar — try again.",
+    });
+    expect(event().googleEventIds).toEqual({ host_a: "g_a" });
+    expect(event().googleSyncError).toBeTruthy();
+  });
+
+  it("ok once every copy is gone", async () => {
+    connect("host_a");
+    seedEvent({ googleEventIds: { host_a: "g_a" } });
+    expect(await removeBookingFromGoogleBeforeDelete("ev_1")).toEqual({ ok: true });
   });
 });
