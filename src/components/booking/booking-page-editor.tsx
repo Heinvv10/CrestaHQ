@@ -28,6 +28,12 @@ import { IntakeFieldBuilder } from "@/components/booking/intake-field-builder";
 import { BookingHelpDialog } from "@/components/booking/booking-help-dialog";
 import { TeamBookingHelpDialog } from "@/components/booking/team-booking-help-dialog";
 import {
+  CalendarTypeSection,
+  hostRuleHint,
+  typeDefaults,
+} from "@/components/booking/calendar-type-section";
+import { pageCalendarType } from "@/lib/booking/calendar-types";
+import {
   defaultBookingPageFormData,
   detectTimezone,
 } from "@/lib/booking/defaults";
@@ -36,6 +42,7 @@ import {
   type BookingPage,
   type BookingPageFormData,
   type BookingPayment,
+  type CalendarType,
   type WorkingHour,
 } from "@/types/booking";
 
@@ -57,6 +64,8 @@ interface Props {
   mode: "new" | "edit";
   /** Hydration for edit mode. Ignored for new. */
   initial?: BookingPage;
+  /** New mode: the type chosen in the picker. */
+  initialType?: CalendarType;
 }
 
 const DURATIONS = [15, 30, 45, 60, 75, 90, 120] as const;
@@ -100,7 +109,7 @@ function allTimezones(): string[] {
   return COMMON_TIMEZONES;
 }
 
-export function BookingPageEditor({ mode, initial }: Props) {
+export function BookingPageEditor({ mode, initial, initialType }: Props) {
   const router = useRouter();
   const { subAccountId, subAccount, saPath } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
@@ -126,6 +135,10 @@ export function BookingPageEditor({ mode, initial }: Props) {
         intakeFields: initial.intakeFields,
         hosts: initial.hosts ?? [],
         allowHostSelection: initial.allowHostSelection ?? false,
+        calendarType: initial.calendarType,
+        distribution: initial.distribution ?? null,
+        seatsPerSlot: initial.seatsPerSlot ?? null,
+        services: initial.services ?? null,
         logoUrl: initial.logoUrl,
         accentColor: initial.accentColor,
         meetingUrl: initial.meetingUrl ?? null,
@@ -138,13 +151,16 @@ export function BookingPageEditor({ mode, initial }: Props) {
         defaultTerritoryId: initial.defaultTerritoryId,
       };
     }
-    return defaultBookingPageFormData(
+    const base = defaultBookingPageFormData(
       // Slug seeded blank in new-mode so the operator types it explicitly;
       // we'll auto-suggest from the name on blur in the input below.
       "",
       detectTimezone(),
     );
-  }, [mode, initial]);
+    return initialType
+      ? { ...base, ...typeDefaults(initialType, base.durationMinutes) }
+      : base;
+  }, [mode, initial, initialType]);
 
   const [form, setForm] = useState<BookingPageFormData>(hydrated);
   const [saving, setSaving] = useState(false);
@@ -205,11 +221,17 @@ export function BookingPageEditor({ mode, initial }: Props) {
       selectedHostUids.has(m.uid),
   );
 
+  const calendarType = pageCalendarType(form);
+  // Types that assign one host per booking from several (priority applies).
+  const poolType = calendarType === "round_robin" || calendarType === "service";
+
   function toggleHost(uid: string, name: string, checked: boolean) {
     const current = form.hosts ?? [];
     if (checked) {
       if (current.some((h) => h.uid === uid)) return;
-      set("hosts", [...current, { uid, name }]);
+      // Personal and class pages book one person: picking swaps the host.
+      const single = calendarType === "personal" || calendarType === "class";
+      set("hosts", single ? [{ uid, name }] : [...current, { uid, name }]);
     } else {
       const next = current.filter((h) => h.uid !== uid);
       set("hosts", next);
@@ -219,6 +241,13 @@ export function BookingPageEditor({ mode, initial }: Props) {
         set("allowHostSelection", false);
       }
     }
+  }
+
+  function setHostPriority(uid: string, priority: 1 | 2 | 3) {
+    set(
+      "hosts",
+      (form.hosts ?? []).map((h) => (h.uid === uid ? { ...h, priority } : h)),
+    );
   }
 
   // Set (or clear) a single host's working-hours override. Passing null / an
@@ -277,7 +306,9 @@ export function BookingPageEditor({ mode, initial }: Props) {
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        // Always the effective type: a pre-SP3 page has none stored, and its
+        // derived type is what the editor showed (e.g. round-robin settings).
+        body: JSON.stringify({ ...form, calendarType }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -461,13 +492,33 @@ export function BookingPageEditor({ mode, initial }: Props) {
         </Field>
       </Section>
 
+      {/* ── Calendar type ──────────────────────────────────────── */}
+      <Section
+        title="Calendar type"
+        description="Who can be booked, and how a time fills up."
+      >
+        <CalendarTypeSection form={form} set={set} disabled={saving} />
+      </Section>
+
       {/* ── Slot rules ─────────────────────────────────────────── */}
       <Section
         title="Slot rules"
         description="How long meetings run, how far ahead visitors can book, and when you're available."
       >
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Duration" htmlFor="duration">
+          <Field
+            label={
+              calendarType === "service"
+                ? "Default length for new services"
+                : "Duration"
+            }
+            htmlFor="duration"
+            hint={
+              calendarType === "service"
+                ? "Each service's own length sets its slots."
+                : undefined
+            }
+          >
             <select
               id="duration"
               value={form.durationMinutes}
@@ -637,6 +688,26 @@ export function BookingPageEditor({ mode, initial }: Props) {
                       {m.name}
                     </span>
                   </label>
+                  {checked && poolType && (
+                    <div className="flex items-center gap-2 border-t px-3 py-2 text-xs">
+                      <label htmlFor={`priority-${m.uid}`} className="font-medium">
+                        Priority
+                      </label>
+                      <select
+                        id={`priority-${m.uid}`}
+                        value={host!.priority ?? 2}
+                        onChange={(e) =>
+                          setHostPriority(m.uid, Number(e.target.value) as 1 | 2 | 3)
+                        }
+                        disabled={saving}
+                        className="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
+                      >
+                        <option value={3}>High</option>
+                        <option value={2}>Medium</option>
+                        <option value={1}>Low</option>
+                      </select>
+                    </div>
+                  )}
                   {checked && (
                     <div className="space-y-2 border-t px-3 py-2.5">
                       <label className="flex cursor-pointer items-center gap-2 text-xs font-medium">
@@ -670,7 +741,14 @@ export function BookingPageEditor({ mode, initial }: Props) {
           </div>
         )}
 
-        {(form.hosts ?? []).length > 0 && (
+        {hostRuleHint(calendarType, (form.hosts ?? []).length) && (
+          <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            {hostRuleHint(calendarType, (form.hosts ?? []).length)}
+          </p>
+        )}
+
+        {poolType && (form.hosts ?? []).length > 0 && (
           <label className="flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3">
             <input
               type="checkbox"
@@ -694,7 +772,11 @@ export function BookingPageEditor({ mode, initial }: Props) {
         )}
 
         <p className="text-[11px] text-muted-foreground">
-          {(form.hosts ?? []).length > 0
+          {!poolType
+            ? calendarType === "collective"
+              ? "Collective: a time is offered only while every selected host is free, and each booking goes into all of their calendars."
+              : "One host: only this person's own bookings (and shared calendar entries) block the page. No host = one shared schedule where any booking blocks it."
+            : (form.hosts ?? []).length > 0
             ? form.allowHostSelection
               ? "Team mode: customers can pick a specific person (or “anyone available”). A booking for a chosen host is only offered inside that host's hours; “anyone” auto-assigns to the least-busy free host."
               : "Team mode: a time stays open while any selected host is free, and each booking is auto-assigned to the least-busy host (the customer doesn't pick)."

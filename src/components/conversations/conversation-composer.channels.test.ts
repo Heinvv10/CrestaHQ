@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Contact } from "@/types/contacts";
 import type { ChannelOption } from "@/lib/conversations/channel-availability";
 import type { WhatsappWindowView } from "@/hooks/use-whatsapp-window";
@@ -208,4 +208,46 @@ it("with no conversation (no last-used channel), opens on the first available", 
   );
   expect(pill("whatsapp").getAttribute("aria-pressed")).toBe("true");
   expect(textarea().disabled).toBe(false);
+});
+
+describe("Send later follows the same rules as Send now", () => {
+  const more = () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="More send options"]')!;
+  async function typeBody(text: string) {
+    const el = textarea();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, text);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("is offered on an available channel with an open window", async () => {
+    m.window.mockReturnValue({
+      provider: "cloud",
+      state: { kind: "open", closesAt: new Date(), msLeft: 60 * 60_000 },
+    });
+    await mount("whatsapp");
+    await typeBody("Following up");
+    expect(more().disabled).toBe(false);
+  });
+
+  it("cannot be booked free-form while the WhatsApp window is closed", async () => {
+    m.window.mockReturnValue({ provider: "cloud", state: { kind: "closed", lastInboundAt: null } });
+    await mount("whatsapp");
+    await typeBody("Following up");
+    expect(more().disabled).toBe(true);
+  });
+
+  it("cannot be booked on a channel the contact is blocked on", async () => {
+    const options = [
+      opt("email", "No email address"),
+      opt("sms"),
+      opt("whatsapp", "Opted out of WhatsApp"),
+      opt("messenger", "Turned off by your agency"),
+      opt("instagram", "Turned off by your agency"),
+    ];
+    await mount("whatsapp", options);
+    await typeBody("Following up");
+    expect(more().disabled).toBe(true);
+  });
 });

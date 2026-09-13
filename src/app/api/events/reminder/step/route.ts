@@ -14,6 +14,7 @@ import {
   hashEventToken,
 } from "@/lib/booking/event-token";
 import { renderBookingReminderEmail } from "@/lib/booking/email";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, eventOccupiesSlot } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -145,11 +146,7 @@ export async function POST(request: Request) {
       businessName: sub.name ?? "Booking",
       businessLogoUrl: sub.logoUrl,
       page: {
-        name: page?.name ?? event.title ?? "Meeting",
-        durationMinutes: page?.durationMinutes ?? Math.max(
-          15,
-          Math.round((endAt.getTime() - startAt.getTime()) / 60_000),
-        ),
+        ...bookedEventLabel(page, event, startAt, endAt),
         timezone: page?.timezone ?? "UTC",
         payment: page?.payment ?? null,
         confirmationMessage: page?.confirmationMessage ?? "",

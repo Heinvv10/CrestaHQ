@@ -73,6 +73,32 @@ export interface BookingHost {
    * host's own free window.
    */
   workingHours?: WorkingHour[];
+  /**
+   * Round-robin priority: 3 high, 2 medium, 1 low. Absent ⇒ 2. Consulted only
+   * on round-robin / service pages — see {@link BookingPage.distribution}.
+   */
+  priority?: 1 | 2 | 3;
+}
+
+/**
+ * GHL's calendar types. Absent on legacy pages — read through
+ * `pageCalendarType()` (hosts ⇒ round_robin, else personal), which is exactly
+ * how those pages already behave.
+ */
+export type CalendarType =
+  | "personal"
+  | "round_robin"
+  | "collective"
+  | "class"
+  | "service";
+
+/** One bookable service on a `service` page: its own duration, same hosts. */
+export interface BookingService {
+  /** Stable local id — the visitor's pick, stamped on the event as `serviceId`. */
+  id: string;
+  name: string;
+  durationMinutes: number;
+  description: string | null;
 }
 
 /**
@@ -135,6 +161,20 @@ export interface BookingPage {
    * opted-out page NEVER emits staff names from the availability API.
    */
   allowHostSelection?: boolean;
+
+  // ── Calendar type (SP3) ────────────────────────────────────────
+  /** See {@link CalendarType}. Absent ⇒ derived by `pageCalendarType()`. */
+  calendarType?: CalendarType;
+  /**
+   * Round robin / service only. "availability" = highest-priority free host,
+   * ties → least loaded; "equal" = least loaded, ties → higher priority. Both
+   * then page order. Absent/null ⇒ "equal" (today's least-loaded behaviour).
+   */
+  distribution?: "availability" | "equal" | null;
+  /** Class only (≥2): bookings that may share one slot start. */
+  seatsPerSlot?: number | null;
+  /** Service only (1–20): the visitor picks one before a slot. */
+  services?: BookingService[] | null;
 
   // ── Visual overrides ──────────────────────────────────────────
   /** Overrides `subAccount.logoUrl` on the public page. */
@@ -246,6 +286,10 @@ export type BookingPageFormData = Pick<
   | "intakeFields"
   | "hosts"
   | "allowHostSelection"
+  | "calendarType"
+  | "distribution"
+  | "seatsPerSlot"
+  | "services"
   | "logoUrl"
   | "accentColor"
   | "meetingUrl"

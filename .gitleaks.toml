@@ -38,4 +38,10 @@ regexes = [
   '''^1//0gNewerGrant$''',
   '''^1//0gThirdGrant$''',
   '''^1//0gOurRotation$''',
+  # Calendar-feed route test fixture: only exists in commit 6fb9615's diff
+  # (src/app/api/sub-accounts/[id]/calendar.ics/route.test.ts line 12 at that
+  # point in history), as the HMAC secret the test signs its own feed token
+  # with. Never a credential. Replaced at the tip by a low-entropy fixture;
+  # this anchor exists only so that commit's diff stops tripping the scan.
+  '''^ics-route-test-secret-0123456789$''',
 ]

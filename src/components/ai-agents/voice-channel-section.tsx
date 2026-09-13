@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { ArrowRight, Inbox, Loader2, Lock, PhoneCall } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
+import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -633,11 +634,19 @@ export function VoiceChannelSection() {
               </option>
               {bookingPages
                 .filter((p) => p.status === "published" && !p.payment)
-                .map((p) => (
-                  <option key={p.slug} value={p.slug}>
-                    Book on: {p.name} ({p.durationMinutes} min)
-                  </option>
-                ))}
+                .map((p) =>
+                  // A call has no service step, so the voice agent refuses
+                  // service pages — shown, but not pickable.
+                  pageCalendarType(p) === "service" ? (
+                    <option key={p.slug} value={p.slug} disabled>
+                      {p.name} — service page, not bookable by voice
+                    </option>
+                  ) : (
+                    <option key={p.slug} value={p.slug}>
+                      Book on: {p.name} ({p.durationMinutes} min)
+                    </option>
+                  ),
+                )}
             </select>
             <p className="text-[11px] text-muted-foreground">
               When set, the agent checks live availability on that booking
@@ -646,7 +655,8 @@ export function VoiceChannelSection() {
               (caller ID): no email is collected, so no confirmation email is
               sent — the appointment lands on the calendar and the normal
               booking triggers fire. Deposit-taking pages can&apos;t be
-              booked by phone and aren&apos;t listed.
+              booked by phone and aren&apos;t listed; service pages can&apos;t
+              either (there&apos;s no service step on a call).
             </p>
           </div>
 

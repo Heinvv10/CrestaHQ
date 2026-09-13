@@ -10,11 +10,15 @@ import {
   tenantFrom,
 } from "@/lib/comms/resend";
 import {
-  computeAvailability,
   isSlotAvailable,
-  type BusyEvent,
   type SlotCandidate,
 } from "@/lib/booking/availability";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
+import {
+  departedHostMessage,
+  movingEventOf,
+  resolvePageAvailability,
+} from "@/lib/booking/resolve-availability";
 import {
   buildEventPublicUrl,
   hashEventToken,
@@ -137,36 +141,23 @@ export async function POST(
         );
       }
       const page = pageSnap.data() as BookingPage;
+      const departed = await departedHostMessage(page, event);
+      if (departed) throw new BadState(departed);
 
-      // Busy events for the new slot's window — re-uses the same
-      // pattern as the book route.
-      const lookbackMs = 8 * 60 * 60_000;
-      const queryFrom = new Date(newStart.getTime() - lookbackMs);
-      const queryTo = new Date(newEnd.getTime() + 1000);
-      const busySnap = await txn.get(
-        db
-          .collection("events")
-          .where("subAccountId", "==", event.subAccountId)
-          .where("startAt", ">=", queryFrom)
-          .where("startAt", "<=", queryTo),
-      );
-      const busy: BusyEvent[] = [];
-      for (const d of busySnap.docs) {
-        if (d.id === eventRef.id) continue; // exclude our own slot
-        const e = d.data() as CalendarEvent;
-        const s = e.status ?? "scheduled";
-        if (s !== "scheduled" && s !== "awaiting_payment") continue;
-        const s2 = (e.startAt as { toDate?: () => Date } | null)?.toDate?.();
-        const e2 = (e.endAt as { toDate?: () => Date } | null)?.toDate?.();
-        if (!(s2 instanceof Date) || !(e2 instanceof Date)) continue;
-        busy.push({ startAt: s2, endAt: e2 });
-      }
-      const free = computeAvailability({
+      // Re-verify through the same resolver the booking used, as a moved
+      // booking: its own host(s) and service, its current slot not busy. A
+      // team booking is checked against its host's calendar only — not
+      // every host's (and a collective one against all of its hosts); a
+      // hostless one against every event, as it was booked.
+      const free = await resolvePageAvailability({
+        subAccountId: event.subAccountId,
         page,
         now: new Date(),
         fromInstant: new Date(newStart.getTime() - 1),
         toInstant: new Date(newEnd.getTime() + 1),
-        busy,
+        movingEvent: movingEventOf(eventRef.id, event),
+        serviceId: event.serviceId ?? null,
+        txn,
       });
       const candidate: SlotCandidate = { startAt: newStart, endAt: newEnd };
       if (!isSlotAvailable(candidate, free)) {
@@ -312,10 +303,7 @@ async function runRescheduleSideEffects(args: {
       businessName: sub.name ?? "Booking",
       businessLogoUrl: sub.logoUrl,
       page: {
-        name: page?.name ?? event.title ?? "Meeting",
-        durationMinutes:
-          page?.durationMinutes ??
-          Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
+        ...bookedEventLabel(page, event, startAt, endAt),
         timezone: page?.timezone ?? "UTC",
         payment: page?.payment ?? null,
         confirmationMessage: page?.confirmationMessage ?? "",

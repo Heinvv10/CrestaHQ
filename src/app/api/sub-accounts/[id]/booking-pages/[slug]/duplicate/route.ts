@@ -7,6 +7,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import {
   validateBookingPageFormData,
+  validateCalendarTypeHosts,
   validateSlug,
 } from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
@@ -126,6 +127,10 @@ export async function POST(
     maxPerDay: source.maxPerDay,
     intakeFields: source.intakeFields ?? [],
     hosts: source.hosts ?? [],
+    calendarType: source.calendarType,
+    distribution: source.distribution ?? null,
+    seatsPerSlot: source.seatsPerSlot ?? null,
+    services: source.services ?? null,
     logoUrl: source.logoUrl ?? null,
     accentColor: source.accentColor ?? null,
     meetingUrl: source.meetingUrl ?? null,
@@ -153,6 +158,13 @@ export async function POST(
   // Re-resolve hosts against live membership (drop removed members, refresh
   // name snapshots) — identical to create/update.
   const hosts = await resolveBookingHosts(subAccountId, data.hosts);
+  const hostsOk = validateCalendarTypeHosts(data.calendarType, hosts.length);
+  if (!hostsOk.ok) {
+    return NextResponse.json(
+      { error: `Couldn't duplicate this page: ${hostsOk.error}` },
+      { status: 400 },
+    );
+  }
 
   // Land territoryId defensively, same derivation as the create route.
   const territoryId =
