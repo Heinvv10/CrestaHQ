@@ -14,10 +14,16 @@ it("escapes & and \" — the two characters that matter inside a double-quoted a
   expect(escapeAttr('a & b " c')).toBe("a &amp; b &quot; c");
 });
 
-it("escapes & before \" so a literal &quot; in the input isn't double-escaped into &amp;quot;", () => {
-  // Order matters: escaping '"' first, then '&', would turn a literal
-  // `&quot;` in the input into `&amp;quot;` — wrong. escapeAttr does '&' first.
-  expect(escapeAttr("&quot;")).toBe("&amp;quot;");
+it("escapes & before \" — escaping \" first would double-escape the & that step just introduced", () => {
+  // '&"' has both a literal '&' and a literal '"'. Escaping '&' first, then
+  // '"': "&" -> "&amp;", then the '"' -> "&quot;" => "&amp;&quot;" (correct).
+  // Escaping '"' first, then '&': the '"' -> "&quot;" first, giving
+  // '&&quot;' — THEN the '&' step also escapes the '&' that step just
+  // introduced inside "&quot;", producing "&amp;&amp;quot;" (wrong,
+  // double-escaped). The two orders disagree only on an input carrying
+  // both characters, which is why "&quot;" alone (no real quote in it)
+  // can't tell them apart.
+  expect(escapeAttr('&"')).toBe("&amp;&quot;");
 });
 
 it("neutralizes the quote that would break out of the attribute — proves the escape is load-bearing", () => {
