@@ -259,6 +259,11 @@ describe("service", () => {
     const out = slots(svc, [], { serviceId: "deleted", movingEvent });
     expect(starts(out)).toEqual(["09:00", "10:30"]);
     expect(out[0].endAt.getTime() - out[0].startAt.getTime()).toBe(90 * 60_000);
+    // A malformed own length is not a slot size: nothing is offered.
+    for (const durationMinutes of [-60, 0, 1 / 60_000, 2.5, 4, 30.5, 8 * 60 + 1, 1e9, Number.NaN]) {
+      expect(slots(svc, [], { serviceId: "deleted", movingEvent: { hostUids: [], durationMinutes } })).toEqual([]);
+    }
+    expect(slots(svc, [], { serviceId: "deleted", movingEvent: { hostUids: [], durationMinutes: 5 } })).toHaveLength(36);
     // A service that still exists sizes it, as for a new booking.
     expect(starts(slots(svc, [], { serviceId: "cut", movingEvent }))).toHaveLength(3);
   });

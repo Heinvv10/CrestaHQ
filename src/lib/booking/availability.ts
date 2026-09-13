@@ -162,6 +162,8 @@ export function utcFromWallClock(
  * on a specific calendar day (year-month-day in the page's tz). Steps
  * by `step` minutes; the last slot must fully fit inside the range.
  */
+const MAX_SLOTS_PER_RANGE = 24 * 60;
+
 function* slotsForRange(
   page: BookingPage,
   year: number,
@@ -172,7 +174,13 @@ function* slotsForRange(
   const step = page.durationMinutes + page.bufferMinutes;
   // Last legal start: range.endMinute − durationMinutes.
   const lastStartMinute = range.endMinute - page.durationMinutes;
-  for (let m = range.startMinute; m <= lastStartMinute; m += step) {
+  // Capped: a day has 1440 minutes, so a sane step never gets near it, and a
+  // tiny one (malformed data) can't pin the event loop.
+  for (
+    let m = range.startMinute, i = 0;
+    m <= lastStartMinute && i < MAX_SLOTS_PER_RANGE;
+    m += step, i++
+  ) {
     const start = utcFromWallClock(year, month, day, m, page.timezone);
     const end = new Date(start.getTime() + page.durationMinutes * 60_000);
     yield { startAt: start, endAt: end };
@@ -207,6 +215,13 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
     : horizonEnd;
 
   if (fromInstant >= toInstant || workingHours.length === 0) {
+    return [];
+  }
+  // A zero, negative or NaN length or step would never advance the slot loop.
+  if (
+    !(page.durationMinutes > 0) ||
+    !(page.durationMinutes + page.bufferMinutes > 0)
+  ) {
     return [];
   }
 

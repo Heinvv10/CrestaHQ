@@ -66,10 +66,18 @@ export interface PageSlotsInput {
  *  - on a service page whose service is gone (or that it pre-dates), it is
  *    sized by its own length.
  */
+/**
+ * Bounds on a slot length taken from an event rather than a validated page:
+ * no service is shorter than 5 min, and the resolver only looks back 8 h for
+ * running events, so nothing longer is sized reliably.
+ */
+export const MIN_SLOT_MINUTES = 5;
+export const MAX_SLOT_MINUTES = 8 * 60;
+
 export interface MovingEvent {
   /** `eventHostUids(event)`. */
   hostUids: string[];
-  /** endAt − startAt. */
+  /** endAt − startAt in whole minutes; 0 when unknown or out of bounds. */
   durationMinutes: number;
 }
 
@@ -117,8 +125,13 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   let sized = page;
   if (type === "service") {
     const minutes =
-      pageService(page, input.serviceId)?.durationMinutes ?? moving?.durationMinutes;
-    if (!minutes) return [];
+      pageService(page, input.serviceId)?.durationMinutes ?? moving?.durationMinutes ?? 0;
+    if (
+      !Number.isInteger(minutes) ||
+      !(minutes >= MIN_SLOT_MINUTES && minutes <= MAX_SLOT_MINUTES)
+    ) {
+      return [];
+    }
     sized = { ...page, durationMinutes: minutes };
   }
 

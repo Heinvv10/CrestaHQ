@@ -5,6 +5,8 @@ import {
   computePageSlots,
   eventHostUids,
   type HostBusy,
+  MAX_SLOT_MINUTES,
+  MIN_SLOT_MINUTES,
   type MovingEvent,
   type PageSlot,
   type PageSlotsInput,
@@ -64,7 +66,7 @@ export class BusyQueryError extends Error {
 
 // Look back by the longest plausible single event so one that started
 // before the window but is still running is seen as busy.
-const BUSY_LOOKBACK_MS = 8 * 60 * 60_000;
+const BUSY_LOOKBACK_MS = MAX_SLOT_MINUTES * 60_000;
 
 export async function resolvePageAvailability(
   opts: ResolveAvailabilityOptions,
@@ -108,12 +110,15 @@ export function movingEventOf(
 ): MovingEvent & { id: string } {
   const start = toDate(e.startAt);
   const end = toDate(e.endAt);
-  return {
-    id,
-    hostUids: eventHostUids(e),
-    // 0 when malformed: a service page then offers nothing rather than guess.
-    durationMinutes: start && end ? (end.getTime() - start.getTime()) / 60_000 : 0,
-  };
+  const minutes = start && end ? (end.getTime() - start.getTime()) / 60_000 : 0;
+  // Events are client-writable, so the length is untrusted: anything but a
+  // whole number of minutes in bounds is unknown (0), and a service page then
+  // offers nothing rather than size slots by it.
+  const ok =
+    Number.isInteger(minutes) &&
+    minutes >= MIN_SLOT_MINUTES &&
+    minutes <= MAX_SLOT_MINUTES;
+  return { id, hostUids: eventHostUids(e), durationMinutes: ok ? minutes : 0 };
 }
 
 /** Occupying events in the sub-account starting inside [from, to]. */
