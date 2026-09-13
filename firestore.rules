@@ -1178,7 +1178,10 @@ service cloud.firestore {
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
-        );
+        )
+        // `mode` decides v1 exposure and whether status changes fire real
+        // triggers/email — server-set only, never flipped from a client.
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mode']);
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,

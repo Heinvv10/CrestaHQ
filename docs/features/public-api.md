@@ -179,6 +179,10 @@ and cancel email.
   and enrols the new contact.
 - **Test mode:** a `mode: "test"` event gets the validated status write
   only — no activity row, no trigger, no email.
+- **Not atomic.** The transition is checked, the other fields are written,
+  then the status change re-checks against the stored event. If another
+  writer changes the status in between, the PATCH can return `409` after
+  its other fields were already written. Re-`GET` the event and retry.
 
 ## Webhooks
 

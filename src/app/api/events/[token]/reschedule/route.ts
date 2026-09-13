@@ -38,9 +38,9 @@ import type { CalendarEvent } from "@/types/events";
  *
  * The only path here that checks slot availability — it's the only actor
  * without a human on the other end double-checking the calendar. The
- * operator route and v1 API reuse `runRescheduleSideEffects` from
+ * operator route reuses `runRescheduleSideEffects` from
  * lib/booking/reschedule.ts for identical post-write bookkeeping, but
- * skip this availability check (see rescheduleWithoutAvailabilityCheck).
+ * skips this availability check (see rescheduleWithoutAvailabilityCheck).
  */
 
 interface RescheduleBody {
