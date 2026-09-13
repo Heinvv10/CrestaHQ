@@ -1,0 +1,98 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { EventFormData } from "@/types/events";
+
+import { saveBookingPageEdit, type RescheduleResponse, type TimeBaseline } from "./booking-edit-save";
+
+const ORIG: TimeBaseline = {
+  startAt: new Date("2030-01-01T10:00:00Z"),
+  endAt: new Date("2030-01-01T10:30:00Z"),
+};
+const MOVED = {
+  startAt: new Date("2030-01-01T12:00:00Z"),
+  endAt: new Date("2030-01-01T12:30:00Z"),
+};
+type Fields = Omit<EventFormData, "startAt" | "endAt">;
+const fields: Fields = { title: "Renamed", contactId: null, location: "", notes: "", meetingUrl: null };
+
+const reschedule = vi.fn<(id: string, s: Date, e: Date) => Promise<RescheduleResponse>>();
+const updateFields = vi.fn<(id: string, f: Fields) => Promise<void>>();
+
+function save(baseline: TimeBaseline, times = MOVED, timeLocked = false) {
+  return saveBookingPageEdit({
+    eventId: "evt1",
+    baseline,
+    ...times,
+    timeLocked,
+    fields,
+    reschedule,
+    updateFields,
+  });
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  reschedule.mockResolvedValue({ ok: true, body: { notifyEmailSent: true } });
+  updateFields.mockResolvedValue();
+});
+
+describe("saveBookingPageEdit", () => {
+  it("reschedules FIRST and saves nothing when the reschedule is refused", async () => {
+    reschedule.mockResolvedValue({ ok: false, body: { error: "Page gone" } });
+    const out = await save(ORIG);
+    expect(out).toEqual({ kind: "reschedule_refused", error: "Page gone" });
+    expect(updateFields).not.toHaveBeenCalled();
+  });
+
+  it("doesn't call reschedule when the time is unchanged", async () => {
+    const out = await save(ORIG, { startAt: ORIG.startAt!, endAt: ORIG.endAt! });
+    expect(reschedule).not.toHaveBeenCalled();
+    expect(out.kind).toBe("saved");
+  });
+
+  it("doesn't call reschedule when the time is locked", async () => {
+    await save(ORIG, MOVED, true);
+    expect(reschedule).not.toHaveBeenCalled();
+    expect(updateFields).toHaveBeenCalled();
+  });
+
+  it("reports the reschedule warning when the visitor wasn't emailed", async () => {
+    reschedule.mockResolvedValue({
+      ok: true,
+      body: { notifyEmailSent: false, notifyEmailSkipReason: "contact_opted_out" },
+    });
+    const out = await save(ORIG);
+    expect(out.kind).toBe("saved");
+    expect(out.kind === "saved" && out.warning).toMatch(
+      /wasn't emailed \(the visitor opted out of email\); their old manage link no longer works/,
+    );
+  });
+
+  it("reschedule OK + field write fails → keeps the warning; a retry with the returned baseline saves the fields without re-POSTing", async () => {
+    reschedule.mockResolvedValue({
+      ok: true,
+      body: { notifyEmailSent: false, notifyEmailSkipReason: "no_contact_email" },
+    });
+    updateFields.mockRejectedValueOnce(new Error("offline"));
+    const first = await save(ORIG);
+    expect(first).toMatchObject({ kind: "fields_failed", rescheduled: true });
+    expect(first.kind === "fields_failed" && first.warning).toMatch(/wasn't emailed/);
+    expect(first.kind === "fields_failed" && first.baseline).toEqual(MOVED);
+
+    // The dialog keeps the returned baseline; the retry is the same click.
+    const retry = await save(first.kind === "fields_failed" ? first.baseline : ORIG);
+    expect(retry.kind).toBe("saved");
+    expect(reschedule).toHaveBeenCalledTimes(1);
+    expect(updateFields).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a server no_change as 'time already applied' and still saves the fields", async () => {
+    reschedule.mockResolvedValue({
+      ok: false,
+      body: { error: "That's already the booking's time.", code: "no_change" },
+    });
+    const out = await save(ORIG);
+    expect(out).toEqual({ kind: "saved", baseline: MOVED, warning: null });
+    expect(updateFields).toHaveBeenCalledWith("evt1", fields);
+  });
+});

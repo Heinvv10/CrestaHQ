@@ -34,7 +34,10 @@ export type AutomationTriggerType =
   | "event_booked"
   | "event_cancelled"
   | "event_rescheduled"
-  | "event_paid";
+  | "event_paid"
+  | "event_confirmed"
+  | "event_completed"
+  | "event_no_show";
 
 export type AutomationStatus = "running" | "completed" | "stopped" | "failed";
 

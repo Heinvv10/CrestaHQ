@@ -5,15 +5,9 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
-  emailIsConfigured,
-  sendEmail,
-  tenantFrom,
-} from "@/lib/comms/resend";
-import {
   isSlotAvailable,
   type SlotCandidate,
 } from "@/lib/booking/availability";
-import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import {
   departedHostMessage,
   movingEventOf,
@@ -25,18 +19,10 @@ import {
   issueEventToken,
   verifyEventToken,
 } from "@/lib/booking/event-token";
-import { generateIcs } from "@/lib/booking/ics";
-import {
-  fireBookingTrigger,
-  recordBookingActivity,
-  scheduleEventReminders,
-} from "@/lib/booking/lifecycle";
-import { renderBookingConfirmationEmail } from "@/lib/booking/email";
+import { runRescheduleSideEffects } from "@/lib/booking/reschedule";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
-import type { Contact } from "@/types/contacts";
-import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
  * Public reschedule endpoint. The HMAC token IS the credential. On
@@ -52,6 +38,12 @@ import type { SubAccountDoc } from "@/types/tenancy";
  *   - Payment-pending events keep the payment requirement on the new
  *     slot (operator still has to mark paid). The hold-expiry deadline
  *     is NOT extended — visitor should pay quickly regardless.
+ *
+ * The only path here that checks slot availability — it's the only actor
+ * without a human on the other end double-checking the calendar. The
+ * operator route reuses `runRescheduleSideEffects` from
+ * lib/booking/reschedule.ts for identical post-write bookkeeping, but
+ * skips this availability check (see rescheduleWithoutAvailabilityCheck).
  */
 
 interface RescheduleBody {
@@ -171,6 +163,8 @@ export async function POST(
         startAt: newStart,
         endAt: newEnd,
         publicTokenHash: newHash,
+        rescheduledAt: FieldValue.serverTimestamp(),
+        rescheduleCount: FieldValue.increment(1),
         updatedAt: FieldValue.serverTimestamp(),
       });
       return {
@@ -220,6 +214,7 @@ export async function POST(
     publicEventUrl,
     startAt: nsa,
     endAt: nea,
+    actor: "visitor",
   });
 
   return NextResponse.json({
@@ -238,136 +233,3 @@ class BadState extends Error {
   }
 }
 class SlotConflict extends Error {}
-
-async function runRescheduleSideEffects(args: {
-  event: CalendarEvent;
-  page: BookingPage | undefined;
-  newRawToken: string;
-  publicEventUrl: string;
-  startAt: Date;
-  endAt: Date;
-}): Promise<void> {
-  const db = getAdminDb();
-  const { event, page, newRawToken, publicEventUrl, startAt, endAt } = args;
-
-  // Re-publish reminder callbacks with a fresh schedule nonce so the
-  // QStash dedup key doesn't collapse onto the previous ones.
-  if (page?.remindersEnabled) {
-    await scheduleEventReminders({
-      eventId: event.id,
-      startAt,
-      reminderOffsetsMinutes: page.reminderOffsetsMinutes,
-      rawToken: newRawToken,
-      pendingPayment: eventStatus(event) === "awaiting_payment",
-      scheduleNonce: Date.now().toString(36),
-    });
-  }
-
-  // Activity + automation trigger.
-  if (event.contactId) {
-    await recordBookingActivity(
-      {
-        id: event.id,
-        title: event.title || "Meeting",
-        contactId: event.contactId,
-        bookingPageSlug: event.bookingPageSlug ?? null,
-      },
-      "booking_rescheduled",
-    );
-    await fireBookingTrigger(
-      {
-        agencyId: event.agencyId,
-        subAccountId: event.subAccountId,
-        contactId: event.contactId,
-      },
-      "event_rescheduled",
-    );
-  }
-
-  // Visitor confirmation email + ICS (UPDATE, sequence+1 so calendar
-  // clients overwrite the existing entry).
-  if (!event.contactId) return;
-  try {
-    const [contactSnap, subSnap] = await Promise.all([
-      db.collection("contacts").doc(event.contactId).get(),
-      db.doc(`subAccounts/${event.subAccountId}`).get(),
-    ]);
-    if (!contactSnap.exists || !subSnap.exists) return;
-    const contact = contactSnap.data() as Contact;
-    const sub = subSnap.data() as SubAccountDoc;
-    if (!emailIsConfigured(sub)) return;
-    if (!contact.email || contact.emailOptedOut) return;
-
-    const rendered = renderBookingConfirmationEmail({
-      recipientName: contact.name ?? "",
-      businessName: sub.name ?? "Booking",
-      businessLogoUrl: sub.logoUrl,
-      page: {
-        ...bookedEventLabel(page, event, startAt, endAt),
-        timezone: page?.timezone ?? "UTC",
-        payment: page?.payment ?? null,
-        confirmationMessage: page?.confirmationMessage ?? "",
-      },
-      startAt,
-      endAt,
-      publicEventUrl,
-    });
-    rendered.subject = `Updated: ${rendered.subject.replace(/^Confirmed: /, "")}`;
-    const appHost =
-      process.env.NEXT_PUBLIC_APP_URL?.replace(/^https?:\/\//, "")
-        ?.replace(/\/.*$/, "")
-        ?.toLowerCase() ?? "leadstack.dev";
-    const ics = generateIcs({
-      uid: event.id,
-      domain: appHost,
-      startAt,
-      endAt,
-      summary: event.title || page?.name || "Meeting",
-      description: page?.confirmationMessage ?? "",
-      location: event.location || "",
-      method: "REQUEST",
-      status: "CONFIRMED",
-      sequence: 1, // bump so calendar apps treat as update
-      attendeeEmail: contact.email,
-      attendeeName: contact.name ?? undefined,
-      organizerEmail: sub.replyToEmail ?? undefined,
-      organizerName: sub.name ?? undefined,
-    });
-
-    if (eventStatus(event) === "awaiting_payment") {
-      // Skip ICS for unconfirmed holds — same logic as the book route.
-      await sendEmail({
-        to: contact.email,
-        subject: rendered.subject,
-        text: rendered.text,
-        html: rendered.html,
-        replyTo: sub.replyToEmail ?? undefined,
-        from: tenantFrom(sub),
-        subAccount: sub,
-        meter: { subAccountId: event.subAccountId },
-      });
-      return;
-    }
-
-    // Through the shared wrapper (it supports attachments) so the
-    // From/Reply-To policy can't be bypassed by the ICS path.
-    await sendEmail({
-      from: tenantFrom(sub),
-      to: contact.email,
-      subject: rendered.subject,
-      text: rendered.text,
-      html: rendered.html,
-      replyTo: sub.replyToEmail ?? undefined,
-      subAccount: sub,
-      meter: { subAccountId: event.subAccountId },
-      attachments: [
-        {
-          filename: "invite.ics",
-          content: Buffer.from(ics, "utf-8").toString("base64"),
-        },
-      ],
-    });
-  } catch (err) {
-    console.warn("[events/reschedule] confirmation send failed", err);
-  }
-}

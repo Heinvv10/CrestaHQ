@@ -337,8 +337,25 @@ export async function bookVoiceSlot(input: {
       "booking_page_booked",
     );
     await fireBookingTrigger(
-      { agencyId, subAccountId, contactId: contactId! },
+      {
+        id: eventDocRef.id,
+        agencyId,
+        subAccountId,
+        contactId: contactId!,
+        bookingPageSlug: page.slug,
+      },
       "event_booked",
+    );
+    // Voice bookings are always free/scheduled — confirmed immediately.
+    await fireBookingTrigger(
+      {
+        id: eventDocRef.id,
+        agencyId,
+        subAccountId,
+        contactId: contactId!,
+        bookingPageSlug: page.slug,
+      },
+      "event_confirmed",
     );
     void emitBookingWebhook({
       eventId: eventDocRef.id,

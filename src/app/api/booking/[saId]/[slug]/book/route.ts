@@ -71,8 +71,8 @@ import type { SubAccountDoc } from "@/types/tenancy";
  *    the sub-account's verified sending domain when configured),
  *  - schedules QStash reminder callbacks (T-24h + T-1h) for scheduled
  *    bookings, or the auto-expire callback for awaiting-payment holds,
- *  - fires the `event_booked` automation trigger (plumbing only — same
- *    v1 caveat as the quote triggers).
+ *  - fires the `booking.created` workflow trigger, plus `booking.confirmed`
+ *    for a free (non-paid-hold) booking — see lib/booking/lifecycle.ts.
  */
 
 // ── Soft rate limits (per IP + per sub-account, in-memory LRU) ──
@@ -634,12 +634,28 @@ export async function POST(
   );
   await fireBookingTrigger(
     {
+      id: created.eventDocRef.id,
       agencyId,
       subAccountId: saId,
       contactId: created.contactId,
+      bookingPageSlug: page.slug,
     },
     "event_booked",
   );
+  // A free booking is confirmed the moment it's created; a paid hold only
+  // becomes confirmed once mark-paid fires this same trigger.
+  if (!paymentRequired) {
+    await fireBookingTrigger(
+      {
+        id: created.eventDocRef.id,
+        agencyId,
+        subAccountId: saId,
+        contactId: created.contactId,
+        bookingPageSlug: page.slug,
+      },
+      "event_confirmed",
+    );
+  }
   void emitBookingWebhook({
     eventId: created.eventDocRef.id,
     agencyId,
