@@ -25,6 +25,16 @@ A page's `calendarType` (absent on legacy pages ⇒ `pageCalendarType()` derives
 
 Every caller that offers or re-verifies a slot — availability API, book route and reschedule route (inside their transactions), voice agent — goes through `resolvePageAvailability` ([src/lib/booking/resolve-availability.ts](../../src/lib/booking/resolve-availability.ts)); the rules are pure in [page-slots.ts](../../src/lib/booking/page-slots.ts). Reschedule re-verifies for the event's own host(s) and service. Voice refuses service pages (no service step on a call).
 
+## Availability rules (SP3)
+
+All optional; absent ⇒ the old behaviour. Applied in [page-slots.ts](../../src/lib/booking/page-slots.ts) / [availability.ts](../../src/lib/booking/availability.ts), so every caller of the resolver gets them.
+
+- **Date-specific hours** — `dateOverrides[]` (`{date: "YYYY-MM-DD", ranges}`, page timezone) on the page and per host. For a date: host entry > page entry > weekly hours (a host's custom weekly hours included). Empty `ranges` = closed that date; an entry can also open a date the weekly hours leave closed. Max 366 per list; past dates are kept.
+- **Buffers** — `bufferBeforeMinutes` (new) and `bufferMinutes` (now the *after* buffer). A new slot `[S, E)` must have `[S − before, E + after)` clear of every busy interval (manual events, other pages' bookings, external busy). This page's own bookings also keep their buffers, so two bookings on the same page are at least `max(before, after)` apart.
+- **Slot interval** — `slotIntervalMinutes` (5–240, step 5): minutes between slot starts, across services too. Null ⇒ `durationMinutes + bufferMinutes`, the old step.
+
+**Behaviour change for existing pages:** before SP3 `bufferMinutes` was only the slot step and never padded existing events — a 15-min buffer still allowed a slot starting right when a manual event ended. It now pads busy time as the after-buffer. Slots next to the page's own on-grid bookings are unchanged (the step already leaves that gap); a slot whose after-buffer runs into an off-grid manual event, or a same-page booking closer than the buffer, is no longer offered.
+
 ## Send flow
 
 1. **Public page** (`/b/[subAccountId]/[slug]`) — server-renders the page config; the client fetches slots from the availability endpoint below.
