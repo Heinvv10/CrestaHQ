@@ -287,3 +287,19 @@ it("an email snippet fills an empty subject but never a reply's Re: subject", as
   expect(container.querySelector("textarea")!.value).toBe("Dear Thabo");
   expect(replySubject.value).toBe("Re: Question");
 });
+
+it("Escape closes the Snippets popover and returns focus to its trigger", async () => {
+  await mount();
+  await click("Snippets");
+  const search = container.querySelector<HTMLInputElement>(
+    "input[aria-label='Search snippets']"
+  )!;
+  expect(document.activeElement).toBe(search);
+  await act(async () => {
+    search.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+    );
+  });
+  expect(container.querySelector("[role='dialog']")).toBeNull();
+  expect(document.activeElement).toBe(button("Snippets"));
+});

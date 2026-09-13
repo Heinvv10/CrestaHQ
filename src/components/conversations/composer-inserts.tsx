@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import Link from "next/link";
 import { MessageSquareText } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -26,25 +26,36 @@ export function ComposerInserts({
   disabled,
   onInsert,
   onSubject,
+  textareaRef,
 }: {
   mergeContext: MergeTagContext;
   emailActive: boolean;
   disabled?: boolean;
   onInsert: (text: string) => void;
   onSubject: (subject: string) => void;
+  /** The composer's textarea — focus returns there after a pick. */
+  textareaRef?: RefObject<HTMLTextAreaElement | null>;
 }) {
   const { subAccountId, saPath } = useSubAccount();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const { snippets, loading, error } = useSnippets(subAccountId, open);
   const boxRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    // Escape hands focus back to the trigger (as the Merge fields menu does);
+    // otherwise the popover unmounts under the focused search box and focus
+    // falls to <body>.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -85,6 +96,7 @@ export function ComposerInserts({
           variant="ghost"
           size="sm"
           disabled={disabled}
+          ref={triggerRef}
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           title="Insert a snippet"
@@ -154,7 +166,11 @@ export function ComposerInserts({
           </div>
         )}
       </div>
-      <MergeFieldMenu onPick={pickField} disabled={disabled} />
+      <MergeFieldMenu
+        onPick={pickField}
+        disabled={disabled}
+        returnFocusTo={textareaRef}
+      />
     </div>
   );
 }

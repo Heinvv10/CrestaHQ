@@ -182,13 +182,12 @@ test("snippets: manage, insert rendered, refuse unresolved tags", async ({
     await editor.getByLabel("Body").fill("Hi ");
     await editor.getByRole("button", { name: "Merge fields" }).click();
     await page.getByRole("menuitem", { name: /Contact first name/ }).click();
+    // Keep typing straight away, like an operator: focus is back in the body
+    // with the caret after the tag. No refocus, no End key, no wait.
+    await page.keyboard.type(", thanks for calling {{business.name}}.");
     await expect(editor.getByLabel("Body")).toHaveValue(
-      "Hi {{contact.first_name}}"
+      "Hi {{contact.first_name}}, thanks for calling {{business.name}}."
     );
-    await editor.getByLabel("Body").press("End");
-    await editor
-      .getByLabel("Body")
-      .pressSequentially(", thanks for calling {{business.name}}.");
     await editor.getByRole("button", { name: "Save" }).click();
     await expect(editor).toHaveCount(0);
 

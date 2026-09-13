@@ -1,13 +1,8 @@
 "use client";
 
-import {
-  useRef,
-  useState,
-  type Dispatch,
-  type SetStateAction,
-  type SyntheticEvent,
-} from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { useSubAccount } from "@/context/sub-account-context";
+import { useCaretInsert } from "@/hooks/use-caret-insert";
 import { Button } from "@/components/ui/button";
 import { DEFAULT_REVIEW_SMS_TEMPLATE } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
@@ -17,7 +12,6 @@ import {
   renderMergeTags,
   type MergeTagContext,
 } from "@/lib/messaging/merge-tags";
-import { insertAtCursor } from "@/lib/messaging/insert-at-cursor";
 
 /**
  * Merge-tag state for the conversation composer (SP2 T4).
@@ -69,8 +63,7 @@ export function useMergeTagComposer({
   };
   const [blocked, setBlocked] = useState(false);
   const [filled, setFilled] = useState(false);
-  const selection = useRef<{ start: number; end: number } | null>(null);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const caret = useCaretInsert(body, setBody);
 
   const tags = findMergeTags(isEmail ? `${subject}\n${body}` : body);
   const fillable = tags.filter(
@@ -83,28 +76,9 @@ export function useMergeTagComposer({
     setFilled(false);
   }
 
-  // The textarea loses focus when a picker opens, so its selection is
-  // remembered here (select / keyup / click / blur) and inserts go there.
-  function rememberSelection(e: SyntheticEvent<HTMLTextAreaElement>) {
-    const el = e.currentTarget;
-    selection.current = { start: el.selectionStart, end: el.selectionEnd };
-  }
-
   function insertIntoBody(text: string) {
-    const sel = selection.current;
-    const next = insertAtCursor(
-      body,
-      text,
-      sel?.start ?? null,
-      sel?.end ?? null
-    );
-    setBody(next.value);
-    selection.current = { start: next.caret, end: next.caret };
+    caret.insert(text);
     reset();
-    requestAnimationFrame(() => {
-      bodyRef.current?.focus();
-      bodyRef.current?.setSelectionRange(next.caret, next.caret);
-    });
   }
 
   function insertReviewMessage() {
@@ -138,13 +112,7 @@ export function useMergeTagComposer({
     return true;
   }
 
-  const textareaProps = {
-    ref: bodyRef,
-    onSelect: rememberSelection,
-    onKeyUp: rememberSelection,
-    onClick: rememberSelection,
-    onBlur: rememberSelection,
-  };
+  const textareaProps = caret.textareaProps;
 
   const notice =
     blocked && tags.length > 0 ? (
@@ -157,6 +125,7 @@ export function useMergeTagComposer({
 
   return {
     mergeContext,
+    textareaRef: caret.ref,
     reviewConfigured: !!reviewUrl,
     insertReviewMessage,
     textareaProps,

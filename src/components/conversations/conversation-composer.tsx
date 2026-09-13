@@ -272,6 +272,7 @@ export function ConversationComposer({
             disabled={disabled}
             onInsert={merge.insertIntoBody}
             onSubject={merge.applySnippetSubject}
+            textareaRef={merge.textareaRef}
           />
           {merge.reviewConfigured && (
             <Button

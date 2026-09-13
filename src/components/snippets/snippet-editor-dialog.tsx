@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MergeFieldMenu } from "./merge-field-menu";
-import { insertAtCursor } from "@/lib/messaging/insert-at-cursor";
+import { useCaretInsert } from "@/hooks/use-caret-insert";
 import { saveSnippet } from "@/lib/snippets/client";
 import {
   SNIPPET_BODY_MAX,
@@ -55,7 +55,7 @@ export function SnippetEditorDialog({
   const [body, setBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const caret = useCaretInsert(body, setBody);
 
   const type: SnippetType =
     target?.mode === "edit" ? target.snippet.type : (target?.type ?? "text");
@@ -68,21 +68,6 @@ export function SnippetEditorDialog({
     setBody(s?.body ?? "");
     setError(null);
   }, [target]);
-
-  function insertTag(tag: string) {
-    const el = bodyRef.current;
-    const next = insertAtCursor(
-      body,
-      tag,
-      el?.selectionStart ?? null,
-      el?.selectionEnd ?? null
-    );
-    setBody(next.value);
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(next.caret, next.caret);
-    });
-  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -116,7 +101,13 @@ export function SnippetEditorDialog({
   return (
     <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-lg">
-        <form onSubmit={submit} className="space-y-3">
+        {/* Any edit clears the last validation error: it described the
+            old values, not the ones now on screen. */}
+        <form
+          onSubmit={submit}
+          onInput={() => setError(null)}
+          className="space-y-3"
+        >
           <DialogHeader>
             <DialogTitle>
               {target?.mode === "edit"
@@ -167,11 +158,17 @@ export function SnippetEditorDialog({
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <Label htmlFor="snippet-body">Body</Label>
-              <MergeFieldMenu onPick={insertTag} />
+              <MergeFieldMenu
+                onPick={(tag) => {
+                  caret.insert(tag);
+                  setError(null);
+                }}
+                returnFocusTo={caret.ref}
+              />
             </div>
             <Textarea
               id="snippet-body"
-              ref={bodyRef}
+              {...caret.textareaProps}
               value={body}
               rows={6}
               maxLength={SNIPPET_BODY_MAX}

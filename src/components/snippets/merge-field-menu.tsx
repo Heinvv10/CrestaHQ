@@ -1,5 +1,6 @@
 "use client";
 
+import type { RefObject } from "react";
 import { Braces } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,9 +19,12 @@ import { MERGE_FIELDS } from "@/lib/messaging/merge-tags";
 export function MergeFieldMenu({
   onPick,
   disabled,
+  returnFocusTo,
 }: {
   onPick: (tag: string) => void;
   disabled?: boolean;
+  /** Where focus goes when the menu closes (the field it inserted into). */
+  returnFocusTo?: RefObject<HTMLElement | null>;
 }) {
   return (
     <DropdownMenu>
@@ -38,7 +42,11 @@ export function MergeFieldMenu({
           </Button>
         }
       />
-      <DropdownMenuContent align="start" className="w-56">
+      <DropdownMenuContent
+        align="start"
+        className="w-56"
+        finalFocus={returnFocusTo}
+      >
         {MERGE_FIELDS.map((f) => (
           <DropdownMenuItem key={f.tag} onClick={() => onPick(f.tag)}>
             <span className="flex-1">{f.label}</span>
