@@ -5,6 +5,7 @@ import {
   buildInboxView,
   inboxFiltersToQuery,
   parseInboxFilters,
+  planQueryWrite,
   reconcileUrlQuery,
   sortConversations,
   type InboxFilters,
@@ -233,6 +234,39 @@ describe("reconcileUrlQuery", () => {
     expect(reconcileUrlQuery("b", ["a", "b"])).toEqual({
       adopt: false,
       pending: [],
+    });
+  });
+});
+
+describe("planQueryWrite", () => {
+  it("a no-op write leaves nothing pending, so a later external nav to that query is adopted", () => {
+    // Re-clicking the active Unread tab while the URL is already ?tab=unread.
+    const plan = planQueryWrite("tab=unread", "tab=unread", []);
+    expect(plan).toEqual({ write: false, pending: [] });
+    // e.g. a notification link to ?tab=unread arriving via another route.
+    expect(reconcileUrlQuery("tab=unread", plan.pending).adopt).toBe(true);
+  });
+
+  it("skips a write equal to the newest pending one", () => {
+    expect(planQueryWrite("b", "a", ["b"])).toEqual({
+      write: false,
+      pending: ["b"],
+    });
+  });
+
+  it("writes a change back to the current URL while a newer write is in flight", () => {
+    // a -> b -> a faster than the echo: the URL is still "a" but heading to
+    // "b", so "a" must be written or the URL ends on "b".
+    expect(planQueryWrite("a", "a", ["b"])).toEqual({
+      write: true,
+      pending: ["b", "a"],
+    });
+  });
+
+  it("queues an ordinary change", () => {
+    expect(planQueryWrite("tab=starred", "", [])).toEqual({
+      write: true,
+      pending: ["tab=starred"],
     });
   });
 });

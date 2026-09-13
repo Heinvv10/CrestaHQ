@@ -99,6 +99,23 @@ export function reconcileUrlQuery(
   return { adopt: true, pending: [] };
 }
 
+/**
+ * Whether a filter change needs a URL write. The comparison is against where
+ * the URL is heading — the newest pending write, else the current query. A
+ * write equal to it causes no searchParams change, so its pending entry would
+ * never be consumed and a later external navigation to that same query would
+ * be mistaken for an echo and dropped.
+ */
+export function planQueryWrite(
+  qs: string,
+  urlQuery: string,
+  pending: string[]
+): { write: boolean; pending: string[] } {
+  const target = pending.length > 0 ? pending[pending.length - 1] : urlQuery;
+  if (qs === target) return { write: false, pending };
+  return { write: true, pending: [...pending, qs] };
+}
+
 function isUnread(c: ConversationDoc): boolean {
   return (c.unreadCount ?? 0) > 0;
 }

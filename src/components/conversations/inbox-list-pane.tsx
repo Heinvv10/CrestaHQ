@@ -16,6 +16,7 @@ import {
   buildInboxView,
   inboxFiltersToQuery,
   parseInboxFilters,
+  planQueryWrite,
   reconcileUrlQuery,
   type InboxFilters,
 } from "@/lib/conversations/inbox-filters";
@@ -107,7 +108,13 @@ export function InboxListPane() {
   function setFilters(next: InboxFilters) {
     setFilterState(next);
     const qs = inboxFiltersToQuery(next);
-    pendingWrites.current = [...pendingWrites.current, qs];
+    const plan = planQueryWrite(
+      qs,
+      inboxFiltersToQuery(parseInboxFilters(searchParams)),
+      pendingWrites.current
+    );
+    if (!plan.write) return;
+    pendingWrites.current = plan.pending;
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
 
