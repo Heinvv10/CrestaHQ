@@ -1,4 +1,5 @@
 import type { Note } from "@/types/contacts";
+import type { ScheduledMessageView } from "@/types/scheduled-messages";
 
 /**
  * Time-ordering for the conversation thread (SP2 T2). The thread renders two
@@ -13,7 +14,11 @@ import type { Note } from "@/types/contacts";
 
 export type ThreadItem<M> =
   | { kind: "message"; key: string; at: number; message: M }
-  | { kind: "note"; key: string; at: number; note: Note };
+  | { kind: "note"; key: string; at: number; note: Note }
+  | { kind: "scheduled"; key: string; at: number; scheduled: ScheduledMessageView };
+
+/** Same-millisecond order: what was said, then the note on it, then what is booked. */
+const KIND_RANK = { message: 0, note: 1, scheduled: 2 } as const;
 
 /** Milliseconds for a Firestore Timestamp / Date / null. 0 when unknown. */
 export function itemMillis(v: unknown): number {
@@ -29,10 +34,18 @@ export function itemMillis(v: unknown): number {
  * Merge messages and notes into one oldest-first stream. A note and a message
  * written in the same millisecond put the message first — a note is almost
  * always a comment ON what just arrived.
+ *
+ * Scheduled messages (SP2 T5) sit at their `sendAt`: a pending one is in the
+ * future, so it lands after everything already said; a failed one stays where
+ * it would have gone out.
  */
 export function mergeThreadItems<
   M extends { id: string; channel: string; createdAt?: unknown },
->(messages: M[], notes: Note[]): ThreadItem<M>[] {
+>(
+  messages: M[],
+  notes: Note[],
+  scheduled: ScheduledMessageView[] = []
+): ThreadItem<M>[] {
   // Notes go in FIRST: Array.sort is stable, so building messages first would
   // put a same-millisecond message ahead of a note without any tie-break, and
   // the tie-break below would be untested decoration.
@@ -52,11 +65,13 @@ export function mergeThreadItems<
       at: itemMillis(m.createdAt),
       message: m,
     })),
+    ...scheduled.map((s) => ({
+      kind: "scheduled" as const,
+      key: `scheduled:${s.id}`,
+      at: Date.parse(s.sendAt) || 0,
+      scheduled: s,
+    })),
   ];
-  items.sort(
-    (a, b) =>
-      a.at - b.at ||
-      (a.kind === b.kind ? 0 : a.kind === "message" ? -1 : 1)
-  );
+  items.sort((a, b) => a.at - b.at || KIND_RANK[a.kind] - KIND_RANK[b.kind]);
   return items;
 }
