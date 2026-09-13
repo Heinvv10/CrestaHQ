@@ -41,10 +41,13 @@ describe("mergeThreadItems (SP2 T2)", () => {
     expect(items.map((i) => i.key)).toEqual(["sms:early", "sms:late"]);
   });
 
+  // Notes are built into the list BEFORE messages, so with a stable sort this
+  // only passes because of the explicit tie-break (see mergeThreadItems).
   it("puts a note after the message it shares a timestamp with", () => {
     const items = mergeThreadItems([msg("m", 100)], [note("n", 100)]);
     expect(items.map((i) => i.kind)).toEqual(["message", "note"]);
   });
+
 
   it("a just-saved note (no server time yet) is the newest row", () => {
     const items = mergeThreadItems(

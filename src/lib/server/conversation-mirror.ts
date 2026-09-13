@@ -21,8 +21,11 @@ import { getAdminDb } from "@/lib/firebase/admin";
  *
  * `contactEmail` follows the same staleness contract as the `contactName` /
  * `contactPhone` denormalizations that already live on the doc: refreshed by
- * the upserts, NOT re-written when the contact is edited.
+ * the upserts (and alongside an owner change, since that mirror copies the
+ * contact's current fields), not on an ordinary contact edit.
  */
+
+import { contactMirror } from "@/lib/conversations/mirror-plan";
 
 export {
   contactMirror,
@@ -31,10 +34,17 @@ export {
 } from "@/lib/conversations/mirror-plan";
 
 /**
- * Push a contact's new owner onto its conversation rows. Called by EVERY path
- * that changes `contact.assignedToUid` (the contact PATCH chokepoint
- * `updateContactServerSide` and the bulk-assign route) right after the contact
- * write lands.
+ * Re-stamp a contact's owner + email onto its conversation rows. Called by
+ * EVERY path that changes `contact.assignedToUid` (the contact PATCH
+ * chokepoint `updateContactServerSide` and the bulk-assign route) right after
+ * the contact write lands.
+ *
+ * It never takes the value from the request. It re-reads the contact's
+ * CURRENT fields inside a transaction and writes those: two near-simultaneous
+ * assigns can finish their mirrors in either order, and a value carried from
+ * the request would let the older one land last and leave the conversation on
+ * the loser's owner. Reading inside the transaction also means a contact write
+ * racing the mirror makes the transaction retry rather than commit stale.
  *
  * Best-effort by design: the contact is already saved and is the source of
  * truth, so a failed mirror must not 500 a save the operator can see
@@ -46,26 +56,29 @@ export {
 export async function mirrorContactAssignee(opts: {
   contactId: string;
   subAccountId: string;
-  assigneeUid: string | null;
 }): Promise<number> {
   try {
     const db = getAdminDb();
+    const contactRef = db.doc(`contacts/${opts.contactId}`);
     // Equality-only query — served by single-field indexes, no composite.
-    const rows = await db
+    const rowsQuery = db
       .collection("conversations")
       .where("subAccountId", "==", opts.subAccountId)
-      .where("contactId", "==", opts.contactId)
-      .get();
-    if (rows.empty) return 0;
-    const batch = db.batch();
-    for (const row of rows.docs) {
-      batch.update(row.ref, {
-        assigneeUid: opts.assigneeUid,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-    }
-    await batch.commit();
-    return rows.size;
+      .where("contactId", "==", opts.contactId);
+    return await db.runTransaction(async (tx) => {
+      const contact = (await tx.get(contactRef)).data();
+      // Gone, or not this tenant's: nothing authoritative to copy.
+      if (!contact || contact.subAccountId !== opts.subAccountId) return 0;
+      const rows = await tx.get(rowsQuery);
+      const mirror = contactMirror(contact);
+      for (const row of rows.docs) {
+        tx.update(row.ref, {
+          ...mirror,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return rows.size;
+    });
   } catch (err) {
     console.warn(
       "[conversation-mirror] assignee mirror failed",

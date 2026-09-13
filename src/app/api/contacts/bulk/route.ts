@@ -188,11 +188,7 @@ export async function POST(request: Request) {
     for (let i = 0; i < updates.length; i += 25) {
       await Promise.all(
         updates.slice(i, i + 25).map(({ snap }) =>
-          mirrorContactAssignee({
-            contactId: snap.id,
-            subAccountId,
-            assigneeUid: action.assignedToUid,
-          })
+          mirrorContactAssignee({ contactId: snap.id, subAccountId })
         )
       );
     }

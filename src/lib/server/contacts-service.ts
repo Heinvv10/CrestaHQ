@@ -302,7 +302,6 @@ export async function updateContactServerSide(opts: {
     await mirrorContactAssignee({
       contactId: opts.contactId,
       subAccountId: existing.subAccountId as string,
-      assigneeUid: patch.assignedToUid ?? null,
     });
   }
 
