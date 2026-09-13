@@ -63,30 +63,28 @@ export class BusyQueryError extends Error {
 }
 
 // Look back by the longest plausible single event so one that started
-// before the window but is still running is seen as busy. (It also covers
-// the before-buffer, which pads busy intervals forward by at most 60 min.)
+// before the window but is still running is seen as busy.
 const BUSY_LOOKBACK_MS = 8 * 60 * 60_000;
 
 export async function resolvePageAvailability(
   opts: ResolveAvailabilityOptions,
 ): Promise<PageSlot[]> {
   const now = opts.now ?? new Date();
+  // Buffers pad busy time by up to the wider buffer on either side, so read
+  // that much further both ways: an event ending just before the window
+  // (before-buffer), or starting just after it (after-buffer, or a
+  // same-page booking's before-buffer), still blocks a slot inside it.
+  const padMs =
+    Math.max(opts.page.bufferMinutes, opts.page.bufferBeforeMinutes ?? 0) *
+    60_000;
   const queryFrom = new Date(
-    (opts.fromInstant ?? now).getTime() - BUSY_LOOKBACK_MS,
-  );
-  // Read past the window by the widest buffer: an event starting inside the
-  // last slot's after-buffer (or a same-page booking whose before-buffer
-  // reaches back into it) still blocks it.
-  const padMinutes = Math.max(
-    opts.page.bufferMinutes,
-    opts.page.bufferBeforeMinutes ?? 0,
+    (opts.fromInstant ?? now).getTime() - BUSY_LOOKBACK_MS - padMs,
   );
   const queryTo = new Date(
     (
       opts.toInstant ??
       new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000)
-    ).getTime() +
-      padMinutes * 60_000,
+    ).getTime() + padMs,
   );
 
   const busy = await loadEventBusy(

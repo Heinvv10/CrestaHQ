@@ -45,6 +45,13 @@ describe("book-time re-verify", () => {
     expect((await book("p", slot("11:00", "11:30"))).status).toBe(200);
   });
 
+  it("sees a long event ending inside the before-buffer (read window reaches back by the pad)", async () => {
+    seedPage("p", { bufferBeforeMinutes: 15 });
+    // 8h10m long, ends 09:50: starts before the plain 8h lookback from 10:00.
+    seedEvent("long", "01:50", "09:50");
+    expect((await book("p", slot("10:00", "10:30"))).status).toBe(409);
+  });
+
   it("books on a UTC+12 page (the re-verify walks the right local date)", async () => {
     // Tue 2026-09-15 09:00 in Auckland (NZST, +12) = Mon 21:00Z.
     seedPage("nz", {
