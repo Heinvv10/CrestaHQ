@@ -27,7 +27,7 @@ const appUrl = () =>
     "",
   );
 
-function escapeAttr(v: string): string {
+export function escapeAttr(v: string): string {
   return v.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
@@ -55,9 +55,12 @@ function copy(snippet: string) {
 export function BookingEmbedDialog({
   subAccountId,
   slug,
+  disabled,
 }: {
   subAccountId: string;
   slug: string;
+  /** True while the page isn't published — the embed would 404 either way. */
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const script = scriptSnippet(subAccountId, slug);
@@ -67,7 +70,17 @@ export function BookingEmbedDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger
         render={
-          <Button type="button" variant="outline" size="sm">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            title={
+              disabled
+                ? "Publish the page to embed it"
+                : "Get the embed snippet"
+            }
+          >
             <Code2 className="mr-1 h-3.5 w-3.5" />
             Embed
           </Button>

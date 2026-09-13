@@ -158,9 +158,11 @@ export default function EditBookingPagePage() {
               Open
             </Button>
           )}
-          {page.status === "published" && (
-            <BookingEmbedDialog subAccountId={subAccountId} slug={page.slug} />
-          )}
+          <BookingEmbedDialog
+            subAccountId={subAccountId}
+            slug={page.slug}
+            disabled={page.status !== "published"}
+          />
         </div>
       </header>
 
