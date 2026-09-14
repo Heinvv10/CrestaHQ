@@ -1,7 +1,12 @@
 import { eventHostUids } from "@/lib/booking/page-slots";
 import { utcFromWallClock } from "@/lib/booking/availability";
 import { detectTimezone } from "@/lib/booking/defaults";
-import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
+import {
+  eventOccupiesSlot,
+  eventSource,
+  eventStatus,
+  isValidStatusTransition,
+} from "@/types/events";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 
@@ -55,6 +60,21 @@ export function hasActiveFilters(filters: AppointmentFilters): boolean {
 export function eventStartMs(event: Pick<CalendarEvent, "startAt">): number | null {
   const d = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
   return d instanceof Date ? d.getTime() : null;
+}
+
+/**
+ * Has this event's scheduled time already passed? Mirrors the operator
+ * dialog's BookingActionsPanel (`startAt.getTime() < Date.now()`), which
+ * only offers Mark attended/Mark no-show once the meeting time has
+ * arrived — an event with no readable start time is never "past" (so a
+ * malformed doc doesn't wrongly unlock completed/no_show).
+ */
+export function eventIsPast(
+  event: Pick<CalendarEvent, "startAt">,
+  nowMs: number,
+): boolean {
+  const startMs = eventStartMs(event);
+  return startMs !== null && startMs < nowMs;
 }
 
 /**
@@ -116,6 +136,33 @@ export function matchesFilters(
  */
 export function canOfferStatusActions(event: Pick<CalendarEvent, "source">): boolean {
   return eventSource(event) === "booking_page";
+}
+
+/**
+ * Which statuses the row menu should actually offer for `event` right
+ * now — the full gate: booking-page only, a valid transition from the
+ * current status, AND (for completed/no_show specifically) the event
+ * must have already started. Mirrors the operator dialog's
+ * BookingActionsPanel, which only shows Mark attended/Mark no-show once
+ * `startAt` has passed — completed/no_show fire a workflow trigger and
+ * free the slot, irreversibly, so a future booking must never offer them
+ * (a misclick on the default Upcoming tab would otherwise do exactly
+ * that to tomorrow's appointment).
+ */
+export function offeredStatusActions(
+  event: CalendarEvent,
+  nowMs: number,
+): EventStatus[] {
+  if (!canOfferStatusActions(event)) return [];
+  const current = eventStatus(event);
+  const past = eventIsPast(event, nowMs);
+  const candidates: EventStatus[] = ["completed", "no_show", "cancelled"];
+  return candidates.filter((next) => {
+    if (next === current) return false;
+    if (!isValidStatusTransition(current, next)) return false;
+    if ((next === "completed" || next === "no_show") && !past) return false;
+    return true;
+  });
 }
 
 /**
@@ -216,13 +263,6 @@ export function dateInputToToMs(value: string, tz: string): number | null {
 }
 
 /**
- * Render an appointment's start time in `tz` — the SAME zone
- * dateInputToFromMs/dateInputToToMs parse the range filter in, so a
- * booking shown as "13 Sep" is also the one a From/To of 2026-09-13
- * matches. A naive `toISOString()`/browser-local render would drift from
- * the filter the moment the viewer isn't in that same zone.
- */
-/**
  * The one timezone both the date-range filter and the Appointment time
  * column use: the sub-account's own `timezone` (the same field
  * recurring-invoices reads via `sub?.timezone ?? "UTC"`), falling back to
@@ -235,6 +275,13 @@ export function resolveAppointmentsTimezone(
   return subAccount?.timezone || detectTimezone();
 }
 
+/**
+ * Render an appointment's start time in `tz` — the SAME zone
+ * dateInputToFromMs/dateInputToToMs parse the range filter in, so a
+ * booking shown as "13 Sep" is also the one a From/To of 2026-09-13
+ * matches. A naive `toISOString()`/browser-local render would drift from
+ * the filter the moment the viewer isn't in that same zone.
+ */
 export function formatAppointmentTime(date: Date, tz: string): string {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
@@ -244,4 +291,15 @@ export function formatAppointmentTime(date: Date, tz: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+/**
+ * Render an epoch ms back to a `<input type="date">` value, in `tz` — the
+ * same zone dateInputToFromMs/dateInputToToMs parsed it in, so re-opening
+ * the picker shows the date the filter is actually applying. Round-trips
+ * with dateInputToFromMs: msToDateInput(dateInputToFromMs(v, tz), tz) === v.
+ */
+export function msToDateInput(ms: number | null, tz: string): string {
+  if (ms === null) return "";
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date(ms));
 }

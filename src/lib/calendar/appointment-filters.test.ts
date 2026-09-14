@@ -7,11 +7,14 @@ import {
   canRescheduleAppointment,
   dateInputToFromMs,
   dateInputToToMs,
+  eventIsPast,
   formatAppointmentTime,
   hasActiveFilters,
   matchesFilters,
   matchesSearch,
   matchesTab,
+  msToDateInput,
+  offeredStatusActions,
   resolveAppointmentsTimezone,
   sortAppointments,
   EMPTY_APPOINTMENT_FILTERS,
@@ -236,6 +239,61 @@ describe("canRescheduleAppointment", () => {
   });
 });
 
+describe("offeredStatusActions", () => {
+  it("offers nothing for a manual event, regardless of status/time", () => {
+    expect(
+      offeredStatusActions(event({ source: "manual", status: "scheduled" }), NOW),
+    ).toEqual([]);
+  });
+
+  it("a FUTURE scheduled booking-page event offers only cancelled", () => {
+    const future = event({
+      source: "booking_page",
+      status: "scheduled",
+      startAt: ts("2030-06-20T00:00:00Z") as never, // after NOW
+    });
+    expect(offeredStatusActions(future, NOW)).toEqual(["cancelled"]);
+  });
+
+  it("a PAST scheduled booking-page event offers completed, no_show, and cancelled", () => {
+    const past = event({
+      source: "booking_page",
+      status: "scheduled",
+      startAt: ts("2020-01-01T00:00:00Z") as never,
+    });
+    expect(offeredStatusActions(past, NOW).sort()).toEqual(
+      ["cancelled", "completed", "no_show"].sort(),
+    );
+  });
+
+  it("a cancelled event offers nothing — always final", () => {
+    expect(
+      offeredStatusActions(
+        event({ source: "booking_page", status: "cancelled", startAt: ts("2020-01-01T00:00:00Z") as never }),
+        NOW,
+      ),
+    ).toEqual([]);
+  });
+
+  it("a past completed event offers the no_show correction but not cancel", () => {
+    expect(
+      offeredStatusActions(
+        event({ source: "booking_page", status: "completed", startAt: ts("2020-01-01T00:00:00Z") as never }),
+        NOW,
+      ),
+    ).toEqual(["no_show"]);
+  });
+
+  it("awaiting_payment offers only cancel, even once past", () => {
+    expect(
+      offeredStatusActions(
+        event({ source: "booking_page", status: "awaiting_payment", startAt: ts("2020-01-01T00:00:00Z") as never }),
+        NOW,
+      ),
+    ).toEqual(["cancelled"]);
+  });
+});
+
 describe("matchesSearch", () => {
   it("empty query matches everything", () => {
     expect(matchesSearch(event({ title: "Consult" }), "Jane Doe", "")).toBe(true);
@@ -401,5 +459,55 @@ describe("date range parsing/rendering — same timezone both ways", () => {
     const naive = new Date(fromMs).toISOString();
     expect(naive.startsWith("2026-09-13")).toBe(false);
     expect(formatAppointmentTime(new Date(fromMs), "Africa/Johannesburg")).toContain("13");
+  });
+
+  it.each(["Africa/Johannesburg", "America/New_York", "UTC"])(
+    "%s: dateInputToToMs's upper bound is exactly 1ms before the NEXT day's start",
+    (tz) => {
+      const toMs = dateInputToToMs("2026-09-13", tz)!;
+      const nextDayFromMs = dateInputToFromMs("2026-09-14", tz)!;
+      expect(toMs).toBe(nextDayFromMs - 1);
+    },
+  );
+
+  it.each(["Africa/Johannesburg", "America/New_York", "UTC"])(
+    "%s: msToDateInput round-trips with dateInputToFromMs",
+    (tz) => {
+      const fromMs = dateInputToFromMs("2026-09-13", tz)!;
+      expect(msToDateInput(fromMs, tz)).toBe("2026-09-13");
+    },
+  );
+
+  it("msToDateInput returns an empty string for null", () => {
+    expect(msToDateInput(null, "UTC")).toBe("");
+  });
+
+  it("msToDateInput must honor the given tz, not toISOString (mutation guard)", () => {
+    // Same drift this file already guards formatAppointmentTime against:
+    // a naive toISOString().slice(0,10) reads the UTC calendar day, which
+    // is "12" for this Johannesburg (+2) instant, not "13".
+    const fromMs = dateInputToFromMs("2026-09-13", "Africa/Johannesburg")!;
+    expect(new Date(fromMs).toISOString().slice(0, 10)).toBe("2026-09-12");
+    expect(msToDateInput(fromMs, "Africa/Johannesburg")).toBe("2026-09-13");
+  });
+});
+
+describe("eventIsPast", () => {
+  function event(startAt: CalendarEvent["startAt"]): Pick<CalendarEvent, "startAt"> {
+    return { startAt };
+  }
+
+  it("true for a startAt before now, false for after", () => {
+    expect(event(ts("2030-06-15T11:00:00Z") as never).startAt).toBeTruthy();
+    expect(eventIsPast(event(ts("2030-06-15T11:00:00Z") as never), NOW)).toBe(true);
+    expect(eventIsPast(event(ts("2030-06-15T13:00:00Z") as never), NOW)).toBe(false);
+  });
+
+  it("false at the exact boundary (not strictly before now)", () => {
+    expect(eventIsPast(event(ts(new Date(NOW).toISOString()) as never), NOW)).toBe(false);
+  });
+
+  it("false when there's no readable start time", () => {
+    expect(eventIsPast(event(null), NOW)).toBe(false);
   });
 });
