@@ -61,6 +61,52 @@ ships.
 When `QCONTACT_DEAL_PIPELINE_ID` is unset (the default), none of the above
 runs — behaviour is unchanged from before deals existed.
 
+## Deal stage sync
+
+When `QCONTACT_DEAL_PIPELINE_ID` **and** `QCONTACT_SYNC_STAGES` (any value
+other than unset/`"0"`) are both set, every run also moves each case's deal
+to the pipeline stage matching its current QContact status — for every case
+in the view, not just newly-seen ones, since a case keeps moving through
+statuses long after its deal was created.
+
+This does **not** re-derive the contact or deal from the case. The state
+file's `deals` map (case id → deal id, recorded when `ensureDeal` creates or
+finds the deal — see Deals above) is the only source of a case's deal id; a
+case with no entry is left alone and counted (`stageUnmapped`), never looked
+up another way. Re-deriving it via the contact-upsert flow used for creation
+was the first design and was rejected: it would re-fire the enrolment-gated
+`POST /api/v1/contacts/upsert` for ~670 already-seen cases every 15 minutes
+(well past the 50/hour enrolment fuse on the API key) and re-write QContact's
+copy of the contact's name/address over any manual edit made in the CRM.
+
+For a mapped case, the only call is `PATCH /api/v1/deals/:id` with the
+mapped stage — no lookup first. "Only when the stage actually differs" is
+decided locally against `dealStages` (case id → the stage last set, also in
+the state file), not by fetching the deal, so this never does a `GET`. A
+404 on the PATCH means the deal is gone: both map entries are dropped and it
+counts under `skipped.deal_not_found`, without failing the run.
+
+Status → stage mapping (see `stage-sync.ts`): New→`new`, Assigned→`assigned`,
+Upcoming→`upcoming`, Pending Customer→`pending_customer`,
+In Progress→`in_progress`, Escalated→`escalated`,
+PON Not Live→`pon_not_live`, Solved→`solved`,
+Solved - No Response→`solved_no_response`,
+Unsolved - No Response→`unsolved_no_response`,
+Closed - No response→`closed_no_response` (QContact renders this last one
+with an en dash on some rows and a hyphen on others — both are accepted).
+An unrecognised status is left alone, never guessed, and counted under
+`skipped.unknown_status`.
+
+A failed PATCH counts in `summary.failed` (case id + HTTP status, no phone
+numbers in logs) and never stops the run or changes any case's seen state —
+stage syncing never marks a case seen or unseen, that's still decided purely
+by the upsert + deal-create step above.
+
+`QCONTACT_SYNC_STAGES` unset or `"0"` (the default) makes this file dead
+code: zero extra reads or writes, byte-identical behaviour to before it
+existed. Deals created before this feature existed have no `deals` map
+entry and won't be stage-synced until backfilled separately.
+
 ## Forward-only, by design
 
 State is a JSON file of every case id already handled
@@ -85,8 +131,9 @@ Env: `QCONTACT_IMPORT_EMAIL`, `QCONTACT_IMPORT_PASSWORD` (the dedicated
 `LEADSTACK_API_KEY`; optional `QCONTACT_BASE_URL`, `QCONTACT_IMPORT_VIEW`,
 `QCONTACT_IMPORT_STATE`, `QCONTACT_DEAL_PIPELINE_ID`, `QCONTACT_DEAL_STAGE`
 (default `new_request`), `QCONTACT_DEAL_OWNER_UID` (currently a no-op — see
-Deals below). QContact tokens expire after ~12 h; the client re-signs-in on
-a 401.
+Deals below), `QCONTACT_SYNC_STAGES` (default off — see Deal stage sync
+above). QContact tokens expire after ~12 h; the client re-signs-in on a
+401.
 
 The code is erasable-syntax TypeScript (no parameter properties, enums or
 namespaces) because Node strips types rather than compiling them. `tsc` and
