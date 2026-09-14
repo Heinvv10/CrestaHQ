@@ -35,7 +35,7 @@ const EVIDENCE = "docs/parity/evidence/sp5/d2-reminders";
 const STAMP = Date.now();
 const restore = (v: unknown) => (v === undefined ? FieldValue.delete() : v);
 
-const contacts: Record<"off" | "on" | "optout" | "exhaust", string> = { off: "", on: "", optout: "", exhaust: "" };
+const contacts: Record<"off" | "on" | "optout" | "exhaust" | "twice", string> = { off: "", on: "", optout: "", exhaust: "", twice: "" };
 let restoreConfigs: { twilioConfig: unknown; googleReviewConfig: unknown } | null = null;
 
 const log = () => primaryRef().collection("reviewRequests");
@@ -143,6 +143,8 @@ test("reminders ON: tracked link, a reminder, no double send on redelivery, the 
   // --- Turn reminders on the way an admin does: Reputation → Settings.
   await page.goto(`/sa/${primaryId()}/reputation/settings`);
   await expect(page.getByTestId("rep-reminder-card")).toBeVisible({ timeout: 30_000 });
+  // At most every 7 days (the QStash plan's max delay is unconfirmed).
+  await expect(page.getByTestId("rep-reminder-every").locator("option")).toHaveText(["Don't repeat", "1 day", "2 days", "3 days", "4 days", "5 days", "6 days", "7 days"]);
   await page.getByTestId("rep-reminder-every").selectOption("1");
   await page.getByTestId("rep-reminder-retries").selectOption("2");
   await page.getByTestId("rep-reminder-save").click();
@@ -206,6 +208,18 @@ test("an opted-out contact's reminder stops without sending", async ({ page, req
   await qstashDelivered(requestId);
   expect(await reminderPost(request, requestId, 1)).toEqual({ outcome: "stopped", reason: "opted_out" });
   expect(await smsBodies(contacts.optout)).toHaveLength(1);
+});
+
+test("one chain per contact: a second request stops the first one's reminders (superseded)", async ({ page, request }) => {
+  await page.goto(`/sa/${primaryId()}/dashboard`);
+  await pageFetch(page, "/api/comms/review-request/send", "POST", JSON.stringify({ contactId: contacts.twice }));
+  const firstId = (await rowFor(contacts.twice)).id;
+  await qstashDelivered(firstId);
+  await pageFetch(page, "/api/comms/review-request/send", "POST", JSON.stringify({ contactId: contacts.twice }));
+  expect((await log().doc(firstId).get()).data()?.reminder).toMatchObject({ state: "stopped", stopReason: "superseded" });
+  await qstashDelivered(firstId);
+  expect(await reminderPost(request, firstId, 1)).toEqual({ outcome: "stopped", reason: "superseded" });
+  expect(await smsBodies(contacts.twice)).toHaveLength(2);
 });
 
 test("the last reminder ends the chain: retries exhausted, nothing more is sent", async ({ page, request }) => {
