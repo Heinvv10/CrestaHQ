@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { callAi } from "@/lib/comms/ai/openrouter";
+import { unsuppliedContact } from "./contact-guard";
 import type { DraftFailure, DraftInput, DraftResult } from "./types";
 
 /**
@@ -10,7 +11,7 @@ import type { DraftFailure, DraftInput, DraftResult } from "./types";
  * the model only as JSON string values, and the system prompt says so. The
  * answer is checked, not trusted: plain text, trimmed, cut to the reply
  * route's 4000-character limit, and REFUSED (nothing is shown) when it
- * carries a phone number, email or link the guidelines did not supply. A
+ * carries any contact the guidelines did not supply (contact-guard.ts). A
  * failure is one kind, for the log only. Never logs review or draft text.
  */
 
@@ -26,29 +27,6 @@ const SYSTEM = [
   "Never mention that you are an AI or that the reply was generated.",
   "Answer with the reply only, as plain text: no quotes, no markdown, no preamble.",
 ].join("\n");
-
-const URL_RE = /\b(?:https?:\/\/|www\.)\S+/gi;
-/**
- * A bare domain ("fixturefibre.co.za", "deals.com"): dot-separated labels
- * ending in a common TLD. TLD-based on purpose — "e.g.", "1.5" or a sentence
- * that ends without a space after its full stop are not domains.
- */
-const DOMAIN_RE =
-  /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|io|app|info|biz|me|co|za|africa|dev|online|site|store|shop|link|ly|us|uk|xyz|example)\b/gi;
-const EMAIL_RE = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/gi;
-const PHONE_RE = /\+?\d[\d\s().-]{6,}\d/g;
-const digits = (s: string) => s.replace(/\D/g, "");
-
-/** A phone number, email or link in `text` that `guidelines` did not supply. */
-function unsuppliedContact(text: string, guidelines: string | null): boolean {
-  const g = guidelines ?? "";
-  const gl = g.toLowerCase();
-  const allowedPhones = new Set((g.match(PHONE_RE) ?? []).map(digits));
-  if ((text.match(URL_RE) ?? []).some((u) => !gl.includes(u.toLowerCase().replace(/[.,;:!?)]+$/, "")))) return true;
-  if ((text.match(EMAIL_RE) ?? []).some((e) => !gl.includes(e.toLowerCase().replace(/[.,;:!?)]+$/, "")))) return true;
-  if ((text.match(DOMAIN_RE) ?? []).some((d) => !gl.includes(d.toLowerCase()))) return true;
-  return (text.match(PHONE_RE) ?? []).some((p) => digits(p).length >= 7 && !allowedPhones.has(digits(p)));
-}
 
 function clean(raw: string): string {
   let t = raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/, "").trim();
@@ -95,6 +73,7 @@ export async function draftReplyWith(model: string, input: DraftInput, call: Bou
   }
   const text = clean(raw);
   if (!text) return fail("empty");
-  if (unsuppliedContact(text, input.guidelines)) return fail("unsupplied_contact");
+  const contact = unsuppliedContact(text, input.guidelines);
+  if (contact) return fail("unsupplied_contact", contact);
   return { text };
 }
