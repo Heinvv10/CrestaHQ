@@ -301,8 +301,16 @@ Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 404
 `not_found` (reply: not an active cached review of this sub-account's listing),
 409 `not_connected` / `reconnect_required` / `idempotency_key_reused` /
 `in_progress` / `changed` (+ `currentUrl`) / `no_proposal`, 400 `invalid_body` /
-`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), 502 `<provider kind>`
-(`access_not_approved` carries the fixed "not approved" sentence as `error`; every other kind "Google request failed"). No response carries a token (every route test scans the
+`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), **424** `<provider kind>`
+(`access_not_approved` carries the fixed "not approved" sentence as `error`; every other kind "Google request failed").
+A provider failure is **424, never 502** (`gbpErrorResponse`): crm.crestahq.com
+is served through Cloudflare, which "returns a Cloudflare-branded HTTP 502 or
+504 error when your origin web server responds with a standard HTTP 502 … or
+504" — the HTML page replaced the `{error, code}` body, so #1000's picker read
+"Couldn't load listings from Google (error)" while the server had logged
+`kind=rate_limited status=429` (SP5 f). `components/gbp/gbp-refusal-through-proxy.test.ts`
+runs the real route response through that edge behaviour into the real
+picker and Insights tab. No response carries a token (every route test scans the
 body for token markers).
 
 ## Data written
@@ -965,7 +973,7 @@ for a retry of the same text and makes a new one when the text changes.
   reply in normally. Reporting a 500 here would be dishonest: the reply is
   already public.
 - **Failure** — the attempt `failed` with its `errorKind`, the cached review
-  untouched, the lock released; 502 `{code: <kind>}`, or 409
+  untouched, the lock released; 424 `{code: <kind>}`, or 409
   `reconnect_required` (a revoked grant is flagged as everywhere else). The
   reply text is never logged. If *recording* the failure itself throws, the
   route still returns Google's real error (logs the failure-to-record by kind
@@ -973,7 +981,7 @@ for a retry of the same text and makes a new one when the text changes.
 - **Limit** — Google's API reference gives the reply `comment` a maximum of
   4096 **bytes**; the route counts 4000 **characters** (the decided rule), so
   a long reply in multi-byte characters can still be refused by Google — an
-  honest 502, nothing cached. (Byte limit: from the v4 reference, not
+  honest 424, nothing cached. (Byte limit: from the v4 reference, not
   re-verified against the live API.)
 
 UI: each review shows **Reply** (or **Edit reply**) to admins while the
@@ -1052,7 +1060,7 @@ The conversation composer's "Ask for review" and the contact header read
 | No listing selected | `gbp-state-pick` | sync `skipped no_listing`; feed `unavailable`, `listing: null` | panel test; `sync/run.test.ts`; feed `route.test.ts` |
 | Refresh token revoked | `gbp-state-reconnect` + `gbp-banner-reconnect` over cached reviews; no Reply | 409 `reconnect_required`; run `reconnect_required`, cache kept | `lib/gbp/tokens.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts`; E2E 6 |
 | Insufficient scope | reconnect with the scope wording | callback `?google=insufficient_scope`; flagged reconnect | `tokens.test.ts`; `callback/route.test.ts`; panel test |
-| Google 401 / 403 / 404 / 429 / 5xx | run result inline; reply error inline | typed `GbpProviderError`; 401 → refresh + one retry; 429 / 5xx retried (3 attempts) in sync, never in reply; 502 `<kind>` | `provider/google.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts` |
+| Google 401 / 403 / 404 / 429 / 5xx | run result inline; reply error inline | typed `GbpProviderError`; 401 → refresh + one retry; 429 / 5xx retried (3 attempts) in sync, never in reply; 424 `<kind>` | `provider/google.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts` |
 | Pagination fails halfway | `gbp-banner-partial` | run `partial`, cursor kept, next run resumes | `sync/run-failures.test.ts` |
 | Location gone / access removed | listing cleared on reconnect re-verify | `listing_cleared not_accessible_after_reconnect`; `not_found` run | `callback/provider.test.ts`; `listing-events.test.ts` |
 | Cached data stale | `gbp-banner-stale`, `gbp-health-stale` | health `stale`; feed `stale` / later `unavailable` | `sync/health.test.ts`; `reviews-section.test.ts`; `route.freshness.test.ts`; E2E 6 feed half |
@@ -1062,7 +1070,7 @@ The conversation composer's "Ask for review" and the contact header read
 | Widget disabled / revoked | card `gbp-widget-state-disabled` / `-none` | feed 404, byte-identical | `…/gbp/widget/route.test.ts`; feed `route.test.ts` |
 | Disallowed origin | the site keeps its static fallback | 403, no ACAO | `route.http.test.ts`; E2E 4 |
 | QStash not configured (local) | "Automatic sync is not scheduled on this deployment — use Sync now" | no schedule; the cron 401s unsigned calls | `reviews-section.test.ts`; `app/api/cron/gbp-sync/route.test.ts` |
-| A reply Google refuses | `gbp-reply-error`, text kept | 502 `<kind>`, attempt `failed`, review untouched | `…/reply/route.idempotency.test.ts`; `reply-composer.test.ts`; E2E 5 |
+| A reply Google refuses | `gbp-reply-error`, text kept | 424 `<kind>`, attempt `failed`, review untouched | `…/reply/route.idempotency.test.ts`; `reply-composer.test.ts`; E2E 5 |
 | Review link changed under the admin | `gbp-reviewurl-error` with the current link | 409 `changed`, nothing written | `…/adopt-listing-url/route.test.ts`; `review-url-card.test.ts`; E2E 7 |
 
 ## Security and tenancy

@@ -95,7 +95,7 @@ describe("the per-review in-flight lock", () => {
 
   it("is released on failure", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind: "transient" }));
-    expect((await post("First text.", KEY)).status).toBe(502);
+    expect((await post("First text.", KEY)).status).toBe(424);
     expect(mem.read(reviewPath("fake-r6"))?.replyInFlight).toBeNull();
     expect((await post("Second text.", K2)).status).toBe(200);
   });
@@ -113,7 +113,7 @@ describe("the per-review in-flight lock", () => {
 
   it("DELETE releases its lock on failure, and a POST on the same review may then proceed", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "deleteReply", kind: "transient" }));
-    expect((await del()).status).toBe(502);
+    expect((await del()).status).toBe(424);
     expect(mem.read(reviewPath("fake-r7"))?.replyInFlight).toBeNull();
     expect((await post("A reply on r7.", K2, R7)).status).toBe(200);
   });
@@ -188,6 +188,6 @@ describe("partial failure", () => {
   it("recording a failure that itself fails still answers with the provider's error", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind: "transient" }));
     failTransaction(2);
-    expect(await post("First text.", KEY)).toMatchObject({ status: 502, body: { code: "transient" } });
+    expect(await post("First text.", KEY)).toMatchObject({ status: 424, body: { code: "transient" } });
   });
 });

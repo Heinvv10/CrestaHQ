@@ -21,7 +21,7 @@ import { parseInsightsRange } from "@/lib/reputation/insights";
  *
  * Refusals, `{error, code}`: 400 invalid_filter (range) · 400 unknown_location
  * / unverifiable_truncated · 403 location_admin_only · 403 gate_off · 503
- * not_configured · 409 not_connected / reconnect_required / no_listing · 502
+ * not_configured · 409 not_connected / reconnect_required / no_listing · 424
  * <provider kind> (access_not_approved: Google's quota-0 refusal, worded).
  */
 

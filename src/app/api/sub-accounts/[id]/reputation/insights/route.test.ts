@@ -173,10 +173,10 @@ describe("refusals", () => {
     expect(res.body.code).toBe(code);
   });
 
-  it("Google's quota-0 refusal → 502 access_not_approved with the fixed sentence", async () => {
+  it("Google's quota-0 refusal → 424 access_not_approved with the fixed sentence", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "access_not_approved" }));
     const { status, body } = await get();
-    expect(status).toBe(502);
+    expect(status).toBe(424);
     expect(body).toEqual({ code: "access_not_approved", error: ACCESS_NOT_APPROVED_TEXT });
   });
 });
@@ -187,23 +187,23 @@ describe("the in-memory memo (10 min per sub-account + connection + location + r
     setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "transient" }));
     expect((await get()).status).toBe(200);
     vi.setSystemTime(new Date(NOW.getTime() + 10 * 60_000 + 1));
-    expect((await get()).status).toBe(502);
+    expect((await get()).status).toBe(424);
   });
 
   it("is keyed by location and range, and by the connection — a reconnect asks again", async () => {
     await get();
     setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "transient" }));
-    expect((await get("?range=7d")).status).toBe(502);
+    expect((await get("?range=7d")).status).toBe(424);
     await get();
     setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "transient" }));
     const sub = mem.read(`subAccounts/${SA}`)!;
     mem.seed(`subAccounts/${SA}`, { ...sub, googleConnectionMeta: { ...(sub.googleConnectionMeta as object), connectedAt: new Date(NOW.getTime() + 1) } });
-    expect((await get()).status).toBe(502);
+    expect((await get()).status).toBe(424);
   });
 
   it("never memoises a refusal", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "transient" }));
-    expect((await get()).status).toBe(502);
+    expect((await get()).status).toBe(424);
     expect((await get()).status).toBe(200);
   });
 });

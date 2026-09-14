@@ -128,7 +128,7 @@ describe("failure", () => {
     setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind: "transient" }));
     const before = contentOf("fake-r6");
     const r = await post({ comment: COMMENT, idempotencyKey: KEY });
-    expect(r).toMatchObject({ status: 502, body: { code: "transient" } });
+    expect(r).toMatchObject({ status: 424, body: { code: "transient" } });
     expect(contentOf("fake-r6")).toEqual(before);
     expect(attempts()[0]).toMatchObject({ status: "failed", errorKind: "transient" });
     expect(events(SA, "reply_posted")).toEqual([]);
@@ -188,7 +188,7 @@ describe("DELETE", () => {
     // DELETE takes and releases the same per-review lock as POST, so a clean
     // review picks up an explicit `replyInFlight: null` — nothing else moves.
     const before = { ...mem.read(reviewPath("fake-r7")), replyInFlight: null };
-    expect(await del()).toMatchObject({ status: 502, body: { code: "transient" } });
+    expect(await del()).toMatchObject({ status: 424, body: { code: "transient" } });
     expect(mem.read(reviewPath("fake-r7"))).toEqual(before);
   });
 });

@@ -48,12 +48,12 @@ describe("the sync", () => {
 });
 
 describe("the listings route (the picker's data)", () => {
-  it("answers 502 access_not_approved with the fixed sentence", async () => {
+  it("answers 424 access_not_approved with the fixed sentence", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "listAccounts", kind: "access_not_approved" }));
     const res = await LOCATIONS(asUser(`http://127.0.0.1:3100/api/sub-accounts/${SA}/google/locations`, "uid_admin"), {
       params: Promise.resolve({ id: SA }),
     });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(424);
     expect(await res.json()).toEqual({ code: "access_not_approved", error: ACCESS_NOT_APPROVED_TEXT });
     expect(ACCESS_NOT_APPROVED_TEXT).toBe("Google hasn't approved Business Profile API access for this project yet.");
   });
