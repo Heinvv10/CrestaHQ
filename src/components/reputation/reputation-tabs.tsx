@@ -5,11 +5,12 @@ import { usePathname } from "next/navigation";
 import { useSubAccount } from "@/context/sub-account-context";
 import { cn } from "@/lib/utils";
 
-/** The Reputation area's tabs, rendered once by the layout. Later SP5 PRs add Requests, Insights and Settings. */
+/** The Reputation area's tabs, rendered once by the layout. Later SP5 PRs add Requests and Settings. */
 const TABS = [
   { slug: "", label: "Overview" },
   { slug: "reviews", label: "Reviews" },
   { slug: "widgets", label: "Widgets" },
+  { slug: "insights", label: "Insights" },
 ] as const;
 
 export function ReputationTabs() {
