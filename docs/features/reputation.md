@@ -146,8 +146,9 @@ failed on its current content.
   re-reads the overview every 3 s (up to a minute) until the lease is free and
   a new `lastRun` appears, then says what it did — or why it stopped (Reviews
   AI or Google switched off, no listing, the listing changed, "The AI provider
-  failed — try again later", "Daily AI limit reached — continues tomorrow",
-  the time budget, an error) — or, past the minute, "The
+  failed — try again later", an unusable AI answer, a label that could not be
+  saved (`save_failed`), "Daily AI limit reached — continues tomorrow", the
+  time budget, an error) — or, past the minute, "The
   result isn't in yet — reload later". Refusals carry their own message:
   Reviews AI off / Google off (403 `gate_off`), no listing (409
   `no_listing`), `busy`, `too_soon`.
@@ -184,25 +185,35 @@ failed on its current content.
   (`sentimentAttempt.failures + 1`, `lastAt` now), immediately before the
   call. After it, a label is written (clearing the strike) if the review still
   has the classified content — or was tombstoned during the call (a 3-value
-  label, no content; readers hide tombstones). **A bad answer from the model**
-  (unparseable, invalid label, unknown / duplicated / missing id) **is a
-  strike**; **a failed call** (timeout, network, 4xx, 5xx, a revoked key or
-  exhausted credits — logged with its HTTP status, never the body) **is not**:
-  its `lastAt` still spaces the retry by an hour, but it never counts toward
-  the three, so an outage or a revoked key never permanently gives up a
-  review. **Either way the run stops on its first failure** (reason
-  `ai_error`), so an outage costs one call per run (and never more than the
-  daily cap), and the Overview shows "The AI provider failed on the last run
-  — check the agency's OpenRouter key/credits" until a run gets through. A
-  label that comes back but cannot be written stops the run as `save_failed`
-  and keeps the strike. A provider that cannot be obtained stops the run as
-  `ai_error`. The whole call — headers and body — is bounded at 60 s, well
-  under the 5-minute lease. Only one call is ever in flight per sub-account,
-  so switching a gate off lets at most that one call finish.
+  label, no content; readers hide tombstones). **The cause decides the
+  strike:** a **transient** failure — no response at all (network, DNS,
+  connect), our own timeout or abort, a missing key, HTTP 401 / 402 / 408 /
+  429 / 5xx (key, credits, rate, provider trouble) — is **not a strike**: its
+  `lastAt` still spaces the retry by an hour, but it never counts toward the
+  three, so an outage or a revoked key never gives up a review; the run stops
+  as `ai_error` and the Overview shows "The AI provider failed on the last
+  run — check the agency's OpenRouter key/credits" until a run gets through.
+  Anything about this review's request — another 4xx (400, 403 moderation,
+  422), a 200 with no content or an error body, or an unusable answer
+  (unparseable, invalid label, unknown / duplicated / missing id) — **is a
+  strike**, and the run stops as `ai_bad_answer` ("The AI gave an unusable
+  answer for a review — it will be retried, at most 3 times"). Failed calls
+  are logged with their HTTP status, never the body. A label that comes back
+  but cannot be written stops the run as `save_failed` and keeps the strike;
+  a provider that cannot be obtained stops it as `ai_error`. If un-counting a
+  transient failure's strike itself fails, the strike stays — conservative.
+  **Queue order:** fresh reviews first (newest first), then reviews already
+  tried, longest-waiting first — so one troublesome review can never block
+  the backlog; it costs at most one call an hour until it is given up. The
+  whole call — headers and body — gets 60 s; at the deadline the request is
+  **aborted** (callAi's optional caller signal, armed through the body read;
+  the provider may still bill an aborted call), well under the 5-minute
+  lease. Only one call is ever in flight per sub-account, so switching a gate
+  off lets at most that one call finish.
 - **Failures:** a review is tried again at most **once an hour** (checked
-  against the clock at that moment) and — for bad answers — **at most three
-  times** per content, then counted as **"couldn't be analysed"**, apart
-  from "not analysed yet". An edit starts a new count; a success clears it.
+  against the clock at that moment) and — for strikes (rejected or unusable
+  answers) — **at most three times** per content, then counted as
+  **"couldn't be analysed"**, apart from "not analysed yet". An edit starts a new count; a success clears it.
 - **Cap:** at most 100 reviews per run, newest first; the rest wait for the
   next run (a capped run is not complete, so the next sync continues).
 - **Clocks:** lease expiry compares instance clocks; production runs one app
