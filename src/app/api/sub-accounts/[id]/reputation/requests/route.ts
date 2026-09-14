@@ -1,0 +1,123 @@
+import "server-only";
+
+import { NextResponse } from "next/server";
+import type { DocumentSnapshot } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { toMillis } from "@/lib/gbp/sync/types";
+import { requestKeys } from "@/lib/reputation/overview";
+import { REVIEW_REQUEST_CHANNELS, REVIEW_REQUEST_SOURCES, REVIEW_REQUEST_STATUSES } from "@/lib/reviews/request-log";
+
+/**
+ * GET /api/sub-accounts/[id]/reputation/requests?status=&channel=&source=&cursor=
+ * — the Requests tab (SP5 d1): the server-only reviewRequests log, newest
+ * first, 50 matching rows per page. Any active member. One single-field query
+ * (`orderBy sentAt desc`, cursor = the last row's id) scanned in batches, with
+ * the filters applied as it scans, so no composite index. Contact names are
+ * joined at read time from THIS sub-account's contacts. Never a message body,
+ * phone number or email address.
+ */
+
+const PAGE = 50;
+const BATCH = 100;
+/** Rows examined per request; a sparse filter returns a partial page and a cursor to continue. */
+const SCAN_CAP = 1000;
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export const dynamic = "force-dynamic";
+
+const invalid = (field: string) =>
+  NextResponse.json({ error: `Invalid filter: ${field}`, code: "invalid_filter", field }, { status: 400 });
+
+export async function GET(request: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  const access = await requireSubAccountMember(request, id);
+  if (access instanceof NextResponse) return access;
+
+  const params = new URL(request.url).searchParams;
+  const filters: Record<"status" | "channel" | "source", string | null> = {
+    status: params.get("status") || null,
+    channel: params.get("channel") || null,
+    source: params.get("source") || null,
+  };
+  const allowed = { status: REVIEW_REQUEST_STATUSES, channel: REVIEW_REQUEST_CHANNELS, source: REVIEW_REQUEST_SOURCES };
+  for (const f of ["status", "channel", "source"] as const) {
+    const v = filters[f];
+    if (v !== null && !(allowed[f] as readonly string[]).includes(v)) return invalid(f);
+  }
+
+  const db = getAdminDb();
+  const log = db.collection(`subAccounts/${id}/reviewRequests`);
+  const cursorId = params.get("cursor");
+  let cursor: DocumentSnapshot | null = null;
+  if (cursorId !== null) {
+    if (!ID.test(cursorId)) return invalid("cursor");
+    const snap = await log.doc(cursorId).get();
+    if (!snap.exists) return invalid("cursor");
+    cursor = snap as DocumentSnapshot;
+  }
+
+  // One extra match tells whether another page exists.
+  const matches: DocumentSnapshot[] = [];
+  let scanned = 0;
+  let lastScanned: DocumentSnapshot | null = cursor;
+  let exhausted = false;
+  while (matches.length <= PAGE && scanned < SCAN_CAP) {
+    let q = log.orderBy("sentAt", "desc");
+    if (lastScanned) q = q.startAfter(lastScanned);
+    const batch = await q.limit(BATCH).get();
+    for (const d of batch.docs) {
+      scanned++;
+      lastScanned = d as DocumentSnapshot;
+      const data = d.data();
+      const keys = requestKeys(data);
+      const status = data.status === "failed" ? "failed" : "sent";
+      if (
+        (!filters.status || status === filters.status) &&
+        (!filters.channel || keys.channel === filters.channel) &&
+        (!filters.source || keys.source === filters.source)
+      ) {
+        matches.push(d as DocumentSnapshot);
+        if (matches.length > PAGE) break;
+      }
+    }
+    if (batch.docs.length < BATCH) {
+      exhausted = matches.length <= PAGE;
+      break;
+    }
+  }
+
+  const page = matches.slice(0, PAGE);
+  const nextCursor =
+    matches.length > PAGE ? page[PAGE - 1].id : !exhausted && lastScanned ? lastScanned.id : null;
+
+  const contactIds = [...new Set(page.map((d) => d.data()?.contactId).filter((c): c is string => typeof c === "string" && ID.test(c)))];
+  const names = new Map<string, string | null>();
+  await Promise.all(
+    contactIds.map(async (cid) => {
+      const c = (await db.doc(`contacts/${cid}`).get()).data();
+      // Only this sub-account's contacts: a stale id never reveals another tenant's name.
+      names.set(cid, c && c.subAccountId === id && typeof c.name === "string" ? c.name : null);
+    }),
+  );
+
+  return NextResponse.json({
+    requests: page.map((d) => {
+      const data = d.data() ?? {};
+      const { channel, source } = requestKeys(data);
+      const sentAt = toMillis(data.sentAt);
+      return {
+        id: d.id,
+        contactId: typeof data.contactId === "string" ? data.contactId : null,
+        contactName: names.get(data.contactId) ?? null,
+        channel,
+        source,
+        trigger: typeof data.trigger === "string" ? data.trigger : null,
+        status: data.status === "failed" ? "failed" : "sent",
+        failureKind: typeof data.failureKind === "string" ? data.failureKind : null,
+        sentAt: sentAt === null ? null : new Date(sentAt).toISOString(),
+      };
+    }),
+    nextCursor,
+  });
+}
