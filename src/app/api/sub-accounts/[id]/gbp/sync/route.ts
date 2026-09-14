@@ -25,6 +25,8 @@ import type { SubAccountDoc } from "@/types";
  */
 
 export const dynamic = "force-dynamic";
+/** Sentiment runs after the response inside this invocation (budget 240 s). */
+export const maxDuration = 300;
 
 export async function POST(
   request: Request,

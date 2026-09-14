@@ -62,7 +62,7 @@ describe("classifyPendingSentiment", () => {
     const r7 = byReviewId()["fake-r7"];
     expect(labelOf("fake-r7")?.basisHash).toBe(sentimentBasis(r7.starRating as number, r7.comment as string));
     expect(billed()).not.toContain(byReviewId()["fake-r3"].id);
-    expect(lease()).toMatchObject({ runId: null, pending: 0, lastRun: { classified: 7, skipped: 0, failed: 0 } });
+    expect(lease()).toMatchObject({ runId: null, lastCompleteAt: expect.any(Number), lastRun: { classified: 7, skipped: 0, failed: 0, reason: null } });
   });
 
   it("never re-bills an unchanged review", async () => {
@@ -79,24 +79,21 @@ describe("classifyPendingSentiment", () => {
     expect([a, b].find((o) => o.status === "skipped")?.skipReason).toBe("busy");
   });
 
-  it("caps a run, carries the rest to the next, and says so in the pending hint", async () => {
+  it("caps a run and carries the rest to the next", async () => {
     expect(await classifyPendingSentiment(SA, { max: 3 })).toMatchObject({ classified: 3, skipped: 4 });
-    expect(lease().pending).toBe(4);
     expect(await classifyPendingSentiment(SA, { max: 3 })).toMatchObject({ classified: 3, skipped: 1 });
     await classifyPendingSentiment(SA, { max: 3 });
     expect(billed()).toHaveLength(6);
-    expect(lease().pending).toBe(0);
   });
 
   it.each([
     ["the Reviews AI gate is off", { reviewsAi: false }, "gate_off"],
     ["the Google gate is off", { google: false }, "google_gate_off"],
-  ])("does nothing when %s, and leaves the pending hint unknown", async (_l, on, reason) => {
-    mem.seed(sentimentLeasePath(SA), { pending: 0 });
+  ])("does nothing when %s — no lease taken, nothing written", async (_l, on, reason) => {
     gates(on);
     expect(await classifyPendingSentiment(SA)).toMatchObject({ status: "skipped", skipReason: reason, classified: 0 });
     expect(billed()).toEqual([]);
-    expect(lease().pending).toBeNull();
+    expect(mem.read(sentimentLeasePath(SA))).toBeUndefined();
   });
 
   it("does nothing without a listing", async () => {
@@ -134,12 +131,30 @@ describe("after a sync (never inside it)", () => {
     expect(reviews().some((r) => r.sentiment)).toBe(false);
   });
 
-  it("a sync that changed nothing classifies only when the last run left work (or never ran)", async () => {
-    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // hint unknown → runs
+  it("a sync that changed nothing: classifies only when no run completed in the last 24 h", async () => {
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // never completed → runs
     expect(billed()).toHaveLength(6);
-    const before = JSON.stringify(lease());
-    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // pending 0 → one read, nothing else
-    expect(JSON.stringify(lease())).toBe(before);
+    const stamp = lease().lastCompleteAt as number;
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // fresh → nothing
+    expect(lease().lastCompleteAt).toBe(stamp);
+    mem.seed(sentimentLeasePath(SA), { ...lease(), lastCompleteAt: Date.now() - 25 * 3600_000 });
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // stale → runs
+    expect(lease().lastCompleteAt).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it.each([
+    ["the Reviews AI gate is off", () => gates({ reviewsAi: false })],
+    ["the Google gate is off", () => gates({ google: false })],
+    ["AI is not configured", () => void delete process.env.REVIEWS_AI_PROVIDER],
+  ])("after a sync with changes, does nothing when %s — before any lease or review read", async (_l, arrange) => {
+    delete process.env.OPENROUTER_API_KEY;
+    arrange();
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const reads = vi.spyOn(storeDb, "collection");
+    await classifyAfterSync({ subAccountId: SA, created: 3, updated: 1 });
+    expect(reads).not.toHaveBeenCalled();
+    expect(mem.read(sentimentLeasePath(SA))).toBeUndefined();
+    expect(billed()).toEqual([]);
   });
 
   it("an edited review is re-classified — exactly one more AI call", async () => {

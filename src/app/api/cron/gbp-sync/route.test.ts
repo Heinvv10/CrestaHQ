@@ -27,7 +27,7 @@ import {
   seedSub,
 } from "@/test/gbp-sync-harness";
 import { POST as SYNC_NOW } from "../../sub-accounts/[id]/gbp/sync/route";
-import { POST } from "./route";
+import { POST, maxDuration } from "./route";
 
 const ORIGINAL = { ...process.env };
 const URL_ = "http://127.0.0.1:3100/api/cron/gbp-sync";
@@ -183,4 +183,8 @@ describe("sentiment after the response (SP5 b)", () => {
     expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
     expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
   });
+});
+
+it("allows 300 s, so the after-response sentiment run (240 s budget) is not cut off", () => {
+  expect(maxDuration).toBe(300);
 });

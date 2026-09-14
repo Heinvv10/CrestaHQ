@@ -6,10 +6,17 @@ import { getAdminDb } from "@/lib/firebase/admin";
  * `subAccounts/{id}/private/sentimentLease` — the classifier's one-per-tenant
  * lease, the Analyse-now cooldown, the pending hint and the last run's counts.
  *
- *   runId, until      the lease (5 min, renewed by its OWNER before each AI call)
+ *   runId, until      the lease (5 min, renewed by its OWNER before each AI call —
+ *                     sentiment-calls.ts)
  *   lastManualAt      Analyse now, at most once a minute
- *   pending           items a later run may still act on; null/absent = unknown
- *   lastRun           {classified, skipped, failed, at} of the last run that ran
+ *   lastCompleteAt    when a run last finished NORMALLY (not thrown, not stopped
+ *                     early by the gate, the listing, the lease, the daily cap
+ *                     or the time budget) — the after-sync trigger reads it
+ *   lastRun           {classified, skipped, failed, at, reason} of the last run
+ *
+ * Clocks: `until` compares instance clocks; the one production app runs on
+ * one host, and dev/CI instances are fake-fenced to the fixture agency, so
+ * skew between writers is not a concern here.
  */
 
 export const SENTIMENT_LEASE_TTL_MS = 5 * 60_000;
@@ -17,12 +24,20 @@ export const SENTIMENT_MANUAL_COOLDOWN_MS = 60_000;
 
 export const sentimentLeasePath = (subAccountId: string) => `subAccounts/${subAccountId}/private/sentimentLease`;
 
+export interface LastRun {
+  classified: number;
+  skipped: number;
+  failed: number;
+  at: unknown;
+  /** Why the run stopped or did not run; null when it finished normally. */
+  reason: string | null;
+}
 export interface LeaseDoc {
   runId?: string | null;
   until?: number;
   lastManualAt?: number | null;
-  pending?: number | null;
-  lastRun?: { classified: number; skipped: number; failed: number; at: unknown } | null;
+  lastCompleteAt?: number | null;
+  lastRun?: LastRun | null;
 }
 
 const ref = (sa: string) => getAdminDb().doc(sentimentLeasePath(sa));
@@ -39,16 +54,6 @@ export async function acquireSentimentLease(sa: string, runId: string, now: numb
     const d = (await tx.get(ref(sa))).data() as LeaseDoc | undefined;
     if (heldByOther(d, runId, now)) return false;
     tx.set(ref(sa), { runId, until: now + SENTIMENT_LEASE_TTL_MS }, { merge: true });
-    return true;
-  });
-}
-
-/** Extend the lease — ONLY while it is still this run's (an expired one another run took is lost). */
-export async function renewSentimentLease(sa: string, runId: string, now: number): Promise<boolean> {
-  return getAdminDb().runTransaction(async (tx) => {
-    const d = (await tx.get(ref(sa))).data() as LeaseDoc | undefined;
-    if (d?.runId !== runId) return false;
-    tx.set(ref(sa), { until: now + SENTIMENT_LEASE_TTL_MS }, { merge: true });
     return true;
   });
 }
@@ -73,29 +78,23 @@ export async function startManualSentiment(
   });
 }
 
-/** Release (only if still ours), recording what is left for later and — when it ran — its counts. */
+/** Release (only if still ours), recording the run; `complete` stamps lastCompleteAt. */
 export async function releaseSentimentLease(
   sa: string,
   runId: string,
-  after: { pending: number | null; lastRun?: LeaseDoc["lastRun"] },
+  after: { lastRun: LastRun; complete: boolean },
 ): Promise<void> {
   try {
     await getAdminDb().runTransaction(async (tx) => {
       const d = (await tx.get(ref(sa))).data() as LeaseDoc | undefined;
       if (d?.runId !== runId) return;
-      tx.set(ref(sa), { runId: null, until: 0, pending: after.pending, ...(after.lastRun ? { lastRun: after.lastRun } : {}) }, { merge: true });
+      tx.set(
+        ref(sa),
+        { runId: null, until: 0, lastRun: after.lastRun, ...(after.complete ? { lastCompleteAt: Date.now() } : {}) },
+        { merge: true },
+      );
     });
   } catch (err) {
     console.warn(`[reputation/sentiment] sa=${sa} lease not released kind=${err instanceof Error ? err.name : typeof err}`);
   }
-}
-
-/** The pending hint goes back to "unknown" (a skipped run cannot say what is left) — one read, a write only if needed. */
-export async function markPendingUnknown(sa: string): Promise<void> {
-  await getAdminDb().runTransaction(async (tx) => {
-    const d = (await tx.get(ref(sa))).data() as LeaseDoc | undefined;
-    if (d && d.pending === null) return;
-    if (!d) return; // absent already reads as unknown
-    tx.set(ref(sa), { pending: null }, { merge: true });
-  });
 }

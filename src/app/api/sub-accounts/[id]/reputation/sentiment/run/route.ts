@@ -20,6 +20,8 @@ import { startManualSentiment } from "@/lib/reputation/sentiment-lease";
  */
 
 export const dynamic = "force-dynamic";
+/** Sentiment runs after the response inside this invocation (budget 240 s). */
+export const maxDuration = 300;
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;

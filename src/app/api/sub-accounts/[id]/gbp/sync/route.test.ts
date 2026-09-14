@@ -26,7 +26,7 @@ import {
   seedSub,
 } from "@/test/gbp-sync-harness";
 import { storeDb } from "@/test/gbp-sync-store";
-import { POST } from "./route";
+import { POST, maxDuration } from "./route";
 
 const ORIGINAL = { ...process.env };
 const url = (sa: string) => `http://127.0.0.1:3100/api/sub-accounts/${sa}/gbp/sync`;
@@ -134,4 +134,8 @@ describe("sentiment after the response (SP5 b)", () => {
     expect(handed).toHaveBeenCalledTimes(1);
     expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 7, updated: 0 }]);
   });
+});
+
+it("allows 300 s, so the after-response sentiment run (240 s budget) is not cut off", () => {
+  expect(maxDuration).toBe(300);
 });

@@ -104,7 +104,13 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
       /** A classification holds the lease right now (Analyse now polls this). */
       running: !!lease.runId && (lease.until ?? 0) > now.getTime(),
       lastRun: lease.lastRun
-        ? { classified: lease.lastRun.classified, skipped: lease.lastRun.skipped, failed: lease.lastRun.failed, at: toIso(lease.lastRun.at) }
+        ? {
+            classified: lease.lastRun.classified,
+            skipped: lease.lastRun.skipped,
+            failed: lease.lastRun.failed,
+            at: toIso(lease.lastRun.at),
+            reason: lease.lastRun.reason ?? null,
+          }
         : null,
     },
     checklist: {

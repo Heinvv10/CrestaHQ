@@ -17,13 +17,22 @@ export interface SentimentItem {
   text: string;
 }
 
+/**
+ * Why an item was not labelled:
+ *   transport — the request never reached the model (network, timeout, no
+ *               key, 401 / 402 / 429): not billed, so the caller undoes its strike;
+ *   model     — the model answered but not validly (bad JSON, unknown or
+ *               duplicated id, invalid label, missing item), or the provider
+ *               failed after accepting the request: treated as billed.
+ */
+export type SentimentFailure = "transport" | "model";
+export type SentimentResult =
+  | { id: string; label: SentimentLabel; failure?: undefined }
+  | { id: string; label: null; failure: SentimentFailure };
+
 export interface ReviewsAi {
   /** The model a label is attributed to ("fake" for the dev/CI fake). */
   model: string;
-  /**
-   * Labels for the items the model answered validly. An item missing from
-   * the result was NOT labelled this round (bad output, failed call) — the
-   * caller leaves it for a later run; nothing is guessed.
-   */
-  classifySentiment(items: SentimentItem[]): Promise<Array<{ id: string; label: SentimentLabel }>>;
+  /** One result per item, in order. Nothing is guessed: an item is labelled or says why not. */
+  classifySentiment(items: SentimentItem[]): Promise<SentimentResult[]>;
 }

@@ -18,7 +18,7 @@ import { SA, asUser, mem, resetSync, reviews, seedSub } from "@/test/gbp-sync-ha
 import { syncListing } from "@/lib/gbp/sync/run";
 import { fakeLogPath } from "@/lib/reputation/ai/fake";
 import { sentimentLeasePath } from "@/lib/reputation/sentiment-lease";
-import { POST } from "./route";
+import { POST, maxDuration } from "./route";
 
 const ORIGINAL = { ...process.env };
 const billed = () => ((mem.read(fakeLogPath(SA))?.calls ?? []) as Array<{ ids: string[] }>).flatMap((c) => c.ids);
@@ -115,4 +115,29 @@ describe("the run", () => {
     await drain();
     expect(billed()).toHaveLength(6);
   });
+
+  it("a deferred run that finds the gate switched off ends with that reason, and releases the lease", async () => {
+    expect((await press()).status).toBe(202);
+    setGates(false);
+    await drain();
+    expect(lease()).toMatchObject({ runId: null, lastRun: { reason: "gate_off", classified: 0 } });
+    expect(billed()).toEqual([]);
+  });
+
+  it("a deferred run whose first read throws still releases the lease", async () => {
+    expect((await press()).status).toBe(202);
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const realDoc = storeDb.doc.bind(storeDb);
+    vi.spyOn(storeDb, "doc").mockImplementation(((path: string) => {
+      if (path === `subAccounts/${SA}`) throw new Error("14 UNAVAILABLE");
+      return realDoc(path);
+    }) as never);
+    await expect(drain()).rejects.toThrow("14 UNAVAILABLE");
+    expect(lease().runId).toBeNull();
+    expect(lease().lastCompleteAt).toBeUndefined();
+  });
+});
+
+it("allows 300 s, so the after-response sentiment run (240 s budget) is not cut off", () => {
+  expect(maxDuration).toBe(300);
 });
