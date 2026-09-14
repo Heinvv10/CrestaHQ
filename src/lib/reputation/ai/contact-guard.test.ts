@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { unsuppliedContact } from "./contact-guard";
 
 /**
- * The draft's contact guard (SP5 c): an AI draft must carry no phone number,
- * email, link, domain, USSD code, social handle or platform the business's
- * guidelines did not supply — however it is written. Each bypass below was
- * listed by the blind review; each must be caught. Allowed contacts are
- * matched as EXACT tokens, never as substrings of the guidelines.
+ * The draft's contact guard (SP5 c) — BEST-EFFORT: it catches the common ways
+ * of writing a phone number, email, link, domain, USSD code, social handle or
+ * platform the business's guidelines did not supply. A determined review can
+ * still slip a contact past it; the control is the admin, who reads every
+ * draft and must click Post. Allowed contacts match as EXACT tokens, never as
+ * substrings of the guidelines. Each bypass below was listed by a blind review.
  */
 
 const refused = (text: string, guidelines: string | null = null) => unsuppliedContact(text, guidelines);
@@ -47,6 +48,28 @@ describe("refuses every written form of a contact", () => {
     ["an email", "Email help@evil.example."],
     ["a URL", "See https://evil.example/x"],
     ["a www link", "See www.evil.example"],
+    ["number words", "Call oh eight two one two three four five six seven."],
+    ["number words mixed with digits", "Call 082 one two three 4567."],
+    ["a middle dot", "Go to evil·com now."],
+    ["a katakana middle dot", "Go to evil・com now."],
+    ["a comma between letters", "Go to evil,com now."],
+    ["a space before the dot", "Go to evil .com now."],
+    ["a space after the dot, lower case", "Go to evil. com now."],
+    ["<dot>", "Go to evil<dot>com now."],
+    ["<at> and <dot>", "Write info<at>evil<dot>com."],
+    ["-dot-", "Go to evil-dot-com now."],
+    ["_dot_", "Go to evil_dot_com now."],
+    ["an underscored platform", "Find us on tik_tok."],
+    ["ig", "DM us on IG."],
+    ["Signal", "Message us on Signal."],
+    ["Threads", "Follow us on Threads."],
+    ["Discord", "Join our Discord."],
+    ["tik tok", "Find us on tik tok."],
+    ["whats app", "Message us on whats app."],
+    ["a spaced USSD code", "Dial * 120 * 555 # to claim."],
+    ["a USSD code without the last star", "Dial *120*555 # now."],
+    ["a USSD code with a star before #", "Dial *120*555*# now."],
+    ["a punycode domain", "See xn--e1afmkfd.xn--p1ai for details."],
   ])("%s", (_label, text) => {
     expect(refused(text)).not.toBeNull();
   });
@@ -64,6 +87,21 @@ describe("leaves ordinary prose alone", () => {
     "Order 12345 is on its way.",
     "Warm regards, The Fixture Team.",
     "We're sorry. We'll do better.",
+    "Your visit on 12/09/2026 was noted.",
+    "We came on 2026-09-12 at 14:30.",
+    "We're open 08:00–17:00 on weekdays.",
+    "The team is in from 9:30am–4:45pm on 14/09.",
+    "Order #1234567 has shipped.",
+    "Order 12345 and order 67890 are both on the way.",
+    "Your Ref: INV-2026-00123 is closed.",
+    "See ticket no. 2026091412 for the fix.",
+    "The router costs R1 299,00 with installation.",
+    "You paid R1 299.00 twice on 12 Sept 2026 — we've refunded it.",
+    "Since 1998 we've been serving 20 000 homes.",
+    "Upgrades from 25 Mbps to 1000 Mbps in 2024.",
+    "Visit us at 14 Main Road, Randburg, 2196.",
+    "We're open 07:30-18:00 every day.",
+    "Thanks for staying with us, we appreciate it.",
   ])("%s", (text) => {
     expect(refused(text)).toBeNull();
   });
@@ -81,6 +119,31 @@ describe("what the guidelines supply is allowed — as exact tokens only", () =>
     expect(refused("Dial *120*777#.", G)).toBeNull();
     expect(refused("More at ｆｉｘｔｕｒｅｆｉｂｒｅ.co.za.", G)).toBeNull();
     expect(refused("Follow us on Instagram @fixturefibre.", G)).toBeNull();
+  });
+
+  it.each([
+    "Visit https://fixturefibre.co.za.",
+    "Visit https://fixturefibre.co.za, or call us.",
+    "More here (https://fixturefibre.co.za) today.",
+    "Visit www.fixturefibre.co.za!",
+    "See https://fixturefibre.co.za;",
+    "Email help@fixturefibre.co.za!",
+  ])("allows its own URL or email before punctuation: %s", (text) => {
+    expect(refused(text, G)).toBeNull();
+  });
+
+  it("two numbers in the guidelines are two allowed numbers — however they are separated", () => {
+    for (const g of ["Call 041 000 0000 or 082 123 4567.", "Lines: 041 000 0000 / 082 123 4567", "041 000 0000, 082 123 4567", "041 000 0000; 082 123 4567", "041 000 0000\n082 123 4567"]) {
+      expect(refused("Call 082 123 4567.", g), g).toBeNull();
+      expect(refused("Call 041 000 0000.", g), g).toBeNull();
+      expect(refused("Call 083 999 8888.", g), g).not.toBeNull();
+    }
+  });
+
+  it("+27 and a leading 0 are the same South African number", () => {
+    expect(refused("Call +27 82 123 4567.", "Our line is 082 123 4567.")).toBeNull();
+    expect(refused("Call 082 123 4567.", "Our line is +27 82 123 4567.")).toBeNull();
+    expect(refused("Call +27 82 999 4567.", "Our line is 082 123 4567.")).not.toBeNull();
   });
 
   it.each([
