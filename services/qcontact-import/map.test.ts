@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mapCase, phoneFromQContact, IMPORT_TAG } from "./map.ts";
+import { gpsFromLocationFields, mapCase, phoneFromQContact, IMPORT_TAG } from "./map.ts";
 import type { CaseDetail, ContactDetail } from "./qcontact.ts";
 
 // Shapes copied from a live Fibertime case + contact (digits changed).
+// c__location_pin is the id of a separate c__contactlocation entity, not
+// coordinates — see qcontact.ts#getLocation and README.
 const caseDetail: CaseDetail = {
   id: 27140690790,
   label: "General FT1569464",
@@ -13,7 +15,7 @@ const caseDetail: CaseDetail = {
     description: "want fibre",
     c__contact_name: "Oarabile",
     c__contact_number: "e164:27795564958",
-    c__location_pin: "-26.1234,28.5678",
+    c__location_pin: "27140699001",
     c__dr_location: "MOA",
   },
 };
@@ -54,7 +56,7 @@ describe("mapCase", () => {
         custom_fields: {
           qcontact_case_id: "27140690790",
           qcontact_case_ref: "FT1569464",
-          qcontact_location_pin: "-26.1234,28.5678",
+          qcontact_location_pin: "27140699001",
           velocity_dr_number: "DR1234567",
         },
       },
@@ -82,5 +84,47 @@ describe("mapCase", () => {
   it("skips a case with a phone but no name", () => {
     const m = mapCase({ ...caseDetail, fields: {} }, { ...contact, label: "", fields: { telephone: "e164:27795564958" } });
     expect(m).toEqual({ ok: false, reason: "no_name" });
+  });
+
+  it("adds qcontact_location_gps alongside the unchanged pin id when a gps string is given", () => {
+    const m = mapCase(caseDetail, contact, "-26.1206884,28.4798344");
+    expect(m.ok && m.body.custom_fields).toMatchObject({
+      qcontact_location_pin: "27140699001",
+      qcontact_location_gps: "-26.1206884,28.4798344",
+    });
+  });
+
+  it("omits qcontact_location_gps when no gps string is given", () => {
+    const m = mapCase(caseDetail, contact);
+    expect(m.ok && "qcontact_location_gps" in m.body.custom_fields).toBe(false);
+  });
+});
+
+describe("gpsFromLocationFields", () => {
+  it("returns \"lat,lng\" for a location inside South Africa", () => {
+    expect(gpsFromLocationFields({ c__latitude: -26.1206884, c__longitude: 28.4798344 })).toBe(
+      "-26.1206884,28.4798344",
+    );
+  });
+
+  it("parses string lat/lng too", () => {
+    expect(gpsFromLocationFields({ c__latitude: "-26.1", c__longitude: "28.5" })).toBe("-26.1,28.5");
+  });
+
+  it("rejects a missing or non-numeric lat/lng", () => {
+    expect(gpsFromLocationFields({})).toBeUndefined();
+    expect(gpsFromLocationFields({ c__latitude: "n/a", c__longitude: 28.5 })).toBeUndefined();
+    expect(gpsFromLocationFields({ c__latitude: -26.1, c__longitude: null })).toBeUndefined();
+  });
+
+  it("rejects coordinates outside South Africa's bounding box (e.g. 0,0 or a swapped lat/lng)", () => {
+    expect(gpsFromLocationFields({ c__latitude: 0, c__longitude: 0 })).toBeUndefined();
+    expect(gpsFromLocationFields({ c__latitude: 28.4798344, c__longitude: -26.1206884 })).toBeUndefined();
+  });
+
+  it("accepts values right at the bounding-box edges and rejects just past them", () => {
+    expect(gpsFromLocationFields({ c__latitude: -22, c__longitude: 33 })).toBe("-22,33");
+    expect(gpsFromLocationFields({ c__latitude: -21.9999, c__longitude: 28 })).toBeUndefined();
+    expect(gpsFromLocationFields({ c__latitude: -30, c__longitude: 33.0001 })).toBeUndefined();
   });
 });

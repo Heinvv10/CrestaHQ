@@ -16,8 +16,8 @@
  * step retries next run too, same as a failed upsert.
  */
 import { readFile, writeFile, rename } from "node:fs/promises";
-import { QContactClient, type CaseRow } from "./qcontact.ts";
-import { mapCase, type UpsertBody } from "./map.ts";
+import { QContactClient, type CaseRow, type LocationDetail } from "./qcontact.ts";
+import { gpsFromLocationFields, locationPinId, mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
 import { leadstackStageSyncer, statusToStageId, type StageSyncer } from "./stage-sync.ts";
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
@@ -59,6 +59,12 @@ export type Summary = {
   stageUnchanged: number;
   /** In-view cases with no recorded deal id — never re-derived, just counted. */
   stageUnmapped: number;
+  /** Distinct location pins resolved to usable in-bounds coordinates. */
+  locationsResolved: number;
+  /** Distinct location pins resolved but with no usable in-bounds coordinates. */
+  locationsSkippedInvalid: number;
+  /** Distinct location pins whose lookup failed (404/500/etc). */
+  locationsLookupFailed: number;
 };
 
 export type Log = (line: string) => void;
@@ -151,10 +157,12 @@ export async function runImport(opts: {
   ensureDeal?: DealEnsurer;
   /** Unset = no stage-sync calls at all (matches pre-existing behaviour). */
   syncStage?: StageSyncer;
+  /** Unset = a case's location pin is never resolved, so no coordinates are ever written. */
+  getLocation?: (id: number) => Promise<LocationDetail>;
   dryRun: boolean;
   log: Log;
 }): Promise<Summary> {
-  const { qc, view, statePath, upsert, ensureDeal, syncStage, dryRun, log } = opts;
+  const { qc, view, statePath, upsert, ensureDeal, syncStage, getLocation, dryRun, log } = opts;
   const rows: CaseRow[] = await qc.listView(view);
   const state = await loadState(statePath);
 
@@ -164,6 +172,7 @@ export async function runImport(opts: {
     return {
       mode: "seed", inView: rows.length, fresh: 0, sent: 0, skipped: {}, failed: 0,
       stageSynced: 0, stageUnchanged: 0, stageUnmapped: 0,
+      locationsResolved: 0, locationsSkippedInvalid: 0, locationsLookupFailed: 0,
     };
   }
 
@@ -175,12 +184,45 @@ export async function runImport(opts: {
     mode: dryRun ? "dry-run" : "import",
     inView: rows.length, fresh: fresh.length, sent: 0, skipped: {}, failed: 0,
     stageSynced: 0, stageUnchanged: 0, stageUnmapped: 0,
+    locationsResolved: 0, locationsSkippedInvalid: 0, locationsLookupFailed: 0,
   };
+  // Pin id → resolved gps ("<lat>,<lng>") or null (invalid/lookup failed) —
+  // resolved at most once per pin per run, whether or not multiple fresh
+  // cases share it.
+  const locationCache = new Map<string, string | null>();
 
   for (const row of fresh) {
     const detail = await qc.getCase(row.id);
     const contact = detail.lookup_contact_id ? await qc.getContact(detail.lookup_contact_id) : null;
-    const mapped = mapCase(detail, contact);
+
+    let gps: string | undefined;
+    const pin = locationPinId(detail);
+    if (pin && getLocation) {
+      if (locationCache.has(pin)) {
+        gps = locationCache.get(pin) ?? undefined;
+      } else {
+        const pinId = Number(pin);
+        let resolved: string | undefined;
+        if (Number.isFinite(pinId)) {
+          try {
+            const location: LocationDetail = await getLocation(pinId);
+            resolved = gpsFromLocationFields(location.fields);
+            if (resolved) summary.locationsResolved++;
+            else summary.locationsSkippedInvalid++;
+          } catch (err) {
+            summary.locationsLookupFailed++;
+            log(`location lookup failed for pin ${pin} on case ${row.id} (${row.label}): ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          summary.locationsLookupFailed++;
+          log(`location lookup failed for pin ${pin} on case ${row.id} (${row.label}): not a valid id`);
+        }
+        locationCache.set(pin, resolved ?? null);
+        gps = resolved;
+      }
+    }
+
+    const mapped = mapCase(detail, contact, gps);
     if (!mapped.ok) {
       summary.skipped[mapped.reason] = (summary.skipped[mapped.reason] ?? 0) + 1;
       log(`skip ${row.id} (${row.label}): ${mapped.reason}`);
@@ -306,7 +348,9 @@ async function main(): Promise<void> {
       : undefined;
   const summary = await runImport({
     qc, view: env.QCONTACT_IMPORT_VIEW, statePath: env.QCONTACT_IMPORT_STATE,
-    upsert: leadstackUpserter(env), ensureDeal, syncStage, dryRun,
+    upsert: leadstackUpserter(env), ensureDeal, syncStage,
+    getLocation: (id) => qc.getLocation(id),
+    dryRun,
     log: (l) => process.stdout.write(`${l}\n`),
   });
   process.stdout.write(`${JSON.stringify(summary)}\n`);

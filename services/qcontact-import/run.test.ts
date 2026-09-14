@@ -172,6 +172,77 @@ describe("runImport with ensureDeal", () => {
   });
 });
 
+describe("runImport with getLocation", () => {
+  const qcWithPin = (pin: string | undefined, ids: number[] = [1]) => ({
+    listView: vi.fn(async () => ids.map((id) => row(id, `2026-09-0${id}`))),
+    getCase: vi.fn(async (id: number): Promise<CaseDetail> => ({
+      id, label: `FT${id}`, lookup_contact_id: id * 10,
+      fields: { reference: `FT${id}`, ...(pin !== undefined ? { c__location_pin: pin } : {}) },
+    })),
+    getContact: vi.fn(async (id: number): Promise<ContactDetail> => ({
+      id, label: "Test Person", fields: { first_name: "Test", last_name: "Person", telephone: "e164:27790000001" },
+    })),
+  });
+
+  it("a pin that resolves to a valid in-bounds location writes qcontact_location_gps and counts locationsResolved", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const getLocation = vi.fn(async () => ({ id: 500, label: "Loc", fields: { c__latitude: -26.1, c__longitude: 28.5 } }));
+    await runImport({ qc: qcWithPin("500", []), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    const s = await runImport({ qc: qcWithPin("500", [1]), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    expect(s).toMatchObject({ locationsResolved: 1, locationsSkippedInvalid: 0, locationsLookupFailed: 0 });
+    const body = (upsert.mock.calls[0] as unknown as [UpsertBody])[0];
+    expect(body.custom_fields.qcontact_location_gps).toBe("-26.1,28.5");
+  });
+
+  it("a resolved location outside South Africa's bounds is not written and counts locationsSkippedInvalid", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const getLocation = vi.fn(async () => ({ id: 500, label: "Loc", fields: { c__latitude: 0, c__longitude: 0 } }));
+    await runImport({ qc: qcWithPin("500", []), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    const s = await runImport({ qc: qcWithPin("500", [1]), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    expect(s).toMatchObject({ locationsResolved: 0, locationsSkippedInvalid: 1, locationsLookupFailed: 0 });
+    const body = (upsert.mock.calls[0] as unknown as [UpsertBody])[0];
+    expect("qcontact_location_gps" in body.custom_fields).toBe(false);
+    expect(body.custom_fields.qcontact_location_pin).toBe("500"); // pin id still kept as-is
+  });
+
+  it("a 404 on the location lookup still imports the case and counts locationsLookupFailed", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const getLocation = vi.fn(async () => { throw new Error("QContact GET /api/v2/entities/c__contactlocation/500: HTTP 404"); });
+    await runImport({ qc: qcWithPin("500", []), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    const s = await runImport({ qc: qcWithPin("500", [1]), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    expect(s).toMatchObject({ sent: 1, failed: 0, locationsResolved: 0, locationsSkippedInvalid: 0, locationsLookupFailed: 1 });
+    const body = (upsert.mock.calls[0] as unknown as [UpsertBody])[0];
+    expect("qcontact_location_gps" in body.custom_fields).toBe(false);
+  });
+
+  it("a case with no pin never calls getLocation and leaves the location counters at 0", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const getLocation = vi.fn(async () => ({ id: 1, label: "Loc", fields: { c__latitude: -26.1, c__longitude: 28.5 } }));
+    await runImport({ qc: qcWithPin(undefined, []), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    const s = await runImport({ qc: qcWithPin(undefined, [1]), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    expect(s).toMatchObject({ locationsResolved: 0, locationsSkippedInvalid: 0, locationsLookupFailed: 0 });
+    expect(getLocation).not.toHaveBeenCalled();
+  });
+
+  it("the same pin shared by two fresh cases in one run is resolved exactly once", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const getLocation = vi.fn(async () => ({ id: 500, label: "Loc", fields: { c__latitude: -26.1, c__longitude: 28.5 } }));
+    await runImport({ qc: qcWithPin("500", []), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    const s = await runImport({ qc: qcWithPin("500", [1, 2]), view: "v", statePath, upsert, getLocation, dryRun: false, log });
+    expect(s).toMatchObject({ sent: 2, locationsResolved: 1 });
+    expect(getLocation).toHaveBeenCalledTimes(1);
+  });
+
+  it("no getLocation passed (unset) never resolves a pin, matching pre-existing behaviour", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    await runImport({ qc: qcWithPin("500", []), view: "v", statePath, upsert, dryRun: false, log });
+    const s = await runImport({ qc: qcWithPin("500", [1]), view: "v", statePath, upsert, dryRun: false, log });
+    expect(s).toMatchObject({ locationsResolved: 0, locationsSkippedInvalid: 0, locationsLookupFailed: 0 });
+    const body = (upsert.mock.calls[0] as unknown as [UpsertBody])[0];
+    expect("qcontact_location_gps" in body.custom_fields).toBe(false);
+  });
+});
+
 describe("loadState", () => {
   it("a state file with no deals/dealStages key loads and behaves as empty", async () => {
     await writeFile(statePath, JSON.stringify({ seen: [1, 2], updatedAt: "2026-09-01T00:00:00.000Z" }));
