@@ -22,10 +22,12 @@ import { assertFixtureSubAccount } from "../lib/guard";
  * the fenced Reviews AI fake (REVIEWS_AI_PROVIDER=fake; every call logged as
  * ids + count at private/reviewsAiFakeLog — what would have been billed):
  * the signed cron syncs the fake's seven reviews (re-dated into the default
- * range) and labels them — star-only from the stars, text by the "AI", one
- * item per text review; a second sync bills nothing; editing one review
- * bills exactly one more; the badges, the Overview donut, and a public feed
- * that carries no sentiment.
+ * range) and — after responding — labels them: star-only from the stars,
+ * text by the "AI", one call per text review; a second sync bills nothing;
+ * a review edited while Reviews AI is off loses its badge (a stale label is
+ * never shown), and Analyse now (202, the card polls) re-labels it for
+ * exactly one more call; the Overview donut, and a public feed that carries
+ * no sentiment.
  */
 
 test.skip(!!process.env.PLAYWRIGHT_BASE_URL, "needs GBP_PROVIDER=fake and REVIEWS_AI_PROVIDER=fake, which a deployed target refuses by design");
@@ -114,18 +116,34 @@ test("sync labels each review once; edits re-bill exactly one; badges, donut, an
   }
   await expect(page.getByTestId("gbp-review-sentiment-fake-r3")).toHaveAttribute("title", "From the star rating");
 
-  // --- Second sync of unchanged reviews: nothing re-billed.
+  // --- Second sync of unchanged reviews: no classification run at all, nothing re-billed.
+  const lastRunAt = async () => JSON.stringify((await privateDoc("sentimentLease").get()).data()?.lastRun?.at ?? null);
+  const before = await lastRunAt();
   await runCron(request);
+  await page.waitForTimeout(1500); // anything deferred would have started by now
+  expect(await lastRunAt()).toBe(before);
   expect(await billed()).toBe(withText);
 
-  // --- Edit one review at "Google": exactly one more AI item, and its label follows the new text.
+  // --- Edit one review at "Google" while Reviews AI is off: its old label is never shown.
+  await guard();
+  await primaryRef().update({ reviewsAiEnabledByAgency: false });
   const edited = recentScenario(now);
   const r1 = edited.reviews[LOC_A].reviews.find((r) => r.reviewId === "fake-r1")!;
   Object.assign(r1, { comment: "Fixture review: edited — terrible after the upgrade.", updateTime: new Date(now).toISOString() });
   await patchScenario({ reviews: edited.reviews });
   await runCron(request);
-  await expect.poll(billed, { timeout: 30_000 }).toBe(withText + 1);
   await page.reload();
+  await expect(page.getByTestId("gbp-review-fake-r1")).toContainText("edited — terrible", { timeout: 30_000 });
+  await expect(page.getByTestId("gbp-review-sentiment-fake-r1")).toHaveCount(0);
+  expect(await billed()).toBe(withText);
+
+  // --- Reviews AI back on; an admin presses Analyse now: 202, the card polls, exactly one more AI call.
+  await primaryRef().update({ reviewsAiEnabledByAgency: true });
+  await page.goto(`/sa/${primaryId()}/reputation`);
+  await page.getByTestId("rep-sentiment-analyse").click();
+  await expect(page.getByTestId("rep-sentiment-result")).toContainText("Labelled 1 review.", { timeout: 60_000 });
+  expect(await billed()).toBe(withText + 1);
+  await page.goto(`/sa/${primaryId()}/reputation/reviews`);
   await expect(page.getByTestId("gbp-review-sentiment-fake-r1")).toHaveAttribute("data-label", "negative", { timeout: 30_000 });
 
   // --- The Overview donut: counted from the labels now stored.

@@ -66,58 +66,82 @@ review link configured (`resolveReviewUrl(sub).configured`), a widget exists
 
 ## Sentiment (SP5 b)
 
-Each synced review gets a cached label, `sentiment {label, method, basisHash,
-model, at}` on its `gbpReviews` doc — `positive` / `neutral` / `negative`.
+Each synced review can carry a cached label, `sentiment {label, method,
+basisHash, model, at}` on its `gbpReviews` doc — `positive` / `neutral` /
+`negative` — and `sentimentAttempt {basisHash, failures, lastAt}` when the AI
+failed on its current content.
 
 - **Gate:** the agency's `reviewsAiEnabledByAgency` ("Reviews AI", opt-in,
   plan-managed, not pre-ticked), on top of `googleEnabledByAgency`. It spends
   the agency's OpenRouter credits. Switching it off tears nothing down: labels
   stay until each review's own lifecycle clears them; no new review is sent.
-- **When it runs:** after every sync that landed pages (Sync now and the
-  6-hourly cron, success or partial) — the counts go on the run record as
-  `sentiment {classified, skipped, failed}`; a failure there is logged by kind
-  and never changes the sync's result. Also on demand: **Analyse now** on the
-  Overview (`POST /api/sub-accounts/[id]/reputation/sentiment/run`, admin,
-  both gates, once a minute — 409 `too_soon`).
+  Because it is a plan gate, **applying a Client Billing plan that does not
+  include Reviews AI switches it off** for that sub-account on the next plan
+  apply, like every other plan gate.
+- **When it runs — never inside a request:** classification is decoupled from
+  the sync (Cloudflare cuts origin requests at 100 s; QStash would retry a slow
+  cron). The 6-hourly cron and Sync now respond first and then, via Next's
+  `after()` (`lib/reputation/sentiment-after.ts`; the same mechanism the
+  Google Calendar push uses in the standalone build), classify — only for a
+  tenant whose run created or updated reviews, or whose **pending hint**
+  (`private/sentimentLease.pending`: what the last run left; unknown until
+  one has run, and again after a skipped one) is not 0. Any other sync costs
+  one small read. **Analyse now** on the Overview (`POST
+  /api/sub-accounts/[id]/reputation/sentiment/run`, admin, both gates, a
+  listing, once a minute) takes the lease and the cooldown in one
+  transaction — so a press refused as `busy` does not burn the minute —
+  answers **202** `{started, aiConfigured}` and classifies after the
+  response; the card re-reads the overview every 3 s (up to a minute) until
+  the lease is free and a new `lastRun` appears, then says what it did.
+  Refusals carry their own message: Reviews AI off / Google off (403
+  `gate_off`), no listing (409 `no_listing`), `busy`, `too_soon`.
 - **What is labelled:** the reviews inbox's own set (`loadServedReviews`:
   active, current listing, within Google's 30-day limit — so the newest 500
   stored records). **Star-only** reviews (no or blank comment) are labelled
   from the stars — 4–5 positive, 3 neutral, 1–2 negative, `method: "rating"`,
-  no AI call. Reviews **with text** go to the AI (`method: "ai"`, `model`).
+  no AI call, written in transactions of up to 100. Reviews **with text** go to
+  the AI (`method: "ai"`, `model`) — **one review per call**
+  (`REVIEWS_AI_BATCH = 1`), so no member of the public's text shares a prompt
+  with another review it could try to steer.
 - **Billing guarantee — never re-billed:** a review is eligible only when it
   has no label or its `basisHash` ≠ `sha256(stars + "\n" + comment)` (it was
-  edited). One lease per sub-account (`private/sentimentLease`, 5 min,
-  renewed before each AI batch) keeps two invocations — a sync and Analyse
-  now, two crons — from both sending the same review; each label is written
-  in a transaction that re-reads the review and writes only if it is still
-  active with the same basis (edited or removed mid-flight ⇒ discarded, not
-  labelled from stale text). Proven by the unit suite and by the E2E spec
-  counting the fake's call log across re-syncs.
-- **Cap:** at most 100 reviews per run, newest first; a big backlog spreads
-  over the next runs (every 6 hours, or Analyse now).
+  edited). One lease per sub-account (`private/sentimentLease`, 5 min) keeps
+  two invocations from both sending the same review; it is renewed before each
+  call and **only by its owner** — a run whose lease expired and was taken
+  stops. Right before each call the review is re-read and dropped if it
+  changed, was removed or was labelled meanwhile; the label is written in a
+  transaction that re-checks the basis (edited mid-call ⇒ discarded).
+- **Failures:** an item the model did not validly answer (bad label, unknown
+  or duplicated id, missing, unparseable, failed call) is left unlabelled and
+  recorded in `sentimentAttempt` for that content: retried **at most once an
+  hour and three times**, then counted as **"couldn't be analysed"** — apart
+  from "not analysed yet". An edit starts a new count; a success clears it.
+- **Cap:** at most 100 reviews per run, newest first; the rest are the
+  pending hint for the next run.
+- **Stale labels are never shown:** a sync edit overwrites a review's content
+  but keeps its `sentiment` (blanking it in the upsert would re-bill on every
+  owner reply, since the content hash covers the reply). So every reader —
+  the reviews route and the overview — shows a label only when its
+  `basisHash` matches the review's current stars + comment; otherwise it reads
+  as absent until re-classified (`lib/reputation/sentiment-basis.ts`).
 - **The AI call** (`src/lib/reputation/ai/`): OpenRouter via `callAi` on the
-  default model, ≤ 20 reviews per call, temperature 0. Review text is
-  untrusted: it is sent only as JSON string values inside a data object, the
-  system prompt says so, and batch-local ids ("1".."n") are used — no
-  document id leaves the server. The reply must be `{"results":[{id,label}]}`;
-  an invalid label, an unknown or duplicated id, a missing item, unparseable
-  output or a failed call leaves those items **unlabelled** this round
-  (logged by kind, counted as `failed`) — nothing is guessed; the next run
-  retries them.
+  default model, temperature 0. Review text is untrusted: it is sent only as a
+  JSON string value inside a data object, the system prompt says so, and a
+  batch-local id ("1") is used — no document id leaves the server.
 - **Not configured:** with no `OPENROUTER_API_KEY` (production today) only
   star-only reviews are labelled; text reviews wait, and the Overview says
   "AI isn't configured on this deployment". Dev/CI use the fenced fake
   (`REVIEWS_AI_PROVIDER=fake`, docs/environment.md).
 - **Lifecycle:** an edit re-classifies (new basis); a tombstone sets
-  `sentiment: null` (derived from deleted content); retention deletes the doc;
-  a restored review is re-classified as new content.
+  `sentiment` and `sentimentAttempt` to null (derived from deleted content);
+  retention deletes the doc; a restored review is re-classified as new content.
 - **Where it shows:** a badge on each review in the reviews list (Reputation →
   Reviews and AI Agents → Google Business — the same component; the title says
-  "From the star rating" or "AI-classified"), and the Overview's sentiment card:
-  a donut over in-range reviews plus "N not analysed yet", with gate-off /
-  not-configured / none-analysed states. The reviews route serves only
-  `{label, method}`; **the public feed never carries sentiment** (its
-  serializer is an allow-list; a test pins the absence).
+  "From the star rating" or "AI-classified"), and the Overview's sentiment
+  card: a donut over in-range reviews plus "N not analysed yet" and "N
+  couldn't be analysed", with gate-off / not-configured / none-analysed
+  states. The reviews route serves only `{label, method}`; **the public feed
+  never carries sentiment** (its serializer is an allow-list; a test pins it).
 - **Limits:** labels are a model's reading of short customer texts —
   translated reviews are classified on the text Google returned (translation
   plus original); a mixed review gets one label. No per-aspect sentiment, no
