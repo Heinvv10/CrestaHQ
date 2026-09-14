@@ -87,7 +87,7 @@ describe("a draft", () => {
   });
 
   it("an AI failure is a 424 draft_failed — no text, nothing posted", async () => {
-    override.ai = { model: "x", classifySentiment: vi.fn(), draftReply: vi.fn(async () => ({ text: null, failure: "model" })) };
+    override.ai = { model: "x", classifySentiment: vi.fn(), draftReply: vi.fn(async () => ({ text: null, failure: "call_failed" })) };
     const { status, body } = await draft();
     expect(status).toBe(424);
     expect(body.code).toBe("draft_failed");

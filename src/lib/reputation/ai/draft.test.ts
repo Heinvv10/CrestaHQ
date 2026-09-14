@@ -71,21 +71,21 @@ describe("the output", () => {
     ["a bare domain link", "Sorry. Visit www.evil.example today."],
     ["an email", "Sorry. Email help@evil.example."],
     ["another phone number", "Sorry. Call 082 123 4567."],
-  ])("refuses a draft carrying %s the guidelines did not supply (model failure, never shown)", async (_label, text) => {
+  ])("refuses a draft carrying %s the guidelines did not supply (never shown)", async (_label, text) => {
     said(text);
-    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "model" });
+    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "unsupplied_contact" });
   });
 
-  it("an empty answer is a model failure", async () => {
+  it("an empty answer is no draft", async () => {
     said("   ");
-    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "model" });
+    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "empty" });
   });
 
-  it("a call that never reached the model is a transport failure; one after it is a model failure", async () => {
+  it("a failed call is no draft — one kind whatever the error (no billing classes)", async () => {
     callAi.mockRejectedValueOnce(new Error("OpenRouter 429: slow down"));
-    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "transport" });
-    callAi.mockRejectedValueOnce(new Error("OpenRouter 500: boom"));
-    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "model" });
+    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "call_failed" });
+    callAi.mockRejectedValueOnce(new TypeError("fetch failed"));
+    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "call_failed" });
   });
 
   it("never logs review or draft text", async () => {

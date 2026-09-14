@@ -16,8 +16,9 @@ import { DAILY_AI_CALL_CAP, sentimentUsagePath } from "./sentiment-calls";
  *   - Spend: every draft counts against the SAME daily AI call cap as
  *     sentiment (`private/sentimentUsage {day, calls}`, DAILY_AI_CALL_CAP),
  *     counted in one transaction with a re-check of both gates BEFORE the
- *     call; over the cap there is no call. Like a sentiment call, the count
- *     is not given back when the call then fails.
+ *     call; over the cap there is no call. No strikes and no refunds: a
+ *     draft is one human click, one call, and it counts whether or not the
+ *     model then produced a usable draft.
  */
 
 export const DRAFTS_PER_MINUTE = 10;

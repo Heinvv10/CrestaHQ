@@ -1,8 +1,7 @@
 import "server-only";
 
 import { callAi } from "@/lib/comms/ai/openrouter";
-import { neverReachedModel } from "./openrouter";
-import type { DraftInput, DraftResult } from "./types";
+import type { DraftFailure, DraftInput, DraftResult } from "./types";
 
 /**
  * An owner-reply DRAFT on OpenRouter (SP5 c). It only ever fills the reply
@@ -10,9 +9,9 @@ import type { DraftInput, DraftResult } from "./types";
  * (lib/gbp/reply.ts is the only poster). The review is untrusted: it reaches
  * the model only as JSON string values, and the system prompt says so. The
  * answer is checked, not trusted: plain text, trimmed, cut to the reply
- * route's 4000-character limit, and REFUSED (a model failure — nothing is
- * shown) when it carries a phone number, email or link the guidelines did
- * not supply. Never logs review or draft text.
+ * route's 4000-character limit, and REFUSED (nothing is shown) when it
+ * carries a phone number, email or link the guidelines did not supply. A
+ * failure is one kind, for the log only. Never logs review or draft text.
  */
 
 export const MAX_DRAFT_CHARS = 4000;
@@ -49,6 +48,11 @@ function clean(raw: string): string {
   return t.slice(0, MAX_DRAFT_CHARS).trimEnd();
 }
 
+function fail(failure: DraftFailure, detail?: string): DraftResult {
+  console.warn(`[reputation/ai] no draft kind=${failure}${detail ? ` error=${detail}` : ""}`);
+  return { text: null, failure };
+}
+
 export async function draftReplyWith(model: string, input: DraftInput): Promise<DraftResult> {
   let raw: string;
   try {
@@ -70,18 +74,10 @@ export async function draftReplyWith(model: string, input: DraftInput): Promise<
     });
     raw = res.text;
   } catch (err) {
-    const transport = neverReachedModel(err);
-    console.warn(`[reputation/ai] draft failed kind=${transport ? "call_failed_transport" : "call_failed_upstream"}`);
-    return { text: null, failure: transport ? "transport" : "model" };
+    return fail("call_failed", err instanceof Error ? err.name : typeof err);
   }
   const text = clean(raw);
-  if (!text) {
-    console.warn("[reputation/ai] draft failed kind=empty");
-    return { text: null, failure: "model" };
-  }
-  if (unsuppliedContact(text, input.guidelines)) {
-    console.warn("[reputation/ai] draft refused kind=unsupplied_contact");
-    return { text: null, failure: "model" };
-  }
+  if (!text) return fail("empty");
+  if (unsuppliedContact(text, input.guidelines)) return fail("unsupplied_contact");
   return { text };
 }

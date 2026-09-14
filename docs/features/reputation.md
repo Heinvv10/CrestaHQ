@@ -352,8 +352,9 @@ switch included).
   the sub-account); **10 drafts a minute per user** (429 `rate_limited`,
   `Retry-After`; in memory, per instance); the **same daily AI call cap as
   sentiment** (429 `daily_cap`) — counted in `private/sentimentUsage` in one
-  transaction that re-checks both gates BEFORE the call, and, like a
-  sentiment call, not given back if the call then fails. An AI failure is 424
+  transaction that re-checks both gates BEFORE the call — no strikes and no
+  refunds: one click, one call, counted whether or not a usable draft came
+  back. An AI failure is 424
   `draft_failed` (not 502 — the edge replaces 502 bodies). **Stores nothing**:
   no draft text in Firestore, logs or the fake's log.
 - **What the model sees** (`lib/reputation/draft.ts` → `ReviewsAi.draftReply`,

@@ -39,8 +39,10 @@ export interface DraftInput {
   /** The sub-account's reply guidelines (tone, sign-off, never-say), or null. */
   guidelines: string | null;
 }
-/** A draft, or why there is none (same billing meaning as SentimentFailure). */
-export type DraftResult = { text: string; failure?: undefined } | { text: null; failure: SentimentFailure };
+/** Why there is no draft — for logs only; the admin just sees "try again or write your own". */
+export type DraftFailure = "call_failed" | "empty" | "unsupplied_contact";
+/** A draft, or none. Every attempt counts against the daily AI cap either way (no strikes, no refunds). */
+export type DraftResult = { text: string; failure?: undefined } | { text: null; failure: DraftFailure };
 
 export interface ReviewsAi {
   /** The model a label is attributed to ("fake" for the dev/CI fake). */
