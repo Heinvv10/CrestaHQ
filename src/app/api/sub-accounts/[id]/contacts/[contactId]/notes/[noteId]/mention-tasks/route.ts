@@ -49,6 +49,9 @@ export async function POST(
     if (note.mentionTasksAt) {
       return { status: 409, error: "Mention tasks were already created" } as const;
     }
+    // Claimed BEFORE the tasks are created: a repeat call can never duplicate
+    // them, at the cost that a createTaskServerSide failure mid-loop loses
+    // the remaining tasks (no retry). Duplicates are the worse failure.
     tx.update(noteRef, { mentionTasksAt: FieldValue.serverTimestamp() });
     return { note };
   });

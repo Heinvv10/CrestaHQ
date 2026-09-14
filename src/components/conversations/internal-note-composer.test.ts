@@ -10,13 +10,13 @@ import type { Contact } from "@/types/contacts";
  * are the team roster (for @mentions) and, when someone is mentioned, the
  * mention-tasks route.
  */
-const m = vi.hoisted(() => ({ addNote: vi.fn(), fetch: vi.fn() }));
+const m = vi.hoisted(() => ({ addNote: vi.fn(), fetch: vi.fn(), toastError: vi.fn() }));
 vi.mock("@/context/sub-account-context", () => ({
   useSubAccount: () => ({ subAccount: {}, subAccountId: "sa1" }),
 }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { uid: "u1" } }) }));
 vi.mock("@/lib/firestore/contacts", () => ({ addNote: m.addNote }));
-vi.mock("sonner", () => ({ toast: { warning: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { warning: vi.fn(), error: m.toastError } }));
 
 import { ConversationComposer } from "./conversation-composer";
 
@@ -43,6 +43,7 @@ beforeEach(() => {
         : { ok: true, taskIds: [] },
   }));
   m.addNote.mockReset().mockResolvedValue("n1");
+  m.toastError.mockReset();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -285,4 +286,27 @@ it("Reply mode never shows the mention list", async () => {
   expect(container.querySelector('[role="listbox"]')).toBeNull();
   await key("Enter");
   expect(container.querySelector("textarea")!.value).toBe("Hi @Mi");
+});
+
+it("a mention-tasks network failure after the note saved reads as saved, not as a failed save", async () => {
+  await renderComposer();
+  await clickTab("Internal note");
+  await type("@Mi");
+  await key("Enter");
+  await frame();
+  const roster = m.fetch.getMockImplementation()!;
+  m.fetch.mockImplementation(async (url: string, init?: unknown) => {
+    if (url === MENTION_URL) throw new Error("Failed to fetch");
+    return roster(url, init);
+  });
+  await type("@Michael Smith call back");
+  await submit();
+  expect(m.addNote).toHaveBeenCalledTimes(1);
+  expect(requests()).toEqual([[MENTION_URL, { method: "POST" }]]);
+  expect(m.toastError).toHaveBeenCalledTimes(1);
+  expect(m.toastError.mock.calls[0][0]).toBe(
+    "Note saved, but the mentioned teammates weren't notified: Failed to fetch"
+  );
+  // Cleared as a successful save is, so a retry cannot duplicate the note.
+  expect(container.querySelector("textarea")!.value).toBe("");
 });

@@ -132,17 +132,31 @@ export function InternalNoteComposer({
     if (!trimmed || saving || !user) return;
     setSaving(true);
     const mentionedUids = mentionedUidsIn(trimmed, picked);
+    let noteId: string;
     try {
-      const noteId = await addNote(
+      noteId = await addNote(
         contactId,
         trimmed,
         user.uid,
         "conversation",
         mentionedUids
       );
-      setBody("");
-      setPicked([]);
-      if (mentionedUids.length > 0) {
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? `Couldn't save the note: ${err.message}`
+          : "Couldn't save the note."
+      );
+      setSaving(false);
+      return;
+    }
+    setBody("");
+    setPicked([]);
+    // The note is saved from here on: a failure below must never read as
+    // "couldn't save", or a retry would duplicate the note.
+    if (mentionedUids.length > 0) {
+      let failure: string | null = null;
+      try {
         const res = await fetch(
           `/api/sub-accounts/${subAccountId}/contacts/${contactId}/notes/${noteId}/mention-tasks`,
           { method: "POST" }
@@ -151,22 +165,18 @@ export function InternalNoteComposer({
           const payload = (await res.json().catch(() => ({}))) as {
             error?: string;
           };
-          toast.error(
-            `Note saved, but the mentioned teammates weren't notified: ${
-              payload.error ?? `HTTP ${res.status}`
-            }`
-          );
+          failure = payload.error ?? `HTTP ${res.status}`;
         }
+      } catch (err) {
+        failure = err instanceof Error ? err.message : "network error";
       }
-    } catch (err) {
-      toast.error(
-        err instanceof Error
-          ? `Couldn't save the note: ${err.message}`
-          : "Couldn't save the note."
-      );
-    } finally {
-      setSaving(false);
+      if (failure) {
+        toast.error(
+          `Note saved, but the mentioned teammates weren't notified: ${failure}`
+        );
+      }
     }
+    setSaving(false);
   }
 
   return (
