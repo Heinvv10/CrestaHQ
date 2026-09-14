@@ -62,6 +62,7 @@ describe("an enabled widget returns exactly the selected public data", () => {
       },
       rating: { average: 3.6, count: 7 },
       source: { name: "Google", attribution: "Reviews from Google" },
+      display: { layout: "carousel", theme: "light" },
       freshness: { lastSuccessfulSyncAt: expect.any(String), stale: false, generatedAt: expect.any(String) },
       reviews: expect.any(Array),
     });
