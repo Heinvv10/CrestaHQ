@@ -13,6 +13,8 @@ import { applyFilters, matchesSearch } from "@/lib/contacts/filter";
 import { useContactSelection } from "@/hooks/use-contact-selection";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
+import { useContactsPreview } from "@/hooks/use-contacts-preview";
+import { RENDER_STEP } from "@/components/show-more-rows";
 import { serializeCsv, downloadCsv } from "@/lib/csv";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -26,8 +28,8 @@ import { ContactFiltersPanel } from "@/components/contacts/contact-filters-panel
 import { SmartListTabs } from "@/components/contacts/smart-list-tabs";
 import { BulkActionsBar } from "@/components/contacts/bulk-actions-bar";
 import {
+  ContactsLoading,
   EmptyState,
-  TableSkeleton,
 } from "@/components/contacts/contacts-empty-states";
 import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
@@ -100,6 +102,14 @@ export default function ContactsPage() {
   );
   const visibleIds = useMemo(() => visible.map((c) => c.id), [visible]);
   const selection = useContactSelection(visibleIds);
+  // Newest page while the full list loads — only when it is exactly what the
+  // table will show: no territory narrowing, smart-list filter or search.
+  const preview = useContactsPreview(
+    agencyId ? { agencyId, subAccountId } : null,
+    RENDER_STEP,
+    loading && filterReady && !!user && !territoryFilter &&
+      !filters.all?.length && !search.trim(),
+  );
   const { members } = useSubAccountMembers(subAccountId);
   const selectedContacts = useMemo(
     () => visible.filter((c) => selection.selected.has(c.id)),
@@ -251,7 +261,7 @@ export default function ContactsPage() {
       />
 
       {loading ? (
-        <TableSkeleton />
+        <ContactsLoading preview={preview} territories={territories} />
       ) : contacts.length === 0 ? (
         <EmptyState onImport={() => setImportOpen(true)} />
       ) : visible.length === 0 ? (

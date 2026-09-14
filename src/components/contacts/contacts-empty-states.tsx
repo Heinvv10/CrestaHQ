@@ -3,6 +3,42 @@
 import { Upload, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AddContactModal } from "@/components/contacts/add-contact-modal";
+import { ContactsTable } from "@/components/contacts/contacts-table";
+import type { Contact } from "@/types/contacts";
+import type { TerritoryDoc } from "@/types";
+
+const NO_SELECTION = new Set<string>();
+const noop = () => undefined;
+
+/**
+ * Loading state: the newest page, read-only, once it lands — selection stays
+ * off because select-all must mean the full list — otherwise the skeleton.
+ */
+export function ContactsLoading({
+  preview,
+  territories,
+}: {
+  preview: Contact[] | null;
+  territories: TerritoryDoc[];
+}) {
+  if (!preview?.length) return <TableSkeleton />;
+  return (
+    <>
+      <ContactsTable
+        contacts={preview}
+        selected={NO_SELECTION}
+        onToggle={noop}
+        onToggleAll={noop}
+        allSelected={false}
+        someSelected={false}
+        territories={territories}
+      />
+      <p className="text-center text-xs text-muted-foreground">
+        Loading all contacts…
+      </p>
+    </>
+  );
+}
 
 export function TableSkeleton() {
   return (
