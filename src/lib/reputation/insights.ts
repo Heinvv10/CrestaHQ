@@ -6,9 +6,10 @@ import { GBP_DAILY_METRICS, type GbpDailyMetric, type GbpDailySeries } from "@/l
  *
  *   - range: the last 7 / 28 / 90 whole days ending YESTERDAY (UTC) — today
  *     is still being counted at Google — compared with the equal span before.
- *   - a day Google returns without a value is 0 (Google omits zeros); a day
- *     it does not return at all is also drawn as 0, and `lastDataDate` says
- *     how far its data actually reaches (Google reports with a lag).
+ *   - a day Google returns without a value is 0 (Google omits zeros) but IS a
+ *     reported day; a day it does not return at all is drawn as 0 too, and
+ *     `lastDataDate` — the latest date Google returned, in or before the
+ *     current window — says how far its data reaches (Google reports with a lag).
  *   - views are Google's impressions: unique users per day, per surface.
  */
 
@@ -99,7 +100,7 @@ export function summarizeInsights(series: GbpDailySeries, window: InsightsWindow
     const m = new Map<string, number>();
     for (const { date, value } of series[metric] ?? []) {
       m.set(date, value);
-      if (value > 0 && date <= window.current.end && (lastDataDate === null || date > lastDataDate)) lastDataDate = date;
+      if (date <= window.current.end && (lastDataDate === null || date > lastDataDate)) lastDataDate = date;
     }
     byDate.set(metric, m);
   }

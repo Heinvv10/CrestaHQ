@@ -106,7 +106,7 @@ review link configured (`resolveReviewUrl(sub).configured`), a widget exists
   Charts: views per day (search + maps) and actions per day (calls + website +
   directions); the desktop / mobile split of views. A day Google returns
   without a value is 0 (Google omits zeros); a missing day is drawn as 0, and
-  `lastDataDate` (the latest non-zero day) is shown as "Google's data runs to
+  `lastDataDate` (the latest day Google returned — a day it sent with a zero value counts) is shown as "Google's data runs to
   …" because Google reports with a delay. Views are Google's impressions —
   unique people per day.
 - **Response:** `{location: {name, title, isListing}, range, window: {current,

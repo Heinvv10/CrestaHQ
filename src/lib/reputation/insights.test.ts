@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { parseDailyMetrics } from "@/lib/gbp/provider/google-parse";
 import { insightsWindow, parseInsightsRange, summarizeInsights } from "./insights";
 
 /**
@@ -75,10 +76,28 @@ describe("summarizeInsights", () => {
     expect(s.daily[2]).toMatchObject({ mapsViews: 11, desktopViews: 5, mobileViews: 6 });
   });
 
-  it("says how far Google's data reaches: the latest date with a non-zero value in either window", () => {
+  it("says how far Google's data reaches: the latest date Google RETURNED, a genuine 0 included", () => {
     expect(s.lastDataDate).toBe("2026-09-13");
-    expect(summarizeInsights({ CALL_CLICKS: [day("2026-09-08", 1), day("2026-09-12", 0)] }, window).lastDataDate).toBe("2026-09-08");
+    // A quiet last day (value omitted by Google → 0) is still a reported day.
+    expect(summarizeInsights({ CALL_CLICKS: [day("2026-09-08", 1), day("2026-09-12", 0)] }, window).lastDataDate).toBe("2026-09-12");
+    expect(summarizeInsights({ CALL_CLICKS: [day("2026-09-13", 0)], WEBSITE_CLICKS: [day("2026-09-10", 0)] }, window).lastDataDate).toBe("2026-09-13");
+    // A day after the window is not "data through" it.
+    expect(summarizeInsights({ CALL_CLICKS: [day("2026-09-10", 0), day("2026-09-14", 3)] }, window).lastDataDate).toBe("2026-09-10");
     expect(summarizeInsights({}, window).lastDataDate).toBeNull();
+    expect(summarizeInsights({ CALL_CLICKS: [] }, window).lastDataDate).toBeNull();
+  });
+
+  it("end to end from Google's payload: a last day sent without a value still counts as reported", () => {
+    const series = parseDailyMetrics(
+      { multiDailyMetricTimeSeries: [{ dailyMetricTimeSeries: [{ dailyMetric: "CALL_CLICKS", timeSeries: { datedValues: [
+        { date: { year: 2026, month: 9, day: 12 }, value: "4" },
+        { date: { year: 2026, month: 9, day: 13 } },
+      ] } }] }] },
+      ["CALL_CLICKS"],
+    );
+    const t = summarizeInsights(series, window);
+    expect(t.lastDataDate).toBe("2026-09-13");
+    expect(t.totals.CALL_CLICKS).toBe(4);
   });
 
   it("ignores values outside both windows and never double-counts a day Google repeats", () => {
