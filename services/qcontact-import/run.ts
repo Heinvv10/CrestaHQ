@@ -10,10 +10,15 @@
  * accidental side effect of the first run. After that, each run upserts only
  * the cases it has not seen, and a case is marked seen only after LeadStack
  * accepted it, so a failed upsert is retried next run.
+ *
+ * When QCONTACT_DEAL_PIPELINE_ID is set, a case is also marked seen only
+ * once it has an open deal in that pipeline (see deals.ts) — a failed deal
+ * step retries next run too, same as a failed upsert.
  */
 import { readFile, writeFile, rename } from "node:fs/promises";
 import { QContactClient, type CaseRow } from "./qcontact.ts";
 import { mapCase, type UpsertBody } from "./map.ts";
+import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
 
 export type Env = {
   QCONTACT_BASE_URL: string;
@@ -23,6 +28,11 @@ export type Env = {
   LEADSTACK_API_URL: string;
   LEADSTACK_API_KEY: string;
   QCONTACT_IMPORT_STATE: string;
+  /** Unset = no deal is created (behaviour unchanged from before this existed). */
+  QCONTACT_DEAL_PIPELINE_ID: string | undefined;
+  QCONTACT_DEAL_STAGE: string;
+  /** Currently a no-op: see deals.ts header. Kept so it's ready once the API supports assignment. */
+  QCONTACT_DEAL_OWNER_UID: string | undefined;
 };
 
 export type State = { seen: number[]; updatedAt: string };
@@ -52,6 +62,9 @@ export function readEnv(env: NodeJS.ProcessEnv): Env {
     LEADSTACK_API_URL: need("LEADSTACK_API_URL"),
     LEADSTACK_API_KEY: need("LEADSTACK_API_KEY"),
     QCONTACT_IMPORT_STATE: env.QCONTACT_IMPORT_STATE ?? ".qcontact-import-state.json",
+    QCONTACT_DEAL_PIPELINE_ID: env.QCONTACT_DEAL_PIPELINE_ID || undefined,
+    QCONTACT_DEAL_STAGE: env.QCONTACT_DEAL_STAGE ?? "new_request",
+    QCONTACT_DEAL_OWNER_UID: env.QCONTACT_DEAL_OWNER_UID || undefined,
   };
 }
 
@@ -72,7 +85,9 @@ export async function saveState(path: string, state: State): Promise<void> {
   await rename(tmp, path);
 }
 
-export type Upserter = (body: UpsertBody) => Promise<{ ok: true } | { ok: false; error: string }>;
+export type Upserter = (
+  body: UpsertBody,
+) => Promise<{ ok: true; contactId: string } | { ok: false; error: string }>;
 
 export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Upserter {
   return async (body) => {
@@ -86,7 +101,10 @@ export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Up
       },
       body: JSON.stringify(body),
     });
-    if (res.ok) return { ok: true };
+    if (res.ok) {
+      const data = (await res.json()) as { contact: { id: string } };
+      return { ok: true, contactId: data.contact.id };
+    }
     return { ok: false, error: `HTTP ${res.status} ${(await res.text()).slice(0, 300)}` };
   };
 }
@@ -96,10 +114,12 @@ export async function runImport(opts: {
   view: string;
   statePath: string;
   upsert: Upserter;
+  /** Unset = no deal calls at all (matches pre-existing behaviour). */
+  ensureDeal?: DealEnsurer;
   dryRun: boolean;
   log: Log;
 }): Promise<Summary> {
-  const { qc, view, statePath, upsert, dryRun, log } = opts;
+  const { qc, view, statePath, upsert, ensureDeal, dryRun, log } = opts;
   const rows: CaseRow[] = await qc.listView(view);
   const state = await loadState(statePath);
 
@@ -130,6 +150,7 @@ export async function runImport(opts: {
     if (dryRun) {
       // No phone in the log: stdout ends up in cron mail and journal files.
       log(`would send ${row.id} (${row.label})`);
+      if (ensureDeal) log(`would create deal ${row.id} (${row.label})`);
       summary.sent++;
       continue;
     }
@@ -139,6 +160,22 @@ export async function runImport(opts: {
       log(`FAILED ${row.id} (${row.label}): ${result.error}`);
       continue;
     }
+
+    if (ensureDeal) {
+      const caseRef = mapped.body.custom_fields.qcontact_case_ref ?? String(row.id);
+      const dealResult = await ensureDeal({
+        contactId: result.contactId,
+        caseId: row.id,
+        title: `Install request — ${mapped.body.name} (${caseRef})`,
+      });
+      if (!dealResult.ok) {
+        // Upsert already succeeded (and is idempotent), so only the deal step retries next run.
+        summary.failed++;
+        log(`FAILED deal ${row.id} (${row.label}): ${dealResult.error}`);
+        continue;
+      }
+    }
+
     summary.sent++;
     seen.add(row.id);
     await saveState(statePath, { seen: [...seen], updatedAt: "" });
@@ -155,9 +192,22 @@ async function main(): Promise<void> {
     email: env.QCONTACT_IMPORT_EMAIL,
     password: env.QCONTACT_IMPORT_PASSWORD,
   });
+  if (env.QCONTACT_DEAL_OWNER_UID) {
+    process.stdout.write(
+      "QCONTACT_DEAL_OWNER_UID is set but has no effect: POST /api/v1/deals does not accept assigned_to_uid (assignment is read-only over the public API).\n",
+    );
+  }
+  const ensureDeal = env.QCONTACT_DEAL_PIPELINE_ID
+    ? leadstackDealEnsurer({
+        LEADSTACK_API_URL: env.LEADSTACK_API_URL,
+        LEADSTACK_API_KEY: env.LEADSTACK_API_KEY,
+        QCONTACT_DEAL_PIPELINE_ID: env.QCONTACT_DEAL_PIPELINE_ID,
+        QCONTACT_DEAL_STAGE: env.QCONTACT_DEAL_STAGE,
+      })
+    : undefined;
   const summary = await runImport({
     qc, view: env.QCONTACT_IMPORT_VIEW, statePath: env.QCONTACT_IMPORT_STATE,
-    upsert: leadstackUpserter(env), dryRun,
+    upsert: leadstackUpserter(env), ensureDeal, dryRun,
     log: (l) => process.stdout.write(`${l}\n`),
   });
   process.stdout.write(`${JSON.stringify(summary)}\n`);
