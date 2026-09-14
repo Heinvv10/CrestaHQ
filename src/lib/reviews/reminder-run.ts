@@ -5,6 +5,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { activeReminder, normalizeReviewChannel } from "@/lib/reviews/constants";
 import { scheduleReviewReminder } from "@/lib/reviews/reminder";
+import { reminderStopReason } from "@/lib/reviews/reminder-checks";
+import { reviewTrackingAvailable } from "@/lib/reviews/click-token";
 import { maybeSendReviewRequest } from "@/lib/reviews/request";
 import type { SubAccountDoc } from "@/types";
 
@@ -33,6 +35,8 @@ export type ReminderRunResult =
   | { outcome: "skipped"; reason: string };
 
 const DAY_MS = 24 * 3600_000;
+/** Recent thread messages read per channel to spot a reply since the request. */
+const INBOUND_LOOKBACK = 20;
 
 const stopped = (reason: string) => ({
   "reminder.state": reason === "retries_exhausted" ? "done" : "stopped",
@@ -62,18 +66,30 @@ export async function runReviewReminder(input: {
 
     const sub = ((await tx.get(subRef)).data() ?? null) as SubAccountDoc | null;
     const cfg = sub?.googleReviewConfig ?? null;
-    const channel = normalizeReviewChannel(cfg?.channel) === "sms" ? "sms" : "whatsapp";
-    const stop = req.clickedAt
-      ? "clicked"
-      : !activeReminder(cfg?.reminder)
-        ? "reminders_off"
-        : !resolveReviewUrl(sub).configured
-          ? "not_configured"
-          : (r.attempts ?? 0) >= (r.maxRetries ?? 0)
-            ? "retries_exhausted"
-            : channel !== req.channel
-              ? "channel_changed"
-              : null;
+    const contactId = req.contactId as string;
+    const [contactSnap, others, sms, wa] = await Promise.all([
+      tx.get(db.doc(`contacts/${contactId}`)),
+      tx.get(db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).where("contactId", "==", contactId)),
+      tx.get(db.collection(`contacts/${contactId}/messages`).orderBy("createdAt", "desc").limit(INBOUND_LOOKBACK)),
+      tx.get(db.collection(`contacts/${contactId}/whatsappMessages`).orderBy("createdAt", "desc").limit(INBOUND_LOOKBACK)),
+    ]);
+    const inboundAt = [...sms.docs, ...wa.docs].flatMap((d) => {
+      const m = d.data() as { direction?: string; createdAt?: { toMillis?: () => number } };
+      const at = m.direction === "inbound" && typeof m.createdAt?.toMillis === "function" ? m.createdAt.toMillis() : null;
+      return at === null ? [] : [at];
+    });
+    const { reason: stop, maxRetries } = reminderStopReason({
+      requestId: input.requestId,
+      req,
+      sub: sub as unknown as Record<string, unknown> | null,
+      contact: contactSnap.exists ? (contactSnap.data() as Record<string, unknown>) : null,
+      contactRequests: others.docs.map((d) => ({ id: d.id, data: d.data() })),
+      inboundAt,
+      trackingAvailable: reviewTrackingAvailable(),
+      reminder: activeReminder(cfg?.reminder),
+      channel: normalizeReviewChannel(cfg?.channel) === "sms" ? "sms" : "whatsapp",
+      reviewUrlConfigured: !!resolveReviewUrl(sub).configured,
+    });
     if (stop) {
       tx.update(ref, stopped(stop));
       return { stop };
@@ -89,7 +105,7 @@ export async function runReviewReminder(input: {
         agencyId: req.agencyId as string,
         contactId: req.contactId as string,
         tracked: req.tracked === true,
-        maxRetries: r.maxRetries ?? 0,
+        maxRetries,
         everyDays: r.everyDays ?? 1,
       },
     };

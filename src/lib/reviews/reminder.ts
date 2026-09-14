@@ -2,7 +2,7 @@ import "server-only";
 
 import { publishCallback } from "@/lib/automations/qstash";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { buildReviewClickUrl } from "@/lib/reviews/click-token";
+import { buildReviewClickUrl, reviewTrackingAvailable } from "@/lib/reviews/click-token";
 import { activeReminder, type ReviewChannel } from "@/lib/reviews/constants";
 
 /**
@@ -39,9 +39,11 @@ export interface ReminderState {
 }
 
 /**
- * The link plan for a dispatcher send; null when reminders are off and this is
- * not a reminder re-send. Only the bodies LeadStack writes (SMS, in-window
- * WhatsApp) can carry the tracked link — an approved template's URL is fixed.
+ * The link plan for a dispatcher send; null — today's body, no reminder — when
+ * reminders are off, the channel is not SMS (reminders are SMS-only: a
+ * template's link is fixed and can't stop on a click; an in-window WhatsApp
+ * dies at the 24h window), or this deployment can't make a tracked link.
+ * Reminders need tracking, so they never run untracked. Never throws.
  */
 export function planReviewLink(input: {
   config: { reminder?: unknown } | null;
@@ -51,21 +53,27 @@ export function planReviewLink(input: {
   reminderOf?: { requestId: string; tracked: boolean };
   newRequestId: () => string;
 }): ReviewLinkPlan | null {
-  const trackedUrl = (requestId: string) =>
-    input.channel === "whatsapp_template" ? "" : buildReviewClickUrl(input.subAccountId, requestId);
+  const trackedUrl = (requestId: string) => {
+    try {
+      return input.channel === "sms" && reviewTrackingAvailable() ? buildReviewClickUrl(input.subAccountId, requestId) : "";
+    } catch {
+      return "";
+    }
+  };
   if (input.reminderOf) {
     const { requestId, tracked } = input.reminderOf;
     const url = tracked ? trackedUrl(requestId) : "";
     return { requestId, bodyUrl: url || input.reviewUrl, tracked: !!url };
   }
   const reminder = activeReminder(input.config?.reminder);
-  if (!reminder) return null;
+  if (!reminder || input.channel !== "sms" || !reviewTrackingAvailable()) return null;
   const requestId = input.newRequestId();
   const url = trackedUrl(requestId);
+  if (!url) return null;
   return {
     requestId,
-    bodyUrl: url || input.reviewUrl,
-    tracked: !!url,
+    bodyUrl: url,
+    tracked: true,
     reminder: {
       ...reminder,
       attempts: 0,
@@ -105,4 +113,22 @@ export async function scheduleReviewReminder(input: {
   }
   console.warn("[reviews/reminder] reminder could not be scheduled; stopped (schedule_failed)");
   return false;
+}
+
+/**
+ * One reminder chain per contact: a new request with reminders on stops the
+ * contact's other scheduled ones (`superseded`). Single-field query on
+ * contactId, filtered here. Never throws — the send has happened.
+ */
+export async function supersedeOtherReminders(subAccountId: string, contactId: string, keepRequestId: string): Promise<void> {
+  try {
+    const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/reviewRequests`).where("contactId", "==", contactId).get();
+    for (const d of snap.docs) {
+      if (d.id === keepRequestId || (d.data().reminder as { state?: string } | undefined)?.state !== "scheduled") continue;
+      await d.ref.update({ "reminder.state": "stopped", "reminder.stopReason": "superseded", "reminder.nextAt": null });
+    }
+  } catch (err) {
+    const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
+    console.error(`[reviews/reminder] superseding older reminders failed kind=${String(kind)}`);
+  }
 }

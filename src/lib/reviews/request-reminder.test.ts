@@ -106,19 +106,46 @@ describe("reminders ON", () => {
     expect(verifyReviewClickToken(token)).toEqual({ subAccountId: "sa1", requestId: rows()[0].id });
   });
 
-  it("free-form WhatsApp is tracked too", async () => {
+  it("reminders are SMS-only: in-window WhatsApp sends today's body with no reminder", async () => {
     setConfig({ channel: "whatsapp_manual", reminder: { everyDays: 1, maxRetries: 1 } });
     mem.seed("contacts/c1/whatsappMessages/in1", { direction: "inbound", createdAt: Timestamp.fromMillis(Date.now() - 3600_000) });
     expect(await send()).toEqual({ sent: true });
-    expect((sendWa.mock.calls[0] as [{ body: string }])[0].body).toContain("/rr/sa1.");
-    expect(rows()[0]).toMatchObject({ channel: "whatsapp", tracked: true, reminder: { state: "scheduled" } });
+    expect((sendWa.mock.calls[0] as [{ body: string }])[0].body).toBe(DEFAULT_BODY);
+    expect(rows()[0]).not.toHaveProperty("reminder");
+    expect(publish).not.toHaveBeenCalled();
   });
 
-  it("without an app URL the plain link is sent and the request is untracked (reminders still run)", async () => {
-    delete process.env.NEXT_PUBLIC_APP_URL;
+  it.each([["NEXT_PUBLIC_APP_URL"], ["AUTOMATIONS_TOKEN_SECRET"]])(
+    "without %s (no tracking) the normal body goes and NO reminder is scheduled — never a send failure",
+    async (name) => {
+      delete process.env[name];
+      expect(await send()).toEqual({ sent: true });
+      expect(smsBody()).toBe(DEFAULT_BODY);
+      expect(rows()[0]).not.toHaveProperty("reminder");
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it("stores a hash of the number it went to — never the number", async () => {
     await send();
-    expect(smsBody()).toBe(DEFAULT_BODY);
-    expect(rows()[0]).toMatchObject({ tracked: false, reminder: { state: "scheduled" } });
+    const { createHash } = await import("node:crypto");
+    expect(rows()[0].toHash).toBe(createHash("sha256").update("+61412345678").digest("hex"));
+    expect(JSON.stringify(rows()[0])).not.toContain("61412345678");
+  });
+
+  it("a new request with reminders on stops the contact's other scheduled ones (superseded), and only theirs", async () => {
+    const scheduled = { everyDays: 3, maxRetries: 2, attempts: 0, state: "scheduled", stopReason: null, nextAt: new Date(), lastAttemptAt: null };
+    const base = { agencyId: "ag1", subAccountId: "sa1", channel: "sms", source: "dispatcher", status: "sent", sentAt: new Date(Date.now() - 86_400_000), tracked: true };
+    mem.seed("subAccounts/sa1/reviewRequests/old", { ...base, contactId: "c1", reminder: scheduled });
+    mem.seed("subAccounts/sa1/reviewRequests/doneOld", { ...base, contactId: "c1", reminder: { ...scheduled, state: "done", stopReason: "retries_exhausted" } });
+    mem.seed("subAccounts/sa1/reviewRequests/otherContact", { ...base, contactId: "c2", reminder: scheduled });
+    await send();
+    const byId = Object.fromEntries(rows().map((r) => [r.id, r]));
+    expect(byId.old.reminder).toMatchObject({ state: "stopped", stopReason: "superseded", nextAt: null });
+    expect(byId.doneOld.reminder).toMatchObject({ state: "done", stopReason: "retries_exhausted" });
+    expect(byId.otherContact.reminder).toMatchObject({ state: "scheduled" });
+    const fresh = rows().find((r) => !["old", "doneOld", "otherContact"].includes(r.id as string))!;
+    expect(fresh.reminder).toMatchObject({ state: "scheduled" });
   });
 
   it("a scheduling failure never fails the send: the reminder is stopped, schedule_failed", async () => {
@@ -136,12 +163,12 @@ describe("reminders ON", () => {
 });
 
 describe("planReviewLink — which channels can be tracked", () => {
-  it("an approved WhatsApp template's link is fixed: untracked, the plain review URL, reminders still planned", async () => {
+  it("reminders are SMS-only: WhatsApp channels get no plan at all", async () => {
     const { planReviewLink } = await import("./reminder");
-    const plan = planReviewLink({
-      config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel: "whatsapp_template", subAccountId: "sa1",
-      reviewUrl: REVIEW_URL, newRequestId: () => "req9",
-    });
-    expect(plan).toMatchObject({ requestId: "req9", bodyUrl: REVIEW_URL, tracked: false, reminder: { state: "scheduled" } });
+    for (const channel of ["whatsapp_template", "whatsapp_manual"] as const) {
+      expect(planReviewLink({
+        config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel, subAccountId: "sa1", reviewUrl: REVIEW_URL, newRequestId: () => "req9",
+      })).toBeNull();
+    }
   });
 });

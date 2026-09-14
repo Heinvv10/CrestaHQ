@@ -46,6 +46,11 @@ export function verifyReviewClickToken(token: string): { subAccountId: string; r
   return timingSafeEqual(Buffer.from(presented), Buffer.from(expected)) ? { subAccountId, requestId } : null;
 }
 
+/** Can a tracked link be made on this deployment? Reminders need one (SP5 d2). */
+export function reviewTrackingAvailable(): boolean {
+  return !!process.env.AUTOMATIONS_TOKEN_SECRET && !!process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
+}
+
 /** The URL the customer sees. Empty without NEXT_PUBLIC_APP_URL — the caller then sends the plain review link. */
 export function buildReviewClickUrl(subAccountId: string, requestId: string): string {
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");

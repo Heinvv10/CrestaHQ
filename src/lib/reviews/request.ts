@@ -24,7 +24,8 @@ import {
 } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { logReviewRequest } from "@/lib/reviews/request-log";
-import { planReviewLink, scheduleReviewReminder } from "@/lib/reviews/reminder";
+import { planReviewLink, scheduleReviewReminder, supersedeOtherReminders } from "@/lib/reviews/reminder";
+import { phoneHash } from "@/lib/reviews/reminder-checks";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -393,9 +394,12 @@ export async function maybeSendReviewRequest(
       trigger: input.trigger,
       status: "sent",
       messageSid: sid,
-      ...(plan ? { id: plan.requestId, tracked: plan.tracked, reminder: { ...plan.reminder } } : {}),
+      // With a reminder: a hash of the number it went to (never the number), so a
+      // reminder can stop if the contact's number changes.
+      ...(plan ? { id: plan.requestId, tracked: plan.tracked, reminder: { ...plan.reminder }, toHash: phoneHash(contact.phone) } : {}),
     });
     if (plan?.reminder) {
+      await supersedeOtherReminders(input.subAccountId, contact.id, plan.requestId);
       await scheduleReviewReminder({
         subAccountId: input.subAccountId,
         requestId: plan.requestId,

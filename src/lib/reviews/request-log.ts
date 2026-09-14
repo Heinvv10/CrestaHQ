@@ -41,6 +41,8 @@ export interface ReviewRequestLogInput {
   id?: string;
   tracked?: boolean;
   reminder?: Record<string, unknown>;
+  /** SHA-256 of the number the request went to — never the number itself. */
+  toHash?: string;
 }
 
 export async function logReviewRequest(input: ReviewRequestLogInput): Promise<void> {
@@ -62,6 +64,7 @@ export async function logReviewRequest(input: ReviewRequestLogInput): Promise<vo
       feedbackAt: null,
       ...(input.tracked !== undefined ? { tracked: input.tracked } : {}),
       ...(input.reminder ? { reminder: input.reminder } : {}),
+      ...(input.toHash ? { toHash: input.toHash } : {}),
     };
     await (input.id ? log.doc(input.id).set(row) : log.add(row));
   } catch (err) {

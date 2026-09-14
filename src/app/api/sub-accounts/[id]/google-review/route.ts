@@ -10,7 +10,8 @@ import {
   normalizeReviewChannel,
   parseReminderSettings,
 } from "@/lib/reviews/constants";
-import { isHttpsUrl } from "@/lib/reviews/review-url";
+import { isGoogleReviewUrl, isHttpsUrl } from "@/lib/reviews/review-url";
+import { reviewTrackingAvailable } from "@/lib/reviews/click-token";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
@@ -46,9 +47,34 @@ interface PostBody {
 
 const invalidReminder = () =>
   NextResponse.json(
-    { error: "Reminders repeat every 1–30 days, at most 5 times.", code: "invalid_reminder", field: "reminder" },
+    { error: "Reminders repeat every 1–7 days, at most 5 times.", code: "invalid_reminder", field: "reminder" },
     { status: 400 },
   );
+
+/**
+ * What turning reminders ON needs (SP5 d2), or the refusal. SMS only: a
+ * template's link can't be tracked (so it can't stop on a click) and repeats
+ * an identical template, and an in-window WhatsApp dies at the 24h window.
+ * A tracked link, so a click can stop them. A Google review link, so a
+ * reminder can only ever send people there. Switching OFF needs none of it.
+ */
+function reminderRefusal(channel: string, reviewUrl: string): NextResponse | null {
+  const refuse = (code: string, error: string) =>
+    NextResponse.json({ error, code, field: "reminder" }, { status: 400 });
+  if (channel !== "sms") {
+    return refuse("reminders_sms_only", "Reminders are for SMS review requests only — switch the channel to SMS first.");
+  }
+  if (!reviewTrackingAvailable()) {
+    return refuse(
+      "reminders_need_tracking",
+      "Reminders need link tracking, which isn't set up on this deployment (AUTOMATIONS_TOKEN_SECRET and NEXT_PUBLIC_APP_URL).",
+    );
+  }
+  if (!isGoogleReviewUrl(reviewUrl)) {
+    return refuse("reminders_google_link_only", "Reminders only repeat a Google review link (g.page, search.google.com, maps.app.goo.gl, google.com).");
+  }
+  return null;
+}
 
 export async function POST(
   request: Request,
@@ -78,6 +104,10 @@ export async function POST(
 
   const channel = normalizeReviewChannel(body.channel);
   const isWhatsapp = channel !== "sms";
+  if (reminder?.everyDays) {
+    const refusal = reminderRefusal(channel, reviewUrl);
+    if (refusal) return refusal;
+  }
   const messageTemplate =
     body.messageTemplate?.trim() || DEFAULT_REVIEW_SMS_TEMPLATE;
 
@@ -216,10 +246,16 @@ export async function PATCH(
   if (!current?.reviewUrl) {
     return NextResponse.json({ error: "Save your review link first." }, { status: 400 });
   }
-  await ref.set(
-    { googleReviewConfig: { ...current, reminder, updatedAt: new Date() }, updatedAt: FieldValue.serverTimestamp() },
-    { merge: true },
-  );
+  if (reminder.everyDays) {
+    const refusal = reminderRefusal(normalizeReviewChannel(current.channel), current.reviewUrl);
+    if (refusal) return refusal;
+  }
+  // Field paths: only these two change — never a write-back of the config read above.
+  await ref.update({
+    "googleReviewConfig.reminder": reminder,
+    "googleReviewConfig.updatedAt": new Date(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
   return NextResponse.json({ ok: true, reminder });
 }
 

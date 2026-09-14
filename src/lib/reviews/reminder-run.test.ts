@@ -128,7 +128,6 @@ describe("stops without sending", () => {
 
   it.each([
     ["the contact opted out", () => mem.seed("contacts/c1", { ...mem.read("contacts/c1"), smsOptedOut: true }), "opted_out"],
-    ["the contact was deleted", () => mem.db.doc("contacts/c1").delete(), "contact_deleted"],
     ["the contact has no phone any more", () => mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone: "" }), "no_phone"],
     ["the sub-account can no longer send SMS", () => sendSms.mockRejectedValueOnce(new Error("carrier down")), "send_failed"],
   ])("%s (the dispatcher refuses; the reminder stops with its reason)", async (_l, arrange, reason) => {

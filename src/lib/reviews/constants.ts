@@ -46,7 +46,9 @@ export interface ReviewReminderSettings {
   maxRetries: number;
 }
 
-export const REMINDER_MAX_EVERY_DAYS = 30;
+/** 7, not GHL's 30: a reminder is one delayed QStash message, and the plan's
+ *  maximum delay is unconfirmed (the same cap scheduled messages use). */
+export const REMINDER_MAX_EVERY_DAYS = 7;
 export const REMINDER_MAX_RETRIES = 5;
 
 const isIntIn = (v: unknown, lo: number, hi: number): v is number =>
