@@ -9,12 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
-const script = vi.hoisted(() => ({ down: true, calls: 0 }));
+const script = vi.hoisted(() => ({ down: true, calls: 0, onCall: null as null | (() => void) }));
 vi.mock("./ai/select", () => ({
   getReviewsAiFor: async () => ({
     model: "scripted",
     classifySentiment: async (items: Array<{ id: string }>) => {
       script.calls++;
+      script.onCall?.();
       return items.map((i) => (script.down ? { id: i.id, label: null, failure: "call_failed" } : { id: i.id, label: "neutral" }));
     },
   }),
@@ -39,7 +40,7 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   await syncListing(SA, { trigger: "scheduled" });
   mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, reviewsAiEnabledByAgency: true });
-  Object.assign(script, { down: true, calls: 0 });
+  Object.assign(script, { down: true, calls: 0, onCall: null });
 });
 afterEach(() => {
   process.env = { ...ORIGINAL };
@@ -69,5 +70,23 @@ describe("a failed call (outage, revoked key, no credits)", () => {
     vi.setSystemTime(new Date(T0.getTime() + 11 * HOUR));
     expect(await classifyPendingSentiment(SA)).toMatchObject({ stopped: null, classified: 6 });
     expect(reviews().every((r) => r.sentiment)).toBe(true);
+  });
+
+  it("if un-counting the strike fails, the run still stops normally (conservative: the strike stays)", async () => {
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const real = storeDb.runTransaction.bind(storeDb);
+    let armed = false;
+    vi.spyOn(storeDb, "runTransaction").mockImplementation((async (fn: never) => {
+      if (armed) {
+        armed = false;
+        throw new Error("14 UNAVAILABLE"); // the first transaction after the call: uncountStrike's
+      }
+      return real(fn);
+    }) as never);
+    script.onCall = () => void (armed = true);
+    expect(await classifyPendingSentiment(SA)).toMatchObject({ stopped: "ai_error", failed: 1 });
+    expect(r7().sentimentAttempt).toMatchObject({ failures: 1 });
+    const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(warned).toContain("strike not un-counted kind=Error");
   });
 });

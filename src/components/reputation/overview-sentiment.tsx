@@ -49,6 +49,7 @@ export const STOP_MESSAGE: Record<string, string> = {
   budget: "The time allowed for this run ran out — the rest continues on the next run.",
   save_failed: "A label could not be saved — try again later.",
   ai_error: "The AI provider failed — try again later.",
+  ai_bad_answer: "The AI gave an unusable answer for a review — it will be retried, at most 3 times.",
   error: "The analysis stopped on an error — try again later.",
 };
 
@@ -167,7 +168,7 @@ export function SentimentCard(props: Props) {
       )}
       {sentiment.failed > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-sentiment-failed">
-          {sentiment.failed} couldn&apos;t be analysed (the AI answered badly three times; tried again only if the review is edited)
+          {sentiment.failed} couldn&apos;t be analysed (the AI rejected or answered it unusably three times; tried again only if the review is edited)
         </p>
       )}
       <p className="mt-3 text-xs text-muted-foreground">

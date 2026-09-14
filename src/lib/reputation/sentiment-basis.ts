@@ -56,7 +56,17 @@ function failuresNow(d: SentimentSource): { failures: number; lastAt: number | n
   return { failures: typeof a.failures === "number" ? a.failures : 0, lastAt: toMillis(a.lastAt) };
 }
 
-/** Given up: the current content failed MAX_SENTIMENT_FAILURES times ("couldn't be analysed"). */
+/**
+ * When the current content was last tried and not labelled (a strike or a
+ * transient failure); null when it never was. Orders the queue: fresh first.
+ */
+export function lastAttemptAt(d: SentimentSource): number | null {
+  const a = d.sentimentAttempt;
+  const basis = reviewBasis(d);
+  return a && basis !== null && a.basisHash === basis ? toMillis(a.lastAt) : null;
+}
+
+/** Given up: the AI rejected or answered the current content badly MAX_SENTIMENT_FAILURES times ("couldn't be analysed"). */
 export function sentimentGaveUp(d: SentimentSource): boolean {
   return currentSentiment(d) === null && failuresNow(d).failures >= MAX_SENTIMENT_FAILURES;
 }

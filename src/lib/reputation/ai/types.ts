@@ -18,11 +18,13 @@ export interface SentimentItem {
 }
 
 /**
- * A failed item says why — for the logs only. Every failed call counts as a
- * strike on the review (no "was it billed?" guessing), and the run stops on
- * its first failure (sentiment.ts), so an outage costs one strike per run.
+ * Why an item was not labelled. `call_failed` is TRANSIENT (no response, our
+ * timeout, 401 / 402 / 408 / 429 / 5xx) — retried after an hour, never a
+ * strike. `call_rejected` (another 4xx, a 200 with no content or an error
+ * body) and `bad_output` (the model answered unusably) are about this review
+ * and are strikes. The run stops on its first failure of any kind.
  */
-export type SentimentFailure = "call_failed" | "bad_output";
+export type SentimentFailure = "call_failed" | "call_rejected" | "bad_output";
 export type SentimentResult =
   | { id: string; label: SentimentLabel; failure?: undefined }
   | { id: string; label: null; failure: SentimentFailure };

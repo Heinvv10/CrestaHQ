@@ -147,6 +147,7 @@ describe("Analyse now", () => {
     ["gate_off", 0, "Reviews AI was switched off — nothing more was analysed."],
     ["no_listing", 0, "No Google listing is selected, so there are no reviews to analyse."],
     ["ai_error", 1, "Labelled 1 review. 3 reviews left for the next run. The AI provider failed — try again later."],
+    ["ai_bad_answer", 1, "Labelled 1 review. 3 reviews left for the next run. The AI gave an unusable answer for a review — it will be retried, at most 3 times."],
     ["error", 0, "The analysis stopped on an error — try again later."],
   ])("a run that stopped (%s) ends with its reason, never 'Still analysing'", async (reason, classified, text) => {
     await render(props());
@@ -165,8 +166,8 @@ describe("the last run's AI failure (cron or manual)", () => {
     );
   });
 
-  it("is not shown after a run that finished or stopped for another reason", async () => {
-    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 3, skipped: 0, failed: 0, at: "2026-09-14T06:00:00.000Z", reason: "daily_cap" } } }));
+  it.each(["daily_cap", "ai_bad_answer", null])("is not shown after a run that stopped with %s", async (reason) => {
+    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 3, skipped: 0, failed: 0, at: "2026-09-14T06:00:00.000Z", reason } } }));
     expect(byId("rep-sentiment-ai-error")).toBeNull();
   });
 });

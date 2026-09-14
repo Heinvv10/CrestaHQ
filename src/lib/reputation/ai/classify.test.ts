@@ -88,14 +88,27 @@ describe("strict validation — never guess", () => {
   );
 
   it.each([
-    ["a 500", new Error("OpenRouter 500: upstream")],
-    ["a 429", new Error("OpenRouter 429: slow down")],
-    ["a network error", new TypeError("fetch failed")],
-  ])("%s is a failed call — unlabelled, no guess about billing", async (_l, err) => {
+    ["a network error (no response)", new TypeError("fetch failed"), "call_failed"],
+    ["our timeout", new Error("OpenRouter request timed out after 30000ms (model m)"), "call_failed"],
+    ["our abort", new Error("OpenRouter request aborted by the caller"), "call_failed"],
+    ["a body read aborted", Object.assign(new Error("This operation was aborted"), { name: "AbortError" }), "call_failed"],
+    ["no key", new Error("OPENROUTER_API_KEY is not set — AI replies require it."), "call_failed"],
+    ["401", new Error("OpenRouter 401: unauthorized"), "call_failed"],
+    ["402", new Error("OpenRouter 402: payment required"), "call_failed"],
+    ["408", new Error("OpenRouter 408: request timeout"), "call_failed"],
+    ["429", new Error("OpenRouter 429: slow down"), "call_failed"],
+    ["500", new Error("OpenRouter 500: upstream"), "call_failed"],
+    ["503", new Error("OpenRouter 503: unavailable"), "call_failed"],
+    ["400", new Error("OpenRouter 400: bad request"), "call_rejected"],
+    ["403 (moderation)", new Error("OpenRouter 403: flagged"), "call_rejected"],
+    ["422", new Error("OpenRouter 422: unprocessable"), "call_rejected"],
+    ["a 200 with no content", new Error("OpenRouter returned no message content"), "call_rejected"],
+    ["a 200 with an error body", new Error("OpenRouter: model refused"), "call_rejected"],
+  ])("%s → %s", async (_l, err, failure) => {
     callAi.mockRejectedValueOnce(err);
-    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "call_failed" }]);
+    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure }]);
     const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(warned).toContain("kind=call_failed");
+    expect(warned).toContain(`kind=${failure}`);
   });
 });
 
@@ -129,12 +142,16 @@ describe("a failed call's log line (SP5 b round 4)", () => {
 });
 
 describe("the whole call is bounded (headers and body)", () => {
-  it(`a call that never finishes (a stalled body) is a failed call after ${REVIEWS_AI_CALL_MS / 1000} s — well under the lease`, async () => {
+  it(`a call that never finishes (a stalled body) is ABORTED at ${REVIEWS_AI_CALL_MS / 1000} s — a transient failure, well under the lease`, async () => {
     vi.useFakeTimers();
     try {
-      callAi.mockImplementationOnce(() => new Promise(() => {})); // headers came, the body never does
+      let seen: AbortSignal | undefined;
+      callAi.mockImplementationOnce(({ signal }: { signal: AbortSignal }) => ((seen = signal), new Promise(() => {}))); // the body never comes
       const pending = openRouterReviewsAi("m").classifySentiment(items(1));
-      await vi.advanceTimersByTimeAsync(REVIEWS_AI_CALL_MS + 1);
+      await vi.advanceTimersByTimeAsync(REVIEWS_AI_CALL_MS - 1);
+      expect(seen?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(seen?.aborted).toBe(true); // the request itself is aborted, not just abandoned
       await expect(pending).resolves.toEqual([{ id: "doc0", label: null, failure: "call_failed" }]);
       expect(REVIEWS_AI_CALL_MS).toBeLessThan(5 * 60_000); // SENTIMENT_LEASE_TTL_MS
     } finally {

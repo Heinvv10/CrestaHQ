@@ -17,7 +17,8 @@ import { toMillis } from "@/lib/gbp/sync/types";
  *     reply moves it. Missing or negative values are excluded and counted.
  *   - sentiment: current labels (SP5 b) over the reviews in range — the
  *     caller passes only a label derived from the review's current content;
- *     "couldn't be analysed" = the AI failed on it 3 times; any other review
+ *     "couldn't be analysed" = the AI rejected or answered it unusably 3 times
+ *     (transient failures never count); any other review
  *     without a label is "not analysed yet".
  *   - requests are counted from the reviewRequests log, from the first logged
  *     request (`countingSince`); they are never linked to reviews. Only rows

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Loader2, Lock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -72,9 +72,14 @@ export function ReputationOverview() {
   const { subAccountId, isAdmin } = useSubAccount();
   const [range, setRange] = useState<RangePreset>("90d");
   const [load, setLoad] = useState<Load>({ state: "loading" });
-  /** Bumped after "Analyse now" so the counts refresh in place. */
+  /** Bumped to re-read in place (Analyse now polling, a sent request). */
   const [reload, setReload] = useState(0);
-  const refresh = useCallback(() => setReload((n) => n + 1), []);
+  /** Set by an Analyse-now poll: a failed re-read then keeps what is on screen. */
+  const polling = useRef(false);
+  const refresh = useCallback(() => {
+    polling.current = true;
+    setReload((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -82,9 +87,13 @@ export function ReputationOverview() {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/reputation/overview?range=${range}`, { signal: controller.signal }).catch(() => null);
       const data = (await res?.json().catch(() => null)) as OverviewResponse | null;
       if (controller.signal.aborted) return;
-      // A failed RE-read (Analyse now polling) keeps what is on screen, so the card
-      // is not unmounted mid-poll; a first load or a range change shows the error.
-      setLoad((prev) => (res?.ok && data?.requests ? { state: "ready", data } : prev.state === "ready" ? prev : { state: "error" }));
+      // Only an Analyse-now poll keeps what is on screen after a failed re-read
+      // (so the polling card is not unmounted); any other failure shows the error.
+      const keep = polling.current;
+      polling.current = false;
+      setLoad((prev) =>
+        res?.ok && data?.requests ? { state: "ready", data } : keep && prev.state === "ready" ? prev : { state: "error" },
+      );
     })();
     return () => controller.abort();
   }, [subAccountId, range, reload]);

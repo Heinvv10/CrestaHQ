@@ -25,9 +25,10 @@ import {
 export const BATCH_SIZE = REVIEWS_AI_BATCH;
 
 /**
- * The whole call — headers AND body — must end within this, well under the
- * classifier's 5-minute lease, so a call can never outlive the run that
- * started it. (`callAi`'s own timeout covers the request until headers only.)
+ * The whole call — headers AND body — gets this long. At the deadline the
+ * request is ABORTED (callAi's caller `signal`, armed through the body read)
+ * and the item is a failed call; the provider may still bill an aborted call.
+ * Well under the classifier's 5-minute lease.
  */
 export const REVIEWS_AI_CALL_MS = 60_000;
 
@@ -38,16 +39,45 @@ class CallTimeout extends Error {
   }
 }
 
-function bounded<T>(work: Promise<T>): Promise<T> {
+/** Abort at the deadline; also stop waiting then, even if a callee ignored the signal. */
+async function bounded<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const limit = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new CallTimeout()), REVIEWS_AI_CALL_MS);
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new CallTimeout());
+    }, REVIEWS_AI_CALL_MS);
   });
-  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+  try {
+    return await Promise.race([start(controller.signal), limit]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The HTTP status of a failed call, from callAi's "OpenRouter <status>: …" — never the body. */
 const statusOf = (err: unknown) => /^OpenRouter (\d{3})\b/.exec(err instanceof Error ? err.message : "")?.[1] ?? "none";
+
+/**
+ * Transient — worth another try later, NOT a strike: no response at all
+ * (network / DNS / connect error — fetch threw before any "OpenRouter …"
+ * message), our own timeout or abort, a missing key, or HTTP 401 / 402 / 408
+ * / 429 / 5xx (key, credits, rate, provider trouble). Everything else — any
+ * other 4xx (400, 403 moderation, 422), a 200 with no content or an error
+ * body — is about this review's request and counts as a strike.
+ */
+export function transientFailure(err: unknown): boolean {
+  if (err instanceof CallTimeout || (err instanceof Error && err.name === "AbortError")) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = statusOf(err);
+  if (status !== "none") {
+    const code = Number(status);
+    return code === 401 || code === 402 || code === 408 || code === 429 || code >= 500;
+  }
+  if (/timed out|aborted by the caller|OPENROUTER_API_KEY is not set/.test(msg)) return true;
+  return !msg.startsWith("OpenRouter"); // "OpenRouter returned no message content" / "OpenRouter: <error>" strike
+}
 
 const SYSTEM = [
   "You label customer reviews of a local business by sentiment.",
@@ -55,7 +85,7 @@ const SYSTEM = [
   'Reply with ONLY a JSON object {"results":[{"id":"<id>","label":"positive"|"neutral"|"negative"}]} with exactly one result per review id and nothing else.',
 ].join("\n");
 
-type Kind = "unparseable" | "invalid_label" | "unknown_id" | "duplicate" | "missing" | "call_failed";
+type Kind = "unparseable" | "invalid_label" | "unknown_id" | "duplicate" | "missing" | "call_failed" | "call_rejected";
 
 function warn(kind: Kind, n: number, extra = "") {
   console.warn(`[reputation/ai] sentiment: ${n} item(s) unlabelled kind=${kind}${extra ? ` ${extra}` : ""}`);
@@ -78,7 +108,7 @@ async function classifyBatch(model: string, batch: SentimentItem[]): Promise<Sen
   const localIds = batch.map((_, i) => String(i + 1));
   let text: string;
   try {
-    const res = await bounded(callAi({
+    const res = await bounded((signal) => callAi({
       model,
       temperature: 0,
       maxTokens: 40 * batch.length + 60,
@@ -86,11 +116,13 @@ async function classifyBatch(model: string, batch: SentimentItem[]): Promise<Sen
         { role: "system", content: SYSTEM },
         { role: "user", content: JSON.stringify({ reviews: batch.map((r, i) => ({ id: localIds[i], stars: r.starRating, text: r.text })) }) },
       ],
+      signal,
     }));
     text = res.text;
   } catch (err) {
-    warn("call_failed", batch.length, `status=${statusOf(err)}`);
-    return failAll(batch, "call_failed");
+    const failure = transientFailure(err) ? "call_failed" : "call_rejected";
+    warn(failure, batch.length, `status=${statusOf(err)}`);
+    return failAll(batch, failure);
   }
   const results = parseResults(text);
   if (!results) {
@@ -99,7 +131,7 @@ async function classifyBatch(model: string, batch: SentimentItem[]): Promise<Sen
   }
   const seen = new Map<string, SentimentLabel | null>();
   const bad: Record<Kind, number> = {
-    unparseable: 0, invalid_label: 0, unknown_id: 0, duplicate: 0, missing: 0, call_failed: 0,
+    unparseable: 0, invalid_label: 0, unknown_id: 0, duplicate: 0, missing: 0, call_failed: 0, call_rejected: 0,
   };
   for (const r of results) {
     const { id, label } = (r ?? {}) as { id?: unknown; label?: unknown };

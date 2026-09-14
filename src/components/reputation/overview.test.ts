@@ -252,6 +252,13 @@ describe("a failed re-read while polling (SP5 b)", () => {
     expect(byId("rep-sentiment-analyse")?.hasAttribute("disabled")).toBe(true); // still waiting
   });
 
+  it("a failed re-read that is NOT an Analyse-now poll (a sent request) shows the error", async () => {
+    await render();
+    status = 502;
+    await act(async () => sendButton.onSent?.());
+    expect(byId("rep-state-error")).not.toBeNull();
+  });
+
   it("a failed FIRST load still shows the error", async () => {
     status = 502;
     await render();

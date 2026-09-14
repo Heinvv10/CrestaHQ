@@ -8,7 +8,15 @@ import type { SubAccountDoc } from "@/types";
 import { reviewsAiConfigured } from "./ai/mode";
 import { getReviewsAiFor } from "./ai/select";
 import type { ReviewsAi } from "./ai/types";
-import { aiRetryAllowed, currentSentiment, ratingLabel, reviewBasis, sentimentGaveUp, type SentimentSource } from "./sentiment-basis";
+import {
+  aiRetryAllowed,
+  currentSentiment,
+  lastAttemptAt,
+  ratingLabel,
+  reviewBasis,
+  sentimentGaveUp,
+  type SentimentSource,
+} from "./sentiment-basis";
 import { beginCall, finishCall, uncountStrike, type StopReason } from "./sentiment-calls";
 import { acquireSentimentLease, releaseSentimentLease } from "./sentiment-lease";
 
@@ -25,7 +33,9 @@ import { acquireSentimentLease, releaseSentimentLease } from "./sentiment-lease"
  *     `beginCall` (one transaction) re-reads the lease, the gates, the
  *     listing, the daily usage and the review; it stops the run, drops the
  *     review, or counts the call and writes a strike. A label clears the
- *     strike (`finishCall`); any failure keeps it and stops the run.
+ *     strike (`finishCall`); a transient failure un-counts it; a rejected or
+ *     unusable answer keeps it. Any failure stops the run. Reviews already
+ *     tried queue after fresh ones.
  *   - NEVER RE-BILLED on re-sync: the basis check, the attempt limit, one
  *     lease per sub-account renewable only by its owner, a daily cap of 300
  *     calls, and a 240 s budget per run.
@@ -96,9 +106,10 @@ async function writeRatingLabels(sa: string, items: Pending[], now: Date): Promi
 
 /**
  * Text reviews, one AI call each, `beginCall` immediately before its call.
- * The run STOPS on the first failure of any kind (the call, the provider, the
- * write): an outage or exhausted credits costs one strike per run, never the
- * backlog. Returns the stop reason, or null when every item was handled.
+ * The run STOPS on the first failure of any kind: `ai_error` (transient —
+ * no strike), `ai_bad_answer` (a strike), `save_failed` (a strike). So an
+ * outage costs one call per run and one bad review costs one call per hour,
+ * never the backlog. Returns the stop reason, or null when all were handled.
  */
 async function classifyText(
   sa: string,
@@ -141,10 +152,16 @@ async function classifyText(
       r = { id: p.docId, label: null, failure: "call_failed" };
     }
     if (!r?.label) {
-      // A bad answer is a strike; a failed call is not (lastAt still waits an hour). Either way: stop.
-      if (r?.failure === "call_failed") await uncountStrike(sa, p, begun.failures);
       counts.failed++;
       rest();
+      if (r?.failure !== "call_failed") return "ai_bad_answer"; // rejected or unusable: the strike stays
+      // Transient: not a strike, but lastAt still waits an hour. If the un-count
+      // itself fails the strike stays — conservative: at worst one strike too many.
+      try {
+        await uncountStrike(sa, p, begun.failures);
+      } catch (err) {
+        console.warn(`[reputation/sentiment] sa=${sa} strike not un-counted kind=${err instanceof Error ? err.name : typeof err}`);
+      }
       return "ai_error";
     }
     try {
@@ -190,7 +207,7 @@ export async function classifyPendingSentiment(
 
     const { reviews } = await loadServedReviews(subAccountId, locationName!, now);
     let waiting = 0; // text reviews in their retry hour (not given up): a later run owes them a call
-    const pending: Pending[] = reviews.flatMap((r) => {
+    const eligible = reviews.flatMap((r) => {
       const basis = reviewBasis(r);
       if (basis === null || currentSentiment(r) !== null) return [];
       const comment = typeof r.comment === "string" ? r.comment : null;
@@ -198,8 +215,14 @@ export async function classifyPendingSentiment(
         if (!sentimentGaveUp(r)) waiting++;
         return [];
       }
-      return [{ docId: String(r.docId), starRating: r.starRating as number, comment, basis }];
+      return [{ docId: String(r.docId), starRating: r.starRating as number, comment, basis, tried: lastAttemptAt(r) }];
     });
+    // Fresh reviews first (newest first, as served), then ones already tried,
+    // longest-waiting first — one troublesome review can never block the backlog.
+    const pending: Pending[] = [
+      ...eligible.filter((x) => x.tried === null),
+      ...eligible.filter((x) => x.tried !== null).sort((a, b) => (a.tried as number) - (b.tried as number)),
+    ].map(({ tried: _tried, ...p }) => p);
     const max = opts.max ?? SENTIMENT_MAX_PER_RUN;
     counts.skipped += Math.max(0, pending.length - max);
     const batch = pending.slice(0, max);

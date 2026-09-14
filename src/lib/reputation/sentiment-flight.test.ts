@@ -148,10 +148,10 @@ describe("the strike", () => {
     const target = docOf("fake-r6").id; // the second text review, newest first
     script.fail.add(target);
     const out = await classifyPendingSentiment(SA);
-    expect(out).toMatchObject({ stopped: "ai_error", classified: 2, failed: 1, skipped: 4 }); // star-only + r7, then r6 fails
+    expect(out).toMatchObject({ stopped: "ai_bad_answer", classified: 2, failed: 1, skipped: 4 }); // star-only + r7, then r6 fails
     expect(script.calls).toHaveLength(2);
     expect(docOf("fake-r6").sentimentAttempt).toMatchObject({ failures: 1 });
-    expect(lease()).toMatchObject({ lastRun: { reason: "ai_error" } });
+    expect(lease()).toMatchObject({ lastRun: { reason: "ai_bad_answer" } });
     expect(lease().lastCompleteAt).toBeUndefined();
   });
 

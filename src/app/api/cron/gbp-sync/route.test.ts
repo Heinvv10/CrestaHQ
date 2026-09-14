@@ -180,16 +180,30 @@ describe("manual and scheduled share one core", () => {
 describe("sentiment after the response (SP5 b)", () => {
   it("hands every run the sweep made to sentiment in one deferred batch", async () => {
     handed.mockClear();
+    // A frozen clock that the SWEEP moves on by a minute: the deadline must be
+    // taken at request start, before the sweep, not after it.
     const startedAt = Date.now();
-    expect((await cron()).status).toBe(200);
-    const endedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: startedAt });
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const realCollection = storeDb.collection.bind(storeDb);
+    let moved = false;
+    vi.spyOn(storeDb, "collection").mockImplementation(((path: string) => {
+      if (!moved) {
+        moved = true;
+        vi.setSystemTime(new Date(startedAt + 60_000));
+      }
+      return realCollection(path);
+    }) as never);
+    try {
+      expect((await cron()).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(moved).toBe(true);
     expect(handed).toHaveBeenCalledTimes(1);
     const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
-    // The one deadline for every tenant: the request's start + 240 s — the
-    // request started somewhere between startedAt and endedAt.
-    const deadline = handed.mock.calls[0][1] as number;
-    expect(deadline).toBeGreaterThanOrEqual(startedAt + 240_000);
-    expect(deadline).toBeLessThanOrEqual(endedAt + 240_000);
+    // The one deadline for every tenant: exactly the request's start + 240 s.
+    expect(handed.mock.calls[0][1]).toBe(startedAt + 240_000);
     expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
     expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
   });

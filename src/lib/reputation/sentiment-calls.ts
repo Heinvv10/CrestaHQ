@@ -44,8 +44,10 @@ export type StopReason =
   | "listing_changed"
   | "daily_cap"
   | "budget"
-  /** The AI call failed or answered badly, or the provider could not be obtained. */
+  /** A transient AI failure (no response, timeout, 401/402/408/429/5xx) or no provider: not a strike. */
   | "ai_error"
+  /** The AI rejected or answered this review unusably: a strike. */
+  | "ai_bad_answer"
   /** A label came back but could not be written (the strike stays). */
   | "save_failed";
 
