@@ -1,52 +1,59 @@
-> **There is a second open handoff:** `.claude/handoffs/2026-09-13-wave1-goals.md` (wave-1 parity goals; lives in the shared checkout). Read it if continuing that work.
+> **There is a second open handoff:** `.claude/handoffs/2026-09-13-wave1-goals.md` (wave-1 parity goals; lives in the shared checkout). Read it if continuing that work. The SP2 handoff is `.claude/handoffs/2026-09-13-1935.md`.
 
-# Handoff — 2026-09-13 19:35 SAST
+# Handoff — 2026-09-14 08:18 SAST
 
 **Project:** CrestaHQ (LeadStack CRM)
-**Branch:** docs/sp2-ledger-status (worktree `/home/hein/Workspace/CrestaHQ-wt-sp2docs`) — ledger + this handoff
-**Session goal:** SP2 — Conversations / unified inbox at GHL parity (ledger, build (a)–(g), Velocity WA backfill, FB/IG behind the gate), under the Level-3 merge boundary, no deploy.
+**Branch:** docs/sp3-ledger-final (worktree `/home/hein/Workspace/CrestaHQ-wt-sp3-docs`) — final ledger + this handoff
+**Session goal:** SP3 — Calendars & booking at GoHighLevel (GHL) parity: ledger, build (a)–(f) one PR each, runtime-verify voice booking (R1) and a QStash reminder (R2) on #1000, under the Level-3 merge boundary, no deploy.
 
 ## Status
-All SP2 build PRs are merged to `main`, the last being (f) channel switcher #112 (`a7dd3aa`). **Update 21:14 SAST:** deployed to crm.crestahq.com at `ecfe6d3` (Hein-approved, gates green) and walked on #1000 — see "Live on #1000" in `docs/parity/sp2.md`; screenshots in `docs/parity/evidence/sp2/prod-1000/`. Production Firestore rules are byte-identical to `main` `a7dd3aa` (verified after #112) and indexes were redeployed from main; no open PR touches rules. The ledger `docs/parity/sp2.md` carries per-row status, the review log, what waits on Hein, and follow-ups.
+Every SP3 build PR is merged to `main`; the last is (f) appointments list #119 (`d0c3893`, 2026-09-14 08:16). **Nothing is deployed** — production crm.crestahq.com still runs pre-SP3 code, including the live forged-identity-header vulnerability that #116 fixes. Production Firestore rules and indexes were deployed from `main` after #115 (the last SP3 PR that changed them) and verified live with the client SDK. #119 and #120 touch no rules. The ledger `docs/parity/sp3.md` has per-row status, evidence links, a build log, decisions taken during review, findings outside scope and follow-ups.
 
 ## What got done this session
-- #101 ledger (`docs/parity/sp2.md`, GHL side-by-side screenshots in `docs/parity/evidence/sp2/ghl/`), WhatsApp exclusion struck in `docs/PARITY_PROGRAM.md`.
-- #105 (a) split-pane inbox: Unread/All/Starred tabs, scope, channel + direction filters, star, mark unread, sort; Conversations is the second full-bleed page.
-- #106 (b) conversation owner = contact owner, mirrored server-side in a transaction; internal notes (contact notes, `source: "conversation"`); email search (`contactEmail` mirror); `assigneeUid` removed from client-writable rules.
-- #108 (c) snippets (server-only `snippets/{id}`, `/sa/[id]/conversations/snippets`) + one merge-tag renderer (`src/lib/messaging/merge-tags.ts`); Send never rewrites text; caret-in-same-commit fix (`src/hooks/use-caret-insert.ts`).
-- #111 (d) Send later: send logic extracted to `src/lib/server/conversation-send/*` (live routes byte-identical, parity tests), `contacts/{id}/scheduledMessages`, QStash worker `/api/scheduled-messages/fire` (claim txn, 15-min late cutoff, `unconfirmed` status, 7-day max, stale-sending dismiss).
-- #103 (e) email threading proven end to end + 3 fixes. #104 (g) missed-call text-back unit + E2E with a fenced fake SMS provider (`src/lib/comms/sms/`, deploy guard extended).
-- #102 (v) Velocity WA backfill script (`scripts/ghl-wa-backfill*.ts`) — dry run only.
-- #113 `E2E_PORT` so local E2E runs stop colliding with CI on `:3100`.
-- #112 (f) channel switcher with reasons + WhatsApp 24h window + template picker; send-template now updates the conversation after a successful send.
-- Rules deployed by hand after #105/#106/#108 and as a union with SP3 #109. #1000 owner/email mirror backfill run (206 written).
+- #109 (a) calendar types (personal, round robin with availability/equal distribution + priority, collective, class with seats, service) and one availability resolver `src/lib/booking/resolve-availability.ts` used by every caller (availability, book, reschedule, voice). `85b1eae`.
+- #110 (b) date overrides, before/after buffers, slot interval. It also fixed a pre-existing bug that made every booking 409 in zones at UTC+12 or later, plus a DST wall-time bug. `0259149`.
+- #107 (c) status lifecycle: `src/lib/server/event-status-service.ts`, triggers `booking.confirmed` / `booking.showed` / `booking.no_show`, and reschedule side effects in `src/lib/booking/reschedule.ts`. `c3f52bb`.
+- #115 (d) Google Calendar two-way sync: per-member tokens at `subAccounts/{sa}/private/googleCalendar_{uid}`, busy blocking, push with deterministic ids, token refresh, and a fenced fake provider for E2E. `calendar.events` scope added in the Google console; the consent screen stays in **Testing** (test users blitzfibre1@gmail.com, ai@velocityfibre.co.za), not submitted for verification. `f0e475a`.
+- #116 (e) embeddable widget and reschedule/cancel links. It also fixes the **live** vulnerability: middleware passed a client-sent `x-user-uid` through on public paths, so `DELETE /api/forms/[id]` could be forged. `8cdb7c7`.
+- #120 late-"now" regression tests and the `e2e/lib/booking-windows.ts` fail-fast guard. `bd58674`.
+- #119 (f) appointments list at `/sa/[id]/calendar/appointments` with tabs, filters and a row status menu. 4 fix rounds. `d0c3893`.
+- R2 done: a QStash reminder fired on #1000 (DELIVERED 200) and the email arrived. Probe data was cleaned up.
+- R1 partly done: voice booking **cannot run in production** because `OPENROUTER_API_KEY` and all `VAPI_*` are empty there. The code path was proven locally against #1000 with a scripted LLM; the probe data was deleted.
+- Browser evidence is under `docs/parity/evidence/sp3/`. It was taken on the E2E fixture tenant from a local build, not on #1000.
+- Removed 15 merged, clean SP3 worktrees.
 
 ## What's next
-1. Merge the ledger/handoff PR from `docs/sp2-ledger-status` if it isn't merged yet.
-2. Any future `firebase deploy`: check open PRs touching `firestore.rules` FIRST as its own step, deploy the union (memory `feedback_rules_deploy_check_then_deploy`).
-3. Done 2026-09-13: deployed `ecfe6d3` and walked on #1000. Remaining live proofs need a WhatsApp sender + a dedicated Twilio number on #1000, and Meta App Review.
+1. Merge the docs PR from `docs/sp3-ledger-final` (ledger final status + evidence + this handoff) if it isn't merged.
+2. **Deploy, once Hein approves it, after 17:00 on a weekday:** `bash scripts/deploy-velo.sh` from the deploy checkout. Then:
+   - Re-verify the forged-header fix with a curl that sends `x-user-uid` without a session to `DELETE /api/forms/<fixture form>`; expect 401.
+   - Walk SP3 on #1000 and add screenshots under `docs/parity/evidence/sp3/prod-1000/`.
+   - Re-run the "E2E smoke (production)" workflow.
+3. After the prod keys are set: re-run R1 (a real Vapi call books on #1000).
+4. Any later `firebase deploy`: check open PRs touching `firestore.rules` FIRST, as its own step, then deploy the union (memory `feedback_rules_deploy_check_then_deploy`).
+5. Follow-ups are listed in `docs/parity/sp3.md` "Follow-ups". The most useful are:
+   - `maxPerDay` is not re-checked at book time.
+   - A v1 PATCH that resends an unchanged completed/no-show status on a future event returns 409.
 
 ## Open questions / blockers
-- **Velocity WA backfill write:** 136 writable (dry run); 80 unknown GHL contacts carry 140 more (create them or not?). Approved report `~/.local/share/crestahq/ghl-wa-backfill-report-2026-09-13.json`; exact command in PR #102 comments. Hein's call.
-- **Owner/email mirror backfill** for Blitz (21) / Velocity (3) / Vortex (54) — dry run only; `scripts/backfill-conversation-owner-email.ts --write --sub-account <id>`. Hein's call.
-- **Missed-call live:** #1000 has no dedicated Twilio number (`twilioConfig: null`, gate off).
-- **FB/IG live:** Meta App Review for app 1400409065548643 — not submitted.
-- **Upstash plan:** scheduling capped at 7 days until the prod plan's max delay is confirmed.
-- **Live email route** never refused `emailOptedOut` contacts server-side (scheduled sends do) — flagged, unchanged.
+- **Deploy approval (Hein).** Every SP3 PR, and the fix for the live form-delete vulnerability, is waiting on it.
+- **Production AI keys (Hein).** `OPENROUTER_API_KEY` and `VAPI_*` are empty on crm.crestahq.com. No AI reply or voice call can run until they're set.
+- **Google verification.** Needed before non-test users can connect Google Calendar. Not submitted, per the goal.
+- **"E2E smoke (production)" fails on every `main` push.** It runs `main`'s specs against production, which lacks SP3. `workflow-enrol.spec.ts` also fails there with `Invalid signature` from the step worker. That failure was not investigated and may be a real production issue.
 
 ## Context the next session needs
-- The shared checkout `/home/hein/Workspace/CrestaHQ` holds another session's uncommitted changes, including edits to `src/components/auth/login-form.tsx` (drops `safeRedirect` → open redirect) and `src/lib/api/webhooks/signing.ts` (reverts the byte-length `timingSafeEqual` guard). A security scanner flagged them. They are NOT on `main` — never commit them.
-- `gh` GraphQL fails and `gh api --jq`/`-F body=@` intermittently returned "unexpected end of JSON"; `curl` with the Heinvv10 token (`env -u GITHUB_TOKEN -u GH_TOKEN gh auth token --user Heinvv10`) worked every time. GitHub returned one transient 500 on PR create.
-- Local E2E: use `E2E_PORT=31xx NEXT_PUBLIC_APP_URL=http://127.0.0.1:31xx` (build + run), CI's fake-provider env, and throwaway QStash values with `QSTASH_URL=http://127.0.0.1:9` — `.env.local` holds PRODUCTION QStash + Firebase keys. The (f) builder ran some early local specs with `.env.local` QStash as-is (loopback app URL; schedule registration skips loopback); not audited for stray publishes from the other inbox specs.
-- The fixture sub-account is shared with every CI E2E run and other sessions (SP3 is active): contacts vanish mid-run when CI's teardown purges. `pgrep -af playwright` false-matches CI's `next build`; use `pgrep -u gha-crestahq -f "playwright test"`.
-- Two main-CI failures were host networking on velo-server (Docker interface attach + DNS timeouts during Firebase sign-in), proven from traces + journal — not code.
-- Browser reviewers must kill the child `next-server`, not just the parent node (one left `:3200` held for an hour).
-- DO NOT RESURRECT: `--create-missing-contacts` in the backfill script — removed after review (it could create unconfirmed duplicate contacts; the phone lookup swallowed 401/403/429).
-- DO NOT RESURRECT: Send-time merge-tag re-render / implicit "fill then stop" in the composer — replaced by an explicit one-shot "Fill merge fields"; the re-render rewrote contact text that looked like a tag.
+- Several PRs used an E2E-only flag, `E2E_DISABLE_BOOKING_RATE_LIMITS=1`, fenced to a loopback app URL (`src/lib/booking/rate-limit-e2e.ts`). The deploy guard refuses the name. Never set it in `.env.production`.
+- The Google Calendar fake provider needs `GCAL_PROVIDER=fake` + a loopback URL + `GCAL_FAKE_ALLOW_PROD_BUILD` + `GCAL_FAKE_AGENCY_ID`; the deploy guard refuses it.
+- Events are client-locked in `firestore.rules` on `hostUids`, `serviceId`, `serviceName`, `mode`, `googleEventIds`, `googleSyncError`, `googleSyncRetryAt`, `assignedToUid`, `assignedToName`, `source` and `bookingPageSlug`. A client delete is refused while `googleEventIds` is non-empty; the UI goes through `DELETE /api/events/by-id/[id]`.
+- Google disconnect deliberately does **not** revoke at Google, because the OAuth client is shared with GBP.
+- The fixture sub-account is shared by CI E2E and every session. A spec that leaves hostless events breaks other booking specs; `assertWindowsClear` now names the polluter. Never run local E2E while CI is queued or running; there is one self-hosted runner, port 3100.
+- Every fix round on this goal introduced at least one new defect that the fix-round review caught (#109 infinite slot loop, #107 test mode firing live workflows, #115 orphaned deletes, #119 v1 partial writes). Keep reviewing each fix round as its own target.
+- `/home/hein/Workspace/CrestaHQ-wt-sp3-appts` has 2 re-captured, uncommitted screenshots in `docs/parity/evidence/sp3/f-appointments/`. The committed versions are the reviewed ones. The worktree can be removed once someone decides the new captures aren't needed.
+- Local branches `feat/sp3-*` and `fix/sp3-day-walk` are merged; the remote branches are deleted.
 
 ## Git state
-- **Uncommitted:** clean in `CrestaHQ-wt-sp2docs` apart from this handoff.
-- **Worktrees of this session:** `CrestaHQ-wt-sp2docs` (this branch); `CrestaHQ-wt-sp2` and `CrestaHQ-wt-sp2f` are merged and removable.
+- **Uncommitted:** ledger, PARITY_PROGRAM and this handoff in `CrestaHQ-wt-sp3-docs`, to be committed in the docs PR.
+- **Unpushed commits:** `docs/sp3-ledger-final` (evidence commit 29537ce + merge of main) until the docs PR is pushed.
+- **Stashes:** none.
 
 ## Where to resume
-Read this file and `docs/parity/sp2.md` ("Waiting on Hein" + "Follow-ups"). SP2 is deployed and walked on #1000; start from "Waiting on Hein" (Velocity backfill write).
+Read this file, then `docs/parity/sp3.md` → "Build log" and "Follow-ups". If Hein has approved a deploy, start at "What's next" step 2.
