@@ -201,6 +201,41 @@ describe("the in-memory memo (10 min per sub-account + connection + location + r
     expect((await get()).status).toBe(424);
   });
 
+  it("is isolated per sub-account: OTHER_SA on the same location and connectedAt gets its own numbers", async () => {
+    setScenario(OTHER_SA, (s) => void (s.insights = { [LOC_A]: { ...PATTERNS[LOC_A], CALL_CLICKS: [7] } }));
+    expect(mem.read(`subAccounts/${OTHER_SA}`)?.googleListing).toMatchObject({ locationName: LOC_A });
+    const days = dayNumbers("2026-09-07", "2026-09-13");
+    const mine = await get("?range=7d");
+    const theirs = await get("?range=7d", "uid_other_admin", OTHER_SA);
+    expect(mine.body.groups.calls.current).toBe(sumPattern([0, 1], days));
+    expect(theirs.status).toBe(200);
+    expect(theirs.body.groups.calls.current).toBe(7 * 7);
+  });
+
+  it("isListing and the title are the listing's NOW, not the memo's", async () => {
+    await get();
+    setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "transient" }));
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, { ...sub, googleListing: { ...(sub.googleListing as object), title: "Renamed Fixture Listing" } });
+    const again = await get();
+    expect(again.status).toBe(200);
+    expect(again.body.location).toEqual({ name: LOC_A, title: "Renamed Fixture Listing", isListing: true });
+  });
+
+  it("a listing change drops the old listing's entry: viewed as another location it is re-verified", async () => {
+    await get();
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, {
+      ...sub,
+      googleListing: { ...(sub.googleListing as object), locationName: LOC_B, title: "Velo Test Fibre — Gqeberha North" },
+    });
+    // Discovery must run for LOC_A now; the scripted failure proves it did.
+    setScenario(SA, (s) => void (s.failNext = { op: "listAccounts", kind: "transient" }));
+    expect((await get(`?location=${encodeURIComponent(LOC_A)}`)).status).toBe(424);
+    const verified = await get(`?location=${encodeURIComponent(LOC_A)}`);
+    expect(verified.body.location).toEqual({ name: LOC_A, title: "Velo Test Fibre — Gqeberha", isListing: false });
+  });
+
   it("never memoises a refusal", async () => {
     setScenario(SA, (s) => void (s.failNext = { op: "fetchDailyMetrics", kind: "transient" }));
     expect((await get()).status).toBe(424);

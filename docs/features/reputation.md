@@ -94,9 +94,11 @@ review link configured (`resolveReviewUrl(sub).configured`), a widget exists
   website clicks, direction requests, conversations, bookings — covering the
   current and previous windows. **Nothing is stored**: the body lives in an
   in-memory memo for 10 minutes per sub-account + connection (`connectedAt`) +
-  location + range + window end, per instance (`lib/gbp/insights.ts`); a
-  refusal is never kept. An entry for another location exists only after
-  discovery passed for that same connection.
+  current listing + location + range + window end, per instance
+  (`lib/gbp/insights.ts`); a refusal is never kept. An entry for another
+  location exists only after discovery passed for that same connection and
+  listing. The memo holds Google's numbers (and a discovered title) only —
+  `isListing` and the listing's title are read fresh on every request.
 - **Numbers** (pure `lib/reputation/insights.ts`, unit-tested): the window is
   the last 7 / 28 / 90 whole **UTC days ending yesterday** (today is still
   being counted), compared with the equal span before. Tiles: Search views

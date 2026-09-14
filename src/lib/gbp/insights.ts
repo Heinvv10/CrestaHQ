@@ -11,11 +11,14 @@ import { GBP_DAILY_METRICS } from "./provider/types";
  * Business Profile content rule: nothing stored past 30 days, so nothing is
  * stored at all). One provider call per request covers both windows.
  *
- * The memo is per sub-account + connection (its `connectedAt`) + location +
- * range + window end, for 10 minutes, per instance. An entry for a location
- * other than the listing exists only after discovery proved this connection
- * can see it, and a reconnect changes the key — so a hit never skips a check
- * that the same connection has not already passed. Refusals are never kept.
+ * The memo is per sub-account + connection (its `connectedAt`) + the current
+ * listing + location + range + window end, for 10 minutes, per instance. An
+ * entry for a location other than the listing exists only after discovery
+ * proved this connection can see it, and a reconnect or a listing change
+ * changes the key — so a hit never skips a check that the same connection has
+ * not already passed for the same listing. The memo keeps Google's numbers and
+ * a discovered title only: `isListing` and the listing's title are read from
+ * the listing on every request. Refusals are never kept.
  */
 
 export const INSIGHTS_MEMO_MS = 10 * 60_000;
@@ -35,7 +38,7 @@ export class InsightsLocationRefusal extends Error {
   }
 }
 
-const memo = new Map<string, { at: number; body: InsightsBody }>();
+const memo = new Map<string, { at: number; title: string; summary: InsightsSummary }>();
 
 /** Tests only: each test starts with an empty memo. */
 export function resetInsightsMemo(): void {
@@ -52,11 +55,17 @@ export async function loadInsights(opts: {
 }): Promise<InsightsBody> {
   const { subAccountId, listing, locationName, range, now } = opts;
   const window = insightsWindow(range, now);
-  const key = [subAccountId, opts.connectionKey, locationName, range, window.current.end].join("|");
-  const hit = memo.get(key);
-  if (hit && now.getTime() - hit.at < INSIGHTS_MEMO_MS) return hit.body;
-
   const isListing = locationName === listing.locationName;
+  const body = (title: string, summary: InsightsSummary): InsightsBody => ({
+    location: { name: locationName, title: isListing ? listing.title : title, isListing },
+    range,
+    window,
+    ...summary,
+  });
+  const key = [subAccountId, opts.connectionKey, listing.locationName, locationName, range, window.current.end].join("|");
+  const hit = memo.get(key);
+  if (hit && now.getTime() - hit.at < INSIGHTS_MEMO_MS) return body(hit.title, hit.summary);
+
   const { title, series } = await withGbpAccess(subAccountId, async (provider, token) => {
     let title = listing.title;
     if (!isListing) {
@@ -73,8 +82,8 @@ export async function loadInsights(opts: {
     return { title, series };
   });
 
-  const body: InsightsBody = { location: { name: locationName, title, isListing }, range, window, ...summarizeInsights(series, window) };
-  memo.set(key, { at: now.getTime(), body });
+  const summary = summarizeInsights(series, window);
+  memo.set(key, { at: now.getTime(), title, summary });
   while (memo.size > MAX_MEMO) memo.delete(memo.keys().next().value!);
-  return body;
+  return body(title, summary);
 }
