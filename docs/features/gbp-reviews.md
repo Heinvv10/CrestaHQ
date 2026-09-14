@@ -918,7 +918,13 @@ review; `DELETE` on the same path deletes it. `lib/gbp/reply.ts` is the
 **only** caller of the provider's `putReply` / `deleteReply` — no sync, cron,
 workflow or AI path posts a reply (`…/reply/route.idempotency.test.ts` › no
 sync, sweep or cron path ever calls putReply or deleteReply; E2E 5 counts the
-fake's call log after a cron sweep). There is no AI draft in v1.
+fake's call log after a cron sweep). **AI drafts exist since SP5 (c)** —
+`POST …/gbp/reviews/[reviewDocId]/draft` returns text for the composer's box
+and posts nothing (it never reaches `putReply` / `deleteReply`; every draft
+route test ends by asserting zero reply calls, and
+`e2e/specs/reputation-ai-draft.spec.ts` counts zero until the click) — so
+`lib/gbp/reply.ts`, on the admin's click of "Post reply to Google", is still
+the ONLY poster. See [reputation.md › AI reply drafts](reputation.md#ai-reply-drafts-sp5-c).
 
 Order of checks, each refusal writing nothing and calling Google zero times:
 
