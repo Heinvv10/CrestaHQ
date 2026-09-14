@@ -404,7 +404,7 @@ switch included).
   updatedByUid}`, written only by `PUT /api/sub-accounts/[id]/reputation/ai-settings`
   (admin, Reviews AI gate; any other key 400 `invalid_body`). `GET` on the same
   path (any member) returns `{enabled, configured, replyGuidelines, updatedAt}`
-  for the Settings card: `rep-settings-ai-card`, `rep-settings-guidelines`
+  for the Settings card: `rep-settings-ai-card`, `rep-settings-ai-limits`, `rep-settings-guidelines`
   (read-only for members, `rep-settings-guidelines-readonly`), `-count`,
   `-save`, `-saved`, `-error`, `rep-settings-ai-gate-off`,
   `rep-settings-ai-not-configured` (guidelines can still be saved),
