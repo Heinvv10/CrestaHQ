@@ -9,9 +9,11 @@ import { getAdminDb } from "@/lib/firebase/admin";
  *   runId, until      the lease (5 min, renewed by its OWNER before each AI call —
  *                     sentiment-calls.ts)
  *   lastManualAt      Analyse now, at most once a minute
- *   lastCompleteAt    when a run last finished NORMALLY (not thrown, not stopped
- *                     early by the gate, the listing, the lease, the daily cap
- *                     or the time budget) — the after-sync trigger reads it
+ *   lastCompleteAt    when a run last finished COMPLETELY: not thrown, not
+ *                     stopped (gate, listing, lease, AI failure, save failure,
+ *                     daily cap, time budget), the 100 cap left nothing, no text
+ *                     review in its retry hour, and AI configured unless there
+ *                     was no text — the after-sync trigger reads it
  *   lastRun           {classified, skipped, failed, at, reason} of the last run
  *
  * Clocks: `until` compares instance clocks; the one production app runs on

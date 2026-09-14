@@ -142,7 +142,8 @@ describe("Analyse now", () => {
 
   it.each([
     ["daily_cap", 2, "Labelled 2 reviews. 3 reviews left for the next run. Daily AI limit reached — continues tomorrow."],
-    ["budget", 2, "Labelled 2 reviews. 3 reviews left for the next run. Stopped after four minutes — the rest continues on the next run."],
+    ["budget", 2, "Labelled 2 reviews. 3 reviews left for the next run. The time allowed for this run ran out — the rest continues on the next run."],
+    ["save_failed", 1, "Labelled 1 review. 3 reviews left for the next run. A label could not be saved — try again later."],
     ["gate_off", 0, "Reviews AI was switched off — nothing more was analysed."],
     ["no_listing", 0, "No Google listing is selected, so there are no reviews to analyse."],
     ["ai_error", 1, "Labelled 1 review. 3 reviews left for the next run. The AI provider failed — try again later."],
@@ -153,5 +154,19 @@ describe("Analyse now", () => {
     const skipped = classified ? 3 : 0;
     await render(props({ reviewsAi: { ...idle, lastRun: { classified, skipped, failed: 0, at: "2026-09-14T10:02:00.000Z", reason } } }));
     expect(byId("rep-sentiment-result")?.textContent).toBe(text);
+  });
+});
+
+describe("the last run's AI failure (cron or manual)", () => {
+  it("shows a persistent line whenever the last run stopped with ai_error — no press needed", async () => {
+    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 0, skipped: 5, failed: 1, at: "2026-09-14T06:00:00.000Z", reason: "ai_error" } } }));
+    expect(byId("rep-sentiment-ai-error")?.textContent).toBe(
+      "The AI provider failed on the last run — check the agency's OpenRouter key/credits.",
+    );
+  });
+
+  it("is not shown after a run that finished or stopped for another reason", async () => {
+    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 3, skipped: 0, failed: 0, at: "2026-09-14T06:00:00.000Z", reason: "daily_cap" } } }));
+    expect(byId("rep-sentiment-ai-error")).toBeNull();
   });
 });

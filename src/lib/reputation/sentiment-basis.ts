@@ -12,9 +12,9 @@ import { SENTIMENT_LABELS, type SentimentLabel } from "./ai/types";
  * the review's current basis is stale and reads as absent.
  */
 
-/** A failed analysis is retried at most this many times per content. */
+/** A bad AI answer: the content is tried at most this many times (a failed call does not count). */
 export const MAX_SENTIMENT_FAILURES = 3;
-/** …and at most once an hour. */
+/** …and at most once an hour — after a bad answer or a failed call. */
 export const SENTIMENT_RETRY_AFTER_MS = 3600_000;
 
 export function sentimentBasis(starRating: number | null, comment: string | null): string {

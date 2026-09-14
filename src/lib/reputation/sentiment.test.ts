@@ -110,6 +110,18 @@ describe("classifyPendingSentiment", () => {
     expect(await classifyPendingSentiment(SA)).toMatchObject({ status: "ran", aiConfigured: false, classified: 1, skipped: 6, failed: 0 });
     expect(labelOf("fake-r3")).toMatchObject({ method: "rating" });
     expect(labelOf("fake-r7")).toBeNull();
+    expect(lease().lastCompleteAt).toBeUndefined(); // text reviews are still waiting for an AI
+  });
+
+  it("is not complete while a text review waits out its retry hour", async () => {
+    const d = byReviewId()["fake-r7"];
+    const basis = sentimentBasis(d.starRating as number, d.comment as string);
+    mem.seed(`subAccounts/${SA}/gbpReviews/${d.id}`, {
+      ...mem.read(`subAccounts/${SA}/gbpReviews/${d.id}`)!,
+      sentimentAttempt: { basisHash: basis, failures: 1, lastAt: new Date() },
+    });
+    expect(await classifyPendingSentiment(SA)).toMatchObject({ stopped: null, classified: 6 });
+    expect(lease().lastCompleteAt).toBeUndefined();
   });
 
   it("only the inbox's set: tombstoned, other-listing and past-retention reviews are left alone", async () => {

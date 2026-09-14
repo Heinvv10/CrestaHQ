@@ -46,7 +46,8 @@ export const STOP_MESSAGE: Record<string, string> = {
   no_listing: "No Google listing is selected, so there are no reviews to analyse.",
   listing_changed: "The Google listing changed during the run — nothing more was analysed.",
   daily_cap: "Daily AI limit reached — continues tomorrow.",
-  budget: "Stopped after four minutes — the rest continues on the next run.",
+  budget: "The time allowed for this run ran out — the rest continues on the next run.",
+  save_failed: "A label could not be saved — try again later.",
   ai_error: "The AI provider failed — try again later.",
   error: "The analysis stopped on an error — try again later.",
 };
@@ -159,9 +160,14 @@ export function SentimentCard(props: Props) {
           {sentiment.notAnalysed} not analysed yet
         </p>
       )}
+      {reviewsAi.lastRun?.reason === "ai_error" && (
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" role="status" data-testid="rep-sentiment-ai-error">
+          The AI provider failed on the last run — check the agency&apos;s OpenRouter key/credits.
+        </p>
+      )}
       {sentiment.failed > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-sentiment-failed">
-          {sentiment.failed} couldn&apos;t be analysed (the AI failed three times; retried only if the review is edited)
+          {sentiment.failed} couldn&apos;t be analysed (the AI answered badly three times; tried again only if the review is edited)
         </p>
       )}
       <p className="mt-3 text-xs text-muted-foreground">

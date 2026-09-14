@@ -1066,8 +1066,9 @@ export function SubAccountManageDialog({
             from their stars, with no AI call). A review is sent to the AI once
             — again only if it is edited, or if its cached copy was deleted and
             re-synced (listing changed, Google disconnected or switched off, or
-            Google&apos;s 30-day storage limit). A failed analysis is retried at
-            most 3 times. At most 300 AI calls a day per sub-account. Spends
+            Google&apos;s 30-day storage limit). A bad AI answer is tried at most
+            3 times; a failed call is retried after an hour. At most 300 AI
+            calls a day per sub-account. Spends
             your OpenRouter credits. Disabling stops new analysis; existing
             labels stay.
           </GateToggle>

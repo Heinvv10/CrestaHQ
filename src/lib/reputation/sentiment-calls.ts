@@ -17,8 +17,12 @@ import { SENTIMENT_LEASE_TTL_MS, sentimentLeasePath } from "./sentiment-lease";
  *               the lease, counts the call and writes a STRIKE on the review
  *               (`sentimentAttempt.failures + 1`). A crash after this keeps
  *               the strike — conservative: it counts toward the three.
- *   finishCall  AFTER it: a label clears the strike. A failed call keeps it
- *               — every failure is a strike, and the run stops on the first.
+ *   finishCall  AFTER it: a label clears the strike (also on a review
+ *               tombstoned during its call — a 3-value label, no content).
+ *   A bad answer from the model keeps the strike; a failed CALL (outage,
+ *   revoked key, no credits, timeout) is un-counted by `uncountStrike` — its
+ *   `lastAt` still spaces the retry by an hour — so an outage never gives up
+ *   on a review. Either way the run stops on its first failure.
  * At most one call is ever in flight per sub-account, so a gate switched off
  * lets at most that one call finish.
  */
@@ -40,8 +44,10 @@ export type StopReason =
   | "listing_changed"
   | "daily_cap"
   | "budget"
-  /** The AI call failed (any way) or the provider could not be obtained. */
-  | "ai_error";
+  /** The AI call failed or answered badly, or the provider could not be obtained. */
+  | "ai_error"
+  /** A label came back but could not be written (the strike stays). */
+  | "save_failed";
 
 export interface CallItem {
   docId: string;
@@ -49,7 +55,7 @@ export interface CallItem {
 }
 type ReviewData = SentimentSource & { state?: string };
 export type Attempt = { basisHash?: unknown; failures?: unknown; lastAt?: unknown } | null;
-export type BeginResult = { go: true } | { go: false; stop: StopReason } | { go: false; drop: true };
+export type BeginResult = { go: true; failures: number } | { go: false; stop: StopReason } | { go: false; drop: true };
 
 export async function beginCall(sa: string, runId: string, locationName: string, p: CallItem): Promise<BeginResult> {
   const db = getAdminDb();
@@ -81,21 +87,34 @@ export async function beginCall(sa: string, runId: string, locationName: string,
     tx.set(leaseRef, { until: now + SENTIMENT_LEASE_TTL_MS }, { merge: true });
     tx.set(usageRef, { day, calls: calls + 1 }, { merge: true });
     tx.update(reviewRef, { sentimentAttempt: { basisHash: p.basis, failures, lastAt: new Date(now) } });
-    return { go: true } as const;
+    return { go: true, failures } as const;
   });
 }
 
 /**
- * After a labelled call: write the label (clearing the strike) only if the
- * review still has the content it was classified from. Returns whether it did.
+ * After a labelled call: write the label (clearing the strike) if the review
+ * still has the content it was classified from — or was tombstoned during the
+ * call (no content left to compare; readers hide tombstones, and a review
+ * restored unchanged then needs no second call). Returns whether it wrote.
  */
 export async function finishCall(sa: string, p: CallItem, label: SentimentLabel, model: string, at: Date): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${p.docId}`);
   return db.runTransaction(async (tx) => {
     const d = (await tx.get(ref)).data() as ReviewData | undefined;
-    if (d?.state !== "active" || reviewBasis(d) !== p.basis) return false;
+    const same = d?.state === "active" && reviewBasis(d) === p.basis;
+    if (!same && d?.state !== "removed") return false;
     tx.update(ref, { sentiment: { label, method: "ai", basisHash: p.basis, model, at }, sentimentAttempt: null });
     return true;
+  });
+}
+
+/** A failed CALL is not a strike: take back the +1 beginCall wrote (only if it is still ours); `lastAt` stays. */
+export async function uncountStrike(sa: string, p: CallItem, failures: number): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`${reviewsCollection(sa)}/${p.docId}`);
+  await db.runTransaction(async (tx) => {
+    const a = ((await tx.get(ref)).data() as ReviewData | undefined)?.sentimentAttempt;
+    if (a?.basisHash === p.basis && a.failures === failures) tx.update(ref, { "sentimentAttempt.failures": failures - 1 });
   });
 }

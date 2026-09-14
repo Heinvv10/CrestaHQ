@@ -144,7 +144,7 @@ describe("the strike", () => {
     expect(docOf("fake-r7").sentiment).toMatchObject({ method: "ai" });
   });
 
-  it("any failed call is a strike and STOPS the run — an outage costs one strike, not the backlog", async () => {
+  it("a bad AI answer is a strike and STOPS the run", async () => {
     const target = docOf("fake-r6").id; // the second text review, newest first
     script.fail.add(target);
     const out = await classifyPendingSentiment(SA);
@@ -162,15 +162,15 @@ describe("the strike", () => {
     expect(lease().lastCompleteAt).toBeUndefined();
   });
 
-  it("a thrown call stops the run the same way", async () => {
+  it("a thrown call is a failed call: the run stops, the retry waits an hour, but it is NOT a strike", async () => {
     script.crash = true;
-    // A throw inside the provider call is caught per call: strike kept, run stopped.
     const out = await classifyPendingSentiment(SA);
     expect(out).toMatchObject({ stopped: "ai_error", failed: 1 });
     expect(script.calls).toHaveLength(1);
+    expect(docOf("fake-r7").sentimentAttempt).toMatchObject({ failures: 0, lastAt: T0 });
   });
 
-  it("retried at most once an hour and three times, then 'couldn't be analysed'", async () => {
+  it("a bad answer: tried at most three times, once an hour, then 'couldn't be analysed'", async () => {
     const target = docOf("fake-r2").id;
     script.fail.add(target);
     await classifyPendingSentiment(SA);
@@ -189,7 +189,7 @@ describe("the strike", () => {
     expect(sent(target)).toBe(3);
   });
 
-  it("a crash outside the call (the store fails) keeps the strike, releases the lease with reason 'error', not complete", async () => {
+  it("a failed save after a billed call keeps the strike and stops with save_failed", async () => {
     const { storeDb } = await import("@/test/gbp-sync-store");
     const real = storeDb.runTransaction.bind(storeDb);
     let n = 0;
@@ -200,9 +200,9 @@ describe("the strike", () => {
       }) as never);
     };
     const out = await classifyPendingSentiment(SA);
-    expect(out).toMatchObject({ stopped: "ai_error", failed: 1 });
+    expect(out).toMatchObject({ stopped: "save_failed", failed: 1 });
     expect(docOf("fake-r7").sentimentAttempt).toMatchObject({ failures: 1 });
-    expect(lease().runId).toBeNull();
+    expect(lease()).toMatchObject({ runId: null, lastRun: { reason: "save_failed" } });
     expect(lease().lastCompleteAt).toBeUndefined();
   });
 
@@ -229,5 +229,20 @@ describe("during a call", () => {
     };
     expect(await classifyPendingSentiment(SA)).toMatchObject({ classified: 6, skipped: 1 });
     expect(docOf("fake-r6").sentiment).toBeUndefined();
+  });
+
+  it("a review tombstoned during its own call still gets its label (no content) and loses the strike", async () => {
+    const target = docOf("fake-r7").id;
+    script.onCall = (ids) => {
+      if (ids.includes(target)) {
+        const d = mem.read(pathOf("fake-r7"))!;
+        mem.seed(pathOf("fake-r7"), { ...d, state: "removed", comment: null, reviewer: null, reply: null, starRating: null, contentHash: null });
+      }
+    };
+    await classifyPendingSentiment(SA);
+    const r7 = docOf("fake-r7");
+    expect(r7.sentiment).toMatchObject({ label: "neutral", method: "ai", basisHash: expect.any(String) });
+    expect(r7.sentimentAttempt).toBeNull();
+    expect(r7.comment).toBeNull();
   });
 });

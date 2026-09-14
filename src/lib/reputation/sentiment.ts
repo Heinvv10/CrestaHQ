@@ -8,8 +8,8 @@ import type { SubAccountDoc } from "@/types";
 import { reviewsAiConfigured } from "./ai/mode";
 import { getReviewsAiFor } from "./ai/select";
 import type { ReviewsAi } from "./ai/types";
-import { aiRetryAllowed, currentSentiment, ratingLabel, reviewBasis, type SentimentSource } from "./sentiment-basis";
-import { beginCall, finishCall, type StopReason } from "./sentiment-calls";
+import { aiRetryAllowed, currentSentiment, ratingLabel, reviewBasis, sentimentGaveUp, type SentimentSource } from "./sentiment-basis";
+import { beginCall, finishCall, uncountStrike, type StopReason } from "./sentiment-calls";
 import { acquireSentimentLease, releaseSentimentLease } from "./sentiment-lease";
 
 /**
@@ -42,7 +42,7 @@ export interface SentimentCounts {
   classified: number;
   /** Eligible but not attempted (over the cap, AI not configured, lease lost) or dropped (changed mid-run). */
   skipped: number;
-  /** Sent to the AI but not labelled (bad output, failed call, refused provider). */
+  /** Sent to the AI but not labelled (a bad answer, a failed call, or a label that could not be saved). */
   failed: number;
 }
 export type SentimentSkip = "gate_off" | "google_gate_off" | "no_listing" | "busy";
@@ -133,17 +133,29 @@ async function classifyText(
       counts.skipped++;
       continue;
     }
+    let r: Awaited<ReturnType<ReviewsAi["classifySentiment"]>>[number] | undefined;
     try {
-      const [r] = await ai.classifySentiment([{ id: p.docId, starRating: p.starRating, text: p.comment ?? "" }]);
-      if (!r?.label) throw new Error(`unlabelled: ${r?.failure ?? "missing"}`);
-      if (await finishCall(sa, p, r.label, ai.model, now)) counts.classified++;
-      else counts.skipped++; // changed while it was classified
+      [r] = await ai.classifySentiment([{ id: p.docId, starRating: p.starRating, text: p.comment ?? "" }]);
     } catch (err) {
-      // The strike beginCall wrote stays: every failed call counts.
-      console.warn(`[reputation/sentiment] sa=${sa} ai call failed; run stops kind=${err instanceof Error ? err.name : typeof err}`);
+      console.warn(`[reputation/sentiment] sa=${sa} ai call threw kind=${err instanceof Error ? err.name : typeof err}`);
+      r = { id: p.docId, label: null, failure: "call_failed" };
+    }
+    if (!r?.label) {
+      // A bad answer is a strike; a failed call is not (lastAt still waits an hour). Either way: stop.
+      if (r?.failure === "call_failed") await uncountStrike(sa, p, begun.failures);
       counts.failed++;
       rest();
       return "ai_error";
+    }
+    try {
+      if (await finishCall(sa, p, r.label, ai.model, now)) counts.classified++;
+      else counts.skipped++; // changed while it was classified
+    } catch (err) {
+      // Billed, not saved: the strike stays.
+      console.warn(`[reputation/sentiment] sa=${sa} label not saved; run stops kind=${err instanceof Error ? err.name : typeof err}`);
+      counts.failed++;
+      rest();
+      return "save_failed";
     }
   }
   return null;
@@ -177,11 +189,15 @@ export async function classifyPendingSentiment(
     }
 
     const { reviews } = await loadServedReviews(subAccountId, locationName!, now);
+    let waiting = 0; // text reviews in their retry hour (not given up): a later run owes them a call
     const pending: Pending[] = reviews.flatMap((r) => {
       const basis = reviewBasis(r);
       if (basis === null || currentSentiment(r) !== null) return [];
       const comment = typeof r.comment === "string" ? r.comment : null;
-      if (!isStarOnly(comment) && !aiRetryAllowed(r, Date.now())) return [];
+      if (!isStarOnly(comment) && !aiRetryAllowed(r, Date.now())) {
+        if (!sentimentGaveUp(r)) waiting++;
+        return [];
+      }
       return [{ docId: String(r.docId), starRating: r.starRating as number, comment, basis }];
     });
     const max = opts.max ?? SENTIMENT_MAX_PER_RUN;
@@ -195,8 +211,9 @@ export async function classifyPendingSentiment(
     const text = batch.filter((x) => !isStarOnly(x.comment));
     if (!aiConfigured) counts.skipped += text.length;
     else if (text.length) stopped = await classifyText(subAccountId, runId, locationName!, text, counts, now, deadline);
-    // Complete only if nothing stopped it AND the 100-per-run cap left nothing behind.
-    complete = stopped === null && pending.length <= max;
+    // Complete only if nothing stopped it, the 100 cap left nothing behind, no
+    // text review is waiting out its retry hour, and none is waiting for an AI.
+    complete = stopped === null && pending.length <= max && waiting === 0 && (aiConfigured || text.length === 0);
     returned = true;
     return { status: "ran", skipReason: null, stopped, aiConfigured, ...counts };
   } finally {

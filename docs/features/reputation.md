@@ -88,8 +88,9 @@ failed on its current content.
   **complete** run (`private/sentimentLease.lastCompleteAt`) is more than 24 h
   old or there has been none. A run is complete only if it finished normally
   — not thrown, not stopped by a gate, the listing, the lease, an AI failure,
-  the daily cap or the time budget — **and** the 100-per-run cap left nothing
-  behind. That covers a killed, stopped or capped run and reviews waiting out
+  a save failure, the daily cap or the time budget — **and** the 100-per-run
+  cap left nothing behind, no text review is waiting out its retry hour, and
+  AI is configured (or there was no text review). That covers a killed, stopped or capped run and reviews waiting out
   their retry hour; switching Reviews AI **on** clears `lastCompleteAt`, so the
   next sync backfills. Otherwise a sync costs the sub-account read. **One
   deadline per request:** the cron, Sync now and Analyse now pass their
@@ -121,8 +122,9 @@ failed on its current content.
   listing changed, Google was disconnected or switched off, or Google's
   30-day storage limit removed it); the label lives on the cached review doc,
   so it goes with it. A tombstone keeps it (below), so a review removed and
-  restored unchanged is not re-sent. A failed analysis is retried at most 3
-  times. A re-sync of unchanged reviews never re-bills.
+  restored unchanged is not re-sent. A bad AI answer is tried at most 3
+  times; a failed call is retried after an hour. A re-sync of unchanged
+  reviews never re-bills.
 - **Spend bounds:** at most **300 AI calls per sub-account per UTC day**
   (`DAILY_AI_CALL_CAP`, a constant), counted in
   `private/sentimentUsage {day, calls}` in the same transaction that starts
@@ -138,19 +140,27 @@ failed on its current content.
   (changed, removed, labelled meanwhile, in its retry hour or given up), or
   renews the lease, counts the call and writes a **strike** on the review
   (`sentimentAttempt.failures + 1`, `lastAt` now), immediately before the
-  call. After it, a label is written (clearing the strike) only if the review
-  still has the classified content. **Every failed call is a strike** — a
-  timeout, a 4xx or 5xx, bad output, a failed write, a crash; nothing guesses
-  whether it was billed — **and the run stops on its first failure** (reason
-  `ai_error`, the card says "The AI provider failed — try again later"), so an
-  outage or exhausted credits costs one strike on one review per run, never
-  the whole backlog. A provider that cannot be obtained stops the run the
-  same way. Only one call is ever in flight per sub-account, so switching a
-  gate off lets at most that one call finish.
-- **Failures:** retried at most **once an hour and three times** per content
-  (checked against the clock at that moment), then counted as **"couldn't be
-  analysed"** — apart from "not analysed yet". An edit starts a new count; a
-  success clears it.
+  call. After it, a label is written (clearing the strike) if the review still
+  has the classified content — or was tombstoned during the call (a 3-value
+  label, no content; readers hide tombstones). **A bad answer from the model**
+  (unparseable, invalid label, unknown / duplicated / missing id) **is a
+  strike**; **a failed call** (timeout, network, 4xx, 5xx, a revoked key or
+  exhausted credits — logged with its HTTP status, never the body) **is not**:
+  its `lastAt` still spaces the retry by an hour, but it never counts toward
+  the three, so an outage or a revoked key never permanently gives up a
+  review. **Either way the run stops on its first failure** (reason
+  `ai_error`), so an outage costs one call per run (and never more than the
+  daily cap), and the Overview shows "The AI provider failed on the last run
+  — check the agency's OpenRouter key/credits" until a run gets through. A
+  label that comes back but cannot be written stops the run as `save_failed`
+  and keeps the strike. A provider that cannot be obtained stops the run as
+  `ai_error`. The whole call — headers and body — is bounded at 60 s, well
+  under the 5-minute lease. Only one call is ever in flight per sub-account,
+  so switching a gate off lets at most that one call finish.
+- **Failures:** a review is tried again at most **once an hour** (checked
+  against the clock at that moment) and — for bad answers — **at most three
+  times** per content, then counted as **"couldn't be analysed"**, apart
+  from "not analysed yet". An edit starts a new count; a success clears it.
 - **Cap:** at most 100 reviews per run, newest first; the rest wait for the
   next run (a capped run is not complete, so the next sync continues).
 - **Clocks:** lease expiry compares instance clocks; production runs one app

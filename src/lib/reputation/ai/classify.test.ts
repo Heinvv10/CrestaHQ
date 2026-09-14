@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const callAi = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/comms/ai/openrouter", () => ({ callAi, aiIsConfigured: () => true, defaultAiModel: () => "m-default" }));
 
-import { BATCH_SIZE, openRouterReviewsAi } from "./openrouter";
+import { BATCH_SIZE, REVIEWS_AI_CALL_MS, openRouterReviewsAi } from "./openrouter";
 import { fakeLabel } from "./fake";
 import type { SentimentItem } from "./types";
 
@@ -109,5 +109,36 @@ describe("the fake's deterministic rule", () => {
     ["  Fixture review with leading and trailing spaces.  ", 5, "neutral"],
   ] as const)("%s → %s", (text, stars, label) => {
     expect(fakeLabel(text, stars)).toBe(label);
+  });
+});
+
+describe("a failed call's log line (SP5 b round 4)", () => {
+  it("carries the HTTP status code and never the body", async () => {
+    callAi.mockRejectedValueOnce(new Error("OpenRouter 402: {\"error\":\"insufficient credits for key sk-or-secret\"}"));
+    await openRouterReviewsAi("m").classifySentiment(items(1));
+    const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(warned).toContain("kind=call_failed status=402");
+    expect(warned).not.toMatch(/insufficient|sk-or/);
+  });
+
+  it("says status=none when there was no HTTP answer", async () => {
+    callAi.mockRejectedValueOnce(new TypeError("fetch failed"));
+    await openRouterReviewsAi("m").classifySentiment(items(1));
+    expect(vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n")).toContain("kind=call_failed status=none");
+  });
+});
+
+describe("the whole call is bounded (headers and body)", () => {
+  it(`a call that never finishes (a stalled body) is a failed call after ${REVIEWS_AI_CALL_MS / 1000} s — well under the lease`, async () => {
+    vi.useFakeTimers();
+    try {
+      callAi.mockImplementationOnce(() => new Promise(() => {})); // headers came, the body never does
+      const pending = openRouterReviewsAi("m").classifySentiment(items(1));
+      await vi.advanceTimersByTimeAsync(REVIEWS_AI_CALL_MS + 1);
+      await expect(pending).resolves.toEqual([{ id: "doc0", label: null, failure: "call_failed" }]);
+      expect(REVIEWS_AI_CALL_MS).toBeLessThan(5 * 60_000); // SENTIMENT_LEASE_TTL_MS
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

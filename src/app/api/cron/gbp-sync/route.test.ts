@@ -180,12 +180,16 @@ describe("manual and scheduled share one core", () => {
 describe("sentiment after the response (SP5 b)", () => {
   it("hands every run the sweep made to sentiment in one deferred batch", async () => {
     handed.mockClear();
+    const startedAt = Date.now();
     expect((await cron()).status).toBe(200);
     expect(handed).toHaveBeenCalledTimes(1);
     const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
+    // The one deadline for every tenant: the request's start + 240 s.
+    const deadline = handed.mock.calls[0][1] as number;
+    expect(deadline - startedAt).toBeGreaterThanOrEqual(230_000);
+    expect(deadline - startedAt).toBeLessThanOrEqual(240_000);
     expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
     expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
-    expect(typeof handed.mock.calls[0][1]).toBe("number"); // the one deadline shared by every tenant
   });
 });
 
