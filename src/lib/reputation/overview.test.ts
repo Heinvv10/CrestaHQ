@@ -171,9 +171,25 @@ describe("requests", () => {
       byChannel: { sms: 2, email: 1, whatsapp: 1 },
       bySource: { dispatcher: 1, broadcast: 1, workflow: 1, inbox: 1 },
       failed: 0,
+      tracked: 0,
+      clicked: 0,
       previous: null, // the log does not cover the whole previous 90 days
       countingSince: ago(95).toISOString(),
     });
+  });
+
+  it("clicked counts only tracked, sent requests in range (SP5 d2)", () => {
+    const o = overview({
+      requests: [
+        req("sms", ago(1), { tracked: true, clickedAt: ago(0, 2) }),
+        req("sms", ago(2), { tracked: true, clickedAt: null }),
+        req("sms", ago(3), { tracked: false, clickedAt: ago(2) }),
+        req("sms", ago(4), { tracked: true, clickedAt: ago(3), status: "failed" }),
+        req("sms", ago(200), { tracked: true, clickedAt: ago(199) }),
+      ],
+      oldestRequestAt: ago(200),
+    });
+    expect(o.requests).toMatchObject({ sent: 3, tracked: 2, clicked: 1 });
   });
 
   it("failed sends are not requests sent: counted apart, never in the trend", () => {
@@ -197,7 +213,7 @@ describe("requests", () => {
   });
 
   it("no log at all: nothing counted, countingSince null", () => {
-    expect(overview().requests).toEqual({ sent: 0, byChannel: {}, bySource: {}, failed: 0, previous: null, countingSince: null });
+    expect(overview().requests).toEqual({ sent: 0, byChannel: {}, bySource: {}, failed: 0, tracked: 0, clicked: 0, previous: null, countingSince: null });
   });
 });
 

@@ -6,7 +6,8 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
-import { DEFAULT_REVIEW_COOLDOWN_DAYS, DEFAULT_REVIEW_SMS_TEMPLATE } from "@/lib/reviews/constants";
+import { DEFAULT_REVIEW_COOLDOWN_DAYS, DEFAULT_REVIEW_SMS_TEMPLATE, activeReminder } from "@/lib/reviews/constants";
+import { googleLinkRefusal } from "@/lib/reviews/reminder-refusal";
 import { isHttpsUrl } from "@/lib/reviews/review-url";
 import type { SubAccountDoc } from "@/types";
 import type { GoogleReviewConfig } from "@/types/tenancy";
@@ -26,7 +27,11 @@ import type { GoogleReviewConfig } from "@/types/tenancy";
 
 export const dynamic = "force-dynamic";
 
-type Outcome = { ok: true; url: string } | { ok: false; code: "no_proposal" } | { ok: false; code: "changed"; currentUrl: string | null };
+type Outcome =
+  | { ok: true; url: string }
+  | { ok: false; code: "no_proposal" }
+  | { ok: false; code: "changed"; currentUrl: string | null }
+  | { ok: false; code: "not_google"; url: string };
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -48,6 +53,10 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     const { configured, proposed } = resolveReviewUrl(sub);
     if (!proposed || !isHttpsUrl(proposed)) return { ok: false, code: "no_proposal" };
     if (configured !== expected) return { ok: false, code: "changed", currentUrl: configured };
+    // SP5 d2: while reminders are on, the link must stay a Google review link.
+    if (activeReminder(sub.googleReviewConfig?.reminder) && googleLinkRefusal(proposed)) {
+      return { ok: false, code: "not_google", url: proposed };
+    }
 
     const now = new Date();
     if (sub.googleReviewConfig) {
@@ -74,6 +83,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   });
 
   if (outcome.ok) return NextResponse.json({ ok: true, reviewUrl: outcome.url });
+  if (outcome.code === "not_google") return googleLinkRefusal(outcome.url)!;
   if (outcome.code === "changed") {
     return NextResponse.json(
       { error: "The review link changed since you looked — check it and try again.", code: "changed", currentUrl: outcome.currentUrl },

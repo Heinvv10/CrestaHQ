@@ -61,6 +61,9 @@ export interface OverviewRequestInput {
   sentAt: unknown;
   status?: unknown;
   source?: unknown;
+  /** SP5 d2: the request carried the tracked /rr/ link, and when it was first clicked. */
+  tracked?: unknown;
+  clickedAt?: unknown;
 }
 
 export interface TrendBucket {
@@ -93,6 +96,9 @@ export interface Overview {
     bySource: Record<string, number>;
     /** Review asks whose send failed, in range — not in `sent`. */
     failed: number;
+    /** Sent requests in range that carried the tracked link, and how many of those were clicked. */
+    tracked: number;
+    clicked: number;
     previous: { sent: number } | null;
     countingSince: string | null;
   };
@@ -167,7 +173,9 @@ export function computeOverview(input: {
   const revs = input.reviews?.flatMap((r) => toRev(r) ?? []) ?? [];
   const allReqs = input.requests.flatMap((r) => {
     const at = toMillis(r.sentAt);
-    return at === null ? [] : [{ at, failed: r.status === "failed", ...requestKeys(r) }];
+    return at === null
+      ? []
+      : [{ at, failed: r.status === "failed", tracked: r.tracked === true, clicked: toMillis(r.clickedAt) !== null, ...requestKeys(r) }];
   });
   const reqs = allReqs.filter((r) => !r.failed);
   const oldestRequest = toMillis(input.oldestRequestAt);
@@ -254,6 +262,8 @@ export function computeOverview(input: {
       byChannel,
       bySource,
       failed: allReqs.filter((r) => r.failed && inRange(r.at)).length,
+      tracked: reqsInRange.filter((r) => r.tracked).length,
+      clicked: reqsInRange.filter((r) => r.tracked && r.clicked).length,
       previous: logCoversPrevious ? { sent: reqs.filter((r) => inPrevious(r.at)).length } : null,
       countingSince: oldestRequest === null ? null : new Date(oldestRequest).toISOString(),
     },

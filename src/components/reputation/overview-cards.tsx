@@ -60,6 +60,12 @@ export function RequestsCard({ data }: { data: Data }) {
           {sources.map(([s, n]) => `${SOURCE_LABEL[s] ?? s}: ${n}`).join(" · ")}
         </p>
       )}
+      {requests.tracked > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-clicked">
+          Clicked: {requests.clicked} of {requests.tracked} tracked request{requests.tracked === 1 ? "" : "s"}. Links are tracked
+          only in requests sent while reminders are on.
+        </p>
+      )}
       {requests.failed > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-failed">
           {requests.failed} more review ask{requests.failed === 1 ? "" : "s"} failed to send and {requests.failed === 1 ? "is" : "are"} not counted.

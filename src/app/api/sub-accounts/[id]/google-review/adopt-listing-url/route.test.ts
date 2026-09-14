@@ -157,3 +157,26 @@ describe("refusals", () => {
     expect(config()).toBeUndefined();
   });
 });
+
+describe("reminders on: only a Google review link may be adopted (SP5 d2)", () => {
+  it("refuses a non-Google listing link, with the config route's code; the link is unchanged", async () => {
+    withConfig({ channel: "sms", reminder: { everyDays: 2, maxRetries: 1 } });
+    const { status, body } = await adopt({ expectedCurrentUrl: EXISTING });
+    expect(status).toBe(400);
+    expect(body).toMatchObject({ code: "reminders_google_link_only" });
+    expect(config()?.reviewUrl).toBe(EXISTING);
+    expect(events()).toEqual([]);
+  });
+
+  it("adopts a Google listing link while reminders are on", async () => {
+    withProposal("https://g.page/r/listing/review");
+    withConfig({ channel: "sms", reminder: { everyDays: 2, maxRetries: 1 } });
+    expect((await adopt({ expectedCurrentUrl: EXISTING })).status).toBe(200);
+    expect(config()?.reviewUrl).toBe("https://g.page/r/listing/review");
+  });
+
+  it("with reminders off any https listing link is adopted as before", async () => {
+    withConfig({ channel: "sms", reminder: { everyDays: null, maxRetries: 1 } });
+    expect((await adopt({ expectedCurrentUrl: EXISTING })).status).toBe(200);
+  });
+});

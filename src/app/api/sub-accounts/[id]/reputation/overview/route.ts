@@ -80,8 +80,8 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
         }))
       : null,
     requests: requestSnap.docs.slice(0, REQUEST_CAP).map((d) => {
-      const { channel, sentAt, status, source } = d.data();
-      return { channel, sentAt, status, source };
+      const { channel, sentAt, status, source, tracked, clickedAt } = d.data();
+      return { channel, sentAt, status, source, tracked, clickedAt };
     }),
     oldestRequestAt,
     range,

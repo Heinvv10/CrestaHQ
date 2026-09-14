@@ -24,6 +24,10 @@ import {
 } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { logReviewRequest } from "@/lib/reviews/request-log";
+import { planReviewLink, scheduleReviewReminder, supersedeOtherReminders } from "@/lib/reviews/reminder";
+import { phoneHash, templateHash } from "@/lib/reviews/reminder-checks";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -47,7 +51,7 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type ReviewTrigger = "manual" | "quote_paid" | "deal_completed";
+export type ReviewTrigger = "manual" | "quote_paid" | "deal_completed" | "reminder";
 
 export interface SendReviewInput {
   subAccountId: string;
@@ -56,6 +60,9 @@ export interface SendReviewInput {
   trigger: ReviewTrigger;
   /** The signed-in sender of a manual send; the log's `createdByUid`. */
   actorUid?: string;
+  /** SP5 d2: a reminder re-send of this request (trigger "reminder") — same
+   *  link, no cooldown, no new log row; the worker records the attempt. */
+  reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
 }
 
 export interface SendReviewResult {
@@ -108,7 +115,9 @@ export async function maybeSendReviewRequest(
     }
 
     const isManual = input.trigger === "manual";
-    if (!isManual) {
+    // A reminder re-sends a request already made; its trigger's gate was checked then.
+    const isReminder = input.trigger === "reminder" && !!input.reminderOf;
+    if (!isManual && !isReminder) {
       // Each auto trigger is gated by `enabled` + its own per-trigger flag.
       const triggerEnabled =
         input.trigger === "quote_paid"
@@ -132,6 +141,8 @@ export async function maybeSendReviewRequest(
     const channel = normalizeReviewChannel(cfg.channel);
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";
+    // A reminder goes only on the channel its request went on.
+    if (isReminder && convoChannel !== input.reminderOf!.channel) return { sent: false, reason: "channel_changed" };
 
     // Per-channel opt-out.
     if (channel === "sms" && smsSendBlock(contact)) {
@@ -141,8 +152,9 @@ export async function maybeSendReviewRequest(
       return { sent: false, reason: "opted_out" };
     }
 
-    // Cooldown — auto only; manual bypasses (operator intent) but still stamps.
-    if (!isManual) {
+    // Cooldown — auto only; manual (operator intent) and a reminder of THIS
+    // request bypass it, but still stamp.
+    if (!isManual && !isReminder) {
       const cooldownDays =
         cfg.cooldownDays > 0 ? cfg.cooldownDays : DEFAULT_REVIEW_COOLDOWN_DAYS;
       const lastMs = toMillis(contact.reviewRequestedAt);
@@ -152,6 +164,21 @@ export async function maybeSendReviewRequest(
     }
 
     const businessName = subAccount.name ?? "";
+    // SP5 d2: reminders off (the default) → null, and every body below is as before.
+    const plan = planReviewLink({
+      config: cfg,
+      channel,
+      subAccountId: input.subAccountId,
+      reviewUrl,
+      reminderOf: isReminder ? input.reminderOf : undefined,
+      remindable:
+        subAccountTwilioIsConfigured(subAccount.twilioConfig) &&
+        subAccount.twilioConfig?.inboundWebhookConfigured === true &&
+        normalizePhoneE164(contact.phone) === contact.phone &&
+        isGoogleReviewUrl(reviewUrl),
+      newRequestId: () => db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).doc().id,
+    });
+    const bodyUrl = plan?.bodyUrl ?? reviewUrl;
 
     // ---- Send (channel-specific) ----
     let sid: string;
@@ -190,7 +217,7 @@ export async function maybeSendReviewRequest(
 
       const freeFormBody = fillReviewSms(
         cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl },
+        { firstName: firstWord(contact.name), businessName, reviewUrl: bodyUrl },
       );
 
       if (channel === "whatsapp_manual") {
@@ -280,7 +307,7 @@ export async function maybeSendReviewRequest(
       }
       renderedBody = fillReviewSms(
         cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl },
+        { firstName: firstWord(contact.name), businessName, reviewUrl: bodyUrl },
       );
       const res = await sendSmsForSubAccount({
         subAccountId: input.subAccountId,
@@ -362,6 +389,9 @@ export async function maybeSendReviewRequest(
       console.warn("[reviews/request] activity write failed", err);
     }
 
+    // A reminder is an attempt on its request (the worker records it), not a new request.
+    if (isReminder) return { sent: true };
+
     // The queryable request log (Reputation). Never throws.
     await logReviewRequest({
       agencyId: input.agencyId,
@@ -373,7 +403,28 @@ export async function maybeSendReviewRequest(
       trigger: input.trigger,
       status: "sent",
       messageSid: sid,
+      // With a reminder: a hash of the number it went to (never the number), so a
+      // reminder can stop if the contact's number changes.
+      ...(plan
+        ? {
+            id: plan.requestId,
+            tracked: plan.tracked,
+            reminder: { ...plan.reminder },
+            toHash: phoneHash(contact.phone),
+            // A hash of the template used — never the body — so a reminder stops if it changes.
+            templateHash: templateHash(cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE),
+          }
+        : {}),
     });
+    if (plan?.reminder) {
+      await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), plan.requestId);
+      await scheduleReviewReminder({
+        subAccountId: input.subAccountId,
+        requestId: plan.requestId,
+        attempt: 1,
+        everyDays: plan.reminder.everyDays,
+      });
+    }
 
     return { sent: true };
   } catch (err) {

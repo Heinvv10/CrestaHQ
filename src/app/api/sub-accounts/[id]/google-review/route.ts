@@ -8,8 +8,10 @@ import {
   DEFAULT_REVIEW_COOLDOWN_DAYS,
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
+  parseReminderSettings,
 } from "@/lib/reviews/constants";
 import { isHttpsUrl } from "@/lib/reviews/review-url";
+import { googleLinkRefusal, reminderRefusal } from "@/lib/reviews/reminder-refusal";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
@@ -25,6 +27,9 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
  *   gating so a client can't bypass it: https review URL, SMS body must contain
  *   {{reviewUrl}}, and a WhatsApp channel requires the agency WhatsApp gate ON +
  *   a configured sender + an APPROVED template.
+ * PATCH — change only `reminder` (SP5 d2). Admin-only; needs a saved config.
+ *   POST keeps the stored reminder when its body has no `reminder` key, so the
+ *   Messaging form (which never sends one) can't switch reminders off.
  * DELETE — clear the config.
  */
 
@@ -37,7 +42,14 @@ interface PostBody {
   cooldownDays?: number;
   triggerOnQuotePaid?: boolean;
   triggerOnDealCompleted?: boolean;
+  reminder?: unknown;
 }
+
+const invalidReminder = () =>
+  NextResponse.json(
+    { error: "Reminders repeat every 1–7 days, at most 5 times.", code: "invalid_reminder", field: "reminder" },
+    { status: 400 },
+  );
 
 export async function POST(
   request: Request,
@@ -54,6 +66,9 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const reminder = body.reminder === undefined ? undefined : parseReminderSettings(body.reminder);
+  if (reminder === null) return invalidReminder();
+
   const reviewUrl = body.reviewUrl?.trim() ?? "";
   if (!reviewUrl || !isHttpsUrl(reviewUrl)) {
     return NextResponse.json(
@@ -64,6 +79,15 @@ export async function POST(
 
   const channel = normalizeReviewChannel(body.channel);
   const isWhatsapp = channel !== "sms";
+  const stored = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? null) as SubAccountDoc | null;
+  if (reminder?.everyDays) {
+    const refusal = reminderRefusal(channel, reviewUrl, stored);
+    if (refusal) return refusal;
+  } else if (reminder === undefined && parseReminderSettings(stored?.googleReviewConfig?.reminder)?.everyDays) {
+    // Reminders stay on (the body doesn't mention them): the link must stay Google's.
+    const refusal = googleLinkRefusal(reviewUrl);
+    if (refusal) return refusal;
+  }
   const messageTemplate =
     body.messageTemplate?.trim() || DEFAULT_REVIEW_SMS_TEMPLATE;
 
@@ -165,6 +189,8 @@ export async function POST(
     cooldownDays,
     triggerOnQuotePaid: body.triggerOnQuotePaid === true,
     triggerOnDealCompleted: body.triggerOnDealCompleted === true,
+    // Not in the body → no key here, and the merge below keeps a stored one.
+    ...(reminder ? { reminder } : {}),
     updatedAt: new Date(),
   };
 
@@ -176,6 +202,42 @@ export async function POST(
     );
 
   return NextResponse.json({ ok: true });
+}
+
+export async function PATCH(
+  request: Request,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const { id: subAccountId } = await ctx.params;
+  const access = await requireSubAccountAdmin(request, subAccountId);
+  if (access instanceof NextResponse) return access;
+
+  let body: { reminder?: unknown };
+  try {
+    body = (await request.json()) as { reminder?: unknown };
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const reminder = parseReminderSettings(body.reminder);
+  if (!reminder) return invalidReminder();
+
+  const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
+  const sub = ((await ref.get()).data() ?? null) as SubAccountDoc | null;
+  const current = sub?.googleReviewConfig;
+  if (!current?.reviewUrl) {
+    return NextResponse.json({ error: "Save your review link first." }, { status: 400 });
+  }
+  if (reminder.everyDays) {
+    const refusal = reminderRefusal(normalizeReviewChannel(current.channel), current.reviewUrl, sub);
+    if (refusal) return refusal;
+  }
+  // Field paths: only these two change — never a write-back of the config read above.
+  await ref.update({
+    "googleReviewConfig.reminder": reminder,
+    "googleReviewConfig.updatedAt": new Date(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return NextResponse.json({ ok: true, reminder });
 }
 
 export async function DELETE(

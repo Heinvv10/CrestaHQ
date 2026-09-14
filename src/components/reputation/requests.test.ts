@@ -26,7 +26,7 @@ import { ReputationRequests, type RequestRow } from "./requests";
 const API = "/api/sub-accounts/sa1/reputation/requests";
 const row = (id: string, over: Partial<RequestRow> = {}): RequestRow => ({
   id, contactId: `c_${id}`, contactName: `Fixture ${id}`, channel: "sms", source: "dispatcher", trigger: "manual",
-  status: "sent", failureKind: null, sentAt: "2026-09-14T08:05:00.000Z", ...over,
+  status: "sent", failureKind: null, sentAt: "2026-09-14T08:05:00.000Z", clickedAt: null, tracked: false, reminder: null, ...over,
 });
 
 let pages: Record<string, { status?: number; body: unknown }>;
@@ -58,6 +58,7 @@ const render = () => act(async () => root.render(createElement(ReputationRequest
 const byId = (id: string) => container.querySelector(`[data-testid="${id}"]`);
 const text = (id: string) => byId(id)?.textContent ?? null;
 const rows = () => [...container.querySelectorAll('[data-testid="rep-req-row"]')];
+const within = (el: Element, id: string) => el.querySelector(`[data-testid="${id}"]`)?.textContent ?? null;
 async function change(el: Element | null, value: string) {
   await act(async () => {
     const input = el as HTMLInputElement | HTMLSelectElement;
@@ -145,6 +146,67 @@ describe("the list", () => {
     await act(async () => answerOld({ ok: true, status: 200, json: async () => ({ requests: [row("old")], nextCursor: null }) }));
     expect(rows().map((r) => r.getAttribute("data-status"))).toEqual(["failed"]);
     expect(container.textContent).not.toContain("Fixture old");
+  });
+
+  it("clicks and reminders (SP5 d2): a Clicked status and a reminder column", async () => {
+    pages[""] = {
+      body: {
+        requests: [
+          row("k", { tracked: true, clickedAt: "2026-09-14T09:00:00.000Z", reminder: { attempts: 1, maxRetries: 2, state: "stopped", stopReason: "clicked", nextAt: null, lastAttemptAt: null } }),
+          row("s", { tracked: true, reminder: { attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt: "2026-09-16T08:05:00.000Z", lastAttemptAt: null } }),
+          row("d", { reminder: { attempts: 2, maxRetries: 2, state: "done", stopReason: "retries_exhausted", nextAt: null, lastAttemptAt: null } }),
+          row("o", { reminder: { attempts: 0, maxRetries: 2, state: "stopped", stopReason: "opted_out", nextAt: null, lastAttemptAt: null } }),
+          row("n"),
+        ],
+        nextCursor: null,
+      },
+    };
+    await render();
+    const [k, sch, done, opt, none] = rows();
+    expect(k.getAttribute("data-status")).toBe("clicked");
+    expect(k.textContent).toContain("Clicked");
+    expect(within(k, "rep-req-reminder")).toBe("Stopped: clicked · 1 of 2 sent");
+    expect(within(sch, "rep-req-reminder")).toMatch(/^0 of 2 sent · next 16 Sept? 2026$/);
+    expect(within(done, "rep-req-reminder")).toBe("Done · 2 of 2 sent");
+    expect(within(opt, "rep-req-reminder")).toBe("Stopped: opted out · 0 of 2 sent");
+    expect(within(none, "rep-req-reminder")).toBe("—");
+  });
+
+  it("a reminder stuck 'sending' for over 15 minutes reads as stopped, outcome unknown; a fresh one as sending", async () => {
+    const old = new Date(Date.now() - 16 * 60_000).toISOString();
+    const fresh = new Date(Date.now() - 60_000).toISOString();
+    const r = (id: string, lastAttemptAt: string) =>
+      row(id, { reminder: { attempts: 1, maxRetries: 2, state: "sending", stopReason: null, nextAt: null, lastAttemptAt } });
+    pages[""] = { body: { requests: [r("old", old), r("fresh", fresh)], nextCursor: null } };
+    await render();
+    const [o, f] = rows();
+    expect(within(o, "rep-req-reminder")).toBe("Stopped — outcome unknown · 1 of 2 sent");
+    expect(within(f, "rep-req-reminder")).toBe("Sending · 1 of 2 sent");
+  });
+
+  it("a 'scheduled' reminder more than a day overdue reads as stopped, outcome unknown", async () => {
+    const r = (id: string, nextAt: string) =>
+      row(id, { reminder: { attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt, lastAttemptAt: null } });
+    pages[""] = {
+      body: { requests: [r("late", new Date(Date.now() - 25 * 3600_000).toISOString()), r("due", new Date(Date.now() - 3600_000).toISOString())], nextCursor: null },
+    };
+    await render();
+    const [late, due] = rows();
+    expect(within(late, "rep-req-reminder")).toBe("Stopped — outcome unknown · 0 of 2 sent");
+    expect(within(due, "rep-req-reminder")).toMatch(/^0 of 2 sent · next /);
+  });
+
+  it("'—' explains itself: a tooltip and a legend under the table", async () => {
+    await render();
+    expect(rows()[0].querySelector('[data-testid="rep-req-reminder"]')?.getAttribute("title")).toContain("No reminders");
+    expect(text("rep-req-reminder-legend")).toContain("Reminders go only with SMS requests sent by Request review");
+  });
+
+  it("the status filter offers Clicked", async () => {
+    pages["status=clicked"] = { body: { requests: [], nextCursor: null } };
+    await render();
+    await change(byId("rep-req-filter-status"), "clicked");
+    expect(fetchMock).toHaveBeenLastCalledWith(`${API}?status=clicked`, expect.anything());
   });
 
   it("a filter asks the server again with it", async () => {

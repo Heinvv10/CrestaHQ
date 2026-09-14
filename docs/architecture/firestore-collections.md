@@ -143,7 +143,13 @@ and workflow send steps, the broadcast email worker and the inbox send routes /
 scheduled-message worker when the rendered message carries the configured
 review URL or is the `review_request` template. Rows before SP5 d1 are the
 dispatcher's only, with channel `whatsapp_template` / `whatsapp_manual` and no
-`source`; readers map them. Never a message body, phone number or email.
+`source`; readers map them. SP5 d2: dispatcher rows sent while reminders are
+on also carry `tracked` (the body had the `/rr/` link) and `reminder
+{everyDays, maxRetries, attempts, nextAt, state, stopReason, lastAttemptAt}`
+and `toHash` / `templateHash` (SHA-256 of the number and of the message
+template used — never the number or the body), updated by
+the reminder worker and by a newer request for the same contact (superseded); `/rr/{token}` stamps `clickedAt` (first click) and `lastClickedAt` (every counted click). Never a
+message body, phone number or email.
 Server only (no client rule, so default deny); read by the Reputation overview
 and requests routes with single-field `sentAt` queries — no index. See
 [reputation.md](../features/reputation.md).

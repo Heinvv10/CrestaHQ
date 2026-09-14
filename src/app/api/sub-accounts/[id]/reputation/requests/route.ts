@@ -29,6 +29,25 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const dynamic = "force-dynamic";
 
+const iso = (v: unknown) => {
+  const ms = toMillis(v);
+  return ms === null ? null : new Date(ms).toISOString();
+};
+
+/** The reminder as the Requests tab shows it (SP5 d2); null when the request had none. */
+function reminderOf(v: unknown) {
+  if (!v || typeof v !== "object") return null;
+  const r = v as Record<string, unknown>;
+  return {
+    attempts: typeof r.attempts === "number" ? r.attempts : 0,
+    maxRetries: typeof r.maxRetries === "number" ? r.maxRetries : 0,
+    state: typeof r.state === "string" ? r.state : "stopped",
+    stopReason: typeof r.stopReason === "string" ? r.stopReason : null,
+    nextAt: iso(r.nextAt),
+    lastAttemptAt: iso(r.lastAttemptAt),
+  };
+}
+
 const invalid = (field: string) =>
   NextResponse.json({ error: `Invalid filter: ${field}`, code: "invalid_filter", field }, { status: 400 });
 
@@ -43,7 +62,8 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     channel: params.get("channel") || null,
     source: params.get("source") || null,
   };
-  const allowed = { status: REVIEW_REQUEST_STATUSES, channel: REVIEW_REQUEST_CHANNELS, source: REVIEW_REQUEST_SOURCES };
+  // "clicked" (SP5 d2): a sent request whose tracked link was clicked.
+  const allowed = { status: [...REVIEW_REQUEST_STATUSES, "clicked"], channel: REVIEW_REQUEST_CHANNELS, source: REVIEW_REQUEST_SOURCES };
   for (const f of ["status", "channel", "source"] as const) {
     const v = filters[f];
     if (v !== null && !(allowed[f] as readonly string[]).includes(v)) return invalid(f);
@@ -76,7 +96,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
       const keys = requestKeys(data);
       const status = data.status === "failed" ? "failed" : "sent";
       if (
-        (!filters.status || status === filters.status) &&
+        (!filters.status || (filters.status === "clicked" ? status === "sent" && data.tracked === true && !!data.clickedAt : status === filters.status)) &&
         (!filters.channel || keys.channel === filters.channel) &&
         (!filters.source || keys.source === filters.source)
       ) {
@@ -129,6 +149,9 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
         status: data.status === "failed" ? "failed" : "sent",
         failureKind: typeof data.failureKind === "string" ? data.failureKind : null,
         sentAt: sentAt === null ? null : new Date(sentAt).toISOString(),
+        clickedAt: iso(data.clickedAt),
+        tracked: data.tracked === true,
+        reminder: reminderOf(data.reminder),
       };
     }),
     nextCursor,

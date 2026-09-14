@@ -24,6 +24,17 @@ export interface RequestRow {
   status: "sent" | "failed";
   failureKind: string | null;
   sentAt: string | null;
+  /** SP5 d2 — clicks and reminders. */
+  clickedAt: string | null;
+  tracked: boolean;
+  reminder: {
+    attempts: number;
+    maxRetries: number;
+    state: string;
+    stopReason: string | null;
+    nextAt: string | null;
+    lastAttemptAt: string | null;
+  } | null;
 }
 
 type Filters = { status: string; channel: string; source: string };
@@ -34,13 +45,54 @@ type Load =
 
 const TRIGGER_LABEL: Record<string, string> = { manual: "manual", quote_paid: "quote paid", deal_completed: "deal completed" };
 const OPTIONS = {
-  status: [["", "Any status"], ["sent", "Sent"], ["failed", "Failed"]],
+  status: [["", "Any status"], ["sent", "Sent"], ["clicked", "Clicked"], ["failed", "Failed"]],
   channel: [["", "Any channel"], ["sms", "SMS"], ["whatsapp", "WhatsApp"], ["email", "Email"]],
   source: [["", "Any sender"], ...Object.entries(SOURCE_LABEL)],
 } as const;
 
 const fmtSentAt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+
+const STUCK_SENDING_MS = 15 * 60_000;
+const STALE_SCHEDULED_MS = 24 * 3600_000;
+const NO_REMINDER_TITLE =
+  "No reminders: the request was sent before reminders were on, not over SMS, or by a workflow, broadcast or the inbox.";
+
+const STOP_LABEL: Record<string, string> = {
+  superseded: "a newer request",
+  clicked_other: "clicked another request",
+  auto_send_off: "auto-send turned off",
+  automations_paused: "automations paused",
+  tracking_unavailable: "link tracking unavailable",
+  phone_changed: "phone number changed",
+  reminders_off: "reminders turned off",
+  not_configured: "review link removed",
+  channel_changed: "channel changed",
+  contact_deleted: "contact deleted",
+  schedule_failed: "could not be scheduled",
+  window_closed: "WhatsApp window closed",
+};
+
+function reminderText(r: RequestRow): string {
+  const m = r.reminder;
+  if (!m) return "—";
+  const count = `${m.attempts} of ${m.maxRetries} sent`;
+  if (m.state === "scheduled") {
+    // More than a day overdue: its message was lost — shown as stopped (display only).
+    if (m.nextAt && Date.now() - Date.parse(m.nextAt) > STALE_SCHEDULED_MS) return `Stopped — outcome unknown · ${count}`;
+    return m.nextAt ? `${count} · next ${fmtDay(m.nextAt)}` : count;
+  }
+  if (m.state === "sending") {
+    // A send claimed but never finished (a crash mid-send): shown as stopped — it never retries.
+    const stuck = !m.lastAttemptAt || Date.now() - Date.parse(m.lastAttemptAt) > STUCK_SENDING_MS;
+    return stuck ? `Stopped — outcome unknown · ${count}` : `Sending · ${count}`;
+  }
+  if (m.state === "done") return `Done · ${count}`;
+  const why = m.stopReason ? (STOP_LABEL[m.stopReason] ?? m.stopReason.replace(/_/g, " ")) : "stopped";
+  return `Stopped: ${why} · ${count}`;
+}
+
+const fmtDay = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
 function sentBy(r: RequestRow): string {
   const label = SOURCE_LABEL[r.source] ?? r.source;
@@ -173,11 +225,18 @@ export function ReputationRequests() {
                 <th className="px-3 py-2 font-medium">Sent by</th>
                 <th className="px-3 py-2 font-medium">Sent at</th>
                 <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Reminders</th>
               </tr>
             </thead>
             <tbody>
               {shown.map((r) => (
-                <tr key={r.id} className="border-t" data-testid="rep-req-row" data-source={r.source} data-status={r.status}>
+                <tr
+                  key={r.id}
+                  className="border-t"
+                  data-testid="rep-req-row"
+                  data-source={r.source}
+                  data-status={r.status === "sent" && r.clickedAt ? "clicked" : r.status}
+                >
                   <td className="px-3 py-2">
                     {r.contactId === null ? (
                       <span className="text-muted-foreground">Outside your territories</span>
@@ -195,15 +254,30 @@ export function ReputationRequests() {
                   <td className="px-3 py-2">
                     {r.status === "failed" ? (
                       <span className="text-destructive" title={r.failureKind ?? undefined}>Failed</span>
+                    ) : r.clickedAt ? (
+                      <span className="text-emerald-700 dark:text-emerald-400">Clicked</span>
                     ) : (
                       "Sent"
                     )}
+                  </td>
+                  <td
+                    className="px-3 py-2 text-xs text-muted-foreground"
+                    data-testid="rep-req-reminder"
+                    title={r.reminder ? undefined : NO_REMINDER_TITLE}
+                  >
+                    {reminderText(r)}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {shown.length > 0 && (
+        <p className="text-xs text-muted-foreground" data-testid="rep-req-reminder-legend">
+          Reminders go only with SMS requests sent by Request review, Send Review Request, quote paid or deal completed
+          while reminders are on; “—” means the request has none. A send that fails ends that request&apos;s reminders.
+        </p>
       )}
       {load.state === "ready" && load.nextCursor && (
         <div className="flex items-center gap-3">

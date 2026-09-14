@@ -51,7 +51,7 @@ describe("authorization and validation", () => {
   });
 
   it.each([
-    ["status", "?status=clicked"],
+    ["status", "?status=delivered"],
     ["channel", "?channel=fax"],
     ["source", "?source=api"],
     ["cursor", "?cursor=../x"],
@@ -79,6 +79,7 @@ describe("the list", () => {
     expect(body.requests[0]).toEqual({
       id: "r001", contactId: "c_one", contactName: "Fixture One", channel: "sms", source: "dispatcher",
       trigger: "manual", status: "sent", failureKind: null, sentAt: new Date(NOW - 60_000).toISOString(),
+      clickedAt: null, tracked: false, reminder: null,
     });
     expect(body.requests[1]).toMatchObject({ contactName: "Fixture Two", source: "workflow", trigger: null });
     expect(body.requests[2]).toMatchObject({ status: "failed", failureKind: "send_failed", channel: "email" });
@@ -161,6 +162,33 @@ describe("paging", () => {
     const p2 = (await read(`?status=failed&cursor=${p1.nextCursor}`)).body;
     expect(p2.requests.map((r: Body) => r.id)).toEqual(["r1003"]);
     expect(p2.nextCursor).toBeNull();
+  });
+
+  it("clicks and reminders (SP5 d2): clickedAt, tracked, the reminder's state — and a clicked filter", async () => {
+    const clickedAt = new Date(NOW - 30_000);
+    const nextAt = new Date(NOW + 86_400_000);
+    seedRow(SA, 1, {
+      tracked: true, clickedAt,
+      reminder: { everyDays: 1, maxRetries: 2, attempts: 1, state: "stopped", stopReason: "clicked", nextAt: null, lastAttemptAt: new Date(NOW) },
+    });
+    seedRow(SA, 2, {
+      tracked: true,
+      reminder: { everyDays: 1, maxRetries: 2, attempts: 0, state: "scheduled", stopReason: null, nextAt, lastAttemptAt: null },
+    });
+    seedRow(SA, 3);
+    const all = (await read()).body.requests;
+    expect(all[0]).toMatchObject({
+      clickedAt: clickedAt.toISOString(), tracked: true,
+      reminder: { attempts: 1, maxRetries: 2, state: "stopped", stopReason: "clicked", nextAt: null, lastAttemptAt: new Date(NOW).toISOString() },
+    });
+    expect(all[1].reminder).toEqual({ attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt: nextAt.toISOString(), lastAttemptAt: null });
+    expect(all[2]).toMatchObject({ clickedAt: null, tracked: false, reminder: null });
+    expect((await read("?status=clicked")).body.requests.map((r: Body) => r.id)).toEqual(["r001"]);
+    // Only a tracked request can have been clicked: a stray clickedAt on an untracked one is not a click.
+    seedRow(SA, 4, { tracked: false, clickedAt });
+    expect((await read("?status=clicked")).body.requests.map((r: Body) => r.id)).toEqual(["r001"]);
+    // "sent" still means sent, clicked or not.
+    expect((await read("?status=sent")).body.requests).toHaveLength(4);
   });
 
   it("channel and source filters", async () => {

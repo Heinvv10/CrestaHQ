@@ -49,6 +49,9 @@ const PUBLIC_PATHS = [
   "/api/cron/gbp-retention",
   // Hourly WhatsApp Cloud quality-rating poll (SP15). Same auth: the signature.
   "/api/cron/whatsapp-quality",
+  // Review-request reminders (SP5 d2) — one QStash message per scheduled
+  // reminder. Same auth: the signature, bound to this route's URL.
+  "/api/cron/review-reminder",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",
@@ -269,6 +272,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // resolves to nothing and 404s, and the destination is re-validated as
   // http(s) before the 302 so this can't become an open redirect.
   /^\/l\/[^/]+$/,
+  // Tracked review-request link: /rr/{token} (SP5 d2), in review requests
+  // sent while reminders are on. Public — the customer has no session. The
+  // signed token is the credential; the route reads no identity header, 302s
+  // only to the sub-account's configured https review link, else 404s.
+  // Exactly one segment.
+  /^\/rr\/[^/]+$/,
   // Public competitor comparison pages (SEO landing pages, e.g.
   // /leadstack-vs-gohighlevel). Slug is path-suffixed with a hyphen
   // rather than a slash so the PUBLIC_PATHS prefix-match logic can't
