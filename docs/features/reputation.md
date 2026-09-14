@@ -82,19 +82,26 @@ failed on its current content.
   the sync (Cloudflare cuts origin requests at 100 s; QStash would retry a slow
   cron). The 6-hourly cron and Sync now respond first and then, via Next's
   `after()` (`lib/reputation/sentiment-after.ts`; the same mechanism the
-  Google Calendar push uses in the standalone build), classify — only for a
-  tenant whose run created or updated reviews, or whose **pending hint**
-  (`private/sentimentLease.pending`: what the last run left; unknown until
-  one has run, and again after a skipped one) is not 0. Any other sync costs
-  one small read. **Analyse now** on the Overview (`POST
+  Google Calendar push uses in the standalone build; the three routes export
+  `maxDuration = 300`), classify a tenant **iff** both gates are on and AI is
+  configured, **and** its run created or updated reviews **or** no run has
+  completed normally in the last 24 h (`private/sentimentLease.lastCompleteAt`,
+  stamped only by a run that finished — not one that threw or was stopped by a
+  gate, the listing, the lease, the daily cap or the time budget). That covers
+  a killed run, reviews waiting out their retry hour, and a gate just switched
+  on, within a day. Otherwise a sync costs the sub-account read.
+  **Analyse now** on the Overview (`POST
   /api/sub-accounts/[id]/reputation/sentiment/run`, admin, both gates, a
-  listing, once a minute) takes the lease and the cooldown in one
-  transaction — so a press refused as `busy` does not burn the minute —
-  answers **202** `{started, aiConfigured}` and classifies after the
-  response; the card re-reads the overview every 3 s (up to a minute) until
-  the lease is free and a new `lastRun` appears, then says what it did.
-  Refusals carry their own message: Reviews AI off / Google off (403
-  `gate_off`), no listing (409 `no_listing`), `busy`, `too_soon`.
+  listing, once a minute) takes the lease and the cooldown in one transaction
+  — a press refused as `busy` does not burn the minute — answers **202**
+  `{started, aiConfigured}` and classifies after the response; the card
+  re-reads the overview every 3 s (up to a minute) until the lease is free and
+  a new `lastRun` appears, then says what it did — or why it stopped (Reviews
+  AI or Google switched off, no listing, the listing changed, "Daily AI limit
+  reached — continues tomorrow", the time budget) — or, past the minute, "The
+  result isn't in yet — reload later". Refusals carry their own message:
+  Reviews AI off / Google off (403 `gate_off`), no listing (409
+  `no_listing`), `busy`, `too_soon`.
 - **What is labelled:** the reviews inbox's own set (`loadServedReviews`:
   active, current listing, within Google's 30-day limit — so the newest 500
   stored records). **Star-only** reviews (no or blank comment) are labelled
@@ -103,21 +110,40 @@ failed on its current content.
   the AI (`method: "ai"`, `model`) — **one review per call**
   (`REVIEWS_AI_BATCH = 1`), so no member of the public's text shares a prompt
   with another review it could try to steer.
-- **Billing guarantee — never re-billed:** a review is eligible only when it
-  has no label or its `basisHash` ≠ `sha256(stars + "\n" + comment)` (it was
-  edited). One lease per sub-account (`private/sentimentLease`, 5 min) keeps
-  two invocations from both sending the same review; it is renewed before each
-  call and **only by its owner** — a run whose lease expired and was taken
-  stops. Right before each call the review is re-read and dropped if it
-  changed, was removed or was labelled meanwhile; the label is written in a
-  transaction that re-checks the basis (edited mid-call ⇒ discarded).
-- **Failures:** an item the model did not validly answer (bad label, unknown
-  or duplicated id, missing, unparseable, failed call) is left unlabelled and
-  recorded in `sentimentAttempt` for that content: retried **at most once an
-  hour and three times**, then counted as **"couldn't be analysed"** — apart
-  from "not analysed yet". An edit starts a new count; a success clears it.
-- **Cap:** at most 100 reviews per run, newest first; the rest are the
-  pending hint for the next run.
+- **What is billed — honestly:** a review is sent to the AI once — again only
+  if it is edited, **or if its cached copy was deleted and re-synced** (the
+  listing changed, Google was disconnected or switched off, or Google's
+  30-day storage limit removed it); the label lives on the cached review doc,
+  so it goes with it. A failed analysis is retried at most 3 times. A re-sync
+  of unchanged reviews never re-bills.
+- **Spend bounds:** at most **300 AI calls per sub-account per UTC day**
+  (`DAILY_AI_CALL_CAP`, a constant), counted in
+  `private/sentimentUsage {day, calls}` in the same transaction that starts
+  each call — over the cap the run stops and the rest waits for tomorrow; and
+  a **240 s budget** per run, after which no new call starts.
+- **Before each call** one transaction (`beginCall`,
+  `lib/reputation/sentiment-calls.ts`) re-reads the lease, the sub-account,
+  the daily usage and the review, and either **stops the run** (the lease is
+  no longer this run's — only its owner can renew it; Reviews AI or Google
+  switched off; the listing changed; the daily cap), **drops the review**
+  (changed, removed, labelled meanwhile, in its retry hour or given up), or
+  renews the lease, counts the call and writes a **strike** on the review
+  (`sentimentAttempt.failures + 1`, `lastAt` now). After the call: a label is
+  written (clearing the strike) only if the review still has the classified
+  content; a failure that **never reached the model** (network, timeout, no
+  key, 401 / 402 / 429) puts the previous attempt back — not billed; a model
+  failure (unparseable, invalid label, unknown / duplicated / missing id, or
+  a provider error after the request was accepted) keeps the strike; a crash
+  keeps it too — conservatively, it counts toward the three.
+- **Failures:** retried at most **once an hour and three times** per content
+  (checked against the clock at that moment), then counted as **"couldn't be
+  analysed"** — apart from "not analysed yet". An edit starts a new count; a
+  success clears it.
+- **Cap:** at most 100 reviews per run, newest first; the rest wait for the
+  next run.
+- **Clocks:** lease expiry compares instance clocks; production runs one app
+  instance on one host, and dev/CI instances are fake-fenced to the fixture
+  agency, so skew between writers is not a concern here.
 - **Stale labels are never shown:** a sync edit overwrites a review's content
   but keeps its `sentiment` (blanking it in the upsert would re-bill on every
   owner reply, since the content hash covers the reply). So every reader —

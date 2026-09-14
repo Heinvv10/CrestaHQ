@@ -111,7 +111,9 @@ the sync): each review may carry `sentiment {label, method, basisHash, model,
 at}` and `sentimentAttempt {basisHash, failures, lastAt}` — both nulled by a
 tombstone; readers ignore a label whose `basisHash` is not the review's current
 basis. `private/sentimentLease` holds the classifier's lease, the Analyse-now
-cooldown, the pending hint and the last run's counts. In dev/CI only,
+cooldown, `lastCompleteAt` (the last run that finished normally) and the last
+run's counts and stop reason; `private/sentimentUsage {day, calls}` counts AI
+calls per UTC day against the 300-call cap. In dev/CI only,
 `private/reviewsAiFakeLog` holds the Reviews AI fake's call log (ids + count,
 never text).
 

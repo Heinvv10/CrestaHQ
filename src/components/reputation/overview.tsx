@@ -81,7 +81,9 @@ export function ReputationOverview() {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/reputation/overview?range=${range}`, { signal: controller.signal }).catch(() => null);
       const data = (await res?.json().catch(() => null)) as OverviewResponse | null;
       if (controller.signal.aborted) return;
-      setLoad(res?.ok && data?.requests ? { state: "ready", data } : { state: "error" });
+      // A failed RE-read (Analyse now polling) keeps what is on screen, so the card
+      // is not unmounted mid-poll; a first load or a range change shows the error.
+      setLoad((prev) => (res?.ok && data?.requests ? { state: "ready", data } : prev.state === "ready" ? prev : { state: "error" }));
     })();
     return () => controller.abort();
   }, [subAccountId, range, reload]);

@@ -201,7 +201,7 @@ describe("sentiment card (SP5 b)", () => {
     expect(byId("rep-sentiment-positive")?.getAttribute("data-count")).toBe("3");
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
-      return { ok: true, status: 200, json: async () => payload({ reviews: { ...payload().reviews!, sentiment: { positive: 4, neutral: 2, negative: 1, notAnalysed: 0, failed: 0 } }, reviewsAi: { enabled: true, configured: true, running: false, lastRun: { classified: 1, skipped: 0, failed: 0, at: "2026-09-14T10:01:00.000Z" } } }) };
+      return { ok: true, status: 200, json: async () => payload({ reviews: { ...payload().reviews!, sentiment: { positive: 4, neutral: 2, negative: 1, notAnalysed: 0, failed: 0 } }, reviewsAi: { enabled: true, configured: true, running: false, lastRun: { classified: 1, skipped: 0, failed: 0, at: "2026-09-14T10:01:00.000Z", reason: null } } }) };
     });
     await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
     expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/reputation/sentiment/run", { method: "POST" });
@@ -212,5 +212,25 @@ describe("sentiment card (SP5 b)", () => {
     body = payload({ reviewsAi: { enabled: false, configured: true, running: false, lastRun: null } });
     await render();
     expect(byId("rep-sentiment-gate-off")).not.toBeNull();
+  });
+});
+
+describe("a failed re-read while polling (SP5 b)", () => {
+  it("keeps the overview (and the polling card) on screen", async () => {
+    await render();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      return { ok: false, status: 502, json: async () => ({ error: "bad gateway" }) };
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    expect(byId("rep-state-error")).toBeNull();
+    expect(byId("rep-sentiment")).not.toBeNull();
+    expect(byId("rep-sentiment-analyse")?.hasAttribute("disabled")).toBe(true); // still waiting
+  });
+
+  it("a failed FIRST load still shows the error", async () => {
+    status = 502;
+    await render();
+    expect(byId("rep-state-error")).not.toBeNull();
   });
 });

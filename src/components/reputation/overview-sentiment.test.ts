@@ -101,7 +101,7 @@ describe("Analyse now", () => {
     await act(async () => vi.advanceTimersByTime(POLL_MS));
     expect(onAnalysed).toHaveBeenCalledTimes(2);
     // The run finished.
-    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 5, skipped: 2, failed: 1, at: "2026-09-14T10:00:00.000Z" } } }));
+    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 5, skipped: 2, failed: 1, at: "2026-09-14T10:00:00.000Z", reason: null } } }));
     expect(byId("rep-sentiment-result")?.textContent).toBe(
       "Labelled 5 reviews. 2 reviews left for the next run. 1 review could not be analysed this time.",
     );
@@ -115,7 +115,7 @@ describe("Analyse now", () => {
     await press();
     for (let i = 0; i < MAX_POLLS + 2; i++) await act(async () => vi.advanceTimersByTime(POLL_MS));
     expect(onAnalysed).toHaveBeenCalledTimes(MAX_POLLS + 1);
-    expect(byId("rep-sentiment-result")?.textContent).toBe("Still analysing — the counts update when it finishes.");
+    expect(byId("rep-sentiment-result")?.textContent).toBe("The result isn't in yet — reload later.");
   });
 
   it.each([
@@ -136,7 +136,20 @@ describe("Analyse now", () => {
     fetchMock.mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ started: true, aiConfigured: false }) });
     await render(props());
     await press();
-    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 1, skipped: 6, failed: 0, at: "2026-09-14T10:00:00.000Z" } } }));
+    await render(props({ reviewsAi: { ...idle, lastRun: { classified: 1, skipped: 6, failed: 0, at: "2026-09-14T10:00:00.000Z", reason: null } } }));
     expect(byId("rep-sentiment-result")?.textContent).toContain("only star-only reviews can be labelled");
+  });
+
+  it.each([
+    ["daily_cap", 2, "Labelled 2 reviews. 3 reviews left for the next run. Daily AI limit reached — continues tomorrow."],
+    ["budget", 2, "Labelled 2 reviews. 3 reviews left for the next run. Stopped after four minutes — the rest continues on the next run."],
+    ["gate_off", 0, "Reviews AI was switched off — nothing more was analysed."],
+    ["no_listing", 0, "No Google listing is selected, so there are no reviews to analyse."],
+  ])("a run that stopped (%s) ends with its reason, never 'Still analysing'", async (reason, classified, text) => {
+    await render(props());
+    await press();
+    const skipped = classified ? 3 : 0;
+    await render(props({ reviewsAi: { ...idle, lastRun: { classified, skipped, failed: 0, at: "2026-09-14T10:02:00.000Z", reason } } }));
+    expect(byId("rep-sentiment-result")?.textContent).toBe(text);
   });
 });

@@ -15,7 +15,7 @@ export interface OverviewResponse extends Overview {
     configured: boolean;
     /** A classification holds the lease right now. */
     running: boolean;
-    lastRun: { classified: number; skipped: number; failed: number; at: string | null } | null;
+    lastRun: { classified: number; skipped: number; failed: number; at: string | null; reason: string | null } | null;
   };
   checklist: {
     googleConnected: boolean;

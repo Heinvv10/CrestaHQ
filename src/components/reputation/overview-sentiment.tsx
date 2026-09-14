@@ -39,10 +39,24 @@ function Muted({ testId, children }: { testId: string; children: React.ReactNode
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Why a run stopped or did not run — shown instead of counts that would read as success. */
+export const STOP_MESSAGE: Record<string, string> = {
+  gate_off: "Reviews AI was switched off — nothing more was analysed.",
+  google_gate_off: "Google reviews were switched off — nothing more was analysed.",
+  no_listing: "No Google listing is selected, so there are no reviews to analyse.",
+  listing_changed: "The Google listing changed during the run — nothing more was analysed.",
+  daily_cap: "Daily AI limit reached — continues tomorrow.",
+  budget: "Stopped after four minutes — the rest continues on the next run.",
+  lease_lost: "Another analysis took over — the counts update when it finishes.",
+};
+
 function describeRun(r: NonNullable<OverviewResponse["reviewsAi"]["lastRun"]>): string {
+  const stop = r.reason ? STOP_MESSAGE[r.reason] : undefined;
+  if (stop && r.classified + r.skipped + r.failed === 0) return stop;
   const parts = [`Labelled ${plural(r.classified, "review")}.`];
   if (r.skipped) parts.push(`${plural(r.skipped, "review")} left for the next run.`);
   if (r.failed) parts.push(`${plural(r.failed, "review")} could not be analysed this time.`);
+  if (stop) parts.push(stop);
   return parts.join(" ");
 }
 
@@ -68,7 +82,7 @@ function useAnalyse({ subAccountId, reviewsAi, onAnalysed }: Props) {
     if (w.polls >= MAX_POLLS) {
       waiting.current = null;
       setBusy(false);
-      setResult("Still analysing — the counts update when it finishes.");
+      setResult("The result isn't in yet — reload later.");
       return;
     }
     const t = setTimeout(() => {

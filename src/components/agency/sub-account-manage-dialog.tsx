@@ -1063,10 +1063,13 @@ export function SubAccountManageDialog({
           >
             When enabled, synced Google reviews with text are labelled
             positive / neutral / negative by AI (star-only reviews are labelled
-            from their stars, with no AI call). Each review is sent to the AI
-            once — again only if it is edited; a failed analysis is retried at
-            most 3 times. Spends your OpenRouter credits. Disabling stops new
-            analysis; existing labels stay.
+            from their stars, with no AI call). A review is sent to the AI once
+            — again only if it is edited, or if its cached copy was deleted and
+            re-synced (listing changed, Google disconnected or switched off, or
+            Google&apos;s 30-day storage limit). A failed analysis is retried at
+            most 3 times. At most 300 AI calls a day per sub-account. Spends
+            your OpenRouter credits. Disabling stops new analysis; existing
+            labels stay.
           </GateToggle>
 
           <GateToggle
