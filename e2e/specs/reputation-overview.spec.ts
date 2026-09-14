@@ -90,23 +90,37 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  // Every step runs even if an earlier one throws — a failed primary restore
+  // must not leave the secondary's gate flipped — and all failures surface.
+  const errors: unknown[] = [];
+  const step = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (err) {
+      errors.push(err);
+    }
+  };
   if (contactId) {
-    await deleteScoped(adminDb().doc(`contacts/${contactId}`));
-    await deleteScoped(adminDb().doc(`conversations/${contactId}`));
+    await step(() => deleteScoped(adminDb().doc(`contacts/${contactId}`)));
+    await step(() => deleteScoped(adminDb().doc(`conversations/${contactId}`)));
   }
   // Each row is checked against the fixture tenant by deleteScoped.
-  await purgeRequests();
-  if (restoreConfigs) {
-    await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
-    await primaryRef().update({
-      twilioConfig: restore(restoreConfigs.twilioConfig),
-      googleReviewConfig: restore(restoreConfigs.googleReviewConfig),
+  await step(purgeRequests);
+  const configs = restoreConfigs;
+  if (configs) {
+    await step(async () => {
+      await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
+      await primaryRef().update({ twilioConfig: restore(configs.twilioConfig), googleReviewConfig: restore(configs.googleReviewConfig) });
     });
   }
   if (secondaryGateFlipped) {
-    await assertFixtureSubAccount(secondaryId(), FIXTURE_SECONDARY_NAME);
-    await adminDb().doc(`subAccounts/${secondaryId()}`).update({ googleEnabledByAgency: true });
+    await step(async () => {
+      await assertFixtureSubAccount(secondaryId(), FIXTURE_SECONDARY_NAME);
+      await adminDb().doc(`subAccounts/${secondaryId()}`).update({ googleEnabledByAgency: true });
+    });
   }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "reputation-overview teardown: several steps failed");
 });
 
 test("the overview's tiles equal the synced reviews and the logged requests", async ({ page, request }) => {
