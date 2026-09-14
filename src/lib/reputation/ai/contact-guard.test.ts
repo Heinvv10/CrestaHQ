@@ -16,6 +16,8 @@ describe("refuses every written form of a contact", () => {
   it.each([
     ["full-width digits", "Call ０８２ １２３ ４５６７ for help."],
     ["Arabic-Indic digits", "Call ٠٨٢١٢٣٤٥٦٧ for help."],
+    ["superscript digits (compatibility forms only NFKC folds)", "Call ⁰⁸² ¹²³ ⁴⁵⁶⁷ for help."],
+    ["circled digits", "Call ⓪⑧② ①②③ ④⑤⑥⑦ for help."],
     ["slashes", "Call 082/123/4567 for help."],
     ["underscores", "Call 082_123_4567 for help."],
     ["spaces and brackets", "Call (082) 123 4567."],
@@ -77,6 +79,7 @@ describe("what the guidelines supply is allowed — as exact tokens only", () =>
     expect(refused("Call ０４１ ０００ ００００.", G)).toBeNull();
     expect(refused("Call 041-000-0000.", G)).toBeNull();
     expect(refused("Dial *120*777#.", G)).toBeNull();
+    expect(refused("More at ｆｉｘｔｕｒｅｆｉｂｒｅ.co.za.", G)).toBeNull();
     expect(refused("Follow us on Instagram @fixturefibre.", G)).toBeNull();
   });
 
