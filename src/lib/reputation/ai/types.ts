@@ -1,4 +1,4 @@
-/** The Reviews AI seam (SP5 b) — one method today; reply drafts join in PR (c). */
+/** The Reviews AI seam (SP5 b sentiment, SP5 c reply drafts). */
 
 export const SENTIMENT_LABELS = ["positive", "neutral", "negative"] as const;
 
@@ -30,9 +30,23 @@ export type SentimentResult =
   | { id: string; label: SentimentLabel; failure?: undefined }
   | { id: string; label: null; failure: SentimentFailure };
 
+/** One review to draft an owner reply for. `comment` is untrusted customer content. */
+export interface DraftInput {
+  starRating: number;
+  comment: string | null;
+  reviewerFirstName: string | null;
+  businessName: string;
+  /** The sub-account's reply guidelines (tone, sign-off, never-say), or null. */
+  guidelines: string | null;
+}
+/** A draft, or why there is none (same billing meaning as SentimentFailure). */
+export type DraftResult = { text: string; failure?: undefined } | { text: null; failure: SentimentFailure };
+
 export interface ReviewsAi {
   /** The model a label is attributed to ("fake" for the dev/CI fake). */
   model: string;
   /** One result per item, in order. Nothing is guessed: an item is labelled or says why not. */
   classifySentiment(items: SentimentItem[]): Promise<SentimentResult[]>;
+  /** A reply DRAFT for the admin to edit. It never posts anything anywhere. */
+  draftReply(input: DraftInput): Promise<DraftResult>;
 }

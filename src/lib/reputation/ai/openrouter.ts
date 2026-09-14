@@ -1,6 +1,7 @@
 import "server-only";
 
 import { callAi } from "@/lib/comms/ai/openrouter";
+import { draftReplyWith } from "./openrouter-draft";
 import {
   REVIEWS_AI_BATCH,
   SENTIMENT_LABELS,
@@ -160,5 +161,6 @@ export function openRouterReviewsAi(model: string): ReviewsAi {
       for (let i = 0; i < items.length; i += BATCH_SIZE) out.push(...(await classifyBatch(model, items.slice(i, i + BATCH_SIZE))));
       return out;
     },
+    draftReply: (input) => draftReplyWith(model, input),
   };
 }
