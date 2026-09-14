@@ -57,11 +57,18 @@ const { changeEventStatus, isValidStatusTransition } = await import(
   "./event-status-service"
 );
 
-function event(status: EventStatus): CalendarEvent {
+/** A comfortably-past instant, so completed/no_show transitions aren't
+ *  refused by the "hasn't happened yet" gate unless a test says so. */
+const PAST_STARTAT = { toDate: () => new Date(Date.now() - 60 * 60_000) } as never;
+
+function event(
+  status: EventStatus,
+  startAt: CalendarEvent["startAt"] = PAST_STARTAT,
+): CalendarEvent {
   return {
     id: "evt1",
     title: "Meeting",
-    startAt: null,
+    startAt,
     endAt: null,
     contactId: "c1",
     location: "",
@@ -173,14 +180,47 @@ describe("changeEventStatus", () => {
   });
 });
 
+describe("changeEventStatus — completed/no_show require the event to have started", () => {
+  const FUTURE = { toDate: () => new Date(Date.now() + 60 * 60_000) } as never;
+
+  it.each(["completed", "no_show"] as const)(
+    "refuses %s on a future-dated scheduled event, and fires nothing",
+    async (next) => {
+      const outcome = await changeEventStatus(event("scheduled", FUTURE), next);
+      expect(outcome.ok).toBe(false);
+      expect(outcome.httpStatus).toBe(409);
+      expect(outcome.error).toBe("This appointment hasn't happened yet.");
+      expect(updatedPatch).toBeNull();
+      expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still allows cancelling a future booking — cancel never needed it to have started", async () => {
+    const outcome = await changeEventStatus(event("scheduled", FUTURE), "cancelled");
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("allows completed/no_show once the event's time has passed", async () => {
+    const outcome = await changeEventStatus(event("scheduled"), "completed"); // default PAST_STARTAT
+    expect(outcome.ok).toBe(true);
+    expect(updatedPatch?.status).toBe("completed");
+  });
+
+  it("refuses when startAt has no readable timestamp — never treated as past", async () => {
+    const outcome = await changeEventStatus(event("scheduled", null), "no_show");
+    expect(outcome.ok).toBe(false);
+    expect(outcome.httpStatus).toBe(409);
+  });
+});
+
 describe("changeEventStatus — test mode", () => {
   const ts = (iso: string) => ({ toDate: () => new Date(iso) }) as never;
   function cancellable(mode: "live" | "test" | undefined): CalendarEvent {
     return {
       ...event("scheduled"),
       mode,
-      startAt: ts("2030-01-01T10:00:00Z"),
-      endAt: ts("2030-01-01T10:30:00Z"),
+      startAt: ts("2020-01-01T10:00:00Z"),
+      endAt: ts("2020-01-01T10:30:00Z"),
     };
   }
 
