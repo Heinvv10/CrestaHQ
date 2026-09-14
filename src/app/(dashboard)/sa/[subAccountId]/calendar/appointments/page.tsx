@@ -19,18 +19,16 @@ import {
 import {
   appointmentCalendarLabel,
   appointmentOwnerLabel,
-  canOfferStatusActions,
   canRescheduleAppointment,
   dateInputToFromMs,
   dateInputToToMs,
   formatAppointmentTime,
-  hasActiveFilters,
   matchesFilters,
   matchesSearch,
   matchesTab,
+  offeredStatusActions,
   resolveAppointmentsTimezone,
   sortAppointments,
-  EMPTY_APPOINTMENT_FILTERS,
   type AppointmentFilters,
   type AppointmentTab,
 } from "@/lib/calendar/appointment-filters";
@@ -58,7 +56,6 @@ import {
 import {
   eventStatus,
   eventStatusLabel,
-  isValidStatusTransition,
   type CalendarEvent,
   type EventStatus,
 } from "@/types/events";
@@ -68,7 +65,12 @@ import type { BookingPage } from "@/types/booking";
 const SELECT_CLASS =
   "border-input bg-background h-9 w-full rounded-md border px-2 text-sm";
 
-/** Row-menu status offers, in a sensible reading order. */
+/**
+ * Row-menu status labels, in a sensible reading order. Which of these are
+ * actually offered for a given event is `offeredStatusActions()`'s call
+ * (appointment-filters.ts) — booking-page only, a valid transition, and
+ * completed/no_show only once the event has started.
+ */
 const STATUS_ACTIONS: { status: EventStatus; label: string }[] = [
   { status: "completed", label: "Mark completed" },
   { status: "no_show", label: "Mark no-show" },
@@ -76,6 +78,29 @@ const STATUS_ACTIONS: { status: EventStatus; label: string }[] = [
 ];
 
 const PAGE_SIZE = 25;
+
+/**
+ * The filter panel's own state shape: same as AppointmentFilters except
+ * the date range is the raw `<input type="date">` string, not epoch ms —
+ * see the `rawFilters` comment in the page component for why.
+ */
+interface RawAppointmentFilters {
+  bookingPageSlug: string | null;
+  hostUid: string | null;
+  status: EventStatus | null;
+  source: AppointmentFilters["source"];
+  fromDate: string;
+  toDate: string;
+}
+
+const EMPTY_RAW_FILTERS: RawAppointmentFilters = {
+  bookingPageSlug: null,
+  hostUid: null,
+  status: null,
+  source: null,
+  fromDate: "",
+  toDate: "",
+};
 
 export default function AppointmentsListPage() {
   const { user, loading: authLoading } = useAuth();
@@ -92,12 +117,31 @@ export default function AppointmentsListPage() {
 
   const [tab, setTab] = useState<AppointmentTab>("upcoming");
   const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<AppointmentFilters>(
-    EMPTY_APPOINTMENT_FILTERS,
+  // The non-date filters, plus the date range as raw `<input type="date">`
+  // strings rather than pre-computed ms — computing ms once at input-change
+  // time would freeze it against whatever `tz` was current then (the
+  // fallback browser tz, if the sub-account doc hadn't loaded yet), and
+  // never update when the real sub-account tz arrives a moment later.
+  const [rawFilters, setRawFilters] = useState<RawAppointmentFilters>(
+    EMPTY_RAW_FILTERS,
+  );
+  const filters: AppointmentFilters = useMemo(
+    () => ({
+      bookingPageSlug: rawFilters.bookingPageSlug,
+      hostUid: rawFilters.hostUid,
+      status: rawFilters.status,
+      source: rawFilters.source,
+      fromMs: dateInputToFromMs(rawFilters.fromDate, tz),
+      toMs: dateInputToToMs(rawFilters.toDate, tz),
+    }),
+    [rawFilters, tz],
   );
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
-  const [busyEventId, setBusyEventId] = useState<string | null>(null);
+  // A Set, not a single id: two rows can have requests in flight at once,
+  // and a click the guard skips (see changeStatus) must not clear a
+  // DIFFERENT row's busy spinner by wiping a single shared scalar.
+  const [busyEventIds, setBusyEventIds] = useState<ReadonlySet<string>>(new Set());
   const [cancelTarget, setCancelTarget] = useState<CalendarEvent | null>(null);
   // Stable across renders — guards against a second click landing before
   // React has repainted the row's disabled button.
@@ -179,9 +223,13 @@ export default function AppointmentsListPage() {
   }, [tab, filters, search]);
 
   async function changeStatus(event: CalendarEvent, next: EventStatus) {
-    setBusyEventId(event.id);
+    setBusyEventIds((prev) => new Set(prev).add(event.id));
     const outcome = await statusGuard.run(event.id, () => applyStatusChange(event.id, next));
-    setBusyEventId(null);
+    setBusyEventIds((prev) => {
+      const n = new Set(prev);
+      n.delete(event.id);
+      return n;
+    });
     if (outcome.skipped) return; // already in flight for this row
     toast[outcome.result.toast.kind](outcome.result.toast.message);
   }
@@ -224,11 +272,10 @@ export default function AppointmentsListPage() {
       </div>
 
       <FilterPanel
-        filters={filters}
-        onChange={setFilters}
+        filters={rawFilters}
+        onChange={setRawFilters}
         bookingPages={bookingPages}
         members={members}
-        tz={tz}
       />
 
       {loading ? (
@@ -262,8 +309,9 @@ export default function AppointmentsListPage() {
                   calendarLabel={appointmentCalendarLabel(event, bookingPageNameBySlug)}
                   ownerLabel={appointmentOwnerLabel(event, memberNameByUid)}
                   tz={tz}
+                  now={now}
                   saPath={saPath}
-                  busy={busyEventId === event.id}
+                  busy={busyEventIds.has(event.id)}
                   onChangeStatus={(next) => {
                     if (next === "cancelled") setCancelTarget(event);
                     else void changeStatus(event, next);
@@ -327,13 +375,11 @@ function FilterPanel({
   onChange,
   bookingPages,
   members,
-  tz,
 }: {
-  filters: AppointmentFilters;
-  onChange: (next: AppointmentFilters) => void;
+  filters: RawAppointmentFilters;
+  onChange: (next: RawAppointmentFilters) => void;
   bookingPages: BookingPage[];
   members: { uid: string; displayName: string }[];
-  tz: string;
 }) {
   const STATUSES: EventStatus[] = [
     "scheduled",
@@ -342,14 +388,13 @@ function FilterPanel({
     "cancelled",
     "no_show",
   ];
-
-  /** Render an epoch ms back to a `<input type="date">` value, in `tz` — the
-   *  same zone dateInputToFromMs/dateInputToToMs parsed it in, so re-opening
-   *  the picker shows the date the filter is actually applying. */
-  function msToDateInput(ms: number | null): string {
-    if (ms === null) return "";
-    return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date(ms));
-  }
+  const hasActive =
+    filters.bookingPageSlug !== null ||
+    filters.hostUid !== null ||
+    filters.status !== null ||
+    filters.source !== null ||
+    filters.fromDate !== "" ||
+    filters.toDate !== "";
 
   return (
     <div className="grid grid-cols-2 gap-2 rounded-xl border bg-muted/20 p-3 sm:grid-cols-3 md:grid-cols-6">
@@ -405,7 +450,7 @@ function FilterPanel({
         onChange={(e) =>
           onChange({
             ...filters,
-            source: (e.target.value || null) as AppointmentFilters["source"],
+            source: (e.target.value || null) as RawAppointmentFilters["source"],
           })
         }
         className={SELECT_CLASS}
@@ -418,20 +463,20 @@ function FilterPanel({
       <Input
         type="date"
         aria-label="From date"
-        value={msToDateInput(filters.fromMs)}
-        onChange={(e) => onChange({ ...filters, fromMs: dateInputToFromMs(e.target.value, tz) })}
+        value={filters.fromDate}
+        onChange={(e) => onChange({ ...filters, fromDate: e.target.value })}
       />
       <Input
         type="date"
         aria-label="To date"
-        value={msToDateInput(filters.toMs)}
-        onChange={(e) => onChange({ ...filters, toMs: dateInputToToMs(e.target.value, tz) })}
+        value={filters.toDate}
+        onChange={(e) => onChange({ ...filters, toDate: e.target.value })}
       />
 
-      {hasActiveFilters(filters) && (
+      {hasActive && (
         <button
           type="button"
-          onClick={() => onChange(EMPTY_APPOINTMENT_FILTERS)}
+          onClick={() => onChange(EMPTY_RAW_FILTERS)}
           className="col-span-full text-left text-xs text-muted-foreground underline hover:text-foreground"
         >
           Clear filters
@@ -447,6 +492,7 @@ function AppointmentRow({
   calendarLabel,
   ownerLabel,
   tz,
+  now,
   saPath,
   busy,
   onChangeStatus,
@@ -457,6 +503,7 @@ function AppointmentRow({
   calendarLabel: string;
   ownerLabel: string;
   tz: string;
+  now: number;
   saPath: (path: string) => string;
   busy: boolean;
   onChangeStatus: (next: EventStatus) => void;
@@ -465,8 +512,8 @@ function AppointmentRow({
   const status = eventStatus(event);
   const start = toDate(event.startAt);
   const whenLabel = start ? formatAppointmentTime(start, tz) : "—";
-  const offerStatusActions = canOfferStatusActions(event);
   const canReschedule = canRescheduleAppointment(event);
+  const offered = offeredStatusActions(event, now);
 
   return (
     <tr className="border-b last:border-b-0 hover:bg-muted/20">
@@ -511,17 +558,13 @@ function AppointmentRow({
           />
           <DropdownMenuContent align="end">
             {/* Status actions match the operator dialog's BookingActionsPanel:
-                only a booking-page event has a lifecycle to flip — flipping a
-                manual event's status here would still email a "visitor" and
-                fire booking.* workflow triggers with nothing behind them. */}
-            {offerStatusActions &&
-              STATUS_ACTIONS.filter(
-                (a) => a.status !== status && isValidStatusTransition(status, a.status),
-              ).map((a) => (
-                <DropdownMenuItem key={a.status} onClick={() => onChangeStatus(a.status)}>
-                  {a.label}
-                </DropdownMenuItem>
-              ))}
+                booking-page only, a valid transition, and — for completed/
+                no_show specifically — only once the event has started. */}
+            {STATUS_ACTIONS.filter((a) => offered.includes(a.status)).map((a) => (
+              <DropdownMenuItem key={a.status} onClick={() => onChangeStatus(a.status)}>
+                {a.label}
+              </DropdownMenuItem>
+            ))}
             <DropdownMenuItem onClick={onEdit}>
               {canReschedule ? "Reschedule" : "Edit"}
             </DropdownMenuItem>
