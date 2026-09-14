@@ -113,6 +113,7 @@ afterEach(async () => {
 const rows = () => el.querySelectorAll("tbody tr").length;
 const loadingNote = () => el.textContent?.includes("Loading all contacts") ?? false;
 const skeleton = () => el.querySelectorAll(".animate-pulse").length > 0;
+const checkboxes = () => el.querySelectorAll('[aria-label^="Select"]').length;
 
 it("paints the newest page first, then the full list replaces it", async () => {
   state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
@@ -128,6 +129,28 @@ it("paints the newest page first, then the full list replaces it", async () => {
   expect(rows()).toBe(5);
   expect(loadingNote()).toBe(false);
   expect(el.textContent).not.toContain("Preview");
+});
+
+it("the preview has no selection checkboxes; the full list does", async () => {
+  state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
+  await act(async () => root.render(createElement(ContactsPage)));
+  expect(rows()).toBe(3);
+  expect(checkboxes()).toBe(0);
+  await act(async () => state.deliver!(contacts("Full", 3)));
+  expect(checkboxes()).toBeGreaterThan(0);
+});
+
+it("typing a search hides the preview — it would not match the results", async () => {
+  state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
+  await act(async () => root.render(createElement(ContactsPage)));
+  expect(rows()).toBe(3);
+  const input = el.querySelector<HTMLInputElement>('input[placeholder^="Search"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "zzz");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(rows()).toBe(0);
+  expect(skeleton()).toBe(true);
 });
 
 it("shows the skeleton, not a preview, while a smart-list filter is active", async () => {

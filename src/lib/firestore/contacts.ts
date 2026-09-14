@@ -98,7 +98,8 @@ export function subscribeToContacts(
  * The newest `count` contacts in a sub-account, one-shot. Lets the contacts
  * page paint its first rows before the full list (which search, filters and
  * select-all need) finishes downloading. Needs the (subAccountId, createdAt
- * desc) index; without it this rejects and callers show no preview.
+ * desc) index; without it this rejects and callers show no preview. A doc
+ * with no `createdAt` is left out (every create path sets it).
  */
 export async function fetchNewestContacts(
   scope: TenantScope,

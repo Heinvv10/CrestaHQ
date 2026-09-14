@@ -39,6 +39,9 @@ interface Props {
    * "Territory" column. Empty array (default) hides the column.
    */
   territories?: TerritoryDoc[];
+  /** Hide the selection checkboxes (the loading preview, where select-all
+   *  cannot mean the full list yet). */
+  readOnly?: boolean;
 }
 
 export function ContactsTable({
@@ -49,6 +52,7 @@ export function ContactsTable({
   allSelected,
   someSelected,
   territories = [],
+  readOnly = false,
 }: Props) {
   const { subAccount, saPath } = useSubAccount();
   const showTerritoryCol = subAccount?.territoryScopingEnabled === true;
@@ -188,7 +192,7 @@ export function ContactsTable({
 
   const table = useReactTable({
     data: contacts,
-    columns,
+    columns: readOnly ? columns.filter((c) => c.id !== "select") : columns,
     state: { sorting },
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
@@ -268,6 +272,7 @@ export function ContactsTable({
         contacts={shownRows.map((r) => r.original)}
         selected={selected}
         onToggle={onToggle}
+        readOnly={readOnly}
       />
       <ShowMoreRows
         shown={shownRows.length}

@@ -13,22 +13,27 @@ export function ContactCardList({
   contacts,
   selected,
   onToggle,
+  readOnly = false,
 }: {
   contacts: Contact[];
   selected: Set<string>;
   onToggle: (id: string) => void;
+  /** Hide the selection checkboxes (see ContactsTable). */
+  readOnly?: boolean;
 }) {
   const { saPath } = useSubAccount();
   return (
     <div className="space-y-3 md:hidden">
       {contacts.map((c) => (
         <div key={c.id} className="flex items-start gap-3">
-          <Checkbox
-            aria-label={`Select ${contactDisplayName(c)}`}
-            checked={selected.has(c.id)}
-            onCheckedChange={() => onToggle(c.id)}
-            className="mt-5"
-          />
+          {!readOnly && (
+            <Checkbox
+              aria-label={`Select ${contactDisplayName(c)}`}
+              checked={selected.has(c.id)}
+              onCheckedChange={() => onToggle(c.id)}
+              className="mt-5"
+            />
+          )}
           <Link
             href={saPath(`/contacts/${c.id}`)}
             className="block min-w-0 flex-1 select-none rounded-xl border bg-card p-4 transition-all hover:bg-muted/30 active:scale-[0.99] active:bg-muted/40"

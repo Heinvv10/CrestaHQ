@@ -11,8 +11,8 @@ const NO_SELECTION = new Set<string>();
 const noop = () => undefined;
 
 /**
- * Loading state: the newest page, read-only, once it lands — selection stays
- * off because select-all must mean the full list — otherwise the skeleton.
+ * Loading state: the newest page once it lands, otherwise the skeleton. No
+ * checkboxes: select-all must mean the full list, which has not arrived.
  */
 export function ContactsLoading({
   preview,
@@ -32,6 +32,7 @@ export function ContactsLoading({
         allSelected={false}
         someSelected={false}
         territories={territories}
+        readOnly
       />
       <p className="text-center text-xs text-muted-foreground">
         Loading all contacts…
