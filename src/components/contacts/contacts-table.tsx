@@ -16,19 +16,12 @@ import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 import { SourceBadge } from "@/components/contacts/source-badge";
 import { ContactCardList } from "@/components/contacts/contact-card-list";
-import { Button } from "@/components/ui/button";
+import { RENDER_STEP, ShowMoreRows } from "@/components/show-more-rows";
 import { Checkbox } from "@/components/ui/checkbox";
 import { formatContactDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSubAccount } from "@/context/sub-account-context";
 import { contactDisplayName } from "@/lib/contacts/display-name";
-
-/**
- * Rows rendered per "Show more" step. Rendering every contact froze the tab
- * for 8s on a 4,551-contact sub-account; sorting, search, filters, select-all
- * and export still run over the full list — only the DOM is capped.
- */
-export const RENDER_STEP = 100;
 
 interface Props {
   /** Already filtered by the page (search + smart list). */
@@ -209,7 +202,6 @@ export function ContactsTable({
 
   const rows = table.getRowModel().rows;
   const shownRows = rows.slice(0, renderLimit);
-  const hidden = rows.length - shownRows.length;
 
   return (
     <>
@@ -277,21 +269,11 @@ export function ContactsTable({
         selected={selected}
         onToggle={onToggle}
       />
-
-      {hidden > 0 && (
-        <div className="flex items-center justify-center gap-3 pt-3 text-xs text-muted-foreground">
-          <span>
-            Showing {shownRows.length} of {rows.length}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setRenderLimit((n) => n + RENDER_STEP)}
-          >
-            Show {Math.min(RENDER_STEP, hidden)} more
-          </Button>
-        </div>
-      )}
+      <ShowMoreRows
+        shown={shownRows.length}
+        total={rows.length}
+        onMore={() => setRenderLimit((n) => n + RENDER_STEP)}
+      />
     </>
   );
 }

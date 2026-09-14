@@ -11,7 +11,8 @@ vi.mock("@/context/sub-account-context", () => ({
   }),
 }));
 
-import { ContactsTable, RENDER_STEP } from "./contacts-table";
+import { ContactsTable } from "./contacts-table";
+import { RENDER_STEP } from "@/components/show-more-rows";
 
 /**
  * A 4,551-contact sub-account froze the tab for 8s because every contact

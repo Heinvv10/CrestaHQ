@@ -8,7 +8,8 @@ vi.mock("@/lib/firestore/conversations", () => ({
   setConversationStarred: vi.fn(),
 }));
 
-import { ConversationList, RENDER_STEP } from "./conversation-list";
+import { ConversationList } from "./conversation-list";
+import { RENDER_STEP } from "@/components/show-more-rows";
 
 /**
  * Rendering Velocity's whole inbox blocked the main thread for 5.5s. The
@@ -33,7 +34,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function mount(list: ConversationDoc[]) {
+async function mount(list: ConversationDoc[], activeId: string | null = null) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const el = document.createElement("div");
   document.body.appendChild(el);
@@ -43,6 +44,7 @@ async function mount(list: ConversationDoc[]) {
       createElement(ConversationList, {
         conversations: list,
         basePath: "/sa/sa1/conversations",
+        activeId,
       }),
     ),
   );
@@ -53,6 +55,7 @@ async function mount(list: ConversationDoc[]) {
   const rows = () => el.querySelectorAll('[data-testid="conversation-row"]');
   return {
     rows,
+    activeRow: () => el.querySelector('[aria-current="page"]'),
     moreButton: () =>
       [...el.querySelectorAll("button")].find((b) =>
         b.textContent?.startsWith("Show "),
@@ -75,6 +78,15 @@ it("Show more reveals the rest step by step, then disappears", async () => {
   await act(async () => m.moreButton()!.click());
   expect(m.rows().length).toBe(230);
   expect(m.moreButton()).toBeUndefined();
+});
+
+it("an open thread past the cap is still rendered and highlighted", async () => {
+  const m = await mount(convos(230), "conv150");
+  expect(m.rows().length).toBe(151);
+  expect(m.activeRow()?.textContent).toContain("Person 150");
+  expect(m.moreButton()?.textContent).toBe("Show 79 more");
+  await act(async () => m.moreButton()!.click());
+  expect(m.rows().length).toBe(230);
 });
 
 it("a short inbox renders whole with no button", async () => {

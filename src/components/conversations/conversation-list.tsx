@@ -5,7 +5,7 @@ import { useState } from "react";
 import { MessagesSquare } from "lucide-react";
 import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { RENDER_STEP, ShowMoreRows } from "@/components/show-more-rows";
 import { StarToggle } from "@/components/conversations/star-toggle";
 import type { ConversationDoc, ConversationChannel } from "@/types/conversations";
 
@@ -26,13 +26,6 @@ const CHANNEL_BADGE: Record<ConversationChannel, string> = {
   instagram: "bg-pink-500/10 text-pink-700 dark:text-pink-400",
   "web-chat": "bg-sky-500/10 text-sky-700 dark:text-sky-400",
 };
-
-/**
- * Rows rendered per "Show more" step. Rendering the whole inbox blocked the
- * main thread for 5.5s on Velocity; filters, counts and search still run over
- * every conversation — only the DOM is capped.
- */
-export const RENDER_STEP = 100;
 
 export function ConversationList({
   conversations,
@@ -79,8 +72,10 @@ export function ConversationList({
     );
   }
 
-  const shown = conversations.slice(0, renderLimit);
-  const hidden = conversations.length - shown.length;
+  // Always render through the open thread's row, so a deep-linked thread
+  // that sorts past the cap still shows (and highlights) in the list.
+  const activeIndex = conversations.findIndex((c) => c.id === activeId);
+  const shown = conversations.slice(0, Math.max(renderLimit, activeIndex + 1));
 
   return (
     <>
@@ -174,20 +169,11 @@ export function ConversationList({
           );
         })}
       </div>
-      {hidden > 0 && (
-        <div className="flex items-center justify-center gap-3 py-3 text-xs text-muted-foreground">
-          <span>
-            Showing {shown.length} of {conversations.length}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setRenderLimit((n) => n + RENDER_STEP)}
-          >
-            Show {Math.min(RENDER_STEP, hidden)} more
-          </Button>
-        </div>
-      )}
+      <ShowMoreRows
+        shown={shown.length}
+        total={conversations.length}
+        onMore={() => setRenderLimit(shown.length + RENDER_STEP)}
+      />
     </>
   );
 }
