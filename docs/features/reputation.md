@@ -366,8 +366,11 @@ switch included).
   or link unless the guidelines have it, never mention being an AI, plain text.
   **The answer is checked, not trusted:** trimmed, code fences / wrapping
   quotes removed, cut to 4000 characters (the reply limit), and **refused** —
-  a model failure, nothing shown — when it carries a phone number, email or
-  link the guidelines did not supply.
+  nothing shown — when it carries a phone number, email, link or bare domain
+  (TLD-based: `deals.com`, `fixture.co.za`; "e.g." and "1.5" are not domains)
+  the guidelines did not supply. The call runs under the seam's per-call
+  bound (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does; a failure is
+  one log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
 - **Composer** (`components/gbp/reply-composer.tsx`): **Draft with AI**
   (`gbp-reply-draft`) appears only when `GET …/gbp/reviews` says `aiDrafts`
   (both gates + configured). It fills an empty box; with text already there
