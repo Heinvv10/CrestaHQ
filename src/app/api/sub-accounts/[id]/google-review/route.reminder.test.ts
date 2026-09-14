@@ -14,7 +14,7 @@ import { storeDb } from "@/test/gbp-sync-store";
 import { PATCH, POST } from "./route";
 
 const REVIEW_URL = "https://g.page/r/fixture/review";
-const DEDICATED = { enabled: true, accountSid: "AC_test", authToken: "tok", fromNumber: "+15017122661" };
+const DEDICATED = { enabled: true, accountSid: "AC_test", authToken: "tok", fromNumber: "+15017122661", inboundWebhookConfigured: true };
 const cfg = () => mem.read(`subAccounts/${SA}`)?.googleReviewConfig as Record<string, unknown> | null | undefined;
 
 function call(handler: typeof POST, method: string, body: Record<string, unknown>, uid = "uid_admin") {
@@ -124,6 +124,16 @@ describe("enabling reminders has prerequisites (POST and PATCH)", () => {
     const res = await call(PATCH, "PATCH", { reminder: on });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: "reminders_need_dedicated_number" });
+    expect((await save({ reminder: on })).status).toBe(400);
+    expect(cfg()).not.toHaveProperty("reminder");
+  });
+
+  it("needs replies to reach us: refused while the number's inbound webhook isn't set up", async () => {
+    await save();
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, twilioConfig: { ...DEDICATED, inboundWebhookConfigured: false } });
+    const res = await call(PATCH, "PATCH", { reminder: on });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "reminders_need_inbound_webhook" });
     expect((await save({ reminder: on })).status).toBe(400);
     expect(cfg()).not.toHaveProperty("reminder");
   });

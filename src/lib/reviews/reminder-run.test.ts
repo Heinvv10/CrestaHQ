@@ -33,7 +33,7 @@ const run = (attempt = 1) => runReviewReminder({ subAccountId: "sa1", requestId:
 
 function setConfig(over: Record<string, unknown> = {}, sub: Record<string, unknown> = {}) {
   mem.seed("subAccounts/sa1", {
-    name: "Acme Plumbing", agencyId: "ag1", twilioConfig: { enabled: true }, whatsappEnabledByAgency: true, ...sub,
+    name: "Acme Plumbing", agencyId: "ag1", twilioConfig: { enabled: true, inboundWebhookConfigured: true }, whatsappEnabledByAgency: true, ...sub,
     googleReviewConfig: {
       enabled: false, reviewUrl: REVIEW_URL, channel: "sms", messageTemplate: "", whatsappTemplateId: null,
       cooldownDays: 90, triggerOnQuotePaid: false, triggerOnDealCompleted: false,

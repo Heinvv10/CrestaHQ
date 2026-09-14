@@ -134,23 +134,27 @@ template's link is fixed, so a click can't stop it and the same template would
 repeat, a WhatsApp quality risk; an in-window WhatsApp message dies when the
 24-hour window closes); a **dedicated SMS number** on the sub-account
 (`reminders_need_dedicated_number` — on the shared sender inbound SMS isn't
-stored, so a reply like "please stop" could never stop them); **link tracking**
-on the deployment
+stored, so a reply like "please stop" could never stop them) **whose inbound
+webhook is set up** (`twilioConfig.inboundWebhookConfigured`,
+`reminders_need_inbound_webhook` — so a reply actually reaches the app);
+**link tracking** on the deployment
 (`AUTOMATIONS_TOKEN_SECRET` and `NEXT_PUBLIC_APP_URL`, `reminders_need_tracking`);
 and a **Google review link** (`reminders_google_link_only` — host exactly
 g.page, search.google.com, maps.app.goo.gl, google.com, www.google.com or
 maps.google.com). Switching them off needs none of it. While reminders are on,
-the Messaging form can't save a non-Google link either (turn reminders off
-first), and a tracked link never redirects to anything but a Google review
-host.
+neither the Messaging form nor "adopt the listing's link" can save a
+non-Google link (turn reminders off first; same `reminders_google_link_only`),
+and a tracked link never redirects to anything but a Google review host.
 
 **With reminders off, nothing changes** — no request id is chosen early, no
 link is rewritten, no field is added to the log row, nothing is scheduled.
 `lib/reviews/request-reminder.test.ts` pins the SMS body and the row keys byte
 for byte, and `e2e/specs/reputation-reminders.spec.ts` asserts the real body.
 The same holds, with reminders on, for any send they can't apply to: a
-non-SMS channel, the shared sender, or no tracking on the deployment — today's
-body, no reminder, never a send failure.
+non-SMS channel, the shared sender or a number without its inbound webhook, a
+contact whose number isn't stored in E.164 (a reply couldn't be matched to
+them; the settings say so), a non-Google review link, or no tracking on the
+deployment — today's body, no reminder, never a send failure.
 
 **With reminders on**, only SMS requests from the dispatcher's own senders —
 Request review, Send Review Request, quote paid, deal completed; never
@@ -163,9 +167,11 @@ workflows, broadcasts or inbox messages — change:
   one change a customer sees, and only while reminders are on.
 - The row gains `tracked`, `reminder {everyDays, maxRetries, attempts: 0,
   nextAt, state: "scheduled", stopReason: null, lastAttemptAt: null}` and
-  `toHash` (SHA-256 of the number it went to — never the number). The
-  contact's other `scheduled` requests stop (`superseded`): one chain per
-  contact. Reminder 1 is published to QStash (`POST /api/cron/review-reminder`,
+  `toHash` (SHA-256 of the number it went to — never the number) and
+  `templateHash` (SHA-256 of the message template used — never the body). The
+  contact's other `scheduled` requests stop (`superseded`) — found by contactId
+  and by `toHash`, so the same person under a duplicate contact counts: one
+  chain per person. Reminder 1 is published to QStash (`POST /api/cron/review-reminder`,
   `{subAccountId, requestId, attempt}`, delay `everyDays`, dedup
   `rr_{requestId}_{attempt}`). Superseding re-reads each older request in a
   transaction and stops it only if it is still `scheduled` — never a worker's
@@ -178,8 +184,8 @@ feed — `cf-connecting-ip` only with `TRUST_CF_CONNECTING_IP=1`, else
 `x-real-ip`, else the left-most `X-Forwarded-For` — with least-recently-used
 eviction, never a wholesale clear; reads no identity header): a valid token for
 a tracked request 302s to the sub-account's **configured** https review link as
-it is now. Only a person's **GET** counts as a click and stamps `clickedAt`
-(once; later clicks keep the first time): a **HEAD**, or a known link-preview
+it is now. Only a person's **GET** counts as a click: the first stamps
+`clickedAt`, and every counted click stamps `lastClickedAt`; a **HEAD**, or a known link-preview
 fetcher (facebookexternalhit, WhatsApp, Slackbot, Twitterbot, TelegramBot,
 Googlebot, bingbot, SkypeUriPreview, LinkedInBot, Discordbot, Applebot, anything
 saying "preview"), is redirected without one. The list can miss an SMS app that
@@ -198,15 +204,16 @@ it stops without sending (state `stopped`, or `done` for retries) when:
 
 | Reason | When |
 |---|---|
-| `clicked` / `clicked_other` | this request was clicked, or any of the contact's requests (an older one included) was clicked after this one was sent |
+| `clicked` / `clicked_other` | this request was clicked, or any of the person's requests (by contactId or number hash; an older one included) was clicked — first click or a re-click (`lastClickedAt`) — after this one was sent |
 | `archived` / `automations_paused` | the sub-account is archived, or its automations are paused |
 | `reminders_off` | reminders are off in the config now (or it was cleared) |
 | `auto_send_off` | a quote-paid / deal-completed request whose auto-send (`enabled` + its trigger) is now off — manual requests are unaffected: `enabled` gates only auto sends |
 | `not_configured` / `channel_changed` | the review link is gone or no longer a Google review link; the channel is no longer the request's (the dispatcher's reminder mode re-checks it too) |
-| `shared_sender` / `tracking_unavailable` | the sub-account is on the shared sender now, or tracking is gone |
+| `shared_sender` / `inbound_not_configured` / `tracking_unavailable` | the sub-account is on the shared sender now, its number's inbound webhook is off, or tracking is gone |
+| `template_changed` | the review message template is no longer the one the request used (`templateHash`) |
 | `contact_deleted` / `phone_changed` | the contact is gone, or their number no longer matches `toHash` |
 | `replied` | the contact sent any inbound SMS or WhatsApp message since the request — only the newest 20 messages per thread are read, so a reply older than 20 of the tenant's own messages to that contact is missed |
-| `superseded` | the dispatcher sent the contact a newer request |
+| `superseded` | the dispatcher sent the person (contactId or number hash) a newer request |
 | `retries_exhausted` | the lower of the request's maximum and the config's maximum now is reached (`done`) |
 
 Otherwise it re-sends through the dispatcher in **reminder mode** — the same

@@ -61,6 +61,8 @@ describe("a valid click", () => {
     vi.setSystemTime(new Date("2026-09-15T10:00:00Z"));
     expect((await click(issueReviewClickToken(SA, "req_1"))).status).toBe(302);
     expect((request()?.clickedAt as Date).toISOString()).toBe("2026-09-14T10:00:00.000Z");
+    // …and records the latest one.
+    expect((request()?.lastClickedAt as Date).toISOString()).toBe("2026-09-15T10:00:00.000Z");
   });
 
   it("goes to the link configured NOW, not one baked in when it was sent", async () => {

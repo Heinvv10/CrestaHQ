@@ -42,7 +42,8 @@ export function ReviewReminderCard() {
   const smsOnly = normalizeReviewChannel(cfg?.channel) !== "sms";
   // What the dashboard can see of "dedicated SMS on" (the server check also needs the credentials).
   const sharedSender = !(subAccount?.twilioConfig?.enabled && subAccount.twilioConfig.fromNumber);
-  const blocked = smsOnly || sharedSender;
+  const noInbound = !sharedSender && subAccount?.twilioConfig?.inboundWebhookConfigured !== true;
+  const blocked = smsOnly || sharedSender || noInbound;
 
   async function save() {
     setSaving(true);
@@ -73,12 +74,19 @@ export function ReviewReminderCard() {
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
           Reminders go with review requests sent by Request review, Send Review Request, quote paid and deal completed — not
-          workflows, broadcasts or inbox messages.
+          workflows, broadcasts or inbox messages — and only to contacts whose number is saved in international format
+          (e.g. +27…), so a reply can be matched to them.
         </p>
         {sharedSender && (
           <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-reminder-dedicated">
             Reminders need this sub-account&apos;s own SMS number (Settings → SMS). On the shared number customers&apos;
             replies can&apos;t be seen, so a reply like &ldquo;please stop&rdquo; couldn&apos;t stop them.
+          </p>
+        )}
+        {noInbound && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-reminder-inbound">
+            Reminders need this number&apos;s incoming-message webhook set up (Settings → SMS), so a customer&apos;s reply
+            reaches you and stops them.
           </p>
         )}
         {smsOnly && (

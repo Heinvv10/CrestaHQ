@@ -3,9 +3,9 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
-import { activeReminder, normalizeReviewChannel } from "@/lib/reviews/constants";
+import { DEFAULT_REVIEW_SMS_TEMPLATE, activeReminder, normalizeReviewChannel } from "@/lib/reviews/constants";
 import { scheduleReviewReminder } from "@/lib/reviews/reminder";
-import { reminderStopReason } from "@/lib/reviews/reminder-checks";
+import { reminderStopReason, templateHash } from "@/lib/reviews/reminder-checks";
 import { reviewTrackingAvailable } from "@/lib/reviews/click-token";
 import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
 import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
@@ -78,9 +78,13 @@ export async function runReviewReminder(input: {
     const sub = ((await tx.get(subRef)).data() ?? null) as SubAccountDoc | null;
     const cfg = sub?.googleReviewConfig ?? null;
     const contactId = req.contactId as string;
+    const log = db.collection(`subAccounts/${input.subAccountId}/reviewRequests`);
+    const toHash = typeof req.toHash === "string" ? req.toHash : null;
+    // The same person under a duplicate contact: same number hash.
+    const sameNumber = toHash ? (await tx.get(log.where("toHash", "==", toHash))).docs : [];
     const [contactSnap, others, sms, wa] = await Promise.all([
       tx.get(db.doc(`contacts/${contactId}`)),
-      tx.get(db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).where("contactId", "==", contactId)),
+      tx.get(log.where("contactId", "==", contactId)),
       tx.get(db.collection(`contacts/${contactId}/messages`).orderBy("createdAt", "desc").limit(INBOUND_LOOKBACK)),
       tx.get(db.collection(`contacts/${contactId}/whatsappMessages`).orderBy("createdAt", "desc").limit(INBOUND_LOOKBACK)),
     ]);
@@ -94,13 +98,15 @@ export async function runReviewReminder(input: {
       req,
       sub: sub as unknown as Record<string, unknown> | null,
       contact: contactSnap.exists ? (contactSnap.data() as Record<string, unknown>) : null,
-      contactRequests: others.docs.map((d) => ({ id: d.id, data: d.data() })),
+      contactRequests: [...new Map([...others.docs, ...sameNumber].map((d) => [d.id, { id: d.id, data: d.data() }])).values()],
       inboundAt,
       trackingAvailable: reviewTrackingAvailable(),
       reminder: activeReminder(cfg?.reminder),
       channel: normalizeReviewChannel(cfg?.channel) === "sms" ? "sms" : "whatsapp",
       reviewUrlConfigured: isGoogleReviewUrl(resolveReviewUrl(sub).configured ?? ""),
       dedicatedSms: subAccountTwilioIsConfigured(sub?.twilioConfig),
+      inboundConfigured: sub?.twilioConfig?.inboundWebhookConfigured === true,
+      templateHash: templateHash(cfg?.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE),
     });
     if (stop) {
       tx.update(ref, stopped(stop));

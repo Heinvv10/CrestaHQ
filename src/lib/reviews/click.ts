@@ -39,7 +39,11 @@ export async function resolveReviewClick(token: string, opts: { stamp: boolean }
   if (!opts.stamp) return destination;
   await db.runTransaction(async (tx) => {
     const current = (await tx.get(ref)).data();
-    if (current && !current.clickedAt) tx.update(ref, { clickedAt: FieldValue.serverTimestamp() });
+    // clickedAt stays the first click; lastClickedAt follows every counted one
+    // (a re-click of an old link must still stop a newer request's reminders).
+    if (current) {
+      tx.update(ref, current.clickedAt ? { lastClickedAt: FieldValue.serverTimestamp() } : { clickedAt: FieldValue.serverTimestamp(), lastClickedAt: FieldValue.serverTimestamp() });
+    }
   });
   return destination;
 }

@@ -39,7 +39,7 @@ const send = () => maybeSendReviewRequest({ subAccountId: "sa1", agencyId: "ag1"
 
 function setConfig(over: Record<string, unknown> = {}) {
   mem.seed("subAccounts/sa1", {
-    name: "Acme Plumbing", agencyId: "ag1", twilioConfig: { enabled: true }, whatsappEnabledByAgency: true,
+    name: "Acme Plumbing", agencyId: "ag1", twilioConfig: { enabled: true, inboundWebhookConfigured: true }, whatsappEnabledByAgency: true,
     googleReviewConfig: {
       enabled: false, reviewUrl: REVIEW_URL, channel: "sms", messageTemplate: "", whatsappTemplateId: null,
       cooldownDays: 90, triggerOnQuotePaid: false, triggerOnDealCompleted: false, ...over,
@@ -178,6 +178,37 @@ describe("reminders ON", () => {
     expect(mem.read("subAccounts/sa1/reviewRequests/old")?.reminder).toMatchObject({ state: "stopped", stopReason: "clicked" });
   });
 
+  it.each([
+    ["the number's inbound webhook isn't set up (replies wouldn't reach us)", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), twilioConfig: { enabled: true, inboundWebhookConfigured: false } })],
+    ["the contact's number isn't stored in E.164 (a reply couldn't be matched to them)", () => mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone: "0412 345 678" })],
+    ["the review link isn't a Google review link", () => setConfig({ reviewUrl: "https://example.com/review", reminder: { everyDays: 3, maxRetries: 2 } })],
+  ])("no reminder when %s — today's body", async (_l, arrange) => {
+    arrange();
+    expect(await send()).toEqual({ sent: true });
+    expect(smsBody()).not.toContain("/rr/");
+    expect(rows()[0]).not.toHaveProperty("reminder");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("stores a hash of the template it used — never the body", async () => {
+    setConfig({ messageTemplate: "Hey {{firstName}}: {{reviewUrl}}", reminder: { everyDays: 3, maxRetries: 2 } });
+    await send();
+    const { createHash } = await import("node:crypto");
+    expect(rows()[0].templateHash).toBe(createHash("sha256").update("Hey {{firstName}}: {{reviewUrl}}").digest("hex"));
+    expect(JSON.stringify(rows()[0])).not.toContain("Hey {{firstName}}");
+  });
+
+  it("superseding reaches the same person under a duplicate contact (same number hash)", async () => {
+    const { phoneHash } = await import("./reminder-checks");
+    const scheduled = { everyDays: 3, maxRetries: 2, attempts: 0, state: "scheduled", stopReason: null, nextAt: new Date(), lastAttemptAt: null };
+    mem.seed("subAccounts/sa1/reviewRequests/dup", {
+      agencyId: "ag1", subAccountId: "sa1", contactId: "c_dup", channel: "sms", source: "dispatcher", status: "sent",
+      sentAt: new Date(Date.now() - 86_400_000), tracked: true, toHash: phoneHash("+61412345678"), reminder: scheduled,
+    });
+    await send();
+    expect(mem.read("subAccounts/sa1/reviewRequests/dup")?.reminder).toMatchObject({ state: "stopped", stopReason: "superseded" });
+  });
+
   it("stores a hash of the number it went to — never the number", async () => {
     await send();
     const { createHash } = await import("node:crypto");
@@ -253,7 +284,7 @@ describe("planReviewLink — which channels can be tracked", () => {
     const { planReviewLink } = await import("./reminder");
     for (const channel of ["whatsapp_template", "whatsapp_manual"] as const) {
       expect(planReviewLink({
-        config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel, subAccountId: "sa1", reviewUrl: REVIEW_URL, dedicatedSms: true, newRequestId: () => "req9",
+        config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel, subAccountId: "sa1", reviewUrl: REVIEW_URL, remindable: true, newRequestId: () => "req9",
       })).toBeNull();
     }
   });

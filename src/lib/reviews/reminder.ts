@@ -51,8 +51,13 @@ export function planReviewLink(input: {
   subAccountId: string;
   reviewUrl: string;
   reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
-  /** A dedicated SMS number: on the shared sender inbound SMS is never stored, so a reply could not stop reminders. */
-  dedicatedSms: boolean;
+  /**
+   * Can a reply stop reminders? A dedicated SMS number (on the shared sender
+   * inbound SMS is never stored) whose inbound webhook is set up, a contact
+   * number in E.164 (so a reply is matched to the contact), and a Google
+   * review link. Without all of these, no reminder.
+   */
+  remindable: boolean;
   newRequestId: () => string;
 }): ReviewLinkPlan | null {
   const trackedUrl = (requestId: string) => {
@@ -68,7 +73,7 @@ export function planReviewLink(input: {
     return { requestId, bodyUrl: url || input.reviewUrl, tracked: !!url };
   }
   const reminder = activeReminder(input.config?.reminder);
-  if (!reminder || !input.dedicatedSms) return null;
+  if (!reminder || !input.remindable) return null;
   const requestId = input.newRequestId();
   // Empty for a non-SMS channel or without tracking: then no reminder at all.
   const url = trackedUrl(requestId);
@@ -130,11 +135,19 @@ export async function scheduleReviewReminder(input: {
  * contact's other scheduled ones (`superseded`). Single-field query on
  * contactId, filtered here. Never throws — the send has happened.
  */
-export async function supersedeOtherReminders(subAccountId: string, contactId: string, keepRequestId: string): Promise<void> {
+export async function supersedeOtherReminders(
+  subAccountId: string,
+  contactId: string,
+  toHash: string,
+  keepRequestId: string,
+): Promise<void> {
   try {
-    const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/reviewRequests`).where("contactId", "==", contactId).get();
     const db = getAdminDb();
-    for (const d of snap.docs) {
+    const log = db.collection(`subAccounts/${subAccountId}/reviewRequests`);
+    // The contact's requests, and the same person's under a duplicate contact (same number hash).
+    const [byContact, byNumber] = await Promise.all([log.where("contactId", "==", contactId).get(), log.where("toHash", "==", toHash).get()]);
+    const docs = [...new Map([...byContact.docs, ...byNumber.docs].map((d) => [d.id, d])).values()];
+    for (const d of docs) {
       if (d.id === keepRequestId) continue;
       // Re-read in a transaction: only a request STILL scheduled is superseded —
       // never a worker's stop, or one mid-send.

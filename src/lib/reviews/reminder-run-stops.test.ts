@@ -26,7 +26,8 @@ vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMess
 vi.mock("@/lib/automations/qstash", () => ({ publishCallback: (...a: unknown[]) => publish(...a) }));
 
 const { runReviewReminder } = await import("./reminder-run");
-const { phoneHash } = await import("./reminder-checks");
+const { phoneHash, templateHash } = await import("./reminder-checks");
+const { DEFAULT_REVIEW_SMS_TEMPLATE } = await import("./constants");
 
 const PHONE = "+61412345678";
 const SENT_AT = Date.now() - 2 * 86_400_000;
@@ -36,7 +37,7 @@ const run = () => runReviewReminder({ subAccountId: "sa1", requestId: "req1", at
 
 function setSub(cfg: Record<string, unknown> = {}, sub: Record<string, unknown> = {}) {
   mem.seed("subAccounts/sa1", {
-    name: "Acme Plumbing", agencyId: "ag1", status: "active", twilioConfig: { enabled: true }, ...sub,
+    name: "Acme Plumbing", agencyId: "ag1", status: "active", twilioConfig: { enabled: true, inboundWebhookConfigured: true }, ...sub,
     googleReviewConfig: {
       enabled: false, reviewUrl: "https://g.page/r/acme/review", channel: "sms", messageTemplate: "", whatsappTemplateId: null,
       cooldownDays: 90, triggerOnQuotePaid: false, triggerOnDealCompleted: false, reminder: { everyDays: 2, maxRetries: 3 }, ...cfg,
@@ -49,6 +50,7 @@ function seedReq(id: string, more: Record<string, unknown> = {}) {
     agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1", channel: "sms", source: "dispatcher",
     trigger: "manual", status: "sent", sentAt: new Date(SENT_AT), clickedAt: null, feedbackAt: null, tracked: true,
     toHash: phoneHash(PHONE),
+    templateHash: templateHash(DEFAULT_REVIEW_SMS_TEMPLATE),
     reminder: { everyDays: 2, maxRetries: 3, attempts: 0, nextAt: new Date(), state: "scheduled", stopReason: null, lastAttemptAt: null },
     ...more,
   });
@@ -95,6 +97,25 @@ describe("one chain per contact", () => {
     await expectStop("clicked_other");
   });
 
+  it("a RE-click on an older link after this request stops it (lastClickedAt, not only the first click)", async () => {
+    // A clicked day −9, this request (B) sent day 0, A clicked again day +1.
+    seedReq("olderA", {
+      sentAt: new Date(SENT_AT - 10 * 86_400_000), clickedAt: new Date(SENT_AT - 9 * 86_400_000),
+      lastClickedAt: new Date(SENT_AT + 86_400_000), reminder: null,
+    });
+    await expectStop("clicked_other");
+  });
+
+  it("the same person under a duplicate contact (same number hash) counts: a newer request supersedes", async () => {
+    seedReq("dupNewer", { contactId: "c_dup", sentAt: new Date(SENT_AT + 3600_000), reminder: null });
+    await expectStop("superseded");
+  });
+
+  it("the same person under a duplicate contact: their click counts too", async () => {
+    seedReq("dupClicked", { contactId: "c_dup", sentAt: new Date(SENT_AT - 86_400_000), clickedAt: new Date(SENT_AT + 60_000), reminder: null });
+    await expectStop("clicked_other");
+  });
+
   it("a click on an OLDER request (before this one) does not", async () => {
     mem.db.doc("subAccounts/sa1/reviewRequests/x").delete();
     seedReq("older", { sentAt: new Date(SENT_AT - 86_400_000), clickedAt: new Date(SENT_AT - 3600_000), reminder: null });
@@ -102,7 +123,7 @@ describe("one chain per contact", () => {
   });
 
   it("another contact's newer request is not this contact's", async () => {
-    seedReq("otherContact", { contactId: "c2", sentAt: new Date(SENT_AT + 3600_000), clickedAt: new Date(), reminder: null });
+    seedReq("otherContact", { contactId: "c2", toHash: phoneHash("+61400000009"), sentAt: new Date(SENT_AT + 3600_000), clickedAt: new Date(), reminder: null });
     expect(await run()).toEqual({ outcome: "sent" });
   });
 });
@@ -153,6 +174,16 @@ describe("master controls and prerequisites", () => {
   it("the review link is no longer a Google review link", async () => {
     setSub({ reviewUrl: "https://example.com/review" });
     await expectStop("not_configured");
+  });
+
+  it("the number's inbound webhook was turned off (replies no longer reach us)", async () => {
+    setSub({}, { twilioConfig: { enabled: true, inboundWebhookConfigured: false } });
+    await expectStop("inbound_not_configured");
+  });
+
+  it("the review message template changed since the request", async () => {
+    setSub({ messageTemplate: "A new wording: {{reviewUrl}}" });
+    await expectStop("template_changed");
   });
 
   it("link tracking no longer available", async () => {

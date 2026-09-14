@@ -77,7 +77,8 @@ test.beforeAll(async () => {
     twilioConfig: {
       enabled: true, accountSid: FAKE_ACCOUNT_SID, authToken: FAKE_AUTH_TOKEN, fromNumber: FAKE_FROM_NUMBER,
       whatsappFromNumber: null, whatsappSandbox: false, whatsappInboundWebhookConfigured: false,
-      inboundWebhookConfigured: false, lastValidatedAt: null, inboundWebhookSecret: null, missedCall: null,
+      // Reminders need replies to reach the app; on the fake rail this is only the flag.
+      inboundWebhookConfigured: true, lastValidatedAt: null, inboundWebhookSecret: null, missedCall: null,
     },
     googleReviewConfig: {
       enabled: false, reviewUrl: REVIEW_URL, channel: "sms", messageTemplate: "", whatsappTemplateId: null,

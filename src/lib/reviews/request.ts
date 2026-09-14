@@ -25,7 +25,9 @@ import {
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { logReviewRequest } from "@/lib/reviews/request-log";
 import { planReviewLink, scheduleReviewReminder, supersedeOtherReminders } from "@/lib/reviews/reminder";
-import { phoneHash } from "@/lib/reviews/reminder-checks";
+import { phoneHash, templateHash } from "@/lib/reviews/reminder-checks";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -169,7 +171,11 @@ export async function maybeSendReviewRequest(
       subAccountId: input.subAccountId,
       reviewUrl,
       reminderOf: isReminder ? input.reminderOf : undefined,
-      dedicatedSms: subAccountTwilioIsConfigured(subAccount.twilioConfig),
+      remindable:
+        subAccountTwilioIsConfigured(subAccount.twilioConfig) &&
+        subAccount.twilioConfig?.inboundWebhookConfigured === true &&
+        normalizePhoneE164(contact.phone) === contact.phone &&
+        isGoogleReviewUrl(reviewUrl),
       newRequestId: () => db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).doc().id,
     });
     const bodyUrl = plan?.bodyUrl ?? reviewUrl;
@@ -399,10 +405,19 @@ export async function maybeSendReviewRequest(
       messageSid: sid,
       // With a reminder: a hash of the number it went to (never the number), so a
       // reminder can stop if the contact's number changes.
-      ...(plan ? { id: plan.requestId, tracked: plan.tracked, reminder: { ...plan.reminder }, toHash: phoneHash(contact.phone) } : {}),
+      ...(plan
+        ? {
+            id: plan.requestId,
+            tracked: plan.tracked,
+            reminder: { ...plan.reminder },
+            toHash: phoneHash(contact.phone),
+            // A hash of the template used — never the body — so a reminder stops if it changes.
+            templateHash: templateHash(cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE),
+          }
+        : {}),
     });
     if (plan?.reminder) {
-      await supersedeOtherReminders(input.subAccountId, contact.id, plan.requestId);
+      await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), plan.requestId);
       await scheduleReviewReminder({
         subAccountId: input.subAccountId,
         requestId: plan.requestId,

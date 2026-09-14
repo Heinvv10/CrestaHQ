@@ -18,7 +18,7 @@ const fetchMock = vi.fn();
 let container: HTMLDivElement;
 let root: Root;
 const cfg = (over: Record<string, unknown> = {}, sub: Record<string, unknown> = {}) => ({
-  twilioConfig: { enabled: true, accountSid: "AC_test", fromNumber: "+15017122661" },
+  twilioConfig: { enabled: true, accountSid: "AC_test", fromNumber: "+15017122661", inboundWebhookConfigured: true },
   googleReviewConfig: { reviewUrl: "https://g.page/r/x/review", channel: "sms", ...over },
   ...sub,
 });
@@ -128,10 +128,22 @@ describe("reminder card", () => {
     expect(byId("rep-reminder-dedicated")).toBeNull();
   });
 
+  it("needs replies to reach us: without the number's inbound webhook it says so and can't be turned on", async () => {
+    ctx.subAccount = cfg({}, { twilioConfig: { enabled: true, accountSid: "AC_test", fromNumber: "+15017122661", inboundWebhookConfigured: false } });
+    await render();
+    expect(byId("rep-reminder-inbound")?.textContent).toContain("incoming-message webhook");
+    expect((byId("rep-reminder-every") as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it("says contacts' numbers must be in international format", async () => {
+    await render();
+    expect(byId("rep-reminder-card")?.textContent).toContain("international format");
+  });
+
   it("names the senders reminders go with, and offers at most 7 days", async () => {
     await render();
     expect(byId("rep-reminder-card")?.textContent).toContain(
-      "Reminders go with review requests sent by Request review, Send Review Request, quote paid and deal completed — not workflows, broadcasts or inbox messages.",
+      "Reminders go with review requests sent by Request review, Send Review Request, quote paid and deal completed — not workflows, broadcasts or inbox messages",
     );
     const days = [...(byId("rep-reminder-every") as HTMLSelectElement).options].map((o) => o.value);
     expect(days).toEqual(["off", "1", "2", "3", "4", "5", "6", "7"]);
