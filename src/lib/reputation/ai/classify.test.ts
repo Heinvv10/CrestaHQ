@@ -99,11 +99,13 @@ describe("strict validation — never guess", () => {
     ["429", new Error("OpenRouter 429: slow down"), "call_failed"],
     ["500", new Error("OpenRouter 500: upstream"), "call_failed"],
     ["503", new Error("OpenRouter 503: unavailable"), "call_failed"],
-    ["400", new Error("OpenRouter 400: bad request"), "call_rejected"],
-    ["403 (moderation)", new Error("OpenRouter 403: flagged"), "call_rejected"],
-    ["422", new Error("OpenRouter 422: unprocessable"), "call_rejected"],
-    ["a 200 with no content", new Error("OpenRouter returned no message content"), "call_rejected"],
-    ["a 200 with an error body", new Error("OpenRouter: model refused"), "call_rejected"],
+    ["400 (e.g. an invalid model — config)", new Error("OpenRouter 400: invalid model"), "call_failed"],
+    ["404", new Error("OpenRouter 404: not found"), "call_failed"],
+    ["422", new Error("OpenRouter 422: unprocessable"), "call_failed"],
+    ["418 (any other 4xx)", new Error("OpenRouter 418: teapot"), "call_failed"],
+    ["a 200 with no content", new Error("OpenRouter returned no message content"), "call_failed"],
+    ["a 200 with an error body", new Error("OpenRouter: model refused"), "call_failed"],
+    ["403 (moderation) — the only rejected call", new Error("OpenRouter 403: flagged"), "call_rejected"],
   ])("%s → %s", async (_l, err, failure) => {
     callAi.mockRejectedValueOnce(err);
     expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure }]);

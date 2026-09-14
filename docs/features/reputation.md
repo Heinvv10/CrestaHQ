@@ -185,23 +185,26 @@ failed on its current content.
   (`sentimentAttempt.failures + 1`, `lastAt` now), immediately before the
   call. After it, a label is written (clearing the strike) if the review still
   has the classified content — or was tombstoned during the call (a 3-value
-  label, no content; readers hide tombstones). **The cause decides the
-  strike:** a **transient** failure — no response at all (network, DNS,
-  connect), our own timeout or abort, a missing key, HTTP 401 / 402 / 408 /
-  429 / 5xx (key, credits, rate, provider trouble) — is **not a strike**: its
-  `lastAt` still spaces the retry by an hour, but it never counts toward the
-  three, so an outage or a revoked key never gives up a review; the run stops
-  as `ai_error` and the Overview shows "The AI provider failed on the last
-  run — check the agency's OpenRouter key/credits" until a run gets through.
-  Anything about this review's request — another 4xx (400, 403 moderation,
-  422), a 200 with no content or an error body, or an unusable answer
-  (unparseable, invalid label, unknown / duplicated / missing id) — **is a
-  strike**, and the run stops as `ai_bad_answer` ("The AI gave an unusable
-  answer for a review — it will be retried, at most 3 times"). Failed calls
-  are logged with their HTTP status, never the body. A label that comes back
-  but cannot be written stops the run as `save_failed` and keeps the strike;
-  a provider that cannot be obtained stops it as `ai_error`. If un-counting a
-  transient failure's strike itself fails, the strike stays — conservative.
+  label, no content; readers hide tombstones). **Only two things are a
+  strike:** HTTP **403** (the provider refusing this review — moderation) and
+  an **unusable answer** (a 200 with content we cannot use: unparseable,
+  invalid label, unknown / duplicated / missing id); the run then stops as
+  `ai_bad_answer` ("The AI gave an unusable answer for a review — it will be
+  retried, at most 3 times"). **Every other failed call is transient** — no
+  response (network, DNS, connect), our timeout or abort, a missing key, 400
+  (e.g. an invalid model), 401, 402, 404, 408, 422, 429, any other 4xx, 5xx,
+  a 200 with no content or with an error body: a configuration or provider
+  problem, not the review's fault. It is **not a strike** (its `lastAt` still
+  spaces the retry by an hour), the run stops as `ai_error`, and the Overview
+  shows "The AI provider failed on the last run — check the agency's
+  OpenRouter key/credits". **A review that always hits a transient error is
+  never given up:** it costs at most one call an hour, blocks nothing (it
+  queues after fresh reviews), and keeps the amber line showing until a call
+  succeeds. Failed calls are logged with their HTTP status, never the body. A
+  label that comes back but cannot be written stops the run as `save_failed`
+  and keeps the strike; a provider that cannot be obtained stops it as
+  `ai_error`. If un-counting a transient failure's strike itself fails, the
+  strike stays — conservative.
   **Queue order:** fresh reviews first (newest first), then reviews already
   tried, longest-waiting first — so one troublesome review can never block
   the backlog; it costs at most one call an hour until it is given up. The
@@ -211,11 +214,12 @@ failed on its current content.
   lease. Only one call is ever in flight per sub-account, so switching a gate
   off lets at most that one call finish.
 - **Failures:** a review is tried again at most **once an hour** (checked
-  against the clock at that moment) and — for strikes (rejected or unusable
-  answers) — **at most three times** per content, then counted as
+  against the clock at that moment) and — for strikes (a 403 or an unusable
+  answer) — **at most three times** per content, then counted as
   **"couldn't be analysed"**, apart from "not analysed yet". An edit starts a new count; a success clears it.
-- **Cap:** at most 100 reviews per run, newest first; the rest wait for the
-  next run (a capped run is not complete, so the next sync continues).
+- **Cap:** at most 100 reviews per run, in queue order (fresh first, newest
+  first; then tried ones, longest-waiting first); the rest wait for the next
+  run (a capped run is not complete, so the next sync continues).
 - **Clocks:** lease expiry compares instance clocks; production runs one app
   instance on one host, and dev/CI instances are fake-fenced to the fixture
   agency, so skew between writers is not a concern here.
@@ -324,8 +328,7 @@ test from the scenario's patterns; memo; nothing stored); provider —
 `lib/gbp/access-not-approved.test.ts`, `components/gbp/access-not-approved-text.test.ts`;
 `e2e/specs/gbp-insights.spec.ts` (tiles equal totals computed from the
 scenario, switch to the second fixture location, listing unchanged in
-Firestore, an invisible location refused, "not approved"). Mutation record:
-`.sp5-orch/f-mutations.md` (orchestrator).
+Firestore, an invisible location refused, "not approved").
 
 ## The review-request log
 
@@ -436,9 +439,8 @@ through the sync), `lib/reputation/ai/*.test.ts` (fence, strict validation),
 - `e2e/specs/reputation-overview.spec.ts` — sync the fake's reviews, two real
   manual sends through the fenced fake SMS rail, the tiles equal the numbers
   computed from that data; the sidebar entry; the gate-off state on the secondary
-  fixture. Mutation record: `.sp5-orch/a-mutations.md` (orchestrator).
+  fixture.
 - `e2e/specs/reputation-requests.spec.ts` — through the fenced fake SMS rail: a
   Send Review Request dialog send, a workflow `send_sms` step carrying the URL (real
   engine, signed step), the composer's "Ask for review", and a plain message; the
   Requests tab lists exactly the three asks by source and Overview shows 3.
-  Mutation record: `.sp5-orch/d1-mutations.md` (orchestrator).

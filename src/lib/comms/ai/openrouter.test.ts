@@ -65,6 +65,19 @@ describe("with a caller signal", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  it("keeps the header timeout: a live caller signal plus timeoutMs 5 still times out after 5 ms", async () => {
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) =>
+          init.signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))),
+        ),
+    );
+    const live = new AbortController(); // never aborted
+    await expect(callAi({ messages: [{ role: "user", content: "x" }], timeoutMs: 5, signal: live.signal })).rejects.toThrow(
+      "OpenRouter request timed out after 5ms",
+    );
+  });
+
   it("an already-aborted signal refuses before any request", async () => {
     const controller = new AbortController();
     controller.abort();

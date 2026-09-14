@@ -18,11 +18,12 @@ export interface SentimentItem {
 }
 
 /**
- * Why an item was not labelled. `call_failed` is TRANSIENT (no response, our
- * timeout, 401 / 402 / 408 / 429 / 5xx) — retried after an hour, never a
- * strike. `call_rejected` (another 4xx, a 200 with no content or an error
- * body) and `bad_output` (the model answered unusably) are about this review
- * and are strikes. The run stops on its first failure of any kind.
+ * Why an item was not labelled. `call_failed` — any failed call except a 403
+ * (no response, timeout, key, credits, invalid model, rate, 5xx, an empty or
+ * error body): transient, retried after an hour, never a strike.
+ * `call_rejected` — HTTP 403, the provider refusing this review: a strike.
+ * `bad_output` — a 200 whose content we cannot use: a strike. The run stops
+ * on its first failure of any kind.
  */
 export type SentimentFailure = "call_failed" | "call_rejected" | "bad_output";
 export type SentimentResult =

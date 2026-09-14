@@ -60,23 +60,16 @@ async function bounded<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T
 const statusOf = (err: unknown) => /^OpenRouter (\d{3})\b/.exec(err instanceof Error ? err.message : "")?.[1] ?? "none";
 
 /**
- * Transient — worth another try later, NOT a strike: no response at all
- * (network / DNS / connect error — fetch threw before any "OpenRouter …"
- * message), our own timeout or abort, a missing key, or HTTP 401 / 402 / 408
- * / 429 / 5xx (key, credits, rate, provider trouble). Everything else — any
- * other 4xx (400, 403 moderation, 422), a 200 with no content or an error
- * body — is about this review's request and counts as a strike.
+ * Is a failed call a strike? Only HTTP 403 — the provider refusing THIS
+ * review (moderation). Everything else is a configuration or provider
+ * problem, not the review's fault, and must never give a review up:
+ * no response, our timeout or abort, a missing key, 400 (e.g. an invalid
+ * model), 401, 402, 404, 408, 422, 429, any other 4xx, 5xx, a 200 with no
+ * content or with an error body. (An unusable ANSWER — a 200 with content we
+ * cannot use — is `bad_output`, a strike, decided after the call.)
  */
 export function transientFailure(err: unknown): boolean {
-  if (err instanceof CallTimeout || (err instanceof Error && err.name === "AbortError")) return true;
-  const msg = err instanceof Error ? err.message : String(err);
-  const status = statusOf(err);
-  if (status !== "none") {
-    const code = Number(status);
-    return code === 401 || code === 402 || code === 408 || code === 429 || code >= 500;
-  }
-  if (/timed out|aborted by the caller|OPENROUTER_API_KEY is not set/.test(msg)) return true;
-  return !msg.startsWith("OpenRouter"); // "OpenRouter returned no message content" / "OpenRouter: <error>" strike
+  return statusOf(err) !== "403";
 }
 
 const SYSTEM = [

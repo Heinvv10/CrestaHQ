@@ -19,10 +19,12 @@ import { SENTIMENT_LEASE_TTL_MS, sentimentLeasePath } from "./sentiment-lease";
  *               the strike — conservative: it counts toward the three.
  *   finishCall  AFTER it: a label clears the strike (also on a review
  *               tombstoned during its call — a 3-value label, no content).
- *   A bad answer from the model keeps the strike; a failed CALL (outage,
- *   revoked key, no credits, timeout) is un-counted by `uncountStrike` — its
- *   `lastAt` still spaces the retry by an hour — so an outage never gives up
- *   on a review. Either way the run stops on its first failure.
+ *   Only a 403 (the provider refusing this review) or an unusable answer
+ *   keeps the strike. Every other failed call — no response, timeout, key,
+ *   credits, invalid model, rate, 5xx, an empty or error body — is un-counted
+ *   by `uncountStrike` (its `lastAt` still spaces the retry by an hour), so a
+ *   configuration or provider problem never gives up a review. Either way
+ *   the run stops on its first failure.
  * At most one call is ever in flight per sub-account, so a gate switched off
  * lets at most that one call finish.
  */

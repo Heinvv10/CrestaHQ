@@ -83,14 +83,16 @@ export function ReputationOverview() {
 
   useEffect(() => {
     const controller = new AbortController();
+    // Captured NOW, for this run only: a newer run (range switch, sent request)
+    // that replaces this one starts with its own, un-kept, flag.
+    const keep = polling.current;
+    polling.current = false;
     void (async () => {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/reputation/overview?range=${range}`, { signal: controller.signal }).catch(() => null);
       const data = (await res?.json().catch(() => null)) as OverviewResponse | null;
       if (controller.signal.aborted) return;
       // Only an Analyse-now poll keeps what is on screen after a failed re-read
       // (so the polling card is not unmounted); any other failure shows the error.
-      const keep = polling.current;
-      polling.current = false;
       setLoad((prev) =>
         res?.ok && data?.requests ? { state: "ready", data } : keep && prev.state === "ready" ? prev : { state: "error" },
       );

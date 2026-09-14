@@ -259,6 +259,40 @@ describe("a failed re-read while polling (SP5 b)", () => {
     expect(byId("rep-state-error")).not.toBeNull();
   });
 
+  it("a range switch during a poll ends the poll's keep: a later failed reload shows the error", async () => {
+    await render();
+    // The poll's re-read hangs; the user switches range; that load succeeds.
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      if (url.endsWith("range=90d")) return new Promise(() => {});
+      return { ok: true, status: 200, json: async () => payload() };
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    const select = byId("rep-range") as HTMLSelectElement;
+    await act(async () => {
+      select.value = "30d";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(byId("rep-overview")).not.toBeNull();
+    // Now a non-poll reload (a sent request) fails: it must show the error, not keep old data.
+    fetchMock.mockImplementation(async () => ({ ok: false, status: 502, json: async () => ({}) }));
+    await act(async () => sendButton.onSent?.());
+    expect(byId("rep-state-error")).not.toBeNull();
+  });
+
+  it("a sent request that lands while a poll's re-read is still in flight does not inherit the poll's keep", async () => {
+    await render();
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      return new Promise(() => {}); // the poll's re-read hangs
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    // The send's reload replaces (aborts) the poll's re-read, and fails.
+    fetchMock.mockImplementation(async () => ({ ok: false, status: 502, json: async () => ({}) }));
+    await act(async () => sendButton.onSent?.());
+    expect(byId("rep-state-error")).not.toBeNull();
+  });
+
   it("a failed FIRST load still shows the error", async () => {
     status = 502;
     await render();
