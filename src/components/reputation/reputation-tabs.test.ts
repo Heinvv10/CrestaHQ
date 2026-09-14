@@ -41,7 +41,6 @@ it.each([
   await act(async () => root.render(createElement(ReputationTabs)));
   expect(current()).toEqual([id]);
   expect([...container.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
-    "/sa/sa1/reputation", "/sa/sa1/reputation/reviews", "/sa/sa1/reputation/requests", "/sa/sa1/reputation/widgets",
-    "/sa/sa1/reputation/insights", "/sa/sa1/reputation/settings",
+    "/sa/sa1/reputation", "/sa/sa1/reputation/reviews", "/sa/sa1/reputation/requests", "/sa/sa1/reputation/widgets", "/sa/sa1/reputation/insights", "/sa/sa1/reputation/settings",
   ]);
 });

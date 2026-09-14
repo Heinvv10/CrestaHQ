@@ -6,7 +6,6 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { useGoogleConfigured } from "@/components/gbp/google-business-panel";
 import { ReviewsSection } from "@/components/gbp/reviews-section";
 import { WidgetSection } from "@/components/gbp/widget-section";
-import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account-google-review-section";
 
 /**
  * Reputation → Reviews and → Widgets mount the existing Google Business
@@ -80,18 +79,6 @@ export function ReputationWidgets() {
   return (
     <div data-testid="rep-widgets">
       <WidgetSection />
-    </div>
-  );
-}
-
-/** Reputation → Settings: the review-request settings (link, channel, message, triggers, reminders), admins only. */
-export function ReputationSettings() {
-  const { subAccount, isAdmin, loading } = useSubAccount();
-  if (loading || !subAccount) return <Loading testId="rep-settings-loading" />;
-  if (!isAdmin) return <Note testId="rep-settings-not-admin">Only sub-account admins change review-request settings.</Note>;
-  return (
-    <div data-testid="rep-settings">
-      <SubAccountGoogleReviewSection />
     </div>
   );
 }

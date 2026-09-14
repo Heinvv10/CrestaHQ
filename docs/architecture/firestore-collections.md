@@ -114,9 +114,11 @@ doc); readers ignore a label whose `basisHash` is not the review's current
 basis. `private/sentimentLease` holds the classifier's lease, the Analyse-now
 cooldown, `lastCompleteAt` (the last run that finished normally) and the last
 run's counts and stop reason; `private/sentimentUsage {day, calls}` counts AI
-calls per UTC day against the 300-call cap. In dev/CI only,
-`private/reviewsAiFakeLog` holds the Reviews AI fake's call log (ids + count,
-never text).
+calls per UTC day against the 300-call cap — sentiment calls AND reply drafts
+(SP5 c). In dev/CI only, `private/reviewsAiFakeLog` holds the Reviews AI
+fake's call log (ids + count, and `drafts: [{at, kind, stars}]` — never text).
+`subAccounts/{id}.reviewsAiConfig {replyGuidelines, updatedAt, updatedByUid}`
+(SP5 c) is server-written (PUT …/reputation/ai-settings), member-readable.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

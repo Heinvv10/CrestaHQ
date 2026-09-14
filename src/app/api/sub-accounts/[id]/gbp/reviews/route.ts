@@ -9,6 +9,7 @@ import { gbpRefusal } from "@/lib/gbp/route-support";
 import { publicReview, publicRun, publicSummary } from "@/lib/gbp/sync/public";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 import { loadServedReviews } from "@/lib/gbp/sync/served";
+import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
 import { runsCollection, type GbpSummary } from "@/lib/gbp/sync/types";
 import type { SubAccountDoc } from "@/types";
 
@@ -78,5 +79,7 @@ export async function GET(
     truncated: served.truncated,
     runs: runSnap.docs.map((d) => publicRun(d.data())),
     scheduled: gbpSyncScheduled(),
+    /** "Draft with AI" can work: the Google gate (checked above), the Reviews AI gate, and AI configured here. */
+    aiDrafts: sub.reviewsAiEnabledByAgency === true && reviewsAiConfigured(),
   });
 }
