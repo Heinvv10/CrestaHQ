@@ -31,10 +31,11 @@ import { subscribeToContacts } from "./contacts";
 
 const SCOPE = { agencyId: "ag1", subAccountId: "sa1" };
 
-function snap(ids: string[], fromCache: boolean) {
+function snap(ids: string[], fromCache: boolean, changes = ids.length) {
   return {
     metadata: { fromCache },
     docs: ids.map((id) => ({ id, data: () => ({ createdAt: null }) })),
+    docChanges: () => Array.from({ length: changes }),
   };
 }
 
@@ -58,12 +59,22 @@ it("waitForServer: a partial cache snapshot is held; the server answer is delive
   expect(cb.mock.calls[0][0].map((c: { id: string }) => c.id).sort()).toEqual(["c1", "c2", "c3"]);
 });
 
-it("waitForServer: once the server has answered, later cache snapshots (offline) still flow", () => {
+it("waitForServer: a warm, complete cache still loads on the server's metadata-only confirmation", () => {
+  const cb = vi.fn();
+  subscribeToContacts(SCOPE, { waitForServer: true }, cb);
+  m.next!(snap(["c1", "c2"], true));
+  m.next!(snap(["c1", "c2"], false, 0));
+  expect(cb).toHaveBeenCalledTimes(1);
+});
+
+it("waitForServer: after loading, real changes flow and metadata-only events are skipped", () => {
   const cb = vi.fn();
   subscribeToContacts(SCOPE, { waitForServer: true }, cb);
   m.next!(snap(["c1", "c2"], false));
-  m.next!(snap(["c1"], true));
-  expect(cb).toHaveBeenCalledTimes(2);
+  m.next!(snap(["c1", "c2", "c3"], false, 1)); // a new contact
+  m.next!(snap(["c1", "c2", "c3"], false, 0)); // its write ack: metadata only
+  m.next!(snap(["c1", "c3"], true, 1)); // a removal seen while offline
+  expect(cb).toHaveBeenCalledTimes(3);
 });
 
 it("without waitForServer, behaviour is unchanged: cache snapshots flow at once", () => {

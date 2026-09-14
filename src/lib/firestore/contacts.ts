@@ -91,12 +91,16 @@ export function subscribeToContacts(
   let serverAnswered = false;
   return onSnapshot(
     q,
-    // A cache→server switch with unchanged docs is metadata-only; without
-    // this it would never fire and a waiting caller would never load.
+    // When the cache already holds the full result (the page revisited in the
+    // same session), the server's confirmation changes no docs — it is
+    // metadata-only and, without this, would never fire.
     { includeMetadataChanges: opts.waitForServer === true },
     (snap) => {
       if (opts.waitForServer) {
         if (snap.metadata.fromCache && !serverAnswered) return;
+        // Once loaded, a metadata-only event (e.g. a write's server ack)
+        // carries no new data — skip the re-sort the default mode never did.
+        if (serverAnswered && snap.docChanges().length === 0) return;
         serverAnswered = true;
       }
       const contacts = snap.docs.map(
