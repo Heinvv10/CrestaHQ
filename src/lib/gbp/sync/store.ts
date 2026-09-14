@@ -133,10 +133,11 @@ export function upsertFor(
   return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false };
 }
 
-/** A removed review keeps only its ids and when it went — no content, no rating. */
+/** A removed review keeps only its ids and when it went — no content, no rating, no sentiment (derived from them). */
 export function tombstone(now: Date): Record<string, unknown> {
   return {
     state: "removed", removedAt: now, comment: null, reviewer: null, reply: null, starRating: null, contentHash: null,
+    sentiment: null,
   };
 }
 

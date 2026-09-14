@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { sentimentAfterSync } from "@/lib/reputation/sentiment";
 import type { SubAccountDoc } from "@/types";
 import { getGbpProviderFor } from "../provider/select";
 import { GbpProviderError } from "../provider/types";
@@ -248,6 +249,12 @@ export async function syncListing(subAccountId: string, opts: SyncOptions): Prom
   // that can no longer sync (retention only) → take the lease.
   const syncs = rec.skipReason === null || rec.skipReason === "reconnect_required";
   if (syncs || sub.gbpSummary) await underLease(rec, rec.skipReason, opts, now, syncs);
+  // Sentiment (SP5 b) for what this run landed — best effort, its own lease,
+  // never changes the sync's result. Absent from the record when it did not run.
+  if (rec.pagesFetched > 0) {
+    const sentiment = await sentimentAfterSync(subAccountId);
+    if (sentiment) rec.sentiment = sentiment;
+  }
   return finish(rec, opts, now);
 }
 

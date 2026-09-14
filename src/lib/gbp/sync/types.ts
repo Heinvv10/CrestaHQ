@@ -86,6 +86,8 @@ export interface SyncRunRecord {
   /** A provider error kind, `internal`, `retention_expired`, `lease_lost` — never a message. */
   errorKind: string | null;
   skipReason: SkipReason | null;
+  /** Sentiment classified after this run's pages landed (SP5 b) — counts only; absent when it did not run. */
+  sentiment?: { classified: number; skipped: number; failed: number };
 }
 
 export interface GbpSummary {
