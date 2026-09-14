@@ -111,18 +111,25 @@ describe("the output", () => {
 });
 
 describe("the time bound (the seam's REVIEWS_AI_CALL_MS, as for sentiment)", () => {
-  it(`a draft call that never finishes is no draft after ${REVIEWS_AI_CALL_MS / 1000} s`, async () => {
+  it(`a draft call that never finishes is aborted and is no draft after ${REVIEWS_AI_CALL_MS / 1000} s`, async () => {
     vi.useFakeTimers();
     try {
-      callAi.mockImplementationOnce(() => new Promise(() => {}));
+      let signal: AbortSignal | undefined;
+      callAi.mockImplementationOnce((args: { signal?: AbortSignal }) => {
+        signal = args.signal;
+        return new Promise(() => {});
+      });
       const pending = openRouterReviewsAi("m-default").draftReply(INPUT);
       await vi.advanceTimersByTimeAsync(REVIEWS_AI_CALL_MS - 1);
       let settled = false;
       void pending.then(() => (settled = true));
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(false);
+      expect(signal?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(2);
       expect(await pending).toEqual({ text: null, failure: "call_failed" });
+      // The request itself is aborted (callAi's caller signal, armed through the body read).
+      expect(signal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }

@@ -57,8 +57,8 @@ async function bounded<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T
   }
 }
 
-/** `callAi` under the per-call bound — the one helper the draft uses (switch here if the bound's mechanism changes). */
-const boundedCall: BoundedCall = (args) => bounded(callAi(args));
+/** `callAi` under the per-call bound, aborted at the deadline via its caller `signal` — the one helper the draft uses. */
+const boundedCall: BoundedCall = (args) => bounded((signal) => callAi({ ...args, signal }));
 
 /** The HTTP status of a failed call, from callAi's "OpenRouter <status>: …" — never the body. */
 const statusOf = (err: unknown) => /^OpenRouter (\d{3})\b/.exec(err instanceof Error ? err.message : "")?.[1] ?? "none";
