@@ -17,8 +17,10 @@ import { ReviewReminderCard } from "./review-reminder-card";
 const fetchMock = vi.fn();
 let container: HTMLDivElement;
 let root: Root;
-const cfg = (over: Record<string, unknown> = {}) => ({
+const cfg = (over: Record<string, unknown> = {}, sub: Record<string, unknown> = {}) => ({
+  twilioConfig: { enabled: true, accountSid: "AC_test", fromNumber: "+15017122661" },
   googleReviewConfig: { reviewUrl: "https://g.page/r/x/review", channel: "sms", ...over },
+  ...sub,
 });
 
 beforeEach(() => {
@@ -114,6 +116,16 @@ describe("reminder card", () => {
     await render();
     expect(byId("rep-reminder-sms-only")).toBeNull();
     expect((byId("rep-reminder-every") as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it("needs the sub-account's own SMS number: on the shared sender it says why and can't be turned on", async () => {
+    ctx.subAccount = cfg({}, { twilioConfig: null });
+    await render();
+    expect(byId("rep-reminder-dedicated")?.textContent).toContain("own SMS number");
+    expect((byId("rep-reminder-every") as HTMLSelectElement).disabled).toBe(true);
+    ctx.subAccount = cfg();
+    await render();
+    expect(byId("rep-reminder-dedicated")).toBeNull();
   });
 
   it("names the senders reminders go with, and offers at most 7 days", async () => {

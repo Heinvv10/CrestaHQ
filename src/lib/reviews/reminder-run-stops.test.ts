@@ -13,10 +13,11 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 const sendSms = vi.fn();
 const publish = vi.fn();
+const dedicated = vi.hoisted(() => ({ on: true }));
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/comms/twilio", () => ({
   smsIsConfigured: () => true,
-  subAccountTwilioIsConfigured: () => true,
+  subAccountTwilioIsConfigured: () => dedicated.on,
   sendSmsForSubAccount: (...a: unknown[]) => sendSms(...a),
   sendWhatsappForSubAccount: vi.fn(),
   sendWhatsappTemplateForSubAccount: vi.fn(),
@@ -60,6 +61,7 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
   sendSms.mockReset().mockResolvedValue({ sid: "SM1", from: "+15550001", mode: "dedicated" });
   publish.mockReset().mockResolvedValue({ messageId: "q2" });
+  dedicated.on = true;
   setSub();
   mem.seed("contacts/c1", { name: "Jane Doe", phone: PHONE, agencyId: "ag1", subAccountId: "sa1" });
   seedReq("req1");
@@ -84,6 +86,12 @@ describe("one chain per contact", () => {
 
   it("a click on ANY of the contact's requests since this one stops it", async () => {
     seedReq("newerClicked", { sentAt: new Date(SENT_AT + 3600_000), clickedAt: new Date(), reminder: null });
+    await expectStop("clicked_other");
+  });
+
+  it("a click on an OLDER request made AFTER this one was sent stops it (the customer reviewed from the old link)", async () => {
+    // A sent day 0, this one (B) day 1 superseding it, the customer taps A's link on day 2.
+    seedReq("olderA", { sentAt: new Date(SENT_AT - 86_400_000), clickedAt: new Date(SENT_AT + 86_400_000), reminder: null });
     await expectStop("clicked_other");
   });
 
@@ -135,6 +143,16 @@ describe("master controls and prerequisites", () => {
   it("a manual request runs whatever the auto-send switch says (it only gates auto sends)", async () => {
     setSub({ enabled: false });
     expect(await run()).toEqual({ outcome: "sent" });
+  });
+
+  it("the sub-account moved to the shared sender (replies can't be seen there)", async () => {
+    dedicated.on = false;
+    await expectStop("shared_sender");
+  });
+
+  it("the review link is no longer a Google review link", async () => {
+    setSub({ reviewUrl: "https://example.com/review" });
+    await expectStop("not_configured");
   });
 
   it("link tracking no longer available", async () => {

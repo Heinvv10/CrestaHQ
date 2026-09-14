@@ -128,6 +128,12 @@ describe("everything else is a 404 and stamps nothing", () => {
     expect((await click(issueReviewClickToken(SA, "req_1"))).status).toBe(404);
   });
 
+  it("a tracked request never redirects to a link that isn't a Google review host", async () => {
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, googleReviewConfig: { reviewUrl: "https://example.com/review" } });
+    expect((await click(issueReviewClickToken(SA, "req_1"))).status).toBe(404);
+    expect(request()?.clickedAt).toBeNull();
+  });
+
   it("no configured review link, or one that is not https", async () => {
     mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, googleReviewConfig: null });
     expect((await click(issueReviewClickToken(SA, "req_1"))).status).toBe(404);

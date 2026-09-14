@@ -25,7 +25,10 @@ export interface ReminderCheckInput {
   reminder: { everyDays: number; maxRetries: number } | null;
   /** The coarse channel the config sends on now. */
   channel: "sms" | "whatsapp";
+  /** The configured review URL exists AND is a Google review link. */
   reviewUrlConfigured: boolean;
+  /** A dedicated Twilio number (on the shared sender inbound SMS isn't stored, so replies can't be seen). */
+  dedicatedSms: boolean;
 }
 
 const ms = (v: unknown): number | null => {
@@ -44,41 +47,34 @@ export function reminderStopReason(i: ReminderCheckInput): { reason: string | nu
   const maxRetries = Math.min(r.maxRetries ?? 0, i.reminder?.maxRetries ?? 0);
   const sentAt = ms(i.req.sentAt) ?? 0;
   const cfg = (i.sub?.googleReviewConfig ?? {}) as Record<string, unknown>;
-  const since = i.contactRequests.filter((o) => o.id !== i.requestId && (ms(o.data.sentAt) ?? 0) >= sentAt);
+  const others = i.contactRequests.filter((o) => o.id !== i.requestId);
+  const since = others.filter((o) => (ms(o.data.sentAt) ?? 0) >= sentAt);
   const trigger = i.req.trigger;
   const autoOff =
     (trigger === "quote_paid" && !(cfg.enabled === true && cfg.triggerOnQuotePaid === true)) ||
     (trigger === "deal_completed" && !(cfg.enabled === true && cfg.triggerOnDealCompleted === true));
   const toHash = typeof i.req.toHash === "string" ? i.req.toHash : null;
 
-  const reason = i.req.clickedAt
-    ? "clicked"
-    : since.some((o) => !!o.data.clickedAt)
-      ? "clicked_other"
-      : i.sub?.status === "archived"
-        ? "archived"
-        : i.sub?.automationsPaused === true
-          ? "automations_paused"
-          : !i.reminder
-            ? "reminders_off"
-            : autoOff
-              ? "auto_send_off"
-              : !i.reviewUrlConfigured
-                ? "not_configured"
-                : i.channel !== i.req.channel
-                  ? "channel_changed"
-                  : !i.trackingAvailable
-                    ? "tracking_unavailable"
-                    : !i.contact
-                      ? "contact_deleted"
-                      : toHash && typeof i.contact.phone === "string" && phoneHash(i.contact.phone) !== toHash
-                        ? "phone_changed"
-                        : i.inboundAt.some((t) => t > sentAt)
-                          ? "replied"
-                          : since.some((o) => (o.data.source ?? "dispatcher") === "dispatcher" && (ms(o.data.sentAt) ?? 0) > sentAt)
-                            ? "superseded"
-                            : (r.attempts ?? 0) >= maxRetries
-                              ? "retries_exhausted"
-                              : null;
+  const contact = i.contact;
+  // In order, the most informative reason first; the first that holds wins.
+  const rules: Array<[string, () => boolean]> = [
+    ["clicked", () => !!i.req.clickedAt],
+    // A click on ANY of the contact's links after this request went — an older one included.
+    ["clicked_other", () => others.some((o) => (ms(o.data.clickedAt) ?? 0) > sentAt)],
+    ["archived", () => i.sub?.status === "archived"],
+    ["automations_paused", () => i.sub?.automationsPaused === true],
+    ["reminders_off", () => !i.reminder],
+    ["auto_send_off", () => autoOff],
+    ["not_configured", () => !i.reviewUrlConfigured],
+    ["channel_changed", () => i.channel !== i.req.channel],
+    ["shared_sender", () => !i.dedicatedSms],
+    ["tracking_unavailable", () => !i.trackingAvailable],
+    ["contact_deleted", () => !contact],
+    ["phone_changed", () => !!toHash && typeof contact?.phone === "string" && phoneHash(contact.phone) !== toHash],
+    ["replied", () => i.inboundAt.some((t) => t > sentAt)],
+    ["superseded", () => since.some((o) => (o.data.source ?? "dispatcher") === "dispatcher" && (ms(o.data.sentAt) ?? 0) > sentAt)],
+    ["retries_exhausted", () => (r.attempts ?? 0) >= maxRetries],
+  ];
+  const reason = rules.find(([, holds]) => holds())?.[0] ?? null;
   return { reason, maxRetries };
 }

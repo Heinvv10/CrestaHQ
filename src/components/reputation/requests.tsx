@@ -54,6 +54,7 @@ const fmtSentAt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 
 const STUCK_SENDING_MS = 15 * 60_000;
+const STALE_SCHEDULED_MS = 24 * 3600_000;
 const NO_REMINDER_TITLE =
   "No reminders: the request was sent before reminders were on, not over SMS, or by a workflow, broadcast or the inbox.";
 
@@ -76,7 +77,11 @@ function reminderText(r: RequestRow): string {
   const m = r.reminder;
   if (!m) return "—";
   const count = `${m.attempts} of ${m.maxRetries} sent`;
-  if (m.state === "scheduled") return m.nextAt ? `${count} · next ${fmtDay(m.nextAt)}` : count;
+  if (m.state === "scheduled") {
+    // More than a day overdue: its message was lost — shown as stopped (display only).
+    if (m.nextAt && Date.now() - Date.parse(m.nextAt) > STALE_SCHEDULED_MS) return `Stopped — outcome unknown · ${count}`;
+    return m.nextAt ? `${count} · next ${fmtDay(m.nextAt)}` : count;
+  }
   if (m.state === "sending") {
     // A send claimed but never finished (a crash mid-send): shown as stopped — it never retries.
     const stuck = !m.lastAttemptAt || Date.now() - Date.parse(m.lastAttemptAt) > STUCK_SENDING_MS;

@@ -12,6 +12,7 @@ import {
 } from "@/lib/reviews/constants";
 import { isGoogleReviewUrl, isHttpsUrl } from "@/lib/reviews/review-url";
 import { reviewTrackingAvailable } from "@/lib/reviews/click-token";
+import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
@@ -51,18 +52,26 @@ const invalidReminder = () =>
     { status: 400 },
   );
 
+const refuse = (code: string, error: string) => NextResponse.json({ error, code, field: "reminder" }, { status: 400 });
+
 /**
  * What turning reminders ON needs (SP5 d2), or the refusal. SMS only: a
  * template's link can't be tracked (so it can't stop on a click) and repeats
  * an identical template, and an in-window WhatsApp dies at the 24h window.
- * A tracked link, so a click can stop them. A Google review link, so a
- * reminder can only ever send people there. Switching OFF needs none of it.
+ * A dedicated SMS number: on the shared sender inbound SMS isn't stored, so a
+ * reply ("please stop") could never stop them. A tracked link, so a click can
+ * stop them. A Google review link, so a reminder can only ever send people
+ * there. Switching OFF needs none of it.
  */
-function reminderRefusal(channel: string, reviewUrl: string): NextResponse | null {
-  const refuse = (code: string, error: string) =>
-    NextResponse.json({ error, code, field: "reminder" }, { status: 400 });
+function reminderRefusal(channel: string, reviewUrl: string, sub: SubAccountDoc | null): NextResponse | null {
   if (channel !== "sms") {
     return refuse("reminders_sms_only", "Reminders are for SMS review requests only — switch the channel to SMS first.");
+  }
+  if (!subAccountTwilioIsConfigured(sub?.twilioConfig)) {
+    return refuse(
+      "reminders_need_dedicated_number",
+      "Reminders need this sub-account's own SMS number (Settings → SMS): on the shared number customers' replies can't be seen, so a reply couldn't stop them.",
+    );
   }
   if (!reviewTrackingAvailable()) {
     return refuse(
@@ -70,10 +79,17 @@ function reminderRefusal(channel: string, reviewUrl: string): NextResponse | nul
       "Reminders need link tracking, which isn't set up on this deployment (AUTOMATIONS_TOKEN_SECRET and NEXT_PUBLIC_APP_URL).",
     );
   }
-  if (!isGoogleReviewUrl(reviewUrl)) {
-    return refuse("reminders_google_link_only", "Reminders only repeat a Google review link (g.page, search.google.com, maps.app.goo.gl, google.com).");
-  }
-  return null;
+  return googleLinkRefusal(reviewUrl);
+}
+
+/** While reminders are on, the review link must stay a Google review link. */
+function googleLinkRefusal(reviewUrl: string): NextResponse | null {
+  return isGoogleReviewUrl(reviewUrl)
+    ? null
+    : refuse(
+        "reminders_google_link_only",
+        "Reminders only repeat a Google review link (g.page, search.google.com, maps.app.goo.gl, google.com). Use a Google link, or turn reminders off first.",
+      );
 }
 
 export async function POST(
@@ -104,8 +120,13 @@ export async function POST(
 
   const channel = normalizeReviewChannel(body.channel);
   const isWhatsapp = channel !== "sms";
+  const stored = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? null) as SubAccountDoc | null;
   if (reminder?.everyDays) {
-    const refusal = reminderRefusal(channel, reviewUrl);
+    const refusal = reminderRefusal(channel, reviewUrl, stored);
+    if (refusal) return refusal;
+  } else if (reminder === undefined && parseReminderSettings(stored?.googleReviewConfig?.reminder)?.everyDays) {
+    // Reminders stay on (the body doesn't mention them): the link must stay Google's.
+    const refusal = googleLinkRefusal(reviewUrl);
     if (refusal) return refusal;
   }
   const messageTemplate =
@@ -242,12 +263,13 @@ export async function PATCH(
   if (!reminder) return invalidReminder();
 
   const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
-  const current = ((await ref.get()).data() as SubAccountDoc | undefined)?.googleReviewConfig;
+  const sub = ((await ref.get()).data() ?? null) as SubAccountDoc | null;
+  const current = sub?.googleReviewConfig;
   if (!current?.reviewUrl) {
     return NextResponse.json({ error: "Save your review link first." }, { status: 400 });
   }
   if (reminder.everyDays) {
-    const refusal = reminderRefusal(normalizeReviewChannel(current.channel), current.reviewUrl);
+    const refusal = reminderRefusal(normalizeReviewChannel(current.channel), current.reviewUrl, sub);
     if (refusal) return refusal;
   }
   // Field paths: only these two change — never a write-back of the config read above.

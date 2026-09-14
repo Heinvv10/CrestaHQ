@@ -7,6 +7,8 @@ import { activeReminder, normalizeReviewChannel } from "@/lib/reviews/constants"
 import { scheduleReviewReminder } from "@/lib/reviews/reminder";
 import { reminderStopReason } from "@/lib/reviews/reminder-checks";
 import { reviewTrackingAvailable } from "@/lib/reviews/click-token";
+import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
+import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
 import { maybeSendReviewRequest } from "@/lib/reviews/request";
 import type { SubAccountDoc } from "@/types";
 
@@ -56,7 +58,16 @@ export async function runReviewReminder(input: {
   type Claim =
     | { skip: string }
     | { stop: string }
-    | { claimed: { agencyId: string; contactId: string; tracked: boolean; maxRetries: number; everyDays: number } };
+    | {
+        claimed: {
+          agencyId: string;
+          contactId: string;
+          tracked: boolean;
+          channel: "sms" | "whatsapp";
+          maxRetries: number;
+          everyDays: number;
+        };
+      };
   const claim: Claim = await db.runTransaction(async (tx) => {
     const req = (await tx.get(ref)).data();
     if (!req) return { skip: "missing" };
@@ -88,7 +99,8 @@ export async function runReviewReminder(input: {
       trackingAvailable: reviewTrackingAvailable(),
       reminder: activeReminder(cfg?.reminder),
       channel: normalizeReviewChannel(cfg?.channel) === "sms" ? "sms" : "whatsapp",
-      reviewUrlConfigured: !!resolveReviewUrl(sub).configured,
+      reviewUrlConfigured: isGoogleReviewUrl(resolveReviewUrl(sub).configured ?? ""),
+      dedicatedSms: subAccountTwilioIsConfigured(sub?.twilioConfig),
     });
     if (stop) {
       tx.update(ref, stopped(stop));
@@ -105,6 +117,7 @@ export async function runReviewReminder(input: {
         agencyId: req.agencyId as string,
         contactId: req.contactId as string,
         tracked: req.tracked === true,
+        channel: req.channel === "whatsapp" ? "whatsapp" : "sms",
         maxRetries,
         everyDays: r.everyDays ?? 1,
       },
@@ -119,7 +132,7 @@ export async function runReviewReminder(input: {
     agencyId: c.agencyId,
     contactId: c.contactId,
     trigger: "reminder",
-    reminderOf: { requestId: input.requestId, tracked: c.tracked },
+    reminderOf: { requestId: input.requestId, tracked: c.tracked, channel: c.channel },
   });
   if (!res.sent) {
     const reason = res.reason === "no_contact" ? "contact_deleted" : (res.reason ?? "send_failed");

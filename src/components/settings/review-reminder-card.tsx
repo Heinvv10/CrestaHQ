@@ -40,6 +40,9 @@ export function ReviewReminderCard() {
 
   if (!isAdmin) return null;
   const smsOnly = normalizeReviewChannel(cfg?.channel) !== "sms";
+  // What the dashboard can see of "dedicated SMS on" (the server check also needs the credentials).
+  const sharedSender = !(subAccount?.twilioConfig?.enabled && subAccount.twilioConfig.fromNumber);
+  const blocked = smsOnly || sharedSender;
 
   async function save() {
     setSaving(true);
@@ -72,6 +75,12 @@ export function ReviewReminderCard() {
           Reminders go with review requests sent by Request review, Send Review Request, quote paid and deal completed — not
           workflows, broadcasts or inbox messages.
         </p>
+        {sharedSender && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-reminder-dedicated">
+            Reminders need this sub-account&apos;s own SMS number (Settings → SMS). On the shared number customers&apos;
+            replies can&apos;t be seen, so a reply like &ldquo;please stop&rdquo; couldn&apos;t stop them.
+          </p>
+        )}
         {smsOnly && (
           <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-reminder-sms-only">
             Reminders are SMS only. A WhatsApp template&apos;s link is fixed, so a click can&apos;t stop its reminders, and
@@ -91,7 +100,7 @@ export function ReviewReminderCard() {
                 id="rep-reminder-every"
                 value={every}
                 onChange={(e) => setEvery(e.target.value)}
-                disabled={smsOnly && every === "off"}
+                disabled={blocked && every === "off"}
                 className={selectClass}
                 data-testid="rep-reminder-every"
               >

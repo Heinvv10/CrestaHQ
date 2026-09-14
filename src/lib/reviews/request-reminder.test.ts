@@ -13,10 +13,11 @@ const mem = createMemoryFirestore();
 const sendSms = vi.fn();
 const sendWa = vi.fn();
 const publish = vi.fn();
+const dedicated = vi.hoisted(() => ({ on: true }));
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/comms/twilio", () => ({
   smsIsConfigured: () => true,
-  subAccountTwilioIsConfigured: () => true,
+  subAccountTwilioIsConfigured: () => dedicated.on,
   sendSmsForSubAccount: (...a: unknown[]) => sendSms(...a),
   sendWhatsappForSubAccount: (...a: unknown[]) => sendWa(...a),
   sendWhatsappTemplateForSubAccount: vi.fn(),
@@ -54,6 +55,7 @@ beforeEach(() => {
   sendSms.mockReset().mockResolvedValue({ sid: "SM1", from: "+15550001", mode: "dedicated" });
   sendWa.mockReset().mockResolvedValue({ sid: "WA1", from: "+15550002" });
   publish.mockReset().mockResolvedValue({ messageId: "q1" });
+  dedicated.on = true;
   setConfig();
   mem.seed("contacts/c1", { name: "Jane Doe", phone: "+61412345678", agencyId: "ag1", subAccountId: "sa1" });
 });
@@ -125,6 +127,56 @@ describe("reminders ON", () => {
       expect(publish).not.toHaveBeenCalled();
     },
   );
+
+  it("on the shared sender (no dedicated number: replies are never seen) the normal body goes and no reminder", async () => {
+    dedicated.on = false;
+    sendSms.mockResolvedValueOnce({ sid: "SM1", from: "+15550001", mode: "shared" });
+    expect(await send()).toEqual({ sent: true });
+    expect(smsBody()).toBe(DEFAULT_BODY);
+    expect(rows()[0]).not.toHaveProperty("reminder");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("reminder mode refuses when the config's channel is no longer the request's (channel_changed)", async () => {
+    const res = await maybeSendReviewRequest({
+      subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "reminder",
+      reminderOf: { requestId: "req1", tracked: true, channel: "whatsapp" },
+    });
+    expect(res).toEqual({ sent: false, reason: "channel_changed" });
+    expect(sendSms).not.toHaveBeenCalled();
+  });
+
+  it("superseding never overwrites a request whose state changed after it was read (a worker's stop)", async () => {
+    const scheduled = { everyDays: 3, maxRetries: 2, attempts: 0, state: "scheduled", stopReason: null, nextAt: new Date(), lastAttemptAt: null };
+    mem.seed("subAccounts/sa1/reviewRequests/old", {
+      agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "sms", source: "dispatcher", status: "sent",
+      sentAt: new Date(Date.now() - 86_400_000), tracked: true, reminder: scheduled,
+    });
+    // The worker stops it (clicked) between the supersede's query and its write.
+    const realCollection = mem.db.collection;
+    vi.spyOn(mem.db, "collection").mockImplementation((path: string) => {
+      const col = realCollection(path);
+      const where = col.where;
+      return Object.assign(col, {
+        where: (...a: Parameters<typeof where>) => {
+          const q = where(...a);
+          const get = q.get;
+          return Object.assign(q, {
+            get: async () => {
+              const snap = await get();
+              mem.seed("subAccounts/sa1/reviewRequests/old", {
+                ...mem.read("subAccounts/sa1/reviewRequests/old"), reminder: { ...scheduled, state: "stopped", stopReason: "clicked" },
+              });
+              return snap;
+            },
+          });
+        },
+      });
+    });
+    await send();
+    vi.mocked(mem.db.collection).mockRestore();
+    expect(mem.read("subAccounts/sa1/reviewRequests/old")?.reminder).toMatchObject({ state: "stopped", stopReason: "clicked" });
+  });
 
   it("stores a hash of the number it went to — never the number", async () => {
     await send();
@@ -201,7 +253,7 @@ describe("planReviewLink — which channels can be tracked", () => {
     const { planReviewLink } = await import("./reminder");
     for (const channel of ["whatsapp_template", "whatsapp_manual"] as const) {
       expect(planReviewLink({
-        config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel, subAccountId: "sa1", reviewUrl: REVIEW_URL, newRequestId: () => "req9",
+        config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel, subAccountId: "sa1", reviewUrl: REVIEW_URL, dedicatedSms: true, newRequestId: () => "req9",
       })).toBeNull();
     }
   });

@@ -60,7 +60,7 @@ export interface SendReviewInput {
   actorUid?: string;
   /** SP5 d2: a reminder re-send of this request (trigger "reminder") — same
    *  link, no cooldown, no new log row; the worker records the attempt. */
-  reminderOf?: { requestId: string; tracked: boolean };
+  reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
 }
 
 export interface SendReviewResult {
@@ -139,6 +139,8 @@ export async function maybeSendReviewRequest(
     const channel = normalizeReviewChannel(cfg.channel);
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";
+    // A reminder goes only on the channel its request went on.
+    if (isReminder && convoChannel !== input.reminderOf!.channel) return { sent: false, reason: "channel_changed" };
 
     // Per-channel opt-out.
     if (channel === "sms" && smsSendBlock(contact)) {
@@ -167,6 +169,7 @@ export async function maybeSendReviewRequest(
       subAccountId: input.subAccountId,
       reviewUrl,
       reminderOf: isReminder ? input.reminderOf : undefined,
+      dedicatedSms: subAccountTwilioIsConfigured(subAccount.twilioConfig),
       newRequestId: () => db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).doc().id,
     });
     const bodyUrl = plan?.bodyUrl ?? reviewUrl;

@@ -14,6 +14,7 @@ import { storeDb } from "@/test/gbp-sync-store";
 import { PATCH, POST } from "./route";
 
 const REVIEW_URL = "https://g.page/r/fixture/review";
+const DEDICATED = { enabled: true, accountSid: "AC_test", authToken: "tok", fromNumber: "+15017122661" };
 const cfg = () => mem.read(`subAccounts/${SA}`)?.googleReviewConfig as Record<string, unknown> | null | undefined;
 
 function call(handler: typeof POST, method: string, body: Record<string, unknown>, uid = "uid_admin") {
@@ -30,6 +31,7 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   process.env.AUTOMATIONS_TOKEN_SECRET = "test-secret-for-click-tokens";
   process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
+  mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, twilioConfig: DEDICATED });
 });
 afterEach(() => {
   process.env = { ...ORIGINAL };
@@ -111,6 +113,27 @@ describe("enabling reminders has prerequisites (POST and PATCH)", () => {
   ])("only a Google review link can be repeated: %s → %i", async (url, status) => {
     const res = await save({ reviewUrl: url, reminder: on });
     expect(res.status).toBe(status);
+  });
+
+  it.each([
+    ["no Twilio config (the shared sender)", null],
+    ["dedicated SMS switched off", { ...DEDICATED, enabled: false }],
+  ])("needs a dedicated SMS number: refused with %s", async (_l, twilioConfig) => {
+    await save();
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, twilioConfig });
+    const res = await call(PATCH, "PATCH", { reminder: on });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "reminders_need_dedicated_number" });
+    expect((await save({ reminder: on })).status).toBe(400);
+    expect(cfg()).not.toHaveProperty("reminder");
+  });
+
+  it("while reminders are on, the form can't save a non-Google link", async () => {
+    await save({ reminder: on });
+    const res = await save({ reviewUrl: "https://example.com/review" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "reminders_google_link_only" });
+    expect(cfg()).toMatchObject({ reviewUrl: REVIEW_URL, reminder: on });
   });
 
   it("switching reminders OFF needs none of this", async () => {

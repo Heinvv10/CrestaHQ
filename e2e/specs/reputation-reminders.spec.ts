@@ -210,7 +210,7 @@ test("an opted-out contact's reminder stops without sending", async ({ page, req
   expect(await smsBodies(contacts.optout)).toHaveLength(1);
 });
 
-test("one chain per contact: a second request stops the first one's reminders (superseded)", async ({ page, request }) => {
+test("one chain per contact: a second request supersedes the first; a click on the first stops the second", async ({ page, request }) => {
   await page.goto(`/sa/${primaryId()}/dashboard`);
   await pageFetch(page, "/api/comms/review-request/send", "POST", JSON.stringify({ contactId: contacts.twice }));
   const firstId = (await rowFor(contacts.twice)).id;
@@ -219,6 +219,14 @@ test("one chain per contact: a second request stops the first one's reminders (s
   expect((await log().doc(firstId).get()).data()?.reminder).toMatchObject({ state: "stopped", stopReason: "superseded" });
   await qstashDelivered(firstId);
   expect(await reminderPost(request, firstId, 1)).toEqual({ outcome: "stopped", reason: "superseded" });
+  expect(await smsBodies(contacts.twice)).toHaveLength(2);
+
+  // The customer taps the FIRST (older) message's link: the newer request's reminder stops too.
+  const secondId = (await log().where("contactId", "==", contacts.twice).get()).docs.find((d) => d.id !== firstId)!.id;
+  const [firstBody] = await smsBodies(contacts.twice);
+  expect((await request.get(`/rr/${firstBody.split("/rr/")[1]}`, { maxRedirects: 0 })).status()).toBe(302);
+  await qstashDelivered(secondId);
+  expect(await reminderPost(request, secondId, 1)).toEqual({ outcome: "stopped", reason: "clicked_other" });
   expect(await smsBodies(contacts.twice)).toHaveLength(2);
 });
 

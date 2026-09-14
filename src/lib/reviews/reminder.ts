@@ -50,7 +50,9 @@ export function planReviewLink(input: {
   channel: ReviewChannel;
   subAccountId: string;
   reviewUrl: string;
-  reminderOf?: { requestId: string; tracked: boolean };
+  reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
+  /** A dedicated SMS number: on the shared sender inbound SMS is never stored, so a reply could not stop reminders. */
+  dedicatedSms: boolean;
   newRequestId: () => string;
 }): ReviewLinkPlan | null {
   const trackedUrl = (requestId: string) => {
@@ -66,7 +68,7 @@ export function planReviewLink(input: {
     return { requestId, bodyUrl: url || input.reviewUrl, tracked: !!url };
   }
   const reminder = activeReminder(input.config?.reminder);
-  if (!reminder) return null;
+  if (!reminder || !input.dedicatedSms) return null;
   const requestId = input.newRequestId();
   // Empty for a non-SMS channel or without tracking: then no reminder at all.
   const url = trackedUrl(requestId);
@@ -131,9 +133,16 @@ export async function scheduleReviewReminder(input: {
 export async function supersedeOtherReminders(subAccountId: string, contactId: string, keepRequestId: string): Promise<void> {
   try {
     const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/reviewRequests`).where("contactId", "==", contactId).get();
+    const db = getAdminDb();
     for (const d of snap.docs) {
-      if (d.id === keepRequestId || (d.data().reminder as { state?: string } | undefined)?.state !== "scheduled") continue;
-      await d.ref.update({ "reminder.state": "stopped", "reminder.stopReason": "superseded", "reminder.nextAt": null });
+      if (d.id === keepRequestId) continue;
+      // Re-read in a transaction: only a request STILL scheduled is superseded —
+      // never a worker's stop, or one mid-send.
+      await db.runTransaction(async (tx) => {
+        const current = (await tx.get(d.ref)).data();
+        if ((current?.reminder as { state?: string } | undefined)?.state !== "scheduled") return;
+        tx.update(d.ref, { "reminder.state": "stopped", "reminder.stopReason": "superseded", "reminder.nextAt": null });
+      });
     }
   } catch (err) {
     const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";

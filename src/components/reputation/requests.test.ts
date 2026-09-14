@@ -184,6 +184,18 @@ describe("the list", () => {
     expect(within(f, "rep-req-reminder")).toBe("Sending · 1 of 2 sent");
   });
 
+  it("a 'scheduled' reminder more than a day overdue reads as stopped, outcome unknown", async () => {
+    const r = (id: string, nextAt: string) =>
+      row(id, { reminder: { attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt, lastAttemptAt: null } });
+    pages[""] = {
+      body: { requests: [r("late", new Date(Date.now() - 25 * 3600_000).toISOString()), r("due", new Date(Date.now() - 3600_000).toISOString())], nextCursor: null },
+    };
+    await render();
+    const [late, due] = rows();
+    expect(within(late, "rep-req-reminder")).toBe("Stopped — outcome unknown · 0 of 2 sent");
+    expect(within(due, "rep-req-reminder")).toMatch(/^0 of 2 sent · next /);
+  });
+
   it("'—' explains itself: a tooltip and a legend under the table", async () => {
     await render();
     expect(rows()[0].querySelector('[data-testid="rep-req-reminder"]')?.getAttribute("title")).toContain("No reminders");

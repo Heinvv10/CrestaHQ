@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { resolveReviewUrl, type ReviewUrlSource } from "@/lib/reviews/canonical-url";
-import { isHttpsUrl } from "@/lib/reviews/review-url";
+import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
 import { verifyReviewClickToken } from "@/lib/reviews/click-token";
 
 /**
@@ -33,7 +33,8 @@ export async function resolveReviewClick(token: string, opts: { stamp: boolean }
   const req = requestSnap.data();
   if (!req || req.tracked !== true) return null;
   const destination = resolveReviewUrl(subSnap.data() as ReviewUrlSource | undefined).configured;
-  if (!destination || !isHttpsUrl(destination)) return null;
+  // Only a Google review link: a tracked request never redirects anywhere else.
+  if (!destination || !isGoogleReviewUrl(destination)) return null;
 
   if (!opts.stamp) return destination;
   await db.runTransaction(async (tx) => {
