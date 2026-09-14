@@ -41,7 +41,14 @@ function recentScenario(now: number): Scenario {
 }
 
 let contactId = "";
-let prior: { twilioConfig: unknown; googleReviewConfig: unknown; secondaryGate: unknown };
+/**
+ * What setup read BEFORE writing, set only once it has — teardown runs even
+ * when beforeAll throws, so it restores only what setup actually changed and
+ * never writes a value it did not read (a failed setup must not be masked by
+ * a teardown TypeError, nor "restore" a config to undefined).
+ */
+let restoreConfigs: { twilioConfig: unknown; googleReviewConfig: unknown } | null = null;
+let secondaryGateFlipped = false;
 
 async function purgeRequests() {
   const snap = await primaryRef().collection("reviewRequests").get();
@@ -52,13 +59,11 @@ test.beforeAll(async () => {
   await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
   await assertFixtureSubAccount(secondaryId(), FIXTURE_SECONDARY_NAME);
   const data = (await primaryRef().get()).data() ?? {};
-  prior = {
-    twilioConfig: data.twilioConfig,
-    googleReviewConfig: data.googleReviewConfig,
-    secondaryGate: (await adminDb().doc(`subAccounts/${secondaryId()}`).get()).data()?.googleEnabledByAgency,
-  };
+  const prior = { twilioConfig: data.twilioConfig, googleReviewConfig: data.googleReviewConfig };
+  const secondaryGate = (await adminDb().doc(`subAccounts/${secondaryId()}`).get()).data()?.googleEnabledByAgency;
   await purgeRequests();
   await setScenario(recentScenario(Date.now()));
+  restoreConfigs = prior;
   await primaryRef().update({
     twilioConfig: {
       enabled: true, accountSid: FAKE_ACCOUNT_SID, authToken: FAKE_AUTH_TOKEN, fromNumber: FAKE_FROM_NUMBER,
@@ -70,7 +75,8 @@ test.beforeAll(async () => {
       cooldownDays: 90, triggerOnQuotePaid: false, triggerOnDealCompleted: false, updatedAt: new Date(),
     },
   });
-  if (prior.secondaryGate === true) {
+  if (secondaryGate === true) {
+    secondaryGateFlipped = true;
     await adminDb().doc(`subAccounts/${secondaryId()}`).update({ googleEnabledByAgency: false });
   }
   const ownerUid = (await adminDb().doc(`agencies/${readEnv().E2E_AGENCY_ID}`).get()).data()?.ownerUid ?? null;
@@ -88,11 +94,17 @@ test.afterAll(async () => {
     await deleteScoped(adminDb().doc(`contacts/${contactId}`));
     await deleteScoped(adminDb().doc(`conversations/${contactId}`));
   }
+  // Each row is checked against the fixture tenant by deleteScoped.
   await purgeRequests();
-  await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
-  await primaryRef().update({ twilioConfig: restore(prior.twilioConfig), googleReviewConfig: restore(prior.googleReviewConfig) });
-  await assertFixtureSubAccount(secondaryId(), FIXTURE_SECONDARY_NAME);
-  if (prior.secondaryGate === true) {
+  if (restoreConfigs) {
+    await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
+    await primaryRef().update({
+      twilioConfig: restore(restoreConfigs.twilioConfig),
+      googleReviewConfig: restore(restoreConfigs.googleReviewConfig),
+    });
+  }
+  if (secondaryGateFlipped) {
+    await assertFixtureSubAccount(secondaryId(), FIXTURE_SECONDARY_NAME);
     await adminDb().doc(`subAccounts/${secondaryId()}`).update({ googleEnabledByAgency: true });
   }
 });
