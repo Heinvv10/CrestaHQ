@@ -22,7 +22,8 @@ const newKey = () => crypto.randomUUID();
 const FAILED = "Your reply could not be posted. Please try again.";
 const RECORD_PENDING = "Posted to Google — the inbox will catch up on the next sync.";
 const DRAFT_FAILED = "Couldn't draft a reply. Try again, or write your own.";
-const DRAFT_NOTE = "AI draft — edit before posting. Nothing is sent until you click Post reply to Google.";
+const DRAFT_NOTE =
+  "AI draft — check it, especially any phone numbers, emails or links, before posting. Nothing is sent until you click Post reply to Google.";
 const DRAFT_DROPPED = "You edited the reply while the draft was on its way, so it wasn't applied.";
 
 export function ReplyComposer({
@@ -68,6 +69,7 @@ export function ReplyComposer({
   };
   const close = () => {
     session.current += 1;
+    setDrafting(false); // the late response is dropped by the session check
     setOpen(false);
   };
 

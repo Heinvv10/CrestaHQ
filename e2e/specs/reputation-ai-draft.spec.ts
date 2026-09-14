@@ -74,7 +74,7 @@ test("guidelines reach the draft; a draft posts nothing; the click posts the edi
   await expect(box).toHaveValue(/2-star review of Velo Test Fibre — Gqeberha/, { timeout: 30_000 });
   await expect(box).toHaveValue(new RegExp(MARK));
   await expect(page.getByTestId("gbp-reply-draft-note")).toHaveText(
-    "AI draft — edit before posting. Nothing is sent until you click Post reply to Google.",
+    "AI draft — check it, especially any phone numbers, emails or links, before posting. Nothing is sent until you click Post reply to Google.",
   );
   await page.waitForTimeout(1500); // anything posted in the background would have landed by now
   expect(await puts()).toEqual([]);

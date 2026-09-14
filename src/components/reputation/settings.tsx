@@ -20,7 +20,7 @@ const MAX = 1000;
 type Load =
   | { state: "loading" }
   | { state: "error" }
-  | { state: "ready"; enabled: boolean; configured: boolean };
+  | { state: "ready"; enabled: boolean; configured: boolean; draftDailyCap: number; dailyCap: number };
 
 function Loading({ testId }: { testId: string }) {
   return (
@@ -42,11 +42,16 @@ function ReviewsAiCard({ subAccountId, isAdmin }: { subAccountId: string; isAdmi
     const controller = new AbortController();
     void (async () => {
       const res = await fetch(api, { signal: controller.signal }).catch(() => null);
-      const data = (await res?.json().catch(() => null)) as { enabled?: boolean; configured?: boolean; replyGuidelines?: string } | null;
+      const data = (await res?.json().catch(() => null)) as
+        | { enabled?: boolean; configured?: boolean; replyGuidelines?: string; draftDailyCap?: number; dailyCap?: number }
+        | null;
       if (controller.signal.aborted) return;
       if (!res?.ok || !data || typeof data.enabled !== "boolean") return setLoad({ state: "error" });
       setText(data.replyGuidelines ?? "");
-      setLoad({ state: "ready", enabled: data.enabled, configured: data.configured === true });
+      setLoad({
+        state: "ready", enabled: data.enabled, configured: data.configured === true,
+        draftDailyCap: Number(data.draftDailyCap), dailyCap: Number(data.dailyCap),
+      });
     })();
     return () => controller.abort();
   }, [api]);
@@ -73,9 +78,7 @@ function ReviewsAiCard({ subAccountId, isAdmin }: { subAccountId: string; isAdmi
         Reply guidelines steer <strong>Draft with AI</strong> in the reply box: tone, how to sign off, things never to say. A draft only
         fills the box — you edit it. Nothing is posted to Google until you click Post reply to Google. There is no auto-reply.
       </p>
-      <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-settings-ai-limits">
-        Drafts can use up to 100 of this sub-account&apos;s 300 AI calls a day; the rest stays for sentiment.
-      </p>
+
       {load.state === "loading" && <Loading testId="rep-settings-ai-loading" />}
       {load.state === "error" && (
         <p className="mt-3 text-sm text-destructive" data-testid="rep-settings-ai-error">The Reviews AI settings could not be loaded.</p>
@@ -92,7 +95,13 @@ function ReviewsAiCard({ subAccountId, isAdmin }: { subAccountId: string; isAdmi
               AI drafting isn&apos;t configured on this deployment, so Draft with AI is unavailable. Guidelines can still be saved.
             </p>
           )}
+          <p className="text-xs text-muted-foreground" data-testid="rep-settings-ai-limits">
+            {`Drafts can use up to ${load.draftDailyCap} of this sub-account's ${load.dailyCap} AI calls a day; the rest stays for sentiment.`}
+          </p>
           <label htmlFor="rep-settings-guidelines" className="text-sm font-medium">Reply guidelines</label>
+          <p className="text-xs text-muted-foreground" data-testid="rep-settings-guidelines-contacts">
+            Contacts written here (phone numbers, emails, links, handles) may appear in drafts — even inside &quot;never mention …&quot;.
+          </p>
           <Textarea
             id="rep-settings-guidelines"
             value={text}

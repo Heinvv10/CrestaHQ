@@ -368,17 +368,31 @@ switch included).
   or link unless the guidelines have it, never mention being an AI, plain text.
   **The answer is checked, not trusted:** trimmed, code fences / wrapping
   quotes removed, cut to 4000 characters (the reply limit), and **refused** —
-  nothing shown — when it carries any contact the guidelines did not supply
-  (`ai/contact-guard.ts`): a phone number (7+ digits within 25 characters,
-  whatever separates them, in any script's digits), an email, a link, a
-  domain (any `label.label` whose last label is 2+ letters — no TLD list, IDNs
-  included; "e.g.", "i.e.", "a.m.", "1.5" are not domains), a USSD code, an
-  `@handle` or a social platform name. The draft is first normalised (NFKC,
-  zero-width and other format characters removed, ideographic / full-width
-  stops read as ".", "[.]", "(dot)", " dot ", "[at]" undone). Contacts the
-  guidelines DO supply are extracted with the same code and allowed only as
-  exact tokens — `fixturefibre.co` does not pass because the guidelines say
-  `fixturefibre.co.za`. The call runs under the seam's per-call bound
+  nothing shown — when it carries a contact the guidelines did not supply
+  (`ai/contact-guard.ts`). The guard is **best-effort: it catches the common
+  forms; a determined review can still slip a contact past it — the admin
+  reads every draft and must click Post.** What it catches: a phone number (7+
+  digits within 25 characters, any separators, any script's digits, number
+  words "oh".."nine"; dates, times, prices, years, thousands, units and
+  order / ref / ticket / invoice numbers are masked first), an email, a link, a
+  domain (any `label.label` whose last label is 2+ letters or `xn--…` — no TLD
+  list, IDNs included; "e.g.", "a.m.", "1.5" are not domains), a USSD code
+  (spaced too), an `@handle`, or a platform name (Instagram/IG, Facebook,
+  TikTok, WhatsApp, Telegram, Signal, Threads, Discord, X/Twitter, Snapchat,
+  LinkedIn, YouTube). The draft is normalised first (NFKC, zero-width and other
+  format characters removed, look-alike stops read as ".", "[.]", "(dot)",
+  "<dot>", "-dot-", " dot ", "evil .com", "evil. com", "evil,com", "[at]",
+  "<at>" undone). Contacts the guidelines DO supply are extracted with the same
+  code and allowed only as exact tokens — `fixturefibre.co` does not pass
+  because the guidelines say `fixturefibre.co.za`; trailing punctuation is
+  trimmed first ("Visit https://fixturefibre.co.za." passes); two numbers in
+  the guidelines are two allowed numbers; `+27 82 …` and `082 …` are the same
+  number. **Anything written in the guidelines may appear in a draft, even
+  inside "never mention …"** — the Settings card says so
+  (`rep-settings-guidelines-contacts`). Accepted false positives, because they
+  fail safe (the draft is refused and the admin writes their own): "Mr.Smith",
+  "review.We", "@everyone", a lower-case word after a full stop, "we'll
+  signal the team". The call runs under the seam's per-call bound
   (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does; a failure is one
   log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
 - **What the prompt alone covers — honestly:** promising a refund or
@@ -391,8 +405,9 @@ switch included).
   (both gates + configured). It fills an empty box; with text already there
   (an existing reply included) it first asks inline "Replace your text?"
   (`gbp-reply-draft-confirm` / `-replace` / `-keep` — never `confirm()`). The
-  note `gbp-reply-draft-note`: "AI draft — edit before posting. Nothing is
-  sent until you click Post reply to Google." Errors inline in
+  note `gbp-reply-draft-note`: "AI draft — check it, especially any phone
+  numbers, emails or links, before posting. Nothing is sent until you click
+  Post reply to Google." Errors inline in
   `gbp-reply-draft-error`. Post is disabled while a draft is on its way; a
   draft that arrives after the composer was closed and reopened is dropped
   silently, and one that arrives after the admin typed is dropped with
@@ -403,8 +418,9 @@ switch included).
   {replyGuidelines ≤ 1000 chars (stored trimmed, "" = none), updatedAt,
   updatedByUid}`, written only by `PUT /api/sub-accounts/[id]/reputation/ai-settings`
   (admin, Reviews AI gate; any other key 400 `invalid_body`). `GET` on the same
-  path (any member) returns `{enabled, configured, replyGuidelines, updatedAt}`
-  for the Settings card: `rep-settings-ai-card`, `rep-settings-ai-limits`, `rep-settings-guidelines`
+  path (any member) returns `{enabled, configured, replyGuidelines, updatedAt, draftDailyCap, dailyCap}`
+  for the Settings card: `rep-settings-ai-card`, `rep-settings-ai-limits` (the numbers come from the
+  route — `draftDailyCap` / `dailyCap`, the server's constants), `rep-settings-guidelines-contacts`, `rep-settings-guidelines`
   (read-only for members, `rep-settings-guidelines-readonly`), `-count`,
   `-save`, `-saved`, `-error`, `rep-settings-ai-gate-off`,
   `rep-settings-ai-not-configured` (guidelines can still be saved),

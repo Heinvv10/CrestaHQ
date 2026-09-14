@@ -8,7 +8,7 @@ import { loadReplyTarget } from "@/lib/gbp/reply";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { ReviewsAiFakeRefusedError, reviewsAiConfigured } from "@/lib/reputation/ai/mode";
 import { getReviewsAiFor } from "@/lib/reputation/ai/select";
-import { beginDraftCall, checkDraftRate, draftInputFor } from "@/lib/reputation/draft";
+import { DRAFT_DAILY_CAP, beginDraftCall, checkDraftRate, draftInputFor } from "@/lib/reputation/draft";
 
 /**
  * POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/draft → `{draft}` —
@@ -64,7 +64,7 @@ export async function POST(request: Request, ctx: Ctx) {
   const stop = await beginDraftCall(id);
   if (stop === "daily_cap") return gbpRefusal(429, "daily_cap", "Daily AI limit reached — try again tomorrow.");
   if (stop === "draft_cap") {
-    return gbpRefusal(429, "draft_cap", "Today's AI draft limit (100) is reached — try again tomorrow, or write your own.");
+    return gbpRefusal(429, "draft_cap", `Today's AI draft limit (${DRAFT_DAILY_CAP}) is reached — try again tomorrow, or write your own.`);
   }
   if (stop === "ai_gate_off") return aiGateOff();
   if (stop === "gate_off") return gbpRefusal(403, "gate_off", "This feature is locked by your agency.");

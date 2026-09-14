@@ -10,6 +10,8 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { AGENCY, OTHER_SA, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
 import { GET, PUT } from "./route";
+import { DRAFT_DAILY_CAP } from "@/lib/reputation/draft";
+import { DAILY_AI_CALL_CAP } from "@/lib/reputation/sentiment-calls";
 
 const put = async (body: unknown, uid = "uid_admin", sa = SA) => {
   const res = await PUT(asUser(`http://127.0.0.1:3100/api/sub-accounts/${sa}/reputation/ai-settings`, uid, "PUT", typeof body === "string" ? body : JSON.stringify(body)), {
@@ -95,7 +97,7 @@ describe("GET — what the Settings card shows", () => {
     await put({ replyGuidelines: "Be kind." });
     const { status, body } = await get();
     expect(status).toBe(200);
-    expect(body).toMatchObject({ enabled: true, configured: true, replyGuidelines: "Be kind." });
+    expect(body).toMatchObject({ enabled: true, configured: true, replyGuidelines: "Be kind.", draftDailyCap: DRAFT_DAILY_CAP, dailyCap: DAILY_AI_CALL_CAP });
     expect(typeof body.updatedAt).toBe("string");
   });
 
@@ -103,7 +105,9 @@ describe("GET — what the Settings card shows", () => {
     delete process.env.REVIEWS_AI_PROVIDER;
     delete process.env.OPENROUTER_API_KEY;
     patchSub({ reviewsAiEnabledByAgency: false });
-    expect((await get()).body).toEqual({ enabled: false, configured: false, replyGuidelines: "", updatedAt: null });
+    expect((await get()).body).toEqual({
+      enabled: false, configured: false, replyGuidelines: "", updatedAt: null, draftDailyCap: DRAFT_DAILY_CAP, dailyCap: DAILY_AI_CALL_CAP,
+    });
   });
 
   it("refuses a non-member and another sub-account's admin", async () => {

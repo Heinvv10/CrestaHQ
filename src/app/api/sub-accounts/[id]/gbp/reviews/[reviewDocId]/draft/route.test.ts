@@ -96,7 +96,7 @@ describe("a draft", () => {
     expect(mem.read(sentimentUsagePath(SA))).toMatchObject({ day: today(), calls: 151, draftsDay: today(), draftCalls: DRAFT_DAILY_CAP });
     const capped = await draft();
     expect([capped.status, capped.body.code]).toEqual([429, "draft_cap"]);
-    expect(capped.body.error).toBe("Today's AI draft limit (100) is reached — try again tomorrow, or write your own.");
+    expect(capped.body.error).toBe(`Today's AI draft limit (${DRAFT_DAILY_CAP}) is reached — try again tomorrow, or write your own.`);
     expect(drafts()).toHaveLength(1);
     expect(mem.read(sentimentUsagePath(SA))).toMatchObject({ calls: 151, draftCalls: DRAFT_DAILY_CAP });
   });

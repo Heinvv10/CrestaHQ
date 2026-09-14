@@ -6,11 +6,15 @@ import { requireSubAccountAdmin, requireSubAccountMember } from "@/lib/auth/requ
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { toMillis } from "@/lib/gbp/sync/types";
 import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
+import { DRAFT_DAILY_CAP } from "@/lib/reputation/draft";
+import { DAILY_AI_CALL_CAP } from "@/lib/reputation/sentiment-calls";
 
 /**
- * GET → `{enabled, configured, replyGuidelines, updatedAt}` for any member —
- * the Settings card's state: the agency's Reviews AI gate, whether Reviews
- * AI can run on this deployment, and the saved guidelines.
+ * GET → `{enabled, configured, replyGuidelines, updatedAt, draftDailyCap,
+ * dailyCap}` for any member — the Settings card's state: the agency's Reviews
+ * AI gate, whether Reviews AI can run on this deployment, the saved
+ * guidelines, and the daily limits (the server's constants, so the card never
+ * states a number of its own).
  *
  * PUT /api/sub-accounts/[id]/reputation/ai-settings `{replyGuidelines}` —
  * the reply guidelines the AI DRAFT follows (tone, sign-off, things never to
@@ -37,6 +41,8 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     configured: reviewsAiConfigured(),
     replyGuidelines: typeof cfg?.replyGuidelines === "string" ? cfg.replyGuidelines : "",
     updatedAt: at === null ? null : new Date(at).toISOString(),
+    draftDailyCap: DRAFT_DAILY_CAP,
+    dailyCap: DAILY_AI_CALL_CAP,
   });
 }
 

@@ -33,7 +33,7 @@ beforeEach(() => {
   ctx.isAdmin = true;
   ctx.loading = false;
   ctx.subAccount = { googleEnabledByAgency: true };
-  state = { enabled: true, configured: true, replyGuidelines: "Sign off as The Fixture Team.", updatedAt: "2026-09-14T08:00:00.000Z" };
+  state = { enabled: true, configured: true, replyGuidelines: "Sign off as The Fixture Team.", updatedAt: "2026-09-14T08:00:00.000Z", draftDailyCap: 40, dailyCap: 250 };
   putStatus = 200;
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     if (url !== API) throw new Error(`unexpected fetch ${url}`);
@@ -89,8 +89,12 @@ describe("the Reviews AI card", () => {
     await render();
     expect(area().value).toBe("Sign off as The Fixture Team.");
     expect(byId("rep-settings-ai-card")?.textContent).toContain("Nothing is posted to Google until you click Post reply to Google");
+    // The numbers come from the route (the server's constants), not from the page.
     expect(byId("rep-settings-ai-limits")?.textContent).toBe(
-      "Drafts can use up to 100 of this sub-account's 300 AI calls a day; the rest stays for sentiment.",
+      "Drafts can use up to 40 of this sub-account's 250 AI calls a day; the rest stays for sentiment.",
+    );
+    expect(byId("rep-settings-guidelines-contacts")?.textContent).toBe(
+      "Contacts written here (phone numbers, emails, links, handles) may appear in drafts — even inside \"never mention …\".",
     );
     await type("  Warm and brief. Sign off as The Fixture Team.  ");
     await act(async () => byId("rep-settings-guidelines-save")!.click());

@@ -96,7 +96,7 @@ describe("a draft only fills the box", () => {
     expect(posts(DRAFT)).toHaveLength(1);
     expect(box().value).toBe(AI_TEXT);
     expect(byId("gbp-reply-draft-note")?.textContent).toBe(
-      "AI draft — edit before posting. Nothing is sent until you click Post reply to Google.",
+      "AI draft — check it, especially any phone numbers, emails or links, before posting. Nothing is sent until you click Post reply to Google.",
     );
     // Let any timers or effects run: still nothing posted, the composer still open.
     await act(async () => new Promise((r) => setTimeout(r, 50)));
@@ -187,6 +187,21 @@ describe("races", () => {
     expect(box().value).toBe("I started writing my own.");
     expect(byId("gbp-reply-draft-note")).toBeNull();
     expect(byId("gbp-reply-draft-dropped")?.textContent).toBe("You edited the reply while the draft was on its way, so it wasn't applied.");
+  });
+
+  it("closing mid-draft leaves the reopened composer usable — not stuck drafting", async () => {
+    const release = holdDraft();
+    await render();
+    await click("gbp-reply-open-r1");
+    await click("gbp-reply-draft");
+    expect((byId("gbp-reply-draft") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => [...container.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!.click());
+    await click("gbp-reply-open-r1");
+    expect((byId("gbp-reply-draft") as HTMLButtonElement).disabled).toBe(false);
+    await type("Written by hand.");
+    expect((byId("gbp-reply-submit") as HTMLButtonElement).disabled).toBe(false);
+    await release();
+    expect(box().value).toBe("Written by hand.");
   });
 
   it("a draft that arrives after the composer was closed and reopened is dropped silently", async () => {
