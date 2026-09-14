@@ -34,7 +34,8 @@ import {
 } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
-import { logIfReviewAsk, templateParts, type TemplateIdentity } from "@/lib/reviews/review-ask";
+import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import type { Contact } from "@/types/contacts";
@@ -102,6 +103,7 @@ interface NodeContext {
     channel: ReviewRequestChannel;
     parts: string[];
     template?: TemplateIdentity | null;
+    templateValues?: string[];
     messageSid?: string | null;
     attempted?: boolean;
   };
@@ -169,8 +171,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
-  // From here every `error:` comes from the provider call itself.
-  ctx.sent = { channel: "email", parts: [subject, text], attempted: true };
+  ctx.sent = { channel: "email", parts: [subject, text] };
 
   try {
     const { id: messageId } = await sendEmail({
@@ -209,6 +210,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     }
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -234,8 +236,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "error:sms_not_configured" };
   }
   const body = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
-  // From here every `error:` comes from the provider call itself.
-  ctx.sent = { channel: "sms", parts: [body], attempted: true };
+  ctx.sent = { channel: "sms", parts: [body] };
   try {
     const sent = await sendSmsForSubAccount({
       subAccountId: ctx.subAccountId,
@@ -321,6 +322,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = providerAttempted(err);
     if (err instanceof SmsRecipientUnsubscribedError) {
       // The carrier says this number texted STOP (possibly before it was
       // wired to our webhook). Record it so the run history explains the
@@ -422,7 +424,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     subject,
     manualValues,
   });
-  ctx.sent = { channel: "whatsapp", parts: templateParts(tpl, contentVariables), template: tpl };
+  ctx.sent = { channel: "whatsapp", parts: [], template: tpl, templateValues: contentVariables };
 
   try {
     // Through the provider dispatcher, not Twilio directly: a workspace on the
@@ -459,7 +461,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
-    ctx.sent.attempted = true;
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -582,8 +584,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "skipped:empty_body" };
   // What goes out depends on the window, decided by the dispatcher; until it
   // answers, either could.
-  const asTemplate = tplDoc ? templateParts(tplDoc, templateValues) : [];
-  ctx.sent = { channel: "whatsapp", parts: [body, ...asTemplate], template: tplDoc };
+  ctx.sent = { channel: "whatsapp", parts: [body], template: tplDoc, templateValues };
 
   try {
     const res = await dispatchWhatsappSend({
@@ -639,7 +640,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     const sentTemplate = res.sentAs === "template" || res.sentAs === "interactive";
     const recordedBody = sentTemplate ? templateBody : body;
     ctx.sent = sentTemplate
-      ? { channel: "whatsapp", parts: asTemplate, template: tplDoc, messageSid: res.messageId ?? null }
+      ? { channel: "whatsapp", parts: [], template: tplDoc, templateValues, messageSid: res.messageId ?? null }
       : { channel: "whatsapp", parts: [body], messageSid: res.messageId ?? null };
     try {
       const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
@@ -678,7 +679,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
-    ctx.sent.attempted = true;
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -1400,8 +1401,20 @@ export async function runStep(
     triggerContext: run.context ?? {},
   };
   const { result, log } = await exec(stepCtx);
-  // A review ask is logged once, here: sent, or failed after a provider was
-  // called. A skipped step, or one refused before sending, is not a request.
+  const entry: WorkflowRunHistoryEntry = {
+    nodeId,
+    type: node.type,
+    at: Timestamp.now(),
+    result: log,
+  };
+  await runRef.update({
+    history: FieldValue.arrayUnion(entry),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  // A review ask is logged once, here — after the history entry above, the
+  // step's idempotency marker, so nothing sits between the send and the
+  // marker. Sent, or failed after a provider was called; a skipped step, or
+  // one refused before sending, is not a request.
   const failed = log.startsWith("error:");
   if (stepCtx.sent && !log.startsWith("skipped:") && (!failed || stepCtx.sent.attempted)) {
     await logIfReviewAsk({
@@ -1413,23 +1426,13 @@ export async function runStep(
       source: "workflow",
       parts: stepCtx.sent.parts,
       template: stepCtx.sent.template,
+      templateValues: stepCtx.sent.templateValues,
       createdByUid: "workflow",
       outcome: failed
         ? { ok: false, failureKind: log.slice("error:".length) }
         : { ok: true, messageSid: stepCtx.sent.messageSid },
     });
   }
-
-  const entry: WorkflowRunHistoryEntry = {
-    nodeId,
-    type: node.type,
-    at: Timestamp.now(),
-    result: log,
-  };
-  await runRef.update({
-    history: FieldValue.arrayUnion(entry),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
 
   // Advance control flow.
   let target: string | null = null;

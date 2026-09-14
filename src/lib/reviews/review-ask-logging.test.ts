@@ -38,7 +38,21 @@ vi.mock("@/lib/server/usage-meter", () => ({
   UsageQuotaExceededError: class extends Error {},
 }));
 vi.mock("@/lib/automations/unsubscribe-token", () => ({ buildUnsubscribeUrl: () => "https://app.test/u/x" }));
+/** The run's history (its idempotency marker) as it stood when each log row was written. */
+const historyAtLog: number[] = [];
+vi.mock("@/lib/reviews/request-log", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/reviews/request-log")>();
+  return {
+    ...real,
+    logReviewRequest: async (input: Parameters<typeof real.logReviewRequest>[0]) => {
+      const run = mem.read("workflowRuns/run1") as { history?: unknown[] } | undefined;
+      historyAtLog.push(run?.history?.length ?? -1);
+      return real.logReviewRequest(input);
+    },
+  };
+});
 
+import { markProviderAttempted } from "@/lib/comms/provider-attempt";
 const { runStep } = await import("@/lib/workflows/engine");
 const { UsageQuotaExceededError } = await import("@/lib/server/usage-meter");
 const { maybeSendReviewRequest } = await import("./request");
@@ -104,6 +118,13 @@ describe("one send, one row", () => {
     expect(JSON.stringify(rows())).not.toMatch(/Thandi|\+2782|g\.page/);
   });
 
+  it("the log row is written only after the run's idempotency marker (nothing between send and marker)", async () => {
+    historyAtLog.length = 0;
+    seedRun({ type: "send_sms", config: { body: `Review us: ${REVIEW_URL}` } });
+    await runStep("run1", "n1");
+    expect(historyAtLog).toEqual([1]);
+  });
+
   it("a workflow SMS without the link writes nothing", async () => {
     seedRun({ type: "send_sms", config: { body: "Your install is booked for Tuesday." } });
     await runStep("run1", "n1");
@@ -119,11 +140,19 @@ describe("one send, one row", () => {
   });
 
   it("a workflow review ask whose send failed is logged failed with a kind, never the provider text", async () => {
-    sendSms.mockRejectedValueOnce(new Error("The 'To' number +27821234567 is not a valid phone number."));
+    sendSms.mockRejectedValueOnce(markProviderAttempted(new Error("The 'To' number +27821234567 is not a valid phone number.")));
     seedRun({ type: "send_sms", config: { body: `Review us: ${REVIEW_URL}` } });
     await runStep("run1", "n1");
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toMatchObject({ source: "workflow", status: "failed", failureKind: "send_failed", messageSid: null });
+  });
+
+  it("a throw before any provider call (credentials unusable) is no row", async () => {
+    sendSms.mockRejectedValueOnce(new Error("Shared SMS is disabled by your agency."));
+    seedRun({ type: "send_sms", config: { body: `Review us: ${REVIEW_URL}` } });
+    await runStep("run1", "n1");
+    expect((mem.read("workflowRuns/run1")?.history as Array<{ result: string }>)[0].result).toMatch(/^error:/);
+    expect(rows()).toEqual([]);
   });
 
   it("a skipped step is not a request (opted out)", async () => {

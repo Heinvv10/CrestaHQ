@@ -85,6 +85,16 @@ describe("states", () => {
     expect(text("rep-req-empty")).toBe("No review requests have been logged yet.");
   });
 
+  it("the Failed filter says which failures are not in the log", async () => {
+    pages["status=failed"] = { body: { requests: [], nextCursor: null } };
+    await render();
+    expect(byId("rep-req-failed-note")).toBeNull();
+    await change(byId("rep-req-filter-status"), "failed");
+    expect(text("rep-req-failed-note")).toBe(
+      "Failed lists sends a provider rejected from workflows, broadcasts and the inbox. A Request review that could not be sent is not logged — the Send Review Request dialog shows why instead.",
+    );
+  });
+
   it("empty under filters, with and without older rows left to scan", async () => {
     pages["status=failed"] = { body: { requests: [], nextCursor: null } };
     pages["channel=email"] = { body: { requests: [], nextCursor: "r1000" } };
@@ -115,6 +125,26 @@ describe("the list", () => {
     expect(c.textContent).toContain("Workflows");
     expect(c.getAttribute("data-status")).toBe("failed");
     expect(c.textContent).toContain("Failed");
+  });
+
+  it("a contact outside the viewer's territories is named as such, without a link", async () => {
+    pages[""] = { body: { requests: [row("h", { contactId: null, contactName: null })], nextCursor: null } };
+    await render();
+    expect(rows()[0].textContent).toContain("Outside your territories");
+    expect(rows()[0].querySelector("a")).toBeNull();
+  });
+
+  it("a Load more answering after the filters changed never lands on the new list", async () => {
+    let answerOld: (v: unknown) => void = () => {};
+    pages[""] = { body: { requests: [row("a")], nextCursor: "ra" } };
+    pages["status=failed"] = { body: { requests: [row("f", { status: "failed" })], nextCursor: null } };
+    await render();
+    fetchMock.mockImplementationOnce(() => new Promise((r) => (answerOld = r)));
+    await act(async () => (byId("rep-req-more") as HTMLButtonElement).click());
+    await change(byId("rep-req-filter-status"), "failed");
+    await act(async () => answerOld({ ok: true, status: 200, json: async () => ({ requests: [row("old")], nextCursor: null }) }));
+    expect(rows().map((r) => r.getAttribute("data-status"))).toEqual(["failed"]);
+    expect(container.textContent).not.toContain("Fixture old");
   });
 
   it("a filter asks the server again with it", async () => {

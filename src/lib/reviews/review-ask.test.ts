@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getStarterTemplate } from "@/lib/comms/whatsapp/starter-templates";
-import { askOutcomeOf, failureKindOf, isReviewAsk } from "./review-ask";
+import { vi } from "vitest";
+import { askOutcomeOf, failureKindOf, isReviewAsk, logIfReviewAsk, templateParts } from "./review-ask";
 
 /**
  * SP5 d1 — what makes an outbound message a review ask. The senders that use
@@ -47,5 +48,29 @@ describe("failureKindOf / askOutcomeOf", () => {
     expect(askOutcomeOf({ ok: false, status: 409, error: "x", code: "session_window_closed" })).toBeNull();
     expect(askOutcomeOf({ ok: false, status: 429, error: "x" })).toBeNull();
     expect(askOutcomeOf({ ok: false, status: 400, error: "x" })).toBeNull();
+  });
+});
+
+describe("templateParts / detection never throw into a send", () => {
+  it("reads a well-formed template: filled body and URL buttons", () => {
+    expect(templateParts({ body: "Hi {{1}}, {{2}}", buttons: [{ type: "quick_reply", text: "Yes" }, { type: "url", text: "Review", url: URL }] }, ["Jane", "thanks"]))
+      .toEqual(["Hi Jane, thanks", URL]);
+  });
+
+  it("skips malformed buttons, bodies and values instead of throwing", () => {
+    expect(templateParts({ body: "Hi {{1}}", buttons: [null, 7, "x", { type: "url" }, { type: "url", url: 5 }] }, ["Jane"])).toEqual(["Hi Jane"]);
+    expect(templateParts({ body: 42, buttons: { length: 1 } }, null as unknown as string[])).toEqual([""]);
+    expect(templateParts({ body: "Hi {{1}}" }, [7 as unknown as string])).toEqual(["Hi "]);
+  });
+
+  it("a template that cannot be read is logged by kind, not thrown", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hostile = { name: "t", body: "b", get buttons(): unknown { throw new TypeError("boom"); } };
+    await expect(logIfReviewAsk({
+      sub: { googleReviewConfig: { reviewUrl: URL } }, agencyId: "ag", subAccountId: "sa", contactId: "c", channel: "whatsapp",
+      source: "workflow", parts: [], template: hostile, templateValues: [], createdByUid: "workflow", outcome: { ok: true },
+    })).resolves.toBeUndefined();
+    expect(warn.mock.calls.map((c) => c.join(" "))).toContain("[reviews/review-ask] review-ask check failed kind=TypeError");
+    warn.mockRestore();
   });
 });

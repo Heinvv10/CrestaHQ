@@ -7,6 +7,7 @@ import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { recordUsage } from "@/lib/server/usage-meter";
 import type { SmtpMeta } from "@/types/email";
 import { getSmtpConnection, sendSmtpEmail } from "./smtp";
+import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
 import type { ResendConfig } from "@/types/tenancy";
 
 let _client: Resend | null = null;
@@ -167,7 +168,7 @@ export async function sendEmail({
       inReplyTo,
       references,
       archive,
-    });
+    }).catch(rethrowAttempted);
     void recordUsage({
       subAccountId: meter.subAccountId,
       unit: "emailsSent",
@@ -225,12 +226,12 @@ export async function sendEmail({
     ...(html ? { html } : {}),
     replyTo: preferredReplyTo || (await defaultReplyTo()),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
-  });
+  }).catch(rethrowAttempted);
   if (result.error) {
-    throw new Error(result.error.message || "Resend send failed");
+    throw markProviderAttempted(new Error(result.error.message || "Resend send failed"));
   }
   if (!result.data?.id) {
-    throw new Error("Resend send failed: no message id returned");
+    throw markProviderAttempted(new Error("Resend send failed: no message id returned"));
   }
   if (meter?.subAccountId) {
     void recordUsage({

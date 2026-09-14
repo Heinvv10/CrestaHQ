@@ -92,6 +92,23 @@ describe("the list", () => {
     expect(body.requests.map((r: Body) => r.contactName)).toEqual([null, null]);
   });
 
+  it("a territory-scoped collaborator sees the row but not a contact outside their territories", async () => {
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, territoryScopingEnabled: true });
+    mem.seed(`subAccounts/${SA}/subAccountMembers/uid_collab`, {
+      ...mem.read(`subAccounts/${SA}/subAccountMembers/uid_collab`)!, assignedTerritoryIds: ["t_north"],
+    });
+    mem.seed("contacts/c_one", { ...mem.read("contacts/c_one")!, territoryId: "t_north" });
+    mem.seed("contacts/c_two", { ...mem.read("contacts/c_two")!, territoryId: "t_south" });
+    seedRow(SA, 1);
+    seedRow(SA, 2, { contactId: "c_two" });
+    const collab = (await read()).body.requests;
+    expect(collab.map((r: Body) => [r.contactId, r.contactName])).toEqual([["c_one", "Fixture One"], [null, null]]);
+    expect(collab[1]).toMatchObject({ id: "r002", status: "sent" });
+    // An admin is never territory-scoped.
+    const admin = (await read("", "uid_admin")).body.requests;
+    expect(admin.map((r: Body) => r.contactName)).toEqual(["Fixture One", "Fixture Two"]);
+  });
+
   it("rows written before d1 read as whatsapp / dispatcher", async () => {
     seedRow(SA, 1, { channel: "whatsapp_manual", source: undefined });
     expect((await read()).body.requests[0]).toMatchObject({ channel: "whatsapp", source: "dispatcher" });

@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import type { DocumentSnapshot } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { toMillis } from "@/lib/gbp/sync/types";
 import { requestKeys } from "@/lib/reputation/overview";
 import { REVIEW_REQUEST_CHANNELS, REVIEW_REQUEST_SOURCES, REVIEW_REQUEST_STATUSES } from "@/lib/reviews/request-log";
@@ -14,8 +15,10 @@ import { REVIEW_REQUEST_CHANNELS, REVIEW_REQUEST_SOURCES, REVIEW_REQUEST_STATUSE
  * first, 50 matching rows per page. Any active member. One single-field query
  * (`orderBy sentAt desc`, cursor = the last row's id) scanned in batches, with
  * the filters applied as it scans, so no composite index. Contact names are
- * joined at read time from THIS sub-account's contacts. Never a message body,
- * phone number or email address.
+ * joined at read time from THIS sub-account's contacts, and for a
+ * territory-scoped collaborator only from contacts in their territories (an
+ * out-of-scope contact's row stays, without its id or name). Never a message
+ * body, phone number or email address.
  */
 
 const PAGE = 50;
@@ -92,10 +95,18 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     matches.length > PAGE ? page[PAGE - 1].id : !exhausted && lastScanned ? lastScanned.id : null;
 
   const contactIds = [...new Set(page.map((d) => d.data()?.contactId).filter((c): c is string => typeof c === "string" && ID.test(c)))];
+  const scope = await loadEffectiveTerritoryScope(access);
   const names = new Map<string, string | null>();
+  const hidden = new Set<string>();
   await Promise.all(
     contactIds.map(async (cid) => {
       const c = (await db.doc(`contacts/${cid}`).get()).data();
+      // Same rule as territoryDenialForContact: a scoped collaborator sees only
+      // contacts whose territory is one of theirs.
+      if (c && scope.enforce && !(typeof c.territoryId === "string" && (scope.ids ?? []).includes(c.territoryId))) {
+        hidden.add(cid);
+        return;
+      }
       // Only this sub-account's contacts: a stale id never reveals another tenant's name.
       names.set(cid, c && c.subAccountId === id && typeof c.name === "string" ? c.name : null);
     }),
@@ -108,7 +119,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
       const sentAt = toMillis(data.sentAt);
       return {
         id: d.id,
-        contactId: typeof data.contactId === "string" ? data.contactId : null,
+        contactId: typeof data.contactId === "string" && !hidden.has(data.contactId) ? data.contactId : null,
         contactName: names.get(data.contactId) ?? null,
         channel,
         source,

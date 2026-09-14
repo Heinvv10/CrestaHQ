@@ -12,11 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ({ subAccountId: "sa1", agencyId: "ag1" }) }));
 vi.mock("@/hooks/use-effective-territory-filter", () => ({ useEffectiveTerritoryFilter: () => ({ ready: true, filter: null }) }));
-const contacts = vi.hoisted(() => ({ emit: null as null | ((c: unknown[]) => void), scope: null as unknown }));
+const contacts = vi.hoisted(() => ({
+  emit: null as null | ((c: unknown[]) => void),
+  fail: null as null | ((e: Error) => void),
+  scope: null as unknown,
+}));
 vi.mock("@/lib/firestore/contacts", () => ({
-  subscribeToContacts: (scope: unknown, _opts: unknown, cb: (c: unknown[]) => void) => {
+  subscribeToContacts: (scope: unknown, _opts: unknown, cb: (c: unknown[]) => void, onError: (e: Error) => void) => {
     contacts.scope = scope;
     contacts.emit = cb;
+    contacts.fail = onError;
     return () => {};
   },
 }));
@@ -24,7 +29,9 @@ vi.mock("@/components/quotes/contact-picker", async () => {
   const { createElement: h } = await import("react");
   return {
     ContactPicker: ({ contacts: list, onChange }: { contacts: Array<{ id: string }>; onChange: (id: string) => void }) =>
-      h("button", { type: "button", "data-testid": "pick-first", onClick: () => onChange(list[0].id) }, `pick of ${list.length}`),
+      h("div", null,
+        h("button", { type: "button", "data-testid": "pick-first", onClick: () => onChange(list[0].id) }, `pick of ${list.length}`),
+        h("button", { type: "button", "data-testid": "pick-last", onClick: () => onChange(list[list.length - 1].id) }, "last")),
   };
 });
 
@@ -76,6 +83,29 @@ describe("send review request dialog", () => {
     expect(byId("rep-send-result")?.getAttribute("data-state")).toBe("sent");
     expect(byId("rep-send-result")?.textContent).toBe("Review request sent.");
     expect(onSent).toHaveBeenCalledTimes(1);
+    // Not a second time to the same contact by a double click: Send stays off until the contact changes.
+    expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("after a send, choosing another contact turns Send back on", async () => {
+    await act(async () => root.render(createElement(SendReviewRequestButton, { onSent })));
+    await click("rep-send-open");
+    await act(async () => contacts.emit?.([{ id: "c1", name: "One" }, { id: "c2", name: "Two" }]));
+    await click("pick-first");
+    answer(200, { ok: true, sent: true });
+    await click("rep-send-submit");
+    expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(true);
+    await click("pick-last");
+    expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("contacts that fail to load say so, instead of an empty list", async () => {
+    await act(async () => root.render(createElement(SendReviewRequestButton, { onSent })));
+    await click("rep-send-open");
+    await act(async () => contacts.fail?.(new Error("permission-denied")));
+    expect(byId("rep-send-contacts-error")?.textContent).toContain("Contacts could not be loaded");
+    expect(byId("pick-first")).toBeNull();
+    expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(true);
   });
 
   it.each([

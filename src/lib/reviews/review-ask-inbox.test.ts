@@ -38,6 +38,7 @@ vi.mock("@/lib/comms/ai/agent", () => ({ getChannelConfig: async () => null }));
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
 vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed: true }), UsageQuotaExceededError: class extends Error {} }));
 
+import { markProviderAttempted } from "@/lib/comms/provider-attempt";
 import { AGENCY, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
 import { POST as smsPOST } from "@/app/api/comms/sms/send/route";
 import { POST as emailPOST } from "@/app/api/comms/email/send/route";
@@ -91,7 +92,7 @@ describe("inbox SMS", () => {
   });
 
   it("a review ask the provider rejected is logged failed, by kind", async () => {
-    sendSms.mockRejectedValueOnce(new Error("carrier said no to +15005550006"));
+    sendSms.mockRejectedValueOnce(markProviderAttempted(new Error("carrier said no to +15005550006")));
     expect((await call(smsPOST, "/api/comms/sms/send", { body: `Review us: ${REVIEW_URL}` })).status).toBe(502);
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toMatchObject({ source: "inbox", status: "failed", failureKind: "send_failed", messageSid: null });
@@ -101,6 +102,12 @@ describe("inbox SMS", () => {
     sendSms.mockRejectedValueOnce(new (SmsRecipientUnsubscribedError as unknown as new (m: string) => Error)("unsubscribed"));
     expect((await call(smsPOST, "/api/comms/sms/send", { body: `Review us: ${REVIEW_URL}` })).status).toBe(409);
     expect(rows()).toMatchObject([{ status: "failed", failureKind: "send_failed" }]);
+  });
+
+  it("a throw before any provider call (no usable credentials) is not a request: no row", async () => {
+    sendSms.mockRejectedValueOnce(new Error("SMS is not configured."));
+    expect((await call(smsPOST, "/api/comms/sms/send", { body: `Review us: ${REVIEW_URL}` })).status).toBe(502);
+    expect(rows()).toEqual([]);
   });
 
   it("refused before sending (opted out) is not a request: no row", async () => {
@@ -140,6 +147,23 @@ describe("inbox email and WhatsApp", () => {
     dispatchWhatsappSend.mockResolvedValueOnce({ ok: false, error: "timeout", attempted: true, providerOutcome: "AMBIGUOUS", provider: "cloud" });
     expect((await call(waPOST, "/api/comms/whatsapp/send", body)).status).toBe(502);
     expect(rows()).toMatchObject([{ channel: "whatsapp", status: "failed", failureKind: "outcome_unknown" }]);
+  });
+
+  it("a WhatsApp throw is a failed row only when a provider was reached", async () => {
+    dispatchWhatsappSend.mockRejectedValueOnce(new Error("WhatsApp is not configured for this sub-account."));
+    expect((await call(waPOST, "/api/comms/whatsapp/send", { body: `Review: ${REVIEW_URL}` })).status).toBe(502);
+    mem.seed(`subAccounts/${SA}/whatsappTemplates/t2`, {
+      name: "review_request", displayName: "Review", body: "Hi {{1}}", status: "approved",
+      variables: [{ position: 1, label: "Name", sampleValue: "Ben", source: "merge_tag", mergeTag: "contact.firstName" }],
+    });
+    dispatchWhatsappTemplateSend.mockRejectedValueOnce(new Error("WhatsApp is not configured for this sub-account."));
+    expect((await call(waTplPOST, "/api/comms/whatsapp/send-template", { templateId: "t2" })).status).toBe(502);
+    expect(rows()).toEqual([]);
+    dispatchWhatsappTemplateSend.mockRejectedValueOnce(markProviderAttempted(new Error("socket hang up")));
+    await call(waTplPOST, "/api/comms/whatsapp/send-template", { templateId: "t2" });
+    dispatchWhatsappSend.mockRejectedValueOnce(markProviderAttempted(new Error("socket hang up")));
+    await call(waPOST, "/api/comms/whatsapp/send", { body: `Review: ${REVIEW_URL}` });
+    expect(rows().map((r) => r.status)).toEqual(["failed", "failed"]);
   });
 
   it("a template send whose manual value is the link is logged; its refusal too", async () => {

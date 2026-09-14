@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Loader2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,8 @@ export function ReputationRequests() {
   const [search, setSearch] = useState("");
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [reload, setReload] = useState(0);
+  // Bumped by every fresh load, so a Load more started before a filter change is dropped.
+  const generation = useRef(0);
 
   const fetchPage = useCallback(
     async (cursor: string | null, signal?: AbortSignal) => {
@@ -68,6 +70,7 @@ export function ReputationRequests() {
 
   useEffect(() => {
     const controller = new AbortController();
+    generation.current++;
     setLoad({ state: "loading" });
     fetchPage(null, controller.signal).then(
       (p) => setLoad({ state: "ready", ...p, more: "idle" }),
@@ -78,12 +81,13 @@ export function ReputationRequests() {
 
   async function loadMore() {
     if (load.state !== "ready" || !load.nextCursor) return;
+    const gen = generation.current;
     setLoad({ ...load, more: "loading" });
     try {
       const p = await fetchPage(load.nextCursor);
-      setLoad({ state: "ready", rows: [...load.rows, ...p.rows], nextCursor: p.nextCursor, more: "idle" });
+      if (gen === generation.current) setLoad({ state: "ready", rows: [...load.rows, ...p.rows], nextCursor: p.nextCursor, more: "idle" });
     } catch {
-      setLoad({ ...load, more: "error" });
+      if (gen === generation.current) setLoad({ ...load, more: "error" });
     }
   }
 
@@ -128,6 +132,12 @@ export function ReputationRequests() {
       <p className="text-xs text-muted-foreground" data-testid="rep-req-search-note">
         The search looks through the requests loaded below only — use Load more to search further back.
       </p>
+      {filters.status === "failed" && (
+        <p className="text-xs text-muted-foreground" data-testid="rep-req-failed-note">
+          Failed lists sends a provider rejected from workflows, broadcasts and the inbox. A Request review that could not
+          be sent is not logged — the Send Review Request dialog shows why instead.
+        </p>
+      )}
 
       {load.state === "loading" && (
         <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-req-loading">
@@ -169,7 +179,9 @@ export function ReputationRequests() {
               {shown.map((r) => (
                 <tr key={r.id} className="border-t" data-testid="rep-req-row" data-source={r.source} data-status={r.status}>
                   <td className="px-3 py-2">
-                    {r.contactId && r.contactName !== null ? (
+                    {r.contactId === null ? (
+                      <span className="text-muted-foreground">Outside your territories</span>
+                    ) : r.contactName !== null ? (
                       <Link href={`/sa/${subAccountId}/contacts/${r.contactId}`} className="font-medium underline-offset-2 hover:underline">
                         {r.contactName || "(unnamed contact)"}
                       </Link>

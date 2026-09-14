@@ -29,6 +29,8 @@ const STARTER = getStarterTemplate("review_request");
 export interface TemplateIdentity {
   name?: string | null;
   body?: string | null;
+  /** Read defensively: a stored template is not trusted to be well-formed. */
+  buttons?: unknown;
 }
 
 export function isReviewAsk(
@@ -42,13 +44,27 @@ export function isReviewAsk(
   return !!reviewUrl && parts.some((p) => typeof p === "string" && p.includes(reviewUrl));
 }
 
-/** A WhatsApp template as sent: its body with the values filled in, and its button URLs. */
-export function templateParts(
-  tpl: { body?: string | null; buttons?: ReadonlyArray<{ type: string; url?: string }> | null },
-  values: readonly string[],
-): string[] {
-  const body = (tpl.body ?? "").replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, n: string) => values[Number(n) - 1] ?? "");
-  return [body, ...(tpl.buttons ?? []).flatMap((b) => (b.type === "url" && b.url ? [b.url] : []))];
+/**
+ * A WhatsApp template as sent: its body with the values filled in, and its
+ * button URLs. Skips anything malformed rather than throwing — this runs
+ * beside a send and must never break it.
+ */
+export function templateParts(tpl: { body?: unknown; buttons?: unknown }, values: readonly unknown[]): string[] {
+  const vals = Array.isArray(values) ? values : [];
+  const body =
+    typeof tpl.body === "string"
+      ? tpl.body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, n: string) => {
+          const v = vals[Number(n) - 1];
+          return typeof v === "string" ? v : "";
+        })
+      : "";
+  const urls = Array.isArray(tpl.buttons)
+    ? tpl.buttons.flatMap((b: unknown) => {
+        const btn = b as { type?: unknown; url?: unknown } | null;
+        return btn && typeof btn === "object" && btn.type === "url" && typeof btn.url === "string" && btn.url ? [btn.url] : [];
+      })
+    : [];
+  return [body, ...urls];
 }
 
 /** A machine-readable failure kind, never free text (a provider message can quote a phone number). */
@@ -67,13 +83,24 @@ export interface ReviewAskSend {
   source: Exclude<ReviewRequestSource, "dispatcher">;
   parts: ReadonlyArray<string | null | undefined>;
   template?: TemplateIdentity | null;
+  /** When a template went out: its values, so its filled body and buttons are checked too. */
+  templateValues?: readonly string[];
   createdByUid: string;
-  outcome: AskOutcome;
+  /** null = not a request (refused before any provider was called). */
+  outcome: AskOutcome | null;
 }
 
 /** Log the send when it is a review ask. Never throws. */
 export async function logIfReviewAsk(a: ReviewAskSend): Promise<void> {
-  if (!isReviewAsk(resolveReviewUrl(a.sub).configured, a.parts, a.template)) return;
+  if (!a.outcome) return;
+  try {
+    const parts = a.template && a.templateValues ? [...a.parts, ...templateParts(a.template, a.templateValues)] : a.parts;
+    if (!isReviewAsk(resolveReviewUrl(a.sub).configured, parts, a.template)) return;
+  } catch (err) {
+    const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
+    console.warn(`[reviews/review-ask] review-ask check failed kind=${String(kind)}`);
+    return;
+  }
   await logReviewRequest({
     agencyId: a.agencyId,
     subAccountId: a.subAccountId,
@@ -109,6 +136,7 @@ export async function logInboxReviewAsk(a: {
   channel: string;
   parts: ReadonlyArray<string | null | undefined>;
   template?: TemplateIdentity | null;
+  templateValues?: readonly string[];
   actorUid: string;
   outcome: AskOutcome | null;
 }): Promise<void> {
@@ -125,6 +153,7 @@ export async function logInboxReviewAsk(a: {
       source: "inbox",
       parts: a.parts,
       template: a.template,
+      templateValues: a.templateValues,
       createdByUid: a.actorUid,
       outcome,
     });

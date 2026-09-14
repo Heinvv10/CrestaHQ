@@ -6,6 +6,7 @@ import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { segmentInfo } from "@/lib/comms/sms-segments";
 import { checkQuota, recordUsage } from "@/lib/server/usage-meter";
 import { sendSmsVia } from "@/lib/comms/sms/select";
+import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
 import type { SubAccountDoc, TwilioConfig } from "@/types";
 
 /**
@@ -285,7 +286,7 @@ export async function sendSmsForSubAccount({
     return { sid: msg.sid, mode: resolved.mode, from: resolved.fromNumber };
   } catch (err) {
     if ((err as { code?: number })?.code === 21610) {
-      throw new SmsRecipientUnsubscribedError(to);
+      throw markProviderAttempted(new SmsRecipientUnsubscribedError(to));
     }
     throw err;
   }
@@ -336,7 +337,7 @@ export async function sendWhatsappForSubAccount({
     from,
     to: toWhatsappAddress(to),
     body,
-  });
+  }).catch(rethrowAttempted);
   void recordUsage({
     subAccountId,
     unit: "whatsappMessages",
@@ -398,7 +399,7 @@ export async function sendWhatsappTemplateForSubAccount({
     to: toWhatsappAddress(to),
     contentSid,
     contentVariables: JSON.stringify(varMap),
-  });
+  }).catch(rethrowAttempted);
   void recordUsage({
     subAccountId,
     unit: "whatsappMessages",

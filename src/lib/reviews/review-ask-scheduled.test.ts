@@ -25,6 +25,7 @@ vi.mock("@/lib/comms/twilio", async (importOriginal) => ({
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
 vi.mock("@/lib/comms/usage", () => ({ recordSend: async () => {} }));
 
+import { markProviderAttempted } from "@/lib/comms/provider-attempt";
 const { fireScheduledMessage } = await import("@/lib/server/scheduled-messages/fire");
 
 const REVIEW_URL = "https://g.page/r/ann/review";
@@ -73,7 +74,7 @@ describe("scheduled inbox message", () => {
   });
 
   it("a provider failure of a review ask is logged failed", async () => {
-    sms.mockRejectedValueOnce(new Error("timeout"));
+    sms.mockRejectedValueOnce(markProviderAttempted(new Error("timeout")));
     seedScheduled("s1", `Thanks Ann! ${REVIEW_URL}`);
     await fireScheduledMessage("c1", "s1");
     expect(rows()).toMatchObject([{ status: "failed", failureKind: "send_failed" }]);

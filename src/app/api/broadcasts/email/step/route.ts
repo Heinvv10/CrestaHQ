@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { qstashIsConfigured, verifyQStashSignature } from "@/lib/automations/qstash";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { checkQuota } from "@/lib/server/usage-meter";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { resolveMergeTags } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { logIfReviewAsk } from "@/lib/reviews/review-ask";
@@ -222,6 +223,7 @@ export async function POST(request: Request) {
 
   let resendMessageId: string | null = null;
   let error: string | null = null;
+  let attempted = false;
   try {
     const result = await sendEmail({
       contactId,
@@ -237,20 +239,8 @@ export async function POST(request: Request) {
     resendMessageId = result.id;
   } catch (err) {
     error = err instanceof Error ? err.message : "Send failed";
+    attempted = providerAttempted(err);
   }
-  // A review link in it makes this recipient's email a review ask (SP5 d1).
-  await logIfReviewAsk({
-    sub: subAccount,
-    agencyId: broadcast.agencyId,
-    subAccountId: broadcast.subAccountId,
-    contactId,
-    channel: "email",
-    source: "broadcast",
-    parts: [subject, text],
-    createdByUid: "broadcast",
-    outcome: resendMessageId ? { ok: true, messageSid: resendMessageId } : { ok: false, failureKind: "send_failed" },
-  });
-
   if (resendMessageId) {
     await sendRef.update({
       status: "sent",
@@ -295,6 +285,22 @@ export async function POST(request: Request) {
       ...(broadcast.status === "queued" ? { status: "sending", startedAt: FieldValue.serverTimestamp() } : {}),
     });
   }
+
+  // A review link in it makes this recipient's email a review ask (SP5 d1) —
+  // logged after the send row is settled (the idempotency marker).
+  await logIfReviewAsk({
+    sub: subAccount,
+    agencyId: broadcast.agencyId,
+    subAccountId: broadcast.subAccountId,
+    contactId,
+    channel: "email",
+    source: "broadcast",
+    parts: [subject, text],
+    createdByUid: "broadcast",
+    outcome: resendMessageId
+      ? { ok: true, messageSid: resendMessageId }
+      : attempted ? { ok: false, failureKind: "send_failed" } : null,
+  });
 
   await maybeMarkBroadcastCompleted(broadcastRef);
 

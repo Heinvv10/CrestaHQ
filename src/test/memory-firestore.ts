@@ -149,7 +149,8 @@ export interface MemoryQuery {
   where: (field: string, op: WhereOp, value: unknown) => MemoryQuery;
   orderBy: (field: string, dir?: "asc" | "desc") => MemoryQuery;
   limit: (n: number) => MemoryQuery;
-  /** Continue after this document in the query's order (Firestore's cursor on a snapshot). */
+  /** Continue after this document in the query's order. Only Firestore's
+   *  snapshot overload — not startAfter(...fieldValues). */
   startAfter: (snap: MemoryDocSnapshot) => MemoryQuery;
   /** Projection is ignored — full docs come back, which is a superset. */
   select: (...fields: string[]) => MemoryQuery;
@@ -248,8 +249,13 @@ export function createMemoryFirestore() {
           if (dir === "desc") paths.reverse();
         }
         // By position: rows up to and including the cursor doc are skipped. Unlike
-        // Firestore, the cursor doc must itself be in this query's result.
-        if (after !== null) paths = paths.slice(paths.indexOf(after) + 1);
+        // Firestore, the cursor doc must itself be in this query's result — a
+        // cursor that is not throws rather than silently returning every row.
+        if (after !== null) {
+          const at = paths.indexOf(after);
+          if (at === -1) return Promise.reject(new Error(`memory-firestore: startAfter cursor ${after} is not in the query's result`));
+          paths = paths.slice(at + 1);
+        }
         if (max !== null) paths = paths.slice(0, max);
         const docs = paths.map(snapshot);
         return tick().then(() => ({ empty: docs.length === 0, size: docs.length, docs }));

@@ -19,7 +19,20 @@ vi.mock("@/lib/comms/resend", () => ({
 }));
 vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed: true }) }));
 vi.mock("@/lib/automations/unsubscribe-token", () => ({ buildUnsubscribeUrl: (id: string) => `https://app.test/u/${id}` }));
+/** The recipient's send-row status (its idempotency marker) when each log row was written. */
+const statusAtLog: unknown[] = [];
+vi.mock("@/lib/reviews/request-log", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/reviews/request-log")>();
+  return {
+    ...real,
+    logReviewRequest: async (input: Parameters<typeof real.logReviewRequest>[0]) => {
+      statusAtLog.push(mem.read(`broadcasts/b1/sends/${input.contactId}`)?.status);
+      return real.logReviewRequest(input);
+    },
+  };
+});
 
+import { markProviderAttempted } from "@/lib/comms/provider-attempt";
 const { POST } = await import("@/app/api/broadcasts/email/step/route");
 
 const REVIEW_URL = "https://g.page/r/blitz/review";
@@ -56,6 +69,13 @@ beforeEach(() => {
 });
 
 describe("broadcast email", () => {
+  it("a throw before the provider was reached is no row", async () => {
+    sendEmail.mockRejectedValueOnce(new Error("EMAIL_FROM is not set."));
+    seedBroadcast(`Review us: ${REVIEW_URL}`);
+    await step("c1");
+    expect(rows()).toEqual([]);
+  });
+
   it("carrying the review link: one row per recipient, source broadcast", async () => {
     seedBroadcast(`Loved the install? Review us: ${REVIEW_URL}\n{{unsubscribeLink}}`);
     await step("c1");
@@ -66,6 +86,15 @@ describe("broadcast email", () => {
       agencyId: "ag1", subAccountId: "sa1", createdByUid: "broadcast", channel: "email", source: "broadcast",
       trigger: null, status: "sent", messageSid: "<m1@tenant.test>",
     });
+  });
+
+  it("the log row is written only after the recipient is marked settled", async () => {
+    statusAtLog.length = 0;
+    seedBroadcast(`Review us: ${REVIEW_URL}`);
+    await step("c1");
+    sendEmail.mockRejectedValueOnce(markProviderAttempted(new Error("550")));
+    await step("c2");
+    expect(statusAtLog).toEqual(["sent", "failed"]);
   });
 
   it("a QStash redelivery of a settled recipient logs nothing more", async () => {
@@ -83,7 +112,7 @@ describe("broadcast email", () => {
   });
 
   it("a failed send of a review ask is logged failed", async () => {
-    sendEmail.mockRejectedValueOnce(new Error("mailbox c1@example.test unavailable"));
+    sendEmail.mockRejectedValueOnce(markProviderAttempted(new Error("mailbox c1@example.test unavailable")));
     seedBroadcast(`Review us: ${REVIEW_URL}`);
     await step("c1");
     expect(rows()).toMatchObject([{ status: "failed", failureKind: "send_failed", messageSid: null }]);

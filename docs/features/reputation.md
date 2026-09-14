@@ -79,9 +79,15 @@ page with a cursor to keep looking, and the page says so. Anything else in a
 filter → 400 `invalid_filter` with `field`. Each row: `id, contactId,
 contactName, channel, source, trigger, status, failureKind, sentAt` — the name
 is joined at read time from the contact doc, **only when that contact is in this
-sub-account** (else null, shown as "Deleted contact"). Never a message body,
-phone number or email address. The **search** matches contact names over the
-rows already loaded, and the page says so.
+sub-account** (else null, shown as "Deleted contact"). For a **territory-scoped
+collaborator** (`loadEffectiveTerritoryScope`, the same rule as
+`territoryDenialForContact`) a contact outside their territories keeps its row
+but loses its id and name (shown as "Outside your territories", no link).
+Never a message body, phone number or email address. The **search** matches
+contact names over the rows already loaded, and the page says so. Selecting
+the **Failed** filter says what it lists: provider rejections from workflows,
+broadcasts and the inbox — a Request review that could not be sent is not
+logged; the dialog below shows why instead.
 
 **Send Review Request** (Overview and Requests headers) opens a dialog with the
 shared contact picker (`components/quotes/contact-picker.tsx`, this
@@ -90,7 +96,8 @@ the existing manual route `/api/comms/review-request/send` — the dispatcher,
 `trigger: "manual"`, which skips the cooldown as it always has. Its answer is
 shown inline in plain words (`components/reputation/send-result.ts`: e.g.
 `not_configured` → "Set your review link first …"); a successful send reloads
-the page's data.
+the page's data, and Send stays off until another contact is picked. Contacts
+that fail to load say so rather than showing an empty picker.
 
 Statuses are what LeadStack can observe truthfully: **sent** and **failed**.
 Delivered / read are not wired to the log; clicked / feedback (`clickedAt`,
@@ -131,8 +138,13 @@ its own rules (the bridge's quiet hours and caps) — is not a request and write
 nothing. (The dispatcher, unchanged from SP5 a, writes successful sends only.) The inbox knows which is
 which from `SendRefusal.attempted` (set by the conversation send service); the
 WhatsApp dispatchers mark a result `attempted` only when they called a
-provider. A scheduled send that throws is not logged: nothing says whether a
-provider was reached.
+provider. A **thrown** send error counts only when it carries the provider-attempt
+mark (`lib/comms/provider-attempt.ts`), set where the carrier call happens — the
+SMS seam (`sms/select.ts`), Twilio's `messages.create`, the SMTP and Resend
+sends — never inferred from a catch: a throw before any provider call (no
+credentials, shared SMS switched off, the fake's fixture fence) logs nothing.
+A scheduled send that throws is not logged: nothing says whether a provider
+was reached.
 
 **What makes a message a review ask** (`isReviewAsk`, `lib/reviews/review-ask.ts`):
 any rendered part — body, email subject, a WhatsApp template's filled body or a
@@ -143,8 +155,30 @@ rendered text because `{{reviewUrl}}` does not resolve in workflow or broadcast
 merge tags (it renders ""), so those asks carry a pasted link. The composer's
 "Ask for review" inserts the link into a normal message, so the URL check
 covers it. A `send_whatsapp` step is judged on what the window made it send:
-its text, or its template. Not covered: Messenger / Instagram messages, missed-call
-text-back, AI replies and booking messages — none is a review-request channel.
+its text, or its template. Not covered: Messenger / Instagram messages, Web Chat
+operator messages, missed-call text-back, AI replies and booking messages —
+none is a review-request channel.
+
+The check is deliberately literal, so it misses some asks:
+
+- **Exact substring** of the configured URL: the same link written differently
+  — a trailing slash added or dropped, `http` vs `https`, other casing — does not
+  match.
+- **Configured, not proposed:** a pasted link equal to the listing's proposed
+  `newReviewUri` counts only once an admin has adopted it as the configured link.
+- **Tracked links:** a tracked `/l/…` link pasted in place of the review URL
+  (even one that redirects to it) does not contain the review URL, so it is not
+  detected.
+- **Template URL buttons with a `{{n}}` suffix:** the button is checked as
+  stored (`https://…/{{1}}`), not with the suffix filled in, so a review link
+  split across the button's base URL and its variable is not detected.
+
+Detection runs inside the logging code's own `try`: a malformed stored template
+(odd `buttons`, a non-string body) is skipped or logged by kind, and can never
+throw into a send or abort a workflow step. In `runStep` and the broadcast
+worker the row is written **after** the idempotency marker (the run's history
+entry; the recipient's settled send row), so no extra Firestore work sits
+between the provider send and the marker.
 
 Server only: no client rule (default deny), no index.
 

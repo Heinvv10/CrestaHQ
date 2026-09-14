@@ -27,6 +27,7 @@ vi.mock("@/lib/comms/whatsapp/template-registrations", () => ({ isTemplateApprov
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
 vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed: true }), UsageQuotaExceededError: class extends Error {} }));
 
+import { markProviderAttempted } from "@/lib/comms/provider-attempt";
 const { runStep } = await import("@/lib/workflows/engine");
 
 const REVIEW_URL = "https://g.page/r/velocity/review";
@@ -84,6 +85,15 @@ describe("whatsapp_template step", () => {
     expect(rows()).toHaveLength(1);
   });
 
+  it("a template with malformed buttons still sends, and the step completes", async () => {
+    seedTemplate("thanks_tpl", { body: `Thanks {{1}}: ${REVIEW_URL}`, buttons: [null, 7, { type: "url" }] });
+    seedRun({ type: "whatsapp_template", config: { templateId: "thanks_tpl" } });
+    await runStep("run1", "n1");
+    expect(dispatchWhatsappTemplateSend).toHaveBeenCalledTimes(1);
+    expect((mem.read("workflowRuns/run1")?.history as Array<{ result: string }>)[0].result).toBe("ok");
+    expect(rows()).toHaveLength(1);
+  });
+
   it("any other template is not", async () => {
     seedTemplate("thanks_tpl", {});
     seedRun({ type: "whatsapp_template", config: { templateId: "thanks_tpl" } });
@@ -106,6 +116,26 @@ describe("whatsapp_template step", () => {
     seedRun({ type: "whatsapp_template", config: { templateId: "review_request", manualValues: { 3: REVIEW_URL } } });
     await runStep("run1", "n1");
     expect(rows()[0]).toMatchObject({ status: "failed", failureKind: "WA_TEMPLATE_NOT_APPROVED" });
+  });
+});
+
+describe("a throw from a WhatsApp step", () => {
+  it("is a failed row only when a provider was reached", async () => {
+    seedTemplate("review_request", { body: starter.body, variables: starter.variables });
+    seedRun({ type: "whatsapp_template", config: { templateId: "review_request", manualValues: { 3: REVIEW_URL } } });
+    dispatchWhatsappTemplateSend.mockRejectedValueOnce(new Error("WhatsApp is not configured for this sub-account."));
+    await runStep("run1", "n1");
+    expect(rows()).toEqual([]);
+
+    seedRun({ type: "send_whatsapp", config: { body: `Review us: ${REVIEW_URL}` } });
+    dispatchWhatsappSend.mockRejectedValueOnce(new Error("WhatsApp is not configured for this sub-account."));
+    await runStep("run1", "n1");
+    expect(rows()).toEqual([]);
+
+    seedRun({ type: "send_whatsapp", config: { body: `Review us: ${REVIEW_URL}` } });
+    dispatchWhatsappSend.mockRejectedValueOnce(markProviderAttempted(new Error("socket hang up")));
+    await runStep("run1", "n1");
+    expect(rows()).toMatchObject([{ status: "failed", failureKind: "send_failed" }]);
   });
 });
 

@@ -24,14 +24,17 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
   const { subAccountId, agencyId } = useSubAccount();
   const { ready, filter } = useEffectiveTerritoryFilter();
   const [open, setOpen] = useState(false);
-  const [contacts, setContacts] = useState<Contact[] | null>(null);
+  const [contacts, setContacts] = useState<Contact[] | "error" | null>(null);
   const [contactId, setContactId] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<Result>(null);
 
   useEffect(() => {
     if (!open || !agencyId || !ready) return;
-    return subscribeToContacts({ agencyId, subAccountId }, { territoryFilter: filter }, setContacts, () => setContacts([]));
+    return subscribeToContacts({ agencyId, subAccountId }, { territoryFilter: filter }, setContacts, (err) => {
+      console.warn(`[reputation/send-review-request] contacts load failed kind=${err.name}`);
+      setContacts("error");
+    });
   }, [open, agencyId, subAccountId, ready, filter]);
 
   function openDialog() {
@@ -79,6 +82,10 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
             <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-send-contacts-loading">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading contacts…
             </p>
+          ) : contacts === "error" ? (
+            <p role="alert" className="text-sm text-destructive" data-testid="rep-send-contacts-error">
+              Contacts could not be loaded. Close this and try again.
+            </p>
           ) : (
             <ContactPicker
               contacts={contacts}
@@ -104,7 +111,8 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
             <Button variant="outline" onClick={() => setOpen(false)}>
               {result?.state === "sent" ? "Done" : "Cancel"}
             </Button>
-            <Button onClick={send} disabled={!contactId || sending} data-testid="rep-send-submit">
+            {/* After a send, off until another contact is picked — no double send by a second click. */}
+            <Button onClick={send} disabled={!contactId || sending || result?.state === "sent"} data-testid="rep-send-submit">
               {sending && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} Send
             </Button>
           </DialogFooter>
