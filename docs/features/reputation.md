@@ -13,7 +13,10 @@ Requests, Insights and Settings.
   unchanged — same route, filters, Sync now and reply. Members read; admins sync
   and reply. With the Google gate off, or before Google is connected and a listing
   chosen, it says so and links to **AI Agents → Google Business**, which stays the
-  place to connect and pick the listing.
+  place to connect and pick the listing. When the deployment has no Google OAuth
+  client configured (the same `google/status` check the Google Business page
+  makes, admins only), the tab hides Sync now and Reply — they could only fail —
+  and shows `rep-reviews-not-configured`; the synced reviews stay readable.
 - **Widgets** mounts the existing widget editor (`components/gbp/widget-section.tsx`),
   admins only.
 
@@ -50,7 +53,7 @@ toward the 500). Single-field query on `createTime`.
 | Star distribution | Count per rating, 1–5, in range. |
 | Response coverage | Replied ÷ reviews in range; `null` with no reviews. |
 | Time to latest reply | `reply.updateTime − createTime`, average and median in hours over replied reviews in range. **Google reports only the latest reply time**, so an edited reply moves it — the label says so. Replies with a missing or earlier-than-review time are excluded and counted (`replyHours.excluded`); they still count as replied for coverage. Trended by the review's bucket. |
-| Requests sent | Rows in `subAccounts/{id}/reviewRequests` (below) with `sentAt` in range, by channel. **Only the dispatcher's sends are logged** — Request review (the contact profile's button), quote paid, deal completed. Review asks sent by workflow SMS/WhatsApp steps and templates (e.g. the `review_request` starter), broadcasts using `{{reviewUrl}}` and the Conversations composer's "Ask for review" are **not counted yet** (SP5 PR d); the tile and card say so. `countingSince` = the **first logged request** (not the deploy date — a sub-account that sends nothing for a while starts later); requests before it were not logged and are not backfilled. The previous-period count is given only when the first logged request is no later than the previous period's start. At most 2,000 rows per request (`truncated.requests`). |
+| Requests sent | Rows in `subAccounts/{id}/reviewRequests` (below) with `sentAt` in range, by channel. **Only the dispatcher's sends are logged** — Request review (the contact profile's button), quote paid, deal completed. Review asks sent any other way are **not counted yet** (SP5 PR d) — a review link pasted into a workflow SMS / WhatsApp / email step body, a WhatsApp template's variable or button (e.g. the `review_request` starter), a link pasted into a broadcast email, and the Conversations composer's "Ask for review" (or a typed link); the tile and card say so. (`{{reviewUrl}}` does not resolve in workflow or broadcast merge tags — it renders "" — so those asks carry a pasted link or an approved template.) `countingSince` = the **first logged request** (not the deploy date — a sub-account that sends nothing for a while starts later); requests before it were not logged and are not backfilled. The previous-period count is given only when the first logged request is no later than the previous period's start. At most 2,000 rows per request (`truncated.requests`). |
 | Requests vs reviews | Shown **side by side per bucket, never attributed**: Google gives no link between a request and a review. |
 | Health | `health` is the reviews inbox's `deriveHealth` result (via `publicSummary`), so both pages show the same stale / partial / reconnect / sync-pending / error / never-synced state and banner. |
 
@@ -66,11 +69,10 @@ review link configured (`resolveReviewUrl(sub).configured`), a widget exists
 `subAccounts/{id}/reviewRequests/{auto}` — written by `maybeSendReviewRequest`
 after every **successful** send it makes: its three callers are the manual
 Request review route (`/api/comms/review-request/send`), quote paid
-(`lib/server/quotes-service.ts`) and deal completed (`/api/deals/[id]`). Other
-senders of review asks do NOT write it yet — workflow `send_sms` /
-`send_whatsapp` / WhatsApp-template steps (`lib/workflows/engine.ts`),
-broadcasts using `{{reviewUrl}}`, and the Conversations composer's "Ask for
-review" — logging those is SP5 PR (d): `{agencyId, subAccountId, createdByUid, contactId, channel, trigger,
+(`lib/server/quotes-service.ts`) and deal completed (`/api/deals/[id]`). Review asks
+sent any other way do NOT write it yet — a review link pasted into a workflow SMS / WhatsApp / email step body, a WhatsApp template's variable or button (e.g. the `review_request` starter), a link pasted into a broadcast email, and the Conversations composer's "Ask for review" (or a typed link) (workflow steps:
+`lib/workflows/engine.ts`; composer: `components/conversations/use-merge-tag-composer.tsx`).
+Logging those is SP5 PR (d). Row fields: `{agencyId, subAccountId, createdByUid, contactId, channel, trigger,
 status: "sent", messageSid, sentAt, clickedAt: null, feedbackAt: null}`.
 `createdByUid` is the signed-in sender of a manual send, else the label
 `"review-request"`; `channel` is the normalized one (`sms` / `whatsapp_template` /

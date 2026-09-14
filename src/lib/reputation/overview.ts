@@ -15,8 +15,8 @@ import { toMillis } from "@/lib/gbp/sync/types";
  *   - time to latest reply: reply.updateTime − createTime, over replied
  *     reviews only. Google reports only the LATEST reply time, so an edited
  *     reply moves it. Missing or negative values are excluded and counted.
- *   - requests are counted from the reviewRequests log, which starts when the
- *     log was deployed (`countingSince`); they are never linked to reviews.
+ *   - requests are counted from the reviewRequests log, from the first logged
+ *     request (`countingSince`); they are never linked to reviews.
  */
 
 export const RANGE_PRESETS = ["30d", "90d", "365d", "all"] as const;
@@ -166,7 +166,7 @@ export function computeOverview(input: {
   const reqsInRange = reqs.filter((r) => inRange(r.at));
   const byChannel: Record<string, number> = {};
   for (const r of reqsInRange) byChannel[r.channel] = (byChannel[r.channel] ?? 0) + 1;
-  // A previous count is honest only if the log already existed for all of it.
+  // A previous count only when the first logged send is at or before previousFrom.
   const logCoversPrevious = previousFrom !== null && oldestRequest !== null && oldestRequest <= previousFrom;
 
   const trend: TrendBucket[] = [];
