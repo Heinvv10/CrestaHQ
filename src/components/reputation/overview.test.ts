@@ -27,7 +27,7 @@ function payload(over: Partial<OverviewResponse> = {}): OverviewResponse {
       distribution: { 1: 1, 2: 1, 3: 1, 4: 1, 5: 3 },
       response: { replied: 2, unreplied: 5, coverage: 2 / 7, replyHours: { avg: 3, median: 3, counted: 2, excluded: 0 } },
     },
-    requests: { sent: 2, byChannel: { sms: 2 }, previous: null, countingSince: "2026-09-01T08:00:00.000Z" },
+    requests: { sent: 2, byChannel: { sms: 2 }, bySource: { dispatcher: 1, workflow: 1 }, failed: 0, previous: null, countingSince: "2026-09-01T08:00:00.000Z" },
     trend: [
       { start: "2026-09-07T00:00:00.000Z", reviews: 0, avgRating: null, avgReplyHours: null, requests: 0 },
       { start: "2026-09-14T00:00:00.000Z", reviews: 7, avgRating: 25 / 7, avgReplyHours: 3, requests: 2 },
@@ -134,7 +134,7 @@ describe("states", () => {
 
   it("empty range", async () => {
     const r = payload().reviews!;
-    body = payload({ reviews: { ...r, count: 0, avgRating: null, response: { ...r.response, replied: 0, unreplied: 0, coverage: null } }, requests: { sent: 0, byChannel: {}, previous: null, countingSince: null } });
+    body = payload({ reviews: { ...r, count: 0, avgRating: null, response: { ...r.response, replied: 0, unreplied: 0, coverage: null } }, requests: { sent: 0, byChannel: {}, bySource: {}, failed: 0, previous: null, countingSince: null } });
     await render();
     expect(byId("rep-state-empty")).not.toBeNull();
     expect(text("rep-tile-avg-value")).toBe("—");
@@ -160,13 +160,20 @@ describe("ready", () => {
     expect(text("rep-response")).toContain("Time to latest reply — Google reports only the latest reply time");
     expect(text("rep-requests-since")).toMatch(/^Counting since 1 Sept? 2026 — the first logged request\. Earlier requests were not logged\.$/);
     expect(text("rep-tile-requests-note")).toBe("Since the first logged request");
-    // Which senders the log covers — said on the tile and on the card.
-    expect(text("rep-requests-scope")).toBe(
-      "Counts requests sent with Request review, and on quote paid / deal completed. Review asks sent by workflows, broadcasts or the inbox composer are not counted yet.",
-    );
-    expect(text("rep-tile-requests-scope")).toBe("Request review, quote paid and deal completed only");
+    // Every sender is logged now (SP5 d1): no "not counted yet" note anywhere.
+    expect(byId("rep-requests-scope")).toBeNull();
+    expect(byId("rep-tile-requests-scope")).toBeNull();
     expect(text("rep-requests")).toContain("not linked one-to-one");
     expect(text("rep-requests-channels")).toBe("SMS: 2");
+    expect(text("rep-requests-sources")).toBe("Request review & triggers: 1 · Workflows: 1");
+    expect(byId("rep-requests-failed")).toBeNull();
+  });
+
+  it("names failed sends apart from requests sent", async () => {
+    body = payload({ requests: { ...payload().requests, failed: 2 } });
+    await render();
+    expect(text("rep-tile-requests-value")).toBe("2");
+    expect(text("rep-requests-failed")).toBe("2 more review asks failed to send and are not counted.");
   });
 
   it("the checklist marks each item from the API", async () => {

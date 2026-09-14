@@ -2,7 +2,7 @@ import Link from "next/link";
 import { CheckCircle2, Circle } from "lucide-react";
 import { AreaChart, BarChart } from "@/components/reports/charts";
 import { Card } from "./overview-tiles";
-import { CHANNEL_LABEL, fmtBucket, fmtDate, fmtHours, fmtPercent } from "./format";
+import { CHANNEL_LABEL, SOURCE_LABEL, fmtBucket, fmtDate, fmtHours, fmtPercent } from "./format";
 import type { OverviewResponse } from "./types";
 
 /** The Overview's response, requests and checklist cards. */
@@ -42,6 +42,7 @@ export function RequestsCard({ data }: { data: Data }) {
   const { requests } = data;
   const x = (s: string) => fmtBucket(s, data.range.bucket);
   const channels = Object.entries(requests.byChannel);
+  const sources = Object.entries(requests.bySource);
   return (
     <Card testId="rep-requests" title="Review requests">
       <p className="text-sm" data-testid="rep-requests-since">
@@ -49,13 +50,19 @@ export function RequestsCard({ data }: { data: Data }) {
           ? `Counting since ${fmtDate(requests.countingSince)} — the first logged request. Earlier requests were not logged.`
           : "No review requests have been logged yet."}
       </p>
-      <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-scope">
-        Counts requests sent with Request review, and on quote paid / deal completed. Review asks sent by workflows,
-        broadcasts or the inbox composer are not counted yet.
-      </p>
       {channels.length > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-channels">
           {channels.map(([c, n]) => `${CHANNEL_LABEL[c] ?? c}: ${n}`).join(" · ")}
+        </p>
+      )}
+      {sources.length > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-sources">
+          {sources.map(([s, n]) => `${SOURCE_LABEL[s] ?? s}: ${n}`).join(" · ")}
+        </p>
+      )}
+      {requests.failed > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-failed">
+          {requests.failed} more review ask{requests.failed === 1 ? "" : "s"} failed to send and {requests.failed === 1 ? "is" : "are"} not counted.
         </p>
       )}
       <div className="mt-3 grid gap-4 md:grid-cols-2">
