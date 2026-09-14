@@ -1,10 +1,11 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { baseURL, FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
 import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
+import { at, day, EVERY_DAY, shot, thirdPartySiteHtml, toTop, ymd, zoom } from "./sp3.helpers";
 
 /**
  * SP3 browser evidence (not a gate): seeds what each screenshot needs on the
@@ -17,7 +18,6 @@ import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
 test.use({ viewport: { width: 1440, height: 900 }, timezoneId: "UTC", locale: "en-US" });
 test.describe.configure({ mode: "serial" });
 
-const OUT = "docs/parity/evidence/sp3";
 const PREFIX = "e2e-evd-";
 const TITLE = "E2E Evidence";
 const env = readEnv();
@@ -25,13 +25,6 @@ const sa = env.E2E_SUBACCOUNT_ID;
 const HOST_A = { uid: "e2e-evd-host-a", name: "Ava Mokoena" };
 const HOST_B = { uid: "e2e-evd-host-b", name: "Ben Naidoo" };
 const slug = (s: string) => `${PREFIX}${s}`;
-
-const now = new Date();
-const day = (n: number) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + n));
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
-const at = (d: Date, hhmm: string) => new Date(`${ymd(d)}T${hhmm}:00Z`);
-const EVERY_DAY = (startMinute: number, endMinute: number) =>
-  [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({ dayOfWeek, startMinute, endMinute }));
 
 const subRef = () => adminDb().doc(`subAccounts/${sa}`);
 const members = () => subRef().collection("subAccountMembers");
@@ -103,27 +96,6 @@ async function purge() {
     await subRef().collection("private").doc(`googleCalendar_${ownerUid}`).delete();
     await subRef().collection("private").doc(`googleCalendarFake_${ownerUid}`).delete();
   }
-}
-
-async function shot(page: Page, file: string) {
-  await page.waitForTimeout(400); // let transitions settle
-  await page.screenshot({ path: `${OUT}/${file}` });
-}
-
-/**
- * Shrink the dashboard's scrolling <main> so a whole section fits the
- * 1440×900 frame (the shell itself keeps its size, so nothing is blank).
- */
-async function zoom(page: Page, factor: number) {
-  await page.evaluate((f) => {
-    const main = document.querySelector("main");
-    if (main) main.style.zoom = String(f);
-  }, factor);
-}
-
-async function toTop(locator: Locator) {
-  await locator.evaluate((el) => el.scrollIntoView({ block: "start" }));
-  await locator.page().evaluate(() => window.scrollBy(0, -16));
 }
 
 test.beforeAll(async () => {
@@ -305,14 +277,7 @@ test("w-widget", async ({ page, browser }) => {
 
   // A third-party site on its own loopback origin embeds the widget.
   const APP = baseURL();
-  const html =
-    `<!doctype html><title>Glow Studio</title>` +
-    `<body style="font-family:system-ui;margin:0;background:#f6f3ee">` +
-    `<header style="padding:24px 48px;background:#2f2a24;color:#fff"><b>Glow Studio</b> · Hair &amp; beauty</header>` +
-    `<main style="max-width:880px;margin:32px auto;padding:0 24px"><h1 style="margin:0 0 8px">Book your visit</h1>` +
-    `<p style="margin:0 0 24px;color:#555">Pick a service and a time — no account needed.</p>` +
-    `<div data-leadstack-booking="${sa}/${slug("service")}"></div></main>` +
-    `<script src="${APP}/booking-embed.js"></script></body>`;
+  const html = thirdPartySiteHtml(APP, `${sa}/${slug("service")}`);
   const site: Server = createServer((_req, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(html);
