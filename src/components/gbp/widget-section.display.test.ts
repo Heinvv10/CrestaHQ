@@ -153,8 +153,9 @@ describe("Preview (saved settings)", () => {
     feedResponse = () => json(feedBody("grid", "dark"));
     await render();
     await loadEmbed();
-    feedResponse = () => json(feedBody("badge"));
-    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, layout: "badge", theme: "light" } };
+    // ONLY the layout changes: the theme, enabled and maxReviews stay as they were.
+    feedResponse = () => json(feedBody("badge", "dark"));
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, layout: "badge", theme: "dark" } };
     await render();
     await settle();
     expect(embedScripts()).toHaveLength(1);
