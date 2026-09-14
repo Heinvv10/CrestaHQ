@@ -137,6 +137,7 @@ describe("PATCH /api/v1/events/:id — status", () => {
   });
 
   it("applies a valid change on a live event: status written, activity + trigger fired", async () => {
+    eventDoc.startAt = { toDate: () => new Date(Date.now() - 60 * 60_000) };
     const res = await patch({ status: "completed" });
     expect(res.status).toBe(200);
     expect(eventDoc.status).toBe("completed");
@@ -182,8 +183,17 @@ describe("PATCH /api/v1/events/:id — status", () => {
     );
   });
 
+  it("refuses completed on a future-dated event with 409, writes nothing", async () => {
+    eventDoc.startAt = { toDate: () => new Date(Date.now() + 60 * 60_000) };
+    const res = await patch({ status: "completed" });
+    expect(res.status).toBe(409);
+    expect(writes).toEqual([]);
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+  });
+
   it("maps a failed status write to a 500 internal_error, not invalid_request", async () => {
     updateThrows = true;
+    eventDoc.startAt = { toDate: () => new Date(Date.now() - 60 * 60_000) };
     const res = await patch({ status: "completed" });
     expect(res.status).toBe(500);
     const body = (await res.json()) as ErrorBody;
