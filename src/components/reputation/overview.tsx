@@ -10,6 +10,7 @@ import { Checklist, RequestsCard, ResponseCard } from "./overview-cards";
 import { SentimentCard } from "./overview-sentiment";
 import { Distribution, Tiles, Trend } from "./overview-tiles";
 import { RANGE_LABEL } from "./format";
+import { SendReviewRequestButton } from "./send-review-request";
 import type { OverviewResponse } from "./types";
 
 /**
@@ -107,7 +108,10 @@ export function ReputationOverview() {
     <div className="space-y-4" data-testid="rep-overview">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold">Reputation overview</h1>
-        {picker}
+        <div className="flex items-center gap-2">
+          {picker}
+          <SendReviewRequestButton onSent={() => setReload((n) => n + 1)} />
+        </div>
       </div>
       {load.state === "loading" && (
         <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-state-loading">

@@ -20,7 +20,10 @@ import { toMillis } from "@/lib/gbp/sync/types";
  *     "couldn't be analysed" = the AI failed on it 3 times; any other review
  *     without a label is "not analysed yet".
  *   - requests are counted from the reviewRequests log, from the first logged
- *     request (`countingSince`); they are never linked to reviews.
+ *     request (`countingSince`); they are never linked to reviews. Only rows
+ *     with status "sent" are requests sent; failed ones are counted apart.
+ *     Rows from before SP5 d1 read as source "dispatcher", and their WhatsApp
+ *     modes (whatsapp_template / whatsapp_manual) as channel "whatsapp".
  */
 
 export const RANGE_PRESETS = ["30d", "90d", "365d", "all"] as const;
@@ -55,6 +58,8 @@ export interface OverviewReviewInput {
 export interface OverviewRequestInput {
   channel: unknown;
   sentAt: unknown;
+  status?: unknown;
+  source?: unknown;
 }
 
 export interface TrendBucket {
@@ -84,6 +89,9 @@ export interface Overview {
   requests: {
     sent: number;
     byChannel: Record<string, number>;
+    bySource: Record<string, number>;
+    /** Review asks whose send failed, in range — not in `sent`. */
+    failed: number;
     previous: { sent: number } | null;
     countingSince: string | null;
   };
@@ -134,6 +142,15 @@ function toRev(r: OverviewReviewInput): Rev | null {
   return { at, stars, replied, replyHours, sentiment };
 }
 
+/** A log row's channel and source, reading rows written before SP5 d1 as the dispatcher's. */
+export function requestKeys(r: { channel?: unknown; source?: unknown }): { channel: string; source: string } {
+  const raw = typeof r.channel === "string" ? r.channel : "unknown";
+  return {
+    channel: raw === "whatsapp_template" || raw === "whatsapp_manual" ? "whatsapp" : raw,
+    source: typeof r.source === "string" ? r.source : "dispatcher",
+  };
+}
+
 const ratingsOf = (rs: Rev[]) => rs.flatMap((r) => (r.stars === null ? [] : [r.stars]));
 
 export function computeOverview(input: {
@@ -147,10 +164,11 @@ export function computeOverview(input: {
 }): Overview {
   const now = input.now.getTime();
   const revs = input.reviews?.flatMap((r) => toRev(r) ?? []) ?? [];
-  const reqs = input.requests.flatMap((r) => {
+  const allReqs = input.requests.flatMap((r) => {
     const at = toMillis(r.sentAt);
-    return at === null ? [] : [{ at, channel: typeof r.channel === "string" ? r.channel : "unknown" }];
+    return at === null ? [] : [{ at, failed: r.status === "failed", ...requestKeys(r) }];
   });
+  const reqs = allReqs.filter((r) => !r.failed);
   const oldestRequest = toMillis(input.oldestRequestAt);
 
   let from: number;
@@ -179,7 +197,11 @@ export function computeOverview(input: {
 
   const reqsInRange = reqs.filter((r) => inRange(r.at));
   const byChannel: Record<string, number> = {};
-  for (const r of reqsInRange) byChannel[r.channel] = (byChannel[r.channel] ?? 0) + 1;
+  const bySource: Record<string, number> = {};
+  for (const r of reqsInRange) {
+    byChannel[r.channel] = (byChannel[r.channel] ?? 0) + 1;
+    bySource[r.source] = (bySource[r.source] ?? 0) + 1;
+  }
   // A previous count only when the first logged send is at or before previousFrom.
   const logCoversPrevious = previousFrom !== null && oldestRequest !== null && oldestRequest <= previousFrom;
 
@@ -229,6 +251,8 @@ export function computeOverview(input: {
     requests: {
       sent: reqsInRange.length,
       byChannel,
+      bySource,
+      failed: allReqs.filter((r) => r.failed && inRange(r.at)).length,
       previous: logCoversPrevious ? { sent: reqs.filter((r) => inPrevious(r.at)).length } : null,
       countingSince: oldestRequest === null ? null : new Date(oldestRequest).toISOString(),
     },

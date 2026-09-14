@@ -58,10 +58,12 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
 
   const log = db.collection(`subAccounts/${id}/reviewRequests`);
   const since = previousPeriodStart(range, now);
-  const [served, requestSnap, oldestSnap, lease] = await Promise.all([
+  const [served, requestSnap, oldestSnap, sentSnap, lease] = await Promise.all([
     unavailable ? null : loadServedReviews(id, locationName, now),
     (since ? log.where("sentAt", ">=", since) : log).orderBy("sentAt", "desc").limit(REQUEST_CAP + 1).get(),
     log.orderBy("sentAt", "asc").limit(1).get(),
+    // The checklist's "first request": one that was actually sent, not a failed ask.
+    log.where("status", "==", "sent").limit(1).get(),
     readLeaseDoc(id),
   ]);
   const oldestRequestAt = oldestSnap.docs[0]?.data().sentAt ?? null;
@@ -77,7 +79,10 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
           sentimentGaveUp: sentimentGaveUp(r),
         }))
       : null,
-    requests: requestSnap.docs.slice(0, REQUEST_CAP).map((d) => ({ channel: d.data().channel, sentAt: d.data().sentAt })),
+    requests: requestSnap.docs.slice(0, REQUEST_CAP).map((d) => {
+      const { channel, sentAt, status, source } = d.data();
+      return { channel, sentAt, status, source };
+    }),
     oldestRequestAt,
     range,
     now,
@@ -118,7 +123,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
       listingSelected: !!locationName,
       reviewLinkConfigured: !!resolveReviewUrl(sub).configured,
       widgetExists: !!sub.gbpWidgetMeta?.publicId,
-      requestLogged: oldestRequestAt !== null,
+      requestLogged: !sentSnap.empty,
     },
   });
 }

@@ -18,7 +18,9 @@ const rev = (stars: number, created: Date, replyAfterHours?: number | "missing")
       ? null
       : { updateTime: replyAfterHours === "missing" ? undefined : new Date(created.getTime() + replyAfterHours * 3600_000).toISOString() },
 });
-const req = (channel: string, sent: Date): OverviewRequestInput => ({ channel, sentAt: sent });
+const req = (channel: string, sent: Date, more: Partial<OverviewRequestInput> = {}): OverviewRequestInput => ({
+  channel, sentAt: sent, status: "sent", source: "dispatcher", ...more,
+});
 
 function overview(over: Partial<Parameters<typeof computeOverview>[0]> = {}) {
   return computeOverview({ reviews: [], requests: [], oldestRequestAt: null, range: "90d", now: NOW, ...over });
@@ -153,17 +155,40 @@ describe("trend", () => {
 });
 
 describe("requests", () => {
-  it("sent in range, by channel, counting since the oldest log entry", () => {
+  it("sent in range, by channel and by source, counting since the oldest log entry", () => {
     const o = overview({
-      requests: [req("sms", ago(1)), req("sms", ago(5)), req("whatsapp_manual", ago(6)), req("sms", ago(95))],
+      requests: [
+        req("sms", ago(1)),
+        req("email", ago(2), { source: "broadcast" }),
+        req("sms", ago(5), { source: "workflow" }),
+        req("whatsapp", ago(6), { source: "inbox" }),
+        req("sms", ago(95)),
+      ],
       oldestRequestAt: ago(95),
     });
     expect(o.requests).toEqual({
-      sent: 3,
-      byChannel: { sms: 2, whatsapp_manual: 1 },
+      sent: 4,
+      byChannel: { sms: 2, email: 1, whatsapp: 1 },
+      bySource: { dispatcher: 1, broadcast: 1, workflow: 1, inbox: 1 },
+      failed: 0,
       previous: null, // the log does not cover the whole previous 90 days
       countingSince: ago(95).toISOString(),
     });
+  });
+
+  it("failed sends are not requests sent: counted apart, never in the trend", () => {
+    const o = overview({
+      requests: [req("sms", ago(0, 1)), req("sms", ago(0, 2), { status: "failed", source: "workflow" })],
+      oldestRequestAt: ago(0, 2),
+    });
+    expect(o.requests).toMatchObject({ sent: 1, failed: 1, byChannel: { sms: 1 }, bySource: { dispatcher: 1 } });
+    expect(o.trend.at(-1)?.requests).toBe(1);
+  });
+
+  it("rows written before d1 (WhatsApp modes, no source) read as whatsapp / dispatcher", () => {
+    const legacy = (channel: string) => ({ channel, sentAt: ago(1), status: "sent" });
+    const o = overview({ requests: [legacy("whatsapp_template"), legacy("whatsapp_manual")], oldestRequestAt: ago(1) });
+    expect(o.requests).toMatchObject({ sent: 2, byChannel: { whatsapp: 2 }, bySource: { dispatcher: 2 } });
   });
 
   it("previous is given only when the log covers the whole previous range", () => {
@@ -172,7 +197,7 @@ describe("requests", () => {
   });
 
   it("no log at all: nothing counted, countingSince null", () => {
-    expect(overview().requests).toEqual({ sent: 0, byChannel: {}, previous: null, countingSince: null });
+    expect(overview().requests).toEqual({ sent: 0, byChannel: {}, bySource: {}, failed: 0, previous: null, countingSince: null });
   });
 });
 

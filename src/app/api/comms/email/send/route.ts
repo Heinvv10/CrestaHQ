@@ -5,6 +5,7 @@ import {
   sendConversationEmail,
 } from "@/lib/server/conversation-send/email";
 import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 
 /**
  * Manual email send. Auth + request parsing only — every send-time check and
@@ -42,15 +43,15 @@ export async function POST(request: Request) {
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  return sendOutcomeResponse(
-    await sendConversationEmail({
-      contactId,
-      contact,
-      subject,
-      body,
-      inReplyTo: payload.inReplyTo,
-      references: payload.references,
-      actor: auth,
-    })
-  );
+  const outcome = await sendConversationEmail({
+    contactId,
+    contact,
+    subject,
+    body,
+    inReplyTo: payload.inReplyTo,
+    references: payload.references,
+    actor: auth,
+  });
+  await logInboxReviewAsk({ contact, channel: "email", parts: [subject, body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
+  return sendOutcomeResponse(outcome);
 }

@@ -2,12 +2,12 @@
 
 A sub-account's **Reputation** area (sidebar → Reputation, `/sa/[id]/reputation`)
 is a reporting layer over data LeadStack already owns: the synced Google review
-cache ([gbp-reviews.md](gbp-reviews.md)) and the review-request dispatcher
-(`lib/reviews/request.ts`). It adds no new way to talk to Google or to customers.
+cache ([gbp-reviews.md](gbp-reviews.md)) and the review-request log every
+sender writes (below). It adds no new way to talk to Google or to customers.
 Ledger and build order: [docs/parity/sp5.md](../parity/sp5.md).
 
-Tabs today: **Overview** · **Reviews** · **Widgets** (SP5 PR a) · **Insights**
-(SP5 PR f). Later SP5 PRs add Requests and Settings.
+Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Insights**
+(SP5 PRs a, d1, f). A later SP5 PR adds Settings.
 
 - **Reviews** mounts the existing reviews inbox (`components/gbp/reviews-section.tsx`)
   unchanged — same route, filters, Sync now and reply. Members read; admins sync
@@ -53,7 +53,7 @@ toward the 500). Single-field query on `createTime`.
 | Star distribution | Count per rating, 1–5, in range. |
 | Response coverage | Replied ÷ reviews in range; `null` with no reviews. |
 | Time to latest reply | `reply.updateTime − createTime`, average and median in hours over replied reviews in range. **Google reports only the latest reply time**, so an edited reply moves it — the label says so. Replies with a missing or earlier-than-review time are excluded and counted (`replyHours.excluded`); they still count as replied for coverage. Trended by the review's bucket. |
-| Requests sent | Rows in `subAccounts/{id}/reviewRequests` (below) with `sentAt` in range, by channel. **Only the dispatcher's sends are logged** — Request review (the contact profile's button), quote paid, deal completed. Review asks sent any other way are **not counted yet** (SP5 PR d) — a review link pasted into a workflow SMS / WhatsApp / email step body, a WhatsApp template's variable or button (e.g. the `review_request` starter), a link pasted into a broadcast email, and the Conversations composer's "Ask for review" (or a typed link); the tile and card say so. (`{{reviewUrl}}` does not resolve in workflow or broadcast merge tags — it renders "" — so those asks carry a pasted link or an approved template.) `countingSince` = the **first logged request** (not the deploy date — a sub-account that sends nothing for a while starts later); requests before it were not logged and are not backfilled. The previous-period count is given only when the first logged request is no later than the previous period's start. At most 2,000 rows per request (`truncated.requests`). |
+| Requests sent | Rows in `subAccounts/{id}/reviewRequests` (below) with `status: "sent"` and `sentAt` in range — **from every sender** (SP5 d1) — by channel (`sms` / `whatsapp` / `email`) and by source (`dispatcher` / `workflow` / `broadcast` / `inbox`). Review asks whose send failed are counted apart (`requests.failed`) and said on the card, never in "sent" or the trend. Rows written before d1 (dispatcher only, channel `whatsapp_template` / `whatsapp_manual`, no `source`) read as `whatsapp` / `dispatcher`. `countingSince` = the **first logged request** (not the deploy date — a sub-account that sends nothing for a while starts later); requests before it were not logged and are not backfilled — and before d1 only the dispatcher's sends were logged. The previous-period count is given only when the first logged request is no later than the previous period's start. At most 2,000 rows per request (`truncated.requests`). |
 | Requests vs reviews | Shown **side by side per bucket, never attributed**: Google gives no link between a request and a review. |
 | Health | `health` is the reviews inbox's `deriveHealth` result (via `publicSummary`), so both pages show the same stale / partial / reconnect / sync-pending / error / never-synced state and banner. |
 
@@ -62,7 +62,49 @@ toward the 500). Single-field query on `createTime`.
 Booleans from real state only, recomputed on every request — no stored progress:
 Google connected (and not flagged reconnect-required), a listing selected, a
 review link configured (`resolveReviewUrl(sub).configured`), a widget exists
-(`gbpWidgetMeta.publicId`), and at least one review request logged.
+(`gbpWidgetMeta.publicId`), and at least one review request **sent** (a log row
+with `status: "sent"` — single-field equality query; a failed ask alone does not
+tick it).
+
+## Requests (SP5 d1)
+
+`/sa/[id]/reputation/requests` reads `GET /api/sub-accounts/[id]/reputation/requests`
+(any active member; `requireSubAccountMember`): the log, newest first, **50
+matching rows a page** with **Load more** (`cursor` = the last row's id). Filters
+`status` (`sent` / `failed`), `channel` (`sms` / `whatsapp` / `email`) and `source`
+run on the server, applied while scanning one single-field query
+(`orderBy sentAt desc` + `startAfter`) in batches of 100 — no composite index. A
+request scans at most 1,000 rows; a sparse filter can return a short (or empty)
+page with a cursor to keep looking, and the page says so. Anything else in a
+filter → 400 `invalid_filter` with `field`. Each row: `id, contactId,
+contactName, channel, source, trigger, status, failureKind, sentAt` — the name
+is joined at read time from the contact doc, **only when that contact is in this
+sub-account** (else null, shown as "Deleted contact"). For a **territory-scoped
+collaborator** (`loadEffectiveTerritoryScope`, the same rule as
+`territoryDenialForContact`) a contact outside their territories — or with no
+territory, or no longer existing — keeps its row but loses its id and name
+(shown as "Outside your territories", no link); Global contacts stay visible.
+Never a message body, phone number or email address. The **search** matches
+contact names over the rows already loaded, and the page says so. Selecting
+the **Failed** filter says what it lists: provider rejections from workflows,
+broadcasts and the inbox — a Request review that could not be sent is not
+logged; the dialog below shows why instead.
+
+**Send Review Request** (Overview and Requests headers) opens a dialog with the
+shared contact picker (`components/quotes/contact-picker.tsx`, this
+sub-account's contacts, territory-filtered like every contact list), then POSTs
+the existing manual route `/api/comms/review-request/send` — the dispatcher,
+`trigger: "manual"`, which skips the cooldown as it always has. Its answer is
+shown inline in plain words (`components/reputation/send-result.ts`: e.g.
+`not_configured` → "Set your review link first …"); a successful send reloads
+the page's data, and Send stays off for the contact just sent to (re-picking
+them does not re-arm it) until the dialog is reopened. Contacts
+that fail to load say so rather than showing an empty picker.
+
+Statuses are what LeadStack can observe truthfully: **sent** and **failed**.
+Delivered / read are not wired to the log; clicked / feedback (`clickedAt`,
+`feedbackAt`) and reminders are later SP5 work (ledger Q1/Q3) — nothing writes
+them yet.
 
 ## Sentiment (SP5 b)
 
@@ -276,23 +318,84 @@ Firestore, an invisible location refused, "not approved"). Mutation record:
 
 ## The review-request log
 
-`subAccounts/{id}/reviewRequests/{auto}` — written by `maybeSendReviewRequest`
-after every **successful** send it makes: its three callers are the manual
-Request review route (`/api/comms/review-request/send`), quote paid
-(`lib/server/quotes-service.ts`) and deal completed (`/api/deals/[id]`). Review asks
-sent any other way do NOT write it yet — a review link pasted into a workflow SMS / WhatsApp / email step body, a WhatsApp template's variable or button (e.g. the `review_request` starter), a link pasted into a broadcast email, and the Conversations composer's "Ask for review" (or a typed link) (workflow steps:
-`lib/workflows/engine.ts`; composer: `components/conversations/use-merge-tag-composer.tsx`).
-Logging those is SP5 PR (d). Row fields: `{agencyId, subAccountId, createdByUid, contactId, channel, trigger,
-status: "sent", messageSid, sentAt, clickedAt: null, feedbackAt: null}`.
-`createdByUid` is the signed-in sender of a manual send, else the label
-`"review-request"`; `channel` is the normalized one (`sms` / `whatsapp_template` /
-`whatsapp_manual`). Refusals and failed sends write nothing. A failed log write
-is logged by kind (`[reviews/request] reviewRequests log write failed kind=…`)
-and never fails the send. What is sent, to whom and when is unchanged —
-`lib/reviews/request-log.test.ts` pins the SMS and WhatsApp bodies and the
-activity row byte for byte. Server only: no client rule (default deny), no index.
-`clickedAt` / `feedbackAt` are reserved for the Requests tab (SP5 PR d); nothing
-writes them yet.
+`subAccounts/{id}/reviewRequests/{auto}` has **one writer**,
+`logReviewRequest()` (`lib/reviews/request-log.ts`). Row fields:
+`{agencyId, subAccountId, createdByUid, contactId, channel: sms|whatsapp|email,
+source: dispatcher|workflow|broadcast|inbox, trigger, status: sent|failed,
+failureKind, messageSid, sentAt, clickedAt: null, feedbackAt: null}`.
+`createdByUid` is the person who sent it (a manual Request review, an inbox
+message — or whoever scheduled it), else a label: `"review-request"`
+(dispatcher auto triggers), `"workflow"`, `"broadcast"`. `trigger` is the
+dispatcher's (`manual` / `quote_paid` / `deal_completed`), null for the others.
+`failureKind` is a short machine kind (a provider message can quote a phone
+number, so free text becomes `send_failed`). A failed log write is logged by
+kind (`[reviews/request-log] reviewRequests write failed source=… kind=…`) and
+never fails the send.
+
+Who writes, each once, at the level that **initiates** the send — never in a
+transport, so no send is counted twice:
+
+| Source | Where | When |
+|---|---|---|
+| `dispatcher` | `maybeSendReviewRequest` (`lib/reviews/request.ts`): Request review (contact profile, Send Review Request), quote paid, deal completed | every successful send; refusals and failed sends write nothing (unchanged from SP5 a) |
+| `workflow` | `runStep` (`lib/workflows/engine.ts`) for `send_sms` / `send_email` / `send_whatsapp` / `whatsapp_template` steps | the step's rendered content is a review ask: sent, or failed after a provider was called (`failureKind` = the step's error token) |
+| `broadcast` | `/api/broadcasts/email/step`, per recipient | the rendered email is a review ask: sent, or failed at the email provider; a QStash redelivery of a settled recipient logs nothing |
+| `inbox` | `/api/comms/{sms,whatsapp,email}/send`, `/api/comms/whatsapp/send-template`, and the scheduled-message worker (`lib/server/scheduled-messages/fire.ts`) | a person's message is a review ask: sent, or failed after a provider was called (`failureKind` = the provider's code, `outcome_unknown`, or `send_failed`) |
+
+**One failure rule for every sender:** a `failed` row means a provider was
+actually called and the send failed there. A send refused before anything went
+out — opt-out, no phone, quota, an agency gate, a shut WhatsApp window, a
+template not approved on this rail, missing credentials, or a rail refusing on
+its own rules (the bridge's quiet hours and caps) — is not a request and writes
+nothing. (The dispatcher, unchanged from SP5 a, writes successful sends only.) The inbox knows which is
+which from `SendRefusal.attempted` (set by the conversation send service); the
+WhatsApp dispatchers mark a result `attempted` only when they called a
+provider. A **thrown** send error counts only when it carries the provider-attempt
+mark (`lib/comms/provider-attempt.ts`), set where the carrier call happens — the
+SMS seam (`sms/select.ts`), Twilio's `messages.create` (and its 21610 mapping),
+SMTP's `sendMail` (inside `sendSmtpEmail`, after every header, address, settings,
+DNS and private-IP check) and Resend's `emails.send` (and its `{ error }` / no-id
+results) — never inferred from a catch: a throw before any provider call (no
+credentials, shared SMS switched off, the fake's fixture fence, an address SMTP
+refuses) logs nothing.
+A scheduled send that throws is not logged: nothing says whether a provider
+was reached.
+
+**What makes a message a review ask** (`isReviewAsk`, `lib/reviews/review-ask.ts`):
+any rendered part — body, email subject, a WhatsApp template's filled body or a
+URL button — contains the sub-account's **configured** review URL
+(`resolveReviewUrl(sub).configured`), or the WhatsApp template is the gallery's
+`review_request` starter (its name or its unedited body). Detection is on the
+rendered text because `{{reviewUrl}}` does not resolve in workflow or broadcast
+merge tags (it renders ""), so those asks carry a pasted link. The composer's
+"Ask for review" inserts the link into a normal message, so the URL check
+covers it. A `send_whatsapp` step is judged on what the window made it send:
+its text, or its template. Not covered: Messenger / Instagram messages, Web Chat
+operator messages, missed-call text-back, AI replies and booking messages —
+none is a review-request channel.
+
+The check is deliberately literal, so it misses some asks:
+
+- **Exact substring** of the configured URL: the same link written differently
+  — a trailing slash added or dropped, `http` vs `https`, other casing — does not
+  match.
+- **Configured, not proposed:** a pasted link equal to the listing's proposed
+  `newReviewUri` counts only once an admin has adopted it as the configured link.
+- **Tracked links:** a tracked `/l/…` link pasted in place of the review URL
+  (even one that redirects to it) does not contain the review URL, so it is not
+  detected.
+- **Template URL buttons with a `{{n}}` suffix:** the button is checked as
+  stored (`https://…/{{1}}`), not with the suffix filled in, so a review link
+  split across the button's base URL and its variable is not detected.
+
+Detection runs inside the logging code's own `try`: a malformed stored template
+(odd `buttons`, a non-string body) is skipped or logged by kind, and can never
+throw into a send or abort a workflow step. In `runStep` and the broadcast
+worker the row is written **after** the idempotency marker (the run's history
+entry; the recipient's settled send row), so no extra Firestore work sits
+between the provider send and the marker.
+
+Server only: no client rule (default deny), no index.
 
 ## Tests
 
@@ -311,9 +414,20 @@ through the sync), `lib/reputation/ai/*.test.ts` (fence, strict validation),
   sub-account's log never counted, gate-off / not-connected / no-listing,
   checklist.
 - `lib/reviews/request-log.test.ts`, `app/api/comms/review-request/send/route.test.ts`
-  — the log row, the actor, and the unchanged send.
+  — the dispatcher's row, the actor, and the unchanged send.
+- `lib/reviews/review-ask*.test.ts` — the review-ask rule, and each sender at its
+  own seam (real `runStep`, real send routes and worker, real broadcast step, in-memory
+  Firestore): one dispatcher send = one row, one workflow send = one row, a message
+  without the URL = none, failures by kind.
+- `app/api/sub-accounts/[id]/reputation/requests/route.test.ts` — the list: tenancy,
+  filters, paging with no gap or repeat, the scan cap, names from this sub-account only.
 - `components/reputation/*.test.ts` — every UI state (jsdom).
 - `e2e/specs/reputation-overview.spec.ts` — sync the fake's reviews, two real
   manual sends through the fenced fake SMS rail, the tiles equal the numbers
   computed from that data; the sidebar entry; the gate-off state on the secondary
   fixture. Mutation record: `.sp5-orch/a-mutations.md` (orchestrator).
+- `e2e/specs/reputation-requests.spec.ts` — through the fenced fake SMS rail: a
+  Send Review Request dialog send, a workflow `send_sms` step carrying the URL (real
+  engine, signed step), the composer's "Ask for review", and a plain message; the
+  Requests tab lists exactly the three asks by source and Overview shows 3.
+  Mutation record: `.sp5-orch/d1-mutations.md` (orchestrator).

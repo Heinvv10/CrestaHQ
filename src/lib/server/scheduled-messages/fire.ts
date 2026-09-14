@@ -11,6 +11,7 @@ import {
   type ScheduledMessageChannel,
   type ScheduledMessageStatus,
 } from "@/types/scheduled-messages";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import { scheduledMessagesPath, scheduledSendBlock } from "./service";
 
 export type FireResult =
@@ -154,6 +155,15 @@ export async function fireScheduledMessage(
     );
   }
 
+  // A review link in it makes it a review ask (SP5 d1). A throw above is not
+  // logged: nothing says whether a provider was reached.
+  await logInboxReviewAsk({
+    contact,
+    channel: doc.channel,
+    parts: [doc.subject, doc.body],
+    actorUid: doc.createdByUid,
+    outcome: askOutcomeOf(outcome),
+  });
   if (!outcome.ok) {
     const unknown = outcome.status === 502 || outcome.outcomeUnknown === true;
     return record(unknown ? "unconfirmed" : "failed", outcome.error, outcome.code ?? null);

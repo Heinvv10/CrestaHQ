@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { checkQuota } from "@/lib/server/usage-meter";
 import { recordSend } from "@/lib/comms/usage";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types";
 import {
@@ -134,7 +135,8 @@ export async function sendConversationEmail(
     warning = result.warning;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to send email";
-    return refuse(502, message);
+    const refusal = refuse(502, message);
+    return providerAttempted(err) ? { ...refusal, attempted: true } : refusal;
   }
 
   try {

@@ -31,6 +31,12 @@ export interface SendRefusal {
    * scheduled-message worker reads it to avoid recording "not sent".
    */
   outcomeUnknown?: true;
+  /**
+   * A provider was called and the send failed there (SP5 d1) — as opposed to
+   * a refusal decided before anything was sent. Never serialised either; a
+   * review ask is logged as failed only when this is set.
+   */
+  attempted?: true;
 }
 
 export interface SendSuccess {

@@ -106,6 +106,9 @@ export interface WhatsAppSendResult {
    * 502 that sends whoever reads it hunting an infrastructure fault.
    */
   providerErrorCode?: string;
+  /** Set by the dispatchers when a provider was actually called (SP5 d1): a
+   *  failure without it was decided before anything was sent. */
+  attempted?: boolean;
   /** True when a dry-run/test path short-circuited the real send. */
   simulated?: boolean;
 }

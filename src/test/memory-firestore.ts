@@ -149,6 +149,9 @@ export interface MemoryQuery {
   where: (field: string, op: WhereOp, value: unknown) => MemoryQuery;
   orderBy: (field: string, dir?: "asc" | "desc") => MemoryQuery;
   limit: (n: number) => MemoryQuery;
+  /** Continue after this document in the query's order. Only Firestore's
+   *  snapshot overload — not startAfter(...fieldValues). */
+  startAfter: (snap: MemoryDocSnapshot) => MemoryQuery;
   /** Projection is ignored — full docs come back, which is a superset. */
   select: (...fields: string[]) => MemoryQuery;
   get: () => Promise<{ empty: boolean; size: number; docs: MemoryDocSnapshot[] }>;
@@ -222,12 +225,14 @@ export function createMemoryFirestore() {
     filters: Array<[string, WhereOp, unknown]>,
     order: [string, "asc" | "desc"] | null,
     max: number | null,
+    after: string | null = null,
   ): MemoryQuery {
     return {
-      where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max),
-      orderBy: (f, dir = "asc") => query(inScope, filters, [f, dir], max),
-      limit: (n) => query(inScope, filters, order, n),
-      select: () => query(inScope, filters, order, max),
+      where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max, after),
+      orderBy: (f, dir = "asc") => query(inScope, filters, [f, dir], max, after),
+      limit: (n) => query(inScope, filters, order, n, after),
+      startAfter: (snap) => query(inScope, filters, order, max, snap.ref.path),
+      select: () => query(inScope, filters, order, max, after),
       // Reads observe the store when ISSUED and resolve a tick later, so two
       // concurrent transactions can both read before either commits.
       get: () => {
@@ -242,6 +247,14 @@ export function createMemoryFirestore() {
             v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : (v as number | string);
           paths.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
           if (dir === "desc") paths.reverse();
+        }
+        // By position: rows up to and including the cursor doc are skipped. Unlike
+        // Firestore, the cursor doc must itself be in this query's result — a
+        // cursor that is not throws rather than silently returning every row.
+        if (after !== null) {
+          const at = paths.indexOf(after);
+          if (at === -1) return Promise.reject(new Error(`memory-firestore: startAfter cursor ${after} is not in the query's result`));
+          paths = paths.slice(at + 1);
         }
         if (max !== null) paths = paths.slice(0, max);
         const docs = paths.map(snapshot);
