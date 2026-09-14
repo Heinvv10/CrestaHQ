@@ -35,7 +35,8 @@ export interface DealApiObject {
   contact_id: string | null;
   lost_reason: string | null;
   territory_id: string | null;
-  /** Sub-account member uid the record is assigned to; read-only over the public API. */
+  /** Sub-account member uid the record is assigned to. Settable on create
+   *  (must be an active member); read-only on PATCH. */
   assigned_to_uid: string | null;
   custom_fields: Record<string, CustomFieldValue> | null;
   created_at: string;
@@ -101,6 +102,8 @@ export interface DealCreateInput {
   pipelineId: string | null;
   priority: DealPriority;
   territoryId: string | null;
+  /** Shape only — the route checks it is an active member. Null = unassigned. */
+  assignedToUid: string | null;
 }
 
 export interface ParseResult<T> {
@@ -175,6 +178,11 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
     return { ok: false, error: "`territory_id` must be a string." };
   }
 
+  const assignedToUid = asString(b.assigned_to_uid, 200);
+  if (assignedToUid === null) {
+    return { ok: false, error: "`assigned_to_uid` must be a string or null." };
+  }
+
   return {
     ok: true,
     value: {
@@ -186,6 +194,7 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
       pipelineId: pipelineId.length === 0 ? null : pipelineId,
       priority: priorityRaw as DealPriority,
       territoryId: territoryId.length === 0 ? null : territoryId,
+      assignedToUid: assignedToUid.length === 0 ? null : assignedToUid,
     },
   };
 }

@@ -1,5 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import type { GbpHealth } from "@/lib/gbp/sync/types";
+import { ACCESS_NOT_APPROVED_TEXT } from "@/lib/gbp/error-text";
 import { absoluteTime } from "./format-time";
 
 /**
@@ -74,6 +75,7 @@ export function HealthBanner({
       return (
         <Banner testId="gbp-banner-stale">
           These reviews may be out of date — {since ? `the last successful sync was ${since}.` : "no sync has succeeded yet."}
+          {lastErrorKind === "access_not_approved" && ` ${ACCESS_NOT_APPROVED_TEXT}`}
         </Banner>
       );
     case "partial":
@@ -96,7 +98,9 @@ export function HealthBanner({
         <Banner testId="gbp-banner-error">
           {lastErrorKind === "retention_expired"
             ? "Sync has been failing for over 30 days, so cached reviews were removed under Google's 30-day storage policy."
-            : "Sync is failing and there is no recent successful sync to show."}
+            : lastErrorKind === "access_not_approved"
+              ? ACCESS_NOT_APPROVED_TEXT
+              : "Sync is failing and there is no recent successful sync to show."}
         </Banner>
       );
     default:

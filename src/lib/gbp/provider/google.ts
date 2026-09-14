@@ -2,10 +2,12 @@ import "server-only";
 
 import { buildGoogleOAuthUrl } from "@/lib/google/oauth";
 import { bearer, fetchJson } from "./google-http";
-import { parseAccounts, parseLocations, parseReply, parseReviews } from "./google-parse";
+import { parseAccounts, parseDailyMetrics, parseLocations, parseReply, parseReviews } from "./google-parse";
 import { exchangeCode, refresh, revoke } from "./google-token";
 import {
   ACCOUNT_NAME_RE,
+  DATE_RE,
+  GBP_DAILY_METRICS,
   LOCATION_NAME_RE,
   REVIEW_NAME_RE,
   type GbpProvider,
@@ -18,11 +20,14 @@ import {
  *   locations  Business Information API v1 (readMask REQUIRED, pageSize max 100)
  *   reviews    legacy My Business API v4   (pageSize max 50) — the only API
  *              that serves reviews; access needs Google's approval.
+ *   insights   Business Profile Performance API v1 (verified 2026-09-14),
+ *              locations.fetchMultiDailyMetricsTimeSeries.
  */
 
 const ACCOUNTS = "https://mybusinessaccountmanagement.googleapis.com/v1";
 const BUSINESS_INFO = "https://mybusinessbusinessinformation.googleapis.com/v1";
 const V4 = "https://mybusiness.googleapis.com/v4";
+const PERFORMANCE = "https://businessprofileperformance.googleapis.com/v1";
 const LOCATION_READ_MASK = "name,title,storefrontAddress,websiteUri,metadata";
 /**
  * Reply calls abort after 30 s (→ `transient`), well inside the reply
@@ -93,6 +98,28 @@ export const googleGbpProvider: GbpProvider = {
         body: JSON.stringify({ comment }),
         signal: AbortSignal.timeout(REPLY_TIMEOUT_MS),
       }),
+    );
+  },
+
+  async fetchDailyMetrics(accessToken, locationName, { metrics, startDate, endDate }) {
+    assertName(locationName, LOCATION_NAME_RE, "location");
+    if (!DATE_RE.test(startDate) || !DATE_RE.test(endDate)) throw new TypeError("Invalid metrics date");
+    if (metrics.length === 0 || metrics.some((m) => !GBP_DAILY_METRICS.includes(m))) {
+      throw new TypeError("Invalid metrics list");
+    }
+    const qs = new URLSearchParams();
+    for (const m of metrics) qs.append("dailyMetrics", m);
+    for (const [key, date] of [["startDate", startDate], ["endDate", endDate]] as const) {
+      const [y, m, d] = date.split("-").map(Number);
+      qs.set(`dailyRange.${key}.year`, String(y));
+      qs.set(`dailyRange.${key}.month`, String(m));
+      qs.set(`dailyRange.${key}.day`, String(d));
+    }
+    return parseDailyMetrics(
+      await fetchJson(`${PERFORMANCE}/${locationName}:fetchMultiDailyMetricsTimeSeries?${qs}`, {
+        headers: bearer(accessToken),
+      }),
+      metrics,
     );
   },
 

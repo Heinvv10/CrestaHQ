@@ -17,7 +17,7 @@ import { gbpErrorResponse, gbpPreconditions } from "@/lib/gbp/route-support";
  * Sub-account admin only, agency-gated. Walks every page of accounts and
  * locations (bounded at 20 pages each; `truncated` says when it stopped).
  * Refusals: 403 gate_off · 503 not_configured · 409 not_connected /
- * reconnect_required · 502 <provider error kind>.
+ * reconnect_required · 424 <provider error kind> (not 502: see route-support.ts).
  */
 
 export async function GET(

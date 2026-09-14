@@ -119,7 +119,7 @@ describe("states", () => {
     expect(secret?.accessTokenExpiresAt as number).toBeGreaterThan(Date.now() + 3_000_000);
   });
 
-  it("retries exactly once: a refresh that works but a data call that keeps 401ing → 502", async () => {
+  it("retries exactly once: a refresh that works but a data call that keeps 401ing → 424", async () => {
     // Real-Google mode, only fetch stubbed: the token endpoint always issues a
     // token, the accounts API always says 401.
     delete process.env.GBP_PROVIDER;
@@ -140,7 +140,7 @@ describe("states", () => {
       }),
     );
     const { status, body } = await list();
-    expect([status, body.code]).toEqual([502, "auth_expired"]);
+    expect([status, body.code]).toEqual([424, "auth_expired"]);
     expect(hits).toEqual({ token: 1, data: 2 });
     vi.unstubAllGlobals();
   });
@@ -163,10 +163,10 @@ describe("states", () => {
     });
   });
 
-  it("maps other provider errors to 502 with only the kind", async () => {
+  it("maps other provider errors to 424 with only the kind", async () => {
     setScenario((s) => (s.failNext = { op: "listLocations", kind: "rate_limited" }));
     const { status, body } = await list();
-    expect(status).toBe(502);
+    expect(status).toBe(424);
     expect(body).toEqual({ error: "Google request failed", code: "rate_limited" });
   });
 });

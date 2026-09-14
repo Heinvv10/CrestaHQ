@@ -3,11 +3,12 @@
 A sub-account's **Reputation** area (sidebar → Reputation, `/sa/[id]/reputation`)
 is a reporting layer over data LeadStack already owns: the synced Google review
 cache ([gbp-reviews.md](gbp-reviews.md)) and the review-request log every
-sender writes (below). It adds no new way to talk to Google or to customers.
+sender writes (below). It adds no new way to talk to Google or to customers,
+except review-request reminders — off unless an admin turns them on (SP5 d2).
 Ledger and build order: [docs/parity/sp5.md](../parity/sp5.md).
 
-Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Settings**
-(SP5 PRs a, d1, d2). A later SP5 PR adds Insights.
+Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Insights** ·
+**Settings** (SP5 PRs a, d1, f, d2).
 
 - **Reviews** mounts the existing reviews inbox (`components/gbp/reviews-section.tsx`)
   unchanged — same route, filters, Sync now and reply. Members read; admins sync
@@ -169,6 +170,82 @@ scheduled. A crash mid-send leaves `sending` — never a second message.
 
 The Overview's requests card shows clicks among tracked requests only
 ("Clicked: X of Y tracked requests").
+
+## Insights (SP5 f)
+
+> **Live status: blocked — case 4-6894000042302.** The Business Profile
+> Performance API is enabled on the project but answers 429
+> `RESOURCE_EXHAUSTED` with a quota of 0 until Google approves the case
+> (probed 2026-09-14). Everything below is proven on the fenced fake provider;
+> on a live deployment the tab shows "Google hasn't approved Business Profile
+> API access for this project yet."
+
+`GET /api/sub-accounts/[id]/reputation/insights?location=locations/…&range=7d|28d|90d`
+(default `28d`; anything else → 400 `invalid_filter`, `field: "range"`).
+
+- **Who:** any active member, for the sub-account's selected listing. The
+  agency's Google gate, Google connected (not reconnect-required) and a
+  listing are required — 403 `gate_off` / 409 `not_connected` /
+  `reconnect_required` / `no_listing`.
+- **Location (G3):** defaults to `googleListing.locationName`. Any other value
+  is **admin only** (403 `location_admin_only` — the locations list behind the
+  picker is admin-only too) and is never trusted: it must match
+  `locations/{id}` (else 400 `unknown_location` before any Google call) and be
+  a location THIS connection can see — the server walks the existing discovery
+  (20-page bound): not there → 400 `unknown_location`, walk truncated → 400
+  `unverifiable_truncated`. Viewing another location **never changes the
+  listing** — the route writes nothing (route test and E2E compare
+  `googleListing` before and after).
+- **Data:** one `fetchDailyMetrics` call (through `withGbpAccess`) for the nine
+  metrics — impressions on Search / Maps × desktop / mobile, call clicks,
+  website clicks, direction requests, conversations, bookings — covering the
+  current and previous windows. **Nothing is stored**: the body lives in an
+  in-memory memo for 10 minutes per sub-account + connection (`connectedAt`) +
+  current listing + location + range + window end, per instance
+  (`lib/gbp/insights.ts`); a refusal is never kept. An entry for another
+  location exists only after discovery passed for that same connection and
+  listing. The memo holds Google's numbers (and a discovered title) only —
+  `isListing` and the listing's title are read fresh on every request.
+- **Numbers** (pure `lib/reputation/insights.ts`, unit-tested): the window is
+  the last 7 / 28 / 90 whole **UTC days ending yesterday** (today is still
+  being counted), compared with the equal span before. Tiles: Search views
+  (desktop + mobile search), Maps views (desktop + mobile maps), Calls,
+  Website clicks, Direction requests, and Conversations / Bookings only when
+  either period is non-zero; each shows the change vs the previous period.
+  Charts: views per day (search + maps) and actions per day (calls + website +
+  directions); the desktop / mobile split of views. A day Google returns
+  without a value is 0 (Google omits zeros); a missing day is drawn as 0, and
+  `lastDataDate` (the latest day Google returned — a day it sent with a zero value counts) is shown as "Google's data runs to
+  …" because Google reports with a delay. Views are Google's impressions —
+  unique people per day.
+- **Response:** `{location: {name, title, isListing}, range, window: {current,
+  previous}, totals, previousTotals, groups, daily, lastDataDate}` — no tokens,
+  account names or ids beyond the location's own resource name.
+
+**UI** (`components/reputation/insights.tsx`, `insights-parts.tsx`; every
+state rendered in `insights.test.ts`): `rep-insights-location` (a select of
+every visible location for admins — from `GET …/google/locations`, falling
+back to the listing alone if that call fails, with `rep-insights-locations-error`
+under it saying why — the "not approved" sentence for `access_not_approved`;
+plain text for members),
+`rep-insights-range`, `rep-insights-tiles` / `rep-insights-tile-<key>` (+
+`-value`, `-note`), `rep-insights-chart-views`, `rep-insights-chart-actions`,
+`rep-insights-devices`, `rep-insights-data-through`, `rep-insights-other-location`,
+and the states `rep-insights-gate-off`, `-not-connected`, `-no-listing`,
+`-not-approved` (Google's quota-0 refusal), `-error` (its own sentence per
+refusal code), `-loading` (also while the sub-account itself is loading, so
+gate-off never flashes), `-empty`.
+
+**Tests:** `lib/reputation/insights.test.ts`; `app/api/sub-accounts/[id]/reputation/insights/route.test.ts`
+(real tenancy, discovery and fake provider; expected numbers computed in the
+test from the scenario's patterns; memo; nothing stored); provider —
+`provider/google-insights.test.ts` (URL, parsing, fail-closed),
+`provider/fake-insights.test.ts`; quota-0 mapping — `provider/google-http.quota.test.ts`,
+`lib/gbp/access-not-approved.test.ts`, `components/gbp/access-not-approved-text.test.ts`;
+`e2e/specs/gbp-insights.spec.ts` (tiles equal totals computed from the
+scenario, switch to the second fixture location, listing unchanged in
+Firestore, an invisible location refused, "not approved"). Mutation record:
+`.sp5-orch/f-mutations.md` (orchestrator).
 
 ## The review-request log
 

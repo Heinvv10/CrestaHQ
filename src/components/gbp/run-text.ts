@@ -11,6 +11,8 @@ export interface RunView {
   skipReason: string | null;
 }
 
+import { ACCESS_NOT_APPROVED_TEXT } from "@/lib/gbp/error-text";
+
 const SKIP_TEXT: Record<string, string> = {
   already_running: "A sync is already running — try again in a minute.",
   listing_changed: "The listing or connection changed while it started — nothing was synced.",
@@ -32,5 +34,6 @@ export function describeRun(run: RunView): string {
   if (run.status === "success") return `Synced: ${counts}.`;
   if (run.status === "partial") return `Partly synced (${counts}) — the next sync carries on.`;
   if (run.status === "reconnect_required") return "Google refused this connection — reconnect to resume syncing.";
+  if (run.errorKind === "access_not_approved") return `Sync failed: ${ACCESS_NOT_APPROVED_TEXT} Cached reviews are kept.`;
   return `Sync failed (${run.errorKind ?? "unknown"}). Cached reviews are kept.`;
 }

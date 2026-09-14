@@ -3,6 +3,8 @@ import "server-only";
 import {
   GbpProviderError,
   type GbpAccount,
+  type GbpDailyMetric,
+  type GbpDailySeries,
   type GbpLocation,
   type GbpReview,
   type GbpReviewReply,
@@ -145,4 +147,35 @@ export function parseReviews(body: unknown): GbpReviewsPage {
     totalReviewCount: optNum(b.totalReviewCount),
     nextPageToken: nextToken(b.nextPageToken),
   };
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+function dayOf(raw: unknown): string {
+  const d = obj(raw);
+  const [y, m, day] = [d.year, d.month, d.day];
+  if (![y, m, day].every((n) => Number.isInteger(n) && (n as number) > 0)) throw bad();
+  return `${y}-${pad(m as number)}-${pad(day as number)}`;
+}
+
+/**
+ * fetchMultiDailyMetricsTimeSeries → one series per REQUESTED metric (others
+ * ignored). `value` is an int64 string that Google leaves out when it is 0.
+ */
+export function parseDailyMetrics(body: unknown, metrics: GbpDailyMetric[]): GbpDailySeries {
+  const out: GbpDailySeries = Object.fromEntries(metrics.map((m) => [m, []]));
+  for (const group of list(obj(body).multiDailyMetricTimeSeries)) {
+    for (const raw of list(obj(group).dailyMetricTimeSeries)) {
+      const series = obj(raw);
+      const metric = series.dailyMetric as GbpDailyMetric;
+      if (!metrics.includes(metric)) continue;
+      const values = list(obj(series.timeSeries ?? {}).datedValues).map((dv) => {
+        const v = obj(dv);
+        if (v.value !== undefined && (typeof v.value !== "string" || !/^\d+$/.test(v.value))) throw bad();
+        return { date: dayOf(v.date), value: v.value === undefined ? 0 : Number(v.value) };
+      });
+      out[metric] = [...(out[metric] ?? []), ...values];
+    }
+  }
+  return out;
 }

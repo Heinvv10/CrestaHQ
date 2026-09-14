@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type {
   GbpAccount,
+  GbpDailyMetric,
   GbpLocation,
   GbpProviderErrorKind,
   GbpReview,
@@ -21,7 +22,8 @@ export type FakeOp =
   | "listLocations"
   | "listReviews"
   | "putReply"
-  | "deleteReply";
+  | "deleteReply"
+  | "fetchDailyMetrics";
 
 export interface FakeScenario {
   revoked?: boolean;
@@ -53,6 +55,33 @@ export interface FakeScenario {
    * explicit human submit ever posts one.
    */
   calls?: Array<{ op: "putReply" | "deleteReply"; reviewName: string }>;
+  /**
+   * Insights per location name and metric: the value on a day is
+   * `pattern[dayNumber % pattern.length]`, dayNumber = whole days since
+   * 1970-01-01 UTC. A metric not listed uses {@link fakeDailyValue}'s default.
+   */
+  insights?: Record<string, Partial<Record<GbpDailyMetric, number[]>>>;
+}
+
+/** Days since 1970-01-01 UTC for a `YYYY-MM-DD` date. */
+export function dayNumber(date: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  return Date.UTC(y, m - 1, d) / 86_400_000;
+}
+
+/**
+ * One day of one metric on the fake: the scenario's pattern, else a small
+ * deterministic default that differs per location — and no bookings, so the
+ * Insights tab's "only when non-zero" tile has a zero case by default.
+ */
+export function fakeDailyValue(scenario: FakeScenario, locationName: string, metric: GbpDailyMetric, date: string): number {
+  const day = dayNumber(date);
+  const pattern = scenario.insights?.[locationName]?.[metric];
+  if (pattern && pattern.length > 0) return pattern[day % pattern.length];
+  if (metric === "BUSINESS_BOOKINGS") return 0;
+  let seed = 0;
+  for (const ch of `${locationName}|${metric}`) seed = (seed * 31 + ch.charCodeAt(0)) % 997;
+  return (seed + day) % 9 + (metric.startsWith("BUSINESS_IMPRESSIONS") ? 20 : 1);
 }
 
 export interface FakeScenarioStore {
