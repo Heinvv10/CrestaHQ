@@ -109,6 +109,7 @@ describe("leaves ordinary prose alone", () => {
     "Upgrades from 25 Mbps to 1000 Mbps in 2024.",
     "Visit us at 14 Main Road, Randburg, 2196.",
     "We're open 07:30-18:00 every day.",
+    "We're open 08:00-17.30 on weekdays.",
     "Thanks for staying with us, we appreciate it.",
   ])("%s", (text) => {
     expect(refused(text)).toBeNull();

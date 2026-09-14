@@ -112,7 +112,7 @@ function maskNonPhones(t: string): string {
     const at = rest[rest.length - 2] as number;
     const whole = rest[rest.length - 1] as string;
     const tail = /^[^\d\n]{0,3}(\d[\d ./-]*)/.exec(whole.slice(at + m.length));
-    if (tail && !/^\d{1,2}[:h]\d{2}/.test(tail[1]) && onlyDigits(m).length + onlyDigits(tail[1]).length >= 7) return m;
+    if (tail && !/^\d{1,2}[:h.]\d{2}/.test(tail[1]) && onlyDigits(m).length + onlyDigits(tail[1]).length >= 7) return m;
     return x(m);
   };
   return t
