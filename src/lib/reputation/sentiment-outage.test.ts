@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * An AI outage or a revoked key (SP5 b round 4): a failed CALL stops the run
  * and spaces the retry by an hour, but never counts toward the three strikes
  * — so a long outage costs at most one call per run and never gives up on a
- * review. Only a bad answer from the model is a strike. Scripted AI double;
+ * review. Only a 403 or an unusable answer from the model is a strike. Scripted AI double;
  * real sync, served set and in-memory Firestore; the clock is faked.
  */
 

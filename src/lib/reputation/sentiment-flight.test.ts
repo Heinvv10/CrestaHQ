@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * What happens around each AI call (SP5 b): the one-transaction `beginCall`
  * (lease owner, gates, listing, daily cap, the review itself, the strike),
- * the time budget, and the failure model: every failed call is a strike and
- * stops the run. The AI is a scripted double; the sync,
+ * the time budget, and the failure model: a 403 or an unusable answer is a
+ * strike, any other failure is not; either way the run stops. The AI is a scripted double; the sync,
  * the served-reviews set and Firestore are real/in-memory. The clock is
  * faked (Date only) so the retry hour and the budget can be walked.
  */
