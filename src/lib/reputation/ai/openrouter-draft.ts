@@ -44,9 +44,8 @@ export type BoundedCall = (args: Parameters<typeof callAi>[0]) => ReturnType<typ
 
 /**
  * `call` is the seam's bounded model call (openrouter.ts `boundedCall`:
- * `callAi` under REVIEWS_AI_CALL_MS), passed in so this file never imports
- * openrouter.ts back and so the bound lives in ONE helper there — whether it
- * is a Promise.race or callAi's own timeout signal.
+ * `callAi` aborted via its caller signal at REVIEWS_AI_CALL_MS), passed in so
+ * this file never imports openrouter.ts back and the bound lives in ONE helper.
  */
 export async function draftReplyWith(model: string, input: DraftInput, call: BoundedCall): Promise<DraftResult> {
   let raw: string;

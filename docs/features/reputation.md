@@ -393,7 +393,9 @@ switch included).
   fail safe (the draft is refused and the admin writes their own): "Mr.Smith",
   "review.We", "@everyone", a lower-case word after a full stop, "we'll
   signal the team". The call runs under the seam's per-call bound
-  (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does; a failure is one
+  (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does — at the deadline the
+  request is aborted through `callAi`'s caller signal (an aborted call may
+  still be billed; it counts against the draft share either way); a failure is one
   log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
 - **What the prompt alone covers — honestly:** promising a refund or
   compensation, an insult, or an unsuitable tone are ruled out only by the
