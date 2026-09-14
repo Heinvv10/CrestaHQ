@@ -174,11 +174,13 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   const contactCancelled = await ensureContact(uid, `E2E Appt Cancelled ${stamp}`);
   const contactManual = await ensureContact(uid, `E2E Appt Manual ${stamp}`);
   const contactCancelable = await ensureContact(uid, `E2E Appt Cancelable ${stamp}`);
+  const contactPast = await ensureContact(uid, `E2E Appt Past ${stamp}`);
 
   const titleUpcoming = `E2E Appt Upcoming Booking ${stamp}`;
   const titleCancelled = `E2E Appt Cancelled Booking ${stamp}`;
   const titleManual = `E2E Appt Manual Meeting ${stamp}`;
   const titleCancelable = `E2E Appt Cancelable Booking ${stamp}`;
+  const titlePast = `E2E Appt Past Booking ${stamp}`;
 
   const upcomingEventId = await createEvent({
     createdByUid: uid,
@@ -212,6 +214,18 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
     title: titleCancelable,
     status: "scheduled",
     startAt: at("10:30"),
+    bookingPageSlug: pageXSlug,
+    source: "booking_page",
+  });
+  // Genuinely in the past (not "tomorrow") — HIGH: completed/no_show are
+  // only offered once startAt has passed, so the status-flip step below
+  // needs a real past booking, not the future "titleUpcoming" one.
+  const pastEventId = await createEvent({
+    createdByUid: uid,
+    contactId: contactPast,
+    title: titlePast,
+    status: "scheduled",
+    startAt: new Date(Date.now() - 2 * 60 * 60_000),
     bookingPageSlug: pageXSlug,
     source: "booking_page",
   });
@@ -268,8 +282,23 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   });
   await expect(page.getByText(titleUpcoming, { exact: true })).toHaveCount(0);
 
-  // --- H1: a manual event's row menu offers no status actions ----------
+  // --- HIGH: a future booking's row menu offers no completed/no-show ---
+  // (only Cancel — completed/no_show fire a workflow trigger and free the
+  // slot, irreversibly, so a default-tab misclick on tomorrow's booking
+  // must not be able to do that).
   await searchBox.fill(String(stamp));
+  const upcomingRowForMenuCheck = page.locator("tr").filter({ hasText: titleUpcoming });
+  await expect(upcomingRowForMenuCheck).toBeVisible({ timeout: 15_000 });
+  await upcomingRowForMenuCheck.getByRole("button").last().click();
+  await expect(page.getByRole("menuitem", { name: "Mark completed" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Mark no-show" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Cancel" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Confirms there was never a way to flip it: still exactly as seeded.
+  const upcomingUnchanged = await adminDb().doc(`events/${upcomingEventId}`).get();
+  expect(upcomingUnchanged.data()?.status).toBe("scheduled");
+
+  // --- H1: a manual event's row menu offers no status actions ----------
   const manualRow = page.locator("tr").filter({ hasText: titleManual });
   await expect(manualRow).toBeVisible({ timeout: 15_000 });
   await manualRow.getByRole("button").last().click();
@@ -315,25 +344,26 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
     )
     .toBe("cancelled");
 
-  // --- row-menu status change ------------------------------------------
+  // --- row-menu status change (on a PAST booking — see HIGH above) -----
   // On the All tab (not Upcoming): marking the booking "completed" makes
   // it stop occupying a slot, so it would drop OUT of the Upcoming tab the
   // moment the status flips - the row itself would vanish rather than
   // showing the updated badge in place. All never filters by status, so
-  // the row stays put and we can watch its badge change.
+  // the row stays put and we can watch its badge change. (It also never
+  // appeared in Upcoming to begin with, since its startAt has passed.)
   await page.getByRole("tab", { name: /^All/ }).click();
   await searchBox.fill(String(stamp));
-  const upcomingRow = page.locator("tr").filter({ hasText: titleUpcoming });
-  await expect(upcomingRow).toBeVisible({ timeout: 15_000 });
-  await upcomingRow.getByRole("button").last().click();
+  const pastRow = page.locator("tr").filter({ hasText: titlePast });
+  await expect(pastRow).toBeVisible({ timeout: 15_000 });
+  await pastRow.getByRole("button").last().click();
   await page.getByRole("menuitem", { name: "Mark completed" }).click();
 
-  await expect(upcomingRow.getByText("Showed", { exact: true })).toBeVisible({
+  await expect(pastRow.getByText("Showed", { exact: true })).toBeVisible({
     timeout: 15_000,
   });
   await expect
     .poll(
-      async () => (await adminDb().doc(`events/${upcomingEventId}`).get()).data()?.status,
+      async () => (await adminDb().doc(`events/${pastEventId}`).get()).data()?.status,
       { timeout: 15_000 },
     )
     .toBe("completed");
