@@ -53,7 +53,7 @@ vi.mock("@/lib/firebase/admin", () => ({
   }),
 }));
 
-const { changeEventStatus, isValidStatusTransition } = await import(
+const { changeEventStatus, isValidStatusTransition, statusChangeError } = await import(
   "./event-status-service"
 );
 
@@ -210,6 +210,21 @@ describe("changeEventStatus — completed/no_show require the event to have star
     const outcome = await changeEventStatus(event("scheduled", null), "no_show");
     expect(outcome.ok).toBe(false);
     expect(outcome.httpStatus).toBe(409);
+  });
+});
+
+describe("statusChangeError — exact startAt boundary (< vs <=)", () => {
+  const nowMs = 1_700_000_000_000;
+
+  it("refuses when startAt === nowMs — not yet started at the exact instant", () => {
+    const exact = { toDate: () => new Date(nowMs) } as never;
+    const error = statusChangeError(event("scheduled", exact), "completed", nowMs);
+    expect(error).toBe("This appointment hasn't happened yet.");
+  });
+
+  it("allows once startAt is 1ms before nowMs", () => {
+    const justPast = { toDate: () => new Date(nowMs - 1) } as never;
+    expect(statusChangeError(event("scheduled", justPast), "completed", nowMs)).toBeNull();
   });
 });
 

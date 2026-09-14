@@ -191,6 +191,25 @@ describe("PATCH /api/v1/events/:id — status", () => {
     expect(m.fireBookingTrigger).not.toHaveBeenCalled();
   });
 
+  it("combined PATCH {status, title} on a future event: 409 and the title is NOT written either — refused before any field write", async () => {
+    eventDoc.startAt = { toDate: () => new Date(Date.now() + 60 * 60_000) };
+    const res = await patch({ status: "completed", title: "Renamed" });
+    expect(res.status).toBe(409);
+    expect(writes).toEqual([]);
+    expect(eventDoc.title).toBe("Call");
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+  });
+
+  it("combined PATCH {status, start_at} on a currently-past event moved to a future start_at: gated on the NEW start_at, 409, nothing written", async () => {
+    eventDoc.startAt = { toDate: () => new Date(Date.now() - 60 * 60_000) };
+    const futureIso = new Date(Date.now() + 60 * 60_000).toISOString();
+    const res = await patch({ status: "completed", start_at: futureIso });
+    expect(res.status).toBe(409);
+    expect(writes).toEqual([]);
+    expect(eventDoc.status).toBe("scheduled");
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+  });
+
   it("maps a failed status write to a 500 internal_error, not invalid_request", async () => {
     updateThrows = true;
     eventDoc.startAt = { toDate: () => new Date(Date.now() - 60 * 60_000) };

@@ -173,16 +173,29 @@ and cancel email.
   always final. Anything else is refused with **`409`**
   `invalid_status_transition` before any field in the PATCH is written.
   A failed status write is a `500` `internal_error`.
+- **Not-yet-started gate:** `completed`/`no_show` also require
+  `start_at` to already be in the past — "This appointment hasn't happened
+  yet." (**`409`** `invalid_status_transition`), so a raw API call can't flip
+  a future booking (which would fire its workflow trigger and free the slot).
+  `cancelled` never needs this. Checked against the PATCH's own `start_at`
+  when the PATCH also moves it, so `{status: "completed", start_at: <past>}`
+  on a currently-future event is allowed, and `{status: "completed",
+  start_at: <future>}` on a currently-past event is refused.
 - **Side effects** (activity row, the `booking.*` workflow trigger, and the
   visitor email on a cancel) run against the event *after* the rest of the
   PATCH is applied, so changing `contact_id` and `status` together notifies
   and enrols the new contact.
 - **Test mode:** a `mode: "test"` event gets the validated status write
   only — no activity row, no trigger, no email.
-- **Not atomic.** The transition is checked, the other fields are written,
-  then the status change re-checks against the stored event. If another
-  writer changes the status in between, the PATCH can return `409` after
-  its other fields were already written. Re-`GET` the event and retry.
+- **Atomic refusal, not atomic success.** Both status checks above (the
+  transition table and the not-yet-started gate) run as a pre-check against
+  the POST-patch event *before any field is written*, so a refused status
+  change never leaves the other fields written either. Once past that
+  pre-check, the other fields are written, then the status change re-applies
+  the same checks against the freshly stored event as its own chokepoint. If
+  another writer changes the status in that window, the PATCH can still
+  return `409` after its other fields were already written — re-`GET` the
+  event and retry.
 
 ## Webhooks
 

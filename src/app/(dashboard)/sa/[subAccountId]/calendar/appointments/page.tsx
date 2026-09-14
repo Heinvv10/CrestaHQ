@@ -22,10 +22,13 @@ import {
   canRescheduleAppointment,
   dateInputToFromMs,
   dateInputToToMs,
+  EMPTY_APPOINTMENT_FILTERS,
   formatAppointmentTime,
+  hasActiveFilters,
   matchesFilters,
   matchesSearch,
   matchesTab,
+  msToDateInput,
   offeredStatusActions,
   resolveAppointmentsTimezone,
   sortAppointments,
@@ -93,13 +96,16 @@ interface RawAppointmentFilters {
   toDate: string;
 }
 
+// Derived from EMPTY_APPOINTMENT_FILTERS (the tested "no filters" shape)
+// rather than repeated as separate literals — msToDateInput(null, tz) is ""
+// for any tz, since the date-range filter has nothing to render yet.
 const EMPTY_RAW_FILTERS: RawAppointmentFilters = {
-  bookingPageSlug: null,
-  hostUid: null,
-  status: null,
-  source: null,
-  fromDate: "",
-  toDate: "",
+  bookingPageSlug: EMPTY_APPOINTMENT_FILTERS.bookingPageSlug,
+  hostUid: EMPTY_APPOINTMENT_FILTERS.hostUid,
+  status: EMPTY_APPOINTMENT_FILTERS.status,
+  source: EMPTY_APPOINTMENT_FILTERS.source,
+  fromDate: msToDateInput(EMPTY_APPOINTMENT_FILTERS.fromMs, "UTC"),
+  toDate: msToDateInput(EMPTY_APPOINTMENT_FILTERS.toMs, "UTC"),
 };
 
 export default function AppointmentsListPage() {
@@ -276,6 +282,7 @@ export default function AppointmentsListPage() {
         onChange={setRawFilters}
         bookingPages={bookingPages}
         members={members}
+        hasActive={hasActiveFilters(filters)}
       />
 
       {loading ? (
@@ -375,11 +382,13 @@ function FilterPanel({
   onChange,
   bookingPages,
   members,
+  hasActive,
 }: {
   filters: RawAppointmentFilters;
   onChange: (next: RawAppointmentFilters) => void;
   bookingPages: BookingPage[];
   members: { uid: string; displayName: string }[];
+  hasActive: boolean;
 }) {
   const STATUSES: EventStatus[] = [
     "scheduled",
@@ -388,13 +397,6 @@ function FilterPanel({
     "cancelled",
     "no_show",
   ];
-  const hasActive =
-    filters.bookingPageSlug !== null ||
-    filters.hostUid !== null ||
-    filters.status !== null ||
-    filters.source !== null ||
-    filters.fromDate !== "" ||
-    filters.toDate !== "";
 
   return (
     <div className="grid grid-cols-2 gap-2 rounded-xl border bg-muted/20 p-3 sm:grid-cols-3 md:grid-cols-6">

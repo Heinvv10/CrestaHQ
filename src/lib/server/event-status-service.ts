@@ -70,10 +70,52 @@ export function statusTransitionError(
   return "That status change isn't allowed.";
 }
 
-/** Has `event.startAt` already passed? No readable timestamp = not started. */
-function eventHasStarted(event: Pick<CalendarEvent, "startAt">): boolean {
-  const d = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
-  return d instanceof Date && d.getTime() < Date.now();
+/**
+ * `startAt` as a plain Date, whether it arrives as a Firestore Timestamp
+ * (from a stored event) or an already-converted Date (a v1 PATCH's
+ * post-patch `startAt`, computed before the write hits Firestore).
+ */
+function toDateSafe(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  const d = (value as { toDate?: () => Date } | null)?.toDate?.();
+  return d instanceof Date ? d : null;
+}
+
+/** Has `event.startAt` already passed (as of `nowMs`)? No readable timestamp = not started. */
+function eventHasStarted(
+  event: { startAt: CalendarEvent["startAt"] | Date },
+  nowMs: number,
+): boolean {
+  const d = toDateSafe(event.startAt);
+  return d !== null && d.getTime() < nowMs;
+}
+
+/**
+ * Why `event → next` is refused, or null when it's allowed — combines the
+ * transition table with the start-time gate below. This is the single
+ * pre-check both `changeEventStatus` and the v1 route's PATCH handler use,
+ * so a route that writes fields before calling `changeEventStatus` can
+ * refuse the whole request (writing nothing) using the same rule the
+ * write itself will apply.
+ */
+export function statusChangeError(
+  event: { startAt: CalendarEvent["startAt"] | Date } & Pick<CalendarEvent, "status">,
+  next: EventStatus,
+  nowMs: number,
+): string | null {
+  const current = eventStatus(event);
+  const transitionError = statusTransitionError(current, next);
+  if (transitionError) return transitionError;
+  // Defense in depth: the UI only offers Mark completed/no-show once an
+  // appointment's scheduled time has passed, but a raw API/route call
+  // bypasses the UI entirely — this is the chokepoint both funnel through,
+  // so it's the only place that can actually stop a future booking from
+  // being flipped (which fires the matching workflow trigger and frees the
+  // slot, irreversibly, on a meeting that hasn't happened).
+  if ((next === "completed" || next === "no_show") && !eventHasStarted(event, nowMs)) {
+    return "This appointment hasn't happened yet.";
+  }
+  return null;
 }
 
 export interface StatusChangeOutcome {
@@ -102,22 +144,9 @@ export async function changeEventStatus(
   if (current === next) {
     return { ok: true, httpStatus: 200, status: next, noop: true };
   }
-  const error = statusTransitionError(current, next);
+  const error = statusChangeError(event, next, Date.now());
   if (error) {
     return { ok: false, httpStatus: 409, error };
-  }
-  // Defense in depth: the UI only offers Mark completed/no-show once an
-  // appointment's scheduled time has passed, but a raw API/route call
-  // bypasses the UI entirely — this is the chokepoint both funnel through,
-  // so it's the only place that can actually stop a future booking from
-  // being flipped (which fires the matching workflow trigger and frees the
-  // slot, irreversibly, on a meeting that hasn't happened).
-  if ((next === "completed" || next === "no_show") && !eventHasStarted(event)) {
-    return {
-      ok: false,
-      httpStatus: 409,
-      error: "This appointment hasn't happened yet.",
-    };
   }
 
   const patch: Record<string, unknown> = {
