@@ -182,12 +182,14 @@ describe("sentiment after the response (SP5 b)", () => {
     handed.mockClear();
     const startedAt = Date.now();
     expect((await cron()).status).toBe(200);
+    const endedAt = Date.now();
     expect(handed).toHaveBeenCalledTimes(1);
     const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
-    // The one deadline for every tenant: the request's start + 240 s.
+    // The one deadline for every tenant: the request's start + 240 s — the
+    // request started somewhere between startedAt and endedAt.
     const deadline = handed.mock.calls[0][1] as number;
-    expect(deadline - startedAt).toBeGreaterThanOrEqual(230_000);
-    expect(deadline - startedAt).toBeLessThanOrEqual(240_000);
+    expect(deadline).toBeGreaterThanOrEqual(startedAt + 240_000);
+    expect(deadline).toBeLessThanOrEqual(endedAt + 240_000);
     expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
     expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
   });
