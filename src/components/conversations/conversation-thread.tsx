@@ -17,6 +17,7 @@ import type { Note } from "@/types/contacts";
 import { ThreadNote } from "./thread-note";
 import { ThreadScheduled } from "./thread-scheduled";
 import { useScheduledMessages } from "@/hooks/use-scheduled-messages";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 
 type ChannelMessage =
   | (MessageDoc & { channel: ConversationChannel })
@@ -203,6 +204,14 @@ export function ConversationThread({
     );
   }, [contactId]);
 
+  const { members } = useSubAccountMembers(
+    isWebChat ? null : subAccountId
+  );
+  const memberNames = useMemo(
+    () => new Map(members.map((m) => [m.uid, m.displayName])),
+    [members]
+  );
+
   const scheduledRead = useScheduledMessages(
     isWebChat ? null : subAccountId,
     isWebChat ? null : contactId,
@@ -277,7 +286,13 @@ export function ConversationThread({
       ) : (
         merged.map((item) =>
           item.kind === "note" ? (
-            <ThreadNote key={item.key} note={item.note} />
+            <ThreadNote
+              key={item.key}
+              note={item.note}
+              mentionNames={(item.note.mentionedUids ?? []).flatMap((uid) =>
+                memberNames.get(uid) ?? []
+              )}
+            />
           ) : item.kind === "scheduled" ? (
             <ThreadScheduled
               key={item.key}
