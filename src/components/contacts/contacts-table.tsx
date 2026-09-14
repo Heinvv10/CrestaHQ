@@ -16,11 +16,19 @@ import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 import { SourceBadge } from "@/components/contacts/source-badge";
 import { ContactCardList } from "@/components/contacts/contact-card-list";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { formatContactDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSubAccount } from "@/context/sub-account-context";
 import { contactDisplayName } from "@/lib/contacts/display-name";
+
+/**
+ * Rows rendered per "Show more" step. Rendering every contact froze the tab
+ * for 8s on a 4,551-contact sub-account; sorting, search, filters, select-all
+ * and export still run over the full list — only the DOM is capped.
+ */
+export const RENDER_STEP = 100;
 
 interface Props {
   /** Already filtered by the page (search + smart list). */
@@ -54,6 +62,7 @@ export function ContactsTable({
   const [sorting, setSorting] = useState<SortingState>([
     { id: "createdAt", desc: true },
   ]);
+  const [renderLimit, setRenderLimit] = useState(RENDER_STEP);
 
   const territoryById = useMemo(() => {
     const m = new Map<string, TerritoryDoc>();
@@ -198,6 +207,10 @@ export function ContactsTable({
     return null;
   }
 
+  const rows = table.getRowModel().rows;
+  const shownRows = rows.slice(0, renderLimit);
+  const hidden = rows.length - shownRows.length;
+
   return (
     <>
       {/* Desktop table */}
@@ -243,7 +256,7 @@ export function ContactsTable({
             ))}
           </thead>
           <tbody>
-            {table.getRowModel().rows.map((row) => (
+            {shownRows.map((row) => (
               <tr
                 key={row.id}
                 className="border-b last:border-b-0 transition-colors hover:bg-muted/30"
@@ -260,10 +273,25 @@ export function ContactsTable({
       </div>
 
       <ContactCardList
-        contacts={table.getRowModel().rows.map((r) => r.original)}
+        contacts={shownRows.map((r) => r.original)}
         selected={selected}
         onToggle={onToggle}
       />
+
+      {hidden > 0 && (
+        <div className="flex items-center justify-center gap-3 pt-3 text-xs text-muted-foreground">
+          <span>
+            Showing {shownRows.length} of {rows.length}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRenderLimit((n) => n + RENDER_STEP)}
+          >
+            Show {Math.min(RENDER_STEP, hidden)} more
+          </Button>
+        </div>
+      )}
     </>
   );
 }
