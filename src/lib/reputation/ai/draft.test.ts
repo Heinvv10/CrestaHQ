@@ -23,7 +23,7 @@ const INPUT: DraftInput = {
   guidelines: "Sign off as The Fixture Team. Our line is 041 000 0000.",
 };
 /** The unit under test, with no time bound (the bound is tested through openRouterReviewsAi below). */
-const draftReplyWith = (model: string, input: DraftInput) => rawDraftReplyWith(model, input, (p) => p);
+const draftReplyWith = (model: string, input: DraftInput) => rawDraftReplyWith(model, input, callAi);
 const said = (text: string) =>
   callAi.mockResolvedValueOnce({ text, model: "m-default", promptTokens: 1, completionTokens: 1, totalTokens: 2 });
 

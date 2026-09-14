@@ -1,7 +1,7 @@
 import "server-only";
 
 import { callAi } from "@/lib/comms/ai/openrouter";
-import { draftReplyWith } from "./openrouter-draft";
+import { draftReplyWith, type BoundedCall } from "./openrouter-draft";
 import {
   REVIEWS_AI_BATCH,
   SENTIMENT_LABELS,
@@ -56,6 +56,9 @@ async function bounded<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T
     clearTimeout(timer);
   }
 }
+
+/** `callAi` under the per-call bound — the one helper the draft uses (switch here if the bound's mechanism changes). */
+const boundedCall: BoundedCall = (args) => bounded(callAi(args));
 
 /** The HTTP status of a failed call, from callAi's "OpenRouter <status>: …" — never the body. */
 const statusOf = (err: unknown) => /^OpenRouter (\d{3})\b/.exec(err instanceof Error ? err.message : "")?.[1] ?? "none";
@@ -161,6 +164,6 @@ export function openRouterReviewsAi(model: string): ReviewsAi {
       for (let i = 0; i < items.length; i += BATCH_SIZE) out.push(...(await classifyBatch(model, items.slice(i, i + BATCH_SIZE))));
       return out;
     },
-    draftReply: (input) => draftReplyWith(model, input, bounded),
+    draftReply: (input) => draftReplyWith(model, input, boundedCall),
   };
 }

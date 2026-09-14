@@ -1,6 +1,6 @@
 import "server-only";
 
-import { callAi } from "@/lib/comms/ai/openrouter";
+import type { callAi } from "@/lib/comms/ai/openrouter";
 import type { DraftFailure, DraftInput, DraftResult } from "./types";
 
 /**
@@ -61,19 +61,19 @@ function fail(failure: DraftFailure, detail?: string): DraftResult {
   return { text: null, failure };
 }
 
+/** One bounded model call — how the seam calls the model. */
+export type BoundedCall = (args: Parameters<typeof callAi>[0]) => ReturnType<typeof callAi>;
+
 /**
- * `bound` is the seam's per-call time bound (openrouter.ts `bounded`,
- * REVIEWS_AI_CALL_MS) — passed in so this file never imports openrouter.ts
- * back (that file wires `draftReply` to this function).
+ * `call` is the seam's bounded model call (openrouter.ts `boundedCall`:
+ * `callAi` under REVIEWS_AI_CALL_MS), passed in so this file never imports
+ * openrouter.ts back and so the bound lives in ONE helper there — whether it
+ * is a Promise.race or callAi's own timeout signal.
  */
-export async function draftReplyWith(
-  model: string,
-  input: DraftInput,
-  bound: <T>(work: Promise<T>) => Promise<T>,
-): Promise<DraftResult> {
+export async function draftReplyWith(model: string, input: DraftInput, call: BoundedCall): Promise<DraftResult> {
   let raw: string;
   try {
-    const res = await bound(callAi({
+    const res = await call({
       model,
       temperature: 0.4,
       maxTokens: 400,
@@ -88,7 +88,7 @@ export async function draftReplyWith(
           }),
         },
       ],
-    }));
+    });
     raw = res.text;
   } catch (err) {
     return fail("call_failed", err instanceof Error ? err.name : typeof err);
