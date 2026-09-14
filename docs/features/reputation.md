@@ -64,6 +64,65 @@ Google connected (and not flagged reconnect-required), a listing selected, a
 review link configured (`resolveReviewUrl(sub).configured`), a widget exists
 (`gbpWidgetMeta.publicId`), and at least one review request logged.
 
+## Sentiment (SP5 b)
+
+Each synced review gets a cached label, `sentiment {label, method, basisHash,
+model, at}` on its `gbpReviews` doc — `positive` / `neutral` / `negative`.
+
+- **Gate:** the agency's `reviewsAiEnabledByAgency` ("Reviews AI", opt-in,
+  plan-managed, not pre-ticked), on top of `googleEnabledByAgency`. It spends
+  the agency's OpenRouter credits. Switching it off tears nothing down: labels
+  stay until each review's own lifecycle clears them; no new review is sent.
+- **When it runs:** after every sync that landed pages (Sync now and the
+  6-hourly cron, success or partial) — the counts go on the run record as
+  `sentiment {classified, skipped, failed}`; a failure there is logged by kind
+  and never changes the sync's result. Also on demand: **Analyse now** on the
+  Overview (`POST /api/sub-accounts/[id]/reputation/sentiment/run`, admin,
+  both gates, once a minute — 409 `too_soon`).
+- **What is labelled:** the reviews inbox's own set (`loadServedReviews`:
+  active, current listing, within Google's 30-day limit — so the newest 500
+  stored records). **Star-only** reviews (no or blank comment) are labelled
+  from the stars — 4–5 positive, 3 neutral, 1–2 negative, `method: "rating"`,
+  no AI call. Reviews **with text** go to the AI (`method: "ai"`, `model`).
+- **Billing guarantee — never re-billed:** a review is eligible only when it
+  has no label or its `basisHash` ≠ `sha256(stars + "\n" + comment)` (it was
+  edited). One lease per sub-account (`private/sentimentLease`, 5 min,
+  renewed before each AI batch) keeps two invocations — a sync and Analyse
+  now, two crons — from both sending the same review; each label is written
+  in a transaction that re-reads the review and writes only if it is still
+  active with the same basis (edited or removed mid-flight ⇒ discarded, not
+  labelled from stale text). Proven by the unit suite and by the E2E spec
+  counting the fake's call log across re-syncs.
+- **Cap:** at most 100 reviews per run, newest first; a big backlog spreads
+  over the next runs (every 6 hours, or Analyse now).
+- **The AI call** (`src/lib/reputation/ai/`): OpenRouter via `callAi` on the
+  default model, ≤ 20 reviews per call, temperature 0. Review text is
+  untrusted: it is sent only as JSON string values inside a data object, the
+  system prompt says so, and batch-local ids ("1".."n") are used — no
+  document id leaves the server. The reply must be `{"results":[{id,label}]}`;
+  an invalid label, an unknown or duplicated id, a missing item, unparseable
+  output or a failed call leaves those items **unlabelled** this round
+  (logged by kind, counted as `failed`) — nothing is guessed; the next run
+  retries them.
+- **Not configured:** with no `OPENROUTER_API_KEY` (production today) only
+  star-only reviews are labelled; text reviews wait, and the Overview says
+  "AI isn't configured on this deployment". Dev/CI use the fenced fake
+  (`REVIEWS_AI_PROVIDER=fake`, docs/environment.md).
+- **Lifecycle:** an edit re-classifies (new basis); a tombstone sets
+  `sentiment: null` (derived from deleted content); retention deletes the doc;
+  a restored review is re-classified as new content.
+- **Where it shows:** a badge on each review in the reviews list (Reputation →
+  Reviews and AI Agents → Google Business — the same component; the title says
+  "From the star rating" or "AI-classified"), and the Overview's sentiment card:
+  a donut over in-range reviews plus "N not analysed yet", with gate-off /
+  not-configured / none-analysed states. The reviews route serves only
+  `{label, method}`; **the public feed never carries sentiment** (its
+  serializer is an allow-list; a test pins the absence).
+- **Limits:** labels are a model's reading of short customer texts —
+  translated reviews are classified on the text Google returned (translation
+  plus original); a mixed review gets one label. No per-aspect sentiment, no
+  AI summary (SP7).
+
 ## The review-request log
 
 `subAccounts/{id}/reviewRequests/{auto}` — written by `maybeSendReviewRequest`
@@ -85,6 +144,13 @@ activity row byte for byte. Server only: no client rule (default deny), no index
 writes them yet.
 
 ## Tests
+
+Sentiment: `lib/reputation/sentiment.test.ts` + `sentiment-flight.test.ts`
+(eligibility, cap, lease, never re-billed, mid-flight edits, tombstones,
+through the sync), `lib/reputation/ai/*.test.ts` (fence, strict validation),
+`…/reputation/sentiment/run/route.test.ts`, the feed's
+`route.sentiment.test.ts`, the badge and card component tests, and
+`e2e/specs/reputation-sentiment.spec.ts`.
 
 - `lib/reputation/overview.test.ts` — every definition above.
 - `app/api/sub-accounts/[id]/reputation/overview/route.test.ts` — real

@@ -98,7 +98,11 @@ default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.n
 caches the CURRENT listing's reviews (tenant-anchored; `state` active/removed
 tombstones; deleted after 30 days unseen); `subAccounts/{id}/gbpSyncRuns/{runId}`
 is an append-only run record (created once per run, kinds and counts only);
-`private/gbpSyncState` holds the run lease, the pass cursor (with the
+Each review may carry `sentiment {label, method, basisHash, model, at}` (SP5 b,
+written only by `lib/reputation/sentiment.ts`; nulled by a tombstone); its
+`private/sentimentLease` holds that classifier's lease and the Analyse-now
+cooldown. In dev/CI only, `private/reviewsAiFakeLog` holds the Reviews AI
+fake's call log (ids + count, never text). `private/gbpSyncState` holds the run lease, the pass cursor (with the
 pass's rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
 cooldown. Sub-accounts that hold a cache but can no longer sync (gate off,
 disconnected, no listing) get retention-only passes from the sweep. The member-readable
