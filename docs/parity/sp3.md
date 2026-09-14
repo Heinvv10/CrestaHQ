@@ -1,6 +1,6 @@
 # SP3 — Calendars & booking
 
-**Date:** 2026-09-13 · **Status: (a)–(e) merged (#109 #110 #107 #115 #116, + #120 test guard); (f) #119 merged — all SP3 build PRs on `main`; R1/R2 done; nothing deployed** · **Depends on:** SP0 (merged) · **Blocks:** SP11 (appointment reports), SP14.
+**Date:** 2026-09-13 · **Status: (a)–(e) merged (#109 #110 #107 #115 #116, + #120 test guard); (f) #119 merged — all SP3 build PRs on `main`; R1/R2 done; **deployed 2026-09-14 08:57 SAST at `d0c3893`** · **Depends on:** SP0 (merged) · **Blocks:** SP11 (appointment reports), SP14.
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP3. Model ledger: [sp1.md](sp1.md). Feature spec: [booking-pages.md](../features/booking-pages.md).
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`) and the E2E fixture tenant. Never Blitz/Velocity/Vortex.
@@ -137,7 +137,7 @@ Runtime checks R1/R2 run against production as deployed today and need no PR unl
 
 **Rules and indexes** were deployed from `main` after every merge that changed them. Each time the union was checked: no open PR carried a rules difference, except #111's deny-all, which is the same as the default. The `events` write locks were verified **live** with the client SDK against the fixture tenant: `hostUids` / `serviceId` / `serviceName` / `mode` / `googleEventIds` / `assignedToUid` / `source` / `bookingPageSlug` are refused on create and update, and a plain create, edit or delete is allowed. Note that the first probe after a release ran before propagation.
 
-**Evidence:** screenshots under `evidence/sp3/{k-types,a-availability,s-status,g-gcal,w-widget,f-appointments}/`. They come from a local build of `main` driven by `e2e/evidence/sp3.capture.ts` on the **E2E fixture tenant**, with Google Calendar on the fenced fake provider. Screens on #1000 itself come with the next production deploy, which this goal did not authorise (same approach as SP1).
+**Evidence:** screenshots under `evidence/sp3/{k-types,a-availability,s-status,g-gcal,w-widget,f-appointments}/`. They come from a local build of `main` driven by `e2e/evidence/sp3.capture.ts` on the **E2E fixture tenant**, with Google Calendar on the fenced fake provider. The deploy came after these were taken; a walk on #1000 with screenshots under `evidence/sp3/prod-1000/` is still open.
 
 **Decisions taken during review** (the code is the source of truth; this records why):
 - **Operator reschedule skips availability checks** (GHL parity). Visitor reschedule is always re-verified by the resolver.
@@ -153,9 +153,9 @@ Runtime checks R1/R2 run against production as deployed today and need no PR unl
 
 **Found outside SP3 scope, recorded:**
 - **Production AI is dead.** `OPENROUTER_API_KEY` and all `VAPI_*` are empty on crm.crestahq.com, so no AI reply or voice call can run.
-- **Forged identity header** (fixed in #116; live until the next deploy).
+- **Forged identity header** (fixed in #116, deployed 2026-09-14). Proven on #1000 with a throwaway form: a session-less `DELETE /api/forms/<id>` with a forged `x-user-uid` returned 200 and deleted the form before the deploy, and returns 401 with the form intact after it.
 - **Fixture pollution.** A spec leaving hostless events broke other booking specs in the evening. #119 fixes the leak; #120 makes the specs name the polluter.
-- **The "E2E smoke (production)" workflow fails on every `main` push.** It runs `main`'s specs against crm.crestahq.com, which still serves pre-SP3 code, so the new specs (e.g. `booking-widget.spec.ts`) fail there until a deploy. `workflow-enrol.spec.ts` also fails there with `Invalid signature` from the step worker; that failure was not investigated.
+- **The "E2E smoke (production)" workflow fails on every `main` push.** It runs `main`'s specs against crm.crestahq.com, which served pre-SP3 code until 2026-09-14, so the new specs (e.g. `booking-widget.spec.ts`) failed there. `workflow-enrol.spec.ts` also fails there with `Invalid signature` from the step worker; that failure was not investigated.
 
 **Follow-ups (not blocking SP3):**
 - `maxPerDay` is not enforced at book-time re-verify. This existed before SP3.

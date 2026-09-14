@@ -99,7 +99,7 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 - test guard (#120)
 - appointments list + filters (#119)
 
-The QStash reminder is proven on #1000. Voice booking can't run in production (empty OpenRouter/Vapi keys); its code path was proven. **Not deployed.** Ledger: [docs/parity/sp3.md](parity/sp3.md).
+The QStash reminder is proven on #1000. Voice booking can't run in production (empty OpenRouter/Vapi keys); its code path was proven. **Deployed 2026-09-14 (`d0c3893`).** Ledger: [docs/parity/sp3.md](parity/sp3.md).
 
 ### SP4 — Sites: funnels, websites, forms, surveys
 **GHL surface:** drag-drop funnel/page builder, templates, domains, forms and surveys with conditional logic, chat widget, QR codes.
