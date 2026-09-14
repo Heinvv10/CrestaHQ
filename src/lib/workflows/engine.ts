@@ -95,13 +95,15 @@ interface NodeContext {
   /**
    * Set by a send executor once its outbound content is rendered, and its
    * provider id once sent (SP5 d1). runStep logs the step as a review ask
-   * when that content carries the sub-account's review link.
+   * when that content carries the sub-account's review link — a failed one
+   * only when `attempted` says a provider was actually called.
    */
   sent?: {
     channel: ReviewRequestChannel;
     parts: string[];
     template?: TemplateIdentity | null;
     messageSid?: string | null;
+    attempted?: boolean;
   };
 }
 
@@ -167,7 +169,8 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
-  ctx.sent = { channel: "email", parts: [subject, text] };
+  // From here every `error:` comes from the provider call itself.
+  ctx.sent = { channel: "email", parts: [subject, text], attempted: true };
 
   try {
     const { id: messageId } = await sendEmail({
@@ -231,7 +234,8 @@ const execSendSms: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "error:sms_not_configured" };
   }
   const body = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
-  ctx.sent = { channel: "sms", parts: [body] };
+  // From here every `error:` comes from the provider call itself.
+  ctx.sent = { channel: "sms", parts: [body], attempted: true };
   try {
     const sent = await sendSmsForSubAccount({
       subAccountId: ctx.subAccountId,
@@ -443,6 +447,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
       },
     });
     if (!res.ok) {
+      ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return {
         result: { kind: "next" },
         log: `error:${res.error ?? "send_failed"}`,
@@ -454,6 +459,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = true;
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -621,6 +627,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       },
     });
     if (!res.ok) {
+      ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return {
         result: { kind: "next" },
         log: `error:${res.error ?? "send_failed"}`,
@@ -671,6 +678,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = true;
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -1392,9 +1400,10 @@ export async function runStep(
     triggerContext: run.context ?? {},
   };
   const { result, log } = await exec(stepCtx);
-  // A review ask is logged once, here, for sent and failed sends; a skipped
-  // step never reached a provider and is not a request.
-  if (stepCtx.sent && !log.startsWith("skipped:")) {
+  // A review ask is logged once, here: sent, or failed after a provider was
+  // called. A skipped step, or one refused before sending, is not a request.
+  const failed = log.startsWith("error:");
+  if (stepCtx.sent && !log.startsWith("skipped:") && (!failed || stepCtx.sent.attempted)) {
     await logIfReviewAsk({
       sub: subAccount,
       agencyId: run.agencyId,
@@ -1405,7 +1414,7 @@ export async function runStep(
       parts: stepCtx.sent.parts,
       template: stepCtx.sent.template,
       createdByUid: "workflow",
-      outcome: log.startsWith("error:")
+      outcome: failed
         ? { ok: false, failureKind: log.slice("error:".length) }
         : { ok: true, messageSid: stepCtx.sent.messageSid },
     });

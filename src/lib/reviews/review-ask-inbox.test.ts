@@ -43,6 +43,8 @@ import { POST as smsPOST } from "@/app/api/comms/sms/send/route";
 import { POST as emailPOST } from "@/app/api/comms/email/send/route";
 import { POST as waPOST } from "@/app/api/comms/whatsapp/send/route";
 import { POST as waTplPOST } from "@/app/api/comms/whatsapp/send-template/route";
+import { SmsRecipientUnsubscribedError } from "@/lib/comms/twilio";
+import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 
 const REVIEW_URL = "https://g.page/r/fixture/review";
 const CONTACT = "c_inbox";
@@ -95,6 +97,19 @@ describe("inbox SMS", () => {
     expect(rows()[0]).toMatchObject({ source: "inbox", status: "failed", failureKind: "send_failed", messageSid: null });
   });
 
+  it("the carrier refusing the number (21610) is a failed ask: the provider was tried", async () => {
+    sendSms.mockRejectedValueOnce(new (SmsRecipientUnsubscribedError as unknown as new (m: string) => Error)("unsubscribed"));
+    expect((await call(smsPOST, "/api/comms/sms/send", { body: `Review us: ${REVIEW_URL}` })).status).toBe(409);
+    expect(rows()).toMatchObject([{ status: "failed", failureKind: "send_failed" }]);
+  });
+
+  it("refused before sending (opted out) is not a request: no row", async () => {
+    mem.seed(`contacts/${CONTACT}`, { ...mem.read(`contacts/${CONTACT}`)!, smsOptedOut: true });
+    expect((await call(smsPOST, "/api/comms/sms/send", { body: `Review us: ${REVIEW_URL}` })).status).toBe(409);
+    expect(sendSms).not.toHaveBeenCalled();
+    expect(rows()).toEqual([]);
+  });
+
   it("a caller who cannot reach the contact sends nothing and logs nothing", async () => {
     expect((await call(smsPOST, "/api/comms/sms/send", { body: REVIEW_URL }, "uid_other_admin")).status).toBe(403);
     expect(rows()).toEqual([]);
@@ -115,6 +130,18 @@ describe("inbox email and WhatsApp", () => {
     expect(rows()[0]).toMatchObject({ channel: "whatsapp", source: "inbox", status: "sent", messageSid: "wamid.in1" });
   });
 
+  it("WhatsApp: a shut window or a rail's refusal is no row; a provider failure is a failed row", async () => {
+    const body = { body: `Review: ${REVIEW_URL}` };
+    dispatchWhatsappSend.mockResolvedValueOnce({ ok: false, error: WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE, providerOutcome: "DEFINITELY_REJECTED", provider: "cloud" });
+    expect((await call(waPOST, "/api/comms/whatsapp/send", body)).status).toBe(409);
+    dispatchWhatsappSend.mockResolvedValueOnce({ ok: false, error: "quiet", refusedBy: "quiet_hours", attempted: true, providerOutcome: "DEFINITELY_REJECTED", provider: "bridge" });
+    await call(waPOST, "/api/comms/whatsapp/send", body);
+    expect(rows()).toEqual([]);
+    dispatchWhatsappSend.mockResolvedValueOnce({ ok: false, error: "timeout", attempted: true, providerOutcome: "AMBIGUOUS", provider: "cloud" });
+    expect((await call(waPOST, "/api/comms/whatsapp/send", body)).status).toBe(502);
+    expect(rows()).toMatchObject([{ channel: "whatsapp", status: "failed", failureKind: "outcome_unknown" }]);
+  });
+
   it("a template send whose manual value is the link is logged; its refusal too", async () => {
     mem.seed(`subAccounts/${SA}/whatsappTemplates/t1`, {
       name: "thanks", displayName: "Thanks", body: "Thanks {{1}}! {{2}}", status: "approved",
@@ -127,9 +154,14 @@ describe("inbox email and WhatsApp", () => {
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toMatchObject({ channel: "whatsapp", source: "inbox", status: "sent", messageSid: "wamid.tpl1" });
 
-    dispatchWhatsappTemplateSend.mockResolvedValueOnce({ ok: false, error: "WA_TEMPLATE_NOT_APPROVED" });
+    // Refused before sending (not approved on this rail): no row.
+    dispatchWhatsappTemplateSend.mockResolvedValueOnce({ ok: false, error: "WA_TEMPLATE_NOT_APPROVED", providerOutcome: "DEFINITELY_REJECTED" });
     expect((await call(waTplPOST, "/api/comms/whatsapp/send-template", { templateId: "t1", manualValues: { 2: REVIEW_URL } })).status).toBe(409);
-    expect(rows().filter((r) => r.status === "failed")).toMatchObject([{ failureKind: "WA_TEMPLATE_NOT_APPROVED" }]);
+    expect(rows()).toHaveLength(1);
+    // Meta rejected it: the provider was tried, so a failed row.
+    dispatchWhatsappTemplateSend.mockResolvedValueOnce({ ok: false, error: "META_REJECTED", attempted: true, providerOutcome: "DEFINITELY_REJECTED" });
+    expect((await call(waTplPOST, "/api/comms/whatsapp/send-template", { templateId: "t1", manualValues: { 2: REVIEW_URL } })).status).toBe(409);
+    expect(rows().filter((r) => r.status === "failed")).toMatchObject([{ failureKind: "META_REJECTED" }]);
 
     // The same template with an ordinary value is not a review ask.
     await call(waTplPOST, "/api/comms/whatsapp/send-template", { templateId: "t1", manualValues: { 2: "https://example.test/booking" } });

@@ -50,10 +50,12 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
 
   const log = db.collection(`subAccounts/${id}/reviewRequests`);
   const since = previousPeriodStart(range, now);
-  const [served, requestSnap, oldestSnap] = await Promise.all([
+  const [served, requestSnap, oldestSnap, sentSnap] = await Promise.all([
     unavailable ? null : loadServedReviews(id, locationName, now),
     (since ? log.where("sentAt", ">=", since) : log).orderBy("sentAt", "desc").limit(REQUEST_CAP + 1).get(),
     log.orderBy("sentAt", "asc").limit(1).get(),
+    // The checklist's "first request": one that was actually sent, not a failed ask.
+    log.where("status", "==", "sent").limit(1).get(),
   ]);
   const oldestRequestAt = oldestSnap.docs[0]?.data().sentAt ?? null;
 
@@ -87,7 +89,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
       listingSelected: !!locationName,
       reviewLinkConfigured: !!resolveReviewUrl(sub).configured,
       widgetExists: !!sub.gbpWidgetMeta?.publicId,
-      requestLogged: oldestRequestAt !== null,
+      requestLogged: !sentSnap.empty,
     },
   });
 }

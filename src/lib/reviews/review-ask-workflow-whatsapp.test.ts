@@ -92,8 +92,16 @@ describe("whatsapp_template step", () => {
     expect(rows()).toEqual([]);
   });
 
-  it("a refused template send of a review ask is logged failed with the dispatcher's kind", async () => {
-    dispatchWhatsappTemplateSend.mockResolvedValueOnce({ ok: false, error: "WA_TEMPLATE_NOT_APPROVED" });
+  it("refused before sending (template not approved on this rail): no row", async () => {
+    dispatchWhatsappTemplateSend.mockResolvedValueOnce({ ok: false, error: "WA_TEMPLATE_NOT_APPROVED", providerOutcome: "DEFINITELY_REJECTED" });
+    seedTemplate("review_request", { body: starter.body, variables: starter.variables });
+    seedRun({ type: "whatsapp_template", config: { templateId: "review_request", manualValues: { 3: REVIEW_URL } } });
+    await runStep("run1", "n1");
+    expect(rows()).toEqual([]);
+  });
+
+  it("a template send the provider rejected is logged failed with its kind", async () => {
+    dispatchWhatsappTemplateSend.mockResolvedValueOnce({ ok: false, error: "WA_TEMPLATE_NOT_APPROVED", attempted: true, providerOutcome: "DEFINITELY_REJECTED" });
     seedTemplate("review_request", { body: starter.body, variables: starter.variables });
     seedRun({ type: "whatsapp_template", config: { templateId: "review_request", manualValues: { 3: REVIEW_URL } } });
     await runStep("run1", "n1");
@@ -107,6 +115,20 @@ describe("send_whatsapp step", () => {
     await runStep("run1", "n1");
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toMatchObject({ channel: "whatsapp", status: "sent", messageSid: "wamid.1" });
+  });
+
+  it("a shut window with no template to fall back on is refused before sending: no row", async () => {
+    dispatchWhatsappSend.mockResolvedValueOnce({ ok: false, error: "WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE", providerOutcome: "DEFINITELY_REJECTED" });
+    seedRun({ type: "send_whatsapp", config: { body: `Thanks! Review us: ${REVIEW_URL}` } });
+    await runStep("run1", "n1");
+    expect(rows()).toEqual([]);
+  });
+
+  it("a provider failure of a free-form review ask is a failed row", async () => {
+    dispatchWhatsappSend.mockResolvedValueOnce({ ok: false, error: "timeout", attempted: true, providerOutcome: "AMBIGUOUS" });
+    seedRun({ type: "send_whatsapp", config: { body: `Thanks! Review us: ${REVIEW_URL}` } });
+    await runStep("run1", "n1");
+    expect(rows()).toMatchObject([{ status: "failed", failureKind: "timeout" }]);
   });
 
   it("when the window made it go as a template without the link, it is not", async () => {

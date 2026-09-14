@@ -134,7 +134,7 @@ export async function sendConversationEmail(
     warning = result.warning;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to send email";
-    return refuse(502, message);
+    return { ...refuse(502, message), attempted: true };
   }
 
   try {

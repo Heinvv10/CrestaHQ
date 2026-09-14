@@ -166,7 +166,7 @@ export async function POST(request: Request) {
   }
 
   // Logged once the send settles: sent, refused by the rail, or failed.
-  const logAsk = (outcome: AskOutcome) =>
+  const logAsk = (outcome: AskOutcome | null) =>
     logInboxReviewAsk({ contact, channel: "whatsapp", parts: templateParts(tpl, values), template: tpl, actorUid: auth.uid, outcome });
 
   let sid: string;
@@ -192,7 +192,8 @@ export async function POST(request: Request) {
       },
     });
     if (!result.ok) {
-      await logAsk({ ok: false, failureKind: result.error ?? "template_refused" });
+      // Only a provider's rejection is a failed ask; "not approved on this rail" never left.
+      await logAsk(result.attempted && !result.refusedBy ? { ok: false, failureKind: result.error ?? "send_failed" } : null);
       return NextResponse.json(
         { error: result.error ?? "Only an approved template can be sent." },
         { status: 409 },
@@ -201,7 +202,7 @@ export async function POST(request: Request) {
     sid = result.messageId ?? "";
     fromNumber = templateFrom;
   } catch (err) {
-    await logAsk({ ok: false, failureKind: err instanceof UsageQuotaExceededError ? "quota" : "send_failed" });
+    await logAsk(err instanceof UsageQuotaExceededError ? null : { ok: false, failureKind: "send_failed" });
     if (err instanceof UsageQuotaExceededError) {
       return NextResponse.json({ error: err.message }, { status: 429 });
     }

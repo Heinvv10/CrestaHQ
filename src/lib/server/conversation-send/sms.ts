@@ -119,10 +119,10 @@ export async function sendConversationSms(
       } catch (recordErr) {
         console.warn("[sms/send] 21610 opt-out record failed", recordErr);
       }
-      return refuse(409, err.message);
+      return { ...refuse(409, err.message), attempted: true };
     }
     const message = err instanceof Error ? err.message : "Failed to send SMS";
-    return refuse(502, message);
+    return { ...refuse(502, message), attempted: true };
   }
 
   const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;

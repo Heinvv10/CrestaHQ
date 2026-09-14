@@ -176,6 +176,14 @@ describe("checklist — from real state only", () => {
     });
   });
 
+  it("a failed review ask alone is not a first request sent", async () => {
+    seedRequest(SA, "f", 1, "sms", { status: "failed", failureKind: "send_failed" });
+    seedRequest(OTHER_SA, "x", 1);
+    expect((await read()).body.checklist.requestLogged).toBe(false);
+    seedRequest(SA, "s", 2);
+    expect((await read()).body.checklist.requestLogged).toBe(true);
+  });
+
   it("a revoked connection is not 'connected'", async () => {
     seedSub(SA, { reconnectRequired: true });
     expect((await read()).body.checklist.googleConnected).toBe(false);

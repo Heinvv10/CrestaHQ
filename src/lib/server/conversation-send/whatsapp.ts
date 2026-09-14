@@ -130,7 +130,9 @@ export async function sendConversationWhatsapp(
       // out. Invisible in the route's response (sendOutcomeResponse sends only
       // error/code); the scheduled worker reads it.
       const waRefuse = (status: number, error: string, code?: string): SendRefusal => {
-        const r = refuse(status, error, code);
+        const r: SendRefusal = refuse(status, error, code);
+        // A rail refusing on its own rules (quiet hours, caps) is not a failed attempt.
+        if (result.attempted && !result.refusedBy) r.attempted = true;
         return result.providerOutcome === "AMBIGUOUS" ? { ...r, outcomeUnknown: true } : r;
       };
       if (result.error === WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE) {
@@ -176,7 +178,7 @@ export async function sendConversationWhatsapp(
       return refuse(429, err.message);
     }
     const message = err instanceof Error ? err.message : "Failed to send WhatsApp message";
-    return refuse(502, message);
+    return { ...refuse(502, message), attempted: true };
   }
 
   const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;

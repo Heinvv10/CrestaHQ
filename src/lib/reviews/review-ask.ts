@@ -87,13 +87,16 @@ export async function logIfReviewAsk(a: ReviewAskSend): Promise<void> {
   });
 }
 
-/** A conversation-send outcome as a log outcome. */
-export function askOutcomeOf(outcome: SendOutcome): AskOutcome {
+/**
+ * A conversation-send outcome as a log outcome; null = not a request. A
+ * refusal decided before anything was sent (opt-out, no phone, quota, gate,
+ * a shut window, a rail's own refusal) is no request; one after a provider
+ * attempt is a failed one.
+ */
+export function askOutcomeOf(outcome: SendOutcome): AskOutcome | null {
   if (outcome.ok) return { ok: true, messageSid: outcome.messageId };
-  const kind =
-    outcome.code ??
-    (outcome.outcomeUnknown ? "outcome_unknown" : outcome.status === 429 ? "quota" : outcome.status >= 500 ? "send_failed" : "refused");
-  return { ok: false, failureKind: kind };
+  if (!outcome.attempted) return null;
+  return { ok: false, failureKind: outcome.code ?? (outcome.outcomeUnknown ? "outcome_unknown" : "send_failed") };
 }
 
 /**
@@ -107,9 +110,10 @@ export async function logInboxReviewAsk(a: {
   parts: ReadonlyArray<string | null | undefined>;
   template?: TemplateIdentity | null;
   actorUid: string;
-  outcome: AskOutcome;
+  outcome: AskOutcome | null;
 }): Promise<void> {
-  if (a.channel !== "sms" && a.channel !== "whatsapp" && a.channel !== "email") return;
+  const outcome = a.outcome;
+  if (!outcome || (a.channel !== "sms" && a.channel !== "whatsapp" && a.channel !== "email")) return;
   try {
     const sub = (await getAdminDb().doc(`subAccounts/${a.contact.subAccountId}`).get()).data() ?? null;
     await logIfReviewAsk({
@@ -122,7 +126,7 @@ export async function logInboxReviewAsk(a: {
       parts: a.parts,
       template: a.template,
       createdByUid: a.actorUid,
-      outcome: a.outcome,
+      outcome,
     });
   } catch (err) {
     const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";

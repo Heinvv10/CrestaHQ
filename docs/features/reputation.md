@@ -62,7 +62,9 @@ toward the 500). Single-field query on `createTime`.
 Booleans from real state only, recomputed on every request — no stored progress:
 Google connected (and not flagged reconnect-required), a listing selected, a
 review link configured (`resolveReviewUrl(sub).configured`), a widget exists
-(`gbpWidgetMeta.publicId`), and at least one review request logged.
+(`gbpWidgetMeta.publicId`), and at least one review request **sent** (a log row
+with `status: "sent"` — single-field equality query; a failed ask alone does not
+tick it).
 
 ## Requests (SP5 d1)
 
@@ -117,9 +119,20 @@ transport, so no send is counted twice:
 | Source | Where | When |
 |---|---|---|
 | `dispatcher` | `maybeSendReviewRequest` (`lib/reviews/request.ts`): Request review (contact profile, Send Review Request), quote paid, deal completed | every successful send; refusals and failed sends write nothing (unchanged from SP5 a) |
-| `workflow` | `runStep` (`lib/workflows/engine.ts`) for `send_sms` / `send_email` / `send_whatsapp` / `whatsapp_template` steps | the step's rendered content is a review ask: sent, or failed (`error:` result); a skipped step (opt-out, no phone, quota) is not a request |
-| `broadcast` | `/api/broadcasts/email/step`, per recipient | the rendered email is a review ask: sent or failed; a QStash redelivery of a settled recipient logs nothing |
-| `inbox` | `/api/comms/{sms,whatsapp,email}/send`, `/api/comms/whatsapp/send-template`, and the scheduled-message worker (`lib/server/scheduled-messages/fire.ts`) | a person's message is a review ask: sent, or refused/failed (`failureKind` = the refusal's code, or `refused` / `quota` / `send_failed`) |
+| `workflow` | `runStep` (`lib/workflows/engine.ts`) for `send_sms` / `send_email` / `send_whatsapp` / `whatsapp_template` steps | the step's rendered content is a review ask: sent, or failed after a provider was called (`failureKind` = the step's error token) |
+| `broadcast` | `/api/broadcasts/email/step`, per recipient | the rendered email is a review ask: sent, or failed at the email provider; a QStash redelivery of a settled recipient logs nothing |
+| `inbox` | `/api/comms/{sms,whatsapp,email}/send`, `/api/comms/whatsapp/send-template`, and the scheduled-message worker (`lib/server/scheduled-messages/fire.ts`) | a person's message is a review ask: sent, or failed after a provider was called (`failureKind` = the provider's code, `outcome_unknown`, or `send_failed`) |
+
+**One failure rule for every sender:** a `failed` row means a provider was
+actually called and the send failed there. A send refused before anything went
+out — opt-out, no phone, quota, an agency gate, a shut WhatsApp window, a
+template not approved on this rail, missing credentials, or a rail refusing on
+its own rules (the bridge's quiet hours and caps) — is not a request and writes
+nothing. (The dispatcher, unchanged from SP5 a, writes successful sends only.) The inbox knows which is
+which from `SendRefusal.attempted` (set by the conversation send service); the
+WhatsApp dispatchers mark a result `attempted` only when they called a
+provider. A scheduled send that throws is not logged: nothing says whether a
+provider was reached.
 
 **What makes a message a review ask** (`isReviewAsk`, `lib/reviews/review-ask.ts`):
 any rendered part — body, email subject, a WhatsApp template's filled body or a

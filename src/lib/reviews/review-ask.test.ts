@@ -38,12 +38,14 @@ describe("failureKindOf / askOutcomeOf", () => {
     expect(failureKindOf(undefined)).toBe("send_failed");
   });
 
-  it("maps a conversation-send outcome", () => {
+  it("maps a conversation-send outcome: a refusal is a failed ask only after a provider attempt", () => {
     expect(askOutcomeOf({ ok: true, messageId: "SM9", response: {} })).toEqual({ ok: true, messageSid: "SM9" });
-    expect(askOutcomeOf({ ok: false, status: 409, error: "x", code: "WA_OUTSIDE_WINDOW" })).toEqual({ ok: false, failureKind: "WA_OUTSIDE_WINDOW" });
-    expect(askOutcomeOf({ ok: false, status: 502, error: "x", outcomeUnknown: true })).toEqual({ ok: false, failureKind: "outcome_unknown" });
-    expect(askOutcomeOf({ ok: false, status: 502, error: "x" })).toEqual({ ok: false, failureKind: "send_failed" });
-    expect(askOutcomeOf({ ok: false, status: 429, error: "x" })).toEqual({ ok: false, failureKind: "quota" });
-    expect(askOutcomeOf({ ok: false, status: 400, error: "x" })).toEqual({ ok: false, failureKind: "refused" });
+    expect(askOutcomeOf({ ok: false, status: 400, error: "x", code: "text_too_long", attempted: true })).toEqual({ ok: false, failureKind: "text_too_long" });
+    expect(askOutcomeOf({ ok: false, status: 502, error: "x", outcomeUnknown: true, attempted: true })).toEqual({ ok: false, failureKind: "outcome_unknown" });
+    expect(askOutcomeOf({ ok: false, status: 502, error: "x", attempted: true })).toEqual({ ok: false, failureKind: "send_failed" });
+    // Refused before anything was sent (opt-out, no phone, quota, gate, window, a rail's refusal): no row.
+    expect(askOutcomeOf({ ok: false, status: 409, error: "x", code: "session_window_closed" })).toBeNull();
+    expect(askOutcomeOf({ ok: false, status: 429, error: "x" })).toBeNull();
+    expect(askOutcomeOf({ ok: false, status: 400, error: "x" })).toBeNull();
   });
 });
