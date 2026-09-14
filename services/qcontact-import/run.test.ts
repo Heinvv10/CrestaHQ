@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leadstackUpserter, loadState, runImport, type Env } from "./run.ts";
+import { leadstackUpserter, loadState, runImport, saveState, type Env } from "./run.ts";
 import type { CaseDetail, CaseRow, ContactDetail } from "./qcontact.ts";
 import type { UpsertBody } from "./map.ts";
 import type { DealEnsurer } from "./deals.ts";
@@ -128,9 +128,9 @@ describe("runImport with ensureDeal", () => {
     expect((await loadState(statePath))?.seen).toEqual([2]);
   });
 
-  it("calls ensureDeal with the upserted contact id, case id and a title built from name + case ref", async () => {
+  it("calls ensureDeal with the upserted contact id, case id and a title built from name + case ref, and records the deal id", async () => {
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: true as const }));
+    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: true as const, dealId: "deal-2" }));
     await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
     const s = await runImport({ qc: fakeQc([row(2, "2026-09-02")]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
     expect(s).toMatchObject({ sent: 1, failed: 0 });
@@ -140,25 +140,43 @@ describe("runImport with ensureDeal", () => {
       title: "Install request — Test Person (FT2)",
     });
     expect((await loadState(statePath))?.seen).toEqual([2]);
+    expect((await loadState(statePath))?.deals).toEqual({ "2": "deal-2" });
   });
 
-  it("a failed deal step leaves the case unseen and counts it failed, even though the upsert succeeded", async () => {
+  it("records the deal id even when ensureDeal found an existing deal rather than creating one", async () => {
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: false, error: "HTTP 500 creating deal" }));
+    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: true as const, dealId: "deal-preexisting" }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
+    await runImport({ qc: fakeQc([row(2, "2026-09-02")]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
+    expect((await loadState(statePath))?.deals).toEqual({ "2": "deal-preexisting" });
+  });
+
+  it("a failed deal step leaves the case unseen and counts it failed, even though the upsert succeeded, and records no deal id", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
+    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: false as const, error: "HTTP 500 creating deal" }));
     await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
     const s = await runImport({ qc: fakeQc([row(2, "2026-09-02")]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
     expect(s).toMatchObject({ sent: 0, failed: 1 });
     expect((await loadState(statePath))?.seen).toEqual([]);
+    expect((await loadState(statePath))?.deals).toEqual({});
     expect(upsert).toHaveBeenCalledTimes(1);
   });
 
   it("dry-run never calls ensureDeal", async () => {
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: true as const }));
+    const ensureDeal: DealEnsurer = vi.fn(async () => ({ ok: true as const, dealId: "deal-2" }));
     await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, ensureDeal, dryRun: false, log });
     const s = await runImport({ qc: fakeQc([row(2, "2026-09-02")]), view: "v", statePath, upsert, ensureDeal, dryRun: true, log });
     expect(s).toMatchObject({ mode: "dry-run", sent: 1 });
     expect(ensureDeal).not.toHaveBeenCalled();
+  });
+});
+
+describe("loadState", () => {
+  it("a state file with no deals/dealStages key loads and behaves as empty", async () => {
+    await writeFile(statePath, JSON.stringify({ seen: [1, 2], updatedAt: "2026-09-01T00:00:00.000Z" }));
+    const state = await loadState(statePath);
+    expect(state).toEqual({ seen: [1, 2], deals: {}, dealStages: {}, updatedAt: "2026-09-01T00:00:00.000Z" });
   });
 });
 
@@ -210,18 +228,26 @@ describe("leadstackUpserter", () => {
 });
 
 describe("runImport with syncStage", () => {
-  it("syncStage undefined (sync off) makes no extra upsert calls and leaves stage counters at 0", async () => {
+  // Seeds a state file that already has cases 1 and 2 marked seen, with the
+  // given caseId → dealId / caseId → last-synced-stage maps, mirroring what
+  // a prior run's ensureDeal + stage-sync would have written.
+  const seedState = (
+    deals: Record<string, string>,
+    dealStages: Record<string, string> = {},
+    seen: number[] = [1, 2],
+  ) => saveState(statePath, { seen, deals, dealStages, updatedAt: "" });
+
+  it("syncStage undefined (sync off) makes no HTTP calls and leaves stage counters at 0", async () => {
+    await seedState({ "1": "deal-1" });
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, dryRun: false, log });
-    const s = await runImport({ qc: fakeQc([row(1, "2026-09-01")]), view: "v", statePath, upsert, dryRun: false, log });
-    expect(s).toMatchObject({ sent: 1, stageSynced: 0, stageUnchanged: 0 });
-    expect(upsert).toHaveBeenCalledTimes(1); // only the fresh-case upsert, no stage-sync pass at all
+    const s = await runImport({ qc: fakeQc([row(1, "2026-09-01", "Assigned")]), view: "v", statePath, upsert, dryRun: false, log });
+    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 0, stageUnmapped: 0 });
   });
 
-  it("dry-run calls neither the stage-sync upsert nor syncStage", async () => {
+  it("dry-run calls neither upsert nor syncStage, even for a mapped case", async () => {
+    await seedState({ "1": "deal-1" });
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
     const s = await runImport({
       qc: fakeQc([row(1, "2026-09-01", "Assigned")]),
       view: "v", statePath, upsert, syncStage, dryRun: true, log,
@@ -231,104 +257,86 @@ describe("runImport with syncStage", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
-  it("moves the deal for a case whose status maps to a different stage", async () => {
-    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+  it("only patches cases that have a recorded deal id; an unmapped case is counted and makes no HTTP call", async () => {
+    await seedState({ "1": "deal-1" }); // case 2 has no entry
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
     const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "Assigned")]),
+      qc: fakeQc([row(1, "2026-09-01", "Assigned"), row(2, "2026-09-02", "Assigned")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s).toMatchObject({ stageSynced: 1, stageUnmapped: 1 });
+    expect(syncStage).toHaveBeenCalledTimes(1);
+    expect(syncStage).toHaveBeenCalledWith({ dealId: "deal-1", stage: "assigned" });
+  });
+
+  it("moves the deal and records the new stage when it differs from what was last synced", async () => {
+    await seedState({ "1": "deal-1" }, { "1": "new" });
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
+    const s = await runImport({
+      qc: fakeQc([row(1, "2026-09-01", "Assigned")]),
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
     expect(s).toMatchObject({ stageSynced: 1, stageUnchanged: 0, failed: 0 });
-    expect(syncStage).toHaveBeenCalledWith({ contactId: "contact-2", status: "Assigned" });
+    expect((await loadState(statePath))?.dealStages).toEqual({ "1": "assigned" });
   });
 
-  it("counts stageUnchanged when syncStage reports the stage already matches", async () => {
-    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "unchanged" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+  it("does not call syncStage when the mapped stage already matches the last-synced stage", async () => {
+    await seedState({ "1": "deal-1" }, { "1": "assigned" });
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
     const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "New")]),
+      qc: fakeQc([row(1, "2026-09-01", "Assigned")]),
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
-    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 1, failed: 0 });
+    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 1 });
+    expect(syncStage).not.toHaveBeenCalled();
   });
 
-  it("counts an unknown status as skipped, without guessing a stage", async () => {
-    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "unknown_status" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+  it("counts an unknown status as skipped, without guessing a stage, and makes no HTTP call", async () => {
+    await seedState({ "1": "deal-1" });
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
     const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "Some Weird Status")]),
+      qc: fakeQc([row(1, "2026-09-01", "Some Weird Status")]),
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
     expect(s).toMatchObject({ skipped: { unknown_status: 1 }, failed: 0, stageSynced: 0, stageUnchanged: 0 });
-  });
-
-  it("a contact with no deal is a no-op: not counted as synced, unchanged, skipped or failed", async () => {
-    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "no_deal" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
-    const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "Assigned")]),
-      view: "v", statePath, upsert, syncStage, dryRun: false, log,
-    });
-    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 0, failed: 0, skipped: {} });
-  });
-
-  it("a case with no phone is skipped by the stage-sync pass too (no contact to sync)", async () => {
-    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
-    const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "Assigned")], { 2: null }),
-      view: "v", statePath, upsert, syncStage, dryRun: false, log,
-    });
     expect(syncStage).not.toHaveBeenCalled();
-    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 0 });
   });
 
-  it("a failed stage-sync upsert counts as failed and the loop continues to the next case", async () => {
-    const callCounts = new Map<string, number>();
-    const upsert = vi.fn(async (body: UpsertBody) => {
-      const caseId = body.custom_fields.qcontact_case_id;
-      const n = (callCounts.get(caseId) ?? 0) + 1;
-      callCounts.set(caseId, n);
-      // Succeeds on the fresh-loop call (1st); case 2's stage-sync call (2nd) fails.
-      if (caseId === "2" && n === 2) return { ok: false as const, error: "HTTP 500" };
-      return { ok: true as const, contactId: `contact-${caseId}` };
-    });
-    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+  it("a 404 (deal deleted) drops the case from the deals map, counts it, and doesn't fail the run", async () => {
+    await seedState({ "1": "deal-1" });
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "not_found" as const }));
     const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "Assigned"), row(3, "2026-09-03", "Assigned")]),
+      qc: fakeQc([row(1, "2026-09-01", "Assigned")]),
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
-    expect(s.sent).toBe(2); // both fresh-loop upserts succeeded
-    expect(s.failed).toBe(1); // case 2's stage-sync upsert failed
-    expect(s.stageSynced).toBe(1); // case 3's stage-sync went through
-    expect(syncStage).toHaveBeenCalledTimes(1); // never reached for case 2
+    expect(s).toMatchObject({ skipped: { deal_not_found: 1 }, failed: 0, stageSynced: 0 });
+    expect((await loadState(statePath))?.deals).toEqual({});
+    expect((await loadState(statePath))?.dealStages).toEqual({});
   });
 
-  it("a failed PATCH (syncStage returning ok:false) counts as failed and the loop continues", async () => {
+  it("a failed PATCH counts as failed, keeps the mapping, and the loop continues to the next case", async () => {
+    await seedState({ "1": "deal-1", "2": "deal-2" });
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
     const syncStage = vi.fn()
       .mockResolvedValueOnce({ ok: false, error: "HTTP 400 patching deal" })
-      .mockResolvedValueOnce({ ok: true, action: "synced" });
-    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+      .mockResolvedValueOnce({ ok: true, action: "patched" });
     const s = await runImport({
-      qc: fakeQc([row(2, "2026-09-02", "Assigned"), row(3, "2026-09-03", "Assigned")]),
+      qc: fakeQc([row(1, "2026-09-01", "Assigned"), row(2, "2026-09-02", "Assigned")]),
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
     expect(s.failed).toBe(1);
     expect(s.stageSynced).toBe(1);
-    expect((await loadState(statePath))?.seen.sort()).toEqual([2, 3]);
+    expect((await loadState(statePath))?.deals).toEqual({ "1": "deal-1", "2": "deal-2" });
   });
 
   it("stage-sync never marks a case seen/unseen, even on a PATCH failure", async () => {
+    await seedState({ "5": "deal-5" }, {}, [5]);
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
-    await runImport({ qc: fakeQc([row(5, "2026-09-01", "New")]), view: "v", statePath, upsert, dryRun: false, log });
-    await runImport({ qc: fakeQc([row(5, "2026-09-01", "New")]), view: "v", statePath, upsert, dryRun: false, log });
     const before = (await loadState(statePath))?.seen;
     const syncStage: StageSyncer = vi.fn(async () => ({ ok: false as const, error: "boom" }));
     const s = await runImport({
@@ -337,5 +345,16 @@ describe("runImport with syncStage", () => {
     });
     expect(s.fresh).toBe(0); // case 5 already seen, not re-sent
     expect((await loadState(statePath))?.seen).toEqual(before); // unchanged despite the syncStage failure
+  });
+
+  it("the stage-sync pass never calls upsert, even for already-seen mapped cases", async () => {
+    await seedState({ "1": "deal-1", "2": "deal-2" });
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
+    await runImport({
+      qc: fakeQc([row(1, "2026-09-01", "Assigned"), row(2, "2026-09-02", "Escalated")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(upsert).not.toHaveBeenCalled();
   });
 });

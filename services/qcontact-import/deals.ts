@@ -3,7 +3,10 @@
  * pipeline, once a case has been upserted as a contact: reads
  * GET /api/v1/deals?contact_id= and creates one via POST /api/v1/deals only
  * when the contact has no deal in that pipeline yet (a deal in a different
- * pipeline does not count).
+ * pipeline does not count). Either way, the deal id is returned so run.ts
+ * can record the case → deal mapping used by stage-sync.ts — a case whose
+ * deal already existed (e.g. a retry after a prior deal-step failure) still
+ * needs that mapping recorded, not just a newly-created one.
  *
  * `value`/`currency` are required by the deals API but meaningless for a
  * fresh install request; ZAR is hardcoded because this service is Velocity
@@ -24,7 +27,7 @@ export type DealEnv = {
   QCONTACT_DEAL_OWNER_UID: string | undefined;
 };
 
-export type DealResult = { ok: true } | { ok: false; error: string };
+export type DealResult = { ok: true; dealId: string } | { ok: false; error: string };
 
 export type DealEnsurer = (input: {
   contactId: string;
@@ -43,9 +46,10 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
     if (!listRes.ok) {
       return { ok: false, error: `HTTP ${listRes.status} listing deals: ${(await listRes.text()).slice(0, 300)}` };
     }
-    const list = (await listRes.json()) as { data: { pipeline_id: string }[] };
-    if (list.data.some((d) => d.pipeline_id === env.QCONTACT_DEAL_PIPELINE_ID)) {
-      return { ok: true };
+    const list = (await listRes.json()) as { data: { id: string; pipeline_id: string }[] };
+    const existing = list.data.find((d) => d.pipeline_id === env.QCONTACT_DEAL_PIPELINE_ID);
+    if (existing) {
+      return { ok: true, dealId: existing.id };
     }
 
     const body: Record<string, unknown> = {
@@ -72,6 +76,16 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
     if (!createRes.ok) {
       return { ok: false, error: `HTTP ${createRes.status} creating deal: ${(await createRes.text()).slice(0, 300)}` };
     }
-    return { ok: true };
+    let data: unknown;
+    try {
+      data = await createRes.json();
+    } catch {
+      return { ok: false, error: "deal create 2xx without deal.id" };
+    }
+    const dealId = (data as { deal?: { id?: unknown } } | null)?.deal?.id;
+    if (typeof dealId !== "string" || dealId.length === 0) {
+      return { ok: false, error: "deal create 2xx without deal.id" };
+    }
+    return { ok: true, dealId };
   };
 }

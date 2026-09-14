@@ -1,19 +1,18 @@
 /**
- * Syncs a QContact case's status onto its LeadStack deal's stage, so the
- * pipeline reflects QContact as the source of truth for where an install
- * request stands. Runs over every case in the view, not just newly-seen
- * ones — a case can move through several QContact statuses long after its
- * deal was created (see run.ts).
+ * Moves a QContact case's LeadStack deal to the pipeline stage matching the
+ * case's current status. Takes a `dealId` directly (see run.ts's
+ * `deals` map in the state file — case id → deal id, recorded when the
+ * deal is created) rather than re-deriving the contact/deal from the case:
+ * doing that on every case, every 15 minutes, would fire the same
+ * enrolment-gated `POST /api/v1/contacts/upsert` used for creation ~670
+ * times a run and blow the 50/hour enrolment fuse on the API key, on top
+ * of re-writing QContact's copy of the contact's name/address over any
+ * manual edit made in the CRM.
  *
- * The contact is found the same way an upsert finds it: by phone, via
- * `POST /api/v1/contacts/upsert` (see run.ts's Upserter). That call is
- * idempotency-keyed on the case id + body, so repeating it every run either
- * hits the 24h cache or re-sends identical data — cheap either way.
- *
- * `GET /api/v1/deals?contact_id=` finds the contact's deal in
- * QCONTACT_DEAL_PIPELINE_ID (a deal in a different pipeline doesn't count,
- * same as deals.ts); no deal is a no-op. `PATCH /api/v1/deals/:id` with
- * `{ stage }` moves it, only when the stage actually differs.
+ * A single `PATCH /api/v1/deals/:id` per case that needs to move — no
+ * lookup call of any kind first. "Only when the stage actually differs"
+ * is decided by run.ts comparing against the stage it last recorded for
+ * that case (also in the state file), not by fetching the deal.
  */
 
 /**
@@ -45,46 +44,29 @@ export function statusToStageId(status: string | null): string | undefined {
 export type StageSyncEnv = {
   LEADSTACK_API_URL: string;
   LEADSTACK_API_KEY: string;
-  QCONTACT_DEAL_PIPELINE_ID: string;
 };
 
+/** `not_found` = the deal (a 404 on PATCH) is gone; run.ts drops it from the map. */
 export type StageSyncResult =
-  | { ok: true; action: "synced" | "unchanged" | "no_deal" | "unknown_status" }
+  | { ok: true; action: "patched" | "not_found" }
   | { ok: false; error: string };
 
-export type StageSyncer = (input: {
-  contactId: string;
-  status: string | null;
-}) => Promise<StageSyncResult>;
+export type StageSyncer = (input: { dealId: string; stage: string }) => Promise<StageSyncResult>;
 
 export function leadstackStageSyncer(env: StageSyncEnv, fetchImpl: typeof fetch = fetch): StageSyncer {
-  return async ({ contactId, status }) => {
-    const stageId = statusToStageId(status);
-    if (!stageId) return { ok: true, action: "unknown_status" };
-
-    const listRes = await fetchImpl(
-      `${env.LEADSTACK_API_URL}/api/v1/deals?contact_id=${encodeURIComponent(contactId)}`,
-      { headers: { Authorization: `Bearer ${env.LEADSTACK_API_KEY}` } },
-    );
-    if (!listRes.ok) {
-      return { ok: false, error: `HTTP ${listRes.status} listing deals: ${(await listRes.text()).slice(0, 300)}` };
-    }
-    const list = (await listRes.json()) as { data: { id: string; pipeline_id: string; stage: string }[] };
-    const deal = list.data.find((d) => d.pipeline_id === env.QCONTACT_DEAL_PIPELINE_ID);
-    if (!deal) return { ok: true, action: "no_deal" };
-    if (deal.stage === stageId) return { ok: true, action: "unchanged" };
-
-    const patchRes = await fetchImpl(`${env.LEADSTACK_API_URL}/api/v1/deals/${encodeURIComponent(deal.id)}`, {
+  return async ({ dealId, stage }) => {
+    const res = await fetchImpl(`${env.LEADSTACK_API_URL}/api/v1/deals/${encodeURIComponent(dealId)}`, {
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${env.LEADSTACK_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ stage: stageId }),
+      body: JSON.stringify({ stage }),
     });
-    if (!patchRes.ok) {
-      return { ok: false, error: `HTTP ${patchRes.status} patching deal: ${(await patchRes.text()).slice(0, 300)}` };
+    if (res.status === 404) return { ok: true, action: "not_found" };
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status} patching deal: ${(await res.text()).slice(0, 300)}` };
     }
-    return { ok: true, action: "synced" };
+    return { ok: true, action: "patched" };
   };
 }

@@ -64,15 +64,27 @@ runs — behaviour is unchanged from before deals existed.
 ## Deal stage sync
 
 When `QCONTACT_DEAL_PIPELINE_ID` **and** `QCONTACT_SYNC_STAGES` (any value
-other than unset/`"0"`) are both set, every run also syncs QContact's case
-status onto the case's deal stage — for every case in the view, not just
-newly-seen ones, since a case keeps moving through statuses long after its
-deal was created. The contact is found by phone the same way an upsert
-finds it (`POST /api/v1/contacts/upsert`, idempotency-keyed, so a repeat
-call either hits the 24h cache or re-sends identical data); its deal in
-`QCONTACT_DEAL_PIPELINE_ID` is found via `GET /api/v1/deals?contact_id=`
-(a deal in a different pipeline doesn't count) and moved with
-`PATCH /api/v1/deals/:id` only when the stage actually differs.
+other than unset/`"0"`) are both set, every run also moves each case's deal
+to the pipeline stage matching its current QContact status — for every case
+in the view, not just newly-seen ones, since a case keeps moving through
+statuses long after its deal was created.
+
+This does **not** re-derive the contact or deal from the case. The state
+file's `deals` map (case id → deal id, recorded when `ensureDeal` creates or
+finds the deal — see Deals above) is the only source of a case's deal id; a
+case with no entry is left alone and counted (`stageUnmapped`), never looked
+up another way. Re-deriving it via the contact-upsert flow used for creation
+was the first design and was rejected: it would re-fire the enrolment-gated
+`POST /api/v1/contacts/upsert` for ~670 already-seen cases every 15 minutes
+(well past the 50/hour enrolment fuse on the API key) and re-write QContact's
+copy of the contact's name/address over any manual edit made in the CRM.
+
+For a mapped case, the only call is `PATCH /api/v1/deals/:id` with the
+mapped stage — no lookup first. "Only when the stage actually differs" is
+decided locally against `dealStages` (case id → the stage last set, also in
+the state file), not by fetching the deal, so this never does a `GET`. A
+404 on the PATCH means the deal is gone: both map entries are dropped and it
+counts under `skipped.deal_not_found`, without failing the run.
 
 Status → stage mapping (see `stage-sync.ts`): New→`new`, Assigned→`assigned`,
 Upcoming→`upcoming`, Pending Customer→`pending_customer`,
@@ -85,15 +97,15 @@ with an en dash on some rows and a hyphen on others — both are accepted).
 An unrecognised status is left alone, never guessed, and counted under
 `skipped.unknown_status`.
 
-A contact with no deal in the pipeline is a no-op. A failed lookup or PATCH
-counts in `summary.failed` (case id + HTTP status, no phone numbers in
-logs) and never stops the run or changes any case's seen state — stage
-syncing never marks a case seen or unseen, that's still decided purely by
-the upsert + deal-create step above.
+A failed PATCH counts in `summary.failed` (case id + HTTP status, no phone
+numbers in logs) and never stops the run or changes any case's seen state —
+stage syncing never marks a case seen or unseen, that's still decided purely
+by the upsert + deal-create step above.
 
 `QCONTACT_SYNC_STAGES` unset or `"0"` (the default) makes this file dead
 code: zero extra reads or writes, byte-identical behaviour to before it
-existed.
+existed. Deals created before this feature existed have no `deals` map
+entry and won't be stage-synced until backfilled separately.
 
 ## Forward-only, by design
 
