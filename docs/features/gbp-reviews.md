@@ -62,7 +62,12 @@ relative to `src/` unless they start with `e2e/`.
 
 - OAuth: `authorizeUrl`, `exchangeCode`, `refresh`, `revoke` (returns `GoogleTokens`).
 - Data: `listAccounts`, `listLocations`, `listReviews` (`{reviews, averageRating,
-  totalReviewCount, nextPageToken}`), `putReply`, `deleteReply`.
+  totalReviewCount, nextPageToken}`), `putReply`, `deleteReply`,
+  `fetchDailyMetrics(accessToken, locationName, {metrics, startDate, endDate})`
+  → one `{date, value}` series per requested metric (SP5 insights — see
+  [reputation.md](reputation.md#insights-sp5-f)). The fake serves a
+  deterministic series per location (`fakeDailyValue`; scenario `insights`
+  patterns override it) and honours `failNext: {op: "fetchDailyMetrics"}`.
 
 `google.ts` is the real implementation (`google-http.ts` maps responses,
 `google-parse.ts` maps payloads, `google-token.ts` is the OAuth token endpoint).
@@ -74,12 +79,17 @@ Endpoints, verified 2026-09-11:
 | locations | `GET mybusinessbusinessinformation.googleapis.com/v1/{accounts/a}/locations?readMask=name,title,storefrontAddress,websiteUri,metadata&pageSize=100` |
 | reviews | `GET mybusiness.googleapis.com/v4/accounts/{a}/locations/{l}/reviews?pageSize=50&orderBy=updateTime%20desc` |
 | reply | `PUT` / `DELETE mybusiness.googleapis.com/v4/{review.name}/reply` |
+| insights (verified 2026-09-14) | `GET businessprofileperformance.googleapis.com/v1/{locations/l}:fetchMultiDailyMetricsTimeSeries?dailyMetrics=…&dailyMetrics=…&dailyRange.startDate.year=…&.month=…&.day=…&dailyRange.endDate.…` — response `multiDailyMetricTimeSeries[].dailyMetricTimeSeries[{dailyMetric, timeSeries.datedValues[{date:{year,month,day}, value}]}]`; `value` is an int64 string Google leaves out when it is 0 (read as 0). **Live: 429 quota 0 until case 4-6894000042302 is approved.** |
 
 Every failure is a `GbpProviderError` whose `kind` is one of `auth_expired`
 (401), `revoked` (OAuth `invalid_grant`), `insufficient_scope` (403
 `ACCESS_TOKEN_SCOPE_INSUFFICIENT` / "insufficient authentication scopes", or
 OAuth `invalid_scope`), `permission_denied` (other 403), `not_found` (404),
-`rate_limited` (429, `retryAfterMs` from `Retry-After`), `transient` (5xx,
+`rate_limited` (429, `retryAfterMs` from `Retry-After`), `access_not_approved`
+(a 429 `RESOURCE_EXHAUSTED` whose ErrorInfo `metadata.quota_limit_value` is
+`"0"` — the project's Business Profile API access is not approved yet; never
+retried by the sync, and shown everywhere as "Google hasn't approved Business
+Profile API access for this project yet." — `lib/gbp/error-text.ts`), `transient` (5xx,
 network, body read failure) or `malformed` (non-JSON, wrong shape, other 4xx).
 The message is fixed per kind + status — never a response body, URL query or
 token. Payloads fail closed: `STAR_RATING_UNSPECIFIED`, a missing id or a
@@ -279,6 +289,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
 | `GET /api/sub-accounts/[id]/gbp/reviews[?rating=&replied=&from=&to=&sort=]` | any member, gated | `{summary, reviews, available, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), each with its cache `docId`; `available` = active reviews before the filters; summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/`. Filters (in memory over the capped set, no composite index): `rating` comma list of 1–5, `replied` `all\|replied\|unreplied`, `from` / `to` on `createTime` — an ISO date-time WITH an offset (the page sends the viewer's local midnights: `from` = local 00:00 of the first day, `to` = local 00:00 after the last, exclusive — so filtered days match the local dates the list shows) or a bare ISO date, read as that UTC day (a date-only `to` covers the whole UTC day), `sort` `newest\|oldest`; an empty value is ignored, anything else malformed is 400 `invalid_filter` with `field` |
 | `GET /api/sub-accounts/[id]/reputation/overview[?range=]` | any member | aggregates over the SAME reviews this route serves (shared `loadServedReviews`, `lib/gbp/sync/served.ts`) plus the review-request log — see [reputation.md](reputation.md) |
+| `GET /api/sub-accounts/[id]/reputation/insights[?location=&range=]` | any member for the listing; another location admin only; gated | Performance insights, in memory only — see [reputation.md](reputation.md#insights-sp5-f) |
 | `POST /api/cron/gbp-retention` | QStash signature bound to this URL | the always-on daily retention housekeeping: a retention-only pass (no provider calls) for every sub-account holding a cache; `{retained}`; 500 only when the sweep cannot start |
 | `POST` / `DELETE /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply` | admin, gated | the explicit human reply — see "Explicit owner reply (PR 4)" |
 | `POST /api/sub-accounts/[id]/google-review/adopt-listing-url` | admin, gated | `{expectedCurrentUrl}` — see "Review-request compatibility (PR 4)" |
@@ -290,7 +301,8 @@ Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 404
 `not_found` (reply: not an active cached review of this sub-account's listing),
 409 `not_connected` / `reconnect_required` / `idempotency_key_reused` /
 `in_progress` / `changed` (+ `currentUrl`) / `no_proposal`, 400 `invalid_body` /
-`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), 502 `<provider kind>`. No response carries a token (every route test scans the
+`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), 502 `<provider kind>`
+(`access_not_approved` carries the fixed "not approved" sentence as `error`; every other kind "Google request failed"). No response carries a token (every route test scans the
 body for token markers).
 
 ## Data written
