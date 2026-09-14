@@ -170,6 +170,7 @@ export async function addNote(
   content: string,
   userId: string,
   source?: Note["source"],
+  mentionedUids: string[] = [],
 ): Promise<string> {
   const ref = await addDoc(
     collection(getFirebaseDb(), CONTACTS, contactId, "notes"),
@@ -178,6 +179,7 @@ export async function addNote(
       createdBy: userId,
       createdAt: serverTimestamp(),
       ...(source ? { source } : {}),
+      ...(mentionedUids.length ? { mentionedUids } : {}),
     },
   );
   return ref.id;

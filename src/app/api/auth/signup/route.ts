@@ -243,6 +243,7 @@ export async function POST(request: Request) {
         webinar1EnabledByAgency: false,
         googleEnabledByAgency: false,
         googleCalendarEnabledByAgency: false,
+        reviewsAiEnabledByAgency: false,
         aiSuiteEnabledByAgency: false,
         metaConfig: null,
         stripeConnectionMeta: null,

@@ -222,6 +222,8 @@ export async function createSubAccountForAgency(
       webinar1EnabledByAgency: false,
       googleEnabledByAgency: false,
       googleCalendarEnabledByAgency: false,
+      // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.
+      reviewsAiEnabledByAgency: false,
       webinar1ConnectionMeta: null,
       // Workspace Assistant ships OFF like every other gate (opt-in) — the
       // agency owner enables it per sub-account from the Manage dialog.

@@ -1,3 +1,4 @@
+import { Frown, Meh, Smile } from "lucide-react";
 import { shortDate } from "./format-time";
 
 /** The public review shape GET /gbp/reviews returns (lib/gbp/sync/public.ts). */
@@ -11,6 +12,31 @@ export interface ReviewView {
   createTime: string | null;
   updateTime: string | null;
   reply: { comment: string; updateTime: string } | null;
+  /** SP5 (b): the cached sentiment label, when the review has one. */
+  sentiment?: { label: string; method: string } | null;
+}
+
+const SENTIMENT: Record<string, { text: string; Icon: typeof Smile; tone: string }> = {
+  positive: { text: "Positive", Icon: Smile, tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  neutral: { text: "Neutral", Icon: Meh, tone: "bg-muted text-muted-foreground" },
+  negative: { text: "Negative", Icon: Frown, tone: "bg-red-500/10 text-red-700 dark:text-red-400" },
+};
+
+function SentimentBadge({ reviewId, sentiment }: { reviewId: string; sentiment: { label: string; method: string } }) {
+  const s = SENTIMENT[sentiment.label];
+  if (!s) return null;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${s.tone}`}
+      title={sentiment.method === "rating" ? "From the star rating" : "AI-classified"}
+      data-testid={`gbp-review-sentiment-${reviewId}`}
+      data-label={sentiment.label}
+      data-method={sentiment.method}
+    >
+      <s.Icon className="h-3 w-3" aria-hidden />
+      {s.text}
+    </span>
+  );
 }
 
 function Stars({ rating }: { rating: number }) {
@@ -37,6 +63,7 @@ export function ReviewItem({ review, children }: { review: ReviewView; children?
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
         <span className="font-medium">{name}</span>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
+          {review.sentiment && <SentimentBadge reviewId={review.reviewId} sentiment={review.sentiment} />}
           <Stars rating={review.starRating} />
           {review.createTime && <time dateTime={review.createTime}>{shortDate(review.createTime)}</time>}
         </span>

@@ -398,6 +398,10 @@ const FEATURE_GATES: Record<
     field: "googleCalendarEnabledByAgency",
     label: "Google Calendar sync (per team member)",
   },
+  "reviews-ai": {
+    field: "reviewsAiEnabledByAgency",
+    label: "Reviews AI (sentiment and reply drafts)",
+  },
   // Get Leads is PARKED — while the flag is on the assistant can't flip (or
   // report) its gate, matching the hidden Manage-dialog toggle. When
   // un-parked, enabling doesn't require OUTSCRAPER_API_KEY to be set —

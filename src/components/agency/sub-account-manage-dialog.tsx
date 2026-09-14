@@ -25,6 +25,7 @@ import {
   Share2,
   GraduationCap,
   Sparkles,
+  Star,
   Trash2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -101,6 +102,7 @@ export function SubAccountManageDialog({
   const initialGoogle = subAccount?.googleEnabledByAgency === true;
   const initialGoogleCalendar =
     subAccount?.googleCalendarEnabledByAgency === true;
+  const initialReviewsAi = subAccount?.reviewsAiEnabledByAgency === true;
   // Workspace Assistant is opt-in like every other gate — off unless
   // explicitly enabled (legacy/unset reads as off).
   const initialAiSuite = subAccount?.aiSuiteEnabledByAgency === true;
@@ -147,6 +149,7 @@ export function SubAccountManageDialog({
   const [webinar1Enabled, setWebinar1Enabled] = useState(initialWebinar1);
   const [webinar1Hidden, setWebinar1Hidden] = useState(initialWebinar1Hidden);
   const [googleEnabled, setGoogleEnabled] = useState(initialGoogle);
+  const [reviewsAiEnabled, setReviewsAiEnabled] = useState(initialReviewsAi);
   const [googleCalendarEnabled, setGoogleCalendarEnabled] = useState(
     initialGoogleCalendar
   );
@@ -286,6 +289,7 @@ export function SubAccountManageDialog({
   const webinar1HiddenDirty = webinar1Hidden !== initialWebinar1Hidden;
   const googleDirty = googleEnabled !== initialGoogle;
   const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
+  const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
   const missedCallDirty = missedCallEnabled !== initialMissedCall;
   const aiSuiteDirty = aiSuiteEnabled !== initialAiSuite;
   const aiSuiteModelDirty = aiSuiteModel !== initialAiSuiteModel;
@@ -318,6 +322,7 @@ export function SubAccountManageDialog({
     webinar1HiddenDirty ||
     googleDirty ||
     googleCalendarDirty ||
+    reviewsAiDirty ||
     missedCallDirty ||
     aiSuiteDirty ||
     aiSuiteModelDirty ||
@@ -363,6 +368,7 @@ export function SubAccountManageDialog({
         webinar1HiddenWhenDisabled?: boolean;
         googleEnabled?: boolean;
         googleCalendarEnabled?: boolean;
+        reviewsAiEnabled?: boolean;
         missedCallTextBackEnabled?: boolean;
         aiSuiteEnabled?: boolean;
         aiSuiteModel?: "opus" | "sonnet";
@@ -401,6 +407,7 @@ export function SubAccountManageDialog({
       if (googleCalendarDirty) {
         payload.googleCalendarEnabled = googleCalendarEnabled;
       }
+      if (reviewsAiDirty) payload.reviewsAiEnabled = reviewsAiEnabled;
       if (missedCallDirty)
         payload.missedCallTextBackEnabled = missedCallEnabled;
       if (aiSuiteDirty) payload.aiSuiteEnabled = aiSuiteEnabled;
@@ -557,6 +564,13 @@ export function SubAccountManageDialog({
           googleCalendarEnabled
             ? "Google Calendar sync enabled."
             : "Google Calendar sync disabled. Members' connections are preserved; re-enabling resumes instantly."
+        );
+      }
+      if (reviewsAiDirty) {
+        parts.push(
+          reviewsAiEnabled
+            ? "Reviews AI enabled."
+            : "Reviews AI disabled. Existing sentiment labels stay; no new reviews are analysed."
         );
       }
       if (missedCallDirty) {
@@ -1036,6 +1050,27 @@ export function SubAccountManageDialog({
             card, refuses new connects and stops the sync; connections are
             preserved, so re-enabling resumes instantly. Disconnecting stays
             available either way.
+          </GateToggle>
+
+          <GateToggle
+            checked={reviewsAiEnabled}
+            onChange={setReviewsAiEnabled}
+            disabled={saving}
+            icon={
+              <Star className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            }
+            title="Reviews AI"
+          >
+            When enabled, synced Google reviews with text are labelled
+            positive / neutral / negative by AI (star-only reviews are labelled
+            from their stars, with no AI call). A review is sent to the AI once
+            — again only if it is edited, or if its cached copy was deleted and
+            re-synced (listing changed, Google disconnected or switched off, or
+            Google&apos;s 30-day storage limit). A bad AI answer is tried at most
+            3 times; a failed call is retried after an hour. At most 300 AI
+            calls a day per sub-account. Spends
+            your OpenRouter credits. Disabling stops new analysis; existing
+            labels stay.
           </GateToggle>
 
           <GateToggle

@@ -12,6 +12,8 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { AGENCY, LEAK_MARKERS, OTHER_SA, SA, asUser, mem, resetSync, seedSub } from "@/test/gbp-sync-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { classifyPendingSentiment } from "@/lib/reputation/sentiment";
+import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
 import { GET } from "./route";
 
 const ORIGINAL = { ...process.env };
@@ -189,5 +191,52 @@ describe("checklist — from real state only", () => {
   it("a revoked connection is not 'connected'", async () => {
     seedSub(SA, { reconnectRequired: true });
     expect((await read()).body.checklist.googleConnected).toBe(false);
+  });
+});
+
+describe("sentiment (SP5 b)", () => {
+  beforeEach(() => {
+    process.env.REVIEWS_AI_PROVIDER = "fake";
+    process.env.REVIEWS_AI_FAKE_AGENCY_ID = "ag_1";
+  });
+  const gateOn = () => mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, reviewsAiEnabledByAgency: true });
+  const docOf = (rid: string) => mem.list(`subAccounts/${SA}/gbpReviews`).find((d) => d.reviewId === rid)!;
+
+  it("counts the current labels over the reviews in range, and reports the Reviews AI state", async () => {
+    expect((await read()).body.reviewsAi).toEqual({ enabled: false, configured: true, running: false, lastRun: null });
+    gateOn();
+    expect((await read()).body.reviews.sentiment).toEqual({ positive: 0, neutral: 0, negative: 0, notAnalysed: 7, failed: 0 });
+    await classifyPendingSentiment(SA);
+    const { body } = await read();
+    expect(body.reviewsAi).toMatchObject({ enabled: true, configured: true, running: false, lastRun: { classified: 7, skipped: 0, failed: 0 } });
+    // fake rule: r7 r4 positive (text), r3 positive (4★ star-only), r6 r2 negative, r5 r1 neutral
+    expect(body.reviews.sentiment).toEqual({ positive: 3, neutral: 2, negative: 2, notAnalysed: 0, failed: 0 });
+  });
+
+  it("a label from older content counts as 'not analysed yet', not as its old label", async () => {
+    gateOn();
+    await classifyPendingSentiment(SA);
+    const d = docOf("fake-r6");
+    mem.seed(`subAccounts/${SA}/gbpReviews/${d.id}`, { ...mem.read(`subAccounts/${SA}/gbpReviews/${d.id}`)!, comment: "Edited at Google." });
+    expect((await read()).body.reviews.sentiment).toEqual({ positive: 3, neutral: 2, negative: 1, notAnalysed: 1, failed: 0 });
+  });
+
+  it("a review the AI failed on three times is 'couldn't be analysed'", async () => {
+    gateOn();
+    const d = docOf("fake-r6");
+    const basis = sentimentBasis(d.starRating as number, d.comment as string);
+    mem.seed(`subAccounts/${SA}/gbpReviews/${d.id}`, { ...mem.read(`subAccounts/${SA}/gbpReviews/${d.id}`)!, sentimentAttempt: { basisHash: basis, failures: 3, lastAt: NOW } });
+    expect((await read()).body.reviews.sentiment).toEqual({ positive: 0, neutral: 0, negative: 0, notAnalysed: 6, failed: 1 });
+  });
+
+  it("says when a classification holds the lease (Analyse now polls it)", async () => {
+    mem.seed(`subAccounts/${SA}/private/sentimentLease`, { runId: "r", until: NOW.getTime() + 60_000 });
+    expect((await read()).body.reviewsAi.running).toBe(true);
+  });
+
+  it("not configured: an OpenRouter deployment without a key", async () => {
+    delete process.env.REVIEWS_AI_PROVIDER;
+    delete process.env.OPENROUTER_API_KEY;
+    expect((await read()).body.reviewsAi).toMatchObject({ enabled: false, configured: false });
   });
 });

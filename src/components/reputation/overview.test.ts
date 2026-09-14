@@ -34,6 +34,7 @@ function payload(over: Partial<OverviewResponse> = {}): OverviewResponse {
     reviews: {
       count: 7, avgRating: 25 / 7, previous: { count: 3, avgRating: 3 },
       distribution: { 1: 1, 2: 1, 3: 1, 4: 1, 5: 3 },
+      sentiment: { positive: 3, neutral: 2, negative: 2, notAnalysed: 0, failed: 0 },
       response: { replied: 2, unreplied: 5, coverage: 2 / 7, replyHours: { avg: 3, median: 3, counted: 2, excluded: 0 } },
     },
     requests: { sent: 2, byChannel: { sms: 2 }, bySource: { dispatcher: 1, workflow: 1 }, failed: 0, tracked: 0, clicked: 0, previous: null, countingSince: "2026-09-01T08:00:00.000Z" },
@@ -48,6 +49,7 @@ function payload(over: Partial<OverviewResponse> = {}): OverviewResponse {
     lastErrorKind: null,
     lastReconciliation: "full",
     truncated: { reviews: false, requests: false },
+    reviewsAi: { enabled: true, configured: true, running: false, lastRun: null },
     checklist: { googleConnected: true, listingSelected: true, reviewLinkConfigured: false, widgetExists: false, requestLogged: true },
     ...over,
   };
@@ -108,7 +110,7 @@ describe("states", () => {
     body = payload({ reviewsUnavailable: reason, reviews: null, listing: null, health: null });
     await render();
     expect(text(id)).toContain(words);
-    for (const t of ["rep-tile-avg", "rep-tile-count", "rep-tile-coverage", "rep-tile-reply-time", "rep-distribution", "rep-response", "rep-trend"]) {
+    for (const t of ["rep-tile-avg", "rep-tile-count", "rep-tile-coverage", "rep-tile-reply-time", "rep-distribution", "rep-response", "rep-trend", "rep-sentiment"]) {
       expect(byId(t)).toBeNull();
     }
     expect(text("rep-tile-requests-value")).toBe("2");
@@ -226,5 +228,86 @@ describe("ready", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(fetchMock).toHaveBeenLastCalledWith(`${API}?range=30d`, expect.anything());
+  });
+});
+
+describe("sentiment card (SP5 b)", () => {
+  it("shows the API's counts, and Analyse now reloads the overview", async () => {
+    await render();
+    expect(byId("rep-sentiment-positive")?.getAttribute("data-count")).toBe("3");
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      return { ok: true, status: 200, json: async () => payload({ reviews: { ...payload().reviews!, sentiment: { positive: 4, neutral: 2, negative: 1, notAnalysed: 0, failed: 0 } }, reviewsAi: { enabled: true, configured: true, running: false, lastRun: { classified: 1, skipped: 0, failed: 0, at: "2026-09-14T10:01:00.000Z", reason: null } } }) };
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/reputation/sentiment/run", { method: "POST" });
+    expect(byId("rep-sentiment-positive")?.getAttribute("data-count")).toBe("4");
+  });
+
+  it("gate off: the card says Reviews AI is off", async () => {
+    body = payload({ reviewsAi: { enabled: false, configured: true, running: false, lastRun: null } });
+    await render();
+    expect(byId("rep-sentiment-gate-off")).not.toBeNull();
+  });
+});
+
+describe("a failed re-read while polling (SP5 b)", () => {
+  it("keeps the overview (and the polling card) on screen", async () => {
+    await render();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      return { ok: false, status: 502, json: async () => ({ error: "bad gateway" }) };
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    expect(byId("rep-state-error")).toBeNull();
+    expect(byId("rep-sentiment")).not.toBeNull();
+    expect(byId("rep-sentiment-analyse")?.hasAttribute("disabled")).toBe(true); // still waiting
+  });
+
+  it("a failed re-read that is NOT an Analyse-now poll (a sent request) shows the error", async () => {
+    await render();
+    status = 502;
+    await act(async () => sendButton.onSent?.());
+    expect(byId("rep-state-error")).not.toBeNull();
+  });
+
+  it("a range switch during a poll ends the poll's keep: a later failed reload shows the error", async () => {
+    await render();
+    // The poll's re-read hangs; the user switches range; that load succeeds.
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      if (url.endsWith("range=90d")) return new Promise(() => {});
+      return { ok: true, status: 200, json: async () => payload() };
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    const select = byId("rep-range") as HTMLSelectElement;
+    await act(async () => {
+      select.value = "30d";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(byId("rep-overview")).not.toBeNull();
+    // Now a non-poll reload (a sent request) fails: it must show the error, not keep old data.
+    fetchMock.mockImplementation(async () => ({ ok: false, status: 502, json: async () => ({}) }));
+    await act(async () => sendButton.onSent?.());
+    expect(byId("rep-state-error")).not.toBeNull();
+  });
+
+  it("a sent request that lands while a poll's re-read is still in flight does not inherit the poll's keep", async () => {
+    await render();
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      return new Promise(() => {}); // the poll's re-read hangs
+    });
+    await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
+    // The send's reload replaces (aborts) the poll's re-read, and fails.
+    fetchMock.mockImplementation(async () => ({ ok: false, status: 502, json: async () => ({}) }));
+    await act(async () => sendButton.onSent?.());
+    expect(byId("rep-state-error")).not.toBeNull();
+  });
+
+  it("a failed FIRST load still shows the error", async () => {
+    status = 502;
+    await render();
+    expect(byId("rep-state-error")).not.toBeNull();
   });
 });

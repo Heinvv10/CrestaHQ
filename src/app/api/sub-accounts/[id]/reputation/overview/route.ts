@@ -6,7 +6,10 @@ import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { deriveHealth } from "@/lib/gbp/sync/health";
 import { publicSummary } from "@/lib/gbp/sync/public";
 import { loadServedReviews } from "@/lib/gbp/sync/served";
-import type { GbpSummary } from "@/lib/gbp/sync/types";
+import { toMillis, type GbpSummary } from "@/lib/gbp/sync/types";
+import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
+import { currentSentiment, sentimentGaveUp } from "@/lib/reputation/sentiment-basis";
+import { readLeaseDoc } from "@/lib/reputation/sentiment-lease";
 import { computeOverview, parseRange, previousPeriodStart } from "@/lib/reputation/overview";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import type { SubAccountDoc } from "@/types";
@@ -25,6 +28,11 @@ import type { SubAccountDoc } from "@/types";
 const REQUEST_CAP = 2000;
 
 export const dynamic = "force-dynamic";
+
+const toIso = (v: unknown): string | null => {
+  const ms = toMillis(v);
+  return ms === null ? null : new Date(ms).toISOString();
+};
 
 type Unavailable = "gate_off" | "not_connected" | "no_listing";
 
@@ -50,17 +58,27 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
 
   const log = db.collection(`subAccounts/${id}/reviewRequests`);
   const since = previousPeriodStart(range, now);
-  const [served, requestSnap, oldestSnap, sentSnap] = await Promise.all([
+  const [served, requestSnap, oldestSnap, sentSnap, lease] = await Promise.all([
     unavailable ? null : loadServedReviews(id, locationName, now),
     (since ? log.where("sentAt", ">=", since) : log).orderBy("sentAt", "desc").limit(REQUEST_CAP + 1).get(),
     log.orderBy("sentAt", "asc").limit(1).get(),
     // The checklist's "first request": one that was actually sent, not a failed ask.
     log.where("status", "==", "sent").limit(1).get(),
+    readLeaseDoc(id),
   ]);
   const oldestRequestAt = oldestSnap.docs[0]?.data().sentAt ?? null;
 
   const overview = computeOverview({
-    reviews: served ? served.reviews.map((r) => ({ starRating: r.starRating, createTime: r.createTime, reply: r.reply as { updateTime?: unknown } | null })) : null,
+    reviews: served
+      ? served.reviews.map((r) => ({
+          starRating: r.starRating,
+          createTime: r.createTime,
+          reply: r.reply as { updateTime?: unknown } | null,
+          // Only a label derived from the current content; a sync edit leaves the old one on the doc.
+          sentiment: currentSentiment(r),
+          sentimentGaveUp: sentimentGaveUp(r),
+        }))
+      : null,
     requests: requestSnap.docs.slice(0, REQUEST_CAP).map((d) => {
       const { channel, sentAt, status, source, tracked, clickedAt } = d.data();
       return { channel, sentAt, status, source, tracked, clickedAt };
@@ -84,6 +102,22 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     lastErrorKind: summary?.lastErrorKind ?? null,
     lastReconciliation: summary?.lastReconciliation ?? null,
     truncated: { reviews: served?.truncated ?? false, requests: requestSnap.size > REQUEST_CAP },
+    /** SP5 (b): the sentiment card's states — the agency gate, and whether any AI can run here. */
+    reviewsAi: {
+      enabled: sub.reviewsAiEnabledByAgency === true,
+      configured: reviewsAiConfigured(),
+      /** A classification holds the lease right now (Analyse now polls this). */
+      running: !!lease.runId && (lease.until ?? 0) > now.getTime(),
+      lastRun: lease.lastRun
+        ? {
+            classified: lease.lastRun.classified,
+            skipped: lease.lastRun.skipped,
+            failed: lease.lastRun.failed,
+            at: toIso(lease.lastRun.at),
+            reason: lease.lastRun.reason ?? null,
+          }
+        : null,
+    },
     checklist: {
       googleConnected: meta?.connected === true && !meta.reconnectRequired,
       listingSelected: !!locationName,

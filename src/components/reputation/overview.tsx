@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Loader2, Lock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { HealthBadge, HealthBanner } from "@/components/gbp/sync-health";
 import { RANGE_PRESETS, type RangePreset } from "@/lib/reputation/overview";
 import { Checklist, RequestsCard, ResponseCard } from "./overview-cards";
+import { SentimentCard } from "./overview-sentiment";
 import { Distribution, Tiles, Trend } from "./overview-tiles";
 import { RANGE_LABEL } from "./format";
 import { SendReviewRequestButton } from "./send-review-request";
@@ -71,15 +72,30 @@ export function ReputationOverview() {
   const { subAccountId, isAdmin } = useSubAccount();
   const [range, setRange] = useState<RangePreset>("90d");
   const [load, setLoad] = useState<Load>({ state: "loading" });
+  /** Bumped to re-read in place (Analyse now polling, a sent request). */
   const [reload, setReload] = useState(0);
+  /** Set by an Analyse-now poll: a failed re-read then keeps what is on screen. */
+  const polling = useRef(false);
+  const refresh = useCallback(() => {
+    polling.current = true;
+    setReload((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
+    // Captured NOW, for this run only: a newer run (range switch, sent request)
+    // that replaces this one starts with its own, un-kept, flag.
+    const keep = polling.current;
+    polling.current = false;
     void (async () => {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/reputation/overview?range=${range}`, { signal: controller.signal }).catch(() => null);
       const data = (await res?.json().catch(() => null)) as OverviewResponse | null;
       if (controller.signal.aborted) return;
-      setLoad(res?.ok && data?.requests ? { state: "ready", data } : { state: "error" });
+      // Only an Analyse-now poll keeps what is on screen after a failed re-read
+      // (so the polling card is not unmounted); any other failure shows the error.
+      setLoad((prev) =>
+        res?.ok && data?.requests ? { state: "ready", data } : keep && prev.state === "ready" ? prev : { state: "error" },
+      );
     })();
     return () => controller.abort();
   }, [subAccountId, range, reload]);
@@ -114,12 +130,24 @@ export function ReputationOverview() {
         </p>
       )}
       {load.state === "error" && <Note testId="rep-state-error">The overview could not be loaded. Please try again.</Note>}
-      {load.state === "ready" && <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} />}
+      {load.state === "ready" && (
+        <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} onAnalysed={refresh} />
+      )}
     </div>
   );
 }
 
-function Ready({ data, subAccountId, isAdmin }: { data: OverviewResponse; subAccountId: string; isAdmin: boolean }) {
+function Ready({
+  data,
+  subAccountId,
+  isAdmin,
+  onAnalysed,
+}: {
+  data: OverviewResponse;
+  subAccountId: string;
+  isAdmin: boolean;
+  onAnalysed: () => void;
+}) {
   const r = data.reviews;
   const empty = (r ? r.count === 0 : true) && data.requests.sent === 0;
   return (
@@ -140,9 +168,16 @@ function Ready({ data, subAccountId, isAdmin }: { data: OverviewResponse; subAcc
       {r && (
         <div className="grid gap-4 md:grid-cols-2">
           <Distribution reviews={r} />
-          <ResponseCard data={data} />
+          <SentimentCard
+            subAccountId={subAccountId}
+            isAdmin={isAdmin}
+            reviewsAi={data.reviewsAi}
+            sentiment={r.sentiment}
+            onAnalysed={onAnalysed}
+          />
         </div>
       )}
+      {r && <ResponseCard data={data} />}
       <RequestsCard data={data} />
       {data.truncated.requests && (
         <p className="text-xs text-muted-foreground" data-testid="rep-requests-truncated">Request figures cover the newest 2,000 requests in this range only.</p>

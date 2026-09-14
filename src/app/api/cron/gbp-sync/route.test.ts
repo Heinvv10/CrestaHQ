@@ -7,6 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+const handed = vi.hoisted(() => vi.fn());
+// Sentiment runs after the response (SP5 b); here we only see what the route hands it.
+vi.mock("@/lib/reputation/sentiment-after", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reputation/sentiment-after")>()),
+  classifyAfterResponse: handed,
+}));
 
 const KEY = "sig_test_current_key_for_gbp_cron";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
@@ -24,7 +30,7 @@ import {
   seedSub,
 } from "@/test/gbp-sync-harness";
 import { POST as SYNC_NOW } from "../../sub-accounts/[id]/gbp/sync/route";
-import { POST } from "./route";
+import { POST, maxDuration } from "./route";
 
 const ORIGINAL = { ...process.env };
 const URL_ = "http://127.0.0.1:3100/api/cron/gbp-sync";
@@ -169,4 +175,40 @@ describe("manual and scheduled share one core", () => {
     expect(s).toEqual(m);
     expect(reviews(OTHER_SA)).toHaveLength(7);
   });
+});
+
+describe("sentiment after the response (SP5 b)", () => {
+  it("hands every run the sweep made to sentiment in one deferred batch", async () => {
+    handed.mockClear();
+    // A frozen clock that the SWEEP moves on by a minute: the deadline must be
+    // taken at request start, before the sweep, not after it.
+    const startedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: startedAt });
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const realCollection = storeDb.collection.bind(storeDb);
+    let moved = false;
+    vi.spyOn(storeDb, "collection").mockImplementation(((path: string) => {
+      if (!moved) {
+        moved = true;
+        vi.setSystemTime(new Date(startedAt + 60_000));
+      }
+      return realCollection(path);
+    }) as never);
+    try {
+      expect((await cron()).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(moved).toBe(true);
+    expect(handed).toHaveBeenCalledTimes(1);
+    const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
+    // The one deadline for every tenant: exactly the request's start + 240 s.
+    expect(handed.mock.calls[0][1]).toBe(startedAt + 240_000);
+    expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
+    expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
+  });
+});
+
+it("allows 300 s, so the after-response sentiment run (240 s budget) is not cut off", () => {
+  expect(maxDuration).toBe(300);
 });
