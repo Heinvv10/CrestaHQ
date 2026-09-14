@@ -131,8 +131,9 @@ review URL or is the `review_request` template. Rows before SP5 d1 are the
 dispatcher's only, with channel `whatsapp_template` / `whatsapp_manual` and no
 `source`; readers map them. SP5 d2: dispatcher rows sent while reminders are
 on also carry `tracked` (the body had the `/rr/` link) and `reminder
-{everyDays, maxRetries, attempts, nextAt, state, stopReason, lastAttemptAt}`,
-updated by the reminder worker; `/rr/{token}` stamps `clickedAt`. Never a
+{everyDays, maxRetries, attempts, nextAt, state, stopReason, lastAttemptAt}`
+and `toHash` (SHA-256 of the number it went to — never the number), updated by
+the reminder worker and by a newer request for the same contact (superseded); `/rr/{token}` stamps `clickedAt`. Never a
 message body, phone number or email.
 Server only (no client rule, so default deny); read by the Reputation overview
 and requests routes with single-field `sentAt` queries — no index. See

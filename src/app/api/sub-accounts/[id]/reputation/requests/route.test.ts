@@ -179,13 +179,16 @@ describe("paging", () => {
     const all = (await read()).body.requests;
     expect(all[0]).toMatchObject({
       clickedAt: clickedAt.toISOString(), tracked: true,
-      reminder: { attempts: 1, maxRetries: 2, state: "stopped", stopReason: "clicked", nextAt: null },
+      reminder: { attempts: 1, maxRetries: 2, state: "stopped", stopReason: "clicked", nextAt: null, lastAttemptAt: new Date(NOW).toISOString() },
     });
-    expect(all[1].reminder).toEqual({ attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt: nextAt.toISOString() });
+    expect(all[1].reminder).toEqual({ attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt: nextAt.toISOString(), lastAttemptAt: null });
     expect(all[2]).toMatchObject({ clickedAt: null, tracked: false, reminder: null });
     expect((await read("?status=clicked")).body.requests.map((r: Body) => r.id)).toEqual(["r001"]);
+    // Only a tracked request can have been clicked: a stray clickedAt on an untracked one is not a click.
+    seedRow(SA, 4, { tracked: false, clickedAt });
+    expect((await read("?status=clicked")).body.requests.map((r: Body) => r.id)).toEqual(["r001"]);
     // "sent" still means sent, clicked or not.
-    expect((await read("?status=sent")).body.requests).toHaveLength(3);
+    expect((await read("?status=sent")).body.requests).toHaveLength(4);
   });
 
   it("channel and source filters", async () => {

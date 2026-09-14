@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { clientIpFrom } from "@/lib/checkout/rate-limit";
-import { resolveReviewClick } from "@/lib/reviews/click";
+import { feedClientKey } from "@/lib/gbp/feed/rate-limit";
+import { isLinkPreviewAgent, resolveReviewClick } from "@/lib/reviews/click";
 import { checkReviewClickRateLimit } from "@/lib/reviews/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -10,15 +10,24 @@ export const dynamic = "force-dynamic";
  * while reminders are on. A valid click 302s to the sub-account's configured
  * Google review link and stops the request's reminders; a forged or unknown
  * token, or no usable review link, is a 404 — never a redirect. Reads no
- * identity header (a public path: a caller can send its own). Per-IP limited.
+ * identity header (a public path: a caller can send its own). Per-client
+ * limited, the client keyed like the GBP feed. Only a person's GET counts as a
+ * click: HEAD and known link-preview fetchers are redirected without one.
  */
-export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
-  const rate = checkReviewClickRateLimit(clientIpFrom(request));
+async function handle(request: Request, token: string, stamp: boolean) {
+  const rate = checkReviewClickRateLimit(feedClientKey(request));
   if (!rate.ok) {
     return new NextResponse("Too many requests", { status: 429, headers: { "retry-after": String(rate.retryAfterSec) } });
   }
-  const { token } = await params;
-  const destination = await resolveReviewClick(token);
+  const destination = await resolveReviewClick(token, { stamp });
   if (!destination) return new NextResponse("Not found", { status: 404 });
   return NextResponse.redirect(destination, 302);
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
+  return handle(request, (await params).token, !isLinkPreviewAgent(request.headers.get("user-agent")));
+}
+
+export async function HEAD(request: Request, { params }: { params: Promise<{ token: string }> }) {
+  return handle(request, (await params).token, false);
 }

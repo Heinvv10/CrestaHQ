@@ -44,6 +44,7 @@ function reminderOf(v: unknown) {
     state: typeof r.state === "string" ? r.state : "stopped",
     stopReason: typeof r.stopReason === "string" ? r.stopReason : null,
     nextAt: iso(r.nextAt),
+    lastAttemptAt: iso(r.lastAttemptAt),
   };
 }
 
@@ -95,7 +96,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
       const keys = requestKeys(data);
       const status = data.status === "failed" ? "failed" : "sent";
       if (
-        (!filters.status || (filters.status === "clicked" ? status === "sent" && !!data.clickedAt : status === filters.status)) &&
+        (!filters.status || (filters.status === "clicked" ? status === "sent" && data.tracked === true && !!data.clickedAt : status === filters.status)) &&
         (!filters.channel || keys.channel === filters.channel) &&
         (!filters.source || keys.source === filters.source)
       ) {

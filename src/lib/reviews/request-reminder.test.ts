@@ -154,6 +154,40 @@ describe("reminders ON", () => {
     expect(rows()[0]).toMatchObject({ status: "sent", reminder: { state: "stopped", stopReason: "schedule_failed", nextAt: null } });
   });
 
+  it("a failed stop write after a failed publish is retried once; a second failure is reported by kind", async () => {
+    const realDoc = mem.db.doc;
+    const failing = (times: number) => {
+      let left = times;
+      vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+        const ref = realDoc(path);
+        if (!path.includes("/reviewRequests/")) return ref;
+        const update = ref.update;
+        return Object.assign(ref, {
+          update: async (d: Record<string, unknown>) => {
+            if (left-- > 0) throw Object.assign(new Error("unavailable"), { code: 14 });
+            return update(d);
+          },
+        });
+      });
+    };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    failing(1);
+    publish.mockResolvedValueOnce(null);
+    expect(await send()).toEqual({ sent: true });
+    expect(rows()[0].reminder).toMatchObject({ state: "stopped", stopReason: "schedule_failed" });
+    expect(errors).not.toHaveBeenCalled();
+
+    vi.mocked(mem.db.doc).mockRestore();
+    mem.clear();
+    setConfig({ reminder: { everyDays: 3, maxRetries: 2 } });
+    mem.seed("contacts/c1", { name: "Jane Doe", phone: "+61412345678", agencyId: "ag1", subAccountId: "sa1" });
+    failing(2);
+    publish.mockResolvedValueOnce(null);
+    expect(await send()).toEqual({ sent: true });
+    expect(errors.mock.calls.map((c) => c.join(" "))).toContain("[reviews/reminder] schedule_failed not recorded kind=14");
+    vi.mocked(mem.db.doc).mockRestore();
+  });
+
   it("a refused send writes no row and schedules nothing", async () => {
     mem.seed("contacts/c1", { ...mem.read("contacts/c1"), smsOptedOut: true });
     expect(await send()).toEqual({ sent: false, reason: "opted_out" });

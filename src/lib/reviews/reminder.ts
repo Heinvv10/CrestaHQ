@@ -103,15 +103,22 @@ export async function scheduleReviewReminder(input: {
     deduplicationId: `rr_${input.requestId}_${input.attempt}`,
   });
   if (res) return true;
-  try {
-    await getAdminDb()
-      .doc(`subAccounts/${input.subAccountId}/reviewRequests/${input.requestId}`)
-      .update({ "reminder.state": "stopped", "reminder.stopReason": "schedule_failed", "reminder.nextAt": null });
-  } catch (err) {
-    const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
-    console.warn(`[reviews/reminder] schedule_failed not recorded kind=${String(kind)}`);
+  console.warn("[reviews/reminder] reminder could not be scheduled; stopping it (schedule_failed)");
+  const path = `subAccounts/${input.subAccountId}/reviewRequests/${input.requestId}`;
+  const stop = { "reminder.state": "stopped", "reminder.stopReason": "schedule_failed", "reminder.nextAt": null };
+  // Retried once: left "scheduled" with no message behind it, the request
+  // would claim a reminder that will never come.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await getAdminDb().doc(path).update(stop);
+      return false;
+    } catch (err) {
+      if (attempt === 2) {
+        const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
+        console.error(`[reviews/reminder] schedule_failed not recorded kind=${String(kind)}`);
+      }
+    }
   }
-  console.warn("[reviews/reminder] reminder could not be scheduled; stopped (schedule_failed)");
   return false;
 }
 

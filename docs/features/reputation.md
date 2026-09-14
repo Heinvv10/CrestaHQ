@@ -106,8 +106,8 @@ Statuses are what LeadStack can observe truthfully: **sent**, **failed** and —
 for requests sent while reminders are on, over SMS or in-window WhatsApp —
 **clicked** (SP5 d2, below; the Clicked filter lists them). The **Reminders**
 column shows how many reminders went of the maximum and the next date, or why
-they stopped (clicked, opted out, retries run out, reminders turned off, review
-link removed, channel changed, contact deleted, could not be scheduled, …).
+they stopped (the reasons below); "—" (with a tooltip and a legend) means the
+request has no reminders.
 Delivered / read are not wired to the log. `feedbackAt` is reserved: the
 private feedback page (`/r/[token]`) is not sent by any sender, so nothing
 writes it.
@@ -116,60 +116,101 @@ writes it.
 
 GHL's "Until clicked, repeat this every N days / Maximum retries". Set in
 **Reputation → Settings** (the Google reviews section, also on Settings →
-Messaging) as `googleReviewConfig.reminder = {everyDays: 1..30 | null,
+Messaging) as `googleReviewConfig.reminder = {everyDays: 1..7 | null,
 maxRetries: 1..5}`, saved with `PATCH /api/sub-accounts/[id]/google-review`
-(admins; needs a saved review link). The form's POST keeps a stored reminder
-(merge write) and validates one when given. **Off is the default**: no
-`reminder`, or `everyDays: null` ("Don't repeat"). Enabling it on a real
-sub-account is Hein's decision.
+(admins; needs a saved review link; writes only `googleReviewConfig.reminder`
+and `updatedAt` by field path). The form's POST keeps a stored reminder (merge
+write) and validates one when given. **Off is the default**: no `reminder`, or
+`everyDays: null` ("Don't repeat"). Enabling it on a real sub-account is Hein's
+decision.
+
+**At most every 7 days** (GHL allows 30): each reminder is one delayed QStash
+message, and the plan's maximum delay is unconfirmed — the same cap scheduled
+messages use. Raise it only once that is confirmed.
+
+**Turning reminders on needs** (both config routes refuse otherwise, with a
+`code`): the review channel is **SMS** (`reminders_sms_only` — a WhatsApp
+template's link is fixed, so a click can't stop it and the same template would
+repeat, a WhatsApp quality risk; an in-window WhatsApp message dies when the
+24-hour window closes); **link tracking** on the deployment
+(`AUTOMATIONS_TOKEN_SECRET` and `NEXT_PUBLIC_APP_URL`, `reminders_need_tracking`);
+and a **Google review link** (`reminders_google_link_only` — host exactly
+g.page, search.google.com, maps.app.goo.gl, google.com, www.google.com or
+maps.google.com). Switching them off needs none of it.
 
 **With reminders off, nothing changes** — no request id is chosen early, no
 link is rewritten, no field is added to the log row, nothing is scheduled.
 `lib/reviews/request-reminder.test.ts` pins the SMS body and the row keys byte
 for byte, and `e2e/specs/reputation-reminders.spec.ts` asserts the real body.
+The same holds, with reminders on, for any send they can't apply to: a
+non-SMS channel, or no tracking on the deployment — today's body, no reminder,
+never a send failure.
 
-**With reminders on**, only the dispatcher's own sends (Request review, Send
-Review Request, quote paid, deal completed) change:
+**With reminders on**, only SMS requests from the dispatcher's own senders —
+Request review, Send Review Request, quote paid, deal completed; never
+workflows, broadcasts or inbox messages — change:
 
-- The request's log id is chosen before the send. On **SMS** and **in-window
-  WhatsApp** the body's `{{reviewUrl}}` becomes the tracked link
+- The request's log id is chosen before the send and the body's
+  `{{reviewUrl}}` becomes the tracked link
   `${NEXT_PUBLIC_APP_URL}/rr/{subAccountId}.{requestId}.{hmac}` (signed with
-  `AUTOMATIONS_TOKEN_SECRET`, domain-separated from tracked-link tokens) — this
-  is the one change a customer sees, and only while reminders are on. An
-  **approved WhatsApp template's** URL is fixed, so those requests are
-  untracked and their reminders stop only on opt-out or retries (the settings
-  say so). Without `NEXT_PUBLIC_APP_URL` the plain link is sent, untracked.
-- The row gains `tracked` and `reminder {everyDays, maxRetries, attempts: 0,
-  nextAt, state: "scheduled", stopReason: null, lastAttemptAt: null}`, and
-  reminder 1 is published to QStash (`POST /api/cron/review-reminder`,
+  `AUTOMATIONS_TOKEN_SECRET`, domain-separated from tracked-link tokens) — the
+  one change a customer sees, and only while reminders are on.
+- The row gains `tracked`, `reminder {everyDays, maxRetries, attempts: 0,
+  nextAt, state: "scheduled", stopReason: null, lastAttemptAt: null}` and
+  `toHash` (SHA-256 of the number it went to — never the number). The
+  contact's other `scheduled` requests stop (`superseded`): one chain per
+  contact. Reminder 1 is published to QStash (`POST /api/cron/review-reminder`,
   `{subAccountId, requestId, attempt}`, delay `everyDays`, dedup
   `rr_{requestId}_{attempt}`). A failed publish never fails the send: the
-  reminder is stopped with `schedule_failed`.
+  reminder is stopped with `schedule_failed` (that write is retried once, then
+  logged by kind with `console.error`).
 
-**`GET /rr/{token}`** (public, per-IP limited to 60/hour, reads no identity
-header): a valid token for a tracked request 302s to the sub-account's
-**configured** https review link as it is now, and stamps `clickedAt` once
-(later clicks keep the first time). Anything else — forged, unknown, untracked,
-no usable link — is a 404, never a redirect. It fires no workflow trigger.
+**`/rr/{token}`** (public; limited to 60 an hour per client, keyed like the GBP
+feed — `cf-connecting-ip` only with `TRUST_CF_CONNECTING_IP=1`, else
+`x-real-ip`, else the left-most `X-Forwarded-For` — with least-recently-used
+eviction, never a wholesale clear; reads no identity header): a valid token for
+a tracked request 302s to the sub-account's **configured** https review link as
+it is now. Only a person's **GET** counts as a click and stamps `clickedAt`
+(once; later clicks keep the first time): a **HEAD**, or a known link-preview
+fetcher (facebookexternalhit, WhatsApp, Slackbot, Twitterbot, TelegramBot,
+Googlebot, bingbot, SkypeUriPreview, LinkedInBot, Discordbot, Applebot, anything
+saying "preview"), is redirected without one. Anything else — forged, unknown,
+untracked, no usable link — is a 404, never a redirect. It fires no workflow
+trigger.
 
 **The reminder worker** (`lib/reviews/reminder-run.ts`, behind the signed
-route) is idempotent under QStash redelivery: in one transaction the request
-must still be `scheduled` with exactly `attempt − 1` reminders sent, and the
-attempt is claimed (`attempts = attempt`, state `sending`) before anything is
-sent — a redelivered or concurrent message finds the claim and sends nothing.
-It stops without sending (state `stopped`, or `done` for retries) when the
-customer clicked, reminders are now off, the review link is gone, the review
-channel changed, or retries ran out; otherwise it re-sends through the
-dispatcher in **reminder mode** — the same link and channel rules, the
-opt-out / window / gate checks, the cooldown skipped for this request only,
-no new log row — and records the attempt on the request. A dispatcher refusal
-stops it with that reason (`opted_out`, `contact_deleted`, `no_phone`,
-`window_closed`, `whatsapp_gate_off`, `send_failed`, …). After the last
-reminder the state is `done` / `retries_exhausted`; otherwise the next is
-scheduled. A crash mid-send leaves `sending` — never a second message.
+route; its rules in `lib/reviews/reminder-checks.ts`) is idempotent under
+QStash redelivery: in one transaction the request must still be `scheduled`
+with exactly `attempt − 1` reminders sent, and the attempt is claimed
+(`attempts = attempt`, state `sending`) before anything is sent — a redelivered
+or concurrent message finds the claim and sends nothing. In that transaction
+it stops without sending (state `stopped`, or `done` for retries) when:
+
+| Reason | When |
+|---|---|
+| `clicked` / `clicked_other` | this request, or any of the contact's requests since it, was clicked |
+| `archived` / `automations_paused` | the sub-account is archived, or its automations are paused |
+| `reminders_off` | reminders are off in the config now (or it was cleared) |
+| `auto_send_off` | a quote-paid / deal-completed request whose auto-send (`enabled` + its trigger) is now off — manual requests are unaffected: `enabled` gates only auto sends |
+| `not_configured` / `channel_changed` / `tracking_unavailable` | the review link is gone, the channel is no longer SMS, or tracking is gone |
+| `contact_deleted` / `phone_changed` | the contact is gone, or their number no longer matches `toHash` |
+| `replied` | the contact sent any inbound SMS or WhatsApp message since the request (the newest 20 per thread are read) |
+| `superseded` | the dispatcher sent the contact a newer request |
+| `retries_exhausted` | the lower of the request's maximum and the config's maximum now is reached (`done`) |
+
+Otherwise it re-sends through the dispatcher in **reminder mode** — the same
+link and channel rules, the opt-out and gate checks, the cooldown skipped for
+this request only, no new log row — and records the attempt on the request. A
+dispatcher refusal stops it with that reason (`opted_out`, `no_phone`,
+`send_failed`, …): **a failed send ends that request's reminders** — the safe
+direction. After the last reminder the state is `done` / `retries_exhausted`;
+otherwise the next is scheduled. A crash mid-send leaves `sending` — never a
+second message; the Requests tab shows a `sending` older than 15 minutes as
+"Stopped — outcome unknown" (display only).
 
 The Overview's requests card shows clicks among tracked requests only
-("Clicked: X of Y tracked requests").
+("Clicked: X of Y tracked requests"); the Requests tab's Clicked filter is the
+same rule (tracked and clicked).
 
 ## Insights (SP5 f)
 

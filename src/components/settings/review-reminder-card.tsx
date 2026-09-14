@@ -39,7 +39,7 @@ export function ReviewReminderCard() {
   }, [stored?.everyDays, stored?.maxRetries]);
 
   if (!isAdmin) return null;
-  const template = normalizeReviewChannel(cfg?.channel) === "whatsapp_template";
+  const smsOnly = normalizeReviewChannel(cfg?.channel) !== "sms";
 
   async function save() {
     setSaving(true);
@@ -65,12 +65,18 @@ export function ReviewReminderCard() {
         <h3 className="text-sm font-semibold">Reminders</h3>
         <p className="mt-0.5 text-xs text-muted-foreground">
           Off by default. When on, a customer who hasn&apos;t clicked the review link gets the same request again.
-          Reminders stop when the customer clicks the link, opts out, or the retries run out.
+          Reminders stop when the customer clicks the link, opts out, or the retries run out — and when they reply,
+          get a newer request, or a send fails.
         </p>
-        {template && (
-          <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-reminder-template-note">
-            Your review requests use an approved WhatsApp template, whose link is fixed — it can&apos;t be tracked, so
-            reminders stop only when the customer opts out or the retries run out.
+        <p className="mt-1 text-xs text-muted-foreground">
+          Reminders go with review requests sent by Request review, Send Review Request, quote paid and deal completed — not
+          workflows, broadcasts or inbox messages.
+        </p>
+        {smsOnly && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-reminder-sms-only">
+            Reminders are SMS only. A WhatsApp template&apos;s link is fixed, so a click can&apos;t stop its reminders, and
+            repeating the same template risks your WhatsApp quality rating; an in-window WhatsApp message can&apos;t be sent
+            once the customer&apos;s 24-hour window closes. Switch review requests to SMS to use reminders.
           </p>
         )}
       </div>
@@ -81,7 +87,14 @@ export function ReviewReminderCard() {
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="rep-reminder-every">Until clicked, repeat every</Label>
-              <select id="rep-reminder-every" value={every} onChange={(e) => setEvery(e.target.value)} className={selectClass} data-testid="rep-reminder-every">
+              <select
+                id="rep-reminder-every"
+                value={every}
+                onChange={(e) => setEvery(e.target.value)}
+                disabled={smsOnly && every === "off"}
+                className={selectClass}
+                data-testid="rep-reminder-every"
+              >
                 <option value="off">Don&apos;t repeat</option>
                 {DAY_OPTIONS.map((d) => <option key={d} value={String(d)}>{d === 1 ? "1 day" : `${d} days`}</option>)}
               </select>

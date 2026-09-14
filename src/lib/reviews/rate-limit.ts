@@ -71,11 +71,16 @@ const clickBuckets = new Map<string, Bucket>();
 
 export function checkReviewClickRateLimit(ip: string): ReviewRateLimitResult {
   const now = Date.now();
-  if (clickBuckets.size > MAX_TRACKED_IPS) clickBuckets.clear();
   let bucket = clickBuckets.get(ip);
-  if (!bucket || now - bucket.windowStartedAt >= WINDOW_MS) {
-    bucket = { count: 0, windowStartedAt: now };
-    clickBuckets.set(ip, bucket);
+  if (!bucket || now - bucket.windowStartedAt >= WINDOW_MS) bucket = { count: 0, windowStartedAt: now };
+  // Least-recently-used order: every hit moves the key to the end. A full table
+  // drops expired windows first, then the least recently used — never a
+  // wholesale clear, which would hand a persistent abuser a fresh budget.
+  clickBuckets.delete(ip);
+  clickBuckets.set(ip, bucket);
+  if (clickBuckets.size > MAX_TRACKED_IPS) {
+    for (const [key, b] of clickBuckets) if (now - b.windowStartedAt >= WINDOW_MS) clickBuckets.delete(key);
+    while (clickBuckets.size > MAX_TRACKED_IPS) clickBuckets.delete(clickBuckets.keys().next().value!);
   }
   bucket.count += 1;
   if (bucket.count > CLICK_LIMIT) {

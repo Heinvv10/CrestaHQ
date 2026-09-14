@@ -53,7 +53,7 @@ describe("reminder card", () => {
     expect((byId("rep-reminder-every") as HTMLSelectElement).value).toBe("off");
     expect((byId("rep-reminder-retries") as HTMLSelectElement).disabled).toBe(true);
     expect(byId("rep-reminder-card")?.textContent).toContain(
-      "Reminders stop when the customer clicks the link, opts out, or the retries run out.",
+      "Reminders stop when the customer clicks the link, opts out, or the retries run out",
     );
   });
 
@@ -62,6 +62,10 @@ describe("reminder card", () => {
     await render();
     expect((byId("rep-reminder-every") as HTMLSelectElement).value).toBe("7");
     expect((byId("rep-reminder-retries") as HTMLSelectElement).value).toBe("3");
+    // A setting outside today's range reads as off rather than a value the form can't show.
+    ctx.subAccount = cfg({ reminder: { everyDays: 14, maxRetries: 3 } });
+    await render();
+    expect((byId("rep-reminder-every") as HTMLSelectElement).value).toBe("off");
   });
 
   it("saves with PATCH and says so", async () => {
@@ -99,13 +103,26 @@ describe("reminder card", () => {
     expect(byId("rep-reminder-save")).toBeNull();
   });
 
-  it("an approved WhatsApp template can't be tracked, and it says so", async () => {
-    ctx.subAccount = cfg({ channel: "whatsapp_template" });
-    await render();
-    expect(byId("rep-reminder-template-note")?.textContent).toContain("can't be tracked");
+  it("SMS only: on a WhatsApp channel it says why and can't be turned on", async () => {
+    for (const channel of ["whatsapp_template", "whatsapp_manual"]) {
+      ctx.subAccount = cfg({ channel });
+      await render();
+      expect(byId("rep-reminder-sms-only")?.textContent).toContain("SMS only");
+      expect((byId("rep-reminder-every") as HTMLSelectElement).disabled).toBe(true);
+    }
     ctx.subAccount = cfg({ channel: "sms" });
     await render();
-    expect(byId("rep-reminder-template-note")).toBeNull();
+    expect(byId("rep-reminder-sms-only")).toBeNull();
+    expect((byId("rep-reminder-every") as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it("names the senders reminders go with, and offers at most 7 days", async () => {
+    await render();
+    expect(byId("rep-reminder-card")?.textContent).toContain(
+      "Reminders go with review requests sent by Request review, Send Review Request, quote paid and deal completed — not workflows, broadcasts or inbox messages.",
+    );
+    const days = [...(byId("rep-reminder-every") as HTMLSelectElement).options].map((o) => o.value);
+    expect(days).toEqual(["off", "1", "2", "3", "4", "5", "6", "7"]);
   });
 
   it("renders nothing for a member who is not an admin", async () => {

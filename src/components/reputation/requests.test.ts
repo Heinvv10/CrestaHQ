@@ -152,10 +152,10 @@ describe("the list", () => {
     pages[""] = {
       body: {
         requests: [
-          row("k", { tracked: true, clickedAt: "2026-09-14T09:00:00.000Z", reminder: { attempts: 1, maxRetries: 2, state: "stopped", stopReason: "clicked", nextAt: null } }),
-          row("s", { tracked: true, reminder: { attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt: "2026-09-16T08:05:00.000Z" } }),
-          row("d", { reminder: { attempts: 2, maxRetries: 2, state: "done", stopReason: "retries_exhausted", nextAt: null } }),
-          row("o", { reminder: { attempts: 0, maxRetries: 2, state: "stopped", stopReason: "opted_out", nextAt: null } }),
+          row("k", { tracked: true, clickedAt: "2026-09-14T09:00:00.000Z", reminder: { attempts: 1, maxRetries: 2, state: "stopped", stopReason: "clicked", nextAt: null, lastAttemptAt: null } }),
+          row("s", { tracked: true, reminder: { attempts: 0, maxRetries: 2, state: "scheduled", stopReason: null, nextAt: "2026-09-16T08:05:00.000Z", lastAttemptAt: null } }),
+          row("d", { reminder: { attempts: 2, maxRetries: 2, state: "done", stopReason: "retries_exhausted", nextAt: null, lastAttemptAt: null } }),
+          row("o", { reminder: { attempts: 0, maxRetries: 2, state: "stopped", stopReason: "opted_out", nextAt: null, lastAttemptAt: null } }),
           row("n"),
         ],
         nextCursor: null,
@@ -170,6 +170,24 @@ describe("the list", () => {
     expect(within(done, "rep-req-reminder")).toBe("Done · 2 of 2 sent");
     expect(within(opt, "rep-req-reminder")).toBe("Stopped: opted out · 0 of 2 sent");
     expect(within(none, "rep-req-reminder")).toBe("—");
+  });
+
+  it("a reminder stuck 'sending' for over 15 minutes reads as stopped, outcome unknown; a fresh one as sending", async () => {
+    const old = new Date(Date.now() - 16 * 60_000).toISOString();
+    const fresh = new Date(Date.now() - 60_000).toISOString();
+    const r = (id: string, lastAttemptAt: string) =>
+      row(id, { reminder: { attempts: 1, maxRetries: 2, state: "sending", stopReason: null, nextAt: null, lastAttemptAt } });
+    pages[""] = { body: { requests: [r("old", old), r("fresh", fresh)], nextCursor: null } };
+    await render();
+    const [o, f] = rows();
+    expect(within(o, "rep-req-reminder")).toBe("Stopped — outcome unknown · 1 of 2 sent");
+    expect(within(f, "rep-req-reminder")).toBe("Sending · 1 of 2 sent");
+  });
+
+  it("'—' explains itself: a tooltip and a legend under the table", async () => {
+    await render();
+    expect(rows()[0].querySelector('[data-testid="rep-req-reminder"]')?.getAttribute("title")).toContain("No reminders");
+    expect(text("rep-req-reminder-legend")).toContain("Reminders go only with SMS requests sent by Request review");
   });
 
   it("the status filter offers Clicked", async () => {
