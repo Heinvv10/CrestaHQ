@@ -57,3 +57,52 @@ it("interleaves an internal note between messages and marks it not sent", async 
     vi.unstubAllGlobals();
   }
 });
+
+it("highlights the @Name of each mentioned member in a note, and only those", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () =>
+        url === "/api/sub-accounts/sa1/members"
+          ? {
+              members: [
+                { uid: "mike", displayName: "Michael Smith", email: "", role: "collaborator" },
+                { uid: "hein", displayName: "Hein", email: "", role: "admin" },
+              ],
+            }
+          : { messages: [] },
+    }))
+  );
+  rows["contacts/c1/notes"] = [
+    {
+      id: "n9",
+      data: {
+        // "@Hein" was typed, not picked — not a mention, so not highlighted.
+        content: "@Michael Smith call back, cc @Hein",
+        createdBy: "u1",
+        source: "conversation",
+        mentionedUids: ["mike"],
+        createdAt: at(4000),
+      },
+    },
+  ];
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        createElement(ConversationThread, { contactId: "c1", subAccountId: "sa1" })
+      )
+    );
+    const marks = [...container.querySelectorAll('[data-testid="note-mention"]')];
+    expect(marks.map((el) => el.textContent)).toEqual(["@Michael Smith"]);
+    expect(container.querySelector('[data-testid="thread-note"]')!.textContent).toContain(
+      "@Michael Smith call back, cc @Hein"
+    );
+  } finally {
+    await act(async () => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
