@@ -1,0 +1,17 @@
+# SP3 R1 — live voice booking on production, #1000, 2026-09-14 ~11:50 SAST
+# Production crm.crestahq.com at 307c443 (includes SP3). Real model: OpenRouter anthropic/claude-haiku-4-5.
+# Requests sent to POST /api/webhooks/vapi/llm/54vPI0BS1zDMcxMyMAyA exactly as Vapi's custom-LLM does (secret in ?s=, redacted here).
+# Caller ID +15555550123 (fictional). Vapi assistant 58a9a9fd-df20-4e28-bc20-a18b9d0ed7a7 on Vapi number a27b2a38-... (+19497048751).
+
+## Turn 1 caller: Hi, I would like to book a review audit call. What times do you have?
+## Agent (HTTP 200, 5.4s):
+Perfect! We've got some slots coming up. How about Tuesday at nine a.m., Wednesday at ten a.m., or Thursday at nine twenty a.m.? Which works best for you?
+
+## Turn 2 caller: Thursday at nine twenty works. My name is Voiceprobe Live.
+## Agent (HTTP 200, 6.2s):
+You're all set, Voiceprobe Live — Thursday, September 17 at nine twenty a.m. is locked in. Looking forward to it!
+
+## Firestore after turn 2 (admin read):
+EVENT OSPtStDNvygpwKDwUWCs {"title":"Review Audit Call — Voiceprobe Live","start":"2026-09-17T07:20:00.000Z","status":"scheduled","source":"booking_page","notes":"Booked by phone via the AI voice agent.","contactId":"NphyzfShepLvhJaBRvBl","agencyId":true,"createdByUid":"voice-agent","assignedToUid":null}
+CONTACT NphyzfShepLvhJaBRvBl {"name":"Voiceprobe Live","source":"voice","phone":"+15555550123"}
+  activities: booking_page_booked

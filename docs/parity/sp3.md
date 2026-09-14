@@ -96,6 +96,18 @@ Rows marked ⚠ were not exercised in GHL: its calendar editor stopped respondin
   - The confirmation was spoken. By v1 design, a voice booking sends no email and schedules no reminder.
   - Evidence: `evidence/sp3/runtime/r1-voice-marker-loop.txt` and `r1-r2-firestore.txt`.
 - **Not exercised:** the telephony leg (Vapi to our webhook) and a real model's behaviour.
+
+**R1 — live on production (2026-09-14).** Hein supplied an OpenRouter key and a Vapi private key. They went into `/home/velo/crestahq-config/.env.production` with a generated `VAPI_WEBHOOK_SECRET`; the file was backed up first and the service restarted. On #1000 the AI agent profile was saved and Voice enabled in the UI in "A number I own in Vapi" mode, on a free Vapi number (+1 949 704 8751). Live booking points at the `review-audit-call` page. Vapi confirmed the sync: assistant `58a9a9fd-…`, custom-LLM URL on crm.crestahq.com.
+- Two caller turns went to the production LLM webhook exactly as Vapi sends them: `?s=` secret, OpenAI chat shape, caller ID +15555550123 (fictional). The real model is `anthropic/claude-haiku-4-5` via OpenRouter.
+- **Turn 1** (200 in 5.4 s): the agent offered three real free slots.
+- **Turn 2** (200 in 6.2 s): the caller picked Thursday 09:20. The agent said "locked in".
+- Firestore then held:
+  - event `OSPtStDNvygpwKDwUWCs`, `scheduled`, `booking_page`, notes "Booked by phone via the AI voice agent";
+  - a new contact with `source: voice` on the caller's number;
+  - a `booking_page_booked` activity.
+- The booking showed in the #1000 Appointments list (`evidence/sp3/runtime/r1-live-prod-appointments.jpg`). The probe event and contact were then deleted.
+- Evidence: `evidence/sp3/runtime/r1-live-prod.txt`.
+- **Still not exercised:** audio. Vapi's text-chat API needs a card on file, and its free US number can't dial out to South Africa, so a real phone call must come from Hein's handset to +1 949 704 8751. The Cloudflare user-agent question below is still open for Vapi's own requests.
 - **Open risk:** Cloudflare returned `403 error code: 1010` to Python's default user agent on crm.crestahq.com. Whether it lets Vapi's webhook user agent through has not been checked.
 
 **R2 — proven on #1000 (2026-09-13).**
@@ -152,7 +164,7 @@ Runtime checks R1/R2 run against production as deployed today and need no PR unl
 - **E2E-only `E2E_DISABLE_BOOKING_RATE_LIMITS=1`, fenced to a loopback app URL.** The whole suite runs from one client, so it exhausted the public booking rate limits. The deploy guard refuses the variable.
 
 **Found outside SP3 scope, recorded:**
-- **Production AI is dead.** `OPENROUTER_API_KEY` and all `VAPI_*` are empty on crm.crestahq.com, so no AI reply or voice call can run.
+- **Production AI was dead until 2026-09-14.** `OPENROUTER_API_KEY` and all `VAPI_*` were empty on crm.crestahq.com. They were set on 2026-09-14 (see R1 live).
 - **Forged identity header** (fixed in #116, deployed 2026-09-14). Proven on #1000 with a throwaway form: a session-less `DELETE /api/forms/<id>` with a forged `x-user-uid` returned 200 and deleted the form before the deploy, and returns 401 with the form intact after it.
 - **Fixture pollution.** A spec leaving hostless events broke other booking specs in the evening. #119 fixes the leak; #120 makes the specs name the polluter.
 - **The "E2E smoke (production)" workflow fails on every `main` push.** It runs `main`'s specs against crm.crestahq.com, which served pre-SP3 code until 2026-09-14, so the new specs (e.g. `booking-widget.spec.ts`) failed there. `workflow-enrol.spec.ts` also fails there with `Invalid signature` from the step worker; that failure was not investigated.
