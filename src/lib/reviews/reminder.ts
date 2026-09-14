@@ -66,8 +66,9 @@ export function planReviewLink(input: {
     return { requestId, bodyUrl: url || input.reviewUrl, tracked: !!url };
   }
   const reminder = activeReminder(input.config?.reminder);
-  if (!reminder || input.channel !== "sms" || !reviewTrackingAvailable()) return null;
+  if (!reminder) return null;
   const requestId = input.newRequestId();
+  // Empty for a non-SMS channel or without tracking: then no reminder at all.
   const url = trackedUrl(requestId);
   if (!url) return null;
   return {
