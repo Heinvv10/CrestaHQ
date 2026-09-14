@@ -4,6 +4,7 @@ import {
   addDoc,
   updateDoc,
   getDoc,
+  getDocs,
   limit,
   onSnapshot,
   serverTimestamp,
@@ -91,6 +92,28 @@ export function subscribeToContacts(
     },
     (err) => onError?.(err),
   );
+}
+
+/**
+ * The newest `count` contacts in a sub-account, one-shot. Lets the contacts
+ * page paint its first rows before the full list (which search, filters and
+ * select-all need) finishes downloading. Needs the (subAccountId, createdAt
+ * desc) index; without it this rejects and callers show no preview. A doc
+ * with no `createdAt` is left out (every create path sets it).
+ */
+export async function fetchNewestContacts(
+  scope: TenantScope,
+  count: number,
+): Promise<Contact[]> {
+  const snap = await getDocs(
+    query(
+      collection(getFirebaseDb(), CONTACTS),
+      where("subAccountId", "==", scope.subAccountId),
+      orderBy("createdAt", "desc"),
+      limit(count),
+    ),
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Contact, "id">) }));
 }
 
 function toMillis(v: unknown): number {
