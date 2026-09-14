@@ -89,6 +89,24 @@ describe("runImport", () => {
     expect((await loadState(statePath))?.seen).toEqual([2]);
   });
 
+  it("a malformed 2xx upsert response (via the real leadstackUpserter) fails only that case and still processes the next one", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("not json", { status: 201 }))
+      .mockResolvedValueOnce(new Response('{"contact":{"id":"c2"}}', { status: 201 }));
+    const upsert = leadstackUpserter(
+      { LEADSTACK_API_URL: "https://crm.test", LEADSTACK_API_KEY: "sk_test" } as Env,
+      fetchImpl as unknown as typeof fetch,
+    );
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(1, "2026-09-01"), row(2, "2026-09-02")]),
+      view: "v", statePath, upsert, dryRun: false, log,
+    });
+    expect(s).toMatchObject({ fresh: 2, sent: 1, failed: 1 });
+    expect((await loadState(statePath))?.seen).toEqual([2]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("dry-run neither calls the upsert nor writes state", async () => {
     const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
     await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, dryRun: false, log });
@@ -152,8 +170,35 @@ describe("leadstackUpserter", () => {
     expect(await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)(body)).toEqual({ ok: true, contactId: "c_42" });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://crm.test/api/v1/contacts/upsert");
-    expect(init.headers).toMatchObject({ Authorization: "Bearer sk_test", "Idempotency-Key": "qcontact-case-42" });
+    expect(init.headers).toMatchObject({
+      Authorization: "Bearer sk_test",
+      "Idempotency-Key": expect.stringMatching(/^qcontact-case-42-[0-9a-f]{12}$/),
+    });
     expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+
+  it("gives the same idempotency key for the same body and a different one when the body changes", async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"contact":{"id":"c_42"}}', { status: 201 }));
+    await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)(body);
+    await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)(body);
+    await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)({ ...body, name: "Different Name" });
+    const keys = fetchImpl.mock.calls.map(
+      (c) => ((c as unknown as [string, RequestInit])[1].headers as Record<string, string>)["Idempotency-Key"],
+    );
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it("reports a 2xx response that isn't JSON as a failure, not a thrown rejection", async () => {
+    const fetchImpl = vi.fn(async () => new Response("not json", { status: 201 }));
+    const r = await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)(body);
+    expect(r).toEqual({ ok: false, error: "upsert 2xx without contact.id" });
+  });
+
+  it("reports a 2xx response with no contact.id as a failure", async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"contact":{}}', { status: 201 }));
+    const r = await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)(body);
+    expect(r).toEqual({ ok: false, error: "upsert 2xx without contact.id" });
   });
 
   it("reports a non-2xx as a failure with the status and body", async () => {

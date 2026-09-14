@@ -14,6 +14,7 @@
  * README: requires the POST /api/v1/deals change from
  * feat/workflow-task-assignee-deal-stage).
  */
+import { dedupedIdempotencyKey } from "./idempotency-key.ts";
 
 export type DealEnv = {
   LEADSTACK_API_URL: string;
@@ -61,8 +62,10 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
       headers: {
         Authorization: `Bearer ${env.LEADSTACK_API_KEY}`,
         "Content-Type": "application/json",
-        // One case = one deal-create request; a retried run replays, never duplicates.
-        "Idempotency-Key": `qcontact-deal-${caseId}`,
+        // One case = one deal-create request; a retried run replays, never duplicates. The
+        // body-fingerprint suffix means a changed title (contact name / case ref) doesn't get
+        // stuck 409ing against a stale cached response.
+        "Idempotency-Key": dedupedIdempotencyKey(`qcontact-deal-${caseId}`, body),
       },
       body: JSON.stringify(body),
     });

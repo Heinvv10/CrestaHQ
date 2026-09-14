@@ -19,6 +19,7 @@ import { readFile, writeFile, rename } from "node:fs/promises";
 import { QContactClient, type CaseRow } from "./qcontact.ts";
 import { mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
+import { dedupedIdempotencyKey } from "./idempotency-key.ts";
 
 export type Env = {
   QCONTACT_BASE_URL: string;
@@ -96,14 +97,25 @@ export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Up
       headers: {
         Authorization: `Bearer ${env.LEADSTACK_API_KEY}`,
         "Content-Type": "application/json",
-        // One case = one request; a retried run replays, never duplicates.
-        "Idempotency-Key": `qcontact-case-${body.custom_fields.qcontact_case_id}`,
+        // One case = one request; a retried run replays, never duplicates. The
+        // body-fingerprint suffix means a changed body (e.g. the contact's
+        // name) doesn't get stuck 409ing against a stale cached response.
+        "Idempotency-Key": dedupedIdempotencyKey(`qcontact-case-${body.custom_fields.qcontact_case_id}`, body),
       },
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      const data = (await res.json()) as { contact: { id: string } };
-      return { ok: true, contactId: data.contact.id };
+      let data: unknown;
+      try {
+        data = await res.json();
+      } catch {
+        return { ok: false, error: "upsert 2xx without contact.id" };
+      }
+      const contactId = (data as { contact?: { id?: unknown } } | null)?.contact?.id;
+      if (typeof contactId !== "string" || contactId.length === 0) {
+        return { ok: false, error: "upsert 2xx without contact.id" };
+      }
+      return { ok: true, contactId };
     }
     return { ok: false, error: `HTTP ${res.status} ${(await res.text()).slice(0, 300)}` };
   };

@@ -33,7 +33,7 @@ describe("leadstackDealEnsurer", () => {
     expect(createInit.method).toBe("POST");
     expect(createInit.headers).toMatchObject({
       Authorization: "Bearer sk_test",
-      "Idempotency-Key": "qcontact-deal-42",
+      "Idempotency-Key": expect.stringMatching(/^qcontact-deal-42-[0-9a-f]{12}$/),
     });
     expect(JSON.parse(createInit.body as string)).toEqual({
       contact_id: "c1",
@@ -43,6 +43,22 @@ describe("leadstackDealEnsurer", () => {
       value: 0,
       currency: "ZAR",
     });
+  });
+
+  it("gives the same idempotency key for the same title and a different one when the title changes", async () => {
+    const keyFor = async (title: string) => {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(listResponse([]))
+        .mockResolvedValueOnce(new Response('{"deal":{"id":"d1"}}', { status: 201 }));
+      await leadstackDealEnsurer(env, fetchImpl as unknown as typeof fetch)({ contactId: "c1", caseId: 42, title });
+      const [, createInit] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+      return (createInit.headers as Record<string, string>)["Idempotency-Key"];
+    };
+    const keyA = await keyFor("Install request — Jane Doe (FT42)");
+    const keyA2 = await keyFor("Install request — Jane Doe (FT42)");
+    const keyB = await keyFor("Install request — Jane Doe Renamed (FT42)");
+    expect(keyA).toBe(keyA2);
+    expect(keyB).not.toBe(keyA);
   });
 
   it("does nothing when the contact already has a deal in the configured pipeline", async () => {
