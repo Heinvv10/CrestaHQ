@@ -35,11 +35,18 @@ export interface ReviewRequestLogInput {
   messageSid?: string | null;
   /** The signed-in sender when a person sent it, else a label ("review-request", "workflow", "broadcast"). */
   createdByUid: string;
+  /** SP5 d2, dispatcher sends while reminders are on: the pre-chosen doc id
+   *  (the tracked link names it), whether the body carries that link, and the
+   *  reminder state. All three absent otherwise — the row is as before. */
+  id?: string;
+  tracked?: boolean;
+  reminder?: Record<string, unknown>;
 }
 
 export async function logReviewRequest(input: ReviewRequestLogInput): Promise<void> {
   try {
-    await getAdminDb().collection(`subAccounts/${input.subAccountId}/reviewRequests`).add({
+    const log = getAdminDb().collection(`subAccounts/${input.subAccountId}/reviewRequests`);
+    const row = {
       agencyId: input.agencyId,
       subAccountId: input.subAccountId,
       createdByUid: input.createdByUid,
@@ -53,7 +60,10 @@ export async function logReviewRequest(input: ReviewRequestLogInput): Promise<vo
       sentAt: FieldValue.serverTimestamp(),
       clickedAt: null,
       feedbackAt: null,
-    });
+      ...(input.tracked !== undefined ? { tracked: input.tracked } : {}),
+      ...(input.reminder ? { reminder: input.reminder } : {}),
+    };
+    await (input.id ? log.doc(input.id).set(row) : log.add(row));
   } catch (err) {
     const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
     console.warn(`[reviews/request-log] reviewRequests write failed source=${input.source} kind=${String(kind)}`);
