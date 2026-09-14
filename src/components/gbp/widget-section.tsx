@@ -8,9 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { OriginReason } from "@/lib/gbp/feed/origins";
-import type { GbpWidgetMeta } from "@/types/google";
+import { widgetDisplay, type OriginReason } from "@/lib/gbp/feed/origins";
+import type { GbpWidgetLayout, GbpWidgetMeta, GbpWidgetTheme } from "@/types/google";
 import { InlineConfirm } from "./inline-confirm";
+import { WidgetPreview } from "./widget-preview";
 
 /**
  * The public reviews widget card on the Google Business page (admins only).
@@ -29,6 +30,10 @@ const REASONS: Record<OriginReason, string> = {
   https_required: "must use https (plain http only for localhost / 127.0.0.1)",
   scheme: "must use https",
 };
+
+const LAYOUTS: Array<[GbpWidgetLayout, string]> = [["carousel", "Carousel"], ["grid", "Grid"], ["list", "List"], ["badge", "Badge"]];
+const THEMES: Array<[GbpWidgetTheme, string]> = [["light", "Light"], ["dark", "Dark"]];
+const field = "h-9 rounded-md border bg-background px-2 text-sm";
 
 type Refusal = { error?: string; code?: string; details?: Array<{ value: string; reason: OriginReason }> };
 
@@ -57,6 +62,12 @@ function snippetFor(publicId: string, mapsUri: string | null | undefined): strin
     `</div>`,
     `<script src="${app}/embed/gbp-reviews.js" defer></script>`,
   ].join("\n");
+}
+
+/** The saved settings that change what the preview draws. */
+function previewVersion(meta: GbpWidgetMeta): string {
+  const { layout, theme } = widgetDisplay(meta);
+  return [meta.enabled, meta.maxReviews, layout, theme].join("|");
 }
 
 async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Refusal & { widget?: GbpWidgetMeta } }> {
@@ -128,13 +139,15 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
   const [enabled, setEnabled] = useState(meta?.enabled ?? true);
   const [origins, setOrigins] = useState((meta?.allowedOrigins ?? []).join("\n"));
   const [maxReviews, setMaxReviews] = useState(String(meta?.maxReviews ?? 12));
+  const [layout, setLayout] = useState(widgetDisplay(meta).layout);
+  const [theme, setTheme] = useState(widgetDisplay(meta).theme);
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
     setBusy(true);
     const allowedOrigins = origins.split("\n").map((o) => o.trim()).filter(Boolean);
-    const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews) });
+    const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews), layout, theme });
     setBusy(false);
     if (ok && data.widget) {
       setOrigins(data.widget.allowedOrigins.join("\n"));
@@ -165,6 +178,20 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
       <div className="space-y-1">
         <Label htmlFor="gbp-widget-max">Reviews shown (1–50)</Label>
         <Input id="gbp-widget-max" type="number" min={1} max={50} value={maxReviews} onChange={(e) => setMaxReviews(e.target.value)} className="w-24" />
+      </div>
+      <div className="flex flex-wrap gap-4">
+        <div className="space-y-1">
+          <Label htmlFor="gbp-widget-layout">Layout</Label>
+          <select id="gbp-widget-layout" className={`${field} block`} value={layout} onChange={(e) => setLayout(e.target.value as GbpWidgetLayout)} data-testid="gbp-widget-layout">
+            {LAYOUTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="gbp-widget-theme">Theme</Label>
+          <select id="gbp-widget-theme" className={`${field} block`} value={theme} onChange={(e) => setTheme(e.target.value as GbpWidgetTheme)} data-testid="gbp-widget-theme">
+            {THEMES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </div>
       </div>
       {errors.length > 0 && (
         <ul className="list-disc pl-5 text-sm text-destructive" data-testid="gbp-widget-errors">
@@ -207,6 +234,7 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
           </p>
         </div>
       )}
+      {meta && <WidgetPreview publicId={meta.publicId} version={previewVersion(meta)} />}
     </div>
   );
 }

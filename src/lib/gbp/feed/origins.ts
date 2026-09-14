@@ -11,6 +11,8 @@
  * included) is refused, not ignored, so nobody can believe one is in force.
  */
 
+import type { GbpWidgetLayout, GbpWidgetTheme } from "@/types/google";
+
 export const MAX_ORIGINS = 10;
 export const MAX_REVIEWS_LIMIT = 50;
 export const DEFAULT_MAX_REVIEWS = 12;
@@ -44,7 +46,26 @@ export function normalizeOrigin(input: unknown): OriginResult {
   return loopback ? { ok: true, origin: url.origin } : { ok: false, reason: "https_required" };
 }
 
-export interface WidgetConfig {
+export const WIDGET_LAYOUTS: readonly GbpWidgetLayout[] = ["carousel", "grid", "list", "badge"];
+export const WIDGET_THEMES: readonly GbpWidgetTheme[] = ["light", "dark"];
+
+export interface WidgetDisplay {
+  layout: GbpWidgetLayout;
+  theme: GbpWidgetTheme;
+}
+
+/**
+ * The display settings of a stored widget or meta. A widget saved before
+ * layouts existed (or holding a value this build does not know) reads as
+ * carousel + light — exactly what it rendered before.
+ */
+export function widgetDisplay(stored: { layout?: unknown; theme?: unknown } | null | undefined): WidgetDisplay {
+  const layout = WIDGET_LAYOUTS.find((l) => l === stored?.layout) ?? "carousel";
+  const theme = WIDGET_THEMES.find((t) => t === stored?.theme) ?? "light";
+  return { layout, theme };
+}
+
+export interface WidgetConfig extends WidgetDisplay {
   enabled: boolean;
   allowedOrigins: string[];
   maxReviews: number;
@@ -59,7 +80,7 @@ export type WidgetConfigResult =
       details?: Array<{ index: number; value: string; reason: OriginReason }>;
     };
 
-const KEYS = new Set(["enabled", "allowedOrigins", "maxReviews"]);
+const KEYS = new Set(["enabled", "allowedOrigins", "maxReviews", "layout", "theme"]);
 const invalid = (error: string): WidgetConfigResult => ({ ok: false, code: "invalid_body", error });
 
 export function parseWidgetConfig(body: unknown): WidgetConfigResult {
@@ -72,6 +93,13 @@ export function parseWidgetConfig(body: unknown): WidgetConfigResult {
   const max = b.maxReviews === undefined ? DEFAULT_MAX_REVIEWS : b.maxReviews;
   if (!Number.isInteger(max) || (max as number) < 1 || (max as number) > MAX_REVIEWS_LIMIT) {
     return invalid(`maxReviews must be a whole number from 1 to ${MAX_REVIEWS_LIMIT}.`);
+  }
+  // Optional; when present, exactly one of the known values. A PUT replaces the config, so absent means the default.
+  if (b.layout !== undefined && !WIDGET_LAYOUTS.includes(b.layout as GbpWidgetLayout)) {
+    return invalid(`layout must be one of: ${WIDGET_LAYOUTS.join(", ")}.`);
+  }
+  if (b.theme !== undefined && !WIDGET_THEMES.includes(b.theme as GbpWidgetTheme)) {
+    return invalid(`theme must be one of: ${WIDGET_THEMES.join(", ")}.`);
   }
   if (b.allowedOrigins.length > MAX_ORIGINS) {
     return { ok: false, code: "too_many_origins", error: `At most ${MAX_ORIGINS} allowed origins.` };
@@ -87,5 +115,8 @@ export function parseWidgetConfig(body: unknown): WidgetConfigResult {
   if (details.length > 0) {
     return { ok: false, code: "invalid_origins", error: "Some allowed origins are not valid.", details };
   }
-  return { ok: true, config: { enabled: b.enabled, allowedOrigins: origins, maxReviews: max as number } };
+  return {
+    ok: true,
+    config: { enabled: b.enabled, allowedOrigins: origins, maxReviews: max as number, ...widgetDisplay(b) },
+  };
 }

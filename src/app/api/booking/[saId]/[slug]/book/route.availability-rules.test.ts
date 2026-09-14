@@ -14,6 +14,7 @@ vi.mock("@/lib/booking/lifecycle", async () => (await h()).bookingMocks.lifecycl
 vi.mock("@/lib/booking/contact-reconcile", async () => (await h()).bookingMocks.reconcile());
 
 const { POST } = await import("./route");
+const { GET } = await import("../availability/route");
 
 const book = (slug: string, s: ReturnType<typeof slot>) =>
   POST(post({ name: "V", email: "v@example.com", phone: "+27600000000", slot: s }), {
@@ -66,5 +67,32 @@ describe("book-time re-verify", () => {
     expect((await book("closed", slot("09:00", "09:30"))).status).toBe(409);
     seedPage("quarter", { slotIntervalMinutes: 15 });
     expect((await book("quarter", slot("09:15", "09:45"))).status).toBe(200);
+  });
+});
+
+describe("now late in the day (Sun 21:04Z)", () => {
+  it("lists and books a later day's slot earlier than now's time of day", async () => {
+    vi.setSystemTime(new Date("2026-09-13T21:04:00Z"));
+    seedPage("late", {
+      workingHours: [{ dayOfWeek: 1, startMinute: 1260, endMinute: 1440 }],
+      visibleDays: 3,
+      dateOverrides: [
+        { date: "2026-09-14", ranges: [] },
+        { date: "2026-09-15", ranges: [{ startMinute: 1260, endMinute: 1320 }] },
+      ],
+    });
+    const res = await GET(new Request("http://x/api"), { params: Promise.resolve({ saId: SA, slug: "late" }) });
+    const listed = ((await res.json()).slots as { startAt: string }[]).map((s) => s.startAt);
+    expect(listed).toEqual(["2026-09-15T21:00:00.000Z", "2026-09-15T21:30:00.000Z"]);
+    const booked = await POST(
+      post({
+        name: "V",
+        email: "v@example.com",
+        phone: "+27600000000",
+        slot: { startAt: "2026-09-15T21:00:00.000Z", endAt: "2026-09-15T21:30:00.000Z" },
+      }),
+      { params: Promise.resolve({ saId: SA, slug: "late" }) },
+    );
+    expect(booked.status).toBe(200);
   });
 });

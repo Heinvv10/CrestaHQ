@@ -11,9 +11,8 @@ import {
 } from "@/lib/api/serializers/events";
 import {
   changeEventStatus,
-  statusTransitionError,
+  statusChangeError,
 } from "@/lib/server/event-status-service";
-import { eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
 
@@ -48,15 +47,21 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
 
-  // Status changes go through the same transition table + side effects as
-  // the dashboard's mark-status action — a raw write here let an API key
-  // un-cancel an event or skip the activity row, trigger, and cancel email.
-  // Refuse a bad transition before writing anything, so a rejected PATCH
-  // leaves the event untouched.
+  // Status changes go through the same transition table + start-time gate as
+  // `changeEventStatus` — a raw write here let an API key un-cancel an event,
+  // skip the activity row/trigger/cancel email, or flip a future booking to
+  // completed/no_show before it happened. Checked against the POST-patch
+  // startAt (a combined `{status, start_at}` PATCH is gated on the NEW time)
+  // and BEFORE any field write, so a rejected PATCH leaves the event
+  // untouched — writing fields first and catching the gate later (inside
+  // `changeEventStatus`) would let a refused status change still persist
+  // the other fields.
   if (patch.status !== undefined) {
-    const error = statusTransitionError(
-      eventStatus(existing as CalendarEvent),
+    const effectiveStartAt = patch.startAt ?? (existing as CalendarEvent).startAt;
+    const error = statusChangeError(
+      { status: (existing as CalendarEvent).status, startAt: effectiveStartAt },
       patch.status,
+      Date.now(),
     );
     if (error) {
       return apiError(ctx, "invalid_request", "invalid_status_transition", error, {

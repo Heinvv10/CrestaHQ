@@ -34,6 +34,7 @@ import {
   CreditCard,
   FlaskConical,
   MonitorPlay,
+  Star,
 } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
@@ -119,6 +120,7 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
     icon: GraduationCap,
     enabled: true,
   },
+  { href: "/reputation", label: "Reputation", icon: Star, enabled: true },
   { href: "/reports", label: "Reports", icon: BarChart3, enabled: true },
   // Labs — the gated container for PRE-RELEASE features (agency opt-in per
   // sub-account via labsEnabledByAgency; hidden-by-default when off).

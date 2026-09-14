@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
+import { assertWindowsClear } from "../lib/booking-windows";
 import { deleteScoped } from "../lib/guard";
 
 /**
@@ -135,6 +136,11 @@ async function bookOnPublicPage(page: Page, slot: string) {
 
 test.beforeAll(async () => {
   await purge();
+  await assertWindowsClear(
+    sa,
+    [[at("21:00"), new Date(at("21:00").getTime() + 3 * 3600_000)]],
+    (e) => String(e.bookingPageSlug ?? "").startsWith(PREFIX) || e.title === "E2E Cal busy",
+  );
   for (const h of [HOST_A, HOST_B]) {
     await members().doc(h.uid).set({
       uid: h.uid,
