@@ -11,6 +11,7 @@ import {
   type ScheduledMessageChannel,
   type ScheduledMessageStatus,
 } from "@/types/scheduled-messages";
+import { askOutcomeOf, logInboxReviewAsk, type AskOutcome } from "@/lib/reviews/review-ask";
 import { scheduledMessagesPath, scheduledSendBlock } from "./service";
 
 export type FireResult =
@@ -128,6 +129,9 @@ export async function fireScheduledMessage(
   if (blocked) return record("failed", blocked.error, blocked.code ?? null);
 
   const user = await getAdminAuth().getUser(doc.createdByUid).catch(() => null);
+  // A review link in it makes it a review ask, logged once it settles (SP5 d1).
+  const logAsk = (ask: AskOutcome) =>
+    logInboxReviewAsk({ contact, channel: doc.channel, parts: [doc.subject, doc.body], actorUid: doc.createdByUid, outcome: ask });
 
   let outcome;
   try {
@@ -148,12 +152,14 @@ export async function fireScheduledMessage(
     });
   } catch (err) {
     console.error("[scheduled-messages/fire] send threw", err);
+    await logAsk({ ok: false, failureKind: "send_failed" });
     return record(
       "unconfirmed",
       err instanceof Error ? err.message : "The send stopped with an error."
     );
   }
 
+  await logAsk(askOutcomeOf(outcome));
   if (!outcome.ok) {
     const unknown = outcome.status === 502 || outcome.outcomeUnknown === true;
     return record(unknown ? "unconfirmed" : "failed", outcome.error, outcome.code ?? null);

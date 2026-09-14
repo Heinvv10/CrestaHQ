@@ -8,6 +8,7 @@ import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { checkQuota } from "@/lib/server/usage-meter";
 import { resolveMergeTags } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
+import { logIfReviewAsk } from "@/lib/reviews/review-ask";
 import type {
   AgencyDoc,
   BroadcastDoc,
@@ -237,6 +238,18 @@ export async function POST(request: Request) {
   } catch (err) {
     error = err instanceof Error ? err.message : "Send failed";
   }
+  // A review link in it makes this recipient's email a review ask (SP5 d1).
+  await logIfReviewAsk({
+    sub: subAccount,
+    agencyId: broadcast.agencyId,
+    subAccountId: broadcast.subAccountId,
+    contactId,
+    channel: "email",
+    source: "broadcast",
+    parts: [subject, text],
+    createdByUid: "broadcast",
+    outcome: resendMessageId ? { ok: true, messageSid: resendMessageId } : { ok: false, failureKind: "send_failed" },
+  });
 
   if (resendMessageId) {
     await sendRef.update({

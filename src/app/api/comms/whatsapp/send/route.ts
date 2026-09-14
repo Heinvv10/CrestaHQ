@@ -3,6 +3,7 @@ import type { BridgeAttachment } from "@/lib/comms/whatsapp/bridge-client";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { sendConversationWhatsapp } from "@/lib/server/conversation-send/whatsapp";
 import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 
 type Body = {
   contactId?: string;
@@ -81,18 +82,18 @@ export async function POST(request: Request) {
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  return sendOutcomeResponse(
-    await sendConversationWhatsapp({
-      contactId,
-      contact,
-      body,
-      attachment,
-      // This route is the ONLY human-typed send path: requireUid above means a
-      // person with a session pressed send in a thread. Every automated sender
-      // — AI auto-reply, review requests, workflow steps, scheduled sends —
-      // is left unmarked, so it keeps the full quiet-hours guard.
-      humanReply: true,
-      actor: auth,
-    }),
-  );
+  const outcome = await sendConversationWhatsapp({
+    contactId,
+    contact,
+    body,
+    attachment,
+    // This route is the ONLY human-typed send path: requireUid above means a
+    // person with a session pressed send in a thread. Every automated sender
+    // — AI auto-reply, review requests, workflow steps, scheduled sends —
+    // is left unmarked, so it keeps the full quiet-hours guard.
+    humanReply: true,
+    actor: auth,
+  });
+  await logInboxReviewAsk({ contact, channel: "whatsapp", parts: [body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
+  return sendOutcomeResponse(outcome);
 }

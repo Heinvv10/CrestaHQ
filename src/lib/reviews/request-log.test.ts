@@ -73,8 +73,10 @@ describe("the reviewRequests log", () => {
       createdByUid: "review-request",
       contactId: C,
       channel: "sms",
+      source: "dispatcher",
       trigger: "quote_paid",
       status: "sent",
+      failureKind: null,
       messageSid: "SM1",
       clickedAt: null,
       feedbackAt: null,
@@ -87,20 +89,20 @@ describe("the reviewRequests log", () => {
     expect(logRows()[0]).toMatchObject({ createdByUid: "uid_admin", trigger: "manual" });
   });
 
-  it("stores the channel the send went over", async () => {
+  it("stores the channel the send went over (either WhatsApp mode is whatsapp)", async () => {
     setSub({ whatsappEnabledByAgency: true });
     setReviewCfg({ channel: "whatsapp_manual" });
     collections[WA_THREAD_PATH] = [{ direction: "inbound", createdAt: ts(Date.now() - 3600_000) }];
     expect(await send("deal_completed")).toEqual({ sent: true });
-    expect(logRows()[0]).toMatchObject({ channel: "whatsapp_manual", trigger: "deal_completed", messageSid: "WA1" });
+    expect(logRows()[0]).toMatchObject({ channel: "whatsapp", trigger: "deal_completed", messageSid: "WA1" });
   });
 
-  it("stores the NORMALIZED channel: legacy 'whatsapp' is logged as whatsapp_template", async () => {
+  it("a template send (legacy 'whatsapp' config) is logged as whatsapp", async () => {
     setSub({ whatsappEnabledByAgency: true });
     setApprovedTemplate();
     setReviewCfg({ channel: "whatsapp" });
     expect(await send()).toEqual({ sent: true });
-    expect(logRows()[0]).toMatchObject({ channel: "whatsapp_template", messageSid: "WA2" });
+    expect(logRows()[0]).toMatchObject({ channel: "whatsapp", messageSid: "WA2" });
   });
 
   it("stores messageSid null when the rail returned no id", async () => {
@@ -132,7 +134,7 @@ describe("the reviewRequests log", () => {
     expect(await send()).toEqual({ sent: true });
     expect(sendSms).toHaveBeenCalledTimes(1);
     const warns = vi.mocked(console.warn).mock.calls.map((c) => c.join(" "));
-    expect(warns).toContain("[reviews/request] reviewRequests log write failed kind=14");
+    expect(warns).toContain("[reviews/request-log] reviewRequests write failed source=dispatcher kind=14");
     // Nothing about the contact or the message in the log line.
     expect(warns.join("\n")).not.toMatch(/\+61|Jane|g\.page/);
   });

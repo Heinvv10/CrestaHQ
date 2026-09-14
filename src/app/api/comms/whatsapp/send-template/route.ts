@@ -10,6 +10,7 @@ import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
+import { logInboxReviewAsk, templateParts, type AskOutcome } from "@/lib/reviews/review-ask";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -164,6 +165,10 @@ export async function POST(request: Request) {
     );
   }
 
+  // Logged once the send settles: sent, refused by the rail, or failed.
+  const logAsk = (outcome: AskOutcome) =>
+    logInboxReviewAsk({ contact, channel: "whatsapp", parts: templateParts(tpl, values), template: tpl, actorUid: auth.uid, outcome });
+
   let sid: string;
   let fromNumber: string;
   try {
@@ -187,6 +192,7 @@ export async function POST(request: Request) {
       },
     });
     if (!result.ok) {
+      await logAsk({ ok: false, failureKind: result.error ?? "template_refused" });
       return NextResponse.json(
         { error: result.error ?? "Only an approved template can be sent." },
         { status: 409 },
@@ -195,6 +201,7 @@ export async function POST(request: Request) {
     sid = result.messageId ?? "";
     fromNumber = templateFrom;
   } catch (err) {
+    await logAsk({ ok: false, failureKind: err instanceof UsageQuotaExceededError ? "quota" : "send_failed" });
     if (err instanceof UsageQuotaExceededError) {
       return NextResponse.json({ error: err.message }, { status: 429 });
     }
@@ -262,6 +269,7 @@ export async function POST(request: Request) {
     body: rendered || `[Template: ${tpl.displayName}]`,
     pauseBot: true,
   });
+  await logAsk({ ok: true, messageSid: sid });
 
   return NextResponse.json({ ok: true, sid });
 }
