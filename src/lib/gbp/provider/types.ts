@@ -66,6 +66,32 @@ export interface GbpReviewsPage {
   nextPageToken: string | null;
 }
 
+/**
+ * The Business Profile Performance API daily metrics the Insights tab reads
+ * (SP5 G2). Impressions are unique users per day, per Google.
+ */
+export const GBP_DAILY_METRICS = [
+  "BUSINESS_IMPRESSIONS_DESKTOP_MAPS",
+  "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH",
+  "BUSINESS_IMPRESSIONS_MOBILE_MAPS",
+  "BUSINESS_IMPRESSIONS_MOBILE_SEARCH",
+  "CALL_CLICKS",
+  "WEBSITE_CLICKS",
+  "BUSINESS_DIRECTION_REQUESTS",
+  "BUSINESS_CONVERSATIONS",
+  "BUSINESS_BOOKINGS",
+] as const;
+export type GbpDailyMetric = (typeof GBP_DAILY_METRICS)[number];
+
+/** One day of one metric. `date` is `YYYY-MM-DD` as Google dates it; `value` ≥ 0 (Google omits zeros). */
+export interface GbpDatedValue {
+  date: string;
+  value: number;
+}
+
+/** Every requested metric has a series (possibly empty); days Google left out are not invented here. */
+export type GbpDailySeries = Partial<Record<GbpDailyMetric, GbpDatedValue[]>>;
+
 export interface GbpPage<T> {
   items: T[];
   nextPageToken: string | null;
@@ -94,6 +120,12 @@ export interface GbpProvider {
   ): Promise<GbpReviewsPage>;
   putReply(accessToken: string, reviewName: string, comment: string): Promise<GbpReviewReply>;
   deleteReply(accessToken: string, reviewName: string): Promise<void>;
+  /** Performance API daily series for one location, `startDate`..`endDate` inclusive (`YYYY-MM-DD`). */
+  fetchDailyMetrics(
+    accessToken: string,
+    locationName: string,
+    opts: { metrics: GbpDailyMetric[]; startDate: string; endDate: string },
+  ): Promise<GbpDailySeries>;
 }
 
 export type GbpProviderErrorKind =
@@ -136,5 +168,6 @@ export class GbpProviderError extends Error {
 /** Resource-name shapes. Anchored so an id can never smuggle a path segment. */
 export const ACCOUNT_NAME_RE = /^accounts\/[A-Za-z0-9_-]+$/;
 export const LOCATION_NAME_RE = /^locations\/[A-Za-z0-9_-]+$/;
+export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const REVIEW_NAME_RE =
   /^accounts\/[A-Za-z0-9_-]+\/locations\/[A-Za-z0-9_-]+\/reviews\/[A-Za-z0-9_-]+$/;
