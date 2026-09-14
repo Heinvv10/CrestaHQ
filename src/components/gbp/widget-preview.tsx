@@ -27,18 +27,26 @@ function loadEmbed(): Promise<Hook> {
   if (w.crestahqReviews) return Promise.resolve(w.crestahqReviews);
   return new Promise((resolve, reject) => {
     let script = document.querySelector<HTMLScriptElement>(`script[src="${SRC}"]`);
-    if (!script) {
+    // A tag that already fired without defining the hook would never fire again: replace it.
+    if (script?.dataset.loaded !== undefined) script.remove();
+    if (!script?.isConnected) {
       script = document.createElement("script");
       script.src = SRC;
       script.async = true;
       document.head.append(script);
     }
     const tag = script;
-    tag.addEventListener("load", () => (w.crestahqReviews ? resolve(w.crestahqReviews) : reject(new Error("embed hook missing"))));
-    tag.addEventListener("error", () => {
-      tag.remove(); // so the next preview tries again
-      reject(new Error("embed script failed to load"));
+    // Either way the tag is spent unless the hook came with it; removing it makes the next preview retry.
+    const fail = (message: string) => {
+      tag.remove();
+      reject(new Error(message));
+    };
+    tag.addEventListener("load", () => {
+      tag.dataset.loaded = "";
+      if (w.crestahqReviews) resolve(w.crestahqReviews);
+      else fail("embed hook missing"); // e.g. an old cached copy of the script, or one that threw
     });
+    tag.addEventListener("error", () => fail("embed script failed to load"));
   });
 }
 
@@ -85,7 +93,7 @@ export function WidgetPreview({ publicId, version }: { publicId: string; version
       )}
       {state === "fallback" && (
         <p className="text-xs text-muted-foreground" data-testid="gbp-widget-preview-fallback">
-          Nothing to preview: the widget is switched off, or the feed has no reviews to show yet. Sites show their static content.
+          The feed isn&apos;t available right now — the widget may be switched off, not yet synced, or unreachable. Sites show their static content.
         </p>
       )}
       {state === "script_error" && (

@@ -170,7 +170,10 @@ describe("Preview (saved settings)", () => {
     feedResponse = () => json({ error: "not_found" }, 404);
     await render();
     await loadEmbed();
-    expect(byId("gbp-widget-preview-fallback")?.textContent).toContain("Nothing to preview");
+    // The embed falls back on ANY refusal (404 off, 429, unavailable, network), so the copy must not name one cause.
+    expect(byId("gbp-widget-preview-fallback")?.textContent).toBe(
+      "The feed isn't available right now — the widget may be switched off, not yet synced, or unreachable. Sites show their static content.",
+    );
     expect(byId("gbp-widget-preview")!.querySelector(".chq-reviews")).toBeNull();
   });
 
@@ -184,5 +187,35 @@ describe("Preview (saved settings)", () => {
     ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, layout: "list", theme: "light" } };
     await render();
     expect(embedScripts()).toHaveLength(1);
+  });
+
+  it("a script that loads WITHOUT the mount hook (e.g. an old cached copy) shows the error, never hangs — and the next preview retries", async () => {
+    await render();
+    // `load` fires, but the file never defined window.crestahqReviews.
+    await act(async () => embedScripts()[0].dispatchEvent(new Event("load")));
+    await settle();
+    expect(byId("gbp-widget-preview-error")).not.toBeNull();
+    expect(byId("gbp-widget-preview-loading")).toBeNull();
+    expect(embedScripts()).toHaveLength(0);
+    feedResponse = () => json(feedBody("list"));
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, layout: "list", theme: "light" } };
+    await render();
+    expect(embedScripts()).toHaveLength(1);
+    await loadEmbed();
+    expect(byId("gbp-widget-preview")!.querySelectorAll(".chq-reviews--list .chq-reviews__card")).toHaveLength(3);
+    expect(byId("gbp-widget-preview-error")).toBeNull();
+  });
+
+  it("does not wait on a script tag that already fired without the hook: it is replaced", async () => {
+    feedResponse = () => json(feedBody("grid", "dark"));
+    const stale = document.createElement("script");
+    stale.setAttribute("src", "/embed/gbp-reviews.js");
+    stale.dataset.loaded = "";
+    document.head.append(stale);
+    await render();
+    expect(stale.isConnected).toBe(false);
+    expect(embedScripts()).toHaveLength(1);
+    await loadEmbed();
+    expect(byId("gbp-widget-preview")!.querySelectorAll(".chq-reviews__card")).toHaveLength(3);
   });
 });
