@@ -131,12 +131,13 @@ describe("the sweep's failure record respects retention", () => {
 });
 
 describe("rate limits (quota is project-wide)", () => {
-  it("stops starting new tenants once one is rate limited", async () => {
+  // access_not_approved (Google's quota-0 429) is the same project-wide wall, only permanent.
+  it.each(["rate_limited", "access_not_approved"] as const)("stops starting new tenants once one gets %s", async (kind) => {
     for (const sa of ["sa_c", "sa_d", "sa_e", "sa_f"]) seedSub(sa);
-    setScenario(SA, (s) => void (s.failReviewsPage = { pageToken: null, kind: "rate_limited" }));
+    setScenario(SA, (s) => void (s.failReviewsPage = { pageToken: null, kind }));
     const result = await runGbpSyncSweep({ sleep: noSleep });
     expect(result.stoppedOnRateLimit).toBe(true);
-    expect(runs(SA)[0]).toMatchObject({ errorKind: "rate_limited" });
+    expect(runs(SA)[0]).toMatchObject({ errorKind: kind });
     // Three workers were already running; nobody picks up the rest.
     expect(result.processed).toBe(3);
     expect(runs("sa_e")).toHaveLength(0);

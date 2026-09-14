@@ -535,7 +535,7 @@ cannot be replayed here) → `lib/gbp/sync/sweep.ts`:
 
 - **Sync:** `where googleEnabledByAgency == true`, filtered to connected +
   listing, never-run first then oldest `gbpSummary.lastRunAt`, **at most 25
-  per call, 3 at a time**; the first `rate_limited` result stops new tenants.
+  per call, 3 at a time**; the first `rate_limited` or `access_not_approved` (quota 0 — project-wide and permanent until approval) result stops new tenants.
 - **Retention only:** `where gbpSummary.lastRunAt != null` (single-field
   inequality — no composite index) filtered to sub-accounts that cannot sync.
 - Fake mode: ONE query `where agencyId == GBP_FAKE_AGENCY_ID` feeds both.
