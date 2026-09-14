@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * PATCH /api/agency/sub-accounts/[id]/feature-gates — the Google Business
@@ -93,9 +93,16 @@ describe("switching the gate off", () => {
 
 describe("the Workspace Assistant path (set_feature_gate) hits the same chokepoint", () => {
   const ctx = { uid: "uid_owner", email: "", displayName: "Owner", agencyId: "ag_1" };
+  let getCapability: typeof import("@/lib/ai-suite/capabilities").getCapability;
+
+  // The capabilities module is ~4,200 lines. Imported inside the first test, its
+  // load alone outran vitest's 5 s test timeout whenever the box was busy, and
+  // the next test then ran against a half-finished one. Load it once, with room.
+  beforeAll(async () => {
+    ({ getCapability } = await import("@/lib/ai-suite/capabilities"));
+  }, 60_000);
 
   it("disabling Google via the assistant deletes the review cache too", async () => {
-    const { getCapability } = await import("@/lib/ai-suite/capabilities");
     const cap = getCapability("set_feature_gate")!;
     await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "google", enabled: false });
     expect(gate()).toBe(false);
@@ -105,7 +112,6 @@ describe("the Workspace Assistant path (set_feature_gate) hits the same chokepoi
   });
 
   it("enabling it keeps the cache, and another gate leaves it alone", async () => {
-    const { getCapability } = await import("@/lib/ai-suite/capabilities");
     const cap = getCapability("set_feature_gate")!;
     await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "google", enabled: true });
     await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "webinars", enabled: false });
@@ -114,7 +120,6 @@ describe("the Workspace Assistant path (set_feature_gate) hits the same chokepoi
   });
 
   it("still refuses a sub-account of another agency (tenant anchor kept)", async () => {
-    const { getCapability } = await import("@/lib/ai-suite/capabilities");
     const cap = getCapability("set_feature_gate")!;
     await expect(
       cap.execute({ ...ctx, agencyId: "ag_other" }, { subAccountId: SA, gate: "google", enabled: false }),
