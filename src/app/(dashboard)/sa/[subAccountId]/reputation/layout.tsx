@@ -1,7 +1,7 @@
 import { ReputationTabs } from "@/components/reputation/reputation-tabs";
 
 /**
- * Reputation (SP5): Overview · Reviews · Widgets · Insights. The tabs render once here so
+ * Reputation (SP5): Overview · Reviews · Requests · Widgets · Insights. The tabs render once here so
  * switching tabs re-renders only the page body.
  */
 export default function ReputationLayout({ children }: { children: React.ReactNode }) {

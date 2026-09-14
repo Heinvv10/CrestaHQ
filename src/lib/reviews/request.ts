@@ -23,6 +23,7 @@ import {
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
+import { logReviewRequest } from "@/lib/reviews/request-log";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -361,26 +362,18 @@ export async function maybeSendReviewRequest(
       console.warn("[reviews/request] activity write failed", err);
     }
 
-    // The queryable request log (Reputation → Overview). Server-only; a
-    // failed write costs a count, never the send that already happened.
-    try {
-      await db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).add({
-        agencyId: input.agencyId,
-        subAccountId: input.subAccountId,
-        createdByUid: input.actorUid ?? "review-request",
-        contactId: contact.id,
-        channel,
-        trigger: input.trigger,
-        status: "sent",
-        messageSid: sid || null,
-        sentAt: FieldValue.serverTimestamp(),
-        clickedAt: null,
-        feedbackAt: null,
-      });
-    } catch (err) {
-      const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
-      console.warn(`[reviews/request] reviewRequests log write failed kind=${String(kind)}`);
-    }
+    // The queryable request log (Reputation). Never throws.
+    await logReviewRequest({
+      agencyId: input.agencyId,
+      subAccountId: input.subAccountId,
+      createdByUid: input.actorUid ?? "review-request",
+      contactId: contact.id,
+      channel: isWhatsapp ? "whatsapp" : "sms",
+      source: "dispatcher",
+      trigger: input.trigger,
+      status: "sent",
+      messageSid: sid,
+    });
 
     return { sent: true };
   } catch (err) {

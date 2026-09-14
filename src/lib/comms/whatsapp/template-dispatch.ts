@@ -113,7 +113,7 @@ export async function dispatchWhatsappTemplateSend(input: {
       },
       provider,
     });
-    return { ...r, provider };
+    return { ...r, provider, attempted: true };
   }
 
   const contentSid = templateRegistration(input.template, "twilio")?.externalId;
@@ -126,6 +126,6 @@ export async function dispatchWhatsappTemplateSend(input: {
     };
   }
   const r = await input.sendViaTwilio(contentSid);
-  return { ...r, provider };
+  return { ...r, provider, attempted: true };
 }
 

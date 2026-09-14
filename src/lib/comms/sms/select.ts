@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendFakeSms } from "./fake";
 import { SmsFakeRefusedError, smsProviderMode } from "./mode";
+import { rethrowAttempted } from "@/lib/comms/provider-attempt";
 
 export { SmsFakeRefusedError, smsProviderMode } from "./mode";
 
@@ -24,9 +25,10 @@ export async function sendSmsVia(
   args: { to: string; body: string },
   real: () => Promise<{ sid: string }>,
 ): Promise<{ sid: string }> {
-  if (smsProviderMode() === "twilio") return real();
+  // The carrier call itself: its failure is a provider attempt (SP5 d1); the fence below is not.
+  if (smsProviderMode() === "twilio") return real().catch(rethrowAttempted);
   await assertSmsFakeFixtureAgency(subAccountId);
-  return sendFakeSms(args);
+  return sendFakeSms(args).catch(rethrowAttempted);
 }
 
 /** Throws unless SMS_FAKE_AGENCY_ID is set and `subAccountId` belongs to it. */

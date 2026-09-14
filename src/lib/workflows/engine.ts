@@ -38,6 +38,9 @@ import {
 } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
+import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
+import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
@@ -94,6 +97,20 @@ interface NodeContext {
    * Webhook step can forward the form fields downstream.
    */
   triggerContext: Record<string, unknown>;
+  /**
+   * Set by a send executor once its outbound content is rendered, and its
+   * provider id once sent (SP5 d1). runStep logs the step as a review ask
+   * when that content carries the sub-account's review link — a failed one
+   * only when `attempted` says a provider was actually called.
+   */
+  sent?: {
+    channel: ReviewRequestChannel;
+    parts: string[];
+    template?: TemplateIdentity | null;
+    templateValues?: string[];
+    messageSid?: string | null;
+    attempted?: boolean;
+  };
 }
 
 /** An executor returns the control-flow result + a short audit log string. */
@@ -158,6 +175,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
+  ctx.sent = { channel: "email", parts: [subject, text] };
 
   try {
     const { id: messageId } = await sendEmail({
@@ -171,6 +189,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
       subAccount: ctx.subAccount,
       meter: { subAccountId: ctx.subAccountId },
     });
+    ctx.sent.messageSid = messageId;
     // Trace on the CONTACT, not just the run history — an automation that
     // emails a customer must be visible from the record the operator opens.
     try {
@@ -195,6 +214,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     }
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -220,6 +240,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "error:sms_not_configured" };
   }
   const body = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
+  ctx.sent = { channel: "sms", parts: [body] };
   try {
     const sent = await sendSmsForSubAccount({
       subAccountId: ctx.subAccountId,
@@ -227,6 +248,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
       to,
       body,
     });
+    ctx.sent.messageSid = sent.sid;
     // Trace on the contact + unified inbox, mirroring the manual send
     // route. Thread/inbox rows only in dedicated mode: on the shared agency
     // number the inbound webhook can't resolve a sub-account, so a reply
@@ -304,6 +326,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = providerAttempted(err);
     if (err instanceof SmsRecipientUnsubscribedError) {
       // The carrier says this number texted STOP (possibly before it was
       // wired to our webhook). Record it so the run history explains the
@@ -405,6 +428,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     subject,
     manualValues,
   });
+  ctx.sent = { channel: "whatsapp", parts: [], template: tpl, templateValues: contentVariables };
 
   try {
     // Through the provider dispatcher, not Twilio directly: a workspace on the
@@ -429,16 +453,19 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
       },
     });
     if (!res.ok) {
+      ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return {
         result: { kind: "next" },
         log: `error:${res.error ?? "send_failed"}`,
       };
     }
+    ctx.sent.messageSid = res.messageId ?? null;
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -559,6 +586,9 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   }
   if (!body.trim() && !inWindowButtons)
     return { result: { kind: "next" }, log: "skipped:empty_body" };
+  // What goes out depends on the window, decided by the dispatcher; until it
+  // answers, either could.
+  ctx.sent = { channel: "whatsapp", parts: [body], template: tplDoc, templateValues };
 
   try {
     const res = await dispatchWhatsappSend({
@@ -602,6 +632,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       },
     });
     if (!res.ok) {
+      ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return {
         result: { kind: "next" },
         log: `error:${res.error ?? "send_failed"}`,
@@ -610,8 +641,11 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // A successful provider call does not write the CRM thread. Use the same
     // provider message id as the manual composer so the row is addressable.
     // Keep recording failures distinct: the message has already been sent.
-    const recordedBody =
-      res.sentAs === "template" || res.sentAs === "interactive" ? templateBody : body;
+    const sentTemplate = res.sentAs === "template" || res.sentAs === "interactive";
+    const recordedBody = sentTemplate ? templateBody : body;
+    ctx.sent = sentTemplate
+      ? { channel: "whatsapp", parts: [], template: tplDoc, templateValues, messageSid: res.messageId ?? null }
+      : { channel: "whatsapp", parts: [body], messageSid: res.messageId ?? null };
     try {
       const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
       const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();
@@ -649,6 +683,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -1433,7 +1468,7 @@ export async function runStep(
 
   const owner = await loadOwner(agency);
   const exec = REGISTRY[node.type] ?? execPassThrough;
-  const { result, log } = await exec({
+  const stepCtx: NodeContext = {
     node,
     contact,
     subAccount,
@@ -1444,8 +1479,8 @@ export async function runStep(
     workflowId: run.workflowId,
     runId,
     triggerContext: run.context ?? {},
-  });
-
+  };
+  const { result, log } = await exec(stepCtx);
   const entry: WorkflowRunHistoryEntry = {
     nodeId,
     type: node.type,
@@ -1456,6 +1491,28 @@ export async function runStep(
     history: FieldValue.arrayUnion(entry),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  // A review ask is logged once, here — after the history entry above, the
+  // step's idempotency marker, so nothing sits between the send and the
+  // marker. Sent, or failed after a provider was called; a skipped step, or
+  // one refused before sending, is not a request.
+  const failed = log.startsWith("error:");
+  if (stepCtx.sent && !log.startsWith("skipped:") && (!failed || stepCtx.sent.attempted)) {
+    await logIfReviewAsk({
+      sub: subAccount,
+      agencyId: run.agencyId,
+      subAccountId: run.subAccountId,
+      contactId: contact.id,
+      channel: stepCtx.sent.channel,
+      source: "workflow",
+      parts: stepCtx.sent.parts,
+      template: stepCtx.sent.template,
+      templateValues: stepCtx.sent.templateValues,
+      createdByUid: "workflow",
+      outcome: failed
+        ? { ok: false, failureKind: log.slice("error:".length) }
+        : { ok: true, messageSid: stepCtx.sent.messageSid },
+    });
+  }
 
   // Advance control flow.
   let target: string | null = null;

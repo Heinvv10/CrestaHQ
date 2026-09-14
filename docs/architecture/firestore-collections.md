@@ -118,17 +118,20 @@ the meta. No new index.
 See [gbp-reviews.md](../features/gbp-reviews.md).
 
 Review-request log: `subAccounts/{id}/reviewRequests/{auto}` — one row per
-review request that was actually sent (`agencyId, subAccountId, createdByUid`
-= the signed-in sender of a manual send, else `"review-request"`; `contactId,
-channel` (normalized: `sms` / `whatsapp_template` / `whatsapp_manual`),
-`trigger, status: "sent", messageSid, sentAt, clickedAt: null, feedbackAt:
-null`). Written only by the dispatcher (`lib/reviews/request.ts`) after a
-successful send — i.e. Request review, quote paid and deal completed. Review links
-sent any other way — pasted into a workflow SMS / WhatsApp / email step or a
-broadcast email, a WhatsApp template's variable or button, the Conversations
-composer's "Ask for review" — do not write it (yet). Refusals and failed sends write nothing. Never a message body
-or phone number. Server only (no client rule, so default deny); read by the
-Reputation overview route with single-field `sentAt` queries — no index. See
+review ask any sender made (`agencyId, subAccountId, createdByUid` = the person
+who sent it, else a label `"review-request"` / `"workflow"` / `"broadcast"`;
+`contactId, channel` (`sms` / `whatsapp` / `email`), `source` (`dispatcher` /
+`workflow` / `broadcast` / `inbox`), `trigger` (the dispatcher's, else null),
+`status` (`sent` / `failed`), `failureKind, messageSid, sentAt, clickedAt: null,
+feedbackAt: null`). One writer, `logReviewRequest()` (`lib/reviews/request-log.ts`),
+called where each send is initiated: the dispatcher after a successful send,
+and workflow send steps, the broadcast email worker and the inbox send routes /
+scheduled-message worker when the rendered message carries the configured
+review URL or is the `review_request` template. Rows before SP5 d1 are the
+dispatcher's only, with channel `whatsapp_template` / `whatsapp_manual` and no
+`source`; readers map them. Never a message body, phone number or email.
+Server only (no client rule, so default deny); read by the Reputation overview
+and requests routes with single-field `sentAt` queries — no index. See
 [reputation.md](../features/reputation.md).
 
 ### Workspace SMTP connection
