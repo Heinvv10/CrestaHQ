@@ -156,6 +156,54 @@ describe("a draft only fills the box", () => {
   });
 });
 
+describe("races", () => {
+  function holdDraft() {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const inner = draftResult;
+    draftResult = async () => (await gate, inner());
+    return () => act(async () => release());
+  }
+
+  it("Post is disabled while a draft is in flight", async () => {
+    const release = holdDraft();
+    await render();
+    await click("gbp-reply-open-r1");
+    await type("My words.");
+    await click("gbp-reply-draft");
+    await click("gbp-reply-draft-replace");
+    expect((byId("gbp-reply-submit") as HTMLButtonElement).disabled).toBe(true);
+    await release();
+    expect((byId("gbp-reply-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("text typed while the draft was on its way is kept — the late draft is not applied", async () => {
+    const release = holdDraft();
+    await render();
+    await click("gbp-reply-open-r1");
+    await click("gbp-reply-draft");
+    await type("I started writing my own.");
+    await release();
+    expect(box().value).toBe("I started writing my own.");
+    expect(byId("gbp-reply-draft-note")).toBeNull();
+    expect(byId("gbp-reply-draft-dropped")?.textContent).toBe("You edited the reply while the draft was on its way, so it wasn't applied.");
+  });
+
+  it("a draft that arrives after the composer was closed and reopened is dropped silently", async () => {
+    const release = holdDraft();
+    await render();
+    await click("gbp-reply-open-r1");
+    await click("gbp-reply-draft");
+    await act(async () => [...container.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!.click());
+    await click("gbp-reply-open-r1");
+    await release();
+    expect(box().value).toBe("");
+    expect(byId("gbp-reply-draft-note")).toBeNull();
+    expect(byId("gbp-reply-draft-dropped")).toBeNull();
+    expect(posts(REPLY)).toHaveLength(0);
+  });
+});
+
 describe("errors", () => {
   it("shows the route's message inline and leaves the box alone", async () => {
     draftResult = async () => ({ status: 429, body: { code: "daily_cap", error: "Daily AI limit reached — try again tomorrow." } });

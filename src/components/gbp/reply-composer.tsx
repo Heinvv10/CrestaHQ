@@ -23,6 +23,7 @@ const FAILED = "Your reply could not be posted. Please try again.";
 const RECORD_PENDING = "Posted to Google — the inbox will catch up on the next sync.";
 const DRAFT_FAILED = "Couldn't draft a reply. Try again, or write your own.";
 const DRAFT_NOTE = "AI draft — edit before posting. Nothing is sent until you click Post reply to Google.";
+const DRAFT_DROPPED = "You edited the reply while the draft was on its way, so it wasn't applied.";
 
 export function ReplyComposer({
   subAccountId,
@@ -45,7 +46,11 @@ export function ReplyComposer({
   const [drafted, setDrafted] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [confirmReplace, setConfirmReplace] = useState(false);
+  const [draftDropped, setDraftDropped] = useState(false);
   const key = useRef("");
+  // A draft response applies only to the composer session and the text it was asked for.
+  const session = useRef(0);
+  const edits = useRef(0);
   const lastSent = useRef<string | null>(null);
 
   const start = () => {
@@ -57,7 +62,13 @@ export function ReplyComposer({
     setDrafted(false);
     setDraftError(null);
     setConfirmReplace(false);
+    setDraftDropped(false);
+    session.current += 1;
     setOpen(true);
+  };
+  const close = () => {
+    session.current += 1;
+    setOpen(false);
   };
 
   // Fills the box and nothing else: posting stays the click on "Post reply to Google".
@@ -65,9 +76,16 @@ export function ReplyComposer({
     setConfirmReplace(false);
     setDrafting(true);
     setDraftError(null);
+    setDraftDropped(false);
+    const asked = { session: session.current, edits: edits.current };
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/gbp/reviews/${review.docId}/draft`, { method: "POST" });
       const data = (await res.json().catch(() => null)) as { draft?: string; error?: string } | null;
+      if (asked.session !== session.current) return; // closed (and maybe reopened) since: drop silently
+      if (asked.edits !== edits.current) {
+        setDraftDropped(true); // typed since: never overwrite without the replace-confirm
+        return;
+      }
       if (res.ok && typeof data?.draft === "string") {
         setText(data.draft);
         setDrafted(true);
@@ -83,7 +101,7 @@ export function ReplyComposer({
   };
   const askDraft = () => (text.trim() ? setConfirmReplace(true) : void draft());
 
-  // Reachable only from the submit button, which is disabled while pending or blank.
+  // Reachable only from the submit button, which is disabled while pending, drafting or blank.
   const submit = async () => {
     const comment = text;
     if (lastSent.current !== null && lastSent.current !== comment) key.current = newKey();
@@ -129,7 +147,10 @@ export function ReplyComposer({
     <div className="mt-3 space-y-2" data-testid="gbp-reply-composer">
       <Textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          edits.current += 1;
+          setText(e.target.value);
+        }}
         rows={3}
         maxLength={4000}
         aria-label="Your reply"
@@ -140,6 +161,7 @@ export function ReplyComposer({
         Your reply will be public on Google, shown under this review as the business&apos;s response.
       </p>
       {drafted && <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="gbp-reply-draft-note">{DRAFT_NOTE}</p>}
+      {draftDropped && <p className="text-xs text-muted-foreground" data-testid="gbp-reply-draft-dropped">{DRAFT_DROPPED}</p>}
       {draftError && (
         <p className="text-xs text-red-600" role="alert" data-testid="gbp-reply-draft-error">{draftError}</p>
       )}
@@ -154,7 +176,7 @@ export function ReplyComposer({
         <p className="text-xs text-red-600" role="alert" data-testid="gbp-reply-error">{error}</p>
       )}
       <div className="flex items-center gap-2">
-        <Button type="button" size="sm" onClick={submit} disabled={pending || !text.trim()} data-testid="gbp-reply-submit">
+        <Button type="button" size="sm" onClick={submit} disabled={pending || drafting || !text.trim()} data-testid="gbp-reply-submit">
           {pending && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}Post reply to Google
         </Button>
         {aiDrafts && (
@@ -162,7 +184,7 @@ export function ReplyComposer({
             {drafting && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}Draft with AI
           </Button>
         )}
-        <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
+        <Button type="button" size="sm" variant="ghost" onClick={close} disabled={pending}>
           Cancel
         </Button>
       </div>
