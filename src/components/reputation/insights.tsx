@@ -29,6 +29,10 @@ const ERROR_TEXT: Record<string, string> = {
   permission_denied: "This Google account doesn't have permission to see this listing's performance.",
   unknown_location: "That listing isn't available to this Google connection.",
   unverifiable_truncated: "This Google account has too many listings to verify that one.",
+  not_found: "This location no longer exists at Google, or this connection lost access to it.",
+  not_configured: "Google isn't configured on this deployment.",
+  location_admin_only: "Only a sub-account admin can view another location.",
+  auth_expired: "Google rejected this connection's credentials. Try again, or reconnect if it keeps happening.",
 };
 
 function Note({ testId, children }: { testId: string; children: React.ReactNode }) {
@@ -42,12 +46,14 @@ function Note({ testId, children }: { testId: string; children: React.ReactNode 
 const field = "h-9 rounded-md border bg-background px-2 text-sm";
 
 export function ReputationInsights() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const listing = subAccount?.googleListing ?? null;
   const ready = subAccount?.googleEnabledByAgency === true && !!subAccount.googleConnectionMeta?.connected && !!listing;
   const [range, setRange] = useState<InsightsRange>("28d");
   const [location, setLocation] = useState<string | null>(null);
   const [options, setOptions] = useState<Option[]>([]);
+  /** Why the other locations could not be listed (the listing's insights still load). */
+  const [optionsError, setOptionsError] = useState<string | null>(null);
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const target = location ?? listing?.locationName ?? "";
 
@@ -57,7 +63,12 @@ export function ReputationInsights() {
     void (async () => {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/google/locations`, { signal: controller.signal }).catch(() => null);
       const data = (await res?.json().catch(() => null)) as { accounts?: Array<{ locations: Option[] }> } | null;
-      if (controller.signal.aborted || !res?.ok || !data?.accounts) return;
+      if (controller.signal.aborted) return;
+      if (!res?.ok || !data?.accounts) {
+        setOptionsError((data as { code?: string } | null)?.code ?? "network");
+        return;
+      }
+      setOptionsError(null);
       setOptions(data.accounts.flatMap((a) => a.locations.map((l) => ({ name: l.name, title: l.title }))));
     })();
     return () => controller.abort();
@@ -82,7 +93,14 @@ export function ReputationInsights() {
       AI Agents → Google Business
     </Link>
   );
-  if (subAccount?.googleEnabledByAgency !== true) {
+  if (loading || !subAccount) {
+    return (
+      <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-insights-loading">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+      </p>
+    );
+  }
+  if (subAccount.googleEnabledByAgency !== true) {
     return (
       <Note testId="rep-insights-gate-off">
         <span className="flex items-center gap-2"><Lock className="h-4 w-4" /> Google Business Profile is not enabled for this sub-account.</span>
@@ -111,6 +129,13 @@ export function ReputationInsights() {
           {INSIGHTS_RANGES.map((r) => <option key={r} value={r}>{RANGE_TEXT[r]}</option>)}
         </select>
       </div>
+      {optionsError && (
+        <p className="text-xs text-muted-foreground" data-testid="rep-insights-locations-error">
+          {optionsError === "access_not_approved"
+            ? ACCESS_NOT_APPROVED_TEXT
+            : "Couldn't load your other Google locations — showing the selected listing."}
+        </p>
+      )}
       {data && !data.location.isListing && (
         <p className="text-xs text-muted-foreground" data-testid="rep-insights-other-location">
           Viewing {data.location.title}. Your reviews stay on {listing.title} — nothing here changes the listing.

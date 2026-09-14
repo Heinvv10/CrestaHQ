@@ -118,12 +118,16 @@ review link configured (`resolveReviewUrl(sub).configured`), a widget exists
 **UI** (`components/reputation/insights.tsx`, `insights-parts.tsx`; every
 state rendered in `insights.test.ts`): `rep-insights-location` (a select of
 every visible location for admins — from `GET …/google/locations`, falling
-back to the listing alone if that call fails; plain text for members),
+back to the listing alone if that call fails, with `rep-insights-locations-error`
+under it saying why — the "not approved" sentence for `access_not_approved`;
+plain text for members),
 `rep-insights-range`, `rep-insights-tiles` / `rep-insights-tile-<key>` (+
 `-value`, `-note`), `rep-insights-chart-views`, `rep-insights-chart-actions`,
 `rep-insights-devices`, `rep-insights-data-through`, `rep-insights-other-location`,
 and the states `rep-insights-gate-off`, `-not-connected`, `-no-listing`,
-`-not-approved` (Google's quota-0 refusal), `-error`, `-loading`, `-empty`.
+`-not-approved` (Google's quota-0 refusal), `-error` (its own sentence per
+refusal code), `-loading` (also while the sub-account itself is loading, so
+gate-off never flashes), `-empty`.
 
 **Tests:** `lib/reputation/insights.test.ts`; `app/api/sub-accounts/[id]/reputation/insights/route.test.ts`
 (real tenancy, discovery and fake provider; expected numbers computed in the

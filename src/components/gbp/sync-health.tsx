@@ -75,6 +75,7 @@ export function HealthBanner({
       return (
         <Banner testId="gbp-banner-stale">
           These reviews may be out of date — {since ? `the last successful sync was ${since}.` : "no sync has succeeded yet."}
+          {lastErrorKind === "access_not_approved" && ` ${ACCESS_NOT_APPROVED_TEXT}`}
         </Banner>
       );
     case "partial":

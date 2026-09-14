@@ -43,6 +43,22 @@ describe("access_not_approved wording", () => {
     expect(describeRun({ status: "failed", errorKind: "transient", skipReason: null })).toBe("Sync failed (transient). Cached reviews are kept.");
   });
 
+  it("the stale health banner adds it after the staleness line", async () => {
+    await act(async () =>
+      root.render(createElement(HealthBanner, { health: "stale", lastErrorKind: "access_not_approved", lastReconciliation: null, lastSuccessfulSyncAt: null })),
+    );
+    const text = container.querySelector('[data-testid="gbp-banner-stale"]')?.textContent ?? "";
+    expect(text).toContain("These reviews may be out of date");
+    expect(text.endsWith(ACCESS_NOT_APPROVED_TEXT)).toBe(true);
+  });
+
+  it("the stale banner says nothing extra for any other kind", async () => {
+    await act(async () =>
+      root.render(createElement(HealthBanner, { health: "stale", lastErrorKind: "transient", lastReconciliation: null, lastSuccessfulSyncAt: null })),
+    );
+    expect(container.querySelector('[data-testid="gbp-banner-stale"]')?.textContent).not.toContain(ACCESS_NOT_APPROVED_TEXT);
+  });
+
   it("the error health banner says it", async () => {
     await act(async () =>
       root.render(createElement(HealthBanner, { health: "error", lastErrorKind: "access_not_approved", lastReconciliation: null, lastSuccessfulSyncAt: null })),

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * context are stubbed.
  */
 
-const ctx = vi.hoisted(() => ({ subAccountId: "sa1", isAdmin: true, loading: false, subAccount: {} as Record<string, unknown> }));
+const ctx = vi.hoisted(() => ({ subAccountId: "sa1", isAdmin: true, loading: false, subAccount: {} as Record<string, unknown> | null }));
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ctx }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => createElement("a", { href, ...rest }, children),
@@ -52,6 +52,7 @@ let insights: (url: URL) => unknown;
 
 beforeEach(() => {
   ctx.isAdmin = true;
+  ctx.loading = false;
   ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: { connected: true }, googleListing: LISTING };
   insights = () => json(body());
   fetchMock.mockReset().mockImplementation(async (raw: string) => {
@@ -92,6 +93,15 @@ async function choose(testId: string, value: string) {
 }
 
 describe("states before any call", () => {
+  it("while the sub-account is still loading: loading, never gate-off, nothing fetched", async () => {
+    ctx.loading = true;
+    ctx.subAccount = null;
+    await render();
+    expect(byId("rep-insights-loading")).not.toBeNull();
+    expect(byId("rep-insights-gate-off")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["gate off", { googleEnabledByAgency: false }, "rep-insights-gate-off"],
     ["not connected", { googleConnectionMeta: null }, "rep-insights-not-connected"],
@@ -160,13 +170,23 @@ describe("the data", () => {
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/google/locations"))).toBe(false);
   });
 
-  it("if the locations list cannot load, the admin still sees the listing's insights", async () => {
+  it.each([
+    ["access_not_approved", 424, "Google hasn't approved Business Profile API access for this project yet."],
+    ["rate_limited", 424, "Couldn't load your other Google locations — showing the selected listing."],
+    [undefined, 502, "Couldn't load your other Google locations — showing the selected listing."],
+  ])("if the locations list cannot load (%s), the admin still sees the listing's insights — and is told why", async (code, status, line) => {
     fetchMock.mockImplementation(async (raw: string) =>
-      String(raw).includes("/google/locations") ? json({ code: "access_not_approved" }, 502) : json(body()),
+      String(raw).includes("/google/locations") ? json(code ? { code } : "<html>", status) : json(body()),
     );
     await render();
     expect([...(byId("rep-insights-location") as HTMLSelectElement).options].map((o) => o.value)).toEqual([LOC_A]);
+    expect(byId("rep-insights-locations-error")?.textContent).toBe(line);
     expect(byId("rep-insights-tile-searchViews-value")?.textContent).toBe("1,200");
+  });
+
+  it("says nothing under the picker when the locations list loaded", async () => {
+    await render();
+    expect(byId("rep-insights-locations-error")).toBeNull();
   });
 
   it("empty: Google has no data for this range", async () => {
@@ -194,6 +214,17 @@ describe("failures", () => {
     insights = () => json({ code, error: "x" }, code === "transient" ? 502 : 409);
     await render();
     expect(byId("rep-insights-error")?.textContent).toContain(text);
+  });
+
+  it.each([
+    ["not_found", 424, "This location no longer exists at Google, or this connection lost access to it."],
+    ["not_configured", 503, "Google isn't configured on this deployment."],
+    ["location_admin_only", 403, "Only a sub-account admin can view another location."],
+    ["auth_expired", 424, "Google rejected this connection's credentials. Try again, or reconnect if it keeps happening."],
+  ])("%s → its own sentence", async (code, status, text) => {
+    insights = () => json({ code, error: "x" }, status);
+    await render();
+    expect(byId("rep-insights-error")?.textContent).toBe(text);
   });
 
   it("a network failure → the generic error", async () => {
