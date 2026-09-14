@@ -134,6 +134,7 @@ describe("the run", () => {
     }) as never);
     await expect(drain()).rejects.toThrow("14 UNAVAILABLE");
     expect(lease().runId).toBeNull();
+    expect(lease().lastRun).toMatchObject({ reason: "error" }); // the card ends with "stopped on an error"
     expect(lease().lastCompleteAt).toBeUndefined();
   });
 });

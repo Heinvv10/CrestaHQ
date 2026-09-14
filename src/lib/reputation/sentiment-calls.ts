@@ -17,18 +17,31 @@ import { SENTIMENT_LEASE_TTL_MS, sentimentLeasePath } from "./sentiment-lease";
  *               the lease, counts the call and writes a STRIKE on the review
  *               (`sentimentAttempt.failures + 1`). A crash after this keeps
  *               the strike — conservative: it counts toward the three.
- *   finishCall  AFTER it: a label clears the strike; a transport failure (the
- *               request never reached the model — not billed) puts the old
- *               attempt back; a model failure keeps the strike.
+ *   finishCall  AFTER it: a label clears the strike. A failed call keeps it
+ *               — every failure is a strike, and the run stops on the first.
+ * At most one call is ever in flight per sub-account, so a gate switched off
+ * lets at most that one call finish.
  */
 
-/** AI calls per sub-account per UTC day — a hard spend bound, not configurable. */
+/**
+ * AI calls per sub-account per UTC day — a hard spend bound, not configurable.
+ * Counted by the day of the transaction that starts the call; a call in flight
+ * across midnight can make one more than 300 fall in a calendar day.
+ */
 export const DAILY_AI_CALL_CAP = 300;
 
 export const sentimentUsagePath = (sa: string) => `subAccounts/${sa}/private/sentimentUsage`;
 const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-export type StopReason = "lease_lost" | "gate_off" | "google_gate_off" | "listing_changed" | "daily_cap" | "budget";
+export type StopReason =
+  | "lease_lost"
+  | "gate_off"
+  | "google_gate_off"
+  | "listing_changed"
+  | "daily_cap"
+  | "budget"
+  /** The AI call failed (any way) or the provider could not be obtained. */
+  | "ai_error";
 
 export interface CallItem {
   docId: string;
@@ -36,7 +49,7 @@ export interface CallItem {
 }
 type ReviewData = SentimentSource & { state?: string };
 export type Attempt = { basisHash?: unknown; failures?: unknown; lastAt?: unknown } | null;
-export type BeginResult = { go: true; previous: Attempt; failures: number } | { go: false; stop: StopReason } | { go: false; drop: true };
+export type BeginResult = { go: true } | { go: false; stop: StopReason } | { go: false; drop: true };
 
 export async function beginCall(sa: string, runId: string, locationName: string, p: CallItem): Promise<BeginResult> {
   const db = getAdminDb();
@@ -68,36 +81,21 @@ export async function beginCall(sa: string, runId: string, locationName: string,
     tx.set(leaseRef, { until: now + SENTIMENT_LEASE_TTL_MS }, { merge: true });
     tx.set(usageRef, { day, calls: calls + 1 }, { merge: true });
     tx.update(reviewRef, { sentimentAttempt: { basisHash: p.basis, failures, lastAt: new Date(now) } });
-    return { go: true, previous, failures } as const;
+    return { go: true } as const;
   });
 }
 
 /**
- * After the call. Every write re-checks that the review still has the content
- * it was classified from. Returns whether a label was written.
+ * After a labelled call: write the label (clearing the strike) only if the
+ * review still has the content it was classified from. Returns whether it did.
  */
-export async function finishCall(
-  sa: string,
-  p: CallItem,
-  outcome:
-    | { kind: "label"; label: SentimentLabel; model: string; at: Date }
-    | { kind: "transport"; previous: Attempt; failures: number }
-    | { kind: "model" },
-): Promise<boolean> {
-  if (outcome.kind === "model") return false; // answered but not validly: the strike stays
+export async function finishCall(sa: string, p: CallItem, label: SentimentLabel, model: string, at: Date): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${p.docId}`);
   return db.runTransaction(async (tx) => {
     const d = (await tx.get(ref)).data() as ReviewData | undefined;
     if (d?.state !== "active" || reviewBasis(d) !== p.basis) return false;
-    if (outcome.kind === "label") {
-      const sentiment = { label: outcome.label, method: "ai", basisHash: p.basis, model: outcome.model, at: outcome.at };
-      tx.update(ref, { sentiment, sentimentAttempt: null });
-      return true;
-    }
-    // Not billed: undo our strike — only if it is still the one we wrote.
-    const a = d.sentimentAttempt as Attempt;
-    if (a?.basisHash === p.basis && a.failures === outcome.failures) tx.update(ref, { sentimentAttempt: outcome.previous });
-    return false;
+    tx.update(ref, { sentiment: { label, method: "ai", basisHash: p.basis, model, at }, sentimentAttempt: null });
+    return true;
   });
 }

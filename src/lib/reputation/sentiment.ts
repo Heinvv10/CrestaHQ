@@ -7,7 +7,7 @@ import { reviewsCollection } from "@/lib/gbp/sync/types";
 import type { SubAccountDoc } from "@/types";
 import { reviewsAiConfigured } from "./ai/mode";
 import { getReviewsAiFor } from "./ai/select";
-import { REVIEWS_AI_BATCH, type ReviewsAi } from "./ai/types";
+import type { ReviewsAi } from "./ai/types";
 import { aiRetryAllowed, currentSentiment, ratingLabel, reviewBasis, type SentimentSource } from "./sentiment-basis";
 import { beginCall, finishCall, type StopReason } from "./sentiment-calls";
 import { acquireSentimentLease, releaseSentimentLease } from "./sentiment-lease";
@@ -21,11 +21,11 @@ import { acquireSentimentLease, releaseSentimentLease } from "./sentiment-lease"
  *     is missing or stale (basis ≠ `sentimentBasis(stars, comment)`), unless
  *     its current content already failed 3 times or failed within the hour.
  *   - Star-only: labelled from the stars, no AI call, one transaction per ≤100.
- *   - With text: ONE review per AI call. Before each call `beginCall` (one
- *     transaction) re-reads the lease, the gates, the listing, the daily
- *     usage and the review; it stops the run, drops the review, or counts the
- *     call and writes a strike. After it, `finishCall` records the label or
- *     undoes the strike of a call that never reached the model.
+ *   - With text: ONE review per AI call. Immediately before each call
+ *     `beginCall` (one transaction) re-reads the lease, the gates, the
+ *     listing, the daily usage and the review; it stops the run, drops the
+ *     review, or counts the call and writes a strike. A label clears the
+ *     strike (`finishCall`); any failure keeps it and stops the run.
  *   - NEVER RE-BILLED on re-sync: the basis check, the attempt limit, one
  *     lease per sub-account renewable only by its owner, a daily cap of 300
  *     calls, and a 240 s budget per run.
@@ -94,6 +94,12 @@ async function writeRatingLabels(sa: string, items: Pending[], now: Date): Promi
   return written;
 }
 
+/**
+ * Text reviews, one AI call each, `beginCall` immediately before its call.
+ * The run STOPS on the first failure of any kind (the call, the provider, the
+ * write): an outage or exhausted credits costs one strike per run, never the
+ * backlog. Returns the stop reason, or null when every item was handled.
+ */
 async function classifyText(
   sa: string,
   runId: string,
@@ -108,37 +114,36 @@ async function classifyText(
     ai = await getReviewsAiFor(sa);
   } catch (err) {
     console.warn(`[reputation/sentiment] sa=${sa} provider refused kind=${err instanceof Error ? err.name : typeof err}`);
-    counts.failed += text.length;
-    return null;
+    counts.skipped += text.length;
+    return "ai_error";
   }
-  for (let i = 0; i < text.length; i += REVIEWS_AI_BATCH) {
+  for (let i = 0; i < text.length; i++) {
+    const rest = () => (counts.skipped += text.length - i - 1);
     if (Date.now() >= deadline) {
       counts.skipped += text.length - i;
       return "budget";
     }
-    const batch: Array<Pending & { begun: { previous: unknown; failures: number } }> = [];
-    for (const p of text.slice(i, i + REVIEWS_AI_BATCH)) {
-      const begun = await beginCall(sa, runId, locationName, p);
-      if (!begun.go && "stop" in begun) {
+    const p = text[i];
+    const begun = await beginCall(sa, runId, locationName, p);
+    if (!begun.go) {
+      if ("stop" in begun) {
         counts.skipped += text.length - i;
         return begun.stop;
       }
-      if (!begun.go) counts.skipped++;
-      else batch.push({ ...p, begun });
+      counts.skipped++;
+      continue;
     }
-    if (!batch.length) continue;
-    const results = await ai.classifySentiment(batch.map((p) => ({ id: p.docId, starRating: p.starRating, text: p.comment ?? "" })));
-    for (const p of batch) {
-      const r = results.find((x) => x.id === p.docId);
-      if (r?.label) {
-        if (await finishCall(sa, p, { kind: "label", label: r.label, model: ai.model, at: now })) counts.classified++;
-        else counts.skipped++;
-      } else {
-        counts.failed++;
-        if (r?.failure === "transport") {
-          await finishCall(sa, p, { kind: "transport", previous: p.begun.previous as never, failures: p.begun.failures });
-        }
-      }
+    try {
+      const [r] = await ai.classifySentiment([{ id: p.docId, starRating: p.starRating, text: p.comment ?? "" }]);
+      if (!r?.label) throw new Error(`unlabelled: ${r?.failure ?? "missing"}`);
+      if (await finishCall(sa, p, r.label, ai.model, now)) counts.classified++;
+      else counts.skipped++; // changed while it was classified
+    } catch (err) {
+      // The strike beginCall wrote stays: every failed call counts.
+      console.warn(`[reputation/sentiment] sa=${sa} ai call failed; run stops kind=${err instanceof Error ? err.name : typeof err}`);
+      counts.failed++;
+      rest();
+      return "ai_error";
     }
   }
   return null;
@@ -146,10 +151,10 @@ async function classifyText(
 
 export async function classifyPendingSentiment(
   subAccountId: string,
-  opts: { max?: number; now?: Date; heldRunId?: string } = {},
+  opts: { max?: number; now?: Date; heldRunId?: string; /** Shared by every run of one request. */ deadline?: number } = {},
 ): Promise<SentimentOutcome> {
   const now = opts.now ?? new Date();
-  const deadline = Date.now() + SENTIMENT_RUN_BUDGET_MS;
+  const deadline = opts.deadline ?? Date.now() + SENTIMENT_RUN_BUDGET_MS;
   const counts: SentimentCounts = { classified: 0, skipped: 0, failed: 0 };
   const aiConfigured = reviewsAiConfigured();
   const runId = opts.heldRunId ?? randomUUID();
@@ -157,6 +162,7 @@ export async function classifyPendingSentiment(
   let skipReason: SentimentSkip | null = null;
   let stopped: StopReason | null = null;
   let complete = false;
+  let returned = false;
 
   try {
     const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubAccountDoc;
@@ -165,7 +171,10 @@ export async function classifyPendingSentiment(
     else if (sub.googleEnabledByAgency !== true) skipReason = "google_gate_off";
     else if (!locationName) skipReason = "no_listing";
     else if (!held && !(held = await acquireSentimentLease(subAccountId, runId, now.getTime()))) skipReason = "busy";
-    if (skipReason) return { status: "skipped", skipReason, stopped, aiConfigured, ...counts };
+    if (skipReason) {
+      returned = true;
+      return { status: "skipped", skipReason, stopped, aiConfigured, ...counts };
+    }
 
     const { reviews } = await loadServedReviews(subAccountId, locationName!, now);
     const pending: Pending[] = reviews.flatMap((r) => {
@@ -186,12 +195,14 @@ export async function classifyPendingSentiment(
     const text = batch.filter((x) => !isStarOnly(x.comment));
     if (!aiConfigured) counts.skipped += text.length;
     else if (text.length) stopped = await classifyText(subAccountId, runId, locationName!, text, counts, now, deadline);
-    complete = stopped === null;
+    // Complete only if nothing stopped it AND the 100-per-run cap left nothing behind.
+    complete = stopped === null && pending.length <= max;
+    returned = true;
     return { status: "ran", skipReason: null, stopped, aiConfigured, ...counts };
   } finally {
-    // Always released when held (a throw included); lastCompleteAt only on a normal finish.
+    // Always released when held (a throw included); lastCompleteAt only on a complete run.
     if (held) {
-      const reason = skipReason ?? stopped;
+      const reason = returned ? (skipReason ?? stopped) : "error";
       await releaseSentimentLease(subAccountId, runId, { lastRun: { ...counts, at: now, reason }, complete });
     }
   }

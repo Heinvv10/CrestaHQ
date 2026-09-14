@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * What happens around each AI call (SP5 b): the one-transaction `beginCall`
  * (lease owner, gates, listing, daily cap, the review itself, the strike),
- * the time budget, and `finishCall` (label / undo a transport failure's
- * strike / keep a model failure's). The AI is a scripted double; the sync,
+ * the time budget, and the failure model: every failed call is a strike and
+ * stops the run. The AI is a scripted double; the sync,
  * the served-reviews set and Firestore are real/in-memory. The clock is
  * faked (Date only) so the retry hour and the budget can be walked.
  */
@@ -12,27 +12,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const script = vi.hoisted(() => ({
   onCall: null as null | ((ids: string[]) => void),
-  model: new Set<string>(),
-  transport: new Set<string>(),
+  fail: new Set<string>(),
   crash: false,
+  refuse: false,
   calls: [] as string[][],
 }));
 vi.mock("./ai/select", () => ({
-  getReviewsAiFor: async () => ({
+  getReviewsAiFor: async () => {
+    if (script.refuse) throw new Error("provider refused");
+    return {
     model: "scripted",
     classifySentiment: async (items: Array<{ id: string }>) => {
       script.calls.push(items.map((i) => i.id));
       script.onCall?.(items.map((i) => i.id));
       if (script.crash) throw new Error("process died mid-call");
-      return items.map((i) =>
-        script.transport.has(i.id)
-          ? { id: i.id, label: null, failure: "transport" }
-          : script.model.has(i.id)
-            ? { id: i.id, label: null, failure: "model" }
-            : { id: i.id, label: "neutral" },
-      );
+      return items.map((i) => (script.fail.has(i.id) ? { id: i.id, label: null, failure: "bad_output" } : { id: i.id, label: "neutral" }));
     },
-  }),
+    };
+  },
 }));
 
 import { SA, mem, resetSync, reviews } from "@/test/gbp-sync-harness";
@@ -59,9 +56,8 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   await syncListing(SA, { trigger: "scheduled" });
   mem.seed(`subAccounts/${SA}`, { ...sub(), reviewsAiEnabledByAgency: true });
-  Object.assign(script, { onCall: null, crash: false });
-  script.model.clear();
-  script.transport.clear();
+  Object.assign(script, { onCall: null, crash: false, refuse: false });
+  script.fail.clear();
   script.calls.length = 0;
 });
 afterEach(() => {
@@ -148,19 +144,35 @@ describe("the strike", () => {
     expect(docOf("fake-r7").sentiment).toMatchObject({ method: "ai" });
   });
 
-  it("a transport failure (never reached the model) is rolled back — not a strike", async () => {
-    const target = docOf("fake-r2").id;
-    script.transport.add(target);
-    expect(await classifyPendingSentiment(SA)).toMatchObject({ failed: 1 });
-    expect(docOf("fake-r2").sentimentAttempt).toBeNull();
-    // Not in a retry wait either: the next run sends it again straight away.
-    await classifyPendingSentiment(SA);
-    expect(sent(target)).toBe(2);
+  it("any failed call is a strike and STOPS the run — an outage costs one strike, not the backlog", async () => {
+    const target = docOf("fake-r6").id; // the second text review, newest first
+    script.fail.add(target);
+    const out = await classifyPendingSentiment(SA);
+    expect(out).toMatchObject({ stopped: "ai_error", classified: 2, failed: 1, skipped: 4 }); // star-only + r7, then r6 fails
+    expect(script.calls).toHaveLength(2);
+    expect(docOf("fake-r6").sentimentAttempt).toMatchObject({ failures: 1 });
+    expect(lease()).toMatchObject({ lastRun: { reason: "ai_error" } });
+    expect(lease().lastCompleteAt).toBeUndefined();
   });
 
-  it("a model failure keeps it: retried at most once an hour and three times, then 'couldn't be analysed'", async () => {
+  it("a provider that cannot be obtained stops the run (ai_error), not a complete run, nothing sent", async () => {
+    script.refuse = true;
+    expect(await classifyPendingSentiment(SA)).toMatchObject({ stopped: "ai_error", classified: 1, skipped: 6, failed: 0 });
+    expect(script.calls).toHaveLength(0);
+    expect(lease().lastCompleteAt).toBeUndefined();
+  });
+
+  it("a thrown call stops the run the same way", async () => {
+    script.crash = true;
+    // A throw inside the provider call is caught per call: strike kept, run stopped.
+    const out = await classifyPendingSentiment(SA);
+    expect(out).toMatchObject({ stopped: "ai_error", failed: 1 });
+    expect(script.calls).toHaveLength(1);
+  });
+
+  it("retried at most once an hour and three times, then 'couldn't be analysed'", async () => {
     const target = docOf("fake-r2").id;
-    script.model.add(target);
+    script.fail.add(target);
     await classifyPendingSentiment(SA);
     expect(docOf("fake-r2").sentimentAttempt).toMatchObject({ failures: 1 });
     vi.setSystemTime(new Date(T0.getTime() + 10 * 60_000)); // within the hour: not sent
@@ -177,9 +189,18 @@ describe("the strike", () => {
     expect(sent(target)).toBe(3);
   });
 
-  it("a crash mid-call keeps the strike (counted), releases the lease, and is not a complete run", async () => {
-    script.crash = true;
-    await expect(classifyPendingSentiment(SA)).rejects.toThrow("process died mid-call");
+  it("a crash outside the call (the store fails) keeps the strike, releases the lease with reason 'error', not complete", async () => {
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const real = storeDb.runTransaction.bind(storeDb);
+    let n = 0;
+    script.onCall = () => {
+      vi.spyOn(storeDb, "runTransaction").mockImplementation((async (fn: never) => {
+        if (++n === 1) throw new Error("14 UNAVAILABLE"); // finishCall's transaction
+        return real(fn);
+      }) as never);
+    };
+    const out = await classifyPendingSentiment(SA);
+    expect(out).toMatchObject({ stopped: "ai_error", failed: 1 });
     expect(docOf("fake-r7").sentimentAttempt).toMatchObject({ failures: 1 });
     expect(lease().runId).toBeNull();
     expect(lease().lastCompleteAt).toBeUndefined();
@@ -187,13 +208,13 @@ describe("the strike", () => {
 
   it("an edit starts a new count (new content)", async () => {
     const target = docOf("fake-r2").id;
-    script.model.add(target);
+    script.fail.add(target);
     for (const h of [0, 1, 2]) {
       vi.setSystemTime(new Date(T0.getTime() + h * HOUR));
       await classifyPendingSentiment(SA);
     }
     mem.seed(pathOf("fake-r2"), { ...mem.read(pathOf("fake-r2"))!, comment: "New text." });
-    script.model.clear();
+    script.fail.clear();
     await classifyPendingSentiment(SA);
     expect(sent(target)).toBe(4);
     expect(docOf("fake-r2").sentiment).toMatchObject({ method: "ai" });

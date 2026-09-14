@@ -68,4 +68,15 @@ describe("reviewsAiEnabled", () => {
     expect(PLAN_GATE_KEYS).toContain("reviewsAiEnabledByAgency");
     expect(PLAN_GATE_LABELS.reviewsAiEnabledByAgency).toBe("Reviews AI (sentiment and reply drafts)");
   });
+
+  it("switching it ON forgets the last complete classification, so the next sync backfills", async () => {
+    const lease = `subAccounts/${SA}/private/sentimentLease`;
+    mem.seed(lease, { lastCompleteAt: 123, lastManualAt: 5 });
+    expect(await patch({ reviewsAiEnabled: true })).toBe(200);
+    expect(mem.read(lease)).toEqual({ lastManualAt: 5 });
+    // Saving it on again (already on) keeps a newer stamp.
+    mem.seed(lease, { lastCompleteAt: 456 });
+    expect(await patch({ reviewsAiEnabled: true })).toBe(200);
+    expect(mem.read(lease)?.lastCompleteAt).toBe(456);
+  });
 });

@@ -3,7 +3,7 @@ import "server-only";
 import { after } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { reviewsAiConfigured } from "./ai/mode";
-import { classifyPendingSentiment } from "./sentiment";
+import { classifyPendingSentiment, SENTIMENT_RUN_BUDGET_MS } from "./sentiment";
 import { readLeaseDoc } from "./sentiment-lease";
 
 /**
@@ -20,19 +20,21 @@ export interface SyncedRun {
   updated: number;
 }
 
-/** A completed run older than this is re-done after a sync even if nothing changed. */
+/** After a sync that changed nothing, classify again once the last complete run is older than this. */
 export const SENTIMENT_RECHECK_MS = 24 * 3600_000;
 
 const kind = (err: unknown) => (err instanceof Error ? err.name : typeof err);
 
 /**
  * Classify after a sync iff Reviews AI can run for the tenant (both gates
- * on, AI configured) AND the run created or changed reviews, or no run has
- * completed normally in the last 24 h (a killed or stopped run, items
- * waiting out their retry hour, a gate just switched on). Otherwise nothing
- * beyond the sub-account read; Analyse now covers "right now".
+ * on, AI configured) AND either the run created or changed reviews, or the
+ * last COMPLETE run (`lastCompleteAt`) is more than 24 h old or there has
+ * been none — which covers a killed, stopped or capped run, items waiting out
+ * their retry hour, and the gate just switched on (switching it on clears
+ * `lastCompleteAt`). Otherwise nothing beyond the sub-account read; Analyse
+ * now covers "right now". `deadline` is shared by every tenant of one request.
  */
-export async function classifyAfterSync(run: SyncedRun): Promise<void> {
+export async function classifyAfterSync(run: SyncedRun, deadline: number): Promise<void> {
   try {
     const sub = (await getAdminDb().doc(`subAccounts/${run.subAccountId}`).get()).data() ?? {};
     if (sub.reviewsAiEnabledByAgency !== true || sub.googleEnabledByAgency !== true || !reviewsAiConfigured()) return;
@@ -40,7 +42,7 @@ export async function classifyAfterSync(run: SyncedRun): Promise<void> {
       const { lastCompleteAt } = await readLeaseDoc(run.subAccountId);
       if (typeof lastCompleteAt === "number" && Date.now() - lastCompleteAt < SENTIMENT_RECHECK_MS) return;
     }
-    await classifyPendingSentiment(run.subAccountId);
+    await classifyPendingSentiment(run.subAccountId, { deadline });
   } catch (err) {
     console.warn(`[reputation/sentiment] sa=${run.subAccountId} after-sync failed kind=${kind(err)}`);
   }
@@ -56,10 +58,16 @@ export function afterResponse(work: () => Promise<unknown>): void {
   }
 }
 
-/** The sync routes: classify each run's tenant, one after another, after responding. */
-export function classifyAfterResponse(runs: SyncedRun[]): void {
+/** A request's deadline: its start + 240 s, one for every tenant it classifies (routes allow 300 s). */
+export const requestDeadline = (startedAt = Date.now()) => startedAt + SENTIMENT_RUN_BUDGET_MS;
+
+/** Each run's tenant, one after another, all under the one `deadline`. */
+export async function classifySyncedRuns(runs: SyncedRun[], deadline: number): Promise<void> {
+  for (const run of runs) await classifyAfterSync(run, deadline);
+}
+
+/** The sync routes: classify after responding, under the request's deadline. */
+export function classifyAfterResponse(runs: SyncedRun[], deadline: number): void {
   if (!runs.length) return;
-  afterResponse(async () => {
-    for (const run of runs) await classifyAfterSync(run);
-  });
+  afterResponse(() => classifySyncedRuns(runs, deadline));
 }

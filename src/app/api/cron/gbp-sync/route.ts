@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 import { runGbpRetentionSweep, runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
-import { classifyAfterResponse, type SyncedRun } from "@/lib/reputation/sentiment-after";
+import { classifyAfterResponse, requestDeadline, type SyncedRun } from "@/lib/reputation/sentiment-after";
 
 /**
  * Scheduled Google Business Profile review sync — every 6 hours.
@@ -22,8 +22,10 @@ import { classifyAfterResponse, type SyncedRun } from "@/lib/reputation/sentimen
  * tenant holding a cache, no provider calls).
  *
  * Review sentiment (SP5 b) runs AFTER this responds, one tenant after
- * another, only for tenants whose run created/changed reviews or left work
- * pending — never inside the request (QStash would retry a slow cron).
+ * another under ONE deadline (request start + 240 s), only for tenants with
+ * Reviews AI on whose run changed reviews or whose last complete
+ * classification is over 24 h old — never inside the request (QStash would
+ * retry a slow cron).
  *
  * Each sub-account is isolated inside the sweep, so this answers 200 with the
  * tally even when some tenants failed; 500 only when the sweep could not
@@ -35,6 +37,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
+  const deadline = requestDeadline();
   const signature = request.headers.get("upstash-signature");
   const rawBody = await request.text();
   if (!signature) {
@@ -50,7 +53,7 @@ export async function POST(request: Request) {
     if (gbpSyncScheduled()) {
       const runs: SyncedRun[] = [];
       const result = await runGbpSyncSweep({ onRun: (r) => runs.push({ subAccountId: r.subAccountId, created: r.created, updated: r.updated }) });
-      classifyAfterResponse(runs);
+      classifyAfterResponse(runs, deadline);
       return NextResponse.json(result);
     }
     // Flag off: behave exactly like the daily retention cron (every tenant

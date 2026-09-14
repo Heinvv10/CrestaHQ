@@ -9,7 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const handed = vi.hoisted(() => vi.fn());
 // Sentiment runs after the response (SP5 b); here we only see what the route hands it.
-vi.mock("@/lib/reputation/sentiment-after", () => ({ classifyAfterResponse: handed }));
+vi.mock("@/lib/reputation/sentiment-after", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reputation/sentiment-after")>()),
+  classifyAfterResponse: handed,
+}));
 
 const KEY = "sig_test_current_key_for_gbp_cron";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
@@ -182,6 +185,7 @@ describe("sentiment after the response (SP5 b)", () => {
     const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
     expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
     expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
+    expect(typeof handed.mock.calls[0][1]).toBe("number"); // the one deadline shared by every tenant
   });
 });
 

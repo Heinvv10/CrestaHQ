@@ -9,15 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { LOC_A, SA, mem, resetSync, reviews, seedSub, setScenario } from "@/test/gbp-sync-harness";
+import { LOC_A, OTHER_SA, SA, mem, resetSync, reviews, seedSub, setScenario } from "@/test/gbp-sync-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { fakeLogPath } from "./ai/fake";
 import { classifyPendingSentiment } from "./sentiment";
-import { classifyAfterSync } from "./sentiment-after";
+import { classifyAfterSync, classifySyncedRuns } from "./sentiment-after";
 import { sentimentBasis } from "./sentiment-basis";
 import { sentimentLeasePath } from "./sentiment-lease";
 
 const ORIGINAL = { ...process.env };
+/** A deadline nothing here reaches. */
+const FAR = Date.now() + 24 * 3600_000;
 
 /** Every id the fake AI was asked about, across all calls. */
 const billed = (): string[] =>
@@ -32,7 +34,7 @@ function gates(on: { reviewsAi?: boolean; google?: boolean } = {}) {
 }
 async function syncAndClassify() {
   const run = await syncListing(SA, { trigger: "scheduled" });
-  await classifyAfterSync({ subAccountId: SA, created: run.created, updated: run.updated });
+  await classifyAfterSync({ subAccountId: SA, created: run.created, updated: run.updated }, FAR);
   return run;
 }
 
@@ -132,13 +134,13 @@ describe("after a sync (never inside it)", () => {
   });
 
   it("a sync that changed nothing: classifies only when no run completed in the last 24 h", async () => {
-    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // never completed → runs
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }, FAR); // never completed → runs
     expect(billed()).toHaveLength(6);
     const stamp = lease().lastCompleteAt as number;
-    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // fresh → nothing
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }, FAR); // fresh → nothing
     expect(lease().lastCompleteAt).toBe(stamp);
     mem.seed(sentimentLeasePath(SA), { ...lease(), lastCompleteAt: Date.now() - 25 * 3600_000 });
-    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }); // stale → runs
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }, FAR); // stale → runs
     expect(lease().lastCompleteAt).toBeGreaterThan(Date.now() - 60_000);
   });
 
@@ -151,7 +153,7 @@ describe("after a sync (never inside it)", () => {
     arrange();
     const { storeDb } = await import("@/test/gbp-sync-store");
     const reads = vi.spyOn(storeDb, "collection");
-    await classifyAfterSync({ subAccountId: SA, created: 3, updated: 1 });
+    await classifyAfterSync({ subAccountId: SA, created: 3, updated: 1 }, FAR);
     expect(reads).not.toHaveBeenCalled();
     expect(mem.read(sentimentLeasePath(SA))).toBeUndefined();
     expect(billed()).toEqual([]);
@@ -181,19 +183,60 @@ describe("after a sync (never inside it)", () => {
     expect(billed()).toHaveLength(6);
   });
 
-  it("a tombstoned review loses its label and its failed attempts", async () => {
+  it("a tombstone keeps the label and the attempts (no content) — a review restored unchanged is not re-sent", async () => {
     await syncAndClassify();
-    const id = byReviewId()["fake-r4"].id;
-    mem.seed(`subAccounts/${SA}/gbpReviews/${id}`, { ...mem.read(`subAccounts/${SA}/gbpReviews/${id}`)!, sentimentAttempt: { basisHash: "x", failures: 1, lastAt: new Date() } });
-    setScenario(SA, (s) => {
+    const before = byReviewId()["fake-r4"].sentiment;
+    const removeR4 = (s: Parameters<Parameters<typeof setScenario>[1]>[0]) => {
       s.reviews[LOC_A].reviews = s.reviews[LOC_A].reviews.filter((r) => r.reviewId !== "fake-r4");
       s.reviews[LOC_A].totalReviewCount = 6;
-    });
+    };
+    const original = mem.read(`subAccounts/${SA}/private/gbpFakeScenario`);
+    setScenario(SA, removeR4);
     await syncListing(SA, { trigger: "scheduled" });
     await syncListing(SA, { trigger: "scheduled" });
     const r4 = byReviewId()["fake-r4"];
     expect(r4.state).toBe("removed");
-    expect(r4.sentiment).toBeNull();
-    expect(r4.sentimentAttempt).toBeNull();
+    expect(r4.comment).toBeNull();
+    expect(r4.sentiment).toEqual(before); // a 3-value label + hashes, no content
+    // Restored at Google, unchanged: labelled again at once, never sent to the AI again.
+    mem.seed(`subAccounts/${SA}/private/gbpFakeScenario`, original!);
+    await syncAndClassify();
+    expect(byReviewId()["fake-r4"].state).toBe("active");
+    expect(billed()).toHaveLength(6);
+  });
+
+  it("a run that hit the 100-per-run cap is not complete — the next sync continues", async () => {
+    await classifyPendingSentiment(SA, { max: 3 });
+    expect(lease().lastCompleteAt).toBeUndefined();
+    await classifyAfterSync({ subAccountId: SA, created: 0, updated: 0 }, FAR); // not complete → runs
+    expect(billed()).toHaveLength(6);
+    expect(lease().lastCompleteAt).toEqual(expect.any(Number));
+  });
+});
+
+describe("one deadline per request", () => {
+  it("the second tenant's run stops when the request's shared deadline has passed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      mem.seed(`subAccounts/${OTHER_SA}`, { ...mem.read(`subAccounts/${OTHER_SA}`)!, reviewsAiEnabledByAgency: true });
+      await syncListing(OTHER_SA, { trigger: "scheduled" });
+      const deadline = Date.now() + 240_000;
+      // The first tenant's classification takes the clock past the shared deadline.
+      const { storeDb } = await import("@/test/gbp-sync-store");
+      const realDoc = storeDb.doc.bind(storeDb);
+      vi.spyOn(storeDb, "doc").mockImplementation(((path: string) => {
+        if (path === fakeLogPath(SA)) vi.setSystemTime(new Date(deadline + 1000));
+        return realDoc(path);
+      }) as never);
+      await classifySyncedRuns(
+        [{ subAccountId: SA, created: 7, updated: 0 }, { subAccountId: OTHER_SA, created: 7, updated: 0 }],
+        deadline,
+      );
+      const otherBilled = ((mem.read(fakeLogPath(OTHER_SA))?.calls ?? []) as unknown[]).length;
+      expect(otherBilled).toBe(0);
+      expect(mem.read(sentimentLeasePath(OTHER_SA))).toMatchObject({ lastRun: { reason: "budget" } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

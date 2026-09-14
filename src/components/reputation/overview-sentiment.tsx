@@ -47,7 +47,8 @@ export const STOP_MESSAGE: Record<string, string> = {
   listing_changed: "The Google listing changed during the run — nothing more was analysed.",
   daily_cap: "Daily AI limit reached — continues tomorrow.",
   budget: "Stopped after four minutes — the rest continues on the next run.",
-  lease_lost: "Another analysis took over — the counts update when it finishes.",
+  ai_error: "The AI provider failed — try again later.",
+  error: "The analysis stopped on an error — try again later.",
 };
 
 function describeRun(r: NonNullable<OverviewResponse["reviewsAi"]["lastRun"]>): string {

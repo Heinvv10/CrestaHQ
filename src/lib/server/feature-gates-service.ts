@@ -133,6 +133,15 @@ export async function applyFeatureGates(
   // listing stay — re-enabling resumes with a fresh sync.
   // A failed clear does not fail the gate (already written): the daily
   // retention sweep is the backstop, and re-saving the gate retries safely.
+  // Reviews AI switched ON (from off): forget the last complete sentiment run,
+  // so the next sync classifies the existing reviews instead of waiting 24 h.
+  if (gates.reviewsAiEnabledByAgency === true && subSnap.data()?.reviewsAiEnabledByAgency !== true) {
+    try {
+      await db.doc(`subAccounts/${subAccountId}/private/sentimentLease`).set({ lastCompleteAt: FieldValue.delete() }, { merge: true });
+    } catch (err) {
+      console.error(`[feature-gates] sentiment reset failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`);
+    }
+  }
   if (gates.googleEnabledByAgency === false) {
     try {
       await clearGbpCache(subAccountId);

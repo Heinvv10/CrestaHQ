@@ -145,6 +145,8 @@ describe("Analyse now", () => {
     ["budget", 2, "Labelled 2 reviews. 3 reviews left for the next run. Stopped after four minutes — the rest continues on the next run."],
     ["gate_off", 0, "Reviews AI was switched off — nothing more was analysed."],
     ["no_listing", 0, "No Google listing is selected, so there are no reviews to analyse."],
+    ["ai_error", 1, "Labelled 1 review. 3 reviews left for the next run. The AI provider failed — try again later."],
+    ["error", 0, "The analysis stopped on an error — try again later."],
   ])("a run that stopped (%s) ends with its reason, never 'Still analysing'", async (reason, classified, text) => {
     await render(props());
     await press();

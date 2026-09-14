@@ -9,7 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const handed = vi.hoisted(() => vi.fn());
 // Sentiment runs after the response (SP5 b); here we only see what the route hands it.
-vi.mock("@/lib/reputation/sentiment-after", () => ({ classifyAfterResponse: handed }));
+vi.mock("@/lib/reputation/sentiment-after", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reputation/sentiment-after")>()),
+  classifyAfterResponse: handed,
+}));
 
 import {
   FOREIGN_AGENCY,
@@ -132,7 +135,11 @@ describe("sentiment after the response (SP5 b)", () => {
     const { status } = await syncNow("uid_admin");
     expect(status).toBe(200);
     expect(handed).toHaveBeenCalledTimes(1);
-    expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 7, updated: 0 }]);
+    // One deadline for the request: its start + 240 s.
+    expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 7, updated: 0 }], expect.any(Number));
+    const deadline = handed.mock.calls[0][1] as number;
+    expect(deadline - Date.now()).toBeGreaterThan(230_000);
+    expect(deadline - Date.now()).toBeLessThanOrEqual(240_000);
   });
 });
 

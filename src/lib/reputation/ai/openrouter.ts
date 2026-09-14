@@ -19,8 +19,7 @@ import {
  * of three labels for an id we sent — batch-local ids ("1".."n"), so no
  * document id leaves the server. Anything else (bad JSON, an unknown id, a
  * duplicate, an invalid label, a missing item, a failed call) leaves that
- * item unlabelled this round, logged by kind — never guessed — and says
- * whether the request reached the model (`SentimentFailure`).
+ * item unlabelled this round, logged by kind — never guessed.
  */
 
 export const BATCH_SIZE = REVIEWS_AI_BATCH;
@@ -31,21 +30,7 @@ const SYSTEM = [
   'Reply with ONLY a JSON object {"results":[{"id":"<id>","label":"positive"|"neutral"|"negative"}]} with exactly one result per review id and nothing else.',
 ].join("\n");
 
-type Kind = "unparseable" | "invalid_label" | "unknown_id" | "duplicate" | "missing" | "call_failed_transport" | "call_failed_upstream";
-
-/**
- * Did a failed `callAi` never reach the model? Network errors (fetch throws
- * before any "OpenRouter …" message), our own timeout, a missing key, and
- * OpenRouter's 401 / 402 / 429 refusals. Anything else — a 5xx, an empty or
- * error body after the request was accepted — is counted as billed.
- */
-export function neverReachedModel(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (/timed out|OPENROUTER_API_KEY is not set/.test(msg)) return true;
-  const status = /^OpenRouter (\d{3})\b/.exec(msg)?.[1];
-  if (status) return status === "401" || status === "402" || status === "429";
-  return !msg.startsWith("OpenRouter");
-}
+type Kind = "unparseable" | "invalid_label" | "unknown_id" | "duplicate" | "missing" | "call_failed";
 
 function warn(kind: Kind, n: number) {
   console.warn(`[reputation/ai] sentiment: ${n} item(s) unlabelled kind=${kind}`);
@@ -78,19 +63,18 @@ async function classifyBatch(model: string, batch: SentimentItem[]): Promise<Sen
       ],
     });
     text = res.text;
-  } catch (err) {
-    const transport = neverReachedModel(err);
-    warn(transport ? "call_failed_transport" : "call_failed_upstream", batch.length);
-    return failAll(batch, transport ? "transport" : "model");
+  } catch {
+    warn("call_failed", batch.length);
+    return failAll(batch, "call_failed");
   }
   const results = parseResults(text);
   if (!results) {
     warn("unparseable", batch.length);
-    return failAll(batch, "model");
+    return failAll(batch, "bad_output");
   }
   const seen = new Map<string, SentimentLabel | null>();
   const bad: Record<Kind, number> = {
-    unparseable: 0, invalid_label: 0, unknown_id: 0, duplicate: 0, missing: 0, call_failed_transport: 0, call_failed_upstream: 0,
+    unparseable: 0, invalid_label: 0, unknown_id: 0, duplicate: 0, missing: 0, call_failed: 0,
   };
   for (const r of results) {
     const { id, label } = (r ?? {}) as { id?: unknown; label?: unknown };
@@ -114,7 +98,7 @@ async function classifyBatch(model: string, batch: SentimentItem[]): Promise<Sen
   for (const [kind, n] of Object.entries(bad) as Array<[Kind, number]>) if (n) warn(kind, n);
   return batch.map((item, i): SentimentResult => {
     const label = seen.get(localIds[i]);
-    return label ? { id: item.id, label } : { id: item.id, label: null, failure: "model" };
+    return label ? { id: item.id, label } : { id: item.id, label: null, failure: "bad_output" };
   });
 }
 

@@ -10,7 +10,7 @@ import { claimManualSlot } from "@/lib/gbp/sync/lease";
 import { publicRun } from "@/lib/gbp/sync/public";
 import { recordFailedRun } from "@/lib/gbp/sync/record";
 import { syncListing } from "@/lib/gbp/sync/run";
-import { classifyAfterResponse } from "@/lib/reputation/sentiment-after";
+import { classifyAfterResponse, requestDeadline } from "@/lib/reputation/sentiment-after";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -32,6 +32,7 @@ export async function POST(
   request: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
+  const deadline = requestDeadline();
   const { id } = await ctx.params;
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
@@ -54,7 +55,7 @@ export async function POST(
   try {
     const run = await syncListing(id, { trigger: "manual", actorUid: access.uid });
     // Sentiment for what this run changed runs after the response (SP5 b).
-    classifyAfterResponse([{ subAccountId: id, created: run.created, updated: run.updated }]);
+    classifyAfterResponse([{ subAccountId: id, created: run.created, updated: run.updated }], deadline);
     return NextResponse.json({ run: publicRun(run) });
   } catch (err) {
     console.error(`[gbp/sync-now] sync threw sa=${id}: ${err instanceof Error ? err.name : typeof err}`);

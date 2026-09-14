@@ -7,7 +7,7 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
 import { classifyPendingSentiment } from "@/lib/reputation/sentiment";
-import { afterResponse } from "@/lib/reputation/sentiment-after";
+import { afterResponse, requestDeadline } from "@/lib/reputation/sentiment-after";
 import { startManualSentiment } from "@/lib/reputation/sentiment-lease";
 
 /**
@@ -24,6 +24,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
+  const deadline = requestDeadline();
   const { id } = await ctx.params;
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
@@ -45,6 +46,6 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       ? gbpRefusal(409, "busy", "An analysis is already running — the counts update when it finishes.")
       : gbpRefusal(409, "too_soon", "Reviews were analysed less than a minute ago — try again shortly.");
   }
-  afterResponse(() => classifyPendingSentiment(id, { heldRunId: runId }));
+  afterResponse(() => classifyPendingSentiment(id, { heldRunId: runId, deadline }));
   return NextResponse.json({ started: true, aiConfigured: reviewsAiConfigured() }, { status: 202 });
 }

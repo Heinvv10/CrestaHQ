@@ -18,14 +18,11 @@ export interface SentimentItem {
 }
 
 /**
- * Why an item was not labelled:
- *   transport — the request never reached the model (network, timeout, no
- *               key, 401 / 402 / 429): not billed, so the caller undoes its strike;
- *   model     — the model answered but not validly (bad JSON, unknown or
- *               duplicated id, invalid label, missing item), or the provider
- *               failed after accepting the request: treated as billed.
+ * A failed item says why — for the logs only. Every failed call counts as a
+ * strike on the review (no "was it billed?" guessing), and the run stops on
+ * its first failure (sentiment.ts), so an outage costs one strike per run.
  */
-export type SentimentFailure = "transport" | "model";
+export type SentimentFailure = "call_failed" | "bad_output";
 export type SentimentResult =
   | { id: string; label: SentimentLabel; failure?: undefined }
   | { id: string; label: null; failure: SentimentFailure };

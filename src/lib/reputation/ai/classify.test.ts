@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const callAi = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/comms/ai/openrouter", () => ({ callAi, aiIsConfigured: () => true, defaultAiModel: () => "m-default" }));
 
-import { BATCH_SIZE, neverReachedModel, openRouterReviewsAi } from "./openrouter";
+import { BATCH_SIZE, openRouterReviewsAi } from "./openrouter";
 import { fakeLabel } from "./fake";
 import type { SentimentItem } from "./types";
 
@@ -66,9 +66,9 @@ describe("strict validation — never guess", () => {
     ["a duplicate id", [{ id: "1", label: "neutral" }, { id: "1", label: "negative" }], "duplicate"],
     ["an unknown id (and so the real one missing)", [{ id: "99", label: "positive" }], "unknown_id"],
     ["no result at all", [], "missing"],
-  ])("%s leaves the review unlabelled (a model failure), logged by kind", async (_l, results, kind) => {
+  ])("%s leaves the review unlabelled, logged by kind", async (_l, results, kind) => {
     reply(results);
-    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "model" }]);
+    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "bad_output" }]);
     const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
     expect(warned).toContain(`kind=${kind}`);
     expect(warned).not.toContain("Review number");
@@ -83,41 +83,19 @@ describe("strict validation — never guess", () => {
     "unparseable output (%s) labels nothing",
     async (text) => {
       reply(text);
-      expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "model" }]);
+      expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "bad_output" }]);
     },
   );
 
-  it("a failed call labels nothing for that review and the next still lands", async () => {
-    callAi.mockRejectedValueOnce(new Error("OpenRouter 500: upstream"));
-    reply([{ id: "1", label: "positive" }]);
-    expect(await openRouterReviewsAi("m").classifySentiment(items(2))).toEqual([
-      { id: "doc0", label: null, failure: "model" },
-      { id: "doc1", label: "positive" },
-    ]);
-    const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(warned).toContain("kind=call_failed_upstream");
-  });
-
-  it("a call that never reached the model is a transport failure (not billed)", async () => {
-    callAi.mockRejectedValueOnce(new Error("OpenRouter 429: rate limited"));
-    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "transport" }]);
-    const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(warned).toContain("kind=call_failed_transport");
-  });
-
   it.each([
-    ["a network error", new TypeError("fetch failed"), true],
-    ["our timeout", new Error("OpenRouter request timed out after 30000ms (model m)"), true],
-    ["no key", new Error("OPENROUTER_API_KEY is not set — AI replies require it."), true],
-    ["401", new Error("OpenRouter 401: unauthorized"), true],
-    ["402", new Error("OpenRouter 402: payment required"), true],
-    ["429", new Error("OpenRouter 429: slow down"), true],
-    ["500", new Error("OpenRouter 500: upstream"), false],
-    ["400", new Error("OpenRouter 400: bad request"), false],
-    ["an empty answer", new Error("OpenRouter returned no message content"), false],
-    ["an error body", new Error("OpenRouter: model overloaded"), false],
-  ])("neverReachedModel: %s → %s", (_l, err, expected) => {
-    expect(neverReachedModel(err)).toBe(expected);
+    ["a 500", new Error("OpenRouter 500: upstream")],
+    ["a 429", new Error("OpenRouter 429: slow down")],
+    ["a network error", new TypeError("fetch failed")],
+  ])("%s is a failed call — unlabelled, no guess about billing", async (_l, err) => {
+    callAi.mockRejectedValueOnce(err);
+    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: null, failure: "call_failed" }]);
+    const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(warned).toContain("kind=call_failed");
   });
 });
 

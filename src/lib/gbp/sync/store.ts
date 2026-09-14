@@ -133,11 +133,15 @@ export function upsertFor(
   return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false };
 }
 
-/** A removed review keeps only its ids and when it went — no content, no rating, no sentiment or attempts (derived from them). */
+/**
+ * A removed review keeps only its ids and when it went — no content, no
+ * rating. Its `sentiment` / `sentimentAttempt` (a 3-value label and hashes,
+ * no content) are kept, so a review restored unchanged is not re-sent to the
+ * AI and its strike count survives; retention deletion removes them with the doc.
+ */
 export function tombstone(now: Date): Record<string, unknown> {
   return {
     state: "removed", removedAt: now, comment: null, reviewer: null, reply: null, starRating: null, contentHash: null,
-    sentiment: null, sentimentAttempt: null,
   };
 }
 
