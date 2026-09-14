@@ -110,8 +110,10 @@ The QStash reminder is proven on #1000. Voice booking can't run in production (e
 ### SP5 — Reputation & Google Business Profile
 **GHL surface:** Reputation overview, reviews inbox, AI review replies + drip response, sentiment, trend charts, response coverage, review widgets, GBP optimisation, listings (Yext — resold, out).
 **CrestaHQ today:** review-request sender only; `/r/[token]` compliant feedback page; **no GBP code at all**.
-**Plan:** `ReviewProvider` seam with a recorded-fixture adapter now; live v4 adapter on Google approval. GBP OAuth + location picker + business-info/performance insights use APIs already enabled and can go live immediately. Port `ApexGEO/src/lib/business-profile/` (OAuth, token refresh, listReviews, updateReply, 5 test files).
+**Plan:** `ReviewProvider` seam with a recorded-fixture adapter now; live v4 adapter on Google approval. ~~GBP OAuth + location picker + business-info/performance insights use APIs already enabled and can go live immediately.~~ Wrong (probed 2026-09-14): every GBP API on the project, Performance included, is quota 0 until the case is approved. Port `ApexGEO/src/lib/business-profile/` (OAuth, token refresh, listReviews, updateReply, 5 test files).
 **Depends on:** SP0. Live half also depends on case 4-6894000042302.
+
+**Status (2026-09-14):** remainder built and merged — #121 #122 #124 #126 #128 #129 #132 #135; ledger [docs/parity/sp5.md](parity/sp5.md). Deployed 2026-09-14 17:48 SAST (cde3b17); live Google half blocked on the case.
 
 ### SP6 — Workflows / automations engine + rebuild of the 25 published workflows
 **GHL surface:** ~50 triggers, ~100 actions, wait/if-else/goal/webhook/AI steps, enrolment history, execution logs, test mode, folders.

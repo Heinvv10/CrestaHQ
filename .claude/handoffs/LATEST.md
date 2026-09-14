@@ -1,55 +1,45 @@
-> **There is a second open handoff:** `.claude/handoffs/2026-09-13-wave1-goals.md` (wave-1 parity goals; lives in the shared checkout). Read it if continuing that work. The SP2 handoff is `.claude/handoffs/2026-09-13-1935.md`.
+> **There is a second open handoff:** `.claude/handoffs/2026-09-14-0818.md` (another session, same day). Read it if continuing that work; `.claude/handoffs/2026-09-13-1935.md` is the one before.
 
-# Handoff — 2026-09-14 08:18 SAST
+# Handoff — 2026-09-14 17:33 SAST
 
 **Project:** CrestaHQ (LeadStack CRM)
-**Branch:** docs/sp3-ledger-final (worktree `/home/hein/Workspace/CrestaHQ-wt-sp3-docs`) — final ledger + this handoff
-**Session goal:** SP3 — Calendars & booking at GoHighLevel (GHL) parity: ledger, build (a)–(f) one PR each, runtime-verify voice booking (R1) and a QStash reminder (R2) on #1000, under the Level-3 merge boundary, no deploy.
+**Branch:** main (SP5 work all merged; worktrees listed below)
+**Session goal:** SP5 — GHL Reputation & GBP remainder parity: ledger + six PRs (a–f), each blind-reviewed and merged under the Level-3 boundary, no deploy.
 
 ## Status
-Every SP3 build PR is merged to `main`; the last is (f) appointments list #119 (`d0c3893`, 2026-09-14 08:16). **Deployed to crm.crestahq.com at `d0c3893` on 2026-09-14 08:57 SAST** (Hein: "deploy now"; `--force` for business hours, and `--skip-tests` after the test gate twice hit a load timeout, see memory `project_crestahq_deploy_test_gate_load`). The deploy also shipped SP5 #121/#122, which were on `main`. The forged-header fix is proven live: 200 before the deploy, 401 after. Production Firestore rules and indexes were deployed from `main` after #115 (the last SP3 PR that changed them) and verified live with the client SDK. #119 and #120 touch no rules. The ledger `docs/parity/sp3.md` has per-row status, evidence links, a build log, decisions taken during review, findings outside scope and follow-ups.
+SP5 is built and merged. Ledger `docs/parity/sp5.md` rows are all "merged (#N)"; every Google-dependent row carries "live half blocked: case 4-6894000042302". Deployed to crm.crestahq.com 2026-09-14 17:48 SAST (`cde3b17`) on Hein's go; walked on #1000 (`docs/parity/evidence/sp5/prod-1000/`). No Firestore rules or indexes changed, so no rules deploy is needed.
 
 ## What got done this session
-- #109 (a) calendar types (personal, round robin with availability/equal distribution + priority, collective, class with seats, service) and one availability resolver `src/lib/booking/resolve-availability.ts` used by every caller (availability, book, reschedule, voice). `85b1eae`.
-- #110 (b) date overrides, before/after buffers, slot interval. It also fixed a pre-existing bug that made every booking 409 in zones at UTC+12 or later, plus a DST wall-time bug. `0259149`.
-- #107 (c) status lifecycle: `src/lib/server/event-status-service.ts`, triggers `booking.confirmed` / `booking.showed` / `booking.no_show`, and reschedule side effects in `src/lib/booking/reschedule.ts`. `c3f52bb`.
-- #115 (d) Google Calendar two-way sync: per-member tokens at `subAccounts/{sa}/private/googleCalendar_{uid}`, busy blocking, push with deterministic ids, token refresh, and a fenced fake provider for E2E. `calendar.events` scope added in the Google console; the consent screen stays in **Testing** (test users blitzfibre1@gmail.com, ai@velocityfibre.co.za), not submitted for verification. `f0e475a`.
-- #116 (e) embeddable widget and reschedule/cancel links. It also fixes the **live** vulnerability: middleware passed a client-sent `x-user-uid` through on public paths, so `DELETE /api/forms/[id]` could be forged. `8cdb7c7`.
-- #120 late-"now" regression tests and the `e2e/lib/booking-windows.ts` fail-fast guard. `bd58674`.
-- #119 (f) appointments list at `/sa/[id]/calendar/appointments` with tabs, filters and a row status menu. 4 fix rounds. `d0c3893`.
-- R2 done: a QStash reminder fired on #1000 (DELIVERED 200) and the email arrived. Probe data was cleaned up.
-- R1 partly done: voice booking **cannot run in production** because `OPENROUTER_API_KEY` and all `VAPI_*` are empty there. The code path was proven locally against #1000 with a scripted LLM; the probe data was deleted.
-- Browser evidence is under `docs/parity/evidence/sp3/`. It was taken on the E2E fixture tenant from a local build, not on #1000.
-- Removed 15 merged, clean SP3 worktrees.
+- **Ledger** `docs/parity/sp5.md` + GHL evidence `docs/parity/evidence/sp5/ghl/` (CrestaHQ location empty; Blitz aggregates only, sidebars cropped, owner name/number redacted).
+- **(a) #122** Reputation sidebar entry + `/sa/[id]/reputation` (Overview · Reviews · Requests · Widgets · Insights · Settings); Overview metrics (`lib/reputation/overview.ts`, `GET …/reputation/overview`); shared served-reviews loader `lib/gbp/sync/served.ts`.
+- **(e) #121** widget `layout` (carousel/grid/list/badge) + `theme` (light/dark) → feed `display` → `public/embed/gbp-reviews.js`; dashboard preview (same-origin GET, allow-list not loosened).
+- **(f) #126** Insights tab: `fetchDailyMetrics` (Performance API) on the provider seam + fake, `GET …/reputation/insights`, location picker; quota-0 429 → `access_not_approved`; **GBP provider refusals now HTTP 424 not 502** (Cloudflare replaced 502 bodies with HTML — that was #1000's "Couldn't load listings (error)").
+- **(d1) #129** one seam `lib/reviews/request-log.ts` logs every review ask (dispatcher, workflow SMS/WA/template/email, broadcasts, inbox routes, scheduled sends) — detection = rendered content contains the configured review URL; `failed` only after a provider attempt (`lib/comms/provider-attempt.ts` mark); Requests tab + Send Review Request dialog.
+- **(b) #124** sentiment: gate `reviewsAiEnabledByAgency` (opt-in), `lib/reputation/ai/` seam (OpenRouter + fenced `REVIEWS_AI_PROVIDER=fake`), classify after sync via Next `after()`, never re-billed (basisHash), 300 AI calls/sub-account/UTC day, one review per call, 60 s abort via new optional `signal` on `lib/comms/ai/openrouter.ts` `callAi`; strikes only for 403 / unusable answer.
+- **(c) #135** AI reply drafts (`POST …/gbp/reviews/[id]/draft`, human edits + clicks Post — `lib/gbp/reply.ts` still the only poster), reply guidelines, Reputation → Settings tab, best-effort contact guard `lib/reputation/ai/contact-guard.ts`, drafts ≤100 of the 300 daily calls.
+- **(d2) #132** reminders + `/rr/[token]` click tracking — **default off**, SMS-only, needs dedicated Twilio number + `inboundWebhookConfigured` + Google review link + E.164 phone; one chain per person; stops on click/reply/opt-out/etc.; max every 7 days (QStash plan unconfirmed).
+- **#128** flaky `feature-gates/route.gbp.test.ts` (import in `beforeAll`, 60 s) — was failing CI/deploy under box load.
 
 ## What's next
-1. Merge the docs PR from `docs/sp3-ledger-final` (ledger final status + evidence + this handoff) if it isn't merged.
-2. **Walk SP3 on #1000** (deployed) and add screenshots under `docs/parity/evidence/sp3/prod-1000/`. Check the "E2E smoke (production)" re-run for `d0c3893` (run 34812798201).
-3. After the prod keys are set: re-run R1 (a real Vapi call books on #1000).
-4. Any later `firebase deploy`: check open PRs touching `firestore.rules` FIRST, as its own step, then deploy the union (memory `feedback_rules_deploy_check_then_deploy`).
-5. Follow-ups are listed in `docs/parity/sp3.md` "Follow-ups". The most useful are:
-   - `maxPerDay` is not re-checked at book time.
-   - A v1 PATCH that resends an unchanged completed/no-show status on a future event returns 409.
+1. **Done:** deployed `cde3b17` 2026-09-14 17:48 and walked #1000 (Overview, Insights, Settings, Google Business "not approved" wording).
+2. **Set `OPENROUTER_API_KEY`** in `/home/velo/crestahq-config/.env.production` (Hein) — without it sentiment labels star-only reviews only and drafts are hidden.
+3. **Case 4-6894000042302** (decision ~09-18): on approval, live-prove reviews/replies/insights on a TEST sub-account per `docs/features/gbp-reviews.md` owner checklist.
+4. Enable `reviewsAiEnabledByAgency` per sub-account (agency Manage dialog) and, only with Hein's OK, reminders on a real sub-account.
 
 ## Open questions / blockers
-- **Production AI keys (Hein).** `OPENROUTER_API_KEY` and `VAPI_*` are empty on crm.crestahq.com. No AI reply or voice call can run until they're set.
-- **Google verification.** Needed before non-test users can connect Google Calendar. Not submitted, per the goal.
-- **"E2E smoke (production)" failed on every `main` push until this deploy**, because production lacked SP3. `workflow-enrol.spec.ts` also failed there with `Invalid signature` from the step worker. That failure was not investigated and may be a real production issue; the re-run for `d0c3893` (run 34812798201) will show whether it persists.
+- QStash plan max delay unconfirmed → reminders capped at 7 days.
+- Follow-ups surfaced in review, not built: ~12 non-GBP routes still answer 502 with a JSON body the UI shows (lost behind Cloudflare, e.g. `comms/whatsapp/send-template`, `comms/voice/call`, `broadcasts/email/send`); `lib/reviews/request.ts` (~506 lines) and `workflows/engine.ts` over 300 lines; `inboundWebhookConfigured` is only set by webhook auto-config (hand-set webhooks can't enable reminders).
 
 ## Context the next session needs
-- Several PRs used an E2E-only flag, `E2E_DISABLE_BOOKING_RATE_LIMITS=1`, fenced to a loopback app URL (`src/lib/booking/rate-limit-e2e.ts`). The deploy guard refuses the name. Never set it in `.env.production`.
-- The Google Calendar fake provider needs `GCAL_PROVIDER=fake` + a loopback URL + `GCAL_FAKE_ALLOW_PROD_BUILD` + `GCAL_FAKE_AGENCY_ID`; the deploy guard refuses it.
-- Events are client-locked in `firestore.rules` on `hostUids`, `serviceId`, `serviceName`, `mode`, `googleEventIds`, `googleSyncError`, `googleSyncRetryAt`, `assignedToUid`, `assignedToName`, `source` and `bookingPageSlug`. A client delete is refused while `googleEventIds` is non-empty; the UI goes through `DELETE /api/events/by-id/[id]`.
-- Google disconnect deliberately does **not** revoke at Google, because the OAuth client is shared with GBP.
-- The fixture sub-account is shared by CI E2E and every session. A spec that leaves hostless events breaks other booking specs; `assertWindowsClear` now names the polluter. Never run local E2E while CI is queued or running; there is one self-hosted runner, port 3100.
-- Every fix round on this goal introduced at least one new defect that the fix-round review caught (#109 infinite slot loop, #107 test mode firing live workflows, #115 orphaned deletes, #119 v1 partial writes). Keep reviewing each fix round as its own target.
-- `/home/hein/Workspace/CrestaHQ-wt-sp3-appts` has 2 re-captured, uncommitted screenshots in `docs/parity/evidence/sp3/f-appointments/`. The committed versions are the reviewed ones. The worktree can be removed once someone decides the new captures aren't needed.
-- Local branches `feat/sp3-*` and `fix/sp3-day-walk` are merged; the remote branches are deleted.
+- GBP API family (incl. Performance) on project 893869567850 answers 429 `quota_limit_value "0"` until case approval — probed with #1000's real grant 2026-09-14.
+- A PR that conflicts with base gets NO pull_request CI run — merge main into it when a run never appears. The single self-hosted runner queue was ~2 h at times; cancel superseded queued runs.
+- Local E2E: `.env.local` per worktree (ports 3105/3106/3107), lock `/home/hein/Workspace/.sp5-orch/e2e.lock`, never while :3100 is busy (CI). Another session's E2E on another port touched the fixture tenant once.
+- Orchestration notes/mutation logs: `/home/hein/Workspace/.sp5-orch/` (not in repo).
+- DO NOT RESURRECT: auto-response / drip auto-reply to Google reviews — rejected (replies stay a human click). Minimum-rating widget filter — rejected (review gating). Transport-vs-billed rollback classes in sentiment — replaced after 3 fix rounds by "strike only 403/unusable answer".
 
 ## Git state
-- **Uncommitted:** none in `CrestaHQ-wt-sp3-docs`; everything is on PR #123 (`docs/sp3-ledger-final`).
-- **Unpushed commits:** none.
-- **Stashes:** none.
+- **Uncommitted:** none from this session (the shared checkout is dirty with other sessions' work — don't stage there).
+- **Worktrees from this session:** `../CrestaHQ-wt-sp5`, `../CrestaHQ-wt-sp5d`, `../CrestaHQ-wt-sp5e` (branches merged/deleted; safe to remove).
 
 ## Where to resume
-Read this file, then `docs/parity/sp3.md` → "Build log" and "Follow-ups". Start at "What's next" step 2.
+Read this file, then `docs/parity/sp5.md` (ledger) and `docs/features/reputation.md`.

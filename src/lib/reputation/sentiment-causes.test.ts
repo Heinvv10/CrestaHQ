@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * Failure CAUSE, end to end through the real OpenRouter seam (SP5 b round 5):
  * callAi is the only double. A review the provider always rejects (403) or
- * answers with nothing is a strike each time — given up after 3 runs an hour
+ * answers with something unusable is a strike each time — given up after 3 runs an hour
  * apart — and, because tried reviews queue AFTER fresh ones, it never blocks
  * the older reviews. A transient failure (429) is never a strike.
  */
