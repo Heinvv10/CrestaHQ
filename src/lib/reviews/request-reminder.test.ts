@@ -134,3 +134,14 @@ describe("reminders ON", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 });
+
+describe("planReviewLink — which channels can be tracked", () => {
+  it("an approved WhatsApp template's link is fixed: untracked, the plain review URL, reminders still planned", async () => {
+    const { planReviewLink } = await import("./reminder");
+    const plan = planReviewLink({
+      config: { reminder: { everyDays: 2, maxRetries: 1 } }, channel: "whatsapp_template", subAccountId: "sa1",
+      reviewUrl: REVIEW_URL, newRequestId: () => "req9",
+    });
+    expect(plan).toMatchObject({ requestId: "req9", bodyUrl: REVIEW_URL, tracked: false, reminder: { state: "scheduled" } });
+  });
+});

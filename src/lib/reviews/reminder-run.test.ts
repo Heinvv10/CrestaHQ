@@ -119,7 +119,10 @@ describe("stops without sending", () => {
     const attempt = (req().reminder.attempts as number) + 1;
     expect(await run(attempt)).toEqual({ outcome: "stopped", reason });
     expect(sendSms).not.toHaveBeenCalled();
-    expect(req().reminder).toMatchObject({ state: reason === "retries_exhausted" ? "done" : "stopped", stopReason: reason, nextAt: null });
+    // Stopped before the claim: the attempt count is untouched.
+    expect(req().reminder).toMatchObject({
+      state: reason === "retries_exhausted" ? "done" : "stopped", stopReason: reason, nextAt: null, attempts: attempt - 1,
+    });
     expect(publish).not.toHaveBeenCalled();
   });
 

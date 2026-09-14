@@ -183,7 +183,7 @@ describe("requests", () => {
       requests: [
         req("sms", ago(1), { tracked: true, clickedAt: ago(0, 2) }),
         req("sms", ago(2), { tracked: true, clickedAt: null }),
-        req("sms", ago(3), { tracked: false }),
+        req("sms", ago(3), { tracked: false, clickedAt: ago(2) }),
         req("sms", ago(4), { tracked: true, clickedAt: ago(3), status: "failed" }),
         req("sms", ago(200), { tracked: true, clickedAt: ago(199) }),
       ],

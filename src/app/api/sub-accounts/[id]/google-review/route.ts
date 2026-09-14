@@ -169,10 +169,6 @@ export async function POST(
   }
 
   const cooldownDays = clampCooldown(body.cooldownDays);
-  // Not in the body → whatever is stored stays; nothing stored → no key at all.
-  const kept =
-    reminder ?? ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() as SubAccountDoc | undefined)
-      ?.googleReviewConfig?.reminder;
 
   const cfg: GoogleReviewConfig = {
     enabled: body.enabled === true,
@@ -183,7 +179,8 @@ export async function POST(
     cooldownDays,
     triggerOnQuotePaid: body.triggerOnQuotePaid === true,
     triggerOnDealCompleted: body.triggerOnDealCompleted === true,
-    ...(kept ? { reminder: kept } : {}),
+    // Not in the body → no key here, and the merge below keeps a stored one.
+    ...(reminder ? { reminder } : {}),
     updatedAt: new Date(),
   };
 
