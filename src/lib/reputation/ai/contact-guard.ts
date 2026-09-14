@@ -94,7 +94,7 @@ function runDigits(s: string, from: number, to: number): string {
  * digits is left alone: it may be part of a number. And nothing is masked
  * that is, or is the start of, a phone: a run with a phone's shape (0 + 9
  * digits, 27 + 9), 9+ digits from 0/27 behind a ref / # / R label, or a time
- * followed within 3 characters by more digits (not another time) that make 7+.
+ * followed within 3 characters by more digits that make 7+.
  */
 function maskNonPhones(t: string): string {
   const x = (m: string) => m.replace(/\d/g, "x");
@@ -112,7 +112,8 @@ function maskNonPhones(t: string): string {
     const at = rest[rest.length - 2] as number;
     const whole = rest[rest.length - 1] as string;
     const tail = /^[^\d\n]{0,3}(\d[\d ./-]*)/.exec(whole.slice(at + m.length));
-    if (tail && !/^\d{1,2}[:h.]\d{2}/.test(tail[1]) && onlyDigits(m).length + onlyDigits(tail[1]).length >= 7) return m;
+    // The tail stops at ":", so a following "17:00" adds 2 digits at most; "17.30" is masked as a date.
+    if (tail && onlyDigits(m).length + onlyDigits(tail[1]).length >= 7) return m;
     return x(m);
   };
   return t
