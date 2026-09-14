@@ -76,7 +76,11 @@ export function normaliseForContacts(text: string): string {
     .replace(new RegExp(`([${LN}])\\s+dot\\s+(?=[${L}]{2,})`, "gu"), "$1.");
 }
 
-/** Digits in dates, times, prices, years, big numbers, units and order/ref numbers — none of them a phone. */
+/**
+ * Digits in dates, times, prices, years, big numbers, units and order/ref
+ * numbers — none of them a phone. A year or a thousands group next to other
+ * digits is left alone: it may be part of a number.
+ */
 function maskNonPhones(t: string): string {
   const x = (m: string) => m.replace(/\d/g, "x");
   return t
@@ -87,7 +91,7 @@ function maskNonPhones(t: string): string {
     .replace(/\b(?:order|ref(?:erence)?|ticket|invoice|inv|account|acc|case)\b\s*(?:no\.?|number|#)?\s*[:#]?\s*[a-z]*[-\d][\w-]*/g, x)
     .replace(/#\s?\d[\d-]*/g, x)
     .replace(/(?<!\d[ ./-]?)\b(?:19|20)\d{2}\b(?![ ./-]?\d)/g, x)
-    .replace(/\b[1-9]\d{0,2}(?:[ ,]\d{3})+(?![ ,-]?\d)/g, x)
+    .replace(/(?<!\d[ ./-]?)\b[1-9]\d{0,2}(?:[ ,]\d{3})+(?![ ,-]?\d)/g, x)
     .replace(/\b\d+(?:[.,]\d+)?\s?(?:mbps|gbps|kbps|mb|gb|km|%|homes|customers|years|yrs|hours|hrs|minutes|mins|days|weeks|months)\b/g, x);
 }
 

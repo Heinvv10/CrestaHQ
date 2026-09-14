@@ -23,6 +23,8 @@ describe("refuses every written form of a contact", () => {
     ["underscores", "Call 082_123_4567 for help."],
     ["spaces and brackets", "Call (082) 123 4567."],
     ["dashes", "Call 082-123-4567."],
+    ["a number ending in a year-like group", "Call 082 123 2019."],
+    ["a number starting with a year-like group", "Call 2019 123 456 now."],
     ["a USSD code", "Dial *120*555# to claim."],
     ["scam.ai", "See scam.ai for your refund."],
     ["refund.de", "Visit refund.de today."],
