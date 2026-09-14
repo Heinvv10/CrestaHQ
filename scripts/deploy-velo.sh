@@ -18,8 +18,9 @@
 #     GBP_FAKE_ in an env file before building, and a loopback app URL inlined
 #     into the built fake-provider check after building. The same guard
 #     refuses the WhatsApp settings fake (WHATSAPP_SETTINGS_PROVIDER /
-#     WHATSAPP_FAKE_), the SMS fake (SMS_PROVIDER / SMS_FAKE_) and the Google
-#     Calendar fake (GCAL_PROVIDER / GCAL_FAKE_).
+#     WHATSAPP_FAKE_), the SMS fake (SMS_PROVIDER / SMS_FAKE_), the Google
+#     Calendar fake (GCAL_PROVIDER / GCAL_FAKE_) and the Reviews AI fake
+#     (REVIEWS_AI_PROVIDER / REVIEWS_AI_FAKE_).
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.
@@ -103,10 +104,11 @@ after=$(git rev-parse --short HEAD)
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
 
-# ── Refuse the dev/CI-only fake providers (GBP, WhatsApp settings, SMS, GCal)
+# ── Refuse the dev/CI-only fake providers (GBP, WhatsApp settings, SMS, GCal, Reviews AI)
 # Pre-build half of scripts/gbp-deploy-check.mjs: no env parsing — any .env*
 # file that even MENTIONS GBP_PROVIDER / GBP_FAKE_ / WHATSAPP_SETTINGS_PROVIDER
-# / WHATSAPP_FAKE_ / SMS_PROVIDER / SMS_FAKE_ / GCAL_PROVIDER / GCAL_FAKE_, or
+# / WHATSAPP_FAKE_ / SMS_PROVIDER / SMS_FAKE_ / GCAL_PROVIDER / GCAL_FAKE_ /
+# REVIEWS_AI_PROVIDER / REVIEWS_AI_FAKE_, or
 # a shell variable named so, refuses the deploy before anything is built. The post-build half runs in
 # the NEXT_PUBLIC_APP_URL verification below. See docs/features/gbp-reviews.md.
 say "Checking for GBP fake-provider settings"

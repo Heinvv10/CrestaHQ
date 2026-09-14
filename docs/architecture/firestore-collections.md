@@ -98,13 +98,25 @@ default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.n
 caches the CURRENT listing's reviews (tenant-anchored; `state` active/removed
 tombstones; deleted after 30 days unseen); `subAccounts/{id}/gbpSyncRuns/{runId}`
 is an append-only run record (created once per run, kinds and counts only);
-`private/gbpSyncState` holds the run lease, the pass cursor (with the
-pass's rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
+`private/gbpSyncState` holds the run lease, the pass cursor (with the pass's
+rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
 cooldown. Sub-accounts that hold a cache but can no longer sync (gate off,
-disconnected, no listing) get retention-only passes from the sweep. The member-readable
-`gbpSummary` field on the parent carries rating, count, freshness and health
-kinds. Selecting another listing, clearing it or disconnecting deletes the
-reviews, the sync state and the summary.
+disconnected, no listing) get retention-only passes from the sweep. The
+member-readable `gbpSummary` field on the parent carries rating, count,
+freshness and health kinds. Selecting another listing, clearing it or
+disconnecting deletes the reviews, the sync state and the summary.
+
+Review sentiment (SP5 b; written only by `lib/reputation/sentiment.ts`, never by
+the sync): each review may carry `sentiment {label, method, basisHash, model,
+at}` and `sentimentAttempt {basisHash, failures, lastAt}` — kept by a
+tombstone (a label and hashes, no content; retention deletes them with the
+doc); readers ignore a label whose `basisHash` is not the review's current
+basis. `private/sentimentLease` holds the classifier's lease, the Analyse-now
+cooldown, `lastCompleteAt` (the last run that finished normally) and the last
+run's counts and stop reason; `private/sentimentUsage {day, calls}` counts AI
+calls per UTC day against the 300-call cap. In dev/CI only,
+`private/reviewsAiFakeLog` holds the Reviews AI fake's call log (ids + count,
+never text).
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

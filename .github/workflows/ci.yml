@@ -246,6 +246,13 @@ jobs:
       GCAL_PROVIDER: fake
       GCAL_FAKE_ALLOW_PROD_BUILD: "1"
       GCAL_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The Reviews AI fake (SP5 PR b) — deterministic sentiment labels, every
+      # call logged (ids + count) at private/reviewsAiFakeLog so a spec can
+      # count billing — fenced exactly the same way
+      # (src/lib/reputation/ai/mode.ts); the deploy guard refuses these too.
+      REVIEWS_AI_PROVIDER: fake
+      REVIEWS_AI_FAKE_ALLOW_PROD_BUILD: "1"
+      REVIEWS_AI_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       # The whole suite runs from one loopback client, so the public booking
       # routes' per-IP rate limiters (src/lib/booking/rate-limit-e2e.ts) would
       # otherwise 429 partway through. Fenced the same way (loopback app URL

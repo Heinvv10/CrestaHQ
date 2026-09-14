@@ -15,6 +15,11 @@ import { toMillis } from "@/lib/gbp/sync/types";
  *   - time to latest reply: reply.updateTime − createTime, over replied
  *     reviews only. Google reports only the LATEST reply time, so an edited
  *     reply moves it. Missing or negative values are excluded and counted.
+ *   - sentiment: current labels (SP5 b) over the reviews in range — the
+ *     caller passes only a label derived from the review's current content;
+ *     "couldn't be analysed" = the AI rejected or answered it unusably 3 times
+ *     (transient failures never count); any other review
+ *     without a label is "not analysed yet".
  *   - requests are counted from the reviewRequests log, from the first logged
  *     request (`countingSince`); they are never linked to reviews. Only rows
  *     with status "sent" are requests sent; failed ones are counted apart.
@@ -47,6 +52,9 @@ export interface OverviewReviewInput {
   starRating: unknown;
   createTime: unknown;
   reply: { updateTime?: unknown } | null | undefined;
+  sentiment?: { label?: unknown } | null;
+  /** The AI failed on this content MAX_SENTIMENT_FAILURES times (it will not be retried). */
+  sentimentGaveUp?: boolean;
 }
 export interface OverviewRequestInput {
   channel: unknown;
@@ -71,6 +79,7 @@ export interface Overview {
     avgRating: number | null;
     previous: { count: number; avgRating: number | null } | null;
     distribution: Record<1 | 2 | 3 | 4 | 5, number>;
+    sentiment: { positive: number; neutral: number; negative: number; notAnalysed: number; failed: number };
     response: {
       replied: number;
       unreplied: number;
@@ -96,6 +105,7 @@ interface Rev {
   replied: boolean;
   /** Hours to the latest reply; null when not replied or not usable. */
   replyHours: number | null;
+  sentiment: "positive" | "neutral" | "negative" | "failed" | null;
 }
 
 const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -127,7 +137,10 @@ function toRev(r: OverviewReviewInput): Rev | null {
   const replied = !!r.reply;
   const replyAt = replied ? toMillis(r.reply?.updateTime) : null;
   const replyHours = replyAt !== null && replyAt >= at ? (replyAt - at) / HOUR : null;
-  return { at, stars, replied, replyHours };
+  const label = r.sentiment?.label;
+  const sentiment =
+    label === "positive" || label === "neutral" || label === "negative" ? label : r.sentimentGaveUp ? "failed" : null;
+  return { at, stars, replied, replyHours, sentiment };
 }
 
 /** A log row's channel and source, reading rows written before SP5 d1 as the dispatcher's. */
@@ -180,6 +193,8 @@ export function computeOverview(input: {
   const replied = current.filter((r) => r.replied).length;
   const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } as Record<1 | 2 | 3 | 4 | 5, number>;
   for (const s of ratingsOf(current)) distribution[s as 1 | 2 | 3 | 4 | 5]++;
+  const sentiment = { positive: 0, neutral: 0, negative: 0, notAnalysed: 0, failed: 0 };
+  for (const r of current) sentiment[r.sentiment ?? "notAnalysed"]++;
 
   const reqsInRange = reqs.filter((r) => inRange(r.at));
   const byChannel: Record<string, number> = {};
@@ -220,6 +235,7 @@ export function computeOverview(input: {
           avgRating: mean(ratingsOf(current)),
           previous: before.length ? { count: before.length, avgRating: mean(ratingsOf(before)) } : null,
           distribution,
+          sentiment,
           response: {
             replied,
             unreplied: current.length - replied,

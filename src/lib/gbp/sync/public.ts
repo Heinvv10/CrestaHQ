@@ -1,3 +1,4 @@
+import { currentSentiment } from "@/lib/reputation/sentiment-basis";
 import { deriveHealth } from "./health";
 import { retentionBasis } from "./reconcile";
 import { RETENTION_MS, toMillis, type GbpHealth, type GbpSummary, type SyncRunRecord } from "./types";
@@ -63,6 +64,8 @@ export interface PublicReview {
   createTime: string | null;
   updateTime: string | null;
   reply: { comment: string; updateTime: string } | null;
+  /** SP5 (b): the current label and how it was reached — never its basis, model or time; null when stale. */
+  sentiment: { label: string; method: string } | null;
 }
 
 export function publicReview(d: Record<string, unknown>): PublicReview {
@@ -79,6 +82,8 @@ export function publicReview(d: Record<string, unknown>): PublicReview {
     createTime: iso(d.createTime),
     updateTime: iso(d.updateTime),
     reply: reply ? { comment: reply.comment, updateTime: reply.updateTime } : null,
+    // Only a label derived from the review's CURRENT content — a sync edit keeps the old one on the doc.
+    sentiment: currentSentiment(d),
   };
 }
 

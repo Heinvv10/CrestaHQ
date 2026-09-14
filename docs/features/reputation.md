@@ -106,6 +106,155 @@ Delivered / read are not wired to the log; clicked / feedback (`clickedAt`,
 `feedbackAt`) and reminders are later SP5 work (ledger Q1/Q3) — nothing writes
 them yet.
 
+## Sentiment (SP5 b)
+
+Each synced review can carry a cached label, `sentiment {label, method,
+basisHash, model, at}` on its `gbpReviews` doc — `positive` / `neutral` /
+`negative` — and `sentimentAttempt {basisHash, failures, lastAt}` when the AI
+failed on its current content.
+
+- **Gate:** the agency's `reviewsAiEnabledByAgency` ("Reviews AI", opt-in,
+  plan-managed, not pre-ticked), on top of `googleEnabledByAgency`. It spends
+  the agency's OpenRouter credits. Switching it off tears nothing down: labels
+  stay until each review's own lifecycle clears them; no new review is sent.
+  Because it is a plan gate, **applying a Client Billing plan that does not
+  include Reviews AI switches it off** for that sub-account on the next plan
+  apply, like every other plan gate.
+- **When it runs — never inside a request:** classification is decoupled from
+  the sync (Cloudflare cuts origin requests at 100 s; QStash would retry a slow
+  cron). The 6-hourly cron and Sync now respond first and then, via Next's
+  `after()` (`lib/reputation/sentiment-after.ts`; the same mechanism the
+  Google Calendar push uses in the standalone build; the three routes export
+  `maxDuration = 300`), classify a tenant **iff** both gates are on and AI is
+  configured, **and** either its run created or updated reviews, or the last
+  **complete** run (`private/sentimentLease.lastCompleteAt`) is more than 24 h
+  old or there has been none. A run is complete only if it finished normally
+  — not thrown, not stopped by a gate, the listing, the lease, an AI failure,
+  a save failure, the daily cap or the time budget — **and** the 100-per-run
+  cap left nothing behind, no text review is waiting out its retry hour, and
+  AI is configured (or there was no text review). That covers a killed, stopped or capped run and reviews waiting out
+  their retry hour; switching Reviews AI **on** clears `lastCompleteAt`, so the
+  next sync backfills. Otherwise a sync costs the sub-account read. **One
+  deadline per request:** the cron, Sync now and Analyse now pass their
+  request's start + 240 s through every tenant they classify — no fresh 240 s
+  per tenant.
+  **Analyse now** on the Overview (`POST
+  /api/sub-accounts/[id]/reputation/sentiment/run`, admin, both gates, a
+  listing, once a minute) takes the lease and the cooldown in one transaction
+  — a press refused as `busy` does not burn the minute — answers **202**
+  `{started, aiConfigured}` and classifies after the response; the card
+  re-reads the overview every 3 s (up to a minute) until the lease is free and
+  a new `lastRun` appears, then says what it did — or why it stopped (Reviews
+  AI or Google switched off, no listing, the listing changed, "The AI provider
+  failed — try again later", an unusable AI answer, a label that could not be
+  saved (`save_failed`), "Daily AI limit reached — continues tomorrow", the
+  time budget, an error) — or, past the minute, "The
+  result isn't in yet — reload later". Refusals carry their own message:
+  Reviews AI off / Google off (403 `gate_off`), no listing (409
+  `no_listing`), `busy`, `too_soon`.
+- **What is labelled:** the reviews inbox's own set (`loadServedReviews`:
+  active, current listing, within Google's 30-day limit — so the newest 500
+  stored records). **Star-only** reviews (no or blank comment) are labelled
+  from the stars — 4–5 positive, 3 neutral, 1–2 negative, `method: "rating"`,
+  no AI call, written in transactions of up to 100. Reviews **with text** go to
+  the AI (`method: "ai"`, `model`) — **one review per call**
+  (`REVIEWS_AI_BATCH = 1`), so no member of the public's text shares a prompt
+  with another review it could try to steer.
+- **What is billed — honestly:** a review is sent to the AI once — again only
+  if it is edited, **or if its cached copy was deleted and re-synced** (the
+  listing changed, Google was disconnected or switched off, or Google's
+  30-day storage limit removed it); the label lives on the cached review doc,
+  so it goes with it. A tombstone keeps it (below), so a review removed and
+  restored unchanged is not re-sent. A bad AI answer is tried at most 3
+  times; a failed call is retried after an hour. A re-sync of unchanged
+  reviews never re-bills.
+- **Spend bounds:** at most **300 AI calls per sub-account per UTC day**
+  (`DAILY_AI_CALL_CAP`, a constant), counted in
+  `private/sentimentUsage {day, calls}` in the same transaction that starts
+  each call — over the cap the run stops and the rest waits for tomorrow (a
+  call is counted on the UTC day it starts, so one in flight across midnight
+  can make one extra call fall in a calendar day); and a **240 s budget** per
+  request, after which no new call starts.
+- **Before each call** one transaction (`beginCall`,
+  `lib/reputation/sentiment-calls.ts`) re-reads the lease, the sub-account,
+  the daily usage and the review, and either **stops the run** (the lease is
+  no longer this run's — only its owner can renew it; Reviews AI or Google
+  switched off; the listing changed; the daily cap), **drops the review**
+  (changed, removed, labelled meanwhile, in its retry hour or given up), or
+  renews the lease, counts the call and writes a **strike** on the review
+  (`sentimentAttempt.failures + 1`, `lastAt` now), immediately before the
+  call. After it, a label is written (clearing the strike) if the review still
+  has the classified content — or was tombstoned during the call (a 3-value
+  label, no content; readers hide tombstones). **Only two things are a
+  strike:** HTTP **403** (the provider refusing this review — moderation) and
+  an **unusable answer** (a 200 with content we cannot use: unparseable,
+  invalid label, unknown / duplicated / missing id); the run then stops as
+  `ai_bad_answer` ("The AI gave an unusable answer for a review — it will be
+  retried, at most 3 times"). **Every other failed call is transient** — no
+  response (network, DNS, connect), our timeout or abort, a missing key, 400
+  (e.g. an invalid model), 401, 402, 404, 408, 422, 429, any other 4xx, 5xx,
+  a 200 with no content or with an error body: a configuration or provider
+  problem, not the review's fault. It is **not a strike** (its `lastAt` still
+  spaces the retry by an hour), the run stops as `ai_error`, and the Overview
+  shows "The AI provider failed on the last run — check the agency's
+  OpenRouter key/credits". **A review that always hits a transient error is
+  never given up:** it costs at most one call an hour, blocks nothing (it
+  queues after fresh reviews), and keeps the amber line showing until a call
+  succeeds. Failed calls are logged with their HTTP status, never the body. A
+  label that comes back but cannot be written stops the run as `save_failed`
+  and keeps the strike; a provider that cannot be obtained stops it as
+  `ai_error`. If un-counting a transient failure's strike itself fails, the
+  strike stays — conservative.
+  **Queue order:** fresh reviews first (newest first), then reviews already
+  tried, longest-waiting first — so one troublesome review can never block
+  the backlog; it costs at most one call an hour until it is given up. The
+  whole call — headers and body — gets 60 s; at the deadline the request is
+  **aborted** (callAi's optional caller signal, armed through the body read;
+  the provider may still bill an aborted call), well under the 5-minute
+  lease. Only one call is ever in flight per sub-account, so switching a gate
+  off lets at most that one call finish.
+- **Failures:** a review is tried again at most **once an hour** (checked
+  against the clock at that moment) and — for strikes (a 403 or an unusable
+  answer) — **at most three times** per content, then counted as
+  **"couldn't be analysed"**, apart from "not analysed yet". An edit starts a new count; a success clears it.
+- **Cap:** at most 100 reviews per run, in queue order (fresh first, newest
+  first; then tried ones, longest-waiting first); the rest wait for the next
+  run (a capped run is not complete, so the next sync continues).
+- **Clocks:** lease expiry compares instance clocks; production runs one app
+  instance on one host, and dev/CI instances are fake-fenced to the fixture
+  agency, so skew between writers is not a concern here.
+- **Stale labels are never shown:** a sync edit overwrites a review's content
+  but keeps its `sentiment` (blanking it in the upsert would re-bill on every
+  owner reply, since the content hash covers the reply). So every reader —
+  the reviews route and the overview — shows a label only when its
+  `basisHash` matches the review's current stars + comment; otherwise it reads
+  as absent until re-classified (`lib/reputation/sentiment-basis.ts`).
+- **The AI call** (`src/lib/reputation/ai/`): OpenRouter via `callAi` on the
+  default model, temperature 0. Review text is untrusted: it is sent only as a
+  JSON string value inside a data object, the system prompt says so, and a
+  batch-local id ("1") is used — no document id leaves the server.
+- **Not configured:** with no `OPENROUTER_API_KEY` (production today) only
+  star-only reviews are labelled; text reviews wait, and the Overview says
+  "AI isn't configured on this deployment". Dev/CI use the fenced fake
+  (`REVIEWS_AI_PROVIDER=fake`, docs/environment.md).
+- **Lifecycle:** an edit re-classifies (new basis). A **tombstone keeps**
+  `sentiment` and `sentimentAttempt` — a 3-value label and hashes, no review
+  content — so a review restored unchanged is labelled again at once without
+  an AI call, and its strike count survives; readers show nothing for a
+  tombstone (no stars, so no current basis). Retention deletion removes them
+  with the doc.
+- **Where it shows:** a badge on each review in the reviews list (Reputation →
+  Reviews and AI Agents → Google Business — the same component; the title says
+  "From the star rating" or "AI-classified"), and the Overview's sentiment
+  card: a donut over in-range reviews plus "N not analysed yet" and "N
+  couldn't be analysed", with gate-off / not-configured / none-analysed
+  states. The reviews route serves only `{label, method}`; **the public feed
+  never carries sentiment** (its serializer is an allow-list; a test pins it).
+- **Limits:** labels are a model's reading of short customer texts —
+  translated reviews are classified on the text Google returned (translation
+  plus original); a mixed review gets one label. No per-aspect sentiment, no
+  AI summary (SP7).
+
 ## Insights (SP5 f)
 
 > **Live status: blocked — case 4-6894000042302.** The Business Profile
@@ -179,8 +328,7 @@ test from the scenario's patterns; memo; nothing stored); provider —
 `lib/gbp/access-not-approved.test.ts`, `components/gbp/access-not-approved-text.test.ts`;
 `e2e/specs/gbp-insights.spec.ts` (tiles equal totals computed from the
 scenario, switch to the second fixture location, listing unchanged in
-Firestore, an invisible location refused, "not approved"). Mutation record:
-`.sp5-orch/f-mutations.md` (orchestrator).
+Firestore, an invisible location refused, "not approved").
 
 ## The review-request log
 
@@ -265,6 +413,13 @@ Server only: no client rule (default deny), no index.
 
 ## Tests
 
+Sentiment: `lib/reputation/sentiment.test.ts` + `sentiment-flight.test.ts`
+(eligibility, cap, lease, never re-billed, mid-flight edits, tombstones,
+through the sync), `lib/reputation/ai/*.test.ts` (fence, strict validation),
+`…/reputation/sentiment/run/route.test.ts`, the feed's
+`route.sentiment.test.ts`, the badge and card component tests, and
+`e2e/specs/reputation-sentiment.spec.ts`.
+
 - `lib/reputation/overview.test.ts` — every definition above.
 - `app/api/sub-accounts/[id]/reputation/overview/route.test.ts` — real
   require-tenancy, real sync over the fake provider, in-memory Firestore:
@@ -284,9 +439,8 @@ Server only: no client rule (default deny), no index.
 - `e2e/specs/reputation-overview.spec.ts` — sync the fake's reviews, two real
   manual sends through the fenced fake SMS rail, the tiles equal the numbers
   computed from that data; the sidebar entry; the gate-off state on the secondary
-  fixture. Mutation record: `.sp5-orch/a-mutations.md` (orchestrator).
+  fixture.
 - `e2e/specs/reputation-requests.spec.ts` — through the fenced fake SMS rail: a
   Send Review Request dialog send, a workflow `send_sms` step carrying the URL (real
   engine, signed step), the composer's "Ask for review", and a plain message; the
   Requests tab lists exactly the three asks by source and Overview shows 3.
-  Mutation record: `.sp5-orch/d1-mutations.md` (orchestrator).

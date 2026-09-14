@@ -7,6 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+const handed = vi.hoisted(() => vi.fn());
+// Sentiment runs after the response (SP5 b); here we only see what the route hands it.
+vi.mock("@/lib/reputation/sentiment-after", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reputation/sentiment-after")>()),
+  classifyAfterResponse: handed,
+}));
 
 import {
   FOREIGN_AGENCY,
@@ -23,7 +29,7 @@ import {
   seedSub,
 } from "@/test/gbp-sync-harness";
 import { storeDb } from "@/test/gbp-sync-store";
-import { POST } from "./route";
+import { POST, maxDuration } from "./route";
 
 const ORIGINAL = { ...process.env };
 const url = (sa: string) => `http://127.0.0.1:3100/api/sub-accounts/${sa}/gbp/sync`;
@@ -121,4 +127,22 @@ describe("an admin's Sync now", () => {
     expect(status).toBe(200);
     expect(body.run).toMatchObject({ status: "skipped", skipReason: "no_listing" });
   });
+});
+
+describe("sentiment after the response (SP5 b)", () => {
+  it("hands this run's created/updated counts to sentiment — which runs after responding", async () => {
+    handed.mockClear();
+    const { status } = await syncNow("uid_admin");
+    expect(status).toBe(200);
+    expect(handed).toHaveBeenCalledTimes(1);
+    // One deadline for the request: its start + 240 s.
+    expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 7, updated: 0 }], expect.any(Number));
+    const deadline = handed.mock.calls[0][1] as number;
+    expect(deadline - Date.now()).toBeGreaterThan(230_000);
+    expect(deadline - Date.now()).toBeLessThanOrEqual(240_000);
+  });
+});
+
+it("allows 300 s, so the after-response sentiment run (240 s budget) is not cut off", () => {
+  expect(maxDuration).toBe(300);
 });

@@ -54,6 +54,10 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     ["GCAL google, even — production never needs the name", "GCAL_PROVIDER=google"],
     ["any GCAL_FAKE_*", "GCAL_FAKE_AGENCY_ID=abc"],
     ["GCAL_FAKE_* commented out", "# GCAL_FAKE_ALLOW_PROD_BUILD=1"],
+    ["the Reviews AI fake", "REVIEWS_AI_PROVIDER=fake"],
+    ["REVIEWS_AI openrouter, even — production never needs the name", "REVIEWS_AI_PROVIDER=openrouter"],
+    ["any REVIEWS_AI_FAKE_*", "REVIEWS_AI_FAKE_AGENCY_ID=abc"],
+    ["REVIEWS_AI_FAKE_* commented out", "# REVIEWS_AI_FAKE_ALLOW_PROD_BUILD=1"],
     ["the E2E booking rate-limit bypass", "E2E_DISABLE_BOOKING_RATE_LIMITS=1"],
     ["E2E_DISABLE_BOOKING_RATE_LIMITS commented out", "# E2E_DISABLE_BOOKING_RATE_LIMITS=1"],
   ])("%s", (_label, line) => {
@@ -77,6 +81,8 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { SMS_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GCAL_PROVIDER: "google" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { GCAL_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { REVIEWS_AI_PROVIDER: "openrouter" })).not.toEqual([]);
+    expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { REVIEWS_AI_FAKE_AGENCY_ID: "x" })).not.toEqual([]);
     expect(mentionsFakeKeys(tmp({ ".env.production": CLEAN }), { E2E_DISABLE_BOOKING_RATE_LIMITS: "1" })).not.toEqual([]);
   });
 
@@ -138,7 +144,7 @@ describe("(a) pre-build: the names alone refuse the deploy", () => {
 
   it("the repo's own .env.example never mentions the names (it ships to the deploy dir)", () => {
     const text = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
-    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_|E2E_DISABLE_BOOKING_RATE_LIMITS/);
+    expect(text).not.toMatch(/GBP_PROVIDER|GBP_FAKE_|WHATSAPP_SETTINGS_PROVIDER|WHATSAPP_FAKE_|SMS_PROVIDER|SMS_FAKE_|GCAL_PROVIDER|GCAL_FAKE_|REVIEWS_AI_PROVIDER|REVIEWS_AI_FAKE_|E2E_DISABLE_BOOKING_RATE_LIMITS/);
   });
 });
 
@@ -191,12 +197,16 @@ const SMS_MODE_CODE = (url: string) =>
 /** The Google Calendar fence (google-calendar/provider/mode.ts), minified the same way. */
 const GCAL_MODE_CODE = (url: string) =>
   `class n extends Error{constructor(e){super(\`Google Calendar fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.GCAL_PROVIDER)return"google";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (Google Calendar fake)")}`;
-const server = (url: string, waUrl = url, smsUrl = url, gcalUrl = url) => [
+/** The Reviews AI fence (reputation/ai/mode.ts), minified the same way. */
+const REVIEWS_AI_MODE_CODE = (url: string) =>
+  `class n extends Error{constructor(e){super(\`Reviews AI fake provider refused: \${e}\`)}}function r(){if("fake"!==process.env.REVIEWS_AI_PROVIDER)return"openrouter";if(!(0,t.isAppLoopbackUrl)(${JSON.stringify(url)}))throw new n("NEXT_PUBLIC_APP_URL is not loopback (Reviews AI fake)")}`;
+const server = (url: string, waUrl = url, smsUrl = url, gcalUrl = url, reviewsAiUrl = url) => [
   { path: "chunks/a.js", text: MODE_CODE(url) },
   { path: "chunks/b.js", text: "unrelated" },
   { path: "chunks/wa.js", text: WA_MODE_CODE(waUrl) },
   { path: "chunks/sms.js", text: SMS_MODE_CODE(smsUrl) },
   { path: "chunks/gcal.js", text: GCAL_MODE_CODE(gcalUrl) },
+  { path: "chunks/reviews-ai.js", text: REVIEWS_AI_MODE_CODE(reviewsAiUrl) },
 ];
 
 describe("(b) post-build: the inlined app URL", () => {
@@ -235,6 +245,7 @@ describe("(b) post-build: the inlined app URL", () => {
         { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
         { path: "sms.js", text: SMS_MODE_CODE("https://crm.crestahq.com") },
         { path: "gcal.js", text: GCAL_MODE_CODE("https://crm.crestahq.com") },
+        { path: "reviews-ai.js", text: REVIEWS_AI_MODE_CODE("https://crm.crestahq.com") },
       ]),
     ).toEqual([]);
   });
@@ -247,6 +258,18 @@ describe("(b) post-build: the inlined app URL", () => {
   it("refuses when the Google Calendar check is missing from the build (nothing proven for it)", () => {
     const noGcal = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/gcal.js");
     expect(inlinedUrlIsSafe("https://crm.crestahq.com", noGcal).join()).toContain("Google Calendar fake-provider check was not found");
+  });
+
+  it("refuses when the Reviews AI check is missing from the build (nothing proven for it)", () => {
+    const noAi = server("https://crm.crestahq.com").filter((f) => f.path !== "chunks/reviews-ai.js");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", noAi).join()).toContain("Reviews AI fake-provider check was not found");
+  });
+
+  it("refuses when only the Reviews AI check carries a loopback literal", () => {
+    const files = server("https://crm.crestahq.com", undefined, undefined, undefined, "http://127.0.0.1:3100");
+    expect(inlinedUrlIsSafe("https://crm.crestahq.com", files).join()).toContain(
+      "Reviews AI fake-provider check is not NEXT_PUBLIC_APP_URL",
+    );
   });
 
   it("refuses when only the Google Calendar check carries a loopback literal", () => {
@@ -301,6 +324,7 @@ describe("(b) post-build: the inlined app URL", () => {
         { path: "wa.js", text: WA_MODE_CODE("https://crm.crestahq.com") },
         { path: "sms.js", text: SMS_MODE_CODE("https://crm.crestahq.com") },
         { path: "gcal.js", text: GCAL_MODE_CODE("https://crm.crestahq.com") },
+        { path: "reviews-ai.js", text: REVIEWS_AI_MODE_CODE("https://crm.crestahq.com") },
       ]),
     ).toEqual([]);
     expect(
@@ -356,6 +380,7 @@ describe("CLI", () => {
     fs.writeFileSync(path.join(dir, ".next/server/chunks/wa.js"), WA_MODE_CODE("https://crm.crestahq.com"));
     fs.writeFileSync(path.join(dir, ".next/server/chunks/sms.js"), SMS_MODE_CODE("https://crm.crestahq.com"));
     fs.writeFileSync(path.join(dir, ".next/server/chunks/gcal.js"), GCAL_MODE_CODE("https://crm.crestahq.com"));
+    fs.writeFileSync(path.join(dir, ".next/server/chunks/reviews-ai.js"), REVIEWS_AI_MODE_CODE("https://crm.crestahq.com"));
     expect(run("post", dir, "https://crm.crestahq.com").status).toBe(0);
     expect(run("post", dir, "http://127.0.0.1:3100").status).toBe(1);
   });
