@@ -122,6 +122,15 @@ describe("the location is never trusted", () => {
     expect(body.code).toBe(code);
   });
 
+  it("refuses a malformed location before any Google call", async () => {
+    setScenario(SA, (s) => void (s.failNext = { op: "listAccounts", kind: "transient" }));
+    const { status, body } = await get(`?location=${encodeURIComponent("locations/a/../b")}`);
+    expect(status).toBe(400);
+    expect(body.code).toBe("unknown_location");
+    // The scripted failure is still armed: discovery never ran.
+    expect((mem.read(`subAccounts/${SA}/private/gbpFakeScenario`) as { failNext?: unknown }).failNext).toBeTruthy();
+  });
+
   it("refuses with unverifiable_truncated when the walk stopped before finding it", async () => {
     setScenario(SA, (s) => {
       s.accounts = Array.from({ length: 61 }, (_, i) => ({ name: `accounts/fx-${i}`, accountName: `Fixture ${i}`, type: "LOCATION_GROUP" }));
