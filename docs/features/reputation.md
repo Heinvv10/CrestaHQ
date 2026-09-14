@@ -6,8 +6,8 @@ cache ([gbp-reviews.md](gbp-reviews.md)) and the review-request log every
 sender writes (below). It adds no new way to talk to Google or to customers.
 Ledger and build order: [docs/parity/sp5.md](../parity/sp5.md).
 
-Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** (SP5 PRs a, d1).
-Later SP5 PRs add Insights and Settings.
+Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Settings**
+(SP5 PRs a, d1, d2). A later SP5 PR adds Insights.
 
 - **Reviews** mounts the existing reviews inbox (`components/gbp/reviews-section.tsx`)
   unchanged — same route, filters, Sync now and reply. Members read; admins sync
@@ -101,10 +101,74 @@ the page's data, and Send stays off for the contact just sent to (re-picking
 them does not re-arm it) until the dialog is reopened. Contacts
 that fail to load say so rather than showing an empty picker.
 
-Statuses are what LeadStack can observe truthfully: **sent** and **failed**.
-Delivered / read are not wired to the log; clicked / feedback (`clickedAt`,
-`feedbackAt`) and reminders are later SP5 work (ledger Q1/Q3) — nothing writes
-them yet.
+Statuses are what LeadStack can observe truthfully: **sent**, **failed** and —
+for requests sent while reminders are on, over SMS or in-window WhatsApp —
+**clicked** (SP5 d2, below; the Clicked filter lists them). The **Reminders**
+column shows how many reminders went of the maximum and the next date, or why
+they stopped (clicked, opted out, retries run out, reminders turned off, review
+link removed, channel changed, contact deleted, could not be scheduled, …).
+Delivered / read are not wired to the log. `feedbackAt` is reserved: the
+private feedback page (`/r/[token]`) is not sent by any sender, so nothing
+writes it.
+
+## Reminders and click tracking (SP5 d2)
+
+GHL's "Until clicked, repeat this every N days / Maximum retries". Set in
+**Reputation → Settings** (the Google reviews section, also on Settings →
+Messaging) as `googleReviewConfig.reminder = {everyDays: 1..30 | null,
+maxRetries: 1..5}`, saved with `PATCH /api/sub-accounts/[id]/google-review`
+(admins; needs a saved review link). The form's POST keeps a stored reminder
+(merge write) and validates one when given. **Off is the default**: no
+`reminder`, or `everyDays: null` ("Don't repeat"). Enabling it on a real
+sub-account is Hein's decision.
+
+**With reminders off, nothing changes** — no request id is chosen early, no
+link is rewritten, no field is added to the log row, nothing is scheduled.
+`lib/reviews/request-reminder.test.ts` pins the SMS body and the row keys byte
+for byte, and `e2e/specs/reputation-reminders.spec.ts` asserts the real body.
+
+**With reminders on**, only the dispatcher's own sends (Request review, Send
+Review Request, quote paid, deal completed) change:
+
+- The request's log id is chosen before the send. On **SMS** and **in-window
+  WhatsApp** the body's `{{reviewUrl}}` becomes the tracked link
+  `${NEXT_PUBLIC_APP_URL}/rr/{subAccountId}.{requestId}.{hmac}` (signed with
+  `AUTOMATIONS_TOKEN_SECRET`, domain-separated from tracked-link tokens) — this
+  is the one change a customer sees, and only while reminders are on. An
+  **approved WhatsApp template's** URL is fixed, so those requests are
+  untracked and their reminders stop only on opt-out or retries (the settings
+  say so). Without `NEXT_PUBLIC_APP_URL` the plain link is sent, untracked.
+- The row gains `tracked` and `reminder {everyDays, maxRetries, attempts: 0,
+  nextAt, state: "scheduled", stopReason: null, lastAttemptAt: null}`, and
+  reminder 1 is published to QStash (`POST /api/cron/review-reminder`,
+  `{subAccountId, requestId, attempt}`, delay `everyDays`, dedup
+  `rr_{requestId}_{attempt}`). A failed publish never fails the send: the
+  reminder is stopped with `schedule_failed`.
+
+**`GET /rr/{token}`** (public, per-IP limited to 60/hour, reads no identity
+header): a valid token for a tracked request 302s to the sub-account's
+**configured** https review link as it is now, and stamps `clickedAt` once
+(later clicks keep the first time). Anything else — forged, unknown, untracked,
+no usable link — is a 404, never a redirect. It fires no workflow trigger.
+
+**The reminder worker** (`lib/reviews/reminder-run.ts`, behind the signed
+route) is idempotent under QStash redelivery: in one transaction the request
+must still be `scheduled` with exactly `attempt − 1` reminders sent, and the
+attempt is claimed (`attempts = attempt`, state `sending`) before anything is
+sent — a redelivered or concurrent message finds the claim and sends nothing.
+It stops without sending (state `stopped`, or `done` for retries) when the
+customer clicked, reminders are now off, the review link is gone, the review
+channel changed, or retries ran out; otherwise it re-sends through the
+dispatcher in **reminder mode** — the same link and channel rules, the
+opt-out / window / gate checks, the cooldown skipped for this request only,
+no new log row — and records the attempt on the request. A dispatcher refusal
+stops it with that reason (`opted_out`, `contact_deleted`, `no_phone`,
+`window_closed`, `whatsapp_gate_off`, `send_failed`, …). After the last
+reminder the state is `done` / `retries_exhausted`; otherwise the next is
+scheduled. A crash mid-send leaves `sending` — never a second message.
+
+The Overview's requests card shows clicks among tracked requests only
+("Clicked: X of Y tracked requests").
 
 ## The review-request log
 
@@ -121,6 +185,9 @@ dispatcher's (`manual` / `quote_paid` / `deal_completed`), null for the others.
 number, so free text becomes `send_failed`). A failed log write is logged by
 kind (`[reviews/request-log] reviewRequests write failed source=… kind=…`) and
 never fails the send.
+Dispatcher sends made while reminders are on also carry `tracked` and
+`reminder` (above); the reminder worker updates `reminder`, and `/rr/` sets
+`clickedAt` — nothing else writes to a row after it is logged.
 
 Who writes, each once, at the level that **initiates** the send — never in a
 transport, so no send is counted twice:
@@ -214,3 +281,15 @@ Server only: no client rule (default deny), no index.
   engine, signed step), the composer's "Ask for review", and a plain message; the
   Requests tab lists exactly the three asks by source and Overview shows 3.
   Mutation record: `.sp5-orch/d1-mutations.md` (orchestrator).
+- `lib/reviews/request-reminder.test.ts` (reminders off: byte-identical; on:
+  the tracked link, the plan, scheduling and its failure),
+  `lib/reviews/reminder-run.test.ts` (every stop condition, redelivery and
+  concurrency), `app/rr/[token]/route.test.ts`, `app/api/cron/review-reminder/route.test.ts`,
+  `app/api/sub-accounts/[id]/google-review/route.reminder.test.ts`,
+  `components/settings/review-reminder-card.test.ts`.
+- `e2e/specs/reputation-reminders.spec.ts` — reminders off (the real body is
+  today's), reminders on set through Reputation → Settings (tracked body, a
+  signed reminder POST sends the second SMS, a redelivery sends nothing, the
+  /rr/ click 302s and stamps clickedAt, the next reminder stops: clicked), an
+  opted-out contact stops, retries run out. Mutation record:
+  `.sp5-orch/d2-mutations.md`.
