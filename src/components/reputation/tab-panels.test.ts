@@ -26,8 +26,11 @@ vi.mock("@/components/gbp/reviews-section", () => ({
 vi.mock("@/components/gbp/widget-section", () => ({
   WidgetSection: () => createElement("div", { "data-testid": "stub-widget" }),
 }));
+vi.mock("@/components/settings/sub-account-google-review-section", () => ({
+  SubAccountGoogleReviewSection: () => createElement("div", { "data-testid": "stub-review-settings" }),
+}));
 
-import { ReputationReviews, ReputationWidgets } from "./tab-panels";
+import { ReputationReviews, ReputationSettings, ReputationWidgets } from "./tab-panels";
 
 const connected = (over: Record<string, unknown> = {}) => ({
   googleEnabledByAgency: true,
@@ -159,5 +162,28 @@ describe("Widgets tab", () => {
     await render(ReputationWidgets);
     expect(byId("rep-widgets")).not.toBeNull();
     expect(byId("stub-widget")).not.toBeNull();
+  });
+});
+
+describe("Reputation → Settings (SP5 d2)", () => {
+  const show = () => act(async () => root.render(createElement(ReputationSettings)));
+  const id = (t: string) => container.querySelector(`[data-testid="${t}"]`);
+
+  it("mounts the review-request settings for an admin", async () => {
+    await show();
+    expect(id("rep-settings")?.querySelector('[data-testid="stub-review-settings"]')).not.toBeNull();
+  });
+
+  it("tells a member they can't change them", async () => {
+    ctx.isAdmin = false;
+    await show();
+    expect(id("rep-settings-not-admin")?.textContent).toContain("Only sub-account admins");
+    expect(id("stub-review-settings")).toBeNull();
+  });
+
+  it("loading", async () => {
+    ctx.loading = true;
+    await show();
+    expect(id("rep-settings-loading")).not.toBeNull();
   });
 });

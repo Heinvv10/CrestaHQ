@@ -10,6 +10,7 @@ import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { ReviewUrlCard } from "@/components/gbp/review-url-card";
+import { ReviewReminderCard } from "@/components/settings/review-reminder-card";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -398,6 +399,9 @@ export function SubAccountGoogleReviewSection() {
           </Button>
         </div>
       </form>
+
+      {/* SP5 d2 — saved on its own (PATCH), so this form never switches reminders off. */}
+      <ReviewReminderCard />
     </section>
   );
 }
