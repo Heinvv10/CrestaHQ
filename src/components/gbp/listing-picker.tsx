@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ACCESS_NOT_APPROVED_TEXT } from "@/lib/gbp/error-text";
 
 /**
  * Pick the Business Profile location this sub-account manages. Shows enough
@@ -44,6 +45,7 @@ const ERROR_TEXT: Record<string, string> = {
   permission_denied: "This Google account doesn't have permission to manage these listings.",
   not_found: "Google couldn't find that Business Profile account any more.",
   rate_limited: "Google is rate-limiting requests. Try again in a minute.",
+  access_not_approved: ACCESS_NOT_APPROVED_TEXT,
   transient: "Google is temporarily unavailable. Try again shortly.",
   malformed: "Google sent an unexpected response. Try again shortly.",
   unknown_location: "That listing isn't available to this Google connection. Reload the list and pick again.",

@@ -62,7 +62,12 @@ relative to `src/` unless they start with `e2e/`.
 
 - OAuth: `authorizeUrl`, `exchangeCode`, `refresh`, `revoke` (returns `GoogleTokens`).
 - Data: `listAccounts`, `listLocations`, `listReviews` (`{reviews, averageRating,
-  totalReviewCount, nextPageToken}`), `putReply`, `deleteReply`.
+  totalReviewCount, nextPageToken}`), `putReply`, `deleteReply`,
+  `fetchDailyMetrics(accessToken, locationName, {metrics, startDate, endDate})`
+  → one `{date, value}` series per requested metric (SP5 insights — see
+  [reputation.md](reputation.md#insights-sp5-f)). The fake serves a
+  deterministic series per location (`fakeDailyValue`; scenario `insights`
+  patterns override it) and honours `failNext: {op: "fetchDailyMetrics"}`.
 
 `google.ts` is the real implementation (`google-http.ts` maps responses,
 `google-parse.ts` maps payloads, `google-token.ts` is the OAuth token endpoint).
@@ -74,12 +79,17 @@ Endpoints, verified 2026-09-11:
 | locations | `GET mybusinessbusinessinformation.googleapis.com/v1/{accounts/a}/locations?readMask=name,title,storefrontAddress,websiteUri,metadata&pageSize=100` |
 | reviews | `GET mybusiness.googleapis.com/v4/accounts/{a}/locations/{l}/reviews?pageSize=50&orderBy=updateTime%20desc` |
 | reply | `PUT` / `DELETE mybusiness.googleapis.com/v4/{review.name}/reply` |
+| insights (verified 2026-09-14) | `GET businessprofileperformance.googleapis.com/v1/{locations/l}:fetchMultiDailyMetricsTimeSeries?dailyMetrics=…&dailyMetrics=…&dailyRange.startDate.year=…&.month=…&.day=…&dailyRange.endDate.…` — response `multiDailyMetricTimeSeries[].dailyMetricTimeSeries[{dailyMetric, timeSeries.datedValues[{date:{year,month,day}, value}]}]`; `value` is an int64 string Google leaves out when it is 0 (read as 0). **Live: 429 quota 0 until case 4-6894000042302 is approved.** |
 
 Every failure is a `GbpProviderError` whose `kind` is one of `auth_expired`
 (401), `revoked` (OAuth `invalid_grant`), `insufficient_scope` (403
 `ACCESS_TOKEN_SCOPE_INSUFFICIENT` / "insufficient authentication scopes", or
 OAuth `invalid_scope`), `permission_denied` (other 403), `not_found` (404),
-`rate_limited` (429, `retryAfterMs` from `Retry-After`), `transient` (5xx,
+`rate_limited` (429, `retryAfterMs` from `Retry-After`), `access_not_approved`
+(a 429 `RESOURCE_EXHAUSTED` whose ErrorInfo `metadata.quota_limit_value` is
+`"0"` — the project's Business Profile API access is not approved yet; never
+retried by the sync, and shown everywhere as "Google hasn't approved Business
+Profile API access for this project yet." — `lib/gbp/error-text.ts`), `transient` (5xx,
 network, body read failure) or `malformed` (non-JSON, wrong shape, other 4xx).
 The message is fixed per kind + status — never a response body, URL query or
 token. Payloads fail closed: `STAR_RATING_UNSPECIFIED`, a missing id or a
@@ -279,6 +289,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
 | `GET /api/sub-accounts/[id]/gbp/reviews[?rating=&replied=&from=&to=&sort=]` | any member, gated | `{summary, reviews, available, runs, scheduled, truncated}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), each with its cache `docId`; `available` = active reviews before the filters; summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/`. Filters (in memory over the capped set, no composite index): `rating` comma list of 1–5, `replied` `all\|replied\|unreplied`, `from` / `to` on `createTime` — an ISO date-time WITH an offset (the page sends the viewer's local midnights: `from` = local 00:00 of the first day, `to` = local 00:00 after the last, exclusive — so filtered days match the local dates the list shows) or a bare ISO date, read as that UTC day (a date-only `to` covers the whole UTC day), `sort` `newest\|oldest`; an empty value is ignored, anything else malformed is 400 `invalid_filter` with `field` |
 | `GET /api/sub-accounts/[id]/reputation/overview[?range=]` | any member | aggregates over the SAME reviews this route serves (shared `loadServedReviews`, `lib/gbp/sync/served.ts`) plus the review-request log — see [reputation.md](reputation.md) |
+| `GET /api/sub-accounts/[id]/reputation/insights[?location=&range=]` | any member for the listing; another location admin only; gated | Performance insights, in memory only — see [reputation.md](reputation.md#insights-sp5-f) |
 | `POST /api/cron/gbp-retention` | QStash signature bound to this URL | the always-on daily retention housekeeping: a retention-only pass (no provider calls) for every sub-account holding a cache; `{retained}`; 500 only when the sweep cannot start |
 | `POST` / `DELETE /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply` | admin, gated | the explicit human reply — see "Explicit owner reply (PR 4)" |
 | `POST /api/sub-accounts/[id]/google-review/adopt-listing-url` | admin, gated | `{expectedCurrentUrl}` — see "Review-request compatibility (PR 4)" |
@@ -290,7 +301,16 @@ Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 404
 `not_found` (reply: not an active cached review of this sub-account's listing),
 409 `not_connected` / `reconnect_required` / `idempotency_key_reused` /
 `in_progress` / `changed` (+ `currentUrl`) / `no_proposal`, 400 `invalid_body` /
-`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), 502 `<provider kind>`. No response carries a token (every route test scans the
+`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), **424** `<provider kind>`
+(`access_not_approved` carries the fixed "not approved" sentence as `error`; every other kind "Google request failed").
+A provider failure is **424, never 502** (`gbpErrorResponse`): crm.crestahq.com
+is served through Cloudflare, which "returns a Cloudflare-branded HTTP 502 or
+504 error when your origin web server responds with a standard HTTP 502 … or
+504" — the HTML page replaced the `{error, code}` body, so #1000's picker read
+"Couldn't load listings from Google (error)" while the server had logged
+`kind=rate_limited status=429` (SP5 f). `components/gbp/gbp-refusal-through-proxy.test.ts`
+runs the real route response through that edge behaviour into the real
+picker and Insights tab. No response carries a token (every route test scans the
 body for token markers).
 
 ## Data written
@@ -515,7 +535,7 @@ cannot be replayed here) → `lib/gbp/sync/sweep.ts`:
 
 - **Sync:** `where googleEnabledByAgency == true`, filtered to connected +
   listing, never-run first then oldest `gbpSummary.lastRunAt`, **at most 25
-  per call, 3 at a time**; the first `rate_limited` result stops new tenants.
+  per call, 3 at a time**; the first `rate_limited` or `access_not_approved` (quota 0 — project-wide and permanent until approval) result stops new tenants.
 - **Retention only:** `where gbpSummary.lastRunAt != null` (single-field
   inequality — no composite index) filtered to sub-accounts that cannot sync.
 - Fake mode: ONE query `where agencyId == GBP_FAKE_AGENCY_ID` feeds both.
@@ -953,7 +973,7 @@ for a retry of the same text and makes a new one when the text changes.
   reply in normally. Reporting a 500 here would be dishonest: the reply is
   already public.
 - **Failure** — the attempt `failed` with its `errorKind`, the cached review
-  untouched, the lock released; 502 `{code: <kind>}`, or 409
+  untouched, the lock released; 424 `{code: <kind>}`, or 409
   `reconnect_required` (a revoked grant is flagged as everywhere else). The
   reply text is never logged. If *recording* the failure itself throws, the
   route still returns Google's real error (logs the failure-to-record by kind
@@ -961,7 +981,7 @@ for a retry of the same text and makes a new one when the text changes.
 - **Limit** — Google's API reference gives the reply `comment` a maximum of
   4096 **bytes**; the route counts 4000 **characters** (the decided rule), so
   a long reply in multi-byte characters can still be refused by Google — an
-  honest 502, nothing cached. (Byte limit: from the v4 reference, not
+  honest 424, nothing cached. (Byte limit: from the v4 reference, not
   re-verified against the live API.)
 
 UI: each review shows **Reply** (or **Edit reply**) to admins while the
@@ -1040,7 +1060,7 @@ The conversation composer's "Ask for review" and the contact header read
 | No listing selected | `gbp-state-pick` | sync `skipped no_listing`; feed `unavailable`, `listing: null` | panel test; `sync/run.test.ts`; feed `route.test.ts` |
 | Refresh token revoked | `gbp-state-reconnect` + `gbp-banner-reconnect` over cached reviews; no Reply | 409 `reconnect_required`; run `reconnect_required`, cache kept | `lib/gbp/tokens.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts`; E2E 6 |
 | Insufficient scope | reconnect with the scope wording | callback `?google=insufficient_scope`; flagged reconnect | `tokens.test.ts`; `callback/route.test.ts`; panel test |
-| Google 401 / 403 / 404 / 429 / 5xx | run result inline; reply error inline | typed `GbpProviderError`; 401 → refresh + one retry; 429 / 5xx retried (3 attempts) in sync, never in reply; 502 `<kind>` | `provider/google.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts` |
+| Google 401 / 403 / 404 / 429 / 5xx | run result inline; reply error inline | typed `GbpProviderError`; 401 → refresh + one retry; 429 (except quota 0 → `access_not_approved`, never retried) / 5xx retried (3 attempts) in sync, never in reply; 424 `<kind>` | `provider/google.test.ts`; `sync/run-failures.test.ts`; `…/reply/route.idempotency.test.ts` |
 | Pagination fails halfway | `gbp-banner-partial` | run `partial`, cursor kept, next run resumes | `sync/run-failures.test.ts` |
 | Location gone / access removed | listing cleared on reconnect re-verify | `listing_cleared not_accessible_after_reconnect`; `not_found` run | `callback/provider.test.ts`; `listing-events.test.ts` |
 | Cached data stale | `gbp-banner-stale`, `gbp-health-stale` | health `stale`; feed `stale` / later `unavailable` | `sync/health.test.ts`; `reviews-section.test.ts`; `route.freshness.test.ts`; E2E 6 feed half |
@@ -1050,7 +1070,7 @@ The conversation composer's "Ask for review" and the contact header read
 | Widget disabled / revoked | card `gbp-widget-state-disabled` / `-none` | feed 404, byte-identical | `…/gbp/widget/route.test.ts`; feed `route.test.ts` |
 | Disallowed origin | the site keeps its static fallback | 403, no ACAO | `route.http.test.ts`; E2E 4 |
 | QStash not configured (local) | "Automatic sync is not scheduled on this deployment — use Sync now" | no schedule; the cron 401s unsigned calls | `reviews-section.test.ts`; `app/api/cron/gbp-sync/route.test.ts` |
-| A reply Google refuses | `gbp-reply-error`, text kept | 502 `<kind>`, attempt `failed`, review untouched | `…/reply/route.idempotency.test.ts`; `reply-composer.test.ts`; E2E 5 |
+| A reply Google refuses | `gbp-reply-error`, text kept | 424 `<kind>`, attempt `failed`, review untouched | `…/reply/route.idempotency.test.ts`; `reply-composer.test.ts`; E2E 5 |
 | Review link changed under the admin | `gbp-reviewurl-error` with the current link | 409 `changed`, nothing written | `…/adopt-listing-url/route.test.ts`; `review-url-card.test.ts`; E2E 7 |
 
 ## Security and tenancy

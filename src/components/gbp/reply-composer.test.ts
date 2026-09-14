@@ -136,7 +136,7 @@ describe("composing", () => {
 
 describe("failure", () => {
   it("shows the error inline, keeps the text, and a retry of the same text reuses the key", async () => {
-    replyResult = async () => ({ status: 502, body: { code: "transient", error: "Google request failed" } });
+    replyResult = async () => ({ status: 424, body: { code: "transient", error: "Google request failed" } });
     await render();
     await click("gbp-reply-open-r1");
     await type(TEXT);

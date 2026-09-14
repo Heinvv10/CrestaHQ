@@ -15,8 +15,8 @@ import { toMillis, type GbpSummary, type SyncRunRecord } from "./types";
  *    GBP_SYNC_SCHEDULE_ENABLED=1): SYNC gated, connected sub-accounts with a
  *    listing via `syncListing` — least recently run first (never-run first),
  *    at most {@link SWEEP_CAP} per invocation, {@link CONCURRENCY} at a time;
- *    the first rate_limited result stops new tenants from starting (the quota
- *    is project-wide). Then a retention-only pass for caches that can no
+ *    the first rate_limited or access_not_approved result stops new tenants
+ *    from starting (the quota is project-wide; `stoppedOnRateLimit` covers both). Then a retention-only pass for caches that can no
  *    longer sync (gate off, disconnected, no listing).
  *  - `runGbpRetentionSweep` (POST /api/cron/gbp-retention, daily, always on —
  *    and the sync cron while its flag is off): a retention-only pass via
@@ -153,7 +153,8 @@ export async function runGbpSyncSweep(
   await pool(sync, (c) => one(c, (status, errorKind) => {
     processed += 1;
     count(status);
-    if (errorKind === "rate_limited") rateLimited = true;
+    // access_not_approved is Google's quota-0 429: the same project-wide wall, only permanent.
+    if (errorKind === "rate_limited" || errorKind === "access_not_approved") rateLimited = true;
   }), () => rateLimited);
   // Caches that cannot sync: retention only (no provider calls, no quota to
   // protect — always runs). Eligible tenants get retention inside their sync.

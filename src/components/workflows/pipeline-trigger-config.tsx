@@ -18,6 +18,7 @@ export function PipelineTriggerConfig({
   withStage,
   stagePlaceholder = "Any stage",
   stageLabel = (label) => `Moved to ${label}`,
+  noPipelineLabel,
   onChange,
 }: {
   pipelineId: string | null | undefined;
@@ -25,13 +26,16 @@ export function PipelineTriggerConfig({
   withStage: boolean;
   stagePlaceholder?: string;
   stageLabel?: (label: string) => string;
+  /** For a step, where unset means "no pipeline" rather than "any": the
+   *  picker shows even with one pipeline, and its unset option reads this. */
+  noPipelineLabel?: string;
   onChange: (next: { pipelineId: string | null; stageId: string | null }) => void;
 }) {
   const { pipelines, byId } = usePipelines();
   const stages = byId(pipelineId).stages;
   return (
     <>
-      {pipelines.length > 1 && (
+      {(pipelines.length > 1 || (noPipelineLabel && pipelines.length > 0)) && (
         <select
           aria-label="Pipeline"
           value={pipelineId ?? ""}
@@ -41,7 +45,7 @@ export function PipelineTriggerConfig({
           }
           className={SELECT_CLASS}
         >
-          <option value="">Any pipeline</option>
+          <option value="">{noPipelineLabel ?? "Any pipeline"}</option>
           {pipelines.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}

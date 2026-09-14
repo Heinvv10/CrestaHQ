@@ -25,6 +25,10 @@ import {
 } from "@/lib/comms/whatsapp/interactive";
 import { ensureTwilioSessionContent } from "@/lib/comms/whatsapp/twilio-session-content";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
+import { isAssignableMember } from "@/lib/server/assignee";
+import { updateDealServerSide } from "@/lib/server/deals-service";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { checkQuota, UsageQuotaExceededError } from "@/lib/server/usage-meter";
 import { reconcileEnrolments } from "@/lib/api/enrolment-cap";
@@ -707,16 +711,79 @@ const execRemoveTag: NodeExecutor = async (ctx) => {
   return { result: { kind: "next" }, log: `tag-:${tag}` };
 };
 
+/**
+ * A deal move fires `pipeline.stage.changed`, which can enrol the contact in
+ * another run whose move_stage moves the deal again. A run never re-enters
+ * itself (each trigger enrols a NEW run), and a move to the stage the deal is
+ * already in fires nothing, so a workflow cannot loop on its own — but two
+ * workflows moving the deal back and forth would, forever. Each workflow-made
+ * move therefore carries its depth on the trigger context; past this many
+ * hops the step leaves the deal alone.
+ */
+const MAX_WORKFLOW_DEAL_MOVES = 5;
+
 const execMoveStage: NodeExecutor = async (ctx) => {
-  const stage = (
-    (ctx.node.config as unknown as MoveStageConfig).stage ?? ""
-  ).trim();
+  const cfg = ctx.node.config as unknown as MoveStageConfig;
+  const stage = (cfg.stage ?? "").trim();
   if (!stage) return { result: { kind: "next" }, log: "skipped:no_stage" };
   await getAdminDb()
     .doc(`contacts/${ctx.contact.id}`)
     .update({ pipelineStage: stage, updatedAt: FieldValue.serverTimestamp() });
-  return { result: { kind: "next" }, log: `stage:${stage}` };
+  const pipelineId = (cfg.pipelineId ?? "").trim();
+  if (!pipelineId) return { result: { kind: "next" }, log: `stage:${stage}` };
+  const deal = await moveContactDeal(ctx, pipelineId, stage);
+  return { result: { kind: "next" }, log: `stage:${stage};deal:${deal}` };
 };
+
+const toMillis = (v: unknown): number =>
+  v instanceof Date
+    ? v.getTime()
+    : typeof (v as Timestamp | undefined)?.toMillis === "function"
+      ? (v as Timestamp).toMillis()
+      : 0;
+
+/** Move the contact's most recently updated open deal in `pipelineId` to
+ *  `stage` through the deals service. Returns the step-log suffix. */
+async function moveContactDeal(
+  ctx: NodeContext,
+  pipelineId: string,
+  stage: string
+): Promise<string> {
+  const depth = Number(ctx.triggerContext.workflowDepth) || 0;
+  if (depth >= MAX_WORKFLOW_DEAL_MOVES) return "skipped:loop_guard";
+  const pipeline = await loadPipeline(ctx.subAccountId, pipelineId);
+  if (!pipeline) return "skipped:pipeline_not_found";
+  if (!findStage(pipeline, stage)) return "skipped:stage_not_in_pipeline";
+
+  // Equality-only query; pipeline + open filtering in memory, because a deal
+  // with no pipelineId belongs to the default pipeline and a query can't
+  // match a missing field.
+  const snap = await getAdminDb()
+    .collection("deals")
+    .where("subAccountId", "==", ctx.subAccountId)
+    .where("contactId", "==", ctx.contact.id)
+    .get();
+  const open = snap.docs
+    .map((d) => ({ id: d.id, data: d.data() }))
+    .filter(
+      ({ data }) =>
+        dealPipelineId(data) === pipeline.id &&
+        !findStage(pipeline, data.stageId as string)?.terminal
+    )
+    .sort((a, b) => toMillis(b.data.updatedAt) - toMillis(a.data.updatedAt));
+  const target = open[0];
+  if (!target) return "skipped:no_open_deal";
+  if (target.data.stageId === stage) return `unchanged:${target.id}`;
+
+  await updateDealServerSide({
+    dealId: target.id,
+    patch: { stageId: stage },
+    userId: ctx.createdByUid,
+    expectedSubAccountId: ctx.subAccountId,
+    workflowDepth: depth + 1,
+  });
+  return `moved:${target.id}`;
+}
 
 // Only these top-level contact fields may be set by a workflow — prevents a
 // crafted config from clobbering tenancy/system keys. customFields.* is open.
@@ -754,6 +821,14 @@ const execCreateTask: NodeExecutor = async (ctx) => {
     cfg.dueInDays && cfg.dueInDays > 0
       ? new Date(Date.now() + cfg.dueInDays * 86_400_000)
       : null;
+  // Checked at run time, not save time: a member removed after the workflow
+  // was saved must not keep receiving tasks.
+  const wanted =
+    typeof cfg.assignedToUid === "string" ? cfg.assignedToUid.trim() : "";
+  const assignedToUid =
+    wanted && (await isAssignableMember(ctx.subAccountId, wanted))
+      ? wanted
+      : null;
   await createTaskServerSide({
     subAccountId: ctx.subAccountId,
     agencyId: ctx.agencyId,
@@ -765,9 +840,14 @@ const execCreateTask: NodeExecutor = async (ctx) => {
     contactId: ctx.contact.id,
     dealId: null,
     eventId: null,
+    assignedToUid,
     workflow: { workflowId: ctx.workflowId, runId: ctx.runId },
   });
-  return { result: { kind: "next" }, log: "task_created" };
+  return {
+    result: { kind: "next" },
+    log:
+      wanted && !assignedToUid ? "task_created:unassigned_not_member" : "task_created",
+  };
 };
 
 /**
