@@ -34,6 +34,7 @@ export async function POST(request: Request) {
     agencyId: contact.agencyId,
     contactId,
     trigger: "manual",
+    actorUid: auth.uid,
   });
 
   return NextResponse.json({ ok: true, sent: result.sent, reason: result.reason });
