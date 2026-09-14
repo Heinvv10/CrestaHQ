@@ -218,3 +218,28 @@ export function eventStatusLabel(status: EventStatus): string {
       return "Cancelled";
   }
 }
+
+/**
+ * Every valid `current → next` status flip. Pure + client-safe (no
+ * "server-only" dependency) so both the server-side transition gate
+ * (lib/server/event-status-service.ts re-exports this) and client UI that
+ * needs to know which transitions to offer (e.g. a row action menu) share
+ * one table instead of two copies drifting apart.
+ *
+ *   - `scheduled` → `completed` / `no_show` / `cancelled` allowed.
+ *   - `completed` ↔ `no_show` → allowed as a correction either direction.
+ *   - `cancelled` is always final.
+ *   - `awaiting_payment` → only `cancelled` (use mark-paid to confirm it).
+ */
+export function isValidStatusTransition(
+  current: EventStatus,
+  next: EventStatus,
+): boolean {
+  if (current === next) return true;
+  if (current === "cancelled") return false; // always final
+  if (current === "completed") return next === "no_show"; // correction
+  if (current === "no_show") return next === "completed"; // correction
+  if (current === "awaiting_payment") return next === "cancelled";
+  // current === "scheduled"
+  return next === "completed" || next === "no_show" || next === "cancelled";
+}

@@ -77,6 +77,9 @@ beforeEach(() => {
     contactId: "c1",
     bookingPageSlug: "page-a",
     title: "Meeting",
+    // Past by default — completed/no_show transitions are refused for a
+    // future-dated event (see event-status-service.test.ts for that gate).
+    startAt: { toDate: () => new Date(Date.now() - 60 * 60_000) },
   };
 });
 
@@ -128,6 +131,15 @@ describe("POST mark-status — trigger firing", () => {
 
   it("rejects cancelled -> completed with 409 and fires nothing", async () => {
     eventDoc.status = "cancelled";
+    const res = await post("completed");
+    expect(res.status).toBe(409);
+    expect(updatedPatch).toBeNull();
+    expect(m.fireBookingTrigger).not.toHaveBeenCalled();
+  });
+
+  it("rejects completed on a future-dated scheduled event with 409, writes nothing", async () => {
+    eventDoc.status = "scheduled";
+    eventDoc.startAt = { toDate: () => new Date(Date.now() + 60 * 60_000) };
     const res = await post("completed");
     expect(res.status).toBe(409);
     expect(updatedPatch).toBeNull();
