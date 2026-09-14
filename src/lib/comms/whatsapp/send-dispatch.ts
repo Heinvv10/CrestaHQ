@@ -182,7 +182,7 @@ export async function dispatchWhatsappSend(
   // that built for Cloud is valid here; it goes by ContentSid.
   if (buttons && provider === "twilio" && input.sendButtonsViaTwilio) {
     const r = await input.sendButtonsViaTwilio();
-    return { ...r, provider, sentAs: "interactive" };
+    return { ...r, provider, sentAs: "interactive", attempted: true };
   }
   if (buttons && provider !== "cloud") {
     return {
@@ -220,7 +220,7 @@ export async function dispatchWhatsappSend(
       provider,
       now,
     });
-    return { ...r, provider, sentAs: interactive ? "interactive" : decision.mode };
+    return { ...r, provider, sentAs: interactive ? "interactive" : decision.mode, attempted: true };
   }
 
   if (provider === "bridge") {
@@ -246,11 +246,11 @@ export async function dispatchWhatsappSend(
       humanReply: input.humanReply === true,
       media: input.attachment ?? null,
     });
-    return { ...r, provider };
+    return { ...r, provider, attempted: true };
   }
 
   const r = await input.sendViaTwilio();
-  return { ...r, provider };
+  return { ...r, provider, attempted: true };
 }
 
 /**

@@ -11,6 +11,7 @@ import {
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
 import { recordSend } from "@/lib/comms/usage";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types";
@@ -119,10 +120,11 @@ export async function sendConversationSms(
       } catch (recordErr) {
         console.warn("[sms/send] 21610 opt-out record failed", recordErr);
       }
-      return refuse(409, err.message);
+      return { ...refuse(409, err.message), attempted: true };
     }
     const message = err instanceof Error ? err.message : "Failed to send SMS";
-    return refuse(502, message);
+    const refusal = refuse(502, message);
+    return providerAttempted(err) ? { ...refusal, attempted: true } : refusal;
   }
 
   const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;

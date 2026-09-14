@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { sendConversationSms } from "@/lib/server/conversation-send/sms";
 import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 
 type Body = { contactId?: string; body?: string };
 
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  return sendOutcomeResponse(
-    await sendConversationSms({ contactId, contact, body, actor: auth }),
-  );
+  const outcome = await sendConversationSms({ contactId, contact, body, actor: auth });
+  await logInboxReviewAsk({ contact, channel: "sms", parts: [body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
+  return sendOutcomeResponse(outcome);
 }

@@ -9,6 +9,7 @@ import { RANGE_PRESETS, type RangePreset } from "@/lib/reputation/overview";
 import { Checklist, RequestsCard, ResponseCard } from "./overview-cards";
 import { Distribution, Tiles, Trend } from "./overview-tiles";
 import { RANGE_LABEL } from "./format";
+import { SendReviewRequestButton } from "./send-review-request";
 import type { OverviewResponse } from "./types";
 
 /**
@@ -70,6 +71,7 @@ export function ReputationOverview() {
   const { subAccountId, isAdmin } = useSubAccount();
   const [range, setRange] = useState<RangePreset>("90d");
   const [load, setLoad] = useState<Load>({ state: "loading" });
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -80,7 +82,7 @@ export function ReputationOverview() {
       setLoad(res?.ok && data?.requests ? { state: "ready", data } : { state: "error" });
     })();
     return () => controller.abort();
-  }, [subAccountId, range]);
+  }, [subAccountId, range, reload]);
 
   const picker = (
     <select
@@ -101,7 +103,10 @@ export function ReputationOverview() {
     <div className="space-y-4" data-testid="rep-overview">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold">Reputation overview</h1>
-        {picker}
+        <div className="flex items-center gap-2">
+          {picker}
+          <SendReviewRequestButton onSent={() => setReload((n) => n + 1)} />
+        </div>
       </div>
       {load.state === "loading" && (
         <p className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-state-loading">

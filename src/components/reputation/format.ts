@@ -34,8 +34,12 @@ export const fmtDate = (iso: string) =>
 export const RANGE_LABEL = { "30d": "Last 30 days", "90d": "Last 90 days", "365d": "Last 12 months", all: "All time" } as const;
 export const PREVIOUS_LABEL = { "30d": "previous 30 days", "90d": "previous 90 days", "365d": "previous 12 months", all: "" } as const;
 
-export const CHANNEL_LABEL: Record<string, string> = {
-  sms: "SMS",
-  whatsapp_template: "WhatsApp (template)",
-  whatsapp_manual: "WhatsApp (in-window)",
+export const CHANNEL_LABEL: Record<string, string> = { sms: "SMS", whatsapp: "WhatsApp", email: "Email" };
+
+/** Who sent a logged review request (reviewRequests.source). */
+export const SOURCE_LABEL: Record<string, string> = {
+  dispatcher: "Request review & triggers",
+  workflow: "Workflows",
+  broadcast: "Broadcasts",
+  inbox: "Inbox",
 };

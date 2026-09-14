@@ -31,11 +31,11 @@ async function read(uid = "uid_collab", query = "", sa = SA): Promise<{ status: 
   return { status: res.status, body: JSON.parse(text) as Body };
 }
 
-function seedRequest(sa: string, id: string, daysAgo: number, channel = "sms") {
+function seedRequest(sa: string, id: string, daysAgo: number, channel = "sms", more: Record<string, unknown> = {}) {
   mem.seed(`subAccounts/${sa}/reviewRequests/${id}`, {
     agencyId: AGENCY, subAccountId: sa, createdByUid: "review-request", contactId: `c_req_${id}`, channel,
-    trigger: "manual", status: "sent", messageSid: null, sentAt: new Date(NOW.getTime() - daysAgo * DAY),
-    clickedAt: null, feedbackAt: null,
+    source: "dispatcher", trigger: "manual", status: "sent", failureKind: null, messageSid: null,
+    sentAt: new Date(NOW.getTime() - daysAgo * DAY), clickedAt: null, feedbackAt: null, ...more,
   });
 }
 
@@ -107,20 +107,25 @@ describe("numbers over the synced fixture reviews", () => {
 });
 
 describe("requests", () => {
-  it("counts this sub-account's log only, by channel, with counting-since", async () => {
+  it("counts this sub-account's log only, sent rows only, by channel and source, with counting-since", async () => {
     seedRequest(SA, "a", 1);
-    seedRequest(SA, "b", 3, "whatsapp_template");
+    // Written by (a) before d1: a WhatsApp mode and no source.
+    seedRequest(SA, "b", 3, "whatsapp_template", { source: undefined });
+    seedRequest(SA, "d", 2, "email", { source: "broadcast", createdByUid: "broadcast", trigger: null });
+    seedRequest(SA, "e", 2, "sms", { source: "workflow", status: "failed", failureKind: "send_failed" });
     seedRequest(SA, "c", 100);
     seedRequest(OTHER_SA, "x", 1);
     seedRequest(OTHER_SA, "y", 2);
     const { body } = await read();
     expect(body.requests).toEqual({
-      sent: 2,
-      byChannel: { sms: 1, whatsapp_template: 1 },
+      sent: 3,
+      byChannel: { sms: 1, whatsapp: 1, email: 1 },
+      bySource: { dispatcher: 2, broadcast: 1 },
+      failed: 1,
       previous: null,
       countingSince: new Date(NOW.getTime() - 100 * DAY).toISOString(),
     });
-    expect(body.trend.reduce((n: number, b: Body) => n + b.requests, 0)).toBe(2);
+    expect(body.trend.reduce((n: number, b: Body) => n + b.requests, 0)).toBe(3);
   });
 });
 
@@ -169,6 +174,14 @@ describe("checklist — from real state only", () => {
     expect((await read()).body.checklist).toEqual({
       googleConnected: true, listingSelected: true, reviewLinkConfigured: true, widgetExists: true, requestLogged: true,
     });
+  });
+
+  it("a failed review ask alone is not a first request sent", async () => {
+    seedRequest(SA, "f", 1, "sms", { status: "failed", failureKind: "send_failed" });
+    seedRequest(OTHER_SA, "x", 1);
+    expect((await read()).body.checklist.requestLogged).toBe(false);
+    seedRequest(SA, "s", 2);
+    expect((await read()).body.checklist.requestLogged).toBe(true);
   });
 
   it("a revoked connection is not 'connected'", async () => {
