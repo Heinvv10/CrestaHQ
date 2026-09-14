@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   filters: { all: [] as unknown[] },
   territoryFilter: null as string[] | null,
   deliver: null as ((list: unknown[]) => void) | null,
+  subscribeOpts: null as unknown,
   fetchNewest: vi.fn(),
   None: () => null,
   auth: { user: { uid: "u1" }, loading: false },
@@ -56,7 +57,8 @@ vi.mock("@/hooks/use-sub-account-members", () => ({
   useSubAccountMembers: () => ({ members: [] }),
 }));
 vi.mock("@/lib/firestore/contacts", () => ({
-  subscribeToContacts: (_s: unknown, _o: unknown, cb: (l: unknown[]) => void) => {
+  subscribeToContacts: (_s: unknown, o: unknown, cb: (l: unknown[]) => void) => {
+    state.subscribeOpts = o;
     state.deliver = cb;
     return () => undefined;
   },
@@ -124,6 +126,8 @@ it("paints the newest page first, then the full list replaces it", async () => {
   );
   expect(rows()).toBe(3);
   expect(loadingNote()).toBe(true);
+  // The full listener must not surface a cache snapshot seeded by the preview.
+  expect(state.subscribeOpts).toMatchObject({ waitForServer: true });
 
   await act(async () => state.deliver!(contacts("Full", 5)));
   expect(rows()).toBe(5);

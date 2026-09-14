@@ -122,7 +122,7 @@ export default function ContactsPage() {
     setLoading(true);
     const unsub = subscribeToContacts(
       { agencyId, subAccountId },
-      { territoryFilter },
+      { territoryFilter, waitForServer: true },
       (list) => {
         setContacts(list);
         setLoading(false);
