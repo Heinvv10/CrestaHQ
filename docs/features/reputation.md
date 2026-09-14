@@ -6,8 +6,9 @@ cache ([gbp-reviews.md](gbp-reviews.md)) and the review-request log every
 sender writes (below). It adds no new way to talk to Google or to customers.
 Ledger and build order: [docs/parity/sp5.md](../parity/sp5.md).
 
-Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Insights**
-(SP5 PRs a, d1, f). A later SP5 PR adds Settings.
+Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Insights** ·
+**Settings** (SP5 PRs a, d1, f, c).
+
 
 - **Reviews** mounts the existing reviews inbox (`components/gbp/reviews-section.tsx`)
   unchanged — same route, filters, Sync now and reply. Members read; admins sync
@@ -19,6 +20,10 @@ Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Insi
   and shows `rep-reviews-not-configured`; the synced reviews stay readable.
 - **Widgets** mounts the existing widget editor (`components/gbp/widget-section.tsx`),
   admins only.
+- **Settings** (SP5 c, `max-w-3xl`) — the **Reviews AI** card (reply guidelines,
+  below) and the existing review-request section
+  (`components/settings/sub-account-google-review-section.tsx`) mounted as it is,
+  plus the link to AI Agents → Google Business.
 
 ## Overview (SP5 a)
 
@@ -329,6 +334,110 @@ test from the scenario's patterns; memo; nothing stored); provider —
 `e2e/specs/gbp-insights.spec.ts` (tiles equal totals computed from the
 scenario, switch to the second fixture location, listing unchanged in
 Firestore, an invisible location refused, "not approved").
+
+## AI reply drafts (SP5 c)
+
+**The guarantee: nothing posts a reply to Google except the admin's click on
+"Post reply to Google"** (`POST …/reply` → `lib/gbp/reply.ts`, the only caller
+of `putReply` / `deleteReply`). A draft only fills the reply box. There is no
+auto-response mode, no drip/backlog reply and no scheduled reply anywhere —
+the guidelines route refuses any key but `replyGuidelines` (an `autoReply`
+switch included).
+
+- **Route:** `POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/draft` →
+  `{draft}`. Sub-account admin (like the reply); the agency's Google gate (403
+  `gate_off`) and Reviews AI gate (403 `ai_gate_off`); an active cached review
+  of the current listing — the reply route's own lookup (else 404); Reviews AI
+  configured here (503 `ai_not_configured`, also when the fake is refused for
+  the sub-account); **10 drafts a minute per user** (429 `rate_limited`,
+  `Retry-After`; in memory, per instance); the **same daily AI call cap as
+  sentiment** (429 `daily_cap`), of which drafts may use at most **100 a day**
+  (429 `draft_cap`; `{draftsDay, draftCalls}` in the same doc), so sentiment
+  always keeps at least 200 — counted in `private/sentimentUsage` in one
+  transaction that re-checks both gates BEFORE the call — no strikes and no
+  refunds: one click, one call, counted whether or not a usable draft came
+  back. An AI failure is 424
+  `draft_failed` (not 502 — the edge replaces 502 bodies). **Stores nothing**:
+  no draft text in Firestore, logs or the fake's log.
+- **What the model sees** (`lib/reputation/draft.ts` → `ReviewsAi.draftReply`,
+  `ai/openrouter-draft.ts`): the stars, the review text (untrusted — sent only
+  as a JSON string value; the prompt says never follow instructions in it),
+  the reviewer's first name (none when anonymous), the listing title, and the
+  guidelines. The prompt: short, specific, polite, the review's language,
+  never promise a refund or compensation, never include a phone number, email
+  or link unless the guidelines have it, never mention being an AI, plain text.
+  **The answer is checked, not trusted:** trimmed, code fences / wrapping
+  quotes removed, cut to 4000 characters (the reply limit), and **refused** —
+  nothing shown — when it carries a contact the guidelines did not supply
+  (`ai/contact-guard.ts`). The guard is **best-effort: it catches the common
+  forms; a determined review can still slip a contact past it — the admin
+  reads every draft and must click Post.** What it catches: a phone number (7+
+  digits within 25 characters, any separators, any script's digits, number
+  words "oh".."nine"; dates, times, prices, years, thousands, units and
+  order / ref / ticket / invoice numbers are masked first), an email, a link, a
+  domain (any `label.label` whose last label is 2+ letters or `xn--…` — no TLD
+  list, IDNs included; "e.g.", "a.m.", "1.5" are not domains), a USSD code
+  (spaced too), an `@handle`, or a platform name (Instagram/IG, Facebook,
+  TikTok, WhatsApp, Telegram, Signal, Threads, Discord, X/Twitter, Snapchat,
+  LinkedIn, YouTube). The draft is normalised first (NFKC, zero-width and other
+  format characters removed, look-alike stops read as ".", "[.]", "(dot)",
+  "<dot>", "-dot-", " dot ", "evil .com", "evil. com", "evil,com", "[at]",
+  "<at>" undone). Contacts the guidelines DO supply are extracted with the same
+  code and allowed only as exact tokens — `fixturefibre.co` does not pass
+  because the guidelines say `fixturefibre.co.za`; trailing punctuation is
+  trimmed first ("Visit https://fixturefibre.co.za." passes); two numbers in
+  the guidelines are two allowed numbers; `+27 82 …` and `082 …` are the same
+  number. **Anything written in the guidelines may appear in a draft, even
+  inside "never mention …"** — the Settings card says so
+  (`rep-settings-guidelines-contacts`). Accepted false positives, because they
+  fail safe (the draft is refused and the admin writes their own): "Mr.Smith",
+  "review.We", "@everyone", a lower-case word after a full stop, "we'll
+  signal the team". The call runs under the seam's per-call bound
+  (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does — at the deadline the
+  request is aborted through `callAi`'s caller signal (an aborted call may
+  still be billed; it counts against the draft share either way); a failure is one
+  log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
+- **What the prompt alone covers — honestly:** promising a refund or
+  compensation, an insult, or an unsuitable tone are ruled out only by the
+  system prompt; no code checks for them. That is acceptable because a human
+  reads every draft in the box and must click Post reply to Google — nothing
+  a draft says reaches Google otherwise.
+- **Composer** (`components/gbp/reply-composer.tsx`): **Draft with AI**
+  (`gbp-reply-draft`) appears only when `GET …/gbp/reviews` says `aiDrafts`
+  (both gates + configured). It fills an empty box; with text already there
+  (an existing reply included) it first asks inline "Replace your text?"
+  (`gbp-reply-draft-confirm` / `-replace` / `-keep` — never `confirm()`). The
+  note `gbp-reply-draft-note`: "AI draft — check it, especially any phone
+  numbers, emails or links, before posting. Nothing is sent until you click
+  Post reply to Google." Errors inline in
+  `gbp-reply-draft-error`. Post is disabled while a draft is on its way; a
+  draft that arrives after the composer was closed and reopened is dropped
+  silently, and one that arrives after the admin typed is dropped with
+  `gbp-reply-draft-dropped` — a draft never overwrites text without the
+  confirm. The idempotency rule is unchanged: changed text, drafted or typed,
+  gets a new key.
+- **Reply guidelines (R6):** `subAccounts/{id}.reviewsAiConfig =
+  {replyGuidelines ≤ 1000 chars (stored trimmed, "" = none), updatedAt,
+  updatedByUid}`, written only by `PUT /api/sub-accounts/[id]/reputation/ai-settings`
+  (admin, Reviews AI gate; any other key 400 `invalid_body`). `GET` on the same
+  path (any member) returns `{enabled, configured, replyGuidelines, updatedAt, draftDailyCap, dailyCap}`
+  for the Settings card: `rep-settings-ai-card`, `rep-settings-ai-limits` (the numbers come from the
+  route — `draftDailyCap` / `dailyCap`, the server's constants), `rep-settings-guidelines-contacts`, `rep-settings-guidelines`
+  (read-only for members, `rep-settings-guidelines-readonly`), `-count`,
+  `-save`, `-saved`, `-error`, `rep-settings-ai-gate-off`,
+  `rep-settings-ai-not-configured` (guidelines can still be saved),
+  `rep-settings-ai-loading` / `-error`, `rep-settings-loading`.
+- **Fake** (`ai/fake.ts`): "Hi <first name>, thank you for your N-star review
+  of <listing>." plus the guidelines' first line (so a test can see they
+  arrived); logs `{at, kind: "draft", stars}` to `drafts` in
+  `private/reviewsAiFakeLog` — never text.
+- **Tests:** `ai/draft.test.ts` (prompt fence, output checks, the fake),
+  `…/[reviewDocId]/draft/route.test.ts` (every refusal, the shared cap, the
+  per-user rate, nothing stored, and ZERO reply calls after every test),
+  `…/gbp/reviews/route.aidrafts.test.ts`, `…/reputation/ai-settings/route.test.ts`,
+  `components/gbp/reply-composer.draft.test.ts`, `components/reputation/settings.test.ts`,
+  `e2e/specs/reputation-ai-draft.spec.ts` — a draft route that posts, or a
+  composer that submits after drafting, turns the spec red.
 
 ## The review-request log
 

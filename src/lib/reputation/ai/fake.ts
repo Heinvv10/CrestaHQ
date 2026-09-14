@@ -2,7 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import type { ReviewsAi, SentimentLabel } from "./types";
+import type { DraftInput, ReviewsAi, SentimentLabel } from "./types";
 
 /**
  * Deterministic stand-in for the model, reachable only through select.ts
@@ -17,7 +17,9 @@ import type { ReviewsAi, SentimentLabel } from "./types";
  *
  * Every call appends `{at, ids, count}` — never text — to
  * `subAccounts/{id}/private/reviewsAiFakeLog`, so the E2E spec can count
- * what would have been billed.
+ * what would have been billed. A reply draft appends `{at, kind: "draft",
+ * stars}` to `drafts` in the same doc (its own array, so sentiment counts
+ * stay exact).
  */
 
 const NEGATIVE = ["not happy", "late", "no signal", "bad", "poor", "terrible", "rude", "never"];
@@ -34,6 +36,13 @@ export function fakeLabel(text: string, _starRating: number): SentimentLabel {
   return "neutral";
 }
 
+/** The fake's draft: the star rating, the first name, and the guidelines' first line echoed (so a test can see they arrived). */
+export function fakeDraft(input: DraftInput): string {
+  const hello = input.reviewerFirstName ? `Hi ${input.reviewerFirstName}, thank you` : "Thank you";
+  const sign = input.guidelines?.split("\n")[0]?.trim().slice(0, 120);
+  return `${hello} for your ${input.starRating}-star review of ${input.businessName}.${sign ? `\n${sign}` : ""}`;
+}
+
 export function createFakeReviewsAi(subAccountId: string): ReviewsAi {
   return {
     model: "fake",
@@ -42,6 +51,12 @@ export function createFakeReviewsAi(subAccountId: string): ReviewsAi {
         .doc(fakeLogPath(subAccountId))
         .set({ calls: FieldValue.arrayUnion({ at: Date.now(), ids: items.map((i) => i.id), count: items.length }) }, { merge: true });
       return items.map((i) => ({ id: i.id, label: fakeLabel(i.text, i.starRating) }));
+    },
+    async draftReply(input) {
+      await getAdminDb()
+        .doc(fakeLogPath(subAccountId))
+        .set({ drafts: FieldValue.arrayUnion({ at: Date.now(), kind: "draft", stars: input.starRating }) }, { merge: true });
+      return { text: fakeDraft(input) };
     },
   };
 }

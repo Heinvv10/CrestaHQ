@@ -36,6 +36,8 @@ interface Ready {
   runs: RunView[];
   scheduled: boolean;
   truncated: boolean;
+  /** "Draft with AI" can work here (both gates + Reviews AI configured). */
+  aiDrafts: boolean;
 }
 type Load = { state: "loading" } | { state: "error" } | Ready;
 
@@ -72,7 +74,7 @@ export function ReviewsSection({
       setLoad({
         state: "ready", summary: data.summary ?? null, reviews: data.reviews, runs: data.runs ?? [],
         available: typeof data.available === "number" ? data.available : data.reviews.length,
-        scheduled: data.scheduled === true, truncated: data.truncated === true,
+        scheduled: data.scheduled === true, truncated: data.truncated === true, aiDrafts: data.aiDrafts === true,
       });
     }
   }, [base, filters]);
@@ -173,7 +175,7 @@ export function ReviewsSection({
           {load.reviews.map((r) => (
             <ReviewItem key={r.reviewId} review={r}>
               {/* Admins only, and not while Google needs a reconnect. */}
-              {canSync && !reconnect && <ReplyComposer subAccountId={subAccountId} review={r} onPosted={refresh} />}
+              {canSync && !reconnect && <ReplyComposer subAccountId={subAccountId} review={r} onPosted={refresh} aiDrafts={load.aiDrafts} />}
             </ReviewItem>
           ))}
         </ul>
