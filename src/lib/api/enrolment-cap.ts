@@ -49,6 +49,32 @@ import { apiError, type ResponseMeta } from "@/lib/api/responses";
 
 export const ENROLMENT_CAP_PER_HOUR = 50;
 
+/**
+ * Upper bound on a per-key override, regardless of what the key doc says.
+ * Without a ceiling, a fat-fingered `enrolmentCapPerHour` (or one an
+ * operator set generously and never revisited) would defeat the fuse this
+ * module exists to provide — an integration could then loop-message
+ * thousands of businesses before the cap ever bit. 1000/hr is already far
+ * above any legitimate integration's normal traffic.
+ */
+const ENROLMENT_CAP_MAX_PER_HOUR = 1000;
+
+/**
+ * Resolve an API key's raw `enrolmentCapPerHour` field into the limit to
+ * enforce. Absent, null, zero, negative, or non-integer values fall back to
+ * `ENROLMENT_CAP_PER_HOUR` — the fuse must never silently disable itself
+ * because a key doc has a bad or missing value. A value above the ceiling is
+ * CLAMPED rather than rejected: an operator who set 100000 almost certainly
+ * meant "much higher than default", not "ignore me and use 50" — clamping
+ * honours that intent while keeping the fuse meaningfully bounded.
+ */
+export function resolveEnrolmentCapPerHour(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+    return ENROLMENT_CAP_PER_HOUR;
+  }
+  return Math.min(raw, ENROLMENT_CAP_MAX_PER_HOUR);
+}
+
 /** Bucket id for an instant, e.g. "2026-09-07T14" (UTC). */
 export function enrolmentHourKey(d: Date = new Date()): string {
   return d.toISOString().slice(0, 13);
@@ -96,9 +122,11 @@ export interface EnrolmentBudget {
 export async function reserveEnrolment(input: {
   subAccountId: string;
   keyId: string;
+  /** Resolved per-key limit. Defaults to `ENROLMENT_CAP_PER_HOUR`. */
+  limit?: number;
 }): Promise<EnrolmentBudget> {
   const now = new Date();
-  const limit = ENROLMENT_CAP_PER_HOUR;
+  const limit = input.limit ?? ENROLMENT_CAP_PER_HOUR;
   const ref = bucketRef(input.subAccountId, input.keyId, enrolmentHourKey(now));
   let reserved: number;
   try {
@@ -214,7 +242,13 @@ export interface EnrolmentGate {
  * that does NOT end in a fired trigger, including a throw.
  */
 export async function openEnrolmentGate(
-  ctx: ResponseMeta & { subAccountId: string; keyId: string; mode: "live" | "test" },
+  ctx: ResponseMeta & {
+    subAccountId: string;
+    keyId: string;
+    mode: "live" | "test";
+    /** Per-key override; resolved again here in case a caller passes a raw value. */
+    enrolmentCapPerHour?: number;
+  },
 ): Promise<EnrolmentGate> {
   const gate = {
     refusal: null,
@@ -226,9 +260,11 @@ export async function openEnrolmentGate(
   // to reserve, nothing to refuse, and nothing to release afterwards.
   if (ctx.mode !== "live") return gate;
 
+  const limit = resolveEnrolmentCapPerHour(ctx.enrolmentCapPerHour);
   const budget = await reserveEnrolment({
     subAccountId: ctx.subAccountId,
     keyId: ctx.keyId,
+    limit,
   });
   if (budget.allowed) {
     // `reserved` tracks whether the bucket was actually incremented — a

@@ -65,6 +65,14 @@ export interface ApiKeyDoc {
    * keys minted before versioning shipped fall back to latest.
    */
   defaultVersion?: string;
+  /**
+   * Per-key override for the hourly workflow-enrolment fuse (see
+   * `lib/api/enrolment-cap.ts`). Optional — absent, null, or an invalid
+   * value falls back to `ENROLMENT_CAP_PER_HOUR`. Not exposed on
+   * `ApiKeyResponse`; it's an operator-set limit, not something a key
+   * holder reads back over the API.
+   */
+  enrolmentCapPerHour?: number;
   createdByUid: string;
   createdAt: Date;
   lastUsedAt: Date | null;
