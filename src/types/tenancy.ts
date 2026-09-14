@@ -465,6 +465,15 @@ export interface SubAccountDoc {
    */
   googleCalendarEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for Reviews AI (SP5): AI sentiment on synced Google
+   * reviews now, AI reply drafts later. Spends the agency's OpenRouter
+   * credits. Opt-in: `false` at creation, read `=== true`. Plan-managed
+   * (`PLAN_GATE_KEYS`, not pre-ticked). No tear-down: cached sentiment labels
+   * stay until the review's own lifecycle (edit, tombstone, retention)
+   * clears them. See docs/features/reputation.md.
+   */
+  reviewsAiEnabledByAgency?: boolean;
+  /**
    * Non-secret display metadata for the connected Google account (see
    * {@link GoogleConnectionMeta}). Null/absent until connected.
    *
