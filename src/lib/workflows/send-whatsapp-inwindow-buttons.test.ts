@@ -129,6 +129,8 @@ describe("in the window: the template's text WITH its buttons, free", () => {
     expect(mem.read("contacts/c1/whatsappMessages/wamid.1")?.body).toBe(
       "Thank you Thandi! If you have a moment, a quick Google review would mean a lot.",
     );
+    // ...and which button the customer could tap.
+    expect(mem.read("contacts/c1/whatsappMessages/wamid.1")?.buttons).toEqual([REVIEW]);
   });
 
   it("sends quick replies as reply buttons", async () => {
@@ -144,6 +146,10 @@ describe("in the window: the template's text WITH its buttons, free", () => {
       type: "interactive",
       interactive: { type: "button", action: { buttons: [{ reply: { title: "Yes, all good" } }, { reply: { title: "No, a problem" } }] } },
     });
+    expect(mem.read("contacts/c1/whatsappMessages/wamid.1")?.buttons).toEqual([
+      { type: "quick_reply", text: "Yes, all good" },
+      { type: "quick_reply", text: "No, a problem" },
+    ]);
   });
 
   it("still sends the step's own text when the template has no buttons", async () => {
@@ -153,6 +159,25 @@ describe("in the window: the template's text WITH its buttons, free", () => {
     await run("plain");
 
     expect(graph[0]).toMatchObject({ type: "text", text: { body: "Thanks! Review us: https://g.page/r/velocity/review" } });
+    // Plain text: no buttons were ever offered, so none are recorded.
+    expect(mem.read("contacts/c1/whatsappMessages/wamid.1")?.buttons).toBeFalsy();
+  });
+});
+
+describe("a template send with buttons records none when it falls back to the template itself", () => {
+  it("outside the window, the button template goes out as \"template\" — not \"interactive\" — and records no buttons", async () => {
+    seedTemplate("check", {
+      status: "approved", body: "Was everything done?", variables: [],
+      buttons: [{ type: "quick_reply", text: "Yes, all good" }],
+      registrations: { cloud: { externalId: "m1", status: "approved", rejectionReason: null } },
+    });
+    lastInbound(30);
+
+    const out = await run("check");
+
+    expect(out.log).toBe("ok");
+    expect(graph[0]).toMatchObject({ type: "template", template: { name: "check" } });
+    expect(mem.read("contacts/c1/whatsappMessages/wamid.1")?.buttons).toBeFalsy();
   });
 });
 

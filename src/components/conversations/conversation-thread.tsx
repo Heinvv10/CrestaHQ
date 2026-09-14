@@ -398,6 +398,19 @@ function ChannelBubble({
           </div>
         )}
         <p className="break-words whitespace-pre-wrap">{message.body}</p>
+        {"buttons" in message && message.buttons && message.buttons.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-current/10 pt-2">
+            {message.buttons.map((btn, i) => (
+              <span
+                key={i}
+                className="rounded-full bg-background/60 px-2 py-0.5 text-[11px] font-medium text-current opacity-80"
+                title={btn.type === "url" ? btn.url : undefined}
+              >
+                {btn.type === "url" ? `🔗 ${btn.text} (${btn.url})` : btn.text}
+              </span>
+            ))}
+          </div>
+        )}
         {"attachments" in message && message.attachments.length > 0 && (
           <div className="mt-2 border-t pt-2 text-xs">
             <p>Attachments (metadata only; open originals in your mailbox)</p>
