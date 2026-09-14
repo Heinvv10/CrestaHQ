@@ -103,6 +103,8 @@ export type GbpProviderErrorKind =
   | "permission_denied"
   | "not_found"
   | "rate_limited"
+  /** A 429 whose quota is 0: Google has not approved API access for the project. Not transient. */
+  | "access_not_approved"
   | "transient"
   | "malformed";
 

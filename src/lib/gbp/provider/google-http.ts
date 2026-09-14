@@ -36,6 +36,20 @@ function isScopeInsufficient(body: unknown): boolean {
   );
 }
 
+/**
+ * A 429 that is not a rate limit: RESOURCE_EXHAUSTED with an ErrorInfo whose
+ * `quota_limit_value` is "0" — the project has no quota at all until Google
+ * approves its Business Profile API access. Waiting cannot change it.
+ */
+function isQuotaZero(body: unknown): boolean {
+  const error = (body as { error?: Record<string, unknown> } | null)?.error;
+  if (!error || typeof error !== "object" || error.status !== "RESOURCE_EXHAUSTED") return false;
+  const details = Array.isArray(error.details) ? error.details : [];
+  return details.some(
+    (d) => (d as { metadata?: { quota_limit_value?: unknown } } | null)?.metadata?.quota_limit_value === "0",
+  );
+}
+
 export function errorForStatus(res: Response, body: unknown): GbpProviderError {
   const status = res.status;
   if (status === 401) return new GbpProviderError("auth_expired", { status });
@@ -47,6 +61,7 @@ export function errorForStatus(res: Response, body: unknown): GbpProviderError {
   }
   if (status === 404) return new GbpProviderError("not_found", { status });
   if (status === 429) {
+    if (isQuotaZero(body)) return new GbpProviderError("access_not_approved", { status });
     return new GbpProviderError("rate_limited", { status, retryAfterMs: retryAfterMs(res) });
   }
   if (status >= 500) return new GbpProviderError("transient", { status });

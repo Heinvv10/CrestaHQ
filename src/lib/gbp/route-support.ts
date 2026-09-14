@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { googleGateOn } from "@/lib/google/gate";
 import { googleAppConfigured } from "@/lib/google/oauth";
 import type { SubAccountDoc } from "@/types";
+import { ACCESS_NOT_APPROVED_TEXT } from "./error-text";
 import { GbpProviderError } from "./provider/types";
 import { GbpNotConnectedError } from "./tokens";
 
@@ -63,5 +64,5 @@ export async function gbpErrorResponse(
     // only if the failed credential was still the stored one.
     return gbpRefusal(409, "reconnect_required", "Reconnect Google Business Profile.");
   }
-  return gbpRefusal(502, err.kind, "Google request failed");
+  return gbpRefusal(502, err.kind, err.kind === "access_not_approved" ? ACCESS_NOT_APPROVED_TEXT : "Google request failed");
 }
