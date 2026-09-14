@@ -7,7 +7,7 @@
 **Session goal:** SP5 — GHL Reputation & GBP remainder parity: ledger + six PRs (a–f), each blind-reviewed and merged under the Level-3 boundary, no deploy.
 
 ## Status
-SP5 is built and merged. Ledger `docs/parity/sp5.md` rows are all "merged (#N)"; every Google-dependent row carries "live half blocked: case 4-6894000042302". Nothing is deployed (Hein approves each deploy, after 17:00 Mon–Fri). No Firestore rules or indexes changed, so no rules deploy is needed.
+SP5 is built and merged. Ledger `docs/parity/sp5.md` rows are all "merged (#N)"; every Google-dependent row carries "live half blocked: case 4-6894000042302". Deployed to crm.crestahq.com 2026-09-14 17:48 SAST (`cde3b17`) on Hein's go; walked on #1000 (`docs/parity/evidence/sp5/prod-1000/`). No Firestore rules or indexes changed, so no rules deploy is needed.
 
 ## What got done this session
 - **Ledger** `docs/parity/sp5.md` + GHL evidence `docs/parity/evidence/sp5/ghl/` (CrestaHQ location empty; Blitz aggregates only, sidebars cropped, owner name/number redacted).
@@ -21,7 +21,7 @@ SP5 is built and merged. Ledger `docs/parity/sp5.md` rows are all "merged (#N)";
 - **#128** flaky `feature-gates/route.gbp.test.ts` (import in `beforeAll`, 60 s) — was failing CI/deploy under box load.
 
 ## What's next
-1. **Deploy (Hein, after 17:00):** `bash scripts/deploy-velo.sh` — then walk `/sa/54vPI0BS1zDMcxMyMAyA/reputation` on #1000 and screenshot to `docs/parity/evidence/sp5/prod-1000/` (fixture-only evidence exists per PR).
+1. **Done:** deployed `cde3b17` 2026-09-14 17:48 and walked #1000 (Overview, Insights, Settings, Google Business "not approved" wording).
 2. **Set `OPENROUTER_API_KEY`** in `/home/velo/crestahq-config/.env.production` (Hein) — without it sentiment labels star-only reviews only and drafts are hidden.
 3. **Case 4-6894000042302** (decision ~09-18): on approval, live-prove reviews/replies/insights on a TEST sub-account per `docs/features/gbp-reviews.md` owner checklist.
 4. Enable `reviewsAiEnabledByAgency` per sub-account (agency Manage dialog) and, only with Hein's OK, reminders on a real sub-account.

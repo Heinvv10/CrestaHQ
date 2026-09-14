@@ -1,6 +1,6 @@
 # SP5 — Reputation & Google Business Profile (remainder)
 
-**Date:** 2026-09-14 · **Status: all SP5 PRs merged 2026-09-14 (#121 #122 #124 #126 #128 #129 #132 #135); not deployed; live Google blocked on case 4-6894000042302** · **Depends on:** SP0 (merged), the GBP reviews stack #77–#81 (merged, deployed 2026-09-11) · **Blocks:** SP11 (review reports), SP14 (GBP per listing).
+**Date:** 2026-09-14 · **Status: all SP5 PRs merged 2026-09-14 (#121 #122 #124 #126 #128 #129 #132 #135); deployed to crm.crestahq.com 2026-09-14 17:48 SAST (cde3b17); live Google blocked on case 4-6894000042302** · **Depends on:** SP0 (merged), the GBP reviews stack #77–#81 (merged, deployed 2026-09-11) · **Blocks:** SP11 (review reports), SP14 (GBP per listing).
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP5. Model ledger: [sp1.md](sp1.md). Feature spec: [gbp-reviews.md](../features/gbp-reviews.md).
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`) and the E2E fixture tenant. Never Blitz/Velocity/Vortex.
@@ -153,8 +153,8 @@ All SP5 PRs merged, each with green CI and APPROVED blind review (review-team fo
 | #135 | AI reply drafts (human posts), guidelines, Settings tab | R5 R6 S1 |
 | #132 | Reminders + click tracking — default off | Q3 S1 |
 
-- **Not deployed.** No `firestore.rules` / `firestore.indexes.json` change in any SP5 PR, so no rules deploy.
-- **Evidence** is fixture-tenant only (`evidence/sp5/<letter>-*/`); #1000 screenshots follow the next approved deploy.
+- **Deployed** 2026-09-14 17:48 SAST (`cde3b17`, Hein's go; deploy gate 393 files / 4392 tests). Walked on #1000: `evidence/sp5/prod-1000/` — Overview (no listing: Google quota 0), Insights, Settings (Reviews AI card, gate off), and Google Business now saying "Google hasn't approved Business Profile API access for this project yet." instead of "(error)". No `firestore.rules` / `firestore.indexes.json` change in any SP5 PR, so no rules deploy.
+- **Evidence:** per-PR frames on the fixture tenant (`evidence/sp5/<letter>-*/`); #1000 after deploy in `evidence/sp5/prod-1000/` (no listing, so review metrics are empty there until the case is approved).
 - **Production prerequisites:** `OPENROUTER_API_KEY` is empty on crm.crestahq.com (sentiment labels star-only reviews; drafts hidden until set). Reviews, replies, listing discovery and insights stay on the fake until case 4-6894000042302 is approved.
 - **Reminders** are off for every tenant. Turning them on for a real sub-account is Hein's decision; they require a dedicated Twilio number with its inbound webhook configured, a Google review link, SMS channel and E.164 contact numbers.
 - **Follow-ups (not built):** ~12 non-GBP routes still answer 502 with a JSON body the UI shows (Cloudflare replaces it); `lib/reviews/request.ts` and `lib/workflows/engine.ts` over 300 lines; `inboundWebhookConfigured` is only set by the webhook auto-config.
