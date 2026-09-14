@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { toMillis } from "@/lib/gbp/sync/types";
 import type { GbpWidgetMeta } from "@/types/google";
-import type { WidgetConfig } from "./origins";
+import { widgetDisplay, type WidgetConfig, type WidgetDisplay } from "./origins";
 
 /**
  * The public reviews widget: ONE per sub-account.
@@ -21,7 +21,8 @@ export const widgetPath = (publicId: string) => `gbpWidgets/${publicId}`;
 export const PUBLIC_ID_RE = /^[A-Za-z0-9_-]{32}$/;
 const newPublicId = () => randomBytes(24).toString("base64url");
 
-export interface GbpWidgetDoc extends WidgetConfig {
+/** `layout` / `theme` are absent on a widget saved before they existed — read them through `widgetDisplay`. */
+export interface GbpWidgetDoc extends Omit<WidgetConfig, keyof WidgetDisplay>, Partial<WidgetDisplay> {
   agencyId: string;
   subAccountId: string;
   createdByUid: string;
@@ -29,7 +30,7 @@ export interface GbpWidgetDoc extends WidgetConfig {
   updatedAt: Date;
 }
 
-export interface PublicWidget {
+export interface PublicWidget extends WidgetDisplay {
   publicId: string;
   enabled: boolean;
   allowedOrigins: string[];
@@ -46,6 +47,7 @@ export function publicWidget(meta: GbpWidgetMeta | null | undefined): PublicWidg
     enabled: meta.enabled,
     allowedOrigins: [...meta.allowedOrigins],
     maxReviews: meta.maxReviews,
+    ...widgetDisplay(meta),
     updatedAt: ms === null ? null : new Date(ms).toISOString(),
   };
 }
@@ -73,6 +75,8 @@ export async function saveWidget(subAccountId: string, byUid: string, config: Wi
       enabled: config.enabled,
       allowedOrigins: config.allowedOrigins,
       maxReviews: config.maxReviews,
+      layout: config.layout,
+      theme: config.theme,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -98,6 +102,7 @@ export async function rotateWidget(subAccountId: string, byUid: string): Promise
       enabled: meta.enabled,
       allowedOrigins: meta.allowedOrigins,
       maxReviews: meta.maxReviews,
+      ...widgetDisplay(meta),
       updatedAt: now,
     };
     tx.set(db.doc(widgetPath(next.publicId)), {
@@ -107,6 +112,7 @@ export async function rotateWidget(subAccountId: string, byUid: string): Promise
       enabled: meta.enabled,
       allowedOrigins: meta.allowedOrigins,
       maxReviews: meta.maxReviews,
+      ...widgetDisplay(meta),
       createdAt: old?.createdAt ?? now,
       updatedAt: now,
     });
