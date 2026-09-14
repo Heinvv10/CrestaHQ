@@ -179,7 +179,7 @@ describe("states", () => {
     ["malformed", "unexpected response"],
   ])("explains a picker load failure (%s)", async (code, text) => {
     ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED };
-    routes["GET /api/sub-accounts/sa1/google/locations"] = () => json({ error: "x", code }, 502);
+    routes["GET /api/sub-accounts/sa1/google/locations"] = () => json({ error: "x", code }, 424);
     await render();
     expect(byId("gbp-picker-error")?.textContent).toContain(text);
   });
