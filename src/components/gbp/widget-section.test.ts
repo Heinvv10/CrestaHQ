@@ -132,6 +132,8 @@ describe("creating a widget", () => {
       enabled: true,
       allowedOrigins: ["https://www.velocityfibre.co.za", "http://127.0.0.1:4401"],
       maxReviews: 12,
+      layout: "carousel",
+      theme: "light",
     });
     // No rating filter is offered, anywhere.
     expect(container.textContent?.toLowerCase()).not.toMatch(/min(imum)? rating|only show|positive/);

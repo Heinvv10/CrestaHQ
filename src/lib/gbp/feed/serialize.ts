@@ -1,4 +1,5 @@
 import { toMillis } from "@/lib/gbp/sync/types";
+import { widgetDisplay, type WidgetDisplay } from "./origins";
 
 /**
  * The public feed body, contract v1 (docs/features/gbp-reviews.md). Explicit
@@ -29,6 +30,8 @@ export interface FeedBody {
   listing: { title: string; mapsUri: string | null; writeReviewUri: string | null } | null;
   rating: { average: number; count: number } | null;
   source: { name: "Google"; attribution: "Reviews from Google" };
+  /** How the embed draws it (additive to v1; an older embed ignores it and shows the carousel). */
+  display: WidgetDisplay;
   freshness: { lastSuccessfulSyncAt: string | null; stale: boolean; generatedAt: string };
   reviews: FeedReview[];
 }
@@ -60,4 +63,10 @@ export function feedReview(id: string, d: Record<string, unknown>): FeedReview {
 export function feedListing(l: Record<string, unknown> | null | undefined): FeedBody["listing"] {
   if (!l) return null;
   return { title: str(l.title) ?? "", mapsUri: str(l.mapsUri), writeReviewUri: str(l.newReviewUri) };
+}
+
+/** Exactly the two display keys of the widget doc — nothing else it may hold. */
+export function feedDisplay(widget: { layout?: unknown; theme?: unknown }): FeedBody["display"] {
+  const { layout, theme } = widgetDisplay(widget);
+  return { layout, theme };
 }

@@ -172,6 +172,6 @@ describe("leakage: an explicit allow-list, never a spread", () => {
     ]) {
       expect(text, marker).not.toContain(marker);
     }
-    expect(Object.keys(body).sort()).toEqual(["freshness", "listing", "rating", "reviews", "source", "status", "version"]);
+    expect(Object.keys(body).sort()).toEqual(["display", "freshness", "listing", "rating", "reviews", "source", "status", "version"]);
   });
 });

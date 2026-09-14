@@ -9,12 +9,15 @@
  * Per container: data-state="loading" (fallback visible) → GET
  * {data-api}/api/public/gbp/feed/{id} with no cookies (the page's origin must
  * be on the widget's allow-list) → status ok / stale replaces the fallback
- * with the carousel ("Last updated <date>" when stale); anything else leaves
- * the fallback untouched, data-state="fallback".
+ * with the feed's display.layout — carousel (also for a missing or unknown
+ * layout), grid, list or badge — in display.theme ("Last updated <date>"
+ * when stale); anything else leaves the fallback untouched,
+ * data-state="fallback". Every layout shows the Google attribution.
  *
  * Feed data reaches the page through textContent only; only http(s) links from
  * the feed are clickable. Rotation rules: see rotation() below. Containers are
- * found once, when the script runs — one added later keeps its fallback.
+ * found once, when the script runs — one added later keeps its fallback,
+ * unless the page hands it to window.crestahqReviews.mount(container).
  * Vanilla ES2017, no dependencies, safe to include more than once.
  */
 (function () {
@@ -23,6 +26,7 @@
   var FEED_PATH = "/api/public/gbp/feed/";
   var AUTO_ADVANCE_MS = 8000;
   var CSS_ID = "chq-reviews-css";
+  var LAYOUTS = ["carousel", "grid", "list", "badge"];
   var CSS = [
     ".chq-reviews{font:inherit;color:inherit;max-width:40rem} .chq-reviews__head{margin-bottom:.75rem}",
     ".chq-reviews__title{font-weight:600;margin:0} .chq-reviews__stale{opacity:.75;font-style:italic}",
@@ -34,6 +38,15 @@
     ".chq-reviews__reply{margin:.5rem 0 0;padding-left:.75rem;border-left:2px solid rgba(0,0,0,.2);font-size:.875em;white-space:pre-wrap}",
     ".chq-reviews__controls{display:flex;align-items:center;gap:.75rem;margin-top:.75rem}",
     ".chq-reviews__controls button{font:inherit;cursor:pointer;min-width:2.25rem;min-height:2.25rem}",
+    ".chq-reviews--grid{max-width:none} .chq-reviews__cards{list-style:none;margin:0;padding:0;display:grid;gap:1rem}",
+    ".chq-reviews--grid .chq-reviews__cards{grid-template-columns:repeat(auto-fill,minmax(16rem,1fr))}",
+    ".chq-reviews__card{margin:0;height:100%;box-sizing:border-box;border:1px solid rgba(0,0,0,.15);border-radius:.5rem;padding:1rem}",
+    ".chq-reviews--badge{display:inline-block;border:1px solid rgba(0,0,0,.15);border-radius:.5rem;padding:.75rem 1rem}",
+    ".chq-reviews--badge .chq-reviews__head{margin:0} .chq-reviews__write{margin:.25rem 0 0;font-size:.875em}",
+    ".chq-reviews--dark{background:#111827;color:#f3f4f6;border-radius:.5rem;padding:1rem}",
+    ".chq-reviews--dark.chq-reviews--badge,.chq-reviews--dark .chq-reviews__carousel,.chq-reviews--dark .chq-reviews__card{border-color:rgba(255,255,255,.2)}",
+    ".chq-reviews--dark .chq-reviews__reply{border-left-color:rgba(255,255,255,.3)} .chq-reviews--dark a{color:#93c5fd}",
+    ".chq-reviews--dark button{background:#1f2937;color:inherit;border:1px solid rgba(255,255,255,.3);border-radius:.25rem}",
   ].join("\n");
 
   function injectCss() {
@@ -61,6 +74,14 @@
     }
   }
 
+  function link(text, href) {
+    var a = el("a", null, text);
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    return a;
+  }
+
   function formatDate(iso) {
     var d = new Date(iso);
     if (isNaN(d.getTime())) return "";
@@ -86,11 +107,7 @@
     var attribution = (feed.source && feed.source.attribution) || "Reviews from Google";
     var maps = httpUrl(listing.mapsUri);
     if (maps) {
-      var link = el("a", null, attribution);
-      link.href = maps;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      source.appendChild(link);
+      source.appendChild(link(attribution, maps));
     } else {
       source.textContent = attribution;
     }
@@ -102,11 +119,40 @@
     return head;
   }
 
+  /** Badge: the header alone, the rating in stars too, and the write-a-review link — never review text. */
+  function badge(feed) {
+    var head = header(feed);
+    if (feed.rating) {
+      var starsNode = el("p", "chq-reviews__stars", stars(feed.rating.average));
+      starsNode.setAttribute("aria-hidden", "true"); // the rating line says it in words
+      head.insertBefore(starsNode, head.querySelector(".chq-reviews__rating"));
+    }
+    var write = httpUrl(feed.listing && feed.listing.writeReviewUri);
+    if (write) head.appendChild(el("p", "chq-reviews__write")).appendChild(link("Write a review", write));
+    return head;
+  }
+
   function slide(review, index, total) {
     var fig = el("figure", "chq-reviews__slide");
     fig.setAttribute("role", "group");
     fig.setAttribute("aria-roledescription", "slide");
     fig.setAttribute("aria-label", index + 1 + " of " + total);
+    return fill(fig, review);
+  }
+
+  /** Grid and list: every served review as a card, all visible, nothing moves. */
+  function cards(reviews) {
+    var list = el("ul", "chq-reviews__cards");
+    list.setAttribute("role", "list"); // list-style:none drops the role in Safari
+    list.setAttribute("aria-label", "Google reviews");
+    reviews.forEach(function (r) {
+      list.appendChild(el("li")).appendChild(fill(el("figure", "chq-reviews__card"), r));
+    });
+    return list;
+  }
+
+  /** The review itself — stars, text, author, owner reply — for a slide or a card. */
+  function fill(fig, review) {
     var starsNode = el("p", "chq-reviews__stars", stars(review.rating));
     starsNode.setAttribute("aria-label", review.rating + " out of 5 stars");
     fig.appendChild(starsNode);
@@ -250,20 +296,25 @@
   }
 
   function render(container, feed) {
-    var root = el("div", "chq-reviews");
-    root.appendChild(header(feed));
+    var display = feed.display || {};
+    var layout = LAYOUTS.indexOf(display.layout) >= 0 ? display.layout : "carousel";
+    var root = el("div", "chq-reviews chq-reviews--" + layout + (display.theme === "dark" ? " chq-reviews--dark" : ""));
     var reviews = Array.isArray(feed.reviews) ? feed.reviews : [];
     // A count but no reviews in the window: the header alone, never "no reviews" under a count.
     var counted = feed.rating && feed.rating.count > 0;
-    if (reviews.length > 0) root.appendChild(carousel(reviews));
-    else if (!counted) root.appendChild(el("p", "chq-reviews__empty", "No Google reviews yet."));
+    if (layout === "badge") root.appendChild(badge(feed));
+    else {
+      root.appendChild(header(feed));
+      if (reviews.length > 0) root.appendChild(layout === "carousel" ? carousel(reviews) : cards(reviews));
+      else if (!counted) root.appendChild(el("p", "chq-reviews__empty", "No Google reviews yet."));
+    }
     // Built in full before the fallback is touched, so a failure above keeps it.
     while (container.firstChild) container.removeChild(container.firstChild);
     container.appendChild(root);
     container.setAttribute("data-state", feed.status);
   }
 
-  function mount(container) {
+  function mount(container, cache) {
     var id = container.getAttribute("data-crestahq-reviews");
     var api = (container.getAttribute("data-api") || "").replace(/\/+$/, "");
     if (!id || !api) {
@@ -271,7 +322,7 @@
       return;
     }
     container.setAttribute("data-state", "loading");
-    fetch(api + FEED_PATH + encodeURIComponent(id), { credentials: "omit" })
+    fetch(api + FEED_PATH + encodeURIComponent(id), cache ? { credentials: "omit", cache: cache } : { credentials: "omit" })
       .then(function (res) {
         if (!res.ok) throw new Error("feed HTTP " + res.status);
         return res.json();
@@ -294,6 +345,14 @@
       if (!nodes[i].hasAttribute("data-state")) mount(nodes[i]);
     }
   }
+
+  // For a container added after load (the dashboard preview): mount it now, revalidating
+  // the feed instead of trusting the HTTP cache. A container already mounted is left alone.
+  window.crestahqReviews = {
+    mount: function (container) {
+      if (container && !container.hasAttribute("data-state")) mount(container, "no-cache");
+    },
+  };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
