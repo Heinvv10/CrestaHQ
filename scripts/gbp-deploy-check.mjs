@@ -254,7 +254,7 @@ if (isMain) {
   }
   if (problems.length > 0) {
     for (const p of problems) console.error(`refused: ${p}`);
-    console.error("GBP deploy check refused. The fake providers (GBP, WhatsApp settings, SMS, Google Calendar) and E2E_DISABLE_BOOKING_RATE_LIMITS are dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
+    console.error("GBP deploy check refused. The fake providers (GBP, WhatsApp settings, SMS, Google Calendar, Reviews AI) and E2E_DISABLE_BOOKING_RATE_LIMITS are dev/CI only; TRUST_CF_CONNECTING_IP=1 belongs in velo's production env. See docs/features/gbp-reviews.md.");
     process.exit(1);
   }
   console.log(`GBP deploy check (${mode}): clean`);
