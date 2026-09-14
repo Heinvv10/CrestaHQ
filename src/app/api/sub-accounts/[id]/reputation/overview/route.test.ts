@@ -122,6 +122,8 @@ describe("requests", () => {
       byChannel: { sms: 1, whatsapp: 1, email: 1 },
       bySource: { dispatcher: 2, broadcast: 1 },
       failed: 1,
+      tracked: 0,
+      clicked: 0,
       previous: null,
       countingSince: new Date(NOW.getTime() - 100 * DAY).toISOString(),
     });

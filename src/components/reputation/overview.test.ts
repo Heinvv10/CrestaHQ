@@ -36,7 +36,7 @@ function payload(over: Partial<OverviewResponse> = {}): OverviewResponse {
       distribution: { 1: 1, 2: 1, 3: 1, 4: 1, 5: 3 },
       response: { replied: 2, unreplied: 5, coverage: 2 / 7, replyHours: { avg: 3, median: 3, counted: 2, excluded: 0 } },
     },
-    requests: { sent: 2, byChannel: { sms: 2 }, bySource: { dispatcher: 1, workflow: 1 }, failed: 0, previous: null, countingSince: "2026-09-01T08:00:00.000Z" },
+    requests: { sent: 2, byChannel: { sms: 2 }, bySource: { dispatcher: 1, workflow: 1 }, failed: 0, tracked: 0, clicked: 0, previous: null, countingSince: "2026-09-01T08:00:00.000Z" },
     trend: [
       { start: "2026-09-07T00:00:00.000Z", reviews: 0, avgRating: null, avgReplyHours: null, requests: 0 },
       { start: "2026-09-14T00:00:00.000Z", reviews: 7, avgRating: 25 / 7, avgReplyHours: 3, requests: 2 },
@@ -143,7 +143,7 @@ describe("states", () => {
 
   it("empty range", async () => {
     const r = payload().reviews!;
-    body = payload({ reviews: { ...r, count: 0, avgRating: null, response: { ...r.response, replied: 0, unreplied: 0, coverage: null } }, requests: { sent: 0, byChannel: {}, bySource: {}, failed: 0, previous: null, countingSince: null } });
+    body = payload({ reviews: { ...r, count: 0, avgRating: null, response: { ...r.response, replied: 0, unreplied: 0, coverage: null } }, requests: { sent: 0, byChannel: {}, bySource: {}, failed: 0, tracked: 0, clicked: 0, previous: null, countingSince: null } });
     await render();
     expect(byId("rep-state-empty")).not.toBeNull();
     expect(text("rep-tile-avg-value")).toBe("—");
@@ -176,6 +176,18 @@ describe("ready", () => {
     expect(text("rep-requests-channels")).toBe("SMS: 2");
     expect(text("rep-requests-sources")).toBe("Request review & triggers: 1 · Workflows: 1");
     expect(byId("rep-requests-failed")).toBeNull();
+  });
+
+  it("clicks: shown only once a tracked request exists, and says what they cover", async () => {
+    await render();
+    expect(byId("rep-requests-clicked")).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    body = payload({ requests: { ...payload().requests, tracked: 4, clicked: 1 } });
+    await render();
+    expect(text("rep-requests-clicked")).toBe(
+      "Clicked: 1 of 4 tracked requests. Links are tracked only in requests sent while reminders are on.",
+    );
   });
 
   it("names failed sends apart from requests sent", async () => {
