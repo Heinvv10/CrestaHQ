@@ -46,8 +46,12 @@ export function RequestsCard({ data }: { data: Data }) {
     <Card testId="rep-requests" title="Review requests">
       <p className="text-sm" data-testid="rep-requests-since">
         {requests.countingSince
-          ? `Counting since ${fmtDate(requests.countingSince)} — requests sent before the log started are not counted.`
+          ? `Counting since ${fmtDate(requests.countingSince)} — the first logged request. Earlier requests were not logged.`
           : "No review requests have been logged yet."}
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-scope">
+        Counts requests sent with Request review, and on quote paid / deal completed. Review asks sent by workflows,
+        broadcasts or the inbox composer are not counted yet.
       </p>
       {channels.length > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-requests-channels">
@@ -76,7 +80,7 @@ export function RequestsCard({ data }: { data: Data }) {
 const ITEMS: Array<{ key: keyof Data["checklist"]; label: string; href: (sa: string) => string }> = [
   { key: "googleConnected", label: "Connect Google Business Profile", href: (sa) => `/sa/${sa}/ai-agents/google-business` },
   { key: "listingSelected", label: "Choose your listing", href: (sa) => `/sa/${sa}/ai-agents/google-business` },
-  { key: "reviewLinkConfigured", label: "Set your review link (Settings → Messaging)", href: (sa) => `/sa/${sa}/dashboard/settings` },
+  { key: "reviewLinkConfigured", label: "Set your review link (Settings Sub-Account → Messaging tab)", href: (sa) => `/sa/${sa}/dashboard/settings` },
   { key: "widgetExists", label: "Create a reviews widget", href: (sa) => `/sa/${sa}/reputation/widgets` },
   { key: "requestLogged", label: "Send your first review request", href: (sa) => `/sa/${sa}/contacts` },
 ];

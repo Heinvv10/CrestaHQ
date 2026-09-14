@@ -21,12 +21,13 @@ export function Card({ testId, title, children }: { testId: string; title: strin
   );
 }
 
-function Tile({ testId, label, value, note }: { testId: string; label: string; value: string; note: string }) {
+function Tile({ testId, label, value, note, scope }: { testId: string; label: string; value: string; note: string; scope?: string }) {
   return (
     <div className="rounded-2xl border bg-card p-4" data-testid={testId}>
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="mt-1 text-2xl font-semibold" data-testid={`${testId}-value`}>{value}</p>
       <p className="mt-1 text-xs text-muted-foreground" data-testid={`${testId}-note`}>{note}</p>
+      {scope && <p className="mt-1 text-[11px] text-muted-foreground" data-testid={`${testId}-scope`}>{scope}</p>}
     </div>
   );
 }
@@ -68,7 +69,8 @@ export function Tiles({ data }: { data: Data }) {
         testId="rep-tile-requests"
         label="Requests sent"
         value={String(data.requests.sent)}
-        note={reqPrev ? `${fmtDelta(data.requests.sent - reqPrev.sent)} vs ${prev}` : data.requests.countingSince ? "Counted since the log started" : "None logged yet"}
+        note={reqPrev ? `${fmtDelta(data.requests.sent - reqPrev.sent)} vs ${prev}` : data.requests.countingSince ? "Since the first logged request" : "None logged yet"}
+        scope="Request review, quote paid and deal completed only"
       />
     </div>
   );

@@ -123,7 +123,9 @@ review request that was actually sent (`agencyId, subAccountId, createdByUid`
 channel` (normalized: `sms` / `whatsapp_template` / `whatsapp_manual`),
 `trigger, status: "sent", messageSid, sentAt, clickedAt: null, feedbackAt:
 null`). Written only by the dispatcher (`lib/reviews/request.ts`) after a
-successful send; refusals and failed sends write nothing. Never a message body
+successful send — i.e. Request review, quote paid and deal completed. Workflow
+SMS/WhatsApp steps, broadcasts and the Conversations composer's "Ask for
+review" do not write it (yet). Refusals and failed sends write nothing. Never a message body
 or phone number. Server only (no client rule, so default deny); read by the
 Reputation overview route with single-field `sentAt` queries — no index. See
 [reputation.md](../features/reputation.md).

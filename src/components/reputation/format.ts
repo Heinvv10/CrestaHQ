@@ -14,7 +14,7 @@ export function fmtHours(h: number | null): string {
   return `${+(h / 24).toFixed(1)} days`;
 }
 
-/** "+2" / "−0.4" / "0" — `digits` for averages. */
+/** "+2" / "−0.4" / "no change" (when it rounds to zero) — `digits` for averages. */
 export function fmtDelta(v: number, digits = 0): string {
   const r = +v.toFixed(digits);
   if (r === 0) return "no change";

@@ -50,7 +50,7 @@ toward the 500). Single-field query on `createTime`.
 | Star distribution | Count per rating, 1–5, in range. |
 | Response coverage | Replied ÷ reviews in range; `null` with no reviews. |
 | Time to latest reply | `reply.updateTime − createTime`, average and median in hours over replied reviews in range. **Google reports only the latest reply time**, so an edited reply moves it — the label says so. Replies with a missing or earlier-than-review time are excluded and counted (`replyHours.excluded`); they still count as replied for coverage. Trended by the review's bucket. |
-| Requests sent | Rows in `subAccounts/{id}/reviewRequests` (below) with `sentAt` in range, by channel. `countingSince` = the oldest row ever: **requests are counted only from the day this log was deployed** — earlier requests left an activity row per contact but no queryable record, and are not backfilled. The previous-period count is given only when the log already existed for the whole previous period. At most 2,000 rows per request (`truncated.requests`). |
+| Requests sent | Rows in `subAccounts/{id}/reviewRequests` (below) with `sentAt` in range, by channel. **Only the dispatcher's sends are logged** — Request review (the contact profile's button), quote paid, deal completed. Review asks sent by workflow SMS/WhatsApp steps and templates (e.g. the `review_request` starter), broadcasts using `{{reviewUrl}}` and the Conversations composer's "Ask for review" are **not counted yet** (SP5 PR d); the tile and card say so. `countingSince` = the **first logged request** (not the deploy date — a sub-account that sends nothing for a while starts later); requests before it were not logged and are not backfilled. The previous-period count is given only when the first logged request is no later than the previous period's start. At most 2,000 rows per request (`truncated.requests`). |
 | Requests vs reviews | Shown **side by side per bucket, never attributed**: Google gives no link between a request and a review. |
 | Health | `health` is the reviews inbox's `deriveHealth` result (via `publicSummary`), so both pages show the same stale / partial / reconnect / sync-pending / error / never-synced state and banner. |
 
@@ -64,8 +64,13 @@ review link configured (`resolveReviewUrl(sub).configured`), a widget exists
 ## The review-request log
 
 `subAccounts/{id}/reviewRequests/{auto}` — written by `maybeSendReviewRequest`
-after every **successful** send (manual from a contact, quote paid, deal
-completed): `{agencyId, subAccountId, createdByUid, contactId, channel, trigger,
+after every **successful** send it makes: its three callers are the manual
+Request review route (`/api/comms/review-request/send`), quote paid
+(`lib/server/quotes-service.ts`) and deal completed (`/api/deals/[id]`). Other
+senders of review asks do NOT write it yet — workflow `send_sms` /
+`send_whatsapp` / WhatsApp-template steps (`lib/workflows/engine.ts`),
+broadcasts using `{{reviewUrl}}`, and the Conversations composer's "Ask for
+review" — logging those is SP5 PR (d): `{agencyId, subAccountId, createdByUid, contactId, channel, trigger,
 status: "sent", messageSid, sentAt, clickedAt: null, feedbackAt: null}`.
 `createdByUid` is the signed-in sender of a manual send, else the label
 `"review-request"`; `channel` is the normalized one (`sms` / `whatsapp_template` /

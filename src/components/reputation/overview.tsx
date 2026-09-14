@@ -28,7 +28,7 @@ function Note({ testId, children }: { testId: string; children: React.ReactNode 
   );
 }
 
-function ReviewState({ data, subAccountId }: { data: OverviewResponse; subAccountId: string }) {
+function ReviewState({ data, subAccountId, isAdmin }: { data: OverviewResponse; subAccountId: string; isAdmin: boolean }) {
   const setup = (
     <Link href={`/sa/${subAccountId}/ai-agents/google-business`} className="font-medium text-foreground underline-offset-2 hover:underline">
       AI Agents → Google Business
@@ -47,7 +47,11 @@ function ReviewState({ data, subAccountId }: { data: OverviewResponse; subAccoun
       return <Note testId="rep-state-no-listing">No listing is selected. Choose one in {setup} to see review metrics.</Note>;
   }
   if (data.health === "never_synced") {
-    return <Note testId="rep-state-never-synced">Reviews have not been synced yet. Run Sync now on the Reviews tab.</Note>;
+    return (
+      <Note testId="rep-state-never-synced">
+        Reviews have not been synced yet. {isAdmin ? "Run Sync now" : "A sub-account admin can run Sync now"} on the Reviews tab.
+      </Note>
+    );
   }
   if (!data.health || data.health === "ok") return null;
   return (
@@ -63,7 +67,7 @@ function ReviewState({ data, subAccountId }: { data: OverviewResponse; subAccoun
 }
 
 export function ReputationOverview() {
-  const { subAccountId } = useSubAccount();
+  const { subAccountId, isAdmin } = useSubAccount();
   const [range, setRange] = useState<RangePreset>("90d");
   const [load, setLoad] = useState<Load>({ state: "loading" });
 
@@ -105,17 +109,17 @@ export function ReputationOverview() {
         </p>
       )}
       {load.state === "error" && <Note testId="rep-state-error">The overview could not be loaded. Please try again.</Note>}
-      {load.state === "ready" && <Ready data={load.data} subAccountId={subAccountId} />}
+      {load.state === "ready" && <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} />}
     </div>
   );
 }
 
-function Ready({ data, subAccountId }: { data: OverviewResponse; subAccountId: string }) {
+function Ready({ data, subAccountId, isAdmin }: { data: OverviewResponse; subAccountId: string; isAdmin: boolean }) {
   const r = data.reviews;
   const empty = (r ? r.count === 0 : true) && data.requests.sent === 0;
   return (
     <>
-      <ReviewState data={data} subAccountId={subAccountId} />
+      <ReviewState data={data} subAccountId={subAccountId} isAdmin={isAdmin} />
       {r && data.health && (
         <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="rep-listing">
           <HealthBadge health={data.health} />

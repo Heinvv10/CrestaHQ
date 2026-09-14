@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * overview API payload; only `fetch` and the sub-account context are stubbed.
  */
 
-vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ({ subAccountId: "sa1" }) }));
+const ctx = vi.hoisted(() => ({ subAccountId: "sa1", isAdmin: true }));
+vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ctx }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => createElement("a", { href, ...rest }, children),
 }));
@@ -50,6 +51,7 @@ let status: number;
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  ctx.isAdmin = true;
   body = payload();
   status = 200;
   fetchMock.mockReset().mockImplementation(async (url: string) => {
@@ -105,10 +107,17 @@ describe("states", () => {
     expect(byId("rep-checklist")).not.toBeNull();
   });
 
-  it("never synced", async () => {
+  it("never synced — an admin is told to run Sync now", async () => {
     body = payload({ health: "never_synced", reviews: { ...payload().reviews!, count: 0 } });
     await render();
-    expect(byId("rep-state-never-synced")).not.toBeNull();
+    expect(text("rep-state-never-synced")).toBe("Reviews have not been synced yet. Run Sync now on the Reviews tab.");
+  });
+
+  it("never synced — a member is not told to press a button they do not have", async () => {
+    ctx.isAdmin = false;
+    body = payload({ health: "never_synced", reviews: { ...payload().reviews!, count: 0 } });
+    await render();
+    expect(text("rep-state-never-synced")).toBe("Reviews have not been synced yet. A sub-account admin can run Sync now on the Reviews tab.");
   });
 
   it.each([
@@ -149,7 +158,13 @@ describe("ready", () => {
     expect(byId("rep-distribution-5")?.getAttribute("data-count")).toBe("3");
     expect(byId("rep-distribution-1")?.getAttribute("data-count")).toBe("1");
     expect(text("rep-response")).toContain("Time to latest reply — Google reports only the latest reply time");
-    expect(text("rep-requests-since")).toMatch(/Counting since 1 Sept? 2026/);
+    expect(text("rep-requests-since")).toMatch(/^Counting since 1 Sept? 2026 — the first logged request\. Earlier requests were not logged\.$/);
+    expect(text("rep-tile-requests-note")).toBe("Since the first logged request");
+    // Which senders the log covers — said on the tile and on the card.
+    expect(text("rep-requests-scope")).toBe(
+      "Counts requests sent with Request review, and on quote paid / deal completed. Review asks sent by workflows, broadcasts or the inbox composer are not counted yet.",
+    );
+    expect(text("rep-tile-requests-scope")).toBe("Request review, quote paid and deal completed only");
     expect(text("rep-requests")).toContain("not linked one-to-one");
     expect(text("rep-requests-channels")).toBe("SMS: 2");
   });
@@ -160,6 +175,10 @@ describe("ready", () => {
     expect(byId("rep-checklist-reviewLinkConfigured")?.getAttribute("data-done")).toBe("false");
     expect(byId("rep-checklist-requestLogged")?.getAttribute("data-done")).toBe("true");
     expect(text("rep-checklist")).toContain("3 of 5 done");
+    // The settings page opens on its Admin tab; the label names the tab the link cannot select.
+    const link = byId("rep-checklist-reviewLinkConfigured")?.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("/sa/sa1/dashboard/settings");
+    expect(link?.textContent).toBe("Set your review link (Settings Sub-Account → Messaging tab)");
   });
 
   it("changing the range refetches with it", async () => {
