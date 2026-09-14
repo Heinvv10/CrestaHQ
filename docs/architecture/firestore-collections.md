@@ -117,6 +117,20 @@ widget per sub-account; rotate replaces the doc, revoke deletes it and nulls
 the meta. No new index.
 See [gbp-reviews.md](../features/gbp-reviews.md).
 
+Review-request log: `subAccounts/{id}/reviewRequests/{auto}` — one row per
+review request that was actually sent (`agencyId, subAccountId, createdByUid`
+= the signed-in sender of a manual send, else `"review-request"`; `contactId,
+channel` (normalized: `sms` / `whatsapp_template` / `whatsapp_manual`),
+`trigger, status: "sent", messageSid, sentAt, clickedAt: null, feedbackAt:
+null`). Written only by the dispatcher (`lib/reviews/request.ts`) after a
+successful send — i.e. Request review, quote paid and deal completed. Review links
+sent any other way — pasted into a workflow SMS / WhatsApp / email step or a
+broadcast email, a WhatsApp template's variable or button, the Conversations
+composer's "Ask for review" — do not write it (yet). Refusals and failed sends write nothing. Never a message body
+or phone number. Server only (no client rule, so default deny); read by the
+Reputation overview route with single-field `sentAt` queries — no index. See
+[reputation.md](../features/reputation.md).
+
 ### Workspace SMTP connection
 `subAccounts/{id}/private/smtpConnection` stores host, port, TLS mode, username,
 password, From email/name and verifiedAt. Admin SDK only; existing

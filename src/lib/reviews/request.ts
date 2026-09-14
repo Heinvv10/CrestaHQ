@@ -53,6 +53,8 @@ export interface SendReviewInput {
   agencyId: string;
   contactId: string;
   trigger: ReviewTrigger;
+  /** The signed-in sender of a manual send; the log's `createdByUid`. */
+  actorUid?: string;
 }
 
 export interface SendReviewResult {
@@ -357,6 +359,27 @@ export async function maybeSendReviewRequest(
         });
     } catch (err) {
       console.warn("[reviews/request] activity write failed", err);
+    }
+
+    // The queryable request log (Reputation → Overview). Server-only; a
+    // failed write costs a count, never the send that already happened.
+    try {
+      await db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).add({
+        agencyId: input.agencyId,
+        subAccountId: input.subAccountId,
+        createdByUid: input.actorUid ?? "review-request",
+        contactId: contact.id,
+        channel,
+        trigger: input.trigger,
+        status: "sent",
+        messageSid: sid || null,
+        sentAt: FieldValue.serverTimestamp(),
+        clickedAt: null,
+        feedbackAt: null,
+      });
+    } catch (err) {
+      const kind = (err as { code?: unknown })?.code ?? (err as Error)?.name ?? "unknown";
+      console.warn(`[reviews/request] reviewRequests log write failed kind=${String(kind)}`);
     }
 
     return { sent: true };

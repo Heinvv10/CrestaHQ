@@ -7,9 +7,9 @@ import { googleGateOn } from "@/lib/google/gate";
 import { applyReviewFilters, parseReviewFilters } from "@/lib/gbp/inbox-filters";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { publicReview, publicRun, publicSummary } from "@/lib/gbp/sync/public";
-import { withinRetention } from "@/lib/gbp/sync/reconcile";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
-import { reviewsCollection, runsCollection, type GbpSummary } from "@/lib/gbp/sync/types";
+import { loadServedReviews } from "@/lib/gbp/sync/served";
+import { runsCollection, type GbpSummary } from "@/lib/gbp/sync/types";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -27,7 +27,6 @@ import type { SubAccountDoc } from "@/types";
  * 30 days.
  */
 
-const REVIEW_CAP = 500;
 const RUN_CAP = 10;
 
 export const dynamic = "force-dynamic";
@@ -57,18 +56,12 @@ export async function GET(
   };
   const locationName = sub.googleListing?.locationName ?? null;
   const now = new Date();
-  const [reviewSnap, runSnap] = await Promise.all([
-    // One more than the cap: "truncated" means there really is a 501st record.
-    db.collection(reviewsCollection(id)).orderBy("createTime", "desc").limit(REVIEW_CAP + 1).get(),
+  const [served, runSnap] = await Promise.all([
+    loadServedReviews(id, locationName, now),
     db.collection(runsCollection(id)).orderBy("finishedAt", "desc").limit(RUN_CAP).get(),
   ]);
 
-  const active = locationName
-    ? reviewSnap.docs
-        .slice(0, REVIEW_CAP)
-        .map((d): Record<string, unknown> => ({ ...d.data(), docId: d.id }))
-        .filter((d) => d.state === "active" && d.locationName === locationName && withinRetention(d.lastSeenAt, now))
-    : [];
+  const active = served.reviews;
   const reviews = applyReviewFilters(active, parsed.filters).map(publicReview);
   const summary =
     locationName && sub.gbpSummary?.locationName === locationName
@@ -82,7 +75,7 @@ export async function GET(
     available: active.length,
     // Counted over records (tombstones included — filtering them in the query
     // would need a composite index), so the list may hold fewer than 500.
-    truncated: reviewSnap.size > REVIEW_CAP,
+    truncated: served.truncated,
     runs: runSnap.docs.map((d) => publicRun(d.data())),
     scheduled: gbpSyncScheduled(),
   });

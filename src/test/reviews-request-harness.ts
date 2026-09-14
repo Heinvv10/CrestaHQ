@@ -20,6 +20,13 @@ export let docs: Record<string, Record<string, unknown>> = {};
 export let collections: Record<string, Array<Record<string, unknown>>> = {};
 /** Every write the dispatcher issued, in order. */
 export const writes: Array<{ path: string; data: unknown }> = [];
+/** Collection/doc paths whose writes throw (fault injection). */
+export const failWrites = new Set<string>();
+
+function record(path: string, data: unknown) {
+  if (failWrites.has(path)) throw Object.assign(new Error("injected"), { code: 14 });
+  writes.push({ path, data });
+}
 
 /** Firestore Timestamp stand-in. */
 export function ts(ms: number) {
@@ -35,7 +42,7 @@ function makeDoc(path: string) {
       data: () => docs[path],
     }),
     set: async (data: unknown) => {
-      writes.push({ path, data });
+      record(path, data);
     },
     collection: (name: string) => makeCollection(`${path}/${name}`),
   };
@@ -54,7 +61,7 @@ function makeCollection(path: string) {
     ...q,
     doc: (id: string) => makeDoc(`${path}/${id}`),
     add: async (data: unknown) => {
-      writes.push({ path, data });
+      record(path, data);
       return { id: "new" };
     },
   };
@@ -152,6 +159,7 @@ export function resetHarness() {
   docs = {};
   collections = {};
   writes.length = 0;
+  failWrites.clear();
   vi.clearAllMocks();
   sendSms.mockResolvedValue({
     sid: "SM1",

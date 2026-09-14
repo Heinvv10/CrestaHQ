@@ -65,7 +65,7 @@ async function send(url: string, method: string, okText: string): Promise<void> 
 type Configured = "loading" | "yes" | "no" | "unknown";
 
 /** Is Google usable on this deployment? Asked once per sub-account. */
-function useGoogleConfigured(subAccountId: string, ask: boolean): Configured {
+export function useGoogleConfigured(subAccountId: string, ask: boolean): Configured {
   const [state, setState] = useState<{ id: string; value: Configured } | null>(null);
   useEffect(() => {
     if (!ask) return;
