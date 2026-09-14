@@ -6,6 +6,7 @@ const env: DealEnv = {
   LEADSTACK_API_KEY: "sk_test",
   QCONTACT_DEAL_PIPELINE_ID: "install-requests",
   QCONTACT_DEAL_STAGE: "new_request",
+  QCONTACT_DEAL_OWNER_UID: undefined,
 };
 
 function listResponse(deals: { pipeline_id: string }[]) {
@@ -71,6 +72,29 @@ describe("leadstackDealEnsurer", () => {
     });
     expect(r).toEqual({ ok: false, error: expect.stringContaining("HTTP 500 listing deals") });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends assigned_to_uid only when QCONTACT_DEAL_OWNER_UID is set", async () => {
+    const withOwner: DealEnv = { ...env, QCONTACT_DEAL_OWNER_UID: "uid_123" };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(listResponse([]))
+      .mockResolvedValueOnce(new Response('{"deal":{"id":"d1"}}', { status: 201 }));
+    await leadstackDealEnsurer(withOwner, fetchImpl as unknown as typeof fetch)({
+      contactId: "c1", caseId: 42, title: "t",
+    });
+    const [, createInit] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+    expect(JSON.parse(createInit.body as string)).toMatchObject({ assigned_to_uid: "uid_123" });
+  });
+
+  it("omits assigned_to_uid when QCONTACT_DEAL_OWNER_UID is unset", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(listResponse([]))
+      .mockResolvedValueOnce(new Response('{"deal":{"id":"d1"}}', { status: 201 }));
+    await leadstackDealEnsurer(env, fetchImpl as unknown as typeof fetch)({
+      contactId: "c1", caseId: 42, title: "t",
+    });
+    const [, createInit] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+    expect(JSON.parse(createInit.body as string)).not.toHaveProperty("assigned_to_uid");
   });
 
   it("reports a failed create call as an error", async () => {

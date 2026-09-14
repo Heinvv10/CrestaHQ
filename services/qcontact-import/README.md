@@ -52,10 +52,11 @@ succeed — a deal failure alone leaves the case unseen (counted in
 already succeeded and won't be repeated pointlessly since it's idempotent
 anyway.
 
-`QCONTACT_DEAL_OWNER_UID` is accepted but currently has **no effect**:
-`POST /api/v1/deals` does not read `assigned_to_uid` — assignment is
-read-only over the public API. Setting it only prints a startup warning.
-It's kept so the wiring is ready once the API supports it.
+`QCONTACT_DEAL_OWNER_UID`, when set, is sent as `assigned_to_uid` on the
+deal create — it must be the uid of an *active* sub-account member, or the
+create 400s. This requires the `POST /api/v1/deals` support landing on
+`feat/workflow-task-assignee-deal-stage`; keep this env var unset until that
+ships.
 
 When `QCONTACT_DEAL_PIPELINE_ID` is unset (the default), none of the above
 runs — behaviour is unchanged from before deals existed.

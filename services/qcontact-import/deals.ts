@@ -9,10 +9,10 @@
  * fresh install request; ZAR is hardcoded because this service is Velocity
  * Fibre only (see README).
  *
- * `assigned_to_uid` is NOT sent: POST /api/v1/deals's create parser does not
- * read it — assignment is read-only over the public API (see the comment on
- * `assigned_to_uid` in src/lib/api/serializers/deals.ts). QCONTACT_DEAL_OWNER_UID
- * is documented in the README as a currently-no-op env var for this reason.
+ * `assigned_to_uid` is sent only when QCONTACT_DEAL_OWNER_UID is set — it
+ * must be the uid of an active sub-account member, or the create 400s (see
+ * README: requires the POST /api/v1/deals change from
+ * feat/workflow-task-assignee-deal-stage).
  */
 
 export type DealEnv = {
@@ -20,6 +20,7 @@ export type DealEnv = {
   LEADSTACK_API_KEY: string;
   QCONTACT_DEAL_PIPELINE_ID: string;
   QCONTACT_DEAL_STAGE: string;
+  QCONTACT_DEAL_OWNER_UID: string | undefined;
 };
 
 export type DealResult = { ok: true } | { ok: false; error: string };
@@ -46,7 +47,7 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
       return { ok: true };
     }
 
-    const body = {
+    const body: Record<string, unknown> = {
       contact_id: contactId,
       pipeline_id: env.QCONTACT_DEAL_PIPELINE_ID,
       stage: env.QCONTACT_DEAL_STAGE,
@@ -54,6 +55,7 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
       value: 0,
       currency: DEAL_CURRENCY,
     };
+    if (env.QCONTACT_DEAL_OWNER_UID) body.assigned_to_uid = env.QCONTACT_DEAL_OWNER_UID;
     const createRes = await fetchImpl(`${env.LEADSTACK_API_URL}/api/v1/deals`, {
       method: "POST",
       headers: {

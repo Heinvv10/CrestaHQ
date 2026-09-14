@@ -31,7 +31,7 @@ export type Env = {
   /** Unset = no deal is created (behaviour unchanged from before this existed). */
   QCONTACT_DEAL_PIPELINE_ID: string | undefined;
   QCONTACT_DEAL_STAGE: string;
-  /** Currently a no-op: see deals.ts header. Kept so it's ready once the API supports assignment. */
+  /** Sent as `assigned_to_uid`; must be an active sub-account member's uid or the deal create 400s. */
   QCONTACT_DEAL_OWNER_UID: string | undefined;
 };
 
@@ -192,17 +192,13 @@ async function main(): Promise<void> {
     email: env.QCONTACT_IMPORT_EMAIL,
     password: env.QCONTACT_IMPORT_PASSWORD,
   });
-  if (env.QCONTACT_DEAL_OWNER_UID) {
-    process.stdout.write(
-      "QCONTACT_DEAL_OWNER_UID is set but has no effect: POST /api/v1/deals does not accept assigned_to_uid (assignment is read-only over the public API).\n",
-    );
-  }
   const ensureDeal = env.QCONTACT_DEAL_PIPELINE_ID
     ? leadstackDealEnsurer({
         LEADSTACK_API_URL: env.LEADSTACK_API_URL,
         LEADSTACK_API_KEY: env.LEADSTACK_API_KEY,
         QCONTACT_DEAL_PIPELINE_ID: env.QCONTACT_DEAL_PIPELINE_ID,
         QCONTACT_DEAL_STAGE: env.QCONTACT_DEAL_STAGE,
+        QCONTACT_DEAL_OWNER_UID: env.QCONTACT_DEAL_OWNER_UID,
       })
     : undefined;
   const summary = await runImport({
