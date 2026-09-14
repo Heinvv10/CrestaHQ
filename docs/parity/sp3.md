@@ -1,6 +1,6 @@
 # SP3 — Calendars & booking
 
-**Date:** 2026-09-13 · **Status: (a)–(e) merged (#109 #110 #107 #115 #116, + #120 test guard); (f) #119 merged — all SP3 build PRs on `main`; R1/R2 done; **deployed 2026-09-14 08:57 SAST at `d0c3893`** · **Depends on:** SP0 (merged) · **Blocks:** SP11 (appointment reports), SP14.
+**Date:** 2026-09-13 · **Status: (a)–(e) merged (#109 #110 #107 #115 #116, + #120 test guard); (f) #119 merged — all SP3 build PRs on `main`; R1/R2 done; deployed 2026-09-14 08:57 SAST at `d0c3893`** · **Depends on:** SP0 (merged) · **Blocks:** SP11 (appointment reports), SP14.
 Programme context: [PARITY_PROGRAM.md](../PARITY_PROGRAM.md) §SP3. Model ledger: [sp1.md](sp1.md). Feature spec: [booking-pages.md](../features/booking-pages.md).
 
 Proving tenant: **#1000 CrestaHQ** (`subAccounts/54vPI0BS1zDMcxMyMAyA`) and the E2E fixture tenant. Never Blitz/Velocity/Vortex.
