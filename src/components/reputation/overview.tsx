@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, Lock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -73,6 +73,7 @@ export function ReputationOverview() {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   /** Bumped after "Analyse now" so the counts refresh in place. */
   const [reload, setReload] = useState(0);
+  const refresh = useCallback(() => setReload((n) => n + 1), []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -113,7 +114,7 @@ export function ReputationOverview() {
       )}
       {load.state === "error" && <Note testId="rep-state-error">The overview could not be loaded. Please try again.</Note>}
       {load.state === "ready" && (
-        <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} onAnalysed={() => setReload((n) => n + 1)} />
+        <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} onAnalysed={refresh} />
       )}
     </div>
   );

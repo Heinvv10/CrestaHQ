@@ -25,7 +25,7 @@ function payload(over: Partial<OverviewResponse> = {}): OverviewResponse {
     reviews: {
       count: 7, avgRating: 25 / 7, previous: { count: 3, avgRating: 3 },
       distribution: { 1: 1, 2: 1, 3: 1, 4: 1, 5: 3 },
-      sentiment: { positive: 3, neutral: 2, negative: 2, notAnalysed: 0 },
+      sentiment: { positive: 3, neutral: 2, negative: 2, notAnalysed: 0, failed: 0 },
       response: { replied: 2, unreplied: 5, coverage: 2 / 7, replyHours: { avg: 3, median: 3, counted: 2, excluded: 0 } },
     },
     requests: { sent: 2, byChannel: { sms: 2 }, previous: null, countingSince: "2026-09-01T08:00:00.000Z" },
@@ -40,7 +40,7 @@ function payload(over: Partial<OverviewResponse> = {}): OverviewResponse {
     lastErrorKind: null,
     lastReconciliation: "full",
     truncated: { reviews: false, requests: false },
-    reviewsAi: { enabled: true, configured: true },
+    reviewsAi: { enabled: true, configured: true, running: false, lastRun: null },
     checklist: { googleConnected: true, listingSelected: true, reviewLinkConfigured: false, widgetExists: false, requestLogged: true },
     ...over,
   };
@@ -200,8 +200,8 @@ describe("sentiment card (SP5 b)", () => {
     await render();
     expect(byId("rep-sentiment-positive")?.getAttribute("data-count")).toBe("3");
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (init?.method === "POST") return { ok: true, status: 200, json: async () => ({ outcome: { status: "ran", classified: 0, failed: 0 } }) };
-      return { ok: true, status: 200, json: async () => payload({ reviews: { ...payload().reviews!, sentiment: { positive: 4, neutral: 2, negative: 1, notAnalysed: 0 } } }) };
+      if (init?.method === "POST") return { ok: true, status: 202, json: async () => ({ started: true, aiConfigured: true }) };
+      return { ok: true, status: 200, json: async () => payload({ reviews: { ...payload().reviews!, sentiment: { positive: 4, neutral: 2, negative: 1, notAnalysed: 0, failed: 0 } }, reviewsAi: { enabled: true, configured: true, running: false, lastRun: { classified: 1, skipped: 0, failed: 0, at: "2026-09-14T10:01:00.000Z" } } }) };
     });
     await act(async () => (byId("rep-sentiment-analyse") as HTMLButtonElement).click());
     expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/reputation/sentiment/run", { method: "POST" });
@@ -209,7 +209,7 @@ describe("sentiment card (SP5 b)", () => {
   });
 
   it("gate off: the card says Reviews AI is off", async () => {
-    body = payload({ reviewsAi: { enabled: false, configured: true } });
+    body = payload({ reviewsAi: { enabled: false, configured: true, running: false, lastRun: null } });
     await render();
     expect(byId("rep-sentiment-gate-off")).not.toBeNull();
   });
