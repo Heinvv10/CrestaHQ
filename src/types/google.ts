@@ -82,8 +82,16 @@ export interface GbpWidgetMeta {
   allowedOrigins: string[];
   /** 1–50. There is deliberately NO rating filter. */
   maxReviews: number;
+  /** Absent on a widget saved before layouts existed: reads as "carousel". */
+  layout?: GbpWidgetLayout;
+  /** Absent on a widget saved before themes existed: reads as "light". */
+  theme?: GbpWidgetTheme;
   updatedAt: Date;
 }
+
+/** How the embed draws the reviews. Served to it as the feed's `display`. */
+export type GbpWidgetLayout = "carousel" | "grid" | "list" | "badge";
+export type GbpWidgetTheme = "light" | "dark";
 
 /** Path of the locked secret doc. One place so no caller can typo it open. */
 export function googleConnectionSecretPath(subAccountId: string): string {

@@ -11,7 +11,7 @@ import { gbpRefusal } from "@/lib/gbp/route-support";
  * The public reviews widget of a sub-account (one at most).
  *
  *   GET    → {widget | null}                    admin, gated
- *   PUT    {enabled, allowedOrigins, maxReviews} admin, gated — creates or updates
+ *   PUT    {enabled, allowedOrigins, maxReviews, layout?, theme?} admin, gated — creates or updates
  *   DELETE → {ok:true}                           admin, UNGATED — revoke (old id → 404)
  *
  * Rotate is POST …/widget/rotate. DELETE stays ungated like disconnect, so a

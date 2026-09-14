@@ -51,6 +51,7 @@ export type FeedBody = {
   listing: { title: string; mapsUri: string | null; writeReviewUri: string | null } | null;
   rating: { average: number; count: number } | null;
   source: { name: string; attribution: string };
+  display: { layout: string; theme: string };
   freshness: { lastSuccessfulSyncAt: string | null; stale: boolean; generatedAt: string };
   reviews: Array<{
     id: string;

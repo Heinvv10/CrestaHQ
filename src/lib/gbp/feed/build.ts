@@ -5,7 +5,7 @@ import { deriveHealth } from "@/lib/gbp/sync/health";
 import { withinRetention } from "@/lib/gbp/sync/reconcile";
 import { reviewsCollection, toMillis, type GbpSummary } from "@/lib/gbp/sync/types";
 import type { SubAccountDoc } from "@/types";
-import { FEED_SOURCE, feedListing, feedReview, type FeedBody, type FeedStatus } from "./serialize";
+import { FEED_SOURCE, feedDisplay, feedListing, feedReview, type FeedBody, type FeedStatus } from "./serialize";
 import { widgetPath, type GbpWidgetDoc } from "./widget-store";
 
 /**
@@ -107,6 +107,7 @@ export async function buildFeed({ publicId, widget, sub }: FeedTarget, now: Date
     listing: feedListing(listing as unknown as Record<string, unknown> | null),
     rating,
     source: { ...FEED_SOURCE },
+    display: feedDisplay(widget),
     freshness: {
       lastSuccessfulSyncAt: last === null ? null : new Date(last).toISOString(),
       stale: status !== "ok",
