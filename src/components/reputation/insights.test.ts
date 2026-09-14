@@ -93,9 +93,12 @@ async function choose(testId: string, value: string) {
 }
 
 describe("states before any call", () => {
-  it("while the sub-account is still loading: loading, never gate-off, nothing fetched", async () => {
+  it.each([
+    ["no doc yet", null],
+    ["a doc still arriving (e.g. switching sub-accounts)", {}],
+  ])("while the sub-account is still loading (%s): loading, never gate-off, nothing fetched", async (_label, doc) => {
     ctx.loading = true;
-    ctx.subAccount = null;
+    ctx.subAccount = doc;
     await render();
     expect(byId("rep-insights-loading")).not.toBeNull();
     expect(byId("rep-insights-gate-off")).toBeNull();
