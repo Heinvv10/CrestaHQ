@@ -184,3 +184,25 @@ describe("without review data (gate off / not connected)", () => {
     expect(o.trend.at(-1)).toMatchObject({ reviews: null, avgRating: null, avgReplyHours: null, requests: 1 });
   });
 });
+
+describe("sentiment (SP5 b)", () => {
+  const labelled = (stars: number, at: Date, label: string | null): OverviewReviewInput => ({
+    ...rev(stars, at),
+    sentiment: label ? { label } : null,
+  });
+
+  it("counts labels over the reviews in range; unlabelled ones are 'not analysed yet'", () => {
+    const o = overview({
+      reviews: [
+        labelled(5, ago(1), "positive"), labelled(4, ago(2), "positive"), labelled(3, ago(3), "neutral"),
+        labelled(1, ago(4), "negative"), labelled(2, ago(5), null), labelled(5, ago(120), "negative"),
+      ],
+    });
+    expect(o.reviews!.sentiment).toEqual({ positive: 2, neutral: 1, negative: 1, notAnalysed: 1 });
+  });
+
+  it("an unknown label is not counted as any of the three", () => {
+    const o = overview({ reviews: [labelled(5, ago(1), "ecstatic")] });
+    expect(o.reviews!.sentiment).toEqual({ positive: 0, neutral: 0, negative: 0, notAnalysed: 1 });
+  });
+});

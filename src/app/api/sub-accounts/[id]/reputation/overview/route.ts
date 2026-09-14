@@ -7,6 +7,7 @@ import { deriveHealth } from "@/lib/gbp/sync/health";
 import { publicSummary } from "@/lib/gbp/sync/public";
 import { loadServedReviews } from "@/lib/gbp/sync/served";
 import type { GbpSummary } from "@/lib/gbp/sync/types";
+import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
 import { computeOverview, parseRange, previousPeriodStart } from "@/lib/reputation/overview";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import type { SubAccountDoc } from "@/types";
@@ -58,7 +59,14 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const oldestRequestAt = oldestSnap.docs[0]?.data().sentAt ?? null;
 
   const overview = computeOverview({
-    reviews: served ? served.reviews.map((r) => ({ starRating: r.starRating, createTime: r.createTime, reply: r.reply as { updateTime?: unknown } | null })) : null,
+    reviews: served
+      ? served.reviews.map((r) => ({
+          starRating: r.starRating,
+          createTime: r.createTime,
+          reply: r.reply as { updateTime?: unknown } | null,
+          sentiment: r.sentiment as { label?: unknown } | null,
+        }))
+      : null,
     requests: requestSnap.docs.slice(0, REQUEST_CAP).map((d) => ({ channel: d.data().channel, sentAt: d.data().sentAt })),
     oldestRequestAt,
     range,
@@ -79,6 +87,8 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     lastErrorKind: summary?.lastErrorKind ?? null,
     lastReconciliation: summary?.lastReconciliation ?? null,
     truncated: { reviews: served?.truncated ?? false, requests: requestSnap.size > REQUEST_CAP },
+    /** SP5 (b): the sentiment card's states — the agency gate, and whether any AI can run here. */
+    reviewsAi: { enabled: sub.reviewsAiEnabledByAgency === true, configured: reviewsAiConfigured() },
     checklist: {
       googleConnected: meta?.connected === true && !meta.reconnectRequired,
       listingSelected: !!locationName,

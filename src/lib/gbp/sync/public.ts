@@ -63,11 +63,14 @@ export interface PublicReview {
   createTime: string | null;
   updateTime: string | null;
   reply: { comment: string; updateTime: string } | null;
+  /** SP5 (b): the cached label and how it was reached — never its basis, model or time. */
+  sentiment: { label: string; method: string } | null;
 }
 
 export function publicReview(d: Record<string, unknown>): PublicReview {
   const reviewer = d.reviewer as PublicReview["reviewer"];
   const reply = d.reply as PublicReview["reply"];
+  const sentiment = d.sentiment as { label?: unknown; method?: unknown } | null | undefined;
   return {
     reviewId: String(d.reviewId ?? ""),
     docId: String(d.docId ?? ""),
@@ -79,6 +82,10 @@ export function publicReview(d: Record<string, unknown>): PublicReview {
     createTime: iso(d.createTime),
     updateTime: iso(d.updateTime),
     reply: reply ? { comment: reply.comment, updateTime: reply.updateTime } : null,
+    sentiment:
+      sentiment && typeof sentiment.label === "string" && typeof sentiment.method === "string"
+        ? { label: sentiment.label, method: sentiment.method }
+        : null,
   };
 }
 

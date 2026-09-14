@@ -12,6 +12,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { AGENCY, LEAK_MARKERS, OTHER_SA, SA, asUser, mem, resetSync, seedSub } from "@/test/gbp-sync-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { classifyPendingSentiment } from "@/lib/reputation/sentiment";
 import { GET } from "./route";
 
 const ORIGINAL = { ...process.env };
@@ -174,5 +175,27 @@ describe("checklist — from real state only", () => {
   it("a revoked connection is not 'connected'", async () => {
     seedSub(SA, { reconnectRequired: true });
     expect((await read()).body.checklist.googleConnected).toBe(false);
+  });
+});
+
+describe("sentiment (SP5 b)", () => {
+  it("counts the cached labels over the reviews in range, and says whether Reviews AI is on and configured", async () => {
+    process.env.REVIEWS_AI_PROVIDER = "fake";
+    process.env.REVIEWS_AI_FAKE_AGENCY_ID = "ag_1";
+    expect((await read()).body.reviewsAi).toEqual({ enabled: false, configured: true });
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, reviewsAiEnabledByAgency: true });
+    const before = await read();
+    expect(before.body.reviews.sentiment).toEqual({ positive: 0, neutral: 0, negative: 0, notAnalysed: 7 });
+    await classifyPendingSentiment(SA);
+    const { body } = await read();
+    expect(body.reviewsAi).toEqual({ enabled: true, configured: true });
+    // fake rule: r7 r4 positive (text), r3 positive (4★ star-only), r6 r2 negative, r5 r1 neutral
+    expect(body.reviews.sentiment).toEqual({ positive: 3, neutral: 2, negative: 2, notAnalysed: 0 });
+  });
+
+  it("not configured: an OpenRouter deployment without a key", async () => {
+    delete process.env.REVIEWS_AI_PROVIDER;
+    delete process.env.OPENROUTER_API_KEY;
+    expect((await read()).body.reviewsAi).toEqual({ enabled: false, configured: false });
   });
 });

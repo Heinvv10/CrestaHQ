@@ -89,6 +89,7 @@ describe("payload", () => {
       createTime: "2026-08-27T09:00:00.000Z",
       updateTime: "2026-08-27T09:00:00.000Z",
       reply: { comment: "Thank you from the fixture team.", updateTime: "2026-08-27T12:00:00Z" },
+      sentiment: null,
     });
     expect(body.reviews[2].comment).toContain("(Translated by Google)");
     expect(body.reviews[6].comment).toBe("  Fixture review with leading and trailing spaces.  ");
@@ -152,5 +153,20 @@ describe("payload", () => {
     seedSub(SA, { listing: null });
     const { body } = await read("uid_admin");
     expect(body).toMatchObject({ summary: null, reviews: [] });
+  });
+});
+
+describe("sentiment (SP5 b)", () => {
+  it("each review carries only its label and method — never the basis, model or time", async () => {
+    const [first] = mem.list(`subAccounts/${SA}/gbpReviews`);
+    mem.seed(`subAccounts/${SA}/gbpReviews/${first.id}`, {
+      ...mem.read(`subAccounts/${SA}/gbpReviews/${first.id}`)!,
+      sentiment: { label: "negative", method: "ai", basisHash: "b".repeat(64), model: "some/model", at: new Date() },
+    });
+    const { body } = await read("uid_collab");
+    const labelled = body.reviews.find((r) => r.docId === first.id)!;
+    expect(labelled.sentiment).toEqual({ label: "negative", method: "ai" });
+    expect(JSON.stringify(body)).not.toMatch(/basisHash|some\/model/);
+    expect(body.reviews.filter((r) => r.sentiment === null)).toHaveLength(6);
   });
 });
