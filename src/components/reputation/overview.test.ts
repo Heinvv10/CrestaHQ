@@ -14,6 +14,15 @@ vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => createElement("a", { href, ...rest }, children),
 }));
 
+// The dialog has its own test (send-review-request.test.ts); here only that it is mounted and refreshes.
+const sendButton = vi.hoisted(() => ({ onSent: null as null | (() => void) }));
+vi.mock("./send-review-request", () => ({
+  SendReviewRequestButton: ({ onSent }: { onSent: () => void }) => {
+    sendButton.onSent = onSent;
+    return createElement("button", { "data-testid": "rep-send-open" }, "Send Review Request");
+  },
+}));
+
 import { ReputationOverview } from "./overview";
 import type { OverviewResponse } from "./types";
 
@@ -186,6 +195,14 @@ describe("ready", () => {
     const link = byId("rep-checklist-reviewLinkConfigured")?.querySelector("a");
     expect(link?.getAttribute("href")).toBe("/sa/sa1/dashboard/settings");
     expect(link?.textContent).toBe("Set your review link (Settings Sub-Account → Messaging tab)");
+  });
+
+  it("offers Send Review Request, and a successful send refreshes the numbers", async () => {
+    await render();
+    expect(text("rep-send-open")).toBe("Send Review Request");
+    const calls = fetchMock.mock.calls.length;
+    await act(async () => sendButton.onSent?.());
+    expect(fetchMock.mock.calls.length).toBe(calls + 1);
   });
 
   it("changing the range refetches with it", async () => {

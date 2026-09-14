@@ -32,12 +32,13 @@ const current = () =>
 it.each([
   ["/sa/sa1/reputation", "rep-tab-overview"],
   ["/sa/sa1/reputation/reviews", "rep-tab-reviews"],
+  ["/sa/sa1/reputation/requests", "rep-tab-requests"],
   ["/sa/sa1/reputation/widgets", "rep-tab-widgets"],
 ])("on %s exactly one tab is current: %s", async (path, id) => {
   nav.pathname = path;
   await act(async () => root.render(createElement(ReputationTabs)));
   expect(current()).toEqual([id]);
   expect([...container.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
-    "/sa/sa1/reputation", "/sa/sa1/reputation/reviews", "/sa/sa1/reputation/widgets",
+    "/sa/sa1/reputation", "/sa/sa1/reputation/reviews", "/sa/sa1/reputation/requests", "/sa/sa1/reputation/widgets",
   ]);
 });
