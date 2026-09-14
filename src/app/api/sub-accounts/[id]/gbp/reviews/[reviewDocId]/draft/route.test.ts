@@ -9,10 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
-const override = vi.hoisted(() => ({ ai: null as null | Record<string, unknown> }));
+const override = vi.hoisted(() => ({ ai: null as null | Record<string, unknown>, onGet: null as null | (() => void) }));
 vi.mock("@/lib/reputation/ai/select", async (orig) => {
   const real = await orig<typeof import("@/lib/reputation/ai/select")>();
-  return { ...real, getReviewsAiFor: async (sa: string) => (override.ai as never) ?? real.getReviewsAiFor(sa) };
+  return {
+    ...real,
+    // Runs AFTER the route's gate pre-check and BEFORE beginDraftCall — where a racing gate flip lands.
+    getReviewsAiFor: async (sa: string) => {
+      override.onGet?.();
+      return (override.ai as never) ?? real.getReviewsAiFor(sa);
+    },
+  };
 });
 
 import { AGENCY, OTHER_SA, SA, mem, resetSync } from "@/test/gbp-sync-harness";
@@ -35,6 +42,7 @@ beforeEach(async () => {
   resetSync();
   resetDraftLimiter();
   override.ai = null;
+  override.onGet = null;
   process.env.REVIEWS_AI_PROVIDER = "fake";
   process.env.REVIEWS_AI_FAKE_AGENCY_ID = AGENCY;
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -92,6 +100,19 @@ describe("a draft", () => {
     expect(status).toBe(424);
     expect(body.code).toBe("draft_failed");
     expect(body.draft).toBeUndefined();
+  });
+});
+
+describe("a gate switched off between the route's check and the call (the in-transaction re-check)", () => {
+  it.each([
+    ["Reviews AI", { reviewsAiEnabledByAgency: false }, 403, "ai_gate_off"],
+    ["Google", { googleEnabledByAgency: false }, 403, "gate_off"],
+  ])("%s gate off mid-request → refused, no AI call, nothing counted", async (_l, patch, status, code) => {
+    override.onGet = () => patchSub(patch);
+    const res = await draft();
+    expect([res.status, res.body.code]).toEqual([status, code]);
+    expect(drafts()).toHaveLength(0);
+    expect(mem.read(sentimentUsagePath(SA))).toBeUndefined();
   });
 });
 

@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const callAi = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/comms/ai/openrouter", () => ({ callAi, aiIsConfigured: () => true, defaultAiModel: () => "m-default" }));
 
-import { MAX_DRAFT_CHARS, draftReplyWith } from "./openrouter-draft";
+import { MAX_DRAFT_CHARS, draftReplyWith as rawDraftReplyWith } from "./openrouter-draft";
+import { REVIEWS_AI_CALL_MS, openRouterReviewsAi } from "./openrouter";
 import { fakeDraft } from "./fake";
 import type { DraftInput } from "./types";
 
@@ -21,6 +22,8 @@ const INPUT: DraftInput = {
   businessName: "Velo Test Fibre",
   guidelines: "Sign off as The Fixture Team. Our line is 041 000 0000.",
 };
+/** The unit under test, with no time bound (the bound is tested through openRouterReviewsAi below). */
+const draftReplyWith = (model: string, input: DraftInput) => rawDraftReplyWith(model, input, (p) => p);
 const said = (text: string) =>
   callAi.mockResolvedValueOnce({ text, model: "m-default", promptTokens: 1, completionTokens: 1, totalTokens: 2 });
 
@@ -68,12 +71,22 @@ describe("the output", () => {
 
   it.each([
     ["a link", "Sorry. See https://evil.example for help."],
-    ["a bare domain link", "Sorry. Visit www.evil.example today."],
+    ["a www link", "Sorry. Visit www.evil.example today."],
+    ["a bare domain", "Sorry. Visit evil.example for help."],
+    ["a bare .com domain", "Sorry. Book again at fixture-deals.com."],
+    ["a bare .co.za domain", "Sorry. See fixture.co.za/help."],
+    ["a bare domain with a subdomain", "Sorry. Try help.fixturefibre.net"],
     ["an email", "Sorry. Email help@evil.example."],
     ["another phone number", "Sorry. Call 082 123 4567."],
   ])("refuses a draft carrying %s the guidelines did not supply (never shown)", async (_label, text) => {
     said(text);
     expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: null, failure: "unsupplied_contact" });
+  });
+
+  it("a domain the guidelines supplied is kept, and ordinary words with dots are not domains", async () => {
+    said("Thanks! More at fixturefibre.co.za. We fixed it e.g. yesterday. Speeds of 1.5 Gbps. Sign-off: The Team.");
+    const out = await draftReplyWith("m-default", { ...INPUT, guidelines: "Mention fixturefibre.co.za when useful." });
+    expect(out.text).toContain("fixturefibre.co.za");
   });
 
   it("an empty answer is no draft", async () => {
@@ -94,6 +107,30 @@ describe("the output", () => {
     const logged = JSON.stringify((console.warn as unknown as { mock: { calls: unknown[] } }).mock.calls);
     expect(logged).not.toContain("evil");
     expect(logged).not.toContain("Technician");
+  });
+});
+
+describe("the time bound (the seam's REVIEWS_AI_CALL_MS, as for sentiment)", () => {
+  it(`a draft call that never finishes is no draft after ${REVIEWS_AI_CALL_MS / 1000} s`, async () => {
+    vi.useFakeTimers();
+    try {
+      callAi.mockImplementationOnce(() => new Promise(() => {}));
+      const pending = openRouterReviewsAi("m-default").draftReply(INPUT);
+      await vi.advanceTimersByTimeAsync(REVIEWS_AI_CALL_MS - 1);
+      let settled = false;
+      void pending.then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(await pending).toEqual({ text: null, failure: "call_failed" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("openRouterReviewsAi drafts through the same checks", async () => {
+    said("Sorry. Email help@evil.example.");
+    expect(await openRouterReviewsAi("m-default").draftReply(INPUT)).toEqual({ text: null, failure: "unsupplied_contact" });
   });
 });
 

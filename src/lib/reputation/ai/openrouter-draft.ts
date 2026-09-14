@@ -28,6 +28,13 @@ const SYSTEM = [
 ].join("\n");
 
 const URL_RE = /\b(?:https?:\/\/|www\.)\S+/gi;
+/**
+ * A bare domain ("fixturefibre.co.za", "deals.com"): dot-separated labels
+ * ending in a common TLD. TLD-based on purpose — "e.g.", "1.5" or a sentence
+ * that ends without a space after its full stop are not domains.
+ */
+const DOMAIN_RE =
+  /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|io|app|info|biz|me|co|za|africa|dev|online|site|store|shop|link|ly|us|uk|xyz|example)\b/gi;
 const EMAIL_RE = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/gi;
 const PHONE_RE = /\+?\d[\d\s().-]{6,}\d/g;
 const digits = (s: string) => s.replace(/\D/g, "");
@@ -39,6 +46,7 @@ function unsuppliedContact(text: string, guidelines: string | null): boolean {
   const allowedPhones = new Set((g.match(PHONE_RE) ?? []).map(digits));
   if ((text.match(URL_RE) ?? []).some((u) => !gl.includes(u.toLowerCase().replace(/[.,;:!?)]+$/, "")))) return true;
   if ((text.match(EMAIL_RE) ?? []).some((e) => !gl.includes(e.toLowerCase().replace(/[.,;:!?)]+$/, "")))) return true;
+  if ((text.match(DOMAIN_RE) ?? []).some((d) => !gl.includes(d.toLowerCase()))) return true;
   return (text.match(PHONE_RE) ?? []).some((p) => digits(p).length >= 7 && !allowedPhones.has(digits(p)));
 }
 
@@ -53,10 +61,19 @@ function fail(failure: DraftFailure, detail?: string): DraftResult {
   return { text: null, failure };
 }
 
-export async function draftReplyWith(model: string, input: DraftInput): Promise<DraftResult> {
+/**
+ * `bound` is the seam's per-call time bound (openrouter.ts `bounded`,
+ * REVIEWS_AI_CALL_MS) — passed in so this file never imports openrouter.ts
+ * back (that file wires `draftReply` to this function).
+ */
+export async function draftReplyWith(
+  model: string,
+  input: DraftInput,
+  bound: <T>(work: Promise<T>) => Promise<T>,
+): Promise<DraftResult> {
   let raw: string;
   try {
-    const res = await callAi({
+    const res = await bound(callAi({
       model,
       temperature: 0.4,
       maxTokens: 400,
@@ -71,7 +88,7 @@ export async function draftReplyWith(model: string, input: DraftInput): Promise<
           }),
         },
       ],
-    });
+    }));
     raw = res.text;
   } catch (err) {
     return fail("call_failed", err instanceof Error ? err.name : typeof err);

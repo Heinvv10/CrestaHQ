@@ -161,6 +161,6 @@ export function openRouterReviewsAi(model: string): ReviewsAi {
       for (let i = 0; i < items.length; i += BATCH_SIZE) out.push(...(await classifyBatch(model, items.slice(i, i + BATCH_SIZE))));
       return out;
     },
-    draftReply: (input) => draftReplyWith(model, input),
+    draftReply: (input) => draftReplyWith(model, input, bounded),
   };
 }
