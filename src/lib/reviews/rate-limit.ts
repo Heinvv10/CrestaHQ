@@ -60,3 +60,26 @@ export function checkReviewRateLimit(ip: string): ReviewRateLimitResult {
   }
   return { ok: true, retryAfterSec: 0 };
 }
+
+/**
+ * Per-IP limit for the tracked review link (`/rr/{token}`, SP5 d2). Its own
+ * bucket for the same reason as above; roomier, since a click is a plain
+ * redirect a shared office network may repeat.
+ */
+const CLICK_LIMIT = 60;
+const clickBuckets = new Map<string, Bucket>();
+
+export function checkReviewClickRateLimit(ip: string): ReviewRateLimitResult {
+  const now = Date.now();
+  if (clickBuckets.size > MAX_TRACKED_IPS) clickBuckets.clear();
+  let bucket = clickBuckets.get(ip);
+  if (!bucket || now - bucket.windowStartedAt >= WINDOW_MS) {
+    bucket = { count: 0, windowStartedAt: now };
+    clickBuckets.set(ip, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > CLICK_LIMIT) {
+    return { ok: false, retryAfterSec: Math.max(1, Math.ceil((WINDOW_MS - (now - bucket.windowStartedAt)) / 1000)) };
+  }
+  return { ok: true, retryAfterSec: 0 };
+}

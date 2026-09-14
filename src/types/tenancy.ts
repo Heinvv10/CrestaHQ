@@ -855,6 +855,12 @@ export interface GoogleReviewConfig {
    * (WhatsApp Manual can't auto-send). Undefined on legacy docs → off.
    */
   triggerOnDealCompleted?: boolean;
+  /**
+   * Reminders (SP5 d2): re-send the same request every `everyDays` until the
+   * customer clicks, opts out, or `maxRetries` reminders have gone. Absent or
+   * `everyDays: null` = off (the default) — nothing about sending changes.
+   */
+  reminder?: { everyDays: number | null; maxRetries: number } | null;
   updatedAt: Date;
 }
 

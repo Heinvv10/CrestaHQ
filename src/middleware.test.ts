@@ -330,3 +330,24 @@ describe("middleware() end to end — the actual wiring, not just the helper", (
     );
   });
 });
+
+describe("isPublicPath — review-request click link and reminders (SP5 d2)", () => {
+  it("lets a customer's click reach /rr/{token} (the signed token is the credential)", () => {
+    expect(isPublicPath("/rr/sa1.req1.abcdef0123")).toBe(true);
+  });
+
+  it("opens exactly one segment under /rr — nothing beside or under it", () => {
+    expect(isPublicPath("/rr")).toBe(false);
+    expect(isPublicPath("/rr/a/b")).toBe(false);
+    expect(isPublicPath("/rrx/a")).toBe(false);
+  });
+
+  it("lets QStash reach the signed reminder worker (the signature is its auth)", () => {
+    expect(isPublicPath("/api/cron/review-reminder")).toBe(true);
+  });
+
+  it("keeps the Requests list and the config behind a session", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/reputation/requests")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/google-review")).toBe(false);
+  });
+});
