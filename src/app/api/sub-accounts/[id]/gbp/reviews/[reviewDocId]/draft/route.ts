@@ -22,7 +22,7 @@ import { beginDraftCall, checkDraftRate, draftInputFor } from "@/lib/reputation/
  * review of the current listing (the reply route's lookup — else 404), Reviews
  * AI configured here (503 `ai_not_configured`), 10 drafts a minute per user
  * (429 `rate_limited`, Retry-After), the shared daily AI cap (429
- * `daily_cap`). An AI failure is 424 `draft_failed` (not 502: the edge
+ * `daily_cap`) and drafts' 100-a-day share of it (429 `draft_cap`). An AI failure is 424 `draft_failed` (not 502: the edge
  * replaces 502 bodies — lib/gbp/route-support.ts).
  */
 
@@ -63,6 +63,9 @@ export async function POST(request: Request, ctx: Ctx) {
   const input = await draftInputFor(id, target.docId);
   const stop = await beginDraftCall(id);
   if (stop === "daily_cap") return gbpRefusal(429, "daily_cap", "Daily AI limit reached — try again tomorrow.");
+  if (stop === "draft_cap") {
+    return gbpRefusal(429, "draft_cap", "Today's AI draft limit (100) is reached — try again tomorrow, or write your own.");
+  }
   if (stop === "ai_gate_off") return aiGateOff();
   if (stop === "gate_off") return gbpRefusal(403, "gate_off", "This feature is locked by your agency.");
 

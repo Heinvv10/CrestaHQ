@@ -15,6 +15,9 @@ import { DAILY_AI_CALL_CAP, sentimentUsagePath } from "./sentiment-calls";
  *     instance — an abuse dampener, like the other in-memory limiters.
  *   - Spend: every draft counts against the SAME daily AI call cap as
  *     sentiment (`private/sentimentUsage {day, calls}`, DAILY_AI_CALL_CAP),
+ *     and drafts alone may use at most DRAFT_DAILY_CAP of it
+ *     (`{draftsDay, draftCalls}` in the same doc — its own day, because
+ *     sentiment rewrites `day`), so sentiment always keeps ≥ 200 calls a day;
  *     counted in one transaction with a re-check of both gates BEFORE the
  *     call; over the cap there is no call. No strikes and no refunds: a
  *     draft is one human click, one call, and it counts whether or not the
@@ -46,7 +49,10 @@ export function checkDraftRate(subAccountId: string, uid: string, now = Date.now
   return { ok: true };
 }
 
-export type DraftStop = "gate_off" | "ai_gate_off" | "daily_cap";
+/** Drafts' share of DAILY_AI_CALL_CAP per sub-account per UTC day — the rest stays sentiment's. */
+export const DRAFT_DAILY_CAP = 100;
+
+export type DraftStop = "gate_off" | "ai_gate_off" | "daily_cap" | "draft_cap";
 
 /** Re-check both gates and the daily cap, and count this call — one transaction, before the call. */
 export async function beginDraftCall(subAccountId: string): Promise<DraftStop | null> {
@@ -55,13 +61,17 @@ export async function beginDraftCall(subAccountId: string): Promise<DraftStop | 
   const usageRef = db.doc(sentimentUsagePath(subAccountId));
   return db.runTransaction(async (tx) => {
     const sub = (await tx.get(subRef)).data() as { googleEnabledByAgency?: boolean; reviewsAiEnabledByAgency?: boolean } | undefined;
-    const usage = (await tx.get(usageRef)).data() as { day?: string; calls?: number } | undefined;
+    const usage = (await tx.get(usageRef)).data() as
+      | { day?: string; calls?: number; draftsDay?: string; draftCalls?: number }
+      | undefined;
     if (sub?.googleEnabledByAgency !== true) return "gate_off";
     if (sub.reviewsAiEnabledByAgency !== true) return "ai_gate_off";
     const day = new Date().toISOString().slice(0, 10);
     const calls = usage?.day === day ? (usage.calls ?? 0) : 0;
     if (calls >= DAILY_AI_CALL_CAP) return "daily_cap";
-    tx.set(usageRef, { day, calls: calls + 1 }, { merge: true });
+    const draftCalls = usage?.draftsDay === day ? (usage.draftCalls ?? 0) : 0;
+    if (draftCalls >= DRAFT_DAILY_CAP) return "draft_cap";
+    tx.set(usageRef, { day, calls: calls + 1, draftsDay: day, draftCalls: draftCalls + 1 }, { merge: true });
     return null;
   });
 }

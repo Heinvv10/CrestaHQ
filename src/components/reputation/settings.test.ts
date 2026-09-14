@@ -89,6 +89,9 @@ describe("the Reviews AI card", () => {
     await render();
     expect(area().value).toBe("Sign off as The Fixture Team.");
     expect(byId("rep-settings-ai-card")?.textContent).toContain("Nothing is posted to Google until you click Post reply to Google");
+    expect(byId("rep-settings-ai-limits")?.textContent).toBe(
+      "Drafts can use up to 100 of this sub-account's 300 AI calls a day; the rest stays for sentiment.",
+    );
     await type("  Warm and brief. Sign off as The Fixture Team.  ");
     await act(async () => byId("rep-settings-guidelines-save")!.click());
     expect(puts()).toEqual([{ replyGuidelines: "  Warm and brief. Sign off as The Fixture Team.  " }]);

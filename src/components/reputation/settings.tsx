@@ -73,6 +73,9 @@ function ReviewsAiCard({ subAccountId, isAdmin }: { subAccountId: string; isAdmi
         Reply guidelines steer <strong>Draft with AI</strong> in the reply box: tone, how to sign off, things never to say. A draft only
         fills the box — you edit it. Nothing is posted to Google until you click Post reply to Google. There is no auto-reply.
       </p>
+      <p className="mt-1 text-xs text-muted-foreground" data-testid="rep-settings-ai-limits">
+        Drafts can use up to 100 of this sub-account&apos;s 300 AI calls a day; the rest stays for sentiment.
+      </p>
       {load.state === "loading" && <Loading testId="rep-settings-ai-loading" />}
       {load.state === "error" && (
         <p className="mt-3 text-sm text-destructive" data-testid="rep-settings-ai-error">The Reviews AI settings could not be loaded.</p>

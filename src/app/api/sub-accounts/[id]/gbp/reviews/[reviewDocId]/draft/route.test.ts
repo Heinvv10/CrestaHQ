@@ -27,7 +27,7 @@ import { calls, callReply, docIdOf, reviewPath } from "@/test/gbp-reply-harness"
 import { syncListing } from "@/lib/gbp/sync/run";
 import { fakeLogPath } from "@/lib/reputation/ai/fake";
 import { DAILY_AI_CALL_CAP, sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
-import { resetDraftLimiter } from "@/lib/reputation/draft";
+import { DRAFT_DAILY_CAP, resetDraftLimiter } from "@/lib/reputation/draft";
 import { POST } from "./route";
 
 const ORIGINAL = { ...process.env };
@@ -86,6 +86,25 @@ describe("a draft", () => {
     expect(capped.body.code).toBe("daily_cap");
     expect(drafts()).toHaveLength(1);
     expect(mem.read(sentimentUsagePath(SA))).toMatchObject({ calls: DAILY_AI_CALL_CAP });
+  });
+
+  it(`drafts may use at most 100 of the daily AI calls, so sentiment always keeps the rest`, async () => {
+    expect(DRAFT_DAILY_CAP).toBe(100);
+    expect(DAILY_AI_CALL_CAP - DRAFT_DAILY_CAP).toBeGreaterThanOrEqual(200);
+    mem.seed(sentimentUsagePath(SA), { day: today(), calls: 150, draftsDay: today(), draftCalls: DRAFT_DAILY_CAP - 1 });
+    expect((await draft()).status).toBe(200);
+    expect(mem.read(sentimentUsagePath(SA))).toMatchObject({ day: today(), calls: 151, draftsDay: today(), draftCalls: DRAFT_DAILY_CAP });
+    const capped = await draft();
+    expect([capped.status, capped.body.code]).toEqual([429, "draft_cap"]);
+    expect(capped.body.error).toBe("Today's AI draft limit (100) is reached — try again tomorrow, or write your own.");
+    expect(drafts()).toHaveLength(1);
+    expect(mem.read(sentimentUsagePath(SA))).toMatchObject({ calls: 151, draftCalls: DRAFT_DAILY_CAP });
+  });
+
+  it("yesterday's draft count does not carry over, even if sentiment already started today's usage doc", async () => {
+    mem.seed(sentimentUsagePath(SA), { day: today(), calls: 5, draftsDay: "2020-01-01", draftCalls: DRAFT_DAILY_CAP });
+    expect((await draft()).status).toBe(200);
+    expect(mem.read(sentimentUsagePath(SA))).toMatchObject({ day: today(), calls: 6, draftsDay: today(), draftCalls: 1 });
   });
 
   it("a usage doc from an earlier day starts today's count again", async () => {
