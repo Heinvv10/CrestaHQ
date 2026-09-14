@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { OTHER_SA, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
-import { PUT } from "./route";
+import { AGENCY, OTHER_SA, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
+import { GET, PUT } from "./route";
 
 const put = async (body: unknown, uid = "uid_admin", sa = SA) => {
   const res = await PUT(asUser(`http://127.0.0.1:3100/api/sub-accounts/${sa}/reputation/ai-settings`, uid, "PUT", typeof body === "string" ? body : JSON.stringify(body)), {
@@ -20,11 +20,22 @@ const put = async (body: unknown, uid = "uid_admin", sa = SA) => {
 const config = (sa = SA) => mem.read(`subAccounts/${sa}`)?.reviewsAiConfig as Record<string, unknown> | null | undefined;
 const patchSub = (patch: Record<string, unknown>, sa = SA) => mem.seed(`subAccounts/${sa}`, { ...mem.read(`subAccounts/${sa}`)!, ...patch });
 
+const ORIGINAL = { ...process.env };
+const get = async (uid = "uid_collab") => {
+  const res = await GET(asUser(`http://127.0.0.1:3100/api/sub-accounts/${SA}/reputation/ai-settings`, uid), { params: Promise.resolve({ id: SA }) });
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+};
+
 beforeEach(() => {
   resetSync();
+  process.env.REVIEWS_AI_PROVIDER = "fake";
+  process.env.REVIEWS_AI_FAKE_AGENCY_ID = AGENCY;
   patchSub({ reviewsAiEnabledByAgency: true });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  process.env = { ...ORIGINAL };
+  vi.restoreAllMocks();
+});
 
 describe("saving guidelines", () => {
   it("stores the trimmed text with who and when, and returns it", async () => {
@@ -76,5 +87,27 @@ describe("who may", () => {
   it("writes only its own sub-account", async () => {
     await put({ replyGuidelines: "mine" });
     expect(config(OTHER_SA)).toBeUndefined();
+  });
+});
+
+describe("GET — what the Settings card shows", () => {
+  it("any member reads the gate, whether AI is configured here, and the guidelines", async () => {
+    await put({ replyGuidelines: "Be kind." });
+    const { status, body } = await get();
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ enabled: true, configured: true, replyGuidelines: "Be kind." });
+    expect(typeof body.updatedAt).toBe("string");
+  });
+
+  it("says not configured, gate off, and no guidelines — honestly", async () => {
+    delete process.env.REVIEWS_AI_PROVIDER;
+    delete process.env.OPENROUTER_API_KEY;
+    patchSub({ reviewsAiEnabledByAgency: false });
+    expect((await get()).body).toEqual({ enabled: false, configured: false, replyGuidelines: "", updatedAt: null });
+  });
+
+  it("refuses a non-member and another sub-account's admin", async () => {
+    expect((await get("uid_stranger")).status).toBe(403);
+    expect((await get("uid_other_admin")).status).toBe(403);
   });
 });
