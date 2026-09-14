@@ -64,8 +64,7 @@ const now = Date.now();
 test.beforeAll(async () => {
   await guard();
   const value = (await primaryRef().get()).data()?.reviewsAiEnabledByAgency;
-  await privateDoc("reviewsAiFakeLog").delete();
-  await privateDoc("sentimentLease").delete();
+  for (const id of ["reviewsAiFakeLog", "sentimentLease", "sentimentUsage"]) await privateDoc(id).delete();
   await setScenario(recentScenario(now));
   priorGate = { value };
   await primaryRef().update({ reviewsAiEnabledByAgency: true });
@@ -83,8 +82,7 @@ test.afterAll(async () => {
   await step(guard);
   if (errors.length) throw errors[0]; // never touch a doc the guard did not clear
   // The private docs carry no tenant fields; their parent was asserted above.
-  await step(() => privateDoc("reviewsAiFakeLog").delete());
-  await step(() => privateDoc("sentimentLease").delete());
+  for (const id of ["reviewsAiFakeLog", "sentimentLease", "sentimentUsage"]) await step(() => privateDoc(id).delete());
   const prior = priorGate;
   if (prior) {
     await step(() => primaryRef().update({ reviewsAiEnabledByAgency: prior.value === undefined ? FieldValue.delete() : prior.value }));
