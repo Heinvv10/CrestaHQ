@@ -572,8 +572,8 @@ served like `/widget.js` (`next.config.ts`).
 
 | Where | Who writes | Content |
 |---|---|---|
-| `gbpWidgets/{publicId}` (top level) | server only; no client rule → default deny | `agencyId, subAccountId, createdByUid, enabled, allowedOrigins, maxReviews, createdAt, updatedAt` |
-| `subAccounts/{id}.gbpWidgetMeta` | server only (member-readable) | `{publicId, enabled, allowedOrigins, maxReviews, updatedAt}` — the id is public by nature (it is in the snippet) |
+| `gbpWidgets/{publicId}` (top level) | server only; no client rule → default deny | `agencyId, subAccountId, createdByUid, enabled, allowedOrigins, maxReviews, layout, theme, createdAt, updatedAt` |
+| `subAccounts/{id}.gbpWidgetMeta` | server only (member-readable) | `{publicId, enabled, allowedOrigins, maxReviews, layout, theme, updatedAt}` — the id is public by nature (it is in the snippet) |
 
 - **One widget per sub-account.** `publicId` = 24 random bytes, base64url
   (32 chars) — opaque, never derived from a tenant id. Doc and meta change in
@@ -585,11 +585,18 @@ served like `/widget.js` (`next.config.ts`).
   entry (400 `invalid_origins`); at most 10 (400 `too_many_origins`).
   An empty list means no browser may read the feed (a server can).
 - **maxReviews** 1–50, default 12.
+- **layout** `carousel | grid | list | badge`, default `carousel`; **theme**
+  `light | dark`, default `light` (SP5 W1/W2). Both optional in the PUT body; any
+  other value is a 400 `invalid_body`. A PUT replaces the config, so leaving
+  one out saves the default. A widget saved before they existed has neither
+  field and reads (GET, feed, rotate) as `carousel` + `light` — exactly what it
+  rendered before; so does a stored value this build does not know
+  (`widgetDisplay` in `lib/gbp/feed/origins.ts`).
 - **No rating filter exists.** The PUT body accepts exactly `enabled`,
-  `allowedOrigins`, `maxReviews`; anything else — `minRating` included — is a
-  400 `invalid_body`, never silently ignored.
+  `allowedOrigins`, `maxReviews`, `layout`, `theme`; anything else —
+  `minRating` included — is a 400 `invalid_body`, never silently ignored.
 - **Rotate** (`POST …/gbp/widget/rotate`) issues a new id with the same
-  config and deletes the old doc — the old id 404s on the server at once
+  config (layout and theme included) and deletes the old doc — the old id 404s on the server at once
   (a cached copy may live up to a minute, see below). **Revoke**
   (`DELETE …/gbp/widget`) deletes the doc and clears the meta; it stays
   **ungated**, like disconnect, so a widget can always be taken down.
@@ -627,7 +634,8 @@ caller can send its own. Order: id shape → rate limit → resolve → origin �
 `Access-Control-Allow-Methods: GET, OPTIONS` for an allowed origin). Other
 methods are 405. The ETag is the sha256 of the body **without**
 `generatedAt`, so it is stable between syncs and changes with any review,
-reply, rating or freshness change.
+reply, rating, freshness or `display` change (a saved layout or theme
+revalidates every cached copy).
 
 **The origin allow-list is browser-level protection, not access control.** A
 request with no `Origin` header (a server, `curl`) gets the full body — the
@@ -640,6 +648,7 @@ thing standing between it and anyone who has the snippet.
   "listing": { "title": "…", "mapsUri": "…|null", "writeReviewUri": "…|null" } | null,
   "rating": { "average": 4.6, "count": 123 } | null,
   "source": { "name": "Google", "attribution": "Reviews from Google" },
+  "display": { "layout": "carousel" | "grid" | "list" | "badge", "theme": "light" | "dark" },
   "freshness": { "lastSuccessfulSyncAt": "ISO|null", "stale": true|false, "generatedAt": "ISO" },
   "reviews": [ { "id": "<gbpReviews doc id>",
                  "author": { "name": "…", "photoUrl": "…|null", "anonymous": false },
@@ -664,6 +673,10 @@ thing standing between it and anyone who has the snippet.
   `anonymous: true` and never get a photo (`photoUrl: null`). The newest 200 cache records are scanned per request (one
   single-field query, no composite index); in a cache full of tombstones the
   feed may hold fewer than `maxReviews` — never an invented one.
+- `display` (added in SP5 PR (e); additive, so `version` stays 1 — an embed
+  that predates it ignores it and shows the carousel) is the widget's layout
+  and theme, exactly those two keys via `feedDisplay`, on every body
+  including `unavailable`.
 - `rating` comes only from the last successful sync's summary, and only when
   Google reported both numbers (a listing with no reviews: `ok`, `rating:
   null`, `reviews: []`).
@@ -708,10 +721,25 @@ for the Velocity site (the dashboard card prints this with the real id):
   request carries no cookies (`credentials: "omit"`).
 - `ok` / `stale` → the fallback is replaced by: listing title, average
   (rounded to one decimal) + count, "Reviews from Google" linking to
-  `mapsUri`, "Last updated <date>" when stale, and a carousel. `data-state` is
-  then `ok` or `stale`. With a count but no reviews in the served window (e.g.
-  all older than 30 days) only the header and attribution show — never "no
-  reviews" under a count that says otherwise.
+  `mapsUri`, "Last updated <date>" when stale, and the reviews in the feed's
+  `display.layout`. `data-state` is then `ok` or `stale`. With a count but no
+  reviews in the served window (e.g. all older than 30 days) only the header
+  and attribution show — never "no reviews" under a count that says otherwise.
+- Layouts (root class `chq-reviews--<layout>`):
+  - `carousel` — the carousel below, unchanged; also used for a missing,
+    `null` or unknown `display.layout`.
+  - `grid` — every served review as a card (`ul.chq-reviews__cards` >
+    `figure.chq-reviews__card`), CSS grid `repeat(auto-fill, minmax(16rem, 1fr))`,
+    no motion, no controls.
+  - `list` — the same cards stacked vertically.
+  - `badge` — the header only, plus the average as stars and "Write a review"
+    linking to `writeReviewUri` when it is http(s). **No review text**, no
+    author, no reply.
+- The Google attribution (`.chq-reviews__source`) renders in **every** layout;
+  there is no setting to remove it (see Google policy below).
+- `display.theme: "dark"` adds `chq-reviews--dark` (dark background, light
+  text, adjusted borders, links and buttons); `light`, missing or unknown is
+  today's look, which inherits the site's colours.
 - `unavailable`, any non-2xx, a network error, a body that is not JSON or an
   unknown `version` → the fallback is left untouched, `data-state="fallback"`.
 - Feed data reaches the page through `textContent` only (never `innerHTML`);
@@ -729,7 +757,15 @@ for the Velocity site (the dashboard card prints this with the real id):
   rotates on its own and `polite` otherwise.
 - **Limitation:** containers are found once, when the script runs. A
   container added to the page later (e.g. by a client-side router) keeps its
-  static fallback.
+  static fallback — unless the page calls
+  `window.crestahqReviews.mount(container)`, which mounts it with
+  `cache: "no-cache"` (a revalidation, so a just-saved layout shows) and does
+  nothing for a container that already has a `data-state`. The dashboard
+  preview is its one caller; existing sites are unaffected.
+- The file is ~360 lines, past the 300-line guideline, deliberately: a site
+  includes ONE `<script>`, and `public/` has no build step, so a second file
+  would be a second request the first must chain-load (a new failure mode on
+  every customer site). It stays one readable, unminified file.
 - CSS is injected once, namespaced `.chq-reviews…`; the site can override it.
 
 Integration example (loading, live, stale label, feed-down fallback, no-JS
@@ -819,7 +855,17 @@ Below the panel, for admins, the public widget card (`widget-section.tsx`):
 `gbp-widget-errors` (the server's reason per rejected origin),
 `gbp-widget-snippet`, `gbp-widget-feed-url`, `gbp-widget-rotate`,
 `gbp-widget-revoke`; with the gate off only Revoke — each rendered by
-`components/gbp/widget-section.test.ts`.
+`components/gbp/widget-section.test.ts`. SP5 PR (e) adds `gbp-widget-layout`
+(Carousel / Grid / List / Badge) and `gbp-widget-theme` (Light / Dark), saved
+with Save, and `gbp-widget-preview` — "Preview (saved settings)"
+(`widget-preview.tsx`): the real embed script against this widget's feed,
+with `gbp-widget-preview-loading`, `gbp-widget-preview-fallback` (the feed
+refused or had nothing — e.g. switched off) and `gbp-widget-preview-error`
+(the script did not load) — each rendered by
+`components/gbp/widget-section.display.test.ts`. The preview's feed request
+is same-origin, and browsers send no `Origin` on a same-origin GET, so the
+feed serves it without the dashboard on the allow-list (asserted in
+`gbp-widget-layouts.spec.ts`); the allow-list is unchanged.
 Every state above has a jsdom test in `components/gbp/google-business-panel.test.ts`
 (the disconnected → Connect → callback round trip itself is E2E-only, in
 `e2e/specs/gbp-connect-select.spec.ts`).
@@ -836,7 +882,8 @@ keys plus `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100`, `GBP_PROVIDER=fake`,
 set +a; pnpm build && pnpm exec playwright test`. The GBP specs
 (`gbp-connect-select`, `gbp-sync` — E2E 2, `gbp-reconcile` — E2E 3,
 `gbp-revoked` — E2E 6 sync half, `gbp-public-feed` — E2E 4, `gbp-feed-stale` —
-E2E 6 feed half, `gbp-reply` — E2E 5, `gbp-review-request` — E2E 7) skip themselves only when
+E2E 6 feed half, `gbp-reply` — E2E 5, `gbp-review-request` — E2E 7,
+`gbp-widget-layouts` — SP5 W1/W2) skip themselves only when
 `PLAYWRIGHT_BASE_URL` points at a deployed target (the production smoke job),
 where the fake is refused by design. The sync specs seed the connection and
 scenario on the fixture primary through `e2e/lib/gbp.ts` and drive the cron
