@@ -295,6 +295,14 @@ export interface Note {
    * every note written before SP2.
    */
   source?: "conversation";
+  /**
+   * Members @mentioned in the note (picked in the composer and still named in
+   * the text when saved). Absent when nobody was mentioned.
+   */
+  mentionedUids?: string[];
+  /** Set server-side when the mention tasks were created, so they are
+   *  created once per note. */
+  mentionTasksAt?: Timestamp | FieldValue | null;
 }
 
 /**
