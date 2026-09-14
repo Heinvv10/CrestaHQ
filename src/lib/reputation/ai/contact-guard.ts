@@ -19,7 +19,8 @@
  *     IDNs) or punycode (`xn--…`); "e.g.", "a.m.", "1.5" are not domains;
  *   - phone: 7+ digits within 25 characters (number words "oh".."nine" read as
  *     digits), AFTER masking dates, times, prices, years, thousands, units and
- *     order / ref / ticket / invoice numbers; +27 and a leading 0 are the same
+ *     order / ref / ticket / invoice numbers — never masking a phone-shaped run
+ *     (see maskNonPhones); +27 and a leading 0 are the same
  *     number; two numbers in the guidelines split at "/", " or ", ",", ";" or
  *     a line break;
  *   - USSD (`*120*555#`, spaced too); `@handle` not part of an email;
@@ -76,22 +77,53 @@ export function normaliseForContacts(text: string): string {
     .replace(new RegExp(`([${LN}])\\s+dot\\s+(?=[${L}]{2,})`, "gu"), "$1.");
 }
 
+/** 10 digits from 0, or an international 27 / 0027 form — a South African phone however it is labelled. */
+const PHONE_SHAPE = /^(?:0\d{9}|27\d{9}|0027\d{9})$/;
+const onlyDigits = (m: string) => m.replace(/\D/g, "");
+/** The digits of the run (digits joined by up to 3 of " ./()-") that overlaps [from, to). */
+function runDigits(s: string, from: number, to: number): string {
+  for (const r of s.matchAll(/\d(?:[ ./()-]{0,3}\d)*/g)) {
+    if (r.index! < to && r.index! + r[0].length > from) return onlyDigits(r[0]);
+  }
+  return "";
+}
+
 /**
  * Digits in dates, times, prices, years, big numbers, units and order/ref
  * numbers — none of them a phone. A year or a thousands group next to other
- * digits is left alone: it may be part of a number.
+ * digits is left alone: it may be part of a number. And nothing is masked
+ * that is, or is the start of, a phone: a run with a phone's shape (0 + 9
+ * digits, 27 + 9), 9+ digits from 0/27 behind a ref / # / R label, or a time
+ * followed within 3 characters by more digits (not another time) that make 7+.
  */
 function maskNonPhones(t: string): string {
   const x = (m: string) => m.replace(/\d/g, "x");
+  /** Mask unless the run it sits in has a phone's shape (or, when `labelled`, 9+ digits from 0 / 27). */
+  const unlessPhone = (labelled: boolean) => (m: string, ...rest: unknown[]) => {
+    const at = rest[rest.length - 2] as number;
+    const whole = rest[rest.length - 1] as string;
+    const run = runDigits(whole, at, at + m.length);
+    const own = onlyDigits(m);
+    if (PHONE_SHAPE.test(run) || PHONE_SHAPE.test(own)) return m;
+    if (labelled && own.length >= 9 && /^(?:0|27)/.test(own)) return m;
+    return x(m);
+  };
+  const timeUnlessPhone = (m: string, ...rest: unknown[]) => {
+    const at = rest[rest.length - 2] as number;
+    const whole = rest[rest.length - 1] as string;
+    const tail = /^[^\d\n]{0,3}(\d[\d ./-]*)/.exec(whole.slice(at + m.length));
+    if (tail && !/^\d{1,2}[:h]\d{2}/.test(tail[1]) && onlyDigits(m).length + onlyDigits(tail[1]).length >= 7) return m;
+    return x(m);
+  };
   return t
-    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, x)
-    .replace(/\b\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?\b/g, x)
-    .replace(/\b\d{1,2}[:h]\d{2}(?:\s?[ap]\.?m\.?)?/g, x)
-    .replace(/\br\s?\d{1,3}(?:[ ,]\d{3})*(?:[.,]\d{2})?\b/g, x)
-    .replace(/\b(?:order|ref(?:erence)?|ticket|invoice|inv|account|acc|case)\b\s*(?:no\.?|number|#)?\s*[:#]?\s*[a-z]*[-\d][\w-]*/g, x)
-    .replace(/#\s?\d[\d-]*/g, x)
-    .replace(/(?<!\d[ ./-]?)\b(?:19|20)\d{2}\b(?![ ./-]?\d)/g, x)
-    .replace(/(?<!\d[ ./-]?)\b[1-9]\d{0,2}(?:[ ,]\d{3})+(?![ ,-]?\d)/g, x)
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, unlessPhone(false))
+    .replace(/\b\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?\b/g, unlessPhone(false))
+    .replace(/\b\d{1,2}[:h]\d{2}(?:\s?[ap]\.?m\.?)?/g, timeUnlessPhone)
+    .replace(/\br\s?\d{1,3}(?:[ ,]\d{3})*(?:[.,]\d{2})?\b/g, unlessPhone(true))
+    .replace(/\b(?:order|ref(?:erence)?|ticket|invoice|inv|account|acc|case)\b\s*(?:no\.?|number|#)?\s*[:#]?\s*[a-z]*[-\d][\w-]*/g, unlessPhone(true))
+    .replace(/#\s?\d[\d-]*/g, unlessPhone(true))
+    .replace(/(?<!\d[ ./-]?)\b(?:19|20)\d{2}\b(?![ ./-]?\d)/g, unlessPhone(false))
+    .replace(/(?<!\d[ ./-]?)\b[1-9]\d{0,2}(?:[ ,]\d{3})+(?![ ,-]?\d)/g, unlessPhone(false))
     .replace(/\b\d+(?:[.,]\d+)?\s?(?:mbps|gbps|kbps|mb|gb|km|%|homes|customers|years|yrs|hours|hrs|minutes|mins|days|weeks|months)\b/g, x);
 }
 
