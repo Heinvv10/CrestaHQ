@@ -6,9 +6,10 @@ import { leadstackUpserter, loadState, runImport, type Env } from "./run.ts";
 import type { CaseDetail, CaseRow, ContactDetail } from "./qcontact.ts";
 import type { UpsertBody } from "./map.ts";
 import type { DealEnsurer } from "./deals.ts";
+import type { StageSyncer } from "./stage-sync.ts";
 
-const row = (id: number, created: string): CaseRow =>
-  ({ id, label: `FT${id}`, created_at: created, status: "New", category: "New Installation" });
+const row = (id: number, created: string, status: string | null = "New"): CaseRow =>
+  ({ id, label: `FT${id}`, created_at: created, status, category: "New Installation" });
 
 function fakeQc(rows: CaseRow[], phones: Record<number, string | null> = {}) {
   return {
@@ -205,5 +206,136 @@ describe("leadstackUpserter", () => {
     const fetchImpl = vi.fn(async () => new Response('{"error":"ambiguous_phone"}', { status: 409 }));
     const r = await leadstackUpserter(env, fetchImpl as unknown as typeof fetch)(body);
     expect(r).toEqual({ ok: false, error: expect.stringContaining("HTTP 409") });
+  });
+});
+
+describe("runImport with syncStage", () => {
+  it("syncStage undefined (sync off) makes no extra upsert calls and leaves stage counters at 0", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, dryRun: false, log });
+    const s = await runImport({ qc: fakeQc([row(1, "2026-09-01")]), view: "v", statePath, upsert, dryRun: false, log });
+    expect(s).toMatchObject({ sent: 1, stageSynced: 0, stageUnchanged: 0 });
+    expect(upsert).toHaveBeenCalledTimes(1); // only the fresh-case upsert, no stage-sync pass at all
+  });
+
+  it("dry-run calls neither the stage-sync upsert nor syncStage", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(1, "2026-09-01", "Assigned")]),
+      view: "v", statePath, upsert, syncStage, dryRun: true, log,
+    });
+    expect(s.mode).toBe("dry-run");
+    expect(syncStage).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("moves the deal for a case whose status maps to a different stage", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "Assigned")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s).toMatchObject({ stageSynced: 1, stageUnchanged: 0, failed: 0 });
+    expect(syncStage).toHaveBeenCalledWith({ contactId: "contact-2", status: "Assigned" });
+  });
+
+  it("counts stageUnchanged when syncStage reports the stage already matches", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "unchanged" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "New")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 1, failed: 0 });
+  });
+
+  it("counts an unknown status as skipped, without guessing a stage", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "unknown_status" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "Some Weird Status")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s).toMatchObject({ skipped: { unknown_status: 1 }, failed: 0, stageSynced: 0, stageUnchanged: 0 });
+  });
+
+  it("a contact with no deal is a no-op: not counted as synced, unchanged, skipped or failed", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "no_deal" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "Assigned")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 0, failed: 0, skipped: {} });
+  });
+
+  it("a case with no phone is skipped by the stage-sync pass too (no contact to sync)", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-2" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "Assigned")], { 2: null }),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(syncStage).not.toHaveBeenCalled();
+    expect(s).toMatchObject({ stageSynced: 0, stageUnchanged: 0 });
+  });
+
+  it("a failed stage-sync upsert counts as failed and the loop continues to the next case", async () => {
+    const callCounts = new Map<string, number>();
+    const upsert = vi.fn(async (body: UpsertBody) => {
+      const caseId = body.custom_fields.qcontact_case_id;
+      const n = (callCounts.get(caseId) ?? 0) + 1;
+      callCounts.set(caseId, n);
+      // Succeeds on the fresh-loop call (1st); case 2's stage-sync call (2nd) fails.
+      if (caseId === "2" && n === 2) return { ok: false as const, error: "HTTP 500" };
+      return { ok: true as const, contactId: `contact-${caseId}` };
+    });
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "synced" as const }));
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "Assigned"), row(3, "2026-09-03", "Assigned")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s.sent).toBe(2); // both fresh-loop upserts succeeded
+    expect(s.failed).toBe(1); // case 2's stage-sync upsert failed
+    expect(s.stageSynced).toBe(1); // case 3's stage-sync went through
+    expect(syncStage).toHaveBeenCalledTimes(1); // never reached for case 2
+  });
+
+  it("a failed PATCH (syncStage returning ok:false) counts as failed and the loop continues", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: "HTTP 400 patching deal" })
+      .mockResolvedValueOnce({ ok: true, action: "synced" });
+    await runImport({ qc: fakeQc([]), view: "v", statePath, upsert, syncStage, dryRun: false, log });
+    const s = await runImport({
+      qc: fakeQc([row(2, "2026-09-02", "Assigned"), row(3, "2026-09-03", "Assigned")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s.failed).toBe(1);
+    expect(s.stageSynced).toBe(1);
+    expect((await loadState(statePath))?.seen.sort()).toEqual([2, 3]);
+  });
+
+  it("stage-sync never marks a case seen/unseen, even on a PATCH failure", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    await runImport({ qc: fakeQc([row(5, "2026-09-01", "New")]), view: "v", statePath, upsert, dryRun: false, log });
+    await runImport({ qc: fakeQc([row(5, "2026-09-01", "New")]), view: "v", statePath, upsert, dryRun: false, log });
+    const before = (await loadState(statePath))?.seen;
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: false as const, error: "boom" }));
+    const s = await runImport({
+      qc: fakeQc([row(5, "2026-09-01", "Escalated")]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log,
+    });
+    expect(s.fresh).toBe(0); // case 5 already seen, not re-sent
+    expect((await loadState(statePath))?.seen).toEqual(before); // unchanged despite the syncStage failure
   });
 });

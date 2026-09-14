@@ -19,6 +19,7 @@ import { readFile, writeFile, rename } from "node:fs/promises";
 import { QContactClient, type CaseRow } from "./qcontact.ts";
 import { mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
+import { leadstackStageSyncer, type StageSyncer } from "./stage-sync.ts";
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
 
 export type Env = {
@@ -34,6 +35,8 @@ export type Env = {
   QCONTACT_DEAL_STAGE: string;
   /** Sent as `assigned_to_uid`; must be an active sub-account member's uid or the deal create 400s. */
   QCONTACT_DEAL_OWNER_UID: string | undefined;
+  /** "1" (or any value other than unset/"0") turns on deal-stage syncing (see stage-sync.ts). Default OFF. */
+  QCONTACT_SYNC_STAGES: string;
 };
 
 export type State = { seen: number[]; updatedAt: string };
@@ -45,6 +48,8 @@ export type Summary = {
   sent: number;
   skipped: Record<string, number>;
   failed: number;
+  stageSynced: number;
+  stageUnchanged: number;
 };
 
 export type Log = (line: string) => void;
@@ -66,6 +71,7 @@ export function readEnv(env: NodeJS.ProcessEnv): Env {
     QCONTACT_DEAL_PIPELINE_ID: env.QCONTACT_DEAL_PIPELINE_ID || undefined,
     QCONTACT_DEAL_STAGE: env.QCONTACT_DEAL_STAGE ?? "new_request",
     QCONTACT_DEAL_OWNER_UID: env.QCONTACT_DEAL_OWNER_UID || undefined,
+    QCONTACT_SYNC_STAGES: env.QCONTACT_SYNC_STAGES ?? "0",
   };
 }
 
@@ -128,17 +134,19 @@ export async function runImport(opts: {
   upsert: Upserter;
   /** Unset = no deal calls at all (matches pre-existing behaviour). */
   ensureDeal?: DealEnsurer;
+  /** Unset = no stage-sync calls at all (matches pre-existing behaviour). */
+  syncStage?: StageSyncer;
   dryRun: boolean;
   log: Log;
 }): Promise<Summary> {
-  const { qc, view, statePath, upsert, ensureDeal, dryRun, log } = opts;
+  const { qc, view, statePath, upsert, ensureDeal, syncStage, dryRun, log } = opts;
   const rows: CaseRow[] = await qc.listView(view);
   const state = await loadState(statePath);
 
   if (state === null) {
     if (!dryRun) await saveState(statePath, { seen: rows.map((r) => r.id), updatedAt: "" });
     log(`seed: recorded ${rows.length} existing cases as seen; nothing sent`);
-    return { mode: "seed", inView: rows.length, fresh: 0, sent: 0, skipped: {}, failed: 0 };
+    return { mode: "seed", inView: rows.length, fresh: 0, sent: 0, skipped: {}, failed: 0, stageSynced: 0, stageUnchanged: 0 };
   }
 
   const seen = new Set(state.seen);
@@ -146,6 +154,7 @@ export async function runImport(opts: {
   const summary: Summary = {
     mode: dryRun ? "dry-run" : "import",
     inView: rows.length, fresh: fresh.length, sent: 0, skipped: {}, failed: 0,
+    stageSynced: 0, stageUnchanged: 0,
   };
 
   for (const row of fresh) {
@@ -193,6 +202,46 @@ export async function runImport(opts: {
     await saveState(statePath, { seen: [...seen], updatedAt: "" });
     log(`sent ${row.id} (${row.label})`);
   }
+
+  // Stage sync runs over EVERY case in the view (seen or not), independent
+  // of the fresh-case loop above — a case's status can keep changing on
+  // QContact's side long after its deal was created. Never touches `seen`.
+  if (syncStage) {
+    for (const row of rows) {
+      if (dryRun) {
+        log(`would sync stage ${row.id} (${row.label}): status=${row.status ?? "null"}`);
+        continue;
+      }
+      const detail = await qc.getCase(row.id);
+      const contact = detail.lookup_contact_id ? await qc.getContact(detail.lookup_contact_id) : null;
+      const mapped = mapCase(detail, contact);
+      if (!mapped.ok) continue; // no phone/name → no contact → no deal to sync
+
+      const upserted = await upsert(mapped.body);
+      if (!upserted.ok) {
+        summary.failed++;
+        log(`FAILED stage-sync upsert ${row.id} (${row.label}): ${upserted.error}`);
+        continue;
+      }
+
+      const result = await syncStage({ contactId: upserted.contactId, status: row.status });
+      if (!result.ok) {
+        summary.failed++;
+        log(`FAILED stage ${row.id} (${row.label}): ${result.error}`);
+        continue;
+      }
+      if (result.action === "synced") {
+        summary.stageSynced++;
+        log(`stage synced ${row.id} (${row.label})`);
+      } else if (result.action === "unchanged") {
+        summary.stageUnchanged++;
+      } else if (result.action === "unknown_status") {
+        summary.skipped.unknown_status = (summary.skipped.unknown_status ?? 0) + 1;
+        log(`skip stage ${row.id} (${row.label}): unknown status ${row.status}`);
+      }
+    }
+  }
+
   return summary;
 }
 
@@ -213,9 +262,17 @@ async function main(): Promise<void> {
         QCONTACT_DEAL_OWNER_UID: env.QCONTACT_DEAL_OWNER_UID,
       })
     : undefined;
+  const syncStage =
+    env.QCONTACT_DEAL_PIPELINE_ID && env.QCONTACT_SYNC_STAGES !== "0"
+      ? leadstackStageSyncer({
+          LEADSTACK_API_URL: env.LEADSTACK_API_URL,
+          LEADSTACK_API_KEY: env.LEADSTACK_API_KEY,
+          QCONTACT_DEAL_PIPELINE_ID: env.QCONTACT_DEAL_PIPELINE_ID,
+        })
+      : undefined;
   const summary = await runImport({
     qc, view: env.QCONTACT_IMPORT_VIEW, statePath: env.QCONTACT_IMPORT_STATE,
-    upsert: leadstackUpserter(env), ensureDeal, dryRun,
+    upsert: leadstackUpserter(env), ensureDeal, syncStage, dryRun,
     log: (l) => process.stdout.write(`${l}\n`),
   });
   process.stdout.write(`${JSON.stringify(summary)}\n`);
