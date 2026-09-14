@@ -10,6 +10,7 @@ export interface OverviewResponse extends Overview {
   lastErrorKind: string | null;
   lastReconciliation: string | null;
   truncated: { reviews: boolean; requests: boolean };
+  reviewsAi: { enabled: boolean; configured: boolean };
   checklist: {
     googleConnected: boolean;
     listingSelected: boolean;

@@ -7,6 +7,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { HealthBadge, HealthBanner } from "@/components/gbp/sync-health";
 import { RANGE_PRESETS, type RangePreset } from "@/lib/reputation/overview";
 import { Checklist, RequestsCard, ResponseCard } from "./overview-cards";
+import { SentimentCard } from "./overview-sentiment";
 import { Distribution, Tiles, Trend } from "./overview-tiles";
 import { RANGE_LABEL } from "./format";
 import type { OverviewResponse } from "./types";
@@ -70,6 +71,8 @@ export function ReputationOverview() {
   const { subAccountId, isAdmin } = useSubAccount();
   const [range, setRange] = useState<RangePreset>("90d");
   const [load, setLoad] = useState<Load>({ state: "loading" });
+  /** Bumped after "Analyse now" so the counts refresh in place. */
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -80,7 +83,7 @@ export function ReputationOverview() {
       setLoad(res?.ok && data?.requests ? { state: "ready", data } : { state: "error" });
     })();
     return () => controller.abort();
-  }, [subAccountId, range]);
+  }, [subAccountId, range, reload]);
 
   const picker = (
     <select
@@ -109,12 +112,24 @@ export function ReputationOverview() {
         </p>
       )}
       {load.state === "error" && <Note testId="rep-state-error">The overview could not be loaded. Please try again.</Note>}
-      {load.state === "ready" && <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} />}
+      {load.state === "ready" && (
+        <Ready data={load.data} subAccountId={subAccountId} isAdmin={isAdmin} onAnalysed={() => setReload((n) => n + 1)} />
+      )}
     </div>
   );
 }
 
-function Ready({ data, subAccountId, isAdmin }: { data: OverviewResponse; subAccountId: string; isAdmin: boolean }) {
+function Ready({
+  data,
+  subAccountId,
+  isAdmin,
+  onAnalysed,
+}: {
+  data: OverviewResponse;
+  subAccountId: string;
+  isAdmin: boolean;
+  onAnalysed: () => void;
+}) {
   const r = data.reviews;
   const empty = (r ? r.count === 0 : true) && data.requests.sent === 0;
   return (
@@ -135,9 +150,16 @@ function Ready({ data, subAccountId, isAdmin }: { data: OverviewResponse; subAcc
       {r && (
         <div className="grid gap-4 md:grid-cols-2">
           <Distribution reviews={r} />
-          <ResponseCard data={data} />
+          <SentimentCard
+            subAccountId={subAccountId}
+            isAdmin={isAdmin}
+            reviewsAi={data.reviewsAi}
+            sentiment={r.sentiment}
+            onAnalysed={onAnalysed}
+          />
         </div>
       )}
+      {r && <ResponseCard data={data} />}
       <RequestsCard data={data} />
       {data.truncated.requests && (
         <p className="text-xs text-muted-foreground" data-testid="rep-requests-truncated">Request figures cover the newest 2,000 requests in this range only.</p>
