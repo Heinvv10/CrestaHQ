@@ -43,6 +43,10 @@ describe("applyStatusChange — toast mapping", () => {
     ["email_not_configured", "Resend isn't configured on this deployment"],
     ["contact_opted_out", "the visitor opted out of email"],
     ["send_failed", "the email send failed (check Vercel logs)"],
+    ["test_mode", "this is a test-mode event"],
+    // "no_contact" has no dedicated case in notifySkipDetail's switch — it
+    // falls through to the same default as an unrecognized reason.
+    ["no_contact", "couldn't reach the visitor by email"],
   ])("maps skip reason %s to its detail", async (reason, detail) => {
     const outcome = await applyStatusChange(
       "evt1",
