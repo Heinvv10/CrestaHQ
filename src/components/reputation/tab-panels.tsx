@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Loader2, Lock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
+import { useGoogleConfigured } from "@/components/gbp/google-business-panel";
 import { ReviewsSection } from "@/components/gbp/reviews-section";
 import { WidgetSection } from "@/components/gbp/widget-section";
 
@@ -35,6 +36,8 @@ const locked = (
 
 export function ReputationReviews() {
   const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
+  // Sync and reply need the deployment's Google OAuth client — asked for admins only, as on the Google Business page.
+  const configured = useGoogleConfigured(subAccountId, !loading && subAccount?.googleEnabledByAgency === true && isAdmin);
   if (loading || !subAccount) return <Loading testId="rep-reviews-loading" />;
   if (subAccount.googleEnabledByAgency !== true) return <Note testId="rep-reviews-gate-off">{locked}</Note>;
   const meta = subAccount.googleConnectionMeta ?? null;
@@ -49,9 +52,20 @@ export function ReputationReviews() {
       </Note>
     );
   }
+  if (isAdmin && configured === "loading") return <Loading testId="rep-reviews-loading" />;
   const reconnect = meta.reconnectRequired === true;
-  // Members read; admins also sync and reply — exactly as on the Google Business page.
-  return <ReviewsSection subAccountId={subAccountId} canSync={isAdmin && !reconnect} reconnect={reconnect} />;
+  // Members read; admins also sync and reply — never offered when the deployment cannot do either.
+  // "unknown" (the check itself failed) does not block, as on the Google Business page; the routes still refuse.
+  return (
+    <>
+      {configured === "no" && (
+        <Note testId="rep-reviews-not-configured">
+          Google isn&apos;t configured on this deployment, so reviews can&apos;t be synced or replied to here. The reviews already synced are shown.
+        </Note>
+      )}
+      <ReviewsSection subAccountId={subAccountId} canSync={isAdmin && !reconnect && configured !== "no"} reconnect={reconnect} />
+    </>
+  );
 }
 
 export function ReputationWidgets() {

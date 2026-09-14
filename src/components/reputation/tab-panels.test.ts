@@ -37,9 +37,20 @@ const connected = (over: Record<string, unknown> = {}) => ({
 
 let container: HTMLDivElement;
 let root: Root;
+/** GET /google/status — is Google OAuth configured on this deployment? */
+let configured: boolean | "fail" | "pending";
+const fetchMock = vi.fn();
 beforeEach(() => {
   Object.assign(ctx, { isAdmin: true, loading: false, subAccount: connected() });
   seen.reviews.length = 0;
+  configured = true;
+  fetchMock.mockReset().mockImplementation(async (url: string) => {
+    if (url !== "/api/sub-accounts/sa1/google/status") throw new Error(`unexpected fetch ${url}`);
+    if (configured === "pending") return new Promise(() => {});
+    if (configured === "fail") throw new Error("network");
+    return { ok: true, json: async () => ({ configured }) };
+  });
+  vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.append(container);
@@ -84,10 +95,31 @@ describe("Reviews tab", () => {
     expect(seen.reviews.at(-1)).toEqual({ subAccountId: "sa1", canSync: true, reconnect: false });
   });
 
-  it("member: read-only", async () => {
+  it("member: read-only, and the deployment check is not even asked", async () => {
     ctx.isAdmin = false;
     await render(ReputationReviews);
     expect(seen.reviews.at(-1)).toEqual({ subAccountId: "sa1", canSync: false, reconnect: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("admin on a deployment without Google OAuth: reviews readable, no Sync/Reply that can only fail", async () => {
+    configured = false;
+    await render(ReputationReviews);
+    expect(seen.reviews.at(-1)).toEqual({ subAccountId: "sa1", canSync: false, reconnect: false });
+    expect(byId("rep-reviews-not-configured")?.textContent).toContain("Google isn't configured on this deployment");
+  });
+
+  it("admin while the deployment check is pending: loading, nothing offered yet", async () => {
+    configured = "pending";
+    await render(ReputationReviews);
+    expect(byId("rep-reviews-loading")).not.toBeNull();
+    expect(byId("stub-reviews")).toBeNull();
+  });
+
+  it("admin when the check itself fails: not blocked (the routes still refuse) — as on the Google Business page", async () => {
+    configured = "fail";
+    await render(ReputationReviews);
+    expect(seen.reviews.at(-1)).toMatchObject({ canSync: true });
   });
 
   it("reconnect needed: cached reviews, labelled, no sync", async () => {
