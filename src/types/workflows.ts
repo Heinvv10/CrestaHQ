@@ -283,7 +283,9 @@ export interface TagConfig {
 }
 export interface MoveStageConfig {
   stage: string;
-  pipelineId?: string; // builder scoping only; the step writes contact.pipelineStage
+  /** The step always writes contact.pipelineStage; with a pipeline set it
+   *  also moves the contact's most recently updated open deal in it. */
+  pipelineId?: string;
 }
 export interface UpdateFieldConfig {
   field: string;
@@ -292,6 +294,9 @@ export interface UpdateFieldConfig {
 export interface CreateTaskConfig {
   title: string;
   dueInDays?: number;
+  /** Honoured only while the uid is an ACTIVE member of the sub-account;
+   *  otherwise the task is created unassigned. */
+  assignedToUid?: string | null;
 }
 /** Who an Internal notification step emails. Legacy configs predate this
  *  field — the engine treats a missing value like "custom" (use `to`, else

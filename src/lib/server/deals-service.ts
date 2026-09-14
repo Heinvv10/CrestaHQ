@@ -354,6 +354,12 @@ export async function updateDealServerSide(opts: {
    * pass this so a foreign id can't cross tenants.
    */
   expectedSubAccountId?: string;
+  /**
+   * Set when a workflow step makes the move: how many workflow-made deal
+   * moves led here. Carried on the triggers' context so the next run's
+   * move_stage can refuse to extend a cycle (see the engine's execMoveStage).
+   */
+  workflowDepth?: number;
 }): Promise<DealWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`deals/${opts.dealId}`);
@@ -482,6 +488,9 @@ export async function updateDealServerSide(opts: {
         pipelineId,
         fromStage: previousStage ?? null,
         toStage,
+        ...(opts.workflowDepth !== undefined
+          ? { workflowDepth: opts.workflowDepth }
+          : {}),
       },
     };
     fireDealTrigger({ ...base, type: "pipeline.stage.changed" });

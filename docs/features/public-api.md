@@ -197,6 +197,13 @@ and cancel email.
   return `409` after its other fields were already written — re-`GET` the
   event and retry.
 
+## Deals: assignee
+
+`POST /v1/deals` accepts an optional `assigned_to_uid`: it must be an
+ACTIVE member of the key's sub-account, else **`400`** `invalid_request`.
+Absent or `null` creates the deal unassigned. It is read-only on
+`PATCH /v1/deals/:id` (silently ignored there, like any unknown key).
+
 ## Webhooks
 
 Outbound webhooks let the sub-account react to platform events (contact created, deal moved, event booked, …) without polling.

@@ -327,6 +327,47 @@ describe("applySnapshot — pipeline ids do not cross sub-accounts", () => {
   });
 });
 
+describe("applySnapshot — task assignees do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+
+  it("nulls create_task.config.assignedToUid, keeps the rest of the step", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [
+          {
+            sourceId: "wf_src",
+            name: "Assigned",
+            status: "active",
+            trigger: { type: "contact.tag.added", filters: { all: [] } },
+            startNodeId: "n1",
+            nodes: {
+              n1: {
+                id: "n1",
+                type: "create_task",
+                config: { title: "Call back", dueInDays: 2, assignedToUid: "u_src_member" },
+                next: null,
+              },
+            },
+          },
+        ] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const wf = written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      nodes: Record<string, { config: Record<string, unknown> }>;
+    };
+    expect(wf.nodes.n1.config).toEqual({
+      title: "Call back",
+      dueInDays: 2,
+      assignedToUid: null,
+    });
+  });
+});
+
 describe("applySnapshot — booking page slugs do not cross sub-accounts", () => {
   const scope = { agencyId: "ag_1", createdByUid: "u_1" };
 

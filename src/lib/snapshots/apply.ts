@@ -54,6 +54,10 @@ function sanitizeNodes(
       // Pipeline ids are per sub-account; the target has its own set. Leave
       // the stage (default-pipeline ids are shared) and drop the scoping.
       out[id] = { ...node, config: { ...node.config, pipelineId: null } };
+    } else if (node.type === "create_task" && node.config.assignedToUid) {
+      // A member uid is the source's; one who also sits on the target (say
+      // the agency owner) would silently start receiving its tasks.
+      out[id] = { ...node, config: { ...node.config, assignedToUid: null } };
     } else {
       out[id] = node;
     }

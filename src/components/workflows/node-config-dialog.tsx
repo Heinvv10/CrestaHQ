@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import { NODE_LABELS } from "@/lib/workflows/catalog";
 import { ConditionsEditor } from "./conditions-editor";
@@ -408,13 +409,17 @@ export function NodeConfigDialog({
           )}
 
           {step.type === "move_stage" && (
-            <Field label="Move contact to stage">
+            <Field
+              label="Move contact to stage"
+              hint="With a pipeline chosen, the contact's most recently updated open deal in it moves too."
+            >
               <PipelineTriggerConfig
                 pipelineId={str("pipelineId") || null}
                 stageId={str("stage") || null}
                 withStage
                 stagePlaceholder="Pick a stage"
                 stageLabel={(l) => l}
+                noPipelineLabel="Contact only (no deal)"
                 onChange={(n) =>
                   set({ pipelineId: n.pipelineId ?? "", stage: n.stageId ?? "" })
                 }
@@ -457,6 +462,16 @@ export function NodeConfigDialog({
                   className="w-28"
                   value={Number(cfg.dueInDays ?? 1)}
                   onChange={(e) => set({ dueInDays: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="Assign to"
+                hint="If this person is no longer a member when the step runs, the task is created unassigned."
+              >
+                <AssigneeSelect
+                  id="create-task-assignee"
+                  value={(cfg.assignedToUid as string | null) ?? null}
+                  onChange={(uid) => set({ assignedToUid: uid })}
                 />
               </Field>
             </>
