@@ -40,6 +40,7 @@ vi.mock("@/lib/server/usage-meter", () => ({
 vi.mock("@/lib/automations/unsubscribe-token", () => ({ buildUnsubscribeUrl: () => "https://app.test/u/x" }));
 
 const { runStep } = await import("@/lib/workflows/engine");
+const { UsageQuotaExceededError } = await import("@/lib/server/usage-meter");
 const { maybeSendReviewRequest } = await import("./request");
 
 const REVIEW_URL = "https://g.page/r/velocity/review";
@@ -130,6 +131,14 @@ describe("one send, one row", () => {
     seedRun({ type: "send_sms", config: { body: `Review us: ${REVIEW_URL}` } });
     await runStep("run1", "n1");
     expect(sendSms).not.toHaveBeenCalled();
+    expect(rows()).toEqual([]);
+  });
+
+  it("a step skipped after rendering (quota) is not a request either", async () => {
+    sendSms.mockRejectedValueOnce(new (UsageQuotaExceededError as unknown as new (m: string) => Error)("quota"));
+    seedRun({ type: "send_sms", config: { body: `Review us: ${REVIEW_URL}` } });
+    await runStep("run1", "n1");
+    expect((mem.read("workflowRuns/run1")?.history as Array<{ result: string }>)[0].result).toBe("skipped:quota");
     expect(rows()).toEqual([]);
   });
 
