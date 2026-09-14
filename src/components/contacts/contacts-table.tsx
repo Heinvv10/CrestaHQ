@@ -16,6 +16,7 @@ import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 import { SourceBadge } from "@/components/contacts/source-badge";
 import { ContactCardList } from "@/components/contacts/contact-card-list";
+import { RENDER_STEP, ShowMoreRows } from "@/components/show-more-rows";
 import { Checkbox } from "@/components/ui/checkbox";
 import { formatContactDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -54,6 +55,7 @@ export function ContactsTable({
   const [sorting, setSorting] = useState<SortingState>([
     { id: "createdAt", desc: true },
   ]);
+  const [renderLimit, setRenderLimit] = useState(RENDER_STEP);
 
   const territoryById = useMemo(() => {
     const m = new Map<string, TerritoryDoc>();
@@ -198,6 +200,9 @@ export function ContactsTable({
     return null;
   }
 
+  const rows = table.getRowModel().rows;
+  const shownRows = rows.slice(0, renderLimit);
+
   return (
     <>
       {/* Desktop table */}
@@ -243,7 +248,7 @@ export function ContactsTable({
             ))}
           </thead>
           <tbody>
-            {table.getRowModel().rows.map((row) => (
+            {shownRows.map((row) => (
               <tr
                 key={row.id}
                 className="border-b last:border-b-0 transition-colors hover:bg-muted/30"
@@ -260,9 +265,14 @@ export function ContactsTable({
       </div>
 
       <ContactCardList
-        contacts={table.getRowModel().rows.map((r) => r.original)}
+        contacts={shownRows.map((r) => r.original)}
         selected={selected}
         onToggle={onToggle}
+      />
+      <ShowMoreRows
+        shown={shownRows.length}
+        total={rows.length}
+        onMore={() => setRenderLimit((n) => n + RENDER_STEP)}
       />
     </>
   );
