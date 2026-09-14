@@ -82,7 +82,7 @@ Rows marked ⚠ were not exercised in GHL: its calendar editor stopped respondin
 
 | # | Item | Today | Plan | Status |
 |---|---|---|---|---|
-| R1 | Voice booking | "built, unverified" (`voice-booking-service.ts`) | Drive a real booking through the Vapi tool path against #1000 and record what actually happens | **cannot run in production; code path proven** — see below |
+| R1 | Voice booking | "built, unverified" (`voice-booking-service.ts`) | Drive a real booking through the Vapi tool path against #1000 and record what actually happens | **proven live on production 2026-09-14** (real model via the production webhook; audio leg not exercised) — see below |
 | R2 | Reminders fire from QStash | Scheduled at book time (`lifecycle.ts:222`) | Book a slot on #1000 whose T-1h reminder falls inside the session; show the QStash message and the email delivery | **proven 2026-09-13** — see below |
 
 **R1 — what actually happened (2026-09-13).**
