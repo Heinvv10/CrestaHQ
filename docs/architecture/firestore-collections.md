@@ -108,8 +108,9 @@ disconnecting deletes the reviews, the sync state and the summary.
 
 Review sentiment (SP5 b; written only by `lib/reputation/sentiment.ts`, never by
 the sync): each review may carry `sentiment {label, method, basisHash, model,
-at}` and `sentimentAttempt {basisHash, failures, lastAt}` — both nulled by a
-tombstone; readers ignore a label whose `basisHash` is not the review's current
+at}` and `sentimentAttempt {basisHash, failures, lastAt}` — kept by a
+tombstone (a label and hashes, no content; retention deletes them with the
+doc); readers ignore a label whose `basisHash` is not the review's current
 basis. `private/sentimentLease` holds the classifier's lease, the Analyse-now
 cooldown, `lastCompleteAt` (the last run that finished normally) and the last
 run's counts and stop reason; `private/sentimentUsage {day, calls}` counts AI
