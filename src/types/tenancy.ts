@@ -474,6 +474,13 @@ export interface SubAccountDoc {
    */
   reviewsAiEnabledByAgency?: boolean;
   /**
+   * Reviews AI settings (SP5 c), written only by PUT
+   * /api/sub-accounts/[id]/reputation/ai-settings (admin, Reviews AI gate).
+   * `replyGuidelines` (≤ 1000 chars, "" = none) steer the reply DRAFT only —
+   * nothing posts to Google without the admin's click.
+   */
+  reviewsAiConfig?: { replyGuidelines: string; updatedAt: Date; updatedByUid: string } | null;
+  /**
    * Non-secret display metadata for the connected Google account (see
    * {@link GoogleConnectionMeta}). Null/absent until connected.
    *
