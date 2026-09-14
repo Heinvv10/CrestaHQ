@@ -97,6 +97,9 @@ describe("send review request dialog", () => {
     expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(true);
     await click("pick-last");
     expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(false);
+    // Re-picking the contact that was just sent to does not re-arm it.
+    await click("pick-first");
+    expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("contacts that fail to load say so, instead of an empty list", async () => {

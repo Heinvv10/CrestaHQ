@@ -168,7 +168,7 @@ export async function sendEmail({
       inReplyTo,
       references,
       archive,
-    }).catch(rethrowAttempted);
+    });
     void recordUsage({
       subAccountId: meter.subAccountId,
       unit: "emailsSent",

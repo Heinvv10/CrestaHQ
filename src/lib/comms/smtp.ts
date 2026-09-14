@@ -5,6 +5,7 @@ import nodemailer from "nodemailer";
 import ipaddr from "ipaddr.js";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SmtpConnection, SmtpMeta } from "@/types/email";
+import { markProviderAttempted } from "@/lib/comms/provider-attempt";
 
 export class SmtpError extends Error {
   constructor(
@@ -251,7 +252,8 @@ export async function sendSmtpEmail(
       throw new SmtpError("SMTP provider did not accept the message.", 502);
     return { id: result.messageId };
   } catch (error) {
-    throw smtpPublicError(error);
+    // Only here was the server actually asked (SP5 d1); every refusal above is not an attempt.
+    throw markProviderAttempted(smtpPublicError(error));
   } finally {
     client.close();
   }

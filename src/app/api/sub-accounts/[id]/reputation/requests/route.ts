@@ -102,8 +102,10 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     contactIds.map(async (cid) => {
       const c = (await db.doc(`contacts/${cid}`).get()).data();
       // Same rule as territoryDenialForContact: a scoped collaborator sees only
-      // contacts whose territory is one of theirs.
-      if (c && scope.enforce && !(typeof c.territoryId === "string" && (scope.ids ?? []).includes(c.territoryId))) {
+      // contacts whose territory is one of theirs (Global included in the ids);
+      // an unassigned or missing contact is hidden too.
+      const territoryId = typeof c?.territoryId === "string" ? c.territoryId : null;
+      if (scope.enforce && (!territoryId || !(scope.ids ?? []).includes(territoryId))) {
         hidden.add(cid);
         return;
       }

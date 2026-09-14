@@ -28,6 +28,8 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
   const [contactId, setContactId] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<Result>(null);
+  /** Who this dialog last sent to: Send stays off for them, however they are re-picked. */
+  const [sentTo, setSentTo] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !agencyId || !ready) return;
@@ -40,6 +42,7 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
   function openDialog() {
     setContactId("");
     setResult(null);
+    setSentTo(null);
     setOpen(true);
   }
 
@@ -56,6 +59,7 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
       if (!res.ok) setResult({ state: "error", message: data.error ?? sendResultMessage(undefined) });
       else if (data.sent) {
         setResult({ state: "sent", message: "Review request sent." });
+        setSentTo(contactId);
         onSent?.();
       } else setResult({ state: "refused", message: sendResultMessage(data.reason) });
     } catch {
@@ -111,8 +115,8 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
             <Button variant="outline" onClick={() => setOpen(false)}>
               {result?.state === "sent" ? "Done" : "Cancel"}
             </Button>
-            {/* After a send, off until another contact is picked — no double send by a second click. */}
-            <Button onClick={send} disabled={!contactId || sending || result?.state === "sent"} data-testid="rep-send-submit">
+            {/* After a send, off for that contact — no double send by a second click or a re-pick. */}
+            <Button onClick={send} disabled={!contactId || sending || contactId === sentTo} data-testid="rep-send-submit">
               {sending && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />} Send
             </Button>
           </DialogFooter>

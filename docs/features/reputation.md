@@ -81,8 +81,9 @@ contactName, channel, source, trigger, status, failureKind, sentAt` — the name
 is joined at read time from the contact doc, **only when that contact is in this
 sub-account** (else null, shown as "Deleted contact"). For a **territory-scoped
 collaborator** (`loadEffectiveTerritoryScope`, the same rule as
-`territoryDenialForContact`) a contact outside their territories keeps its row
-but loses its id and name (shown as "Outside your territories", no link).
+`territoryDenialForContact`) a contact outside their territories — or with no
+territory, or no longer existing — keeps its row but loses its id and name
+(shown as "Outside your territories", no link); Global contacts stay visible.
 Never a message body, phone number or email address. The **search** matches
 contact names over the rows already loaded, and the page says so. Selecting
 the **Failed** filter says what it lists: provider rejections from workflows,
@@ -96,7 +97,8 @@ the existing manual route `/api/comms/review-request/send` — the dispatcher,
 `trigger: "manual"`, which skips the cooldown as it always has. Its answer is
 shown inline in plain words (`components/reputation/send-result.ts`: e.g.
 `not_configured` → "Set your review link first …"); a successful send reloads
-the page's data, and Send stays off until another contact is picked. Contacts
+the page's data, and Send stays off for the contact just sent to (re-picking
+them does not re-arm it) until the dialog is reopened. Contacts
 that fail to load say so rather than showing an empty picker.
 
 Statuses are what LeadStack can observe truthfully: **sent** and **failed**.
@@ -140,9 +142,12 @@ which from `SendRefusal.attempted` (set by the conversation send service); the
 WhatsApp dispatchers mark a result `attempted` only when they called a
 provider. A **thrown** send error counts only when it carries the provider-attempt
 mark (`lib/comms/provider-attempt.ts`), set where the carrier call happens — the
-SMS seam (`sms/select.ts`), Twilio's `messages.create`, the SMTP and Resend
-sends — never inferred from a catch: a throw before any provider call (no
-credentials, shared SMS switched off, the fake's fixture fence) logs nothing.
+SMS seam (`sms/select.ts`), Twilio's `messages.create` (and its 21610 mapping),
+SMTP's `sendMail` (inside `sendSmtpEmail`, after every header, address, settings,
+DNS and private-IP check) and Resend's `emails.send` (and its `{ error }` / no-id
+results) — never inferred from a catch: a throw before any provider call (no
+credentials, shared SMS switched off, the fake's fixture fence, an address SMTP
+refuses) logs nothing.
 A scheduled send that throws is not logged: nothing says whether a provider
 was reached.
 

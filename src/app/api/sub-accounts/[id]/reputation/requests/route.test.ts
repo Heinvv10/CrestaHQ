@@ -109,6 +109,23 @@ describe("the list", () => {
     expect(admin.map((r: Body) => r.contactName)).toEqual(["Fixture One", "Fixture Two"]);
   });
 
+  it("scoped: Global contacts are visible; unassigned and missing contacts are hidden (territoryDenialForContact's rule)", async () => {
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, territoryScopingEnabled: true });
+    mem.seed(`subAccounts/${SA}/subAccountMembers/uid_collab`, {
+      ...mem.read(`subAccounts/${SA}/subAccountMembers/uid_collab`)!, assignedTerritoryIds: ["t_north"],
+    });
+    mem.seed("contacts/c_one", { ...mem.read("contacts/c_one")!, territoryId: "global" });
+    mem.seed("contacts/c_two", { ...mem.read("contacts/c_two")! }); // no territoryId
+    seedRow(SA, 1);
+    seedRow(SA, 2, { contactId: "c_two" });
+    seedRow(SA, 3, { contactId: "c_gone" });
+    const collab = (await read()).body.requests;
+    expect(collab.map((r: Body) => [r.contactId, r.contactName])).toEqual([["c_one", "Fixture One"], [null, null], [null, null]]);
+    // Unscoped, a missing contact keeps its id (shown as deleted).
+    const admin = (await read("", "uid_admin")).body.requests;
+    expect(admin.map((r: Body) => [r.contactId, r.contactName])).toEqual([["c_one", "Fixture One"], ["c_two", "Fixture Two"], ["c_gone", null]]);
+  });
+
   it("rows written before d1 read as whatsapp / dispatcher", async () => {
     seedRow(SA, 1, { channel: "whatsapp_manual", source: undefined });
     expect((await read()).body.requests[0]).toMatchObject({ channel: "whatsapp", source: "dispatcher" });
