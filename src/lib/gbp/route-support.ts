@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { googleGateOn } from "@/lib/google/gate";
 import { googleAppConfigured } from "@/lib/google/oauth";
 import type { SubAccountDoc } from "@/types";
+import { ACCESS_NOT_APPROVED_TEXT } from "./error-text";
 import { GbpProviderError } from "./provider/types";
 import { GbpNotConnectedError } from "./tokens";
 
@@ -63,5 +64,8 @@ export async function gbpErrorResponse(
     // only if the failed credential was still the stored one.
     return gbpRefusal(409, "reconnect_required", "Reconnect Google Business Profile.");
   }
-  return gbpRefusal(502, err.kind, "Google request failed");
+  // 424, not 502: crm.crestahq.com is behind Cloudflare, which replaces an
+  // origin 502 / 504 with its own HTML page — the `{error, code}` body never
+  // reached the browser (#1000's picker read "(error)" for a logged 429).
+  return gbpRefusal(424, err.kind, err.kind === "access_not_approved" ? ACCESS_NOT_APPROVED_TEXT : "Google request failed");
 }

@@ -14,7 +14,7 @@ import {
 } from "@/lib/booking/lifecycle";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
-import { eventStatus } from "@/types/events";
+import { eventStatus, isValidStatusTransition } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
 import type { AutomationTriggerType } from "@/types";
 import type { BookingPage } from "@/types/booking";
@@ -47,21 +47,10 @@ import { pushBookingToGoogle } from "@/lib/google-calendar/push";
  */
 
 /**
- * Every valid `current → next` flip, exported so tests can exercise it
- * directly against every from→to pair without hitting a route.
+ * Re-exported from types/events.ts (the pure, client-safe home for the
+ * transition table) so existing imports of this module keep working.
  */
-export function isValidStatusTransition(
-  current: EventStatus,
-  next: EventStatus,
-): boolean {
-  if (current === next) return true;
-  if (current === "cancelled") return false; // always final
-  if (current === "completed") return next === "no_show"; // correction
-  if (current === "no_show") return next === "completed"; // correction
-  if (current === "awaiting_payment") return next === "cancelled";
-  // current === "scheduled"
-  return next === "completed" || next === "no_show" || next === "cancelled";
-}
+export { isValidStatusTransition };
 
 /**
  * Why `current → next` is refused, or null when it's allowed. Worded for
@@ -79,6 +68,54 @@ export function statusTransitionError(
     return "Mark as paid first if the visitor paid, or cancel to release the slot.";
   }
   return "That status change isn't allowed.";
+}
+
+/**
+ * `startAt` as a plain Date, whether it arrives as a Firestore Timestamp
+ * (from a stored event) or an already-converted Date (a v1 PATCH's
+ * post-patch `startAt`, computed before the write hits Firestore).
+ */
+function toDateSafe(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  const d = (value as { toDate?: () => Date } | null)?.toDate?.();
+  return d instanceof Date ? d : null;
+}
+
+/** Has `event.startAt` already passed (as of `nowMs`)? No readable timestamp = not started. */
+function eventHasStarted(
+  event: { startAt: CalendarEvent["startAt"] | Date },
+  nowMs: number,
+): boolean {
+  const d = toDateSafe(event.startAt);
+  return d !== null && d.getTime() < nowMs;
+}
+
+/**
+ * Why `event → next` is refused, or null when it's allowed — combines the
+ * transition table with the start-time gate below. This is the single
+ * pre-check both `changeEventStatus` and the v1 route's PATCH handler use,
+ * so a route that writes fields before calling `changeEventStatus` can
+ * refuse the whole request (writing nothing) using the same rule the
+ * write itself will apply.
+ */
+export function statusChangeError(
+  event: { startAt: CalendarEvent["startAt"] | Date } & Pick<CalendarEvent, "status">,
+  next: EventStatus,
+  nowMs: number,
+): string | null {
+  const current = eventStatus(event);
+  const transitionError = statusTransitionError(current, next);
+  if (transitionError) return transitionError;
+  // Defense in depth: the UI only offers Mark completed/no-show once an
+  // appointment's scheduled time has passed, but a raw API/route call
+  // bypasses the UI entirely — this is the chokepoint both funnel through,
+  // so it's the only place that can actually stop a future booking from
+  // being flipped (which fires the matching workflow trigger and frees the
+  // slot, irreversibly, on a meeting that hasn't happened).
+  if ((next === "completed" || next === "no_show") && !eventHasStarted(event, nowMs)) {
+    return "This appointment hasn't happened yet.";
+  }
+  return null;
 }
 
 export interface StatusChangeOutcome {
@@ -107,7 +144,7 @@ export async function changeEventStatus(
   if (current === next) {
     return { ok: true, httpStatus: 200, status: next, noop: true };
   }
-  const error = statusTransitionError(current, next);
+  const error = statusChangeError(event, next, Date.now());
   if (error) {
     return { ok: false, httpStatus: 409, error };
   }

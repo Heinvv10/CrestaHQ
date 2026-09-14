@@ -13,6 +13,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { loadPipeline } from "@/lib/pipelines/server";
 import { findStage } from "@/lib/pipelines/stages";
+import { isAssignableMember } from "@/lib/server/assignee";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 
 const DEFAULT_LIMIT = 20;
@@ -30,7 +31,8 @@ const MAX_LIMIT = 100;
  *   - `contact_id` — deals attached to a specific contact
  *
  * Create accepts `pipeline_id` (absent = the default pipeline); `stage`
- * must be a stage of that pipeline.
+ * must be a stage of that pipeline. `assigned_to_uid` (optional, create
+ * only) must be an ACTIVE member of the key's sub-account.
  *
  * Both filters are AND-ed. Cursor pagination orders by `stageChangedAt`
  * desc (matches the dashboard's Kanban "most recently moved first").
@@ -143,6 +145,20 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     );
   }
 
+  // A "/" would make the member path name a collection and throw, not 400.
+  if (
+    input.assignedToUid !== null &&
+    (input.assignedToUid.includes("/") ||
+      !(await isAssignableMember(ctx.subAccountId, input.assignedToUid)))
+  ) {
+    return apiError(
+      ctx,
+      "invalid_request",
+      "invalid_body",
+      `assigned_to_uid=${input.assignedToUid} is not an active member of this sub-account.`,
+    );
+  }
+
   // Validate any custom_fields against the sub-account's deal definitions.
   const cfDefs = await loadCustomFieldDefs(ctx.subAccountId, "deal");
   const cf = validateCustomFieldValues(
@@ -167,6 +183,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     customFields: cf.value,
     territoryId:
       input.territoryId ?? contactData.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid,
     agencyId: ctx.agencyId,
     subAccountId: ctx.subAccountId,
     createdByUid: `apikey:${ctx.keyPrefix}`,

@@ -10,6 +10,7 @@ import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-fil
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import { CalendarView } from "@/components/calendar/calendar-view";
+import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
 
 export default function CalendarPage() {
   const { user, loading: authLoading } = useAuth();
@@ -48,12 +49,15 @@ export default function CalendarPage() {
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Calendar</h1>
-        <p className="text-sm text-muted-foreground">
-          Manual events — meetings, calls, reminders. Click any day to add
-          something.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Calendar</h1>
+          <p className="text-sm text-muted-foreground">
+            Manual events — meetings, calls, reminders. Click any day to add
+            something.
+          </p>
+        </div>
+        <CalendarViewSwitch active="calendar" />
       </div>
 
       {loading ? (

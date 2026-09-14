@@ -2,7 +2,9 @@ import "server-only";
 
 import { GOOGLE_SCOPE, type GoogleTokens } from "@/lib/google/oauth";
 import {
+  dayNumber,
   defaultFakeScenario,
+  fakeDailyValue,
   type FakeOp,
   type FakeScenario,
   type FakeScenarioStore,
@@ -182,6 +184,20 @@ export function createFakeGbpProvider(
       target.reply = { comment, updateTime: new Date().toISOString() };
       await store.set(bound, scenario);
       return target.reply;
+    },
+
+    async fetchDailyMetrics(accessToken, locationName, { metrics, startDate, endDate }) {
+      const scenario = await authed(accessToken, "fetchDailyMetrics");
+      if (!Object.values(scenario.locations).some((ls) => ls.some((l) => l.name === locationName))) {
+        throw new GbpProviderError("not_found", { status: 404 });
+      }
+      const days: string[] = [];
+      for (let n = dayNumber(startDate); n <= dayNumber(endDate); n++) {
+        days.push(new Date(n * 86_400_000).toISOString().slice(0, 10));
+      }
+      return Object.fromEntries(
+        metrics.map((m) => [m, days.map((date) => ({ date, value: fakeDailyValue(scenario, locationName, m, date) }))]),
+      );
     },
 
     async deleteReply(accessToken, reviewName) {
