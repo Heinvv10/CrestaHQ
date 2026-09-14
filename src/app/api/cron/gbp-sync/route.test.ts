@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+const handed = vi.hoisted(() => vi.fn());
+// Sentiment runs after the response (SP5 b); here we only see what the route hands it.
+vi.mock("@/lib/reputation/sentiment-after", () => ({ classifyAfterResponse: handed }));
 
 const KEY = "sig_test_current_key_for_gbp_cron";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
@@ -168,5 +171,16 @@ describe("manual and scheduled share one core", () => {
     const { id: _j, runId: _b, trigger: _t2, actorUid: _u2, startedAt: _s2, finishedAt: _e2, ...s } = scheduledRun;
     expect(s).toEqual(m);
     expect(reviews(OTHER_SA)).toHaveLength(7);
+  });
+});
+
+describe("sentiment after the response (SP5 b)", () => {
+  it("hands every run the sweep made to sentiment in one deferred batch", async () => {
+    handed.mockClear();
+    expect((await cron()).status).toBe(200);
+    expect(handed).toHaveBeenCalledTimes(1);
+    const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
+    expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
+    expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
   });
 });

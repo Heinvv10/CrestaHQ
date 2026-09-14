@@ -1,74 +1,52 @@
 import "server-only";
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { loadServedReviews } from "@/lib/gbp/sync/served";
 import { reviewsCollection } from "@/lib/gbp/sync/types";
 import type { SubAccountDoc } from "@/types";
 import { reviewsAiConfigured } from "./ai/mode";
 import { getReviewsAiFor } from "./ai/select";
-import type { ReviewsAi, SentimentLabel } from "./ai/types";
+import { REVIEWS_AI_BATCH, type ReviewsAi, type SentimentLabel } from "./ai/types";
+import { aiRetryAllowed, currentSentiment, ratingLabel, reviewBasis, type SentimentSource } from "./sentiment-basis";
+import { acquireSentimentLease, markPendingUnknown, releaseSentimentLease, renewSentimentLease } from "./sentiment-lease";
 
 /**
  * Review sentiment (SP5 b): `sentiment {label, method, basisHash, model, at}`
- * cached on each `gbpReviews` doc.
+ * cached on each `gbpReviews` doc; `sentimentAttempt {basisHash, failures,
+ * lastAt}` counts failed analyses of the current content.
  *
- *   - Eligible: the reviews inbox's own set (`loadServedReviews` — active,
- *     current listing, within Google's 30-day limit) with no label, or one
- *     whose `basisHash` no longer matches `sentimentBasis(stars, comment)`.
- *   - Star-only (no / blank comment): labelled from the stars, no AI call.
- *   - With text: one AI item each, in batches of 20, only when Reviews AI is
- *     configured; the reply is validated per item (ai/openrouter.ts).
- *   - NEVER RE-BILLED: an unchanged review is never sent twice — the basis
- *     check skips it, and one lease per sub-account (`private/sentimentLease`)
- *     keeps two invocations from both sending it. Each label is written in a
- *     transaction that re-reads the review and writes only if it is still
- *     active with the same basis (edited mid-flight ⇒ discarded).
- *   - At most `max` (default 100) reviews per run, newest first; the rest wait
- *     for the next run.
+ *   - Eligible: the reviews inbox's own set (`loadServedReviews`) whose label
+ *     is missing or stale (basis ≠ `sentimentBasis(stars, comment)`), unless
+ *     its current content already failed 3 times or failed within the hour.
+ *   - Star-only: labelled from the stars, no AI call, one transaction per ≤100.
+ *   - With text: ONE review per AI call; right before each call the review is
+ *     re-read and dropped if it changed, was removed or is already labelled.
+ *   - NEVER RE-BILLED: the basis check, the attempt limit, and one lease per
+ *     sub-account that only its owner can renew (a lost lease stops the run).
+ *     Each label / failure is written in a transaction that re-checks the basis.
+ *   - At most `max` (default 100) reviews per run, newest first.
+ * Runs AFTER the response (sentiment-after.ts), never inside a sync.
  */
 
 export const SENTIMENT_MAX_PER_RUN = 100;
-export const SENTIMENT_LEASE_TTL_MS = 5 * 60_000;
-const AI_BATCH = 20;
+const STAR_WRITE_BATCH = 100;
 
 export type SentimentMethod = "rating" | "ai";
-export interface SentimentDoc {
-  label: SentimentLabel;
-  method: SentimentMethod;
-  basisHash: string;
-  model: string | null;
-  at: Date;
-}
-
 export interface SentimentCounts {
   /** Labels written this run. */
   classified: number;
-  /** Eligible but not attempted (over the cap, AI not configured, lease lost) or discarded (edited mid-flight). */
+  /** Eligible but not attempted (over the cap, AI not configured, lease lost) or dropped (changed mid-run). */
   skipped: number;
-  /** Sent for classification but not labelled (bad model output, failed call, refused provider). */
+  /** Sent to the AI but not labelled (bad output, failed call, refused provider). */
   failed: number;
 }
 export type SentimentSkip = "gate_off" | "google_gate_off" | "no_listing" | "busy";
 export interface SentimentOutcome extends SentimentCounts {
   status: "ran" | "skipped";
   skipReason: SentimentSkip | null;
-  /** False when no AI can be called here (text reviews wait). */
   aiConfigured: boolean;
 }
-
-export const sentimentLeasePath = (subAccountId: string) => `subAccounts/${subAccountId}/private/sentimentLease`;
-
-/** What a label was derived from: the stars and the exact comment. */
-export function sentimentBasis(starRating: number | null, comment: string | null): string {
-  return createHash("sha256").update(`${starRating ?? ""}\n${comment ?? ""}`).digest("hex");
-}
-
-export function ratingLabel(stars: number): SentimentLabel {
-  return stars >= 4 ? "positive" : stars === 3 ? "neutral" : "negative";
-}
-
-const isStarOnly = (comment: unknown) => typeof comment !== "string" || comment.trim() === "";
 
 interface Pending {
   docId: string;
@@ -77,53 +55,49 @@ interface Pending {
   basis: string;
 }
 
-async function takeLease(sa: string, runId: string, now: number): Promise<boolean> {
-  const db = getAdminDb();
-  const ref = db.doc(sentimentLeasePath(sa));
-  return db.runTransaction(async (tx) => {
-    const cur = (await tx.get(ref)).data() as { runId?: string; until?: number } | undefined;
-    if (cur?.runId && cur.runId !== runId && (cur.until ?? 0) > now) return false;
-    tx.set(ref, { runId, until: now + SENTIMENT_LEASE_TTL_MS }, { merge: true });
-    return true;
-  });
+const isStarOnly = (comment: string | null) => comment === null || comment.trim() === "";
+const reviewRef = (sa: string, docId: string) => getAdminDb().doc(`${reviewsCollection(sa)}/${docId}`);
+type ReviewData = SentimentSource & { state?: string };
+
+/** Still the same active content, and not already labelled for it? */
+function stillPending(d: ReviewData | undefined, p: Pending): boolean {
+  return d?.state === "active" && reviewBasis(d) === p.basis && currentSentiment(d) === null;
 }
 
-async function releaseLease(sa: string, runId: string): Promise<void> {
-  const db = getAdminDb();
-  const ref = db.doc(sentimentLeasePath(sa));
-  try {
-    await db.runTransaction(async (tx) => {
-      const cur = (await tx.get(ref)).data() as { runId?: string } | undefined;
-      if (cur?.runId === runId) tx.set(ref, { runId: null, until: 0 }, { merge: true });
+/** Star-only labels, one transaction per ≤100 reviews. Returns how many were written. */
+async function writeRatingLabels(sa: string, items: Pending[], now: Date): Promise<number> {
+  let written = 0;
+  for (let i = 0; i < items.length; i += STAR_WRITE_BATCH) {
+    const chunk = items.slice(i, i + STAR_WRITE_BATCH);
+    written += await getAdminDb().runTransaction(async (tx) => {
+      const docs: Array<ReviewData | undefined> = [];
+      for (const p of chunk) docs.push((await tx.get(reviewRef(sa, p.docId))).data() as ReviewData | undefined);
+      let n = 0;
+      chunk.forEach((p, k) => {
+        if (!stillPending(docs[k], p)) return;
+        const sentiment = { label: ratingLabel(p.starRating), method: "rating", basisHash: p.basis, model: null, at: now };
+        tx.update(reviewRef(sa, p.docId), { sentiment, sentimentAttempt: null });
+        n++;
+      });
+      return n;
     });
-  } catch (err) {
-    console.warn(`[reputation/sentiment] sa=${sa} lease not released kind=${err instanceof Error ? err.name : typeof err}`);
   }
+  return written;
 }
 
-export const SENTIMENT_MANUAL_COOLDOWN_MS = 60_000;
-
-/** "Analyse now" at most once a minute per sub-account; true = this press may run. */
-export async function claimSentimentManualSlot(subAccountId: string, now: Date): Promise<boolean> {
-  const db = getAdminDb();
-  const ref = db.doc(sentimentLeasePath(subAccountId));
-  return db.runTransaction(async (tx) => {
-    const last = ((await tx.get(ref)).data()?.lastManualAt as number | undefined) ?? null;
-    if (last !== null && now.getTime() - last < SENTIMENT_MANUAL_COOLDOWN_MS) return false;
-    tx.set(ref, { lastManualAt: now.getTime() }, { merge: true });
-    return true;
-  });
-}
-
-/** Write one label iff the review is still active with the basis it was classified from. */
-async function writeLabel(sa: string, p: Pending, label: SentimentLabel, method: SentimentMethod, model: string | null, now: Date) {
-  const db = getAdminDb();
-  const ref = db.doc(`${reviewsCollection(sa)}/${p.docId}`);
-  return db.runTransaction(async (tx) => {
-    const d = (await tx.get(ref)).data() as { state?: string; starRating?: number | null; comment?: string | null } | undefined;
-    if (d?.state !== "active" || sentimentBasis(d.starRating ?? null, d.comment ?? null) !== p.basis) return false;
-    const sentiment: SentimentDoc = { label, method, basisHash: p.basis, model, at: now };
-    tx.update(ref, { sentiment });
+/** Label, or record a failed attempt — either only if the review still has the classified content. */
+async function recordResult(sa: string, p: Pending, label: SentimentLabel | null, model: string, now: Date) {
+  const ref = reviewRef(sa, p.docId);
+  return getAdminDb().runTransaction(async (tx) => {
+    const d = (await tx.get(ref)).data() as ReviewData | undefined;
+    if (d?.state !== "active" || reviewBasis(d) !== p.basis) return false;
+    if (label) {
+      tx.update(ref, { sentiment: { label, method: "ai", basisHash: p.basis, model, at: now }, sentimentAttempt: null });
+    } else {
+      const a = d.sentimentAttempt;
+      const failures = a?.basisHash === p.basis && typeof a.failures === "number" ? a.failures + 1 : 1;
+      tx.update(ref, { sentimentAttempt: { basisHash: p.basis, failures, lastAt: now } });
+    }
     return true;
   });
 }
@@ -137,83 +111,82 @@ async function classifyText(sa: string, runId: string, text: Pending[], counts: 
     counts.failed += text.length;
     return;
   }
-  for (let i = 0; i < text.length; i += AI_BATCH) {
-    const batch = text.slice(i, i + AI_BATCH);
-    // Renew before each billed call; a lost lease means another run owns this tenant now.
-    if (!(await takeLease(sa, runId, Date.now()))) {
+  for (let i = 0; i < text.length; i += REVIEWS_AI_BATCH) {
+    // Only the lease's owner may go on: an expired lease another run took stops this one.
+    if (!(await renewSentimentLease(sa, runId, Date.now()))) {
       counts.skipped += text.length - i;
       return;
     }
+    const batch: Pending[] = [];
+    for (const p of text.slice(i, i + REVIEWS_AI_BATCH)) {
+      const d = (await reviewRef(sa, p.docId).get()).data() as ReviewData | undefined;
+      if (stillPending(d, p) && aiRetryAllowed(d!, now.getTime())) batch.push(p);
+      else counts.skipped++;
+    }
+    if (!batch.length) continue;
     const labels = new Map(
       (await ai.classifySentiment(batch.map((p) => ({ id: p.docId, starRating: p.starRating, text: p.comment ?? "" })))).map(
         (r) => [r.id, r.label],
       ),
     );
     for (const p of batch) {
-      const label = labels.get(p.docId);
-      if (!label) counts.failed++;
-      else if (await writeLabel(sa, p, label, "ai", ai.model, now)) counts.classified++;
-      else counts.skipped++;
+      const label = labels.get(p.docId) ?? null;
+      const wrote = await recordResult(sa, p, label, ai.model, now);
+      if (label && wrote) counts.classified++;
+      else if (label) counts.skipped++;
+      else counts.failed++;
     }
   }
 }
 
 export async function classifyPendingSentiment(
   subAccountId: string,
-  opts: { max?: number; now?: Date } = {},
+  opts: { max?: number; now?: Date; heldRunId?: string } = {},
 ): Promise<SentimentOutcome> {
   const now = opts.now ?? new Date();
   const counts: SentimentCounts = { classified: 0, skipped: 0, failed: 0 };
   const aiConfigured = reviewsAiConfigured();
-  const skip = (skipReason: SentimentSkip): SentimentOutcome => ({ status: "skipped", skipReason, aiConfigured, ...counts });
+  const runId = opts.heldRunId ?? randomUUID();
+  const skip = async (skipReason: SentimentSkip): Promise<SentimentOutcome> => {
+    if (skipReason !== "busy") {
+      if (opts.heldRunId) await releaseSentimentLease(subAccountId, runId, { pending: null });
+      else await markPendingUnknown(subAccountId);
+    }
+    return { status: "skipped", skipReason, aiConfigured, ...counts };
+  };
 
-  const db = getAdminDb();
-  const sub = ((await db.doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubAccountDoc;
+  const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubAccountDoc;
   if (sub.reviewsAiEnabledByAgency !== true) return skip("gate_off");
   if (sub.googleEnabledByAgency !== true) return skip("google_gate_off");
   const locationName = sub.googleListing?.locationName ?? null;
   if (!locationName) return skip("no_listing");
+  if (!opts.heldRunId && !(await acquireSentimentLease(subAccountId, runId, now.getTime()))) return skip("busy");
 
-  const runId = randomUUID();
-  if (!(await takeLease(subAccountId, runId, now.getTime()))) return skip("busy");
   try {
     const { reviews } = await loadServedReviews(subAccountId, locationName, now);
     const pending: Pending[] = reviews.flatMap((r) => {
-      const starRating = typeof r.starRating === "number" ? r.starRating : null;
-      if (starRating === null) return [];
+      const basis = reviewBasis(r);
+      if (basis === null || currentSentiment(r) !== null) return [];
       const comment = typeof r.comment === "string" ? r.comment : null;
-      const basis = sentimentBasis(starRating, comment);
-      const current = r.sentiment as { basisHash?: string } | null | undefined;
-      return current?.basisHash === basis ? [] : [{ docId: String(r.docId), starRating, comment, basis }];
+      if (!isStarOnly(comment) && !aiRetryAllowed(r, now.getTime())) return [];
+      return [{ docId: String(r.docId), starRating: r.starRating as number, comment, basis }];
     });
     const max = opts.max ?? SENTIMENT_MAX_PER_RUN;
     counts.skipped += Math.max(0, pending.length - max);
     const batch = pending.slice(0, max);
 
-    for (const p of batch.filter((x) => isStarOnly(x.comment))) {
-      if (await writeLabel(subAccountId, p, ratingLabel(p.starRating), "rating", null, now)) counts.classified++;
-      else counts.skipped++;
-    }
+    const stars = batch.filter((x) => isStarOnly(x.comment));
+    const written = await writeRatingLabels(subAccountId, stars, now);
+    counts.classified += written;
+    counts.skipped += stars.length - written;
     const text = batch.filter((x) => !isStarOnly(x.comment));
     if (!aiConfigured) counts.skipped += text.length;
     else if (text.length) await classifyText(subAccountId, runId, text, counts, now);
   } finally {
-    await releaseLease(subAccountId, runId);
+    await releaseSentimentLease(subAccountId, runId, {
+      pending: counts.skipped + counts.failed,
+      lastRun: { ...counts, at: now },
+    });
   }
   return { status: "ran", skipReason: null, aiConfigured, ...counts };
-}
-
-/**
- * After a sync that landed pages: classify, best effort — a failure here is
- * logged by kind and reported as counts, never thrown into the sync.
- * Null when the run did not classify (gates, no listing, another run busy).
- */
-export async function sentimentAfterSync(subAccountId: string): Promise<SentimentCounts | null> {
-  try {
-    const out = await classifyPendingSentiment(subAccountId);
-    return out.status === "ran" ? { classified: out.classified, skipped: out.skipped, failed: out.failed } : null;
-  } catch (err) {
-    console.warn(`[reputation/sentiment] sa=${subAccountId} after-sync failed kind=${err instanceof Error ? err.name : typeof err}`);
-    return null;
-  }
 }

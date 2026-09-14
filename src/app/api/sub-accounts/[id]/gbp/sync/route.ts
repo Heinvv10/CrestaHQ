@@ -10,6 +10,7 @@ import { claimManualSlot } from "@/lib/gbp/sync/lease";
 import { publicRun } from "@/lib/gbp/sync/public";
 import { recordFailedRun } from "@/lib/gbp/sync/record";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { classifyAfterResponse } from "@/lib/reputation/sentiment-after";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -50,6 +51,8 @@ export async function POST(
 
   try {
     const run = await syncListing(id, { trigger: "manual", actorUid: access.uid });
+    // Sentiment for what this run changed runs after the response (SP5 b).
+    classifyAfterResponse([{ subAccountId: id, created: run.created, updated: run.updated }]);
     return NextResponse.json({ run: publicRun(run) });
   } catch (err) {
     console.error(`[gbp/sync-now] sync threw sa=${id}: ${err instanceof Error ? err.name : typeof err}`);

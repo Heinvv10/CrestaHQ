@@ -11,6 +11,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 import { SA, mem, resetSync, reviews } from "@/test/gbp-sync-harness";
 import { createWidget, feed, freshIp } from "@/test/gbp-feed-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { classifyPendingSentiment } from "@/lib/reputation/sentiment";
 
 const ORIGINAL = { ...process.env };
 
@@ -21,6 +22,7 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, reviewsAiEnabledByAgency: true });
   await syncListing(SA, { trigger: "scheduled" });
+  await classifyPendingSentiment(SA);
 });
 afterEach(() => {
   process.env = { ...ORIGINAL };

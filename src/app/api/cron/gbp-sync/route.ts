@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 import { runGbpRetentionSweep, runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
+import { classifyAfterResponse, type SyncedRun } from "@/lib/reputation/sentiment-after";
 
 /**
  * Scheduled Google Business Profile review sync — every 6 hours.
@@ -19,6 +20,10 @@ import { runGbpRetentionSweep, runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
  * in QStash cannot make the page's "not scheduled" untrue — and runs the same
  * retention-only pass as the always-on daily `gbp-retention` cron (every
  * tenant holding a cache, no provider calls).
+ *
+ * Review sentiment (SP5 b) runs AFTER this responds, one tenant after
+ * another, only for tenants whose run created/changed reviews or left work
+ * pending — never inside the request (QStash would retry a slow cron).
  *
  * Each sub-account is isolated inside the sweep, so this answers 200 with the
  * tally even when some tenants failed; 500 only when the sweep could not
@@ -40,7 +45,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    if (gbpSyncScheduled()) return NextResponse.json(await runGbpSyncSweep());
+    if (gbpSyncScheduled()) {
+      const runs: SyncedRun[] = [];
+      const result = await runGbpSyncSweep({ onRun: (r) => runs.push({ subAccountId: r.subAccountId, created: r.created, updated: r.updated }) });
+      classifyAfterResponse(runs);
+      return NextResponse.json(result);
+    }
     // Flag off: behave exactly like the daily retention cron (every tenant
     // holding a cache, no provider calls) and sync nobody.
     return NextResponse.json({ skipped: "not_scheduled", processed: 0, ...(await runGbpRetentionSweep()) });

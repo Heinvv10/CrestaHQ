@@ -19,6 +19,7 @@ import {
   setScenario,
 } from "@/test/gbp-sync-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
 import { GET } from "./route";
 
 const ORIGINAL = { ...process.env };
@@ -157,16 +158,34 @@ describe("payload", () => {
 });
 
 describe("sentiment (SP5 b)", () => {
-  it("each review carries only its label and method — never the basis, model or time", async () => {
-    const [first] = mem.list(`subAccounts/${SA}/gbpReviews`);
-    mem.seed(`subAccounts/${SA}/gbpReviews/${first.id}`, {
-      ...mem.read(`subAccounts/${SA}/gbpReviews/${first.id}`)!,
-      sentiment: { label: "negative", method: "ai", basisHash: "b".repeat(64), model: "some/model", at: new Date() },
+  function label(reviewId: string, basisOverride?: string) {
+    const doc = mem.list(`subAccounts/${SA}/gbpReviews`).find((d) => d.reviewId === reviewId)!;
+    const basisHash = basisOverride ?? sentimentBasis(doc.starRating as number, (doc.comment as string | null) ?? null);
+    mem.seed(`subAccounts/${SA}/gbpReviews/${doc.id}`, {
+      ...mem.read(`subAccounts/${SA}/gbpReviews/${doc.id}`)!,
+      sentiment: { label: "negative", method: "ai", basisHash, model: "some/model", at: new Date() },
     });
+    return doc.id;
+  }
+
+  it("each review carries only its label and method — never the basis, model or time", async () => {
+    const id = label("fake-r6");
     const { body } = await read("uid_collab");
-    const labelled = body.reviews.find((r) => r.docId === first.id)!;
-    expect(labelled.sentiment).toEqual({ label: "negative", method: "ai" });
+    expect(body.reviews.find((r) => r.docId === id)!.sentiment).toEqual({ label: "negative", method: "ai" });
     expect(JSON.stringify(body)).not.toMatch(/basisHash|some\/model/);
     expect(body.reviews.filter((r) => r.sentiment === null)).toHaveLength(6);
+  });
+
+  it("a label from older content is stale and reads as absent (a sync edit keeps it on the doc)", async () => {
+    const id = label("fake-r6");
+    setScenario(SA, (s) => {
+      const r = s.reviews[LOC_A].reviews.find((x) => x.reviewId === "fake-r6")!;
+      r.comment = "Fixture review: edited at Google.";
+      r.updateTime = "2026-09-01T09:00:00Z";
+    });
+    await syncListing(SA, { trigger: "scheduled" }); // Reviews AI gate off: nothing re-classifies it
+    expect(mem.read(`subAccounts/${SA}/gbpReviews/${id}`)?.sentiment).toBeTruthy(); // still on the doc…
+    const { body } = await read("uid_collab");
+    expect(body.reviews.find((r) => r.docId === id)!.sentiment).toBeNull(); // …but never served
   });
 });

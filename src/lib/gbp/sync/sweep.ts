@@ -6,7 +6,7 @@ import { GbpFakeRefusedError, gbpProviderMode } from "../provider/select";
 import { recordFailedRun } from "./record";
 import type { Sleep } from "./retry";
 import { retainListing, skipReasonFor, syncListing } from "./run";
-import { toMillis, type GbpSummary } from "./types";
+import { toMillis, type GbpSummary, type SyncRunRecord } from "./types";
 
 /**
  * The two sweeps behind the GBP crons, both under each tenant's lease:
@@ -121,7 +121,9 @@ export async function runGbpRetentionSweep(): Promise<RetentionTally> {
   return retainAll(cached);
 }
 
-export async function runGbpSyncSweep(opts: { sleep?: Sleep } = {}): Promise<SweepResult> {
+export async function runGbpSyncSweep(
+  opts: { sleep?: Sleep; /** Each completed run (the cron hands them to sentiment, after responding). */ onRun?: (run: SyncRunRecord) => void } = {},
+): Promise<SweepResult> {
   const { sync, cached } = await candidates();
   const byStatus: Record<string, number> = {};
   const count = (k: string) => (byStatus[k] = (byStatus[k] ?? 0) + 1);
@@ -133,6 +135,7 @@ export async function runGbpSyncSweep(opts: { sleep?: Sleep } = {}): Promise<Swe
     const now = new Date();
     try {
       const run = await syncListing(c.id, { trigger: "scheduled", sleep: opts.sleep });
+      opts.onRun?.(run);
       onDone(run.status, run.errorKind);
     } catch (err) {
       if (err instanceof GbpFakeRefusedError) {

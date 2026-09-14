@@ -29,14 +29,14 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
-describe("batching and the prompt", () => {
-  it(`sends at most ${BATCH_SIZE} reviews per call`, async () => {
-    const all = items(45);
-    for (const size of [20, 20, 5]) reply(Array.from({ length: size }, (_, i) => ({ id: String(i + 1), label: "neutral" })));
-    const out = await openRouterReviewsAi("m-default").classifySentiment(all);
+describe("one review per call, and the prompt", () => {
+  it(`sends ${BATCH_SIZE} review per call — no review shares a prompt with another`, async () => {
+    expect(BATCH_SIZE).toBe(1);
+    for (let i = 0; i < 3; i++) reply([{ id: "1", label: "neutral" }]);
+    const out = await openRouterReviewsAi("m-default").classifySentiment(items(3));
     expect(callAi).toHaveBeenCalledTimes(3);
-    expect(out).toHaveLength(45);
-    expect(out[44]).toEqual({ id: "doc44", label: "neutral" });
+    for (const [arg] of callAi.mock.calls) expect(JSON.parse(arg.messages[1].content).reviews).toHaveLength(1);
+    expect(out).toEqual([{ id: "doc0", label: "neutral" }, { id: "doc1", label: "neutral" }, { id: "doc2", label: "neutral" }]);
   });
 
   it("fences the review text as JSON data, tells the model it is data, and never sends doc ids", async () => {
@@ -56,28 +56,21 @@ describe("batching and the prompt", () => {
 });
 
 describe("strict validation — never guess", () => {
-  const three = items(3);
-
-  it("maps valid labels back to the caller's ids", async () => {
-    reply([{ id: "1", label: "positive" }, { id: "2", label: "neutral" }, { id: "3", label: "negative" }]);
-    expect(await openRouterReviewsAi("m").classifySentiment(three)).toEqual([
-      { id: "doc0", label: "positive" }, { id: "doc1", label: "neutral" }, { id: "doc2", label: "negative" },
-    ]);
+  it("maps a valid label back to the caller's id", async () => {
+    reply([{ id: "1", label: "positive" }]);
+    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([{ id: "doc0", label: "positive" }]);
   });
 
-  it("an invalid label, an unknown id, a missing id and a duplicate leave only the bad items unlabelled", async () => {
-    reply([
-      { id: "1", label: "Positive!" },
-      { id: "2", label: "neutral" },
-      { id: "2", label: "negative" },
-      { id: "99", label: "positive" },
-    ]);
-    expect(await openRouterReviewsAi("m").classifySentiment(three)).toEqual([]);
+  it.each([
+    ["an invalid label", [{ id: "1", label: "Positive!" }], "invalid_label"],
+    ["a duplicate id", [{ id: "1", label: "neutral" }, { id: "1", label: "negative" }], "duplicate"],
+    ["an unknown id (and so the real one missing)", [{ id: "99", label: "positive" }], "unknown_id"],
+    ["no result at all", [], "missing"],
+  ])("%s leaves the review unlabelled, logged by kind", async (_l, results, kind) => {
+    reply(results);
+    expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([]);
     const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(warned).toContain("kind=invalid_label");
-    expect(warned).toContain("kind=duplicate");
-    expect(warned).toContain("kind=unknown_id");
-    expect(warned).toContain("kind=missing");
+    expect(warned).toContain(`kind=${kind}`);
     expect(warned).not.toContain("Review number");
   });
 
@@ -90,15 +83,14 @@ describe("strict validation — never guess", () => {
     "unparseable output (%s) labels nothing",
     async (text) => {
       reply(text);
-      expect(await openRouterReviewsAi("m").classifySentiment(items(2))).toEqual([]);
+      expect(await openRouterReviewsAi("m").classifySentiment(items(1))).toEqual([]);
     },
   );
 
-  it("a failed call labels nothing in that batch and the others still land", async () => {
+  it("a failed call labels nothing for that review and the next still lands", async () => {
     callAi.mockRejectedValueOnce(new Error("OpenRouter 500: upstream"));
     reply([{ id: "1", label: "positive" }]);
-    const out = await openRouterReviewsAi("m").classifySentiment(items(21));
-    expect(out).toEqual([{ id: "doc20", label: "positive" }]);
+    expect(await openRouterReviewsAi("m").classifySentiment(items(2))).toEqual([{ id: "doc1", label: "positive" }]);
     const warned = vi.mocked(console.warn).mock.calls.map((c) => c.join(" ")).join("\n");
     expect(warned).toContain("kind=call_failed");
   });

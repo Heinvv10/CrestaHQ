@@ -198,11 +198,19 @@ describe("sentiment (SP5 b)", () => {
         labelled(1, ago(4), "negative"), labelled(2, ago(5), null), labelled(5, ago(120), "negative"),
       ],
     });
-    expect(o.reviews!.sentiment).toEqual({ positive: 2, neutral: 1, negative: 1, notAnalysed: 1 });
+    expect(o.reviews!.sentiment).toEqual({ positive: 2, neutral: 1, negative: 1, notAnalysed: 1, failed: 0 });
+  });
+
+  it("'couldn't be analysed' (given up after failures) is counted apart from 'not analysed yet'", () => {
+    const o = overview({
+      reviews: [{ ...labelled(3, ago(1), null), sentimentGaveUp: true }, labelled(2, ago(2), null), { ...labelled(5, ago(3), "positive"), sentimentGaveUp: true }],
+    });
+    // A label wins over an old failure record.
+    expect(o.reviews!.sentiment).toEqual({ positive: 1, neutral: 0, negative: 0, notAnalysed: 1, failed: 1 });
   });
 
   it("an unknown label is not counted as any of the three", () => {
     const o = overview({ reviews: [labelled(5, ago(1), "ecstatic")] });
-    expect(o.reviews!.sentiment).toEqual({ positive: 0, neutral: 0, negative: 0, notAnalysed: 1 });
+    expect(o.reviews!.sentiment).toEqual({ positive: 0, neutral: 0, negative: 0, notAnalysed: 1, failed: 0 });
   });
 });

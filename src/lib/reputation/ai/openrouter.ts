@@ -1,10 +1,11 @@
 import "server-only";
 
 import { callAi } from "@/lib/comms/ai/openrouter";
-import { SENTIMENT_LABELS, type ReviewsAi, type SentimentItem, type SentimentLabel } from "./types";
+import { REVIEWS_AI_BATCH, SENTIMENT_LABELS, type ReviewsAi, type SentimentItem, type SentimentLabel } from "./types";
 
 /**
- * The real classifier on OpenRouter (`callAi`). Review text is untrusted
+ * The real classifier on OpenRouter (`callAi`), one review per call
+ * (`REVIEWS_AI_BATCH`). Review text is untrusted
  * input: it reaches the model only as JSON string values inside a data
  * object, the system prompt says so, and the output can only ever become one
  * of three labels for an id we sent — batch-local ids ("1".."n"), so no
@@ -13,7 +14,7 @@ import { SENTIMENT_LABELS, type ReviewsAi, type SentimentItem, type SentimentLab
  * item unlabelled this round, logged by kind — never guessed.
  */
 
-export const BATCH_SIZE = 20;
+export const BATCH_SIZE = REVIEWS_AI_BATCH;
 
 const SYSTEM = [
   "You label customer reviews of a local business by sentiment.",

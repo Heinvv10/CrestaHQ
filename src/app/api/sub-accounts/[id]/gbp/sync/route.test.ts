@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+const handed = vi.hoisted(() => vi.fn());
+// Sentiment runs after the response (SP5 b); here we only see what the route hands it.
+vi.mock("@/lib/reputation/sentiment-after", () => ({ classifyAfterResponse: handed }));
 
 import {
   FOREIGN_AGENCY,
@@ -120,5 +123,15 @@ describe("an admin's Sync now", () => {
     const { status, body } = await syncNow("uid_admin");
     expect(status).toBe(200);
     expect(body.run).toMatchObject({ status: "skipped", skipReason: "no_listing" });
+  });
+});
+
+describe("sentiment after the response (SP5 b)", () => {
+  it("hands this run's created/updated counts to sentiment — which runs after responding", async () => {
+    handed.mockClear();
+    const { status } = await syncNow("uid_admin");
+    expect(status).toBe(200);
+    expect(handed).toHaveBeenCalledTimes(1);
+    expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 7, updated: 0 }]);
   });
 });

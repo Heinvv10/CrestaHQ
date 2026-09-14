@@ -1,6 +1,13 @@
 /** The Reviews AI seam (SP5 b) — one method today; reply drafts join in PR (c). */
 
 export const SENTIMENT_LABELS = ["positive", "neutral", "negative"] as const;
+
+/**
+ * Reviews per AI call — ONE, deliberately: text from one member of the public
+ * must never sit in the same prompt as another review it could try to steer.
+ * The classifier and the caller both batch by this.
+ */
+export const REVIEWS_AI_BATCH = 1;
 export type SentimentLabel = (typeof SENTIMENT_LABELS)[number];
 
 /** One review to classify. `text` is untrusted customer content. */
