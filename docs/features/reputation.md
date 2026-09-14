@@ -351,7 +351,9 @@ switch included).
   configured here (503 `ai_not_configured`, also when the fake is refused for
   the sub-account); **10 drafts a minute per user** (429 `rate_limited`,
   `Retry-After`; in memory, per instance); the **same daily AI call cap as
-  sentiment** (429 `daily_cap`) — counted in `private/sentimentUsage` in one
+  sentiment** (429 `daily_cap`), of which drafts may use at most **100 a day**
+  (429 `draft_cap`; `{draftsDay, draftCalls}` in the same doc), so sentiment
+  always keeps at least 200 — counted in `private/sentimentUsage` in one
   transaction that re-checks both gates BEFORE the call — no strikes and no
   refunds: one click, one call, counted whether or not a usable draft came
   back. An AI failure is 424
@@ -366,11 +368,24 @@ switch included).
   or link unless the guidelines have it, never mention being an AI, plain text.
   **The answer is checked, not trusted:** trimmed, code fences / wrapping
   quotes removed, cut to 4000 characters (the reply limit), and **refused** —
-  nothing shown — when it carries a phone number, email, link or bare domain
-  (TLD-based: `deals.com`, `fixture.co.za`; "e.g." and "1.5" are not domains)
-  the guidelines did not supply. The call runs under the seam's per-call
-  bound (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does; a failure is
-  one log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
+  nothing shown — when it carries any contact the guidelines did not supply
+  (`ai/contact-guard.ts`): a phone number (7+ digits within 25 characters,
+  whatever separates them, in any script's digits), an email, a link, a
+  domain (any `label.label` whose last label is 2+ letters — no TLD list, IDNs
+  included; "e.g.", "i.e.", "a.m.", "1.5" are not domains), a USSD code, an
+  `@handle` or a social platform name. The draft is first normalised (NFKC,
+  zero-width and other format characters removed, ideographic / full-width
+  stops read as ".", "[.]", "(dot)", " dot ", "[at]" undone). Contacts the
+  guidelines DO supply are extracted with the same code and allowed only as
+  exact tokens — `fixturefibre.co` does not pass because the guidelines say
+  `fixturefibre.co.za`. The call runs under the seam's per-call bound
+  (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does; a failure is one
+  log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
+- **What the prompt alone covers — honestly:** promising a refund or
+  compensation, an insult, or an unsuitable tone are ruled out only by the
+  system prompt; no code checks for them. That is acceptable because a human
+  reads every draft in the box and must click Post reply to Google — nothing
+  a draft says reaches Google otherwise.
 - **Composer** (`components/gbp/reply-composer.tsx`): **Draft with AI**
   (`gbp-reply-draft`) appears only when `GET …/gbp/reviews` says `aiDrafts`
   (both gates + configured). It fills an empty box; with text already there
@@ -378,8 +393,12 @@ switch included).
   (`gbp-reply-draft-confirm` / `-replace` / `-keep` — never `confirm()`). The
   note `gbp-reply-draft-note`: "AI draft — edit before posting. Nothing is
   sent until you click Post reply to Google." Errors inline in
-  `gbp-reply-draft-error`. The idempotency rule is unchanged: changed text,
-  drafted or typed, gets a new key.
+  `gbp-reply-draft-error`. Post is disabled while a draft is on its way; a
+  draft that arrives after the composer was closed and reopened is dropped
+  silently, and one that arrives after the admin typed is dropped with
+  `gbp-reply-draft-dropped` — a draft never overwrites text without the
+  confirm. The idempotency rule is unchanged: changed text, drafted or typed,
+  gets a new key.
 - **Reply guidelines (R6):** `subAccounts/{id}.reviewsAiConfig =
   {replyGuidelines ≤ 1000 chars (stored trimmed, "" = none), updatedAt,
   updatedByUid}`, written only by `PUT /api/sub-accounts/[id]/reputation/ai-settings`
@@ -399,8 +418,7 @@ switch included).
   per-user rate, nothing stored, and ZERO reply calls after every test),
   `…/gbp/reviews/route.aidrafts.test.ts`, `…/reputation/ai-settings/route.test.ts`,
   `components/gbp/reply-composer.draft.test.ts`, `components/reputation/settings.test.ts`,
-  `e2e/specs/reputation-ai-draft.spec.ts`. Mutation record:
-  `.sp5-orch/c-mutations.md` (orchestrator) — a draft route that posts, or a
+  `e2e/specs/reputation-ai-draft.spec.ts` — a draft route that posts, or a
   composer that submits after drafting, turns the spec red.
 
 ## The review-request log
