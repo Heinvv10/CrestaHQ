@@ -259,23 +259,40 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 //     inside a third-party library, so the fix is to never be slow on that
 //     goroutine.
 func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
-	// The intake lock is held from here to wg.Add, so "closed" cannot change
-	// between the check and the Add — see Fanout.closed.
-	f.inFlightMu.Lock()
-
-	// Closed intake is checked FIRST, before the watermark and before
-	// RecordInbound. A message arriving now cannot be acked (the socket is
-	// gone), so WhatsApp redelivers it after the restart and it is recorded
-	// then. Recording it now instead would raise the watermark: with two such
-	// messages, the newer's timestamp becomes the watermark and the older is
-	// dropped as history on redelivery — permanently, because this bridge
-	// stores no body.
-	if f.closed {
-		f.inFlightMu.Unlock()
-		log.Printf("ALERT inbound arrived during shutdown jid=%s len=%s — not recorded, not forwarded; "+
-			"WhatsApp redelivers it after restart", redact.JID(jid), redact.Body(text))
+	if !f.intake(jid, text, msgID, at) {
 		return
 	}
+	base := map[string]any{
+		"from":      jid,
+		"text":      text,
+		"messageId": msgID,
+		"at":        at.UTC().Format(time.RFC3339),
+	}
+	go func() {
+		defer f.wg.Done()
+		defer f.track(jid, -1)
+		f.deliverAdmitted(jid, base, fetchMedia)
+	}()
+}
+
+// intake records one inbound message and decides whether it is forwarded. On
+// true it has ALREADY done wg.Add and the in-flight count, and the caller must
+// start the delivery goroutine that undoes them.
+//
+// The whole decision runs under inFlightMu, released by defer. Both parts of
+// that matter:
+//
+//   - Under the lock, so "closed" cannot change between the check and wg.Add
+//     — see Fanout.closed.
+//   - By defer, because this runs on whatsmeow's event goroutine and
+//     whatsmeow's dispatchEvent RECOVERS a panicking handler (client.go:
+//     980-985) and moves on. A panic in the store, the watermark or a rail
+//     with the lock still held would leave the next inbound blocked on it
+//     forever: every customer's messages stopped, whatsmeow logging the stuck
+//     node — JID in the clear — every 30s, and Drain blocked until SIGKILL.
+func (f *Fanout) intake(jid, text, msgID string, at time.Time) bool {
+	f.inFlightMu.Lock()
+	defer f.inFlightMu.Unlock()
 
 	// Before RecordInbound, or this very message raises the watermark above
 	// itself and every message looks like history.
@@ -297,32 +314,48 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(
 	// non-owner messages during the window would otherwise exhaust the cap and
 	// the owner's genuinely new message would be the one dropped.
 	if !f.fromOwner(jid) {
-		f.inFlightMu.Unlock()
 		log.Printf("inbound from non-owner jid=%s len=%s — recorded, not forwarded",
 			redact.JID(jid), redact.Body(text))
-		return
+		return false
 	}
 
 	if f.inReplayWindow() && !f.admitDuringReplay(jid, text, at) {
-		f.inFlightMu.Unlock()
-		return
+		return false
 	}
 
-	base := map[string]any{
-		"from":      jid,
-		"text":      text,
-		"messageId": msgID,
-		"at":        at.UTC().Format(time.RFC3339),
+	// Intake closed: Drain has begun. Checked after the owner filter and the
+	// replay gate so the ALERT below fires only for a message that really
+	// would have been forwarded. RECORDED above regardless, because
+	// reply-only (rails/replyonly.go, HasInboundFrom) refuses an operator's
+	// reply to a contact with no recorded inbound, and this may be a
+	// first-time contact's only message.
+	//
+	// And the message is LOST, not deferred. The chain, from the pinned
+	// modules: Drain runs only after client.Disconnect returns, so a handler
+	// that reaches here has already decrypted its message; libsignal persists
+	// the advanced ratchet inside decrypt (session/SessionCipher.go:195-199,
+	// StoreSession before returning the plaintext); this bridge does not set
+	// EnableDecryptedEventBuffer, so whatsmeow decrypts directly
+	// (message.go:520); WhatsApp's redelivery after restart therefore fails
+	// with ErrOldCounter (SessionCipher.go:340), which whatsmeow logs as
+	// "Ignoring message" and skips (message.go:406) before sending the receipt
+	// (message.go:490) — no events.Message is dispatched and this function
+	// never sees it again.
+	//
+	// The window is narrow — it opens only when a handler outlives Disconnect,
+	// by whatsmeow's 5s give-up (client.go:715) or its mid-node connCtx exit
+	// (client.go:936-939) — but a message in it is gone, so the ALERT says so
+	// and carries what an operator needs to find it on the phone.
+	if f.closed {
+		log.Printf("ALERT inbound LOST during shutdown jid=%s messageId=%s len=%s — decrypted before "+
+			"shutdown, will not be redelivered after restart; recorded, not forwarded",
+			redact.JID(jid), msgID, redact.Body(text))
+		return false
 	}
 
 	f.wg.Add(1)
 	f.inFlight[redact.JID(jid)]++
-	f.inFlightMu.Unlock()
-	go func() {
-		defer f.wg.Done()
-		defer f.track(jid, -1)
-		f.deliverAdmitted(jid, base, fetchMedia)
-	}()
+	return true
 }
 
 func (f *Fanout) track(jid string, delta int) {

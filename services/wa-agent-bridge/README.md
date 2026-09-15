@@ -321,6 +321,14 @@ as an `ALERT` with redacted JIDs and lost, because the bridge stores no body.
 `TimeoutStopSec=90` in the unit funds the 35s HTTP drain, the 5s whatsmeow
 waits for its handler queue on disconnect, and this 25s — 65s in all.
 
+One narrow loss window remains, stated rather than hidden: a message whose
+handler outlives the socket's disconnect and reaches the fanout after the
+drain has begun is recorded but not forwarded, and it is **not** redelivered
+after restart — it was already decrypted, so WhatsApp's redelivery is ignored
+by whatsmeow as an old message. It is logged as `ALERT inbound LOST during
+shutdown` with the redacted sender and the WhatsApp message id, so an operator
+can find it on the phone.
+
 **View-once media is downloaded and stored like any other.** whatsmeow unwraps
 a "view once" photo into a plain image before this bridge sees it, and the
 bridge deliberately does not branch on `IsViewOnce` — a photo the sender meant

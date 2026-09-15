@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -9,8 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -683,9 +686,18 @@ func TestTextOnlyPostsDoNotHoldAMediaSlot(t *testing.T) {
 
 // Once Drain has begun, Deliver must not start new work: sync.WaitGroup
 // forbids Add racing a Wait at zero, and a delivery started after the drain
-// budget was set is one the budget never accounted for. Such a message is
-// recorded (reply-only depends on that) and reported, not posted.
+// budget was set is one the budget never accounted for.
+//
+// The message is still RECORDED — reply-only refuses an operator's reply to a
+// contact with no recorded inbound — and it is reported as LOST, because it
+// is: it was decrypted before shutdown, so WhatsApp's redelivery after restart
+// fails with ErrOldCounter and whatsmeow ignores it without dispatching an
+// event. An ALERT that promised a redelivery would send nobody looking.
 func TestDeliverAfterDrainStartsNothing(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
 	srv, body, _ := captureOne(t)
 	st := store.NewMemory()
 	f := openFanout(srv.URL, "", st, false)
@@ -706,52 +718,18 @@ func TestDeliverAfterDrainStartsNothing(t *testing.T) {
 	if len(body) != 0 {
 		t.Fatalf("a delivery after Drain was posted (%d); nothing was accounting for it", len(body))
 	}
-	// NOT recorded, deliberately — see TestLateMessagesAreAdmittedOnRedelivery
-	// for why recording it would lose messages.
-	if ok, _ := st.HasInboundFrom(knownJID); ok {
-		t.Fatal("a message arriving during shutdown was recorded; it will be redelivered, and recording it now raises the watermark over its siblings")
+	if ok, _ := st.HasInboundFrom(knownJID); !ok {
+		t.Fatal("a message arriving during shutdown was not recorded; reply-only will refuse a reply to this contact")
 	}
-}
-
-// A message arriving after Drain has closed intake cannot be acked — the socket
-// is already gone — so WhatsApp redelivers it after the restart. If two arrive
-// in that window and are recorded now, the watermark rises to the newer; on
-// redelivery the older is strictly below it, admitDuringReplay calls it
-// history, and it is dropped for good. Not recording them costs nothing: the
-// redelivery records them.
-func TestLateMessagesAreAdmittedOnRedelivery(t *testing.T) {
-	st := store.NewMemory()
-	older := time.Now().Add(-2 * time.Second)
-	newer := time.Now().Add(-1 * time.Second)
-
-	// Before restart: intake closed, then two messages land.
-	srv1, _, _ := captureOne(t)
-	before := openFanout(srv1.URL, "", st, false)
-	if err := before.Drain(context.Background()); err != nil {
-		t.Fatal(err)
+	out := logged.String()
+	if !strings.Contains(out, "LOST") || !strings.Contains(out, "will not be redelivered") {
+		t.Fatalf("the ALERT must say the message is lost and will not be redelivered, got: %q", out)
 	}
-	before.Deliver(knownJID, "first", "wamid.OLDER", older, nil)
-	before.Deliver(knownJID, "second", "wamid.NEWER", newer, nil)
-
-	// After restart: same store, a new connection inside its replay window,
-	// WhatsApp redelivers both in order.
-	srv2, body, _ := captureOne(t)
-	after := openFanout(srv2.URL, "", st, true)
-	after.Deliver(knownJID, "first", "wamid.OLDER", older, nil)
-	after.Deliver(knownJID, "second", "wamid.NEWER", newer, nil)
-	after.Wait()
-
-	got := map[string]bool{}
-	for len(got) < 2 {
-		select {
-		case b := <-body:
-			var p map[string]any
-			_ = json.Unmarshal(b, &p)
-			got[fmt.Sprint(p["messageId"])] = true
-		case <-time.After(2 * time.Second):
-			t.Fatalf("only %v were forwarded on redelivery; the rest were dropped as history "+
-				"because the late messages had been recorded before the restart", got)
-		}
+	if !strings.Contains(out, "wamid.LATE") {
+		t.Fatalf("the ALERT must carry the WhatsApp message id so an operator can find it, got: %q", out)
+	}
+	if strings.Contains(out, knownJID) {
+		t.Fatalf("the ALERT must carry the JID redacted, not in the clear: %q", out)
 	}
 }
 
@@ -835,5 +813,63 @@ func TestFallbackDoesNotHoldAMediaSlot(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("with %d fallbacks blocked, a new file-carrying delivery could not get a media slot — "+
 			"the text-only fallbacks are holding them", maxConcurrentMediaDeliveries)
+	}
+}
+
+// panicOnceStore panics on its first RecordInbound, as a store bug or a
+// corrupted database page might.
+type panicOnceStore struct {
+	rails.Store
+	mu       sync.Mutex
+	panicked bool
+}
+
+func (p *panicOnceStore) RecordInbound(jid string, at time.Time) error {
+	p.mu.Lock()
+	first := !p.panicked
+	p.panicked = true
+	p.mu.Unlock()
+	if first {
+		panic("store exploded")
+	}
+	return p.Store.RecordInbound(jid, at)
+}
+
+// whatsmeow's dispatchEvent recovers a panicking handler (client.go:980-985)
+// and carries on with the next event. If Deliver panics while holding the
+// intake lock and nothing releases it, the NEXT inbound blocks whatsmeow's
+// event goroutine forever: every customer's messages stop, whatsmeow logs the
+// stuck node — JID in the clear — every 30s, and Drain blocks until SIGKILL.
+func TestPanicInsideIntakeDoesNotWedgeTheFanout(t *testing.T) {
+	srv, _, _ := captureOne(t)
+	f := openFanout(srv.URL, "", &panicOnceStore{Store: store.NewMemory()}, false)
+
+	func() {
+		defer func() { _ = recover() }() // what whatsmeow's dispatchEvent does
+		f.Deliver(knownJID, "boom", "wamid.PANIC", time.Now(), nil)
+	}()
+
+	next := make(chan struct{})
+	go func() {
+		f.Deliver(knownJID, "after", "wamid.AFTER", time.Now(), nil)
+		close(next)
+	}()
+	select {
+	case <-next:
+	case <-time.After(time.Second):
+		t.Fatal("the next Deliver blocked after a panic inside intake — the lock was never released")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	drained := make(chan error, 1)
+	go func() { drained <- f.Drain(ctx) }()
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("Drain after a recovered panic: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Drain blocked after a panic inside intake")
 	}
 }
