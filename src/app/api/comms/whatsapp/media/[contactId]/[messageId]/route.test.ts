@@ -31,6 +31,8 @@ let claims: Record<string, unknown> | null;
 let fileCalls: string[];
 /** Options handed to createReadStream, so a range can be proven to reach the bucket. */
 let readCalls: ({ start: number; end: number } | undefined)[];
+/** When set, `getStorage` throws synchronously — an admin app or Storage init failure. */
+let storageInitError: Error | null;
 
 const BYTES = Buffer.from("PNGDATA-not-a-real-image");
 
@@ -90,7 +92,10 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 vi.mock("firebase-admin/storage", () => ({
-  getStorage: () => fakeStorage,
+  getStorage: () => {
+    if (storageInitError) throw storageInitError;
+    return fakeStorage;
+  },
 }));
 
 import { GET } from "./route";
@@ -115,6 +120,7 @@ const AUTHED = { "x-user-uid": "user-1" };
 beforeEach(() => {
   fileCalls = [];
   readCalls = [];
+  storageInitError = null;
   claims = { status: "active", agencyId: AGENCY_ID, agencyRole: "staff" };
   contactDoc = { agencyId: AGENCY_ID, subAccountId: SUB_ACCOUNT_ID, name: "Ada" };
   memberDoc = { status: "active" };
@@ -315,6 +321,17 @@ describe("GET /api/comms/whatsapp/media/[contactId]/[messageId]", () => {
       "filename*=UTF-8''",
     )[1];
     expect(star).toBe("re%28port%29%2A%21.pdf");
+  });
+
+  it("404s instead of 500 when resolving the bucket throws synchronously", async () => {
+    // The row and the caller are both valid, so only the Storage init failure
+    // stands between this request and a 200. It must end in the route's own
+    // not-found answer, not an unhandled throw.
+    storageInitError = new Error("The default Firebase app does not exist");
+    const res = await call(AUTHED);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Not found" });
+    expect(fileCalls).toEqual([]);
   });
 
   it("404s when the stored path disagrees with the derived one, without touching Storage", async () => {

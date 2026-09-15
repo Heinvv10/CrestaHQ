@@ -86,26 +86,27 @@ export async function openWhatsappMedia(path: string): Promise<{
   contentType: string;
   read: (range?: MediaByteRange) => AsyncIterable<Buffer>;
 } | null> {
-  const b = bucket();
-  if (!b) return null;
-  const file = b.file(path);
-  let sizeBytes = 0;
-  let contentType = "application/octet-stream";
   try {
+    // Inside the try: resolving the bucket can throw synchronously (no admin
+    // app), and the serving route would then answer an unhandled 500 instead
+    // of its 404.
+    const b = bucket();
+    if (!b) return null;
+    const file = b.file(path);
     const [meta] = await file.getMetadata();
-    sizeBytes = Number(meta.size ?? 0);
-    contentType = meta.contentType ?? contentType;
-  } catch {
-    // Missing object, or metadata unreadable — indistinguishable to the caller,
-    // and both mean "there is nothing to serve".
+    return {
+      sizeBytes: Number(meta.size ?? 0),
+      contentType: meta.contentType ?? "application/octet-stream",
+      read: (range) =>
+        range
+          ? file.createReadStream({ start: range.start, end: range.end })
+          : file.createReadStream(),
+    };
+  } catch (err) {
+    // Missing object, unreadable metadata, or Storage that would not
+    // initialise — all mean "there is nothing to serve" to the caller, but only
+    // the log can tell them apart.
+    console.error("[whatsapp-media] open failed", err);
     return null;
   }
-  return {
-    sizeBytes,
-    contentType,
-    read: (range) =>
-      range
-        ? file.createReadStream({ start: range.start, end: range.end })
-        : file.createReadStream(),
-  };
 }
