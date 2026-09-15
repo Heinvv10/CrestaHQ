@@ -60,10 +60,14 @@ type Fanout struct {
 	// closed is set by Drain under the same lock, and Deliver checks it under
 	// that lock before wg.Add — sync.WaitGroup forbids an Add racing a Wait
 	// whose counter is at zero, which is exactly what a message arriving
-	// during shutdown would otherwise do. That is not hypothetical: whatsmeow's
-	// Disconnect gives up waiting for its handler queue after 5s
-	// (client.go:715) and returns with a handler still running, so main.go can
-	// be inside Drain while that handler reaches Deliver.
+	// during shutdown would otherwise do. That is not hypothetical — whatsmeow
+	// has two paths by which Disconnect returns with a handler still running,
+	// so main.go can be inside Drain while that handler reaches Deliver:
+	//   - the slow one: Disconnect gives up waiting for the handler queue after
+	//     5s (unlockedDisconnect, client.go:715);
+	//   - the fast one: handlerQueueLoop returns on connCtx.Done in the middle
+	//     of handling a node (client.go:936-939), closing closeWait without
+	//     waiting for that handler, so Disconnect can return at once.
 	inFlightMu sync.Mutex
 	inFlight   map[string]int
 	closed     bool

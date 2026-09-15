@@ -269,9 +269,11 @@ func main() {
 	// shutdownBudget (35s) outlasts the 30s send-queue timeout so an in-flight
 	// send gets to finish or time out on its own terms before Disconnect pulls
 	// the socket out from under it. client.Disconnect then waits up to 5s for
-	// whatsmeow's handler queue to finish (unlockedDisconnect, client.go:715) —
-	// a handler still running there can call fanout.Deliver during the drain,
-	// which is why Deliver refuses new work once Drain has begun. fanout.Drain
+	// whatsmeow's handler queue to finish (unlockedDisconnect, client.go:715).
+	// It can return with a handler still running — after that 5s, or at once
+	// when handlerQueueLoop exits mid-node on connCtx.Done (client.go:936-939)
+	// — and that handler can call fanout.Deliver during the drain, which is why
+	// Deliver refuses new work once Drain has begun. fanout.Drain
 	// then gets fanoutDrainBudget (25s): it abandons file work immediately and
 	// the messages go text-only. Worst case end to end is 35s + 5s + 25s = 65s;
 	// TimeoutStopSec=90 in the systemd unit leaves 25s of headroom before

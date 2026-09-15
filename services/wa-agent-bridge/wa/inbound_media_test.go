@@ -665,6 +665,9 @@ func TestHostSwitchOverflowIsNotReportedAsTooLarge(t *testing.T) {
 		if media == nil || media.Dropped != "fetch_failed" {
 			t.Fatalf("Dropped = %q, want fetch_failed for a host-switch overflow", media.Dropped)
 		}
+		if dl.peak > maxInboundCiphertextBytes {
+			t.Fatalf("file peaked at %d bytes against a %d cap", dl.peak, maxInboundCiphertextBytes)
+		}
 	})
 }
 
@@ -676,15 +679,24 @@ func TestHostSwitchOverflowIsNotReportedAsTooLarge(t *testing.T) {
 // A stub that modelled what we believed hid a mislabel on every download
 // WhatsApp served from two or more hosts.
 //
-// Each host serves bodies[i]. A body that copies in completely stands in for a
-// response whose ciphertext hash then fails (ErrInvalidMediaEncSHA256), which
-// is the realistic reason a normal-sized response moves on.
-type hostLoopDownloader struct{ bodies []int }
+// Each host serves bodies[i]. A body that copies in completely takes whatsmeow's
+// HMAC-failure path, which is the one that touches the file between hosts:
+// downloadEncryptedMediaToFile reads the 10-byte MAC with ReadAt and truncates
+// it off with Truncate(n-10) — n being THIS attempt's byte count, not the file
+// length — then validateMediaFile rewinds and reads the whole file before
+// failing with ErrInvalidMediaHMAC. The file therefore SHRINKS between hosts,
+// so a check of its final size can pass even when a host's write breached the
+// cap. peak records the size immediately after every copy, which is where a
+// breach is visible.
+type hostLoopDownloader struct {
+	bodies []int
+	peak   int64
+}
 
 func (d *hostLoopDownloader) DownloadToFile(ctx context.Context, _ whatsmeow.DownloadableMessage, file whatsmeow.File) error {
 	var err error
 	for i, size := range d.bodies {
-		err = hostAttempt(file, size)
+		err = d.hostAttempt(file, size)
 		if err == nil ||
 			errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) ||
 			errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith403) ||
@@ -699,11 +711,31 @@ func (d *hostLoopDownloader) DownloadToFile(ctx context.Context, _ whatsmeow.Dow
 	return err
 }
 
-func hostAttempt(file whatsmeow.File, size int) error {
-	if _, err := io.Copy(file, whatsmeowBody(make([]byte, size))); err != nil {
+func (d *hostLoopDownloader) hostAttempt(file whatsmeow.File, size int) error {
+	n, cerr := io.Copy(file, whatsmeowBody(make([]byte, size)))
+	if st, err := file.Stat(); err == nil && st.Size() > d.peak {
+		d.peak = st.Size()
+	}
+	if cerr != nil {
+		return cerr
+	}
+	if n <= 10 {
+		return whatsmeow.ErrTooShortFile
+	}
+	mac := make([]byte, 10)
+	if _, err := file.ReadAt(mac, n-10); err != nil {
 		return err
 	}
-	return whatsmeow.ErrInvalidMediaEncSHA256
+	if err := file.Truncate(n - 10); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := io.Copy(io.Discard, file); err != nil {
+		return err
+	}
+	return whatsmeow.ErrInvalidMediaHMAC
 }
 
 // whatsmeowBody is a source shaped like whatsmeow's: an io.TeeReader, which
@@ -770,11 +802,34 @@ func TestOversizeIsTooLargeOnAnyNumberOfHosts(t *testing.T) {
 			for i := range bodies {
 				bodies[i] = oversize
 			}
-			c, seen := recordingClient(&hostLoopDownloader{bodies: bodies})
+			dl := &hostLoopDownloader{bodies: bodies}
+			c, seen := recordingClient(dl)
 			_, media := deliver(t, c, seen, imageMsg("trust me", 1<<20))
 			if media == nil || media.Dropped != "too_large" {
 				t.Fatalf("Dropped = %q, want too_large for an oversize body served by %d host(s)", media.Dropped, hosts)
 			}
+			// At PEAK, not at the end: whatsmeow truncates between hosts.
+			if dl.peak > maxInboundCiphertextBytes {
+				t.Fatalf("file peaked at %d bytes against a %d cap", dl.peak, maxInboundCiphertextBytes)
+			}
 		})
+	}
+}
+
+// The cap must hold at every host's peak, not just at the end, across the
+// sequence whatsmeow actually runs between hosts: normal response, MAC read,
+// Truncate(n-10), rewind, full read, next host. A mixed run — normal hosts
+// then an oversize one — is the shape where the final size lies most.
+func TestCapHoldsAtPeakAcrossRealisticHostSwitches(t *testing.T) {
+	dl := &hostLoopDownloader{bodies: []int{10 << 20, 10 << 20, 40 << 20}}
+	c, seen := recordingClient(dl)
+	_, media := deliver(t, c, seen, imageMsg("mixed hosts", 10<<20))
+	if media == nil || media.Dropped == "" {
+		t.Fatalf("media = %+v; a run that crossed the cap must be dropped", media)
+	}
+	if dl.peak > maxInboundCiphertextBytes {
+		t.Fatalf("file peaked at %d bytes against a %d cap — asserted at peak because whatsmeow "+
+			"truncates between hosts, so the final size can understate a breach",
+			dl.peak, maxInboundCiphertextBytes)
 	}
 }
