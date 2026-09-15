@@ -30,6 +30,8 @@ const m = vi.hoisted(() => ({
   putCalls: 0,
   /** Contacts whose text-row write throws. */
   rowWriteFailsFor: new Set<string>(),
+  /** When set, a contact's row write fails only the first time. */
+  rowWriteFailsOnce: false,
   /** Set to make the opt-out batch commit throw, as contention would. */
   commitThrows: false,
   contactUpdates: [] as Array<Record<string, unknown>>,
@@ -101,6 +103,7 @@ function docRef(path: string) {
     set: async (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
       const contactId = path.split("/")[1] ?? "";
       if ("direction" in data && m.rowWriteFailsFor.has(contactId)) {
+        if (m.rowWriteFailsOnce) m.rowWriteFailsFor.delete(contactId);
         throw new Error("row write refused");
       }
       m.sets.push({ path, data });
@@ -276,6 +279,7 @@ beforeEach(() => {
   m.putHangs = false;
   m.putCalls = 0;
   m.rowWriteFailsFor.clear();
+  m.rowWriteFailsOnce = false;
   m.commitThrows = false;
   m.contactUpdates.length = 0;
   fetchCalls = [];
@@ -405,7 +409,7 @@ describe("cloud inbound media — the plan's five", () => {
 });
 
 describe("cloud inbound media — ordering against the redelivery guard", () => {
-  it("a Meta retry during a slow download still gets exactly one AI reply", async () => {
+  it("a redelivery arriving mid-download is recognised by the guard: one AI reply, one upsert", async () => {
     // Only the FIRST metadata call blocks. If the retry blocked too, a broken
     // ordering would deadlock instead of failing, and prove nothing.
     let release!: () => void;
@@ -796,5 +800,47 @@ describe("cloud inbound — the AI never replies to an empty message", () => {
 
     expect(m.aiCalls).toHaveLength(1);
     expect(m.aiCalls[0]!.incomingMessage).toBe("👍");
+  });
+});
+
+describe("cloud inbound media — every clause of the Meta host guard", () => {
+  const refused = async (url: string) => {
+    onMeta = async () => metaJson({ url });
+    await post(image());
+    const host = new URL(url).host;
+    expect(fetchCalls.some((c) => c.url.includes(host))).toBe(false);
+    expect(fetchCalls).toHaveLength(1);
+    expect(row().mediaDropped).toBe("fetch_failed");
+  };
+
+  it("refuses a host that merely ENDS with a Meta suffix (evilfbsbx.com)", async () => {
+    await refused("https://evilfbsbx.com/x");
+  });
+
+  it("refuses a Meta host on a non-default port", async () => {
+    await refused("https://lookaside.fbsbx.com:8443/x");
+  });
+
+  it("refuses plain http on a Meta host", async () => {
+    await refused("http://lookaside.fbsbx.com/x");
+  });
+});
+
+describe("cloud inbound media — a retry whose own row merge fails still attaches", () => {
+  it("re-attempts the attachment onto the row the first delivery wrote", async () => {
+    // First delivery: row written, download fails (a death mid-download).
+    onMeta = async () => new Response("{}", { status: 500 });
+    await post(image());
+    expect(m.docs.has(ROW)).toBe(true);
+    expect(row().mediaDropped).toBe("fetch_failed");
+
+    // Retry: the row merge throws transiently, the download works.
+    m.rowWriteFailsFor.add("c_1");
+    m.rowWriteFailsOnce = true;
+    onMeta = async () => metaJson();
+    expect((await post(image())).status).toBe(200);
+
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+    expect(row()).not.toHaveProperty("mediaDropped");
   });
 });

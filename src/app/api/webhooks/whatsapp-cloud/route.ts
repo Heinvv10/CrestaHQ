@@ -161,13 +161,15 @@ async function attachInboundMedia(opts: {
 
   // Only rows that exist: merged onto a row whose write failed, `media` or
   // `mediaDropped` would create a ghost doc — no body, no direction, no
-  // createdAt — that every later delivery then reads as "seen".
+  // createdAt — that every later delivery then reads as "seen". A row an
+  // EARLIER delivery wrote counts as existing, so a retry whose own row merge
+  // failed transiently still re-attempts the attachment.
   //
   // And never downgrade: a row that already holds media is left alone — no
   // re-fetch, and no `mediaDropped` from a retry whose download failed.
   const pending = opts.contactDocs.filter(
     (d, i) =>
-      opts.rowWritten.has(d.id) &&
+      (opts.rowWritten.has(d.id) || opts.seen[i]?.exists === true) &&
       !parseWhatsappMedia(opts.seen[i]?.data()?.media),
   );
   if (pending.length === 0) return;
