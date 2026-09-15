@@ -1,7 +1,12 @@
 name: wa-agent-bridge
 
+# push is main-only, as in ci.yml. With push on every branch, one commit to a
+# PR branch queued two full Go runs, and a concurrency group cannot fold them:
+# github.ref is refs/heads/<branch> on push and refs/pull/<N>/merge on
+# pull_request, so the two runs never share a group.
 on:
   push:
+    branches: [main]
     paths:
       - 'services/wa-agent-bridge/**'
       - '.github/workflows/wa-agent-bridge.yml'
@@ -9,6 +14,10 @@ on:
     paths:
       - 'services/wa-agent-bridge/**'
       - '.github/workflows/wa-agent-bridge.yml'
+
+concurrency:
+  group: wa-agent-bridge-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   go:
