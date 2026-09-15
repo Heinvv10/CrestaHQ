@@ -441,11 +441,14 @@ func TestDrainAbandonsTheFileAndStillPostsTheMessage(t *testing.T) {
 	srv, body, _ := captureOne(t)
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
+	started := make(chan struct{})
 	fetch := func(ctx context.Context) *wa.InboundMedia {
+		close(started)
 		<-ctx.Done() // a download that would take minutes
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
 	}
 	f.Deliver(knownJID, "the caption", "wamid.SLOW", time.Now(), fetch)
+	<-started // the download is in flight; Drain must cancel it, not pre-empt it
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -518,10 +521,16 @@ func TestDrainGivesUpOnBudgetAndReportsWhatItAbandoned(t *testing.T) {
 
 	release := make(chan struct{})
 	defer close(release)
+	started := make(chan struct{})
 	f.Deliver(knownJID, "stuck", "wamid.STUCK", time.Now(), func(context.Context) *wa.InboundMedia {
+		close(started)
 		<-release // ignores ctx entirely
 		return &wa.InboundMedia{Dropped: "fetch_failed"}
 	})
+	// The premise is a fetch ALREADY in flight. Without this, Drain can win
+	// the race to the slot, and a message that never started file work is —
+	// correctly — posted text-only with nothing left to abandon.
+	<-started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -583,5 +592,150 @@ func TestFallbackBodyIsSigned(t *testing.T) {
 	want := fmt.Sprintf("t=%d,v1=%s", fixed.Unix(), hex.EncodeToString(mac.Sum(nil)))
 	if sigs[1] != want {
 		t.Fatalf("fallback body signature mismatch:\n got %q\nwant %q", sigs[1], want)
+	}
+}
+
+// A backlog of attachments parked on the media slots at shutdown must not be
+// lost to those slots. Once shutdown has begun there is no file work left to
+// bound — every parked message should skip the slot, and go out text-only
+// concurrently, well inside the drain budget.
+//
+// The fetch deliberately takes 200ms even when its context is already
+// cancelled, because the real one does: validateMediaFile, DecryptFile and the
+// hash take no context. A parked goroutine that still waits for a slot and
+// still fetches after shutdown serialises 20 of those through 2 slots.
+func TestDrainDeliversAParkedBacklogWithinBudget(t *testing.T) {
+	const n = 20
+	var mu sync.Mutex
+	got := map[string]bool{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		time.Sleep(300 * time.Millisecond) // a slow consumer
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		mu.Lock()
+		got[fmt.Sprint(p["messageId"])] = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	fetch := func(ctx context.Context) *wa.InboundMedia {
+		<-ctx.Done()
+		time.Sleep(200 * time.Millisecond) // decrypt + hash ignore ctx
+		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
+	}
+	for i := 0; i < n; i++ {
+		f.Deliver(knownJID, "photo", fmt.Sprintf("wamid.%d", i), time.Now(), fetch)
+	}
+	time.Sleep(50 * time.Millisecond) // two hold slots, eighteen park
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	err := f.Drain(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if err != nil || len(got) != n {
+		t.Fatalf("Drain err=%v; %d of %d parked messages reached the consumer — "+
+			"the rest were lost to the media slots at shutdown", err, len(got), n)
+	}
+}
+
+// A text POST — a dropped file, or no file at all — carries no memory peak and
+// must not hold a media slot. Holding one serialises every such message behind
+// two slots for as long as a slow consumer takes to answer.
+func TestTextOnlyPostsDoNotHoldAMediaSlot(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, maxSeen := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		inFlight++
+		if inFlight > maxSeen {
+			maxSeen = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(150 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	for i := 0; i < 8; i++ {
+		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.%d", i), time.Now(), func(context.Context) *wa.InboundMedia {
+			return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "too_large"}
+		})
+	}
+	f.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if maxSeen <= maxConcurrentMediaDeliveries {
+		t.Fatalf("at most %d text-only POSTs ran at once; they are queuing on the %d media slots",
+			maxSeen, maxConcurrentMediaDeliveries)
+	}
+}
+
+// Once Drain has begun, Deliver must not start new work: sync.WaitGroup
+// forbids Add racing a Wait at zero, and a delivery started after the drain
+// budget was set is one the budget never accounted for. Such a message is
+// recorded (reply-only depends on that) and reported, not posted.
+func TestDeliverAfterDrainStartsNothing(t *testing.T) {
+	srv, body, _ := captureOne(t)
+	st := store.NewMemory()
+	f := openFanout(srv.URL, "", st, false)
+
+	if err := f.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.Deliver(knownJID, "too late", "wamid.LATE", time.Now(), nil)
+
+	done := make(chan struct{})
+	go func() { f.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return: Deliver added work after Drain")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if len(body) != 0 {
+		t.Fatalf("a delivery after Drain was posted (%d); nothing was accounting for it", len(body))
+	}
+	if ok, _ := st.HasInboundFrom(knownJID); !ok {
+		t.Fatal("a message arriving during shutdown must still be recorded")
+	}
+}
+
+// Deliver and Drain concurrently, under -race. Before the intake guard this
+// was a documented sync.WaitGroup misuse — Add racing Wait at zero.
+func TestDeliverConcurrentWithDrainIsSafe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	for round := 0; round < 50; round++ {
+		f := openFanout(srv.URL, "", store.NewMemory(), false)
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				f.Deliver(knownJID, "x", fmt.Sprintf("wamid.%d", i), time.Now(), nil)
+			}(i)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := f.Drain(ctx); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		cancel()
+		wg.Wait()
+		f.Wait()
 	}
 }

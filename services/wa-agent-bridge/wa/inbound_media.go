@@ -38,6 +38,18 @@ const maxInboundCiphertextBytes = maxInboundMediaBytes + 4096
 // rather than being retried five times against the same oversize file.
 var errMediaTooLarge = errors.New("wa: inbound media exceeded the cap mid-download")
 
+// errMediaCorruptOverflow refuses growth past the cap that was caused by
+// whatsmeow appending a second media host's response after the first, not by
+// any one response being too large.
+//
+// DownloadMediaWithPathToFile moves to the next host after a non-retryable
+// error (hash mismatch, bad MAC, too short) WITHOUT rewinding the file, so two
+// normal-sized responses can cross the cap between them. The result is a
+// corrupt download whatsmeow would reject anyway. It is refused for the same
+// disk reason, but deliberately does NOT wrap errMediaTooLarge: that label
+// tells an operator the customer sent something big, which is false.
+var errMediaCorruptOverflow = errors.New("wa: inbound media host retry appended past the cap")
+
 // inboundMediaTimeout bounds one download.
 //
 // It does NOT bound anything the socket is waiting on: the download runs on
@@ -114,15 +126,25 @@ type cappedFile struct {
 	f     *os.File
 	limit int64
 	pos   int64
+	// runStart is the offset the current ReadFrom began at. whatsmeow makes
+	// exactly one io.Copy — so exactly one ReadFrom — per media host attempt,
+	// which makes this the one place a response boundary is observable. It is
+	// -1 outside a ReadFrom.
+	runStart int64
 }
 
 var _ whatsmeow.File = (*cappedFile)(nil)
 
 func (c *cappedFile) grow(end int64) error {
-	if end > c.limit {
-		return errMediaTooLarge
+	if end <= c.limit {
+		return nil
 	}
-	return nil
+	// Refused either way — the disk bound does not care why. The label does:
+	// only a single response that is itself over the cap is "too large".
+	if c.runStart > 0 && end-c.runStart <= c.limit {
+		return errMediaCorruptOverflow
+	}
+	return errMediaTooLarge
 }
 
 func (c *cappedFile) Read(p []byte) (int, error) {
@@ -144,6 +166,8 @@ func (c *cappedFile) Write(p []byte) (int, error) {
 // made HERE rather than inherited: it funnels the source through Write in
 // fixed chunks, so the cap is checked before each one lands.
 func (c *cappedFile) ReadFrom(r io.Reader) (int64, error) {
+	c.runStart = c.pos
+	defer func() { c.runStart = -1 }()
 	return io.Copy(writeOnly{c}, r)
 }
 
@@ -365,7 +389,7 @@ func fetchInboundMedia(ctx context.Context, jid string, a *attachment, dl MediaD
 	ctx, cancel := context.WithTimeout(ctx, inboundMediaTimeout)
 	defer cancel()
 
-	capped := &cappedFile{f: f, limit: maxInboundCiphertextBytes}
+	capped := &cappedFile{f: f, limit: maxInboundCiphertextBytes, runStart: -1}
 	if err := dl.DownloadToFile(ctx, a.msg, capped); err != nil {
 		// The mime type and the declared size, never the bytes and never the
 		// filename — a filename is customer data on this rail.

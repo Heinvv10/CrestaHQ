@@ -49,7 +49,7 @@ func (s *stubDownloader) DownloadToFile(ctx context.Context, _ whatsmeow.Downloa
 	if s.inFlight > s.maxConcurrent {
 		s.maxConcurrent = s.inFlight
 	}
-	hold, err, payload := s.hold, s.err, s.payload
+	hold := s.hold
 	s.mu.Unlock()
 
 	defer func() {
@@ -61,6 +61,12 @@ func (s *stubDownloader) DownloadToFile(ctx context.Context, _ whatsmeow.Downloa
 	if hold != nil {
 		<-hold
 	}
+	// Read AFTER hold, not before: a test that sets err while this is blocked
+	// must see it. Reading it at call time made the shutdown test flake
+	// whenever the goroutine reached here before the test set the error.
+	s.mu.Lock()
+	err, payload := s.err, s.payload
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -242,7 +248,7 @@ func TestCappedFileRefusesGrowthByEveryRoute(t *testing.T) {
 
 	t.Run("ReadFrom via io.Copy", func(t *testing.T) {
 		c := newCapped(t)
-		n, err := io.Copy(c, bytes.NewReader(make([]byte, 64)))
+		n, err := io.Copy(c, whatsmeowBody(make([]byte, 64)))
 		if !errors.Is(err, errMediaTooLarge) {
 			t.Fatalf("io.Copy of 64 bytes into an 8-byte cap: n=%d err=%v, want errMediaTooLarge", n, err)
 		}
@@ -570,5 +576,125 @@ func TestCancelledDownloadIsReportedAsShutdown(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fetch did not return after cancellation")
+	}
+}
+
+// Read must move the offset the cap measures from. validateMediaFile rewinds
+// and reads the whole file before the decrypt writes back, so a Read that did
+// not advance pos would let a following Write start from 0 and extend the file
+// past the cap unrefused.
+func TestCappedFileReadAdvancesTheOffset(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "capped-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	c := &cappedFile{f: f, limit: 8}
+
+	if _, err := c.Write(make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(c, make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte{1}); !errors.Is(err, errMediaTooLarge) {
+		t.Fatalf("a write after reading to the cap must be refused; got %v — Read did not advance the offset", err)
+	}
+}
+
+// whatsmeow's DownloadMediaWithPathToFile tries the next media host after a
+// non-retryable error WITHOUT rewinding the file, so the second host's bytes
+// land after the first host's. Two normal-sized responses can therefore
+// cross the cap between them. That is a corrupt download (whatsmeow's hash
+// check would fail it), not an oversize FILE, and must not be labelled one:
+// "too_large" tells an operator and a consumer that the customer sent
+// something big.
+//
+// The disk bound still holds — the write is still refused — only the label
+// changes.
+func TestHostSwitchOverflowIsNotReportedAsTooLarge(t *testing.T) {
+	t.Run("cappedFile", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "capped-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		c := &cappedFile{f: f, limit: 16}
+
+		// Host 1: 10 bytes, then whatsmeow gives up on it.
+		if _, err := io.Copy(c, whatsmeowBody(make([]byte, 10))); err != nil {
+			t.Fatalf("first host within the cap: %v", err)
+		}
+		// Host 2: 10 more bytes from offset 10, no rewind.
+		_, err = io.Copy(c, whatsmeowBody(make([]byte, 10)))
+		if err == nil {
+			t.Fatal("the combined write crossed the cap and was not refused; the disk bound is gone")
+		}
+		if errors.Is(err, errMediaTooLarge) {
+			t.Fatalf("two 10-byte responses against a 16-byte cap were labelled too large: %v", err)
+		}
+		if st, _ := c.Stat(); st.Size() > 16 {
+			t.Fatalf("file grew to %d past the cap", st.Size())
+		}
+	})
+
+	t.Run("one response over the cap is still too large", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "capped-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		c := &cappedFile{f: f, limit: 16}
+		if _, err := io.Copy(c, whatsmeowBody(make([]byte, 10))); err != nil {
+			t.Fatal(err)
+		}
+		// Host 2 alone ships more than the cap.
+		if _, err := io.Copy(c, whatsmeowBody(make([]byte, 20))); !errors.Is(err, errMediaTooLarge) {
+			t.Fatalf("a single response over the cap must be too large, got %v", err)
+		}
+	})
+
+	t.Run("through the fetch", func(t *testing.T) {
+		dl := &twoHostDownloader{perHost: 10 << 20} // 10MiB from each of two hosts
+		c, seen := recordingClient(dl)
+		_, media := deliver(t, c, seen, imageMsg("normal photo", 10<<20))
+		if media == nil || media.Dropped != "fetch_failed" {
+			t.Fatalf("Dropped = %q, want fetch_failed for a host-switch overflow", media.Dropped)
+		}
+	})
+}
+
+// twoHostDownloader reproduces whatsmeow's host loop: io.Copy one response,
+// fail it, io.Copy the next into the same file with no rewind.
+type twoHostDownloader struct{ perHost int }
+
+func (d *twoHostDownloader) DownloadToFile(_ context.Context, _ whatsmeow.DownloadableMessage, file whatsmeow.File) error {
+	var err error
+	for host := 0; host < 2; host++ {
+		_, err = io.Copy(file, io.TeeReader(bytes.NewReader(make([]byte, d.perHost)), sha256.New()))
+		if err != nil {
+			return err
+		}
+	}
+	return errors.New("hash of media ciphertext doesn't match")
+}
+
+// whatsmeowBody is a source shaped like whatsmeow's: an io.TeeReader, which
+// does NOT implement io.WriterTo. That matters for any test of io.Copy into
+// cappedFile — io.Copy checks the SOURCE's WriteTo before the destination's
+// ReadFrom, so a bytes.Reader source silently takes the Write path and a
+// "ReadFrom" test never calls ReadFrom.
+func whatsmeowBody(b []byte) io.Reader {
+	return io.TeeReader(bytes.NewReader(b), sha256.New())
+}
+
+// Guard on the helper itself: if it ever gains WriteTo, every ReadFrom test
+// above silently stops testing ReadFrom.
+func TestWhatsmeowBodyForcesReadFrom(t *testing.T) {
+	if _, ok := whatsmeowBody(nil).(io.WriterTo); ok {
+		t.Fatal("whatsmeowBody implements io.WriterTo; io.Copy would bypass cappedFile.ReadFrom in every test using it")
 	}
 }

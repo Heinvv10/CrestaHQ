@@ -207,12 +207,20 @@ func main() {
 	const shutdownBudget = 35 * time.Second
 
 	// fanoutDrainBudget bounds the second step, the inbound delivery drain.
-	// fanout.Drain cancels every in-flight download and media POST first, so
-	// what remains is text-only posts on the 10s client — the original and the
-	// fallback, worst case ~20s in sequence. 25s covers that; anything still
-	// running after it is logged and abandoned rather than holding systemd
-	// past TimeoutStopSec, which would SIGKILL everything including the posts
-	// that were about to succeed.
+	//
+	// The worst case is not one delivery but a BACKLOG of them, so it is worth
+	// being exact about why the backlog drains in parallel. Drain stops intake,
+	// then cancels every in-flight download and media POST. The (at most two)
+	// deliveries holding a media slot finish their abandoned file work — the
+	// HTTP phase stops on cancel; whatsmeow's HMAC, decrypt and hash take no
+	// context but are bounded by the 16MiB cap to a fraction of a second — and
+	// then post text-only. Every delivery still WAITING for a slot stops waiting
+	// and posts text-only at once, without a slot, concurrently with the rest.
+	// So the backlog costs one text POST per consumer in parallel, each on the
+	// 10s client, plus one fallback for the slot holders: ~20s whatever the
+	// backlog size. 25s covers that; anything still running after it is logged
+	// and abandoned rather than holding systemd past TimeoutStopSec, which
+	// would SIGKILL everything including the posts about to succeed.
 	const fanoutDrainBudget = 25 * time.Second
 
 	// The one send path. Everything outbound goes through this queue so that

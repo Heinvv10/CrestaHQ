@@ -57,8 +57,13 @@ type Fanout struct {
 	drainCancel context.CancelFunc
 	// inFlight is what Drain reports if it has to give up: redacted JIDs of the
 	// deliveries still running, so an operator can see what a deploy cost.
+	// closed is set by Drain under the same lock, and Deliver checks it under
+	// that lock before wg.Add — sync.WaitGroup forbids an Add racing a Wait
+	// whose counter is at zero, which is exactly what a message arriving
+	// during shutdown would otherwise do.
 	inFlightMu sync.Mutex
 	inFlight   map[string]int
+	closed     bool
 	// now is the signing clock. Defaulted to time.Now by NewFanout; tests
 	// that need to assert a fixed signature override it directly (same
 	// package, deliberate unexported access — see f.client.Transport above).
@@ -283,8 +288,18 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(
 		"at":        at.UTC().Format(time.RFC3339),
 	}
 
+	f.inFlightMu.Lock()
+	if f.closed {
+		f.inFlightMu.Unlock()
+		// Recorded above, so reply-only still knows this contact. Not posted:
+		// the drain budget was set before this arrived and cannot fund it.
+		log.Printf("ALERT inbound arrived during shutdown jid=%s len=%s — recorded, not forwarded",
+			redact.JID(jid), redact.Body(text))
+		return
+	}
 	f.wg.Add(1)
-	f.track(jid, +1)
+	f.inFlight[redact.JID(jid)]++
+	f.inFlightMu.Unlock()
 	go func() {
 		defer f.wg.Done()
 		defer f.track(jid, -1)
@@ -305,28 +320,98 @@ func (f *Fanout) track(jid string, delta int) {
 // deliverAdmitted fetches the attachment, if any, and posts to every consumer.
 // It runs on its own goroutine: see Deliver for why nothing here may run on
 // whatsmeow's.
+//
+// A media slot is held ONLY while there is a memory peak to bound: across the
+// fetch, the marshal of a body carrying the file, and the POSTs of that body.
+// Nothing that carries no file — a dropped attachment, a text-only fallback,
+// a message that never had a file — waits for a slot or holds one. And once
+// shutdown has begun, a message still waiting for a slot stops waiting: it is
+// posted text-only straight away, because at that point the slots would only
+// queue messages behind file work that is being abandoned anyway.
 func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
-	var media *wa.InboundMedia
-	if fetchMedia != nil {
-		// The slot is held across the fetch AND the marshal, because the
-		// marshal is where the memory peak actually is — see mediaSlots.
-		f.mediaSlots <- struct{}{}
-		defer func() { <-f.mediaSlots }()
-		media = fetchMedia(f.drainCtx)
+	if fetchMedia == nil {
+		f.postEach(jid, withMedia(base, nil), false)
+		return
+	}
+	if !f.acquireMediaSlot() {
+		f.postEach(jid, withMedia(base, &wa.InboundMedia{Dropped: "shutdown"}), false)
+		return
+	}
+	media := fetchMedia(f.drainCtx)
+	if media == nil || media.Dropped != "" {
+		f.releaseMediaSlot()
+		f.postEach(jid, withMedia(base, media), false)
+		return
 	}
 
+	failed := f.postEach(jid, withMedia(base, media), true)
+	// Released before the fallbacks: they carry no file, and the file's
+	// bytes are unreachable from here on.
+	media = nil
+	f.releaseMediaSlot()
+	if len(failed) == 0 {
+		return
+	}
+
+	// The file could not be delivered — but the customer's MESSAGE must not
+	// die with it. The bridge stores no body to replay from later, so the
+	// retry happens now or never.
+	//
+	// A duplicate is safe by construction: the payload carries WhatsApp's own
+	// message id and docs/hermes-consumer.md requires consumers to dedupe on
+	// it.
+	reason := "delivery_failed"
+	if f.drainCtx.Err() != nil {
+		// The POST did not fail; the bridge stopped it. Say so, or an
+		// operator hunts a consumer bug that does not exist.
+		reason = "shutdown"
+	}
+	var wg sync.WaitGroup
+	for _, c := range failed {
+		log.Printf("WARNING media delivery %s consumer=%s — retrying text-only jid=%s",
+			reason, c.Name, redact.JID(jid))
+		wg.Add(1)
+		go func(c config.Consumer) {
+			defer wg.Done()
+			f.postTextOnly(c, base, jid, reason)
+		}(c)
+	}
+	wg.Wait()
+}
+
+// acquireMediaSlot waits for a media slot, or reports false once shutdown has
+// begun. Checked before the select as well as in it: when both cases are
+// ready Go picks one at random, and a message that takes a slot after
+// shutdown would do file work nobody will wait for.
+func (f *Fanout) acquireMediaSlot() bool {
+	if f.drainCtx.Err() != nil {
+		return false
+	}
+	select {
+	case f.mediaSlots <- struct{}{}:
+		return true
+	case <-f.drainCtx.Done():
+		return false
+	}
+}
+
+func (f *Fanout) releaseMediaSlot() { <-f.mediaSlots }
+
+// withMedia is base plus the media key the file's outcome calls for.
+//
+// Added ONLY when there is something to say. A text message must keep posting
+// exactly the four published keys: a `"media": null` on every inbound would
+// change the payload every live consumer already parses, for messages that
+// have no file.
+//
+// The bytes ride inline, base64-encoded, inside the body the HMAC already
+// covers — so signing is unchanged and the file is authenticated by the same
+// header the message is.
+func withMedia(base map[string]any, media *wa.InboundMedia) map[string]any {
 	body := make(map[string]any, len(base)+1)
 	for k, v := range base {
 		body[k] = v
 	}
-	// Added ONLY when there is something to say. A text message must keep
-	// posting exactly the four published keys: a `"media": null` on every
-	// inbound would change the payload every live consumer already parses, for
-	// messages that have no file.
-	//
-	// The bytes ride inline, base64-encoded, inside the body the HMAC already
-	// covers — so signing is unchanged and the file is authenticated by the
-	// same header the message is.
 	switch {
 	case media == nil:
 	case media.Dropped != "":
@@ -338,14 +423,19 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia fun
 			"dataBase64": base64.StdEncoding.EncodeToString(media.Data),
 		}
 	}
+	return body
+}
 
+// postEach marshals body once and posts it to every consumer concurrently,
+// returning the consumers it could not deliver to.
+func (f *Fanout) postEach(jid string, body map[string]any, carriesMedia bool) []config.Consumer {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("WARNING inbound payload marshal failed jid=%s err=%v", redact.JID(jid), err)
-		return
+		return nil
 	}
-	carriesMedia := body["media"] != nil
-
+	var mu sync.Mutex
+	var failed []config.Consumer
 	var wg sync.WaitGroup
 	for _, c := range f.consumers {
 		if c.WebhookURL == "" {
@@ -354,32 +444,15 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia fun
 		wg.Add(1)
 		go func(c config.Consumer) {
 			defer wg.Done()
-			if err := f.post(c, payload, carriesMedia); err == nil {
-				return
+			if err := f.post(c, payload, carriesMedia); err != nil {
+				mu.Lock()
+				failed = append(failed, c)
+				mu.Unlock()
 			}
-			if !carriesMedia {
-				return
-			}
-			// The file could not be delivered — but the customer's MESSAGE
-			// must not die with it. A 21MiB body over a slow hop is the one
-			// failure this bridge can still do something about, and it stores
-			// no body to replay from later, so the retry happens now or never.
-			//
-			// A duplicate is safe by construction: the payload carries
-			// WhatsApp's own message id and docs/hermes-consumer.md requires
-			// consumers to dedupe on it.
-			reason := "delivery_failed"
-			if f.drainCtx.Err() != nil {
-				// The POST did not fail; the bridge stopped it. Say so, or an
-				// operator hunts a consumer bug that does not exist.
-				reason = "shutdown"
-			}
-			log.Printf("WARNING media delivery %s consumer=%s — retrying text-only jid=%s",
-				reason, c.Name, redact.JID(jid))
-			f.postTextOnly(c, base, jid, reason)
 		}(c)
 	}
 	wg.Wait()
+	return failed
 }
 
 // postTextOnly re-posts a message whose media POST failed, carrying the file's
@@ -515,6 +588,9 @@ func (f *Fanout) Wait() { f.wg.Wait() }
 // delivery cut off here is a customer message this bridge cannot replay: it
 // stores no body.
 func (f *Fanout) Drain(ctx context.Context) error {
+	f.inFlightMu.Lock()
+	f.closed = true
+	f.inFlightMu.Unlock()
 	f.drainCancel()
 	done := make(chan struct{})
 	go func() {

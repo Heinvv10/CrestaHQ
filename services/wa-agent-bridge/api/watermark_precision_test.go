@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,16 +29,18 @@ func realStoreFanout(t *testing.T, connectedAt time.Time) (*Fanout, *store.SQLit
 	}
 	t.Cleanup(func() { st.Close() })
 
-	n := 0
+	// Atomic: the handler runs on one goroutine per connection, and the
+	// fanout posts deliveries concurrently.
+	var n atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
-		n++
+		n.Add(1)
 	}))
 	t.Cleanup(srv.Close)
 
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
 		"", st, func() bool { return true }, func() time.Time { return connectedAt })
-	return f, st, func() int { return n }
+	return f, st, func() int { return int(n.Load()) }
 }
 
 // Inbound timestamps come from WhatsApp; outbound ones come from this host's

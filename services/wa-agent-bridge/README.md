@@ -268,7 +268,10 @@ by what the sender declared.** whatsmeow's `Download` ends in a plain
 all of it; this bridge uses `DownloadToFile` streaming into a temp file
 (`wa.cappedFile`) whose `Write`, `WriteAt`, `ReadFrom` and `Truncate` all
 refuse to grow it past `wa.maxInboundCiphertextBytes` (16MiB + 4KiB of
-AES-CBC/MAC slack). That list matters: `io.Copy` — which is what whatsmeow
+AES-CBC/MAC slack). A refusal is labelled `too_large` only when one media
+host's response is itself over the cap; whatsmeow appends a second host's
+response after a failed first one without rewinding, and a cap crossed that way
+is a corrupt download, reported as `fetch_failed`. That list matters: `io.Copy` — which is what whatsmeow
 calls — uses the destination's `ReadFrom` when it has one, and a first version
 of this type that embedded `*os.File` inherited one and was bypassed entirely.
 The type embeds nothing now, and is deliberately not an `*os.File`, so
@@ -306,8 +309,11 @@ hostile one, on a number that is unpublished. A bounded queue that drops with
 `mediaDropped: "queue_full"` is the escalation if it is ever measured to
 matter.
 
-**Shutdown.** `fanout.Drain` cancels every in-flight download and media POST,
-so each such message is re-posted text-only with `mediaDropped: "shutdown"`
+**Shutdown.** `fanout.Drain` stops intake, then cancels every in-flight
+download and media POST, so each such message is re-posted text-only with
+`mediaDropped: "shutdown"`. Messages still waiting for a media slot stop
+waiting and post text-only at once, in parallel, without a slot — so a backlog
+drains in roughly one POST's time, not one POST per slot per message — all
 within the 25s `fanoutDrainBudget`; anything still running after that is logged
 as an `ALERT` with redacted JIDs and lost, because the bridge stores no body.
 `TimeoutStopSec=90` in the unit funds the 35s HTTP drain plus this 25s.
