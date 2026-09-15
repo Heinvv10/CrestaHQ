@@ -26,15 +26,41 @@ const MAX_CLOUD_MEDIA_BYTES = 16 << 20;
 const METADATA_TIMEOUT_MS = 3_000;
 
 /**
- * The bytes. 16 MiB in 3 s would need ~43 Mbit/s; 15 s needs ~9. The row is
- * written before this runs, so a Meta retry while it is in flight is caught by
- * the redelivery guard and costs nothing but ack latency.
+ * The bytes. 16 MiB in 3 s would need ~43 Mbit/s; 15 s needs ~9. The route
+ * runs this after the inbox entry and any AI reply, so a slow download delays
+ * only the ack and the attachment.
  */
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 
 type CloudMediaFetch =
   | { ok: true; bytes: Buffer }
   | { ok: false; reason: WhatsappMediaDropped };
+
+/**
+ * Hosts the bearer token may be sent to. The token is a long-lived WABA
+ * system-user token; a metadata response naming any other host must not
+ * receive it.
+ *
+ * `lookaside.fbsbx.com` is Meta's WhatsApp media CDN; `whatsapp.net` is also
+ * Meta's. Matched on a real hostname suffix — `fbsbx.com.evil.example` is not
+ * `fbsbx.com`. If Meta moves its CDN, the warn below names the new host.
+ */
+const MEDIA_HOST_SUFFIXES = ["fbsbx.com", "whatsapp.net"];
+
+function isMetaMediaUrl(raw: string): { ok: boolean; host: string } {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, host: "(unparseable)" };
+  }
+  const host = url.hostname.toLowerCase();
+  const ok =
+    url.protocol === "https:" &&
+    url.port === "" &&
+    MEDIA_HOST_SUFFIXES.some((s) => host === s || host.endsWith(`.${s}`));
+  return { ok, host };
+}
 
 function redact(text: string, token: string): string {
   return token ? text.split(token).join("[redacted]") : text;
@@ -108,10 +134,18 @@ export async function fetchCloudMedia(opts: {
     const meta = (await metaRes.json()) as Record<string, unknown>;
     const url = typeof meta.url === "string" ? meta.url : "";
     const sha256 = typeof meta.sha256 === "string" ? meta.sha256 : "";
-    // The token goes to whatever host this names, so it must at least be TLS.
-    if (!url.startsWith("https://") || !sha256) {
+    if (!url || !sha256) {
       console.warn(
         `[whatsapp-cloud-media] metadata missing url or sha256 (sa=${opts.subAccountId})`,
+      );
+      return { ok: false, reason: "fetch_failed" };
+    }
+    const target = isMetaMediaUrl(url);
+    if (!target.ok) {
+      // Loud on purpose: this is either an attack or Meta moving its CDN, and
+      // the second must show up in journalctl rather than as silent drops.
+      console.warn(
+        `[whatsapp-cloud-media] REFUSING media download from non-Meta host "${target.host}" — token withheld (sa=${opts.subAccountId})`,
       );
       return { ok: false, reason: "fetch_failed" };
     }
@@ -122,6 +156,8 @@ export async function fetchCloudMedia(opts: {
 
     const bytesRes = await fetch(url, {
       headers: auth,
+      // A redirect would carry the bearer token to wherever it points.
+      redirect: "error",
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
     });
     if (!bytesRes.ok) {

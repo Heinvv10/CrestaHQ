@@ -23,6 +23,16 @@ const m = vi.hoisted(() => ({
   putThrows: false,
   /** Set to make the store refuse without throwing, as an unset bucket does. */
   putRefuses: false,
+  /** Storage paths whose store refuses, for a partial multi-contact failure. */
+  putRefusesFor: new Set<string>(),
+  /** Set to make the store never settle, as a hung `file.save` does. */
+  putHangs: false,
+  putCalls: 0,
+  /** Contacts whose text-row write throws. */
+  rowWriteFailsFor: new Set<string>(),
+  /** Set to make the opt-out batch commit throw, as contention would. */
+  commitThrows: false,
+  contactUpdates: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("firebase-admin/firestore", () => ({
@@ -67,8 +77,12 @@ vi.mock("@/lib/comms/whatsapp/cloud-credentials", () => ({
 vi.mock("@/lib/comms/whatsapp/media-storage", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/comms/whatsapp/media-storage")>()),
   putWhatsappMedia: async (o: { path: string; bytes: Buffer; contentType: string }) => {
+    m.putCalls++;
+    if (m.putHangs) return new Promise<never>(() => {});
     if (m.putThrows) throw new Error("bucket exploded");
-    if (m.putRefuses) return { ok: false, reason: "bucket_unconfigured" };
+    if (m.putRefuses || [...m.putRefusesFor].some((c) => o.path.includes(`/${c}/`))) {
+      return { ok: false, reason: "bucket_unconfigured" };
+    }
     m.puts.push(o);
     return { ok: true };
   },
@@ -85,6 +99,10 @@ function docRef(path: string) {
     // Synchronous body: the store is updated at call time, as a committed
     // Firestore write would be visible to the next read.
     set: async (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
+      const contactId = path.split("/")[1] ?? "";
+      if ("direction" in data && m.rowWriteFailsFor.has(contactId)) {
+        throw new Error("row write refused");
+      }
       m.sets.push({ path, data });
       const next: Record<string, unknown> = opts?.merge
         ? { ...(m.docs.get(path) ?? {}) }
@@ -158,7 +176,20 @@ vi.mock("@/lib/firebase/admin", () => ({
           void r.set(d, o);
         },
       }),
-    batch: () => ({ update: () => {}, set: () => {}, commit: async () => {} }),
+    // Atomic: nothing buffered is visible until commit succeeds.
+    batch: () => {
+      const pending: Array<Record<string, unknown>> = [];
+      return {
+        update: (_ref: unknown, data: Record<string, unknown>) => {
+          pending.push(data);
+        },
+        set: () => {},
+        commit: async () => {
+          if (m.commitThrows) throw new Error("contention");
+          m.contactUpdates.push(...pending);
+        },
+      };
+    },
   }),
 }));
 
@@ -241,6 +272,12 @@ beforeEach(() => {
   m.puts.length = 0;
   m.putThrows = false;
   m.putRefuses = false;
+  m.putRefusesFor.clear();
+  m.putHangs = false;
+  m.putCalls = 0;
+  m.rowWriteFailsFor.clear();
+  m.commitThrows = false;
+  m.contactUpdates.length = 0;
   fetchCalls = [];
   onMeta = async () => metaJson();
   onBytes = async () => new Response(BYTES);
@@ -254,6 +291,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -576,5 +614,139 @@ describe("cloud inbound media — trust nothing Meta or the sender declares", ()
     expect(body).not.toContain(TOKEN);
     expect(JSON.stringify(row())).not.toContain(TOKEN);
     expect(row().mediaDropped).toBe("fetch_failed");
+  });
+});
+
+describe("cloud inbound media — nothing that doesn't need the file waits for it", () => {
+  it("indexes the conversation and replies BEFORE the download, so a death mid-download strands nothing", async () => {
+    // The first delivery's Graph call never settles — a deploy restart or an
+    // OOM in that window. Meta then redelivers the same wamid, which is a
+    // redelivery and skips the inbox bump and the AI. They must already have
+    // happened, or they never will.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    onMeta = async () => {
+      if (calls++ === 0) {
+        await gate;
+        return new Response("{}", { status: 500 });
+      }
+      return metaJson();
+    };
+
+    const first = post(image());
+    await vi.waitFor(() => expect(fetchCalls.length).toBe(1));
+    await post(image());
+
+    // Asserted WHILE the first delivery is still blocked in Graph.
+    expect(m.conversationUpserts).toHaveLength(1);
+    expect(m.aiCalls).toHaveLength(1);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+
+    release();
+    await first;
+  });
+
+  it("previews a caption-less photo for every contact even when one contact's store fails", async () => {
+    m.contactIds = ["c_1", "c_2"];
+    m.putRefusesFor.add("c_2");
+
+    await post(image());
+
+    expect(m.conversationUpserts.map((u) => u.body)).toEqual(["📷 Photo", "📷 Photo"]);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+    expect(m.docs.get("contacts/c_2/whatsappMessages/wamid.M1")).toMatchObject({
+      mediaDropped: "fetch_failed",
+    });
+  });
+
+  it("bounds a hung Storage save at 20s and records fetch_failed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    m.putHangs = true;
+
+    const pending = post(image("caption survives"));
+    // Yield on the real event loop until the route is parked inside the save.
+    for (let i = 0; i < 200 && m.putCalls === 0; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(m.putCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    const res = await pending;
+
+    expect(res.status).toBe(200);
+    expect(row()).toMatchObject({ body: "caption survives", mediaDropped: "fetch_failed" });
+    expect(row()).not.toHaveProperty("media");
+  });
+
+  it("never creates a ghost row holding only media when the text row write failed", async () => {
+    m.rowWriteFailsFor.add("c_1");
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(m.docs.has(ROW)).toBe(false);
+  });
+});
+
+describe("cloud inbound media — the bearer token only goes to Meta", () => {
+  it("refuses a download URL on a non-Meta host without requesting it", async () => {
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+      warned.push(a.map(String).join(" "));
+    });
+    onMeta = async () => metaJson({ url: "https://evil.example.com/x" });
+
+    await post(image());
+
+    expect(fetchCalls.some((c) => c.url.includes("evil.example.com"))).toBe(false);
+    expect(row().mediaDropped).toBe("fetch_failed");
+    expect(warned.some((w) => w.includes("evil.example.com"))).toBe(true);
+    expect(warned.join("\n")).not.toContain(TOKEN);
+  });
+
+  it("refuses a look-alike host that merely starts with a Meta domain", async () => {
+    onMeta = async () =>
+      metaJson({ url: "https://lookaside.fbsbx.com.evil.example/x" });
+
+    await post(image());
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(row().mediaDropped).toBe("fetch_failed");
+  });
+
+  it("will not follow a redirect with the bearer token attached", async () => {
+    await post(image());
+
+    const download = fetchCalls.find((c) => !c.url.startsWith("https://graph.facebook.com/"));
+    expect(download?.init?.redirect).toBe("error");
+  });
+});
+
+describe("cloud inbound media — opt-outs", () => {
+  it("honours STOP sent as a photo caption, keeps the photo, and does not reply", async () => {
+    const res = await post(image("STOP"));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ optedOut: true });
+    expect(m.contactUpdates).toEqual([
+      expect.objectContaining({ whatsappOptedOut: true }),
+    ]);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+    expect(m.aiCalls).toHaveLength(0);
+  });
+
+  it("answers 503 on a failed opt-out commit, and Meta's retry then records both", async () => {
+    m.commitThrows = true;
+    expect((await post(image("STOP"))).status).toBe(503);
+    expect(m.contactUpdates).toHaveLength(0);
+
+    m.commitThrows = false;
+    expect((await post(image("STOP"))).status).toBe(200);
+
+    expect(m.contactUpdates).toEqual([
+      expect.objectContaining({ whatsappOptedOut: true }),
+    ]);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+    expect(m.aiCalls).toHaveLength(0);
   });
 });
