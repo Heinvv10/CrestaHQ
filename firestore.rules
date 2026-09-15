@@ -208,6 +208,12 @@ service cloud.firestore {
       match /snapshots/{snapshotId} {
         allow read: if isAgencyOwner(agencyId);
         allow write: if false;
+
+        // Share links (SP13). Server-only: a share carries its token hash,
+        // and the owner UI lists them via GET /api/agency/snapshots/shares.
+        match /shares/{shareId} {
+          allow read, write: if false;
+        }
       }
 
       // Client Billing v1 — agency plan docs (monthly price + gate bundle).
@@ -861,6 +867,13 @@ service cloud.firestore {
     // `read` to canAccessSub(subAccountId, agencyId) for sub-account rows and
     // an agency-owner check for agency rows (subAccountId is null there).
     match /aiSuiteActions/{actionId} {
+      allow read, write: if false;
+    }
+
+    // Snapshot share-link index: sha256(token) → {agencyId, snapshotId,
+    // shareId}, so import resolves a token without a collection-group query.
+    // Server-only — written by the share routes, read by import.
+    match /snapshotShareIndex/{tokenHash} {
       allow read, write: if false;
     }
 

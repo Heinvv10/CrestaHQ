@@ -28,3 +28,16 @@ export async function loadIdTokenClaims(
     }
   }
 }
+
+/**
+ * Whether the user holds the agency-owner claim. Unlike
+ * {@link loadIdTokenClaims} this THROWS when the token cannot be read at all,
+ * so a caller can tell "not an owner" from "could not find out" — returning
+ * `{}` there would show a real owner a refusal instead of a retry.
+ */
+export async function readOwnerClaim(
+  user: TokenSource,
+): Promise<"owner" | "not_owner"> {
+  const { claims } = await user.getIdTokenResult(true);
+  return claims.agencyRole === "owner" ? "owner" : "not_owner";
+}
