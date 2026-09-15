@@ -187,9 +187,14 @@ jobs:
   #
   # Blocking, like every other step in this file. NOT continue-on-error. If it
   # ever becomes too flaky to block, delete it rather than soften it.
+  #
+  # Pinned to the one runner labelled crestahq-e2e. Every run binds
+  # 127.0.0.1:3100 and seeds + purges the same fixture sub-accounts, so two
+  # E2E jobs on two runners would collide on both. The other jobs have no
+  # shared port or tenant and may run on any crestahq runner.
   e2e:
     name: E2E (Playwright)
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     timeout-minutes: 30
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:

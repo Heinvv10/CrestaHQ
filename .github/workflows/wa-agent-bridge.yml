@@ -10,6 +10,12 @@ on:
       - 'services/wa-agent-bridge/**'
       - '.github/workflows/wa-agent-bridge.yml'
 
+# A push to a PR branch fires both push and pull_request; without a group each
+# one queues its own full Go run on the shared runners.
+concurrency:
+  group: wa-agent-bridge-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   go:
     runs-on: [self-hosted, linux, velo, crestahq]
