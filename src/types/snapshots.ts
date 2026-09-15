@@ -121,11 +121,44 @@ export interface SnapshotDoc {
   name: string;
   description: string;
   version: typeof SNAPSHOT_VERSION;
-  /** The sub-account this snapshot was captured from (provenance only). */
-  sourceSubAccountId: string;
+  /**
+   * The sub-account this snapshot was captured from (provenance only). Null
+   * on an imported copy — the source sub-account belongs to another agency.
+   */
+  sourceSubAccountId: string | null;
   createdByUid: string;
   createdAt: Timestamp | FieldValue | null;
   payload: SnapshotPayload;
+  /** Set only on a copy imported through another agency's share link. */
+  importedFrom?: SnapshotImportedFrom;
+}
+
+/**
+ * Marks an imported snapshot. Deliberately carries no id of the sharing
+ * agency, its snapshot, or the share — only when the copy arrived.
+ */
+export interface SnapshotImportedFrom {
+  importedAt: Timestamp | FieldValue | null;
+  /** "file" when uploaded as a snapshot file; absent for a share-link import. */
+  via?: "file";
+}
+
+/** Link lifetimes an owner can pick when sharing. */
+export const SNAPSHOT_SHARE_EXPIRY_DAYS = [1, 7, 30] as const;
+
+export type SnapshotShareStatus = "active" | "expired" | "revoked" | "used";
+
+/** A share as the owner UI sees it — no token hash, millis timestamps. */
+export interface SnapshotShareSummary {
+  id: string;
+  snapshotId: string;
+  snapshotName: string;
+  expiresAt: number;
+  singleUse: boolean;
+  usedCount: number;
+  revokedAt: number | null;
+  createdAt: number | null;
+  status: SnapshotShareStatus;
 }
 
 /** Returned by applySnapshot + the apply API route. */

@@ -208,6 +208,12 @@ service cloud.firestore {
       match /snapshots/{snapshotId} {
         allow read: if isAgencyOwner(agencyId);
         allow write: if false;
+
+        // Share links (SP13). Server-only: a share carries its token hash,
+        // and the owner UI lists them via GET /api/agency/snapshots/shares.
+        match /shares/{shareId} {
+          allow read, write: if false;
+        }
       }
 
       // Template library — one workflow / email template / form per doc,
@@ -509,6 +515,25 @@ service cloud.firestore {
       // /api/sub-accounts/[id]/custom-fields, so the client write path stays
       // closed (mirrors bookingPages + products).
       match /customFields/{fieldId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
+      // Media Library files + folders. Member-readable (the page and the
+      // picker subscribe live); every write goes through the Admin-SDK
+      // routes at /api/sub-accounts/[id]/media — same model as customFields.
+      // The bytes live in Storage under media/{subAccountId}/… (storage.rules).
+      match /media/{mediaId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+      match /mediaFolders/{folderId} {
         allow read: if canAccessSub(
           subAccountId,
           get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
@@ -851,6 +876,13 @@ service cloud.firestore {
     // `read` to canAccessSub(subAccountId, agencyId) for sub-account rows and
     // an agency-owner check for agency rows (subAccountId is null there).
     match /aiSuiteActions/{actionId} {
+      allow read, write: if false;
+    }
+
+    // Snapshot share-link index: sha256(token) → {agencyId, snapshotId,
+    // shareId}, so import resolves a token without a collection-group query.
+    // Server-only — written by the share routes, read by import.
+    match /snapshotShareIndex/{tokenHash} {
       allow read, write: if false;
     }
 

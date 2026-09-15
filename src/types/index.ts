@@ -13,3 +13,4 @@ export * from "./api";
 export * from "./webhooks";
 export * from "./get-leads";
 export * from "./billing";
+export * from "./media";
