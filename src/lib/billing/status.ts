@@ -60,6 +60,18 @@ export function effectiveBillingState(
   }
 }
 
+/**
+ * True for a subscriber whose charge counts toward MRR — active AND grace
+ * (still paying, mid-dunning-banner), NOT pending or lapsed. The single
+ * predicate behind both the page-header MRR roll-up
+ * (`agency/billing/page.tsx`) and the per-plan MRR in
+ * `src/lib/billing/reselling.ts`, so the two MRR figures on one screen
+ * never disagree.
+ */
+export function isMrrEligible(state: EffectiveBillingState): boolean {
+  return state === "active" || state === "grace";
+}
+
 /** True when the workspace should be blocked for sub-account members. */
 export function billingBlocksWorkspace(state: EffectiveBillingState): boolean {
   return state === "pending" || state === "lapsed";
