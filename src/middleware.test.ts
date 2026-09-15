@@ -29,6 +29,7 @@ vi.mock("next-firebase-auth-edge/lib/next/middleware", () => ({
 }));
 
 import middleware, { isPublicPath, loginRedirectUrl, withoutIdentityHeaders } from "./middleware";
+import { safeRedirect } from "@/lib/auth/safe-redirect";
 
 /**
  * Regression test for the logged-out redirect.
@@ -120,7 +121,34 @@ describe("loginRedirectUrl", () => {
       "/agency",
     );
     expect(url.searchParams.get("invite")).toBe("xyz");
-    expect(url.searchParams.get("redirect")).toBe("/agency");
+    expect(url.searchParams.get("redirect")).toBe("/agency?invite=xyz");
+  });
+
+  it("carries a share link's ?token through login in ?redirect", () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    const url = loginRedirectUrl(
+      requestWith("http://localhost:4300/agency/snapshots/import?token=abc"),
+      "/agency/snapshots/import",
+    );
+    expect(url.origin).toBe("https://crm.crestahq.com");
+    expect(url.pathname).toBe("/login");
+    const redirect = url.searchParams.get("redirect");
+    expect(redirect).toBe("/agency/snapshots/import?token=abc");
+    // And the login form lands the visitor back on exactly that.
+    expect(safeRedirect(redirect)).toBe("/agency/snapshots/import?token=abc");
+  });
+
+  it("still lets the login form refuse a redirect that leaves the origin", () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    // A protocol-relative path is the one shape the middleware itself can
+    // emit; the consumer must refuse it, query and all.
+    const url = loginRedirectUrl(
+      requestWith("http://localhost:4300//evil.example/x?token=abc"),
+      "//evil.example/x",
+    );
+    expect(url.searchParams.get("redirect")).toBe("//evil.example/x?token=abc");
+    expect(safeRedirect(url.searchParams.get("redirect"))).toBe("/dashboard");
+    expect(safeRedirect("https://evil.example/agency?token=abc")).toBe("/dashboard");
   });
 
   it("falls back to the request origin when the env var is unset", () => {

@@ -9,7 +9,11 @@ import { useAgency } from "@/hooks/use-agency";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-/** Accept either a bare token or the whole share URL pasted into the box. */
+/**
+ * Accept either a bare token or the whole share URL pasted into the box — the
+ * fallback for a visitor who arrives without `?token` (login keeps it, but a
+ * link can still be mangled in transit).
+ */
 function tokenFrom(value: string): string {
   const trimmed = value.trim();
   try {

@@ -322,6 +322,10 @@ export function isPublicPath(pathname: string): boolean {
  * the configured origin fixes this by making them agree, rather than by
  * literally shipping the public origin in the header.
  *
+ * `?redirect` carries the path AND query, so a deep link whose query is the
+ * point (a snapshot share link's `?token=`) survives sign-in. The login form
+ * runs it through `safeRedirect`, which refuses anything not same-origin.
+ *
  * The path and query are still taken from `nextUrl` (preserving any existing
  * query string, as before); only protocol + host are pinned to
  * NEXT_PUBLIC_APP_URL. If that var is unset or malformed we fall back to the
@@ -330,7 +334,7 @@ export function isPublicPath(pathname: string): boolean {
 export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
   const url = request.nextUrl.clone();
   url.pathname = "/login";
-  url.searchParams.set("redirect", pathname);
+  url.searchParams.set("redirect", `${pathname}${request.nextUrl.search}`);
 
   const configured = process.env.NEXT_PUBLIC_APP_URL;
   if (configured) {

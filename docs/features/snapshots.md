@@ -79,9 +79,10 @@ Logic in [src/lib/snapshots/share.ts](src/lib/snapshots/share.ts); routes are th
   `POST /api/agency/snapshots/import`. `GET /api/agency/snapshots` now returns
   `importedFrom` so the panel can split **My snapshots / Imported / Shared** tabs.
 - **Import page** `/agency/snapshots/import` is session-gated like every
-  `/agency` page. A logged-out recipient is sent to `/login?redirect=…`, which
-  drops the token from the redirect target — so the page also accepts a pasted
-  link when it has no `?token`.
+  `/agency` page. A logged-out recipient goes to `/login?redirect=…`; the
+  middleware puts path + query in `redirect` (the login form's `safeRedirect`
+  still refuses anything off-origin), so `?token` survives sign-in. A pasted
+  link box remains as a fallback when the page has no `?token`.
 
 **Not carried yet**: pipelines (`subAccounts/{id}/pipelines`). Apply therefore nulls a workflow's `trigger.pipelineId` and any `move_stage` step's `config.pipelineId` — like an unmapped `formId` — so a copied workflow fires on any pipeline (stage ids kept; the default pipeline's are shared) until the operator re-pins it. Also not carried: booking pages,
 per-channel AI config (the `aiAgent/{channelId}` docs — the persona travels, the
