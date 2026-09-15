@@ -216,6 +216,14 @@ export async function sendWhatsappCloud(opts: {
     // The rail enforces what it declares, so a caller that skipped the
     // composer's picker gets the same answer as one that used it — and an
     // oversized file is never pushed at Graph only to be refused there.
+    if (opts.message.length > capabilities.maxMediaCaptionChars) {
+      return {
+        ok: false,
+        error: `A message sent with a file is its caption, and WhatsApp allows ${capabilities.maxMediaCaptionChars} characters; this one is ${opts.message.length}.`,
+        providerOutcome: "DEFINITELY_REJECTED",
+        providerErrorCode: "caption_too_long",
+      };
+    }
     const bytes = Buffer.from(opts.media.dataBase64, "base64");
     const kind = mediaKindForMime(opts.media.contentType);
     const cap = capabilities.maxMediaBytes[kind];

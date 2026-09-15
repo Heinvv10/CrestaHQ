@@ -170,7 +170,7 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
     );
   });
 
-  it("records the file on the thread row as `media`, and never the bytes", async () => {
+  it("marks the row store_failed when no bucket is configured, and never carries the bytes", async () => {
     // A thread showing only the caption cannot answer "did the report
     // actually go?" — the first question asked when a prospect says it never
     // arrived. The bytes must not be on the row: it is read by the UI and is
@@ -184,7 +184,7 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
     });
 
     await post({ contactId: "c1", body: "here it is", attachment });
-    expect(messageRow?.mediaDropped).toBe("fetch_failed");
+    expect(messageRow?.mediaDropped).toBe("store_failed");
     expect(messageRow).not.toHaveProperty("attachment");
     expect(JSON.stringify(messageRow)).not.toContain("AAEC");
     expect(activityRow?.content).toContain("report.png");

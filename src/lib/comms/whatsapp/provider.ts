@@ -51,6 +51,11 @@ export interface WhatsAppProviderCapabilities {
   maxMediaBytes: Readonly<Record<WhatsappMediaKind, number>>;
   /** Exact MIME types this rail will put on the wire. Empty when it sends none. */
   mediaMimeTypes: readonly string[];
+  /**
+   * Longest message (UTF-16 length, as `interactive.ts` counts) that may ride
+   * as a file's caption; 0 when `supportsMedia` is false.
+   */
+  maxMediaCaptionChars: number;
 }
 
 export type WhatsAppProviderId = "twilio" | "cloud" | "bridge";
@@ -64,27 +69,43 @@ export type WhatsAppProviderId = "twilio" | "cloud" | "bridge";
  * fails when the two disagree.
  */
 const BRIDGE_MAX_MEDIA_BYTES = sameCapForEveryKind(8 << 20);
+/** The caption IS the bridge's `Text`, so its cap is `maxTextRunes`. */
+const BRIDGE_MAX_CAPTION_CHARS = 4096;
 const BRIDGE_MEDIA_MIME_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
   "application/pdf",
 ];
 
+/** Meta's caption limit, the same 1024 `interactive.ts` holds a body to. */
+const CLOUD_MAX_CAPTION_CHARS = 1024;
+
 /**
- * What the Cloud rail will upload. A subset of Meta's supported types: audio
- * is left out because Meta accepts no caption on an audio message, and the
- * composer always sends the typed text as the caption — an audio file would
- * silently lose it.
+ * What the Cloud rail will upload. A subset of Meta's supported types:
+ *
+ * - audio is left out because Meta accepts no caption on an audio message,
+ *   and the composer always sends the typed text as the caption — an audio
+ *   file would silently lose it.
+ * - video/mp4 is left out until a live proof. Meta requires H.264 + AAC
+ *   inside the container; an iPhone's HEVC `.mp4` passes a MIME check,
+ *   uploads, gets a wamid, and then fails asynchronously while the thread
+ *   row says "sent". Restoring it is this one line, after a real handset has
+ *   received one.
  *
  * Caps per Meta's media documentation (as encoded by both
  * @whatsapp-cloudapi/client and @kapso/whatsapp-cloud-api, checked
  * 2026-09-15): image 5 MB, audio 16 MB, video 16 MB, document 100 MB,
- * sticker 100 KB. Documents are held at 16 MiB here rather than Meta's
- * 100 MB — that is this app's own request-body and Storage ceiling.
- * Stickers are never sent from the composer (webp is not listed), so 0.
+ * sticker 100 KB. Meta's image cap is DECIMAL megabytes, so it is 5_000_000
+ * here: a binary 5 MiB would admit a 5.1 MB photo that Meta then refuses
+ * after the upload. Documents are held at 16 MiB rather than Meta's 100 MB
+ * because the composer posts the file as base64 JSON, and that body passes
+ * through src/middleware.ts: `experimental.middlewareClientMaxBodySize` in
+ * next.config.ts must admit 16 MiB × 4/3 plus the envelope (Next's default
+ * 10 MB truncates anything over ~7.5 MiB). Stickers are never sent from the
+ * composer (webp is not listed), so 0.
  */
 const CLOUD_MAX_MEDIA_BYTES: Readonly<Record<WhatsappMediaKind, number>> = {
-  image: 5 << 20,
+  image: 5_000_000,
   audio: 16 << 20,
   video: 16 << 20,
   document: 16 << 20,
@@ -97,7 +118,6 @@ function sameCapForEveryKind(bytes: number): Readonly<Record<WhatsappMediaKind, 
 const CLOUD_MEDIA_MIME_TYPES: readonly string[] = [
   "image/jpeg",
   "image/png",
-  "video/mp4",
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -113,6 +133,7 @@ export const WHATSAPP_PROVIDER_CAPABILITIES: Record<
     supportsMedia: false,
     maxMediaBytes: sameCapForEveryKind(0),
     mediaMimeTypes: [],
+    maxMediaCaptionChars: 0,
   },
   cloud: {
     supportsTemplates: true,
@@ -120,6 +141,7 @@ export const WHATSAPP_PROVIDER_CAPABILITIES: Record<
     supportsMedia: true,
     maxMediaBytes: CLOUD_MAX_MEDIA_BYTES,
     mediaMimeTypes: CLOUD_MEDIA_MIME_TYPES,
+    maxMediaCaptionChars: CLOUD_MAX_CAPTION_CHARS,
   },
   bridge: {
     supportsTemplates: false,
@@ -127,6 +149,7 @@ export const WHATSAPP_PROVIDER_CAPABILITIES: Record<
     supportsMedia: true,
     maxMediaBytes: BRIDGE_MAX_MEDIA_BYTES,
     mediaMimeTypes: BRIDGE_MEDIA_MIME_TYPES,
+    maxMediaCaptionChars: BRIDGE_MAX_CAPTION_CHARS,
   },
 };
 

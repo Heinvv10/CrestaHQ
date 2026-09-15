@@ -70,6 +70,7 @@ describe("capabilitiesFor", () => {
         expect(c.mediaMimeTypes.length).toBeGreaterThan(0);
       } else {
         expect(Object.values(c.maxMediaBytes).every((n) => n === 0)).toBe(true);
+        expect(c.maxMediaCaptionChars).toBe(0);
         expect(c.mediaMimeTypes).toEqual([]);
       }
     }
@@ -97,9 +98,23 @@ describe("bridge capabilities agree with the Go bridge", () => {
     for (const v of Object.values(caps)) expect(v).toBe(goBytes);
   });
 
+  it("offers neither audio nor video on Cloud, and caps captions at 1024", () => {
+    const c = capabilitiesFor("cloud");
+    expect(c.mediaMimeTypes.some((t) => t.startsWith("audio/") || t.startsWith("video/"))).toBe(false);
+    expect(c.maxMediaCaptionChars).toBe(1024);
+  });
+
+  it("the bridge caption cap matches `const maxTextRunes` in server.go", () => {
+    // The caption IS the bridge's Text, so it is bounded by the same constant.
+    const m = /^const maxTextRunes = (\d+)$/m.exec(goSource);
+    expect(m, "maxTextRunes not found in server.go").not.toBeNull();
+    expect(capabilitiesFor("bridge").maxMediaCaptionChars).toBe(Number(m![1]));
+  });
+
   it("caps Cloud images at Meta's 5 MB, below the 16 MiB the other kinds get", () => {
     const caps = capabilitiesFor("cloud").maxMediaBytes;
-    expect(caps.image).toBe(5 << 20);
+    // Decimal, as Meta states it — not 5 MiB.
+    expect(caps.image).toBe(5_000_000);
     expect(caps.video).toBe(16 << 20);
     expect(caps.document).toBe(16 << 20);
   });

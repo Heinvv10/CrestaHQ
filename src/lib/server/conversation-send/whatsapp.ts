@@ -219,7 +219,7 @@ export async function sendConversationWhatsapp(
             storagePath,
           },
         }
-      : { mediaDropped: "fetch_failed" };
+      : { mediaDropped: "store_failed" };
   }
 
   try {

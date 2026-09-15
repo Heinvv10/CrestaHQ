@@ -72,7 +72,13 @@ export function parseWhatsappMedia(value: unknown): WhatsappMedia | null {
 export type WhatsappMediaDropped =
   | "too_large"
   | "fetch_failed"
-  | "unsupported_type";
+  | "unsupported_type"
+  /**
+   * Outbound only: the file REACHED the customer, but this app's copy of it
+   * could not be kept. Never "fetch_failed" — an operator reading "download
+   * failed" on an outbound row resends a file the customer already has.
+   */
+  | "store_failed";
 
 /**
  * MIME types this app will put in a `Content-Type` on a media response.
@@ -143,6 +149,8 @@ export function mediaDroppedLabel(reason: WhatsappMediaDropped): string {
       return "Attachment not saved — too large";
     case "unsupported_type":
       return "Attachment not saved — unsupported file type";
+    case "store_failed":
+      return "Sent — no copy kept here";
     case "fetch_failed":
       return "Attachment not saved — download failed";
   }

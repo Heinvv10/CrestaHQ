@@ -30,6 +30,8 @@ let messageRowId: string | undefined;
 /** What the bucket received: path → bytes + contentType. */
 let saved: Array<{ path: string; bytes: Buffer; contentType: string }>;
 let saveThrows: Error | null;
+/** getStorage itself throws, synchronously, before any file handle exists. */
+let getStorageThrows: Error | null;
 
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
@@ -62,16 +64,19 @@ vi.mock("@/lib/reviews/review-ask", () => ({
   logInboxReviewAsk: async () => undefined,
 }));
 vi.mock("firebase-admin/storage", () => ({
-  getStorage: () => ({
-    bucket: () => ({
-      file: (path: string) => ({
-        save: async (bytes: Buffer, opts: { metadata: { contentType: string } }) => {
-          if (saveThrows) throw saveThrows;
-          saved.push({ path, bytes, contentType: opts.metadata.contentType });
-        },
+  getStorage: () => {
+    if (getStorageThrows) throw getStorageThrows;
+    return {
+      bucket: () => ({
+        file: (path: string) => ({
+          save: async (bytes: Buffer, opts: { metadata: { contentType: string } }) => {
+            if (saveThrows) throw saveThrows;
+            saved.push({ path, bytes, contentType: opts.metadata.contentType });
+          },
+        }),
       }),
-    }),
-  }),
+    };
+  },
 }));
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminApp: () => ({ name: "test-app" }),
@@ -159,6 +164,7 @@ beforeEach(() => {
   messageRowId = undefined;
   saved = [];
   saveThrows = null;
+  getStorageThrows = null;
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "cloud" };
   requireUid.mockReturnValue({ uid: "u1" });
   requireContactAccessible.mockResolvedValue({
@@ -315,6 +321,55 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(messageRow?.media).toMatchObject({ kind: "document", sizeBytes: sixMb.length });
   });
 
+  it("refuses an image between 5,000,000 and 5 MiB bytes — Meta's 5 MB is decimal", async () => {
+    const justOver = Buffer.alloc(5_100_000, 1);
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, dataBase64: justOver.toString("base64") },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("media_too_large");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a caption over Meta's 1024 characters before any Graph call", async () => {
+    // Uploading first and letting the message POST fail wastes the upload and
+    // hands the operator a 502 carrying raw Graph JSON.
+    const res = await post({
+      contactId: "c1",
+      body: "x".repeat(1025),
+      attachment: { ...attachment, filename: "q.pdf", contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("caption_too_long");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+  });
+
+  it("sends a caption of exactly 1024 characters", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA7" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT7" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "x".repeat(1024),
+      attachment: { ...attachment, filename: "q.pdf", contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses video/mp4 on Cloud until a live proof", async () => {
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { filename: "clip.mp4", contentType: "video/mp4", dataBase64: "AAEC" },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("media_unsupported_type");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a file over 16 MiB on every kind", async () => {
     const big = Buffer.alloc(16 * 1024 * 1024 + 1, 1);
     const res = await post({
@@ -376,7 +431,7 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     expect(saved).toHaveLength(1);
   });
 
-  it("marks the row mediaDropped when the send succeeded but the Storage copy failed", async () => {
+  it("marks the row store_failed — never fetch_failed — when the send succeeded but the copy failed", async () => {
     subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
     checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
     getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
@@ -384,11 +439,24 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     saveThrows = new Error("bucket down");
 
     const res = await post({ contactId: "c1", body: "here", attachment });
-    // The customer got the file. The row must still say a file went, even
-    // though the thread cannot show it.
+    // The customer got the file. The row must still say a file went, and
+    // must not read "download failed" — an operator would resend it.
     expect(res.status).toBe(200);
     expect(messageRow?.media).toBeUndefined();
-    expect(messageRow?.mediaDropped).toBe("fetch_failed");
+    expect(messageRow?.mediaDropped).toBe("store_failed");
+  });
+
+  it("still writes the row (store_failed) and answers 200 when resolving the bucket throws", async () => {
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
+    checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB2" });
+    getStorageThrows = new Error("The default Firebase app does not exist");
+
+    const res = await post({ contactId: "c1", body: "here", attachment });
+    expect(res.status).toBe(200);
+    expect(messageRowId).toBe("3EB2");
+    expect(messageRow?.mediaDropped).toBe("store_failed");
   });
 
   it("writes neither media field on a plain text row", async () => {
