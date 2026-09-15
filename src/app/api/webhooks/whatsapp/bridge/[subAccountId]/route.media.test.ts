@@ -644,4 +644,11 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     await post(inbound({ mediaDropped: "store_failed" }));
     expect(row("c1").mediaDropped).toBe("fetch_failed");
   });
+  it("never auto-replies to a START either — an opt-in is not a conversation", async () => {
+    aiOn = true;
+    const res = await post(inbound({ text: "START" }));
+    expect(await res.json()).toMatchObject({ optedOut: false });
+    expect(optOutUpdates).toEqual([expect.objectContaining({ whatsappOptedOut: false })]);
+    expect(maybeRespondWithAi).not.toHaveBeenCalled();
+  });
 });
