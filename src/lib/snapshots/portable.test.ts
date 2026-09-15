@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
 import { applySnapshot } from "./apply";
-import { scrubImportedPayload } from "./import-scrub";
+import { toPortablePayload } from "./portable";
 import type { SnapshotPayload } from "@/types/snapshots";
 
 /**
@@ -16,7 +16,7 @@ const SOURCE_TEMPLATE = "tmpl_src_9Z";
 
 function sourcePayload(): SnapshotPayload {
   return {
-    forms: [{ sourceId: SOURCE_FORM, name: "Lead form" }],
+    forms: [{ sourceId: SOURCE_FORM, name: "Lead form", settings: { redirectUrl: "https://source.example/thanks", autoTags: ["lead"] } }],
     messageTemplates: [{ sourceId: "msg_src_3K", name: "Hi" }],
     products: [{ sourceId: "prod_src_4M", name: "Call-out" }],
     customFields: [{ sourceId: "cf_src_5N", entity: "contact", key: "k", label: "K" }],
@@ -42,15 +42,21 @@ function sourcePayload(): SnapshotPayload {
   } as unknown as SnapshotPayload;
 }
 
-const scrubbed = () => scrubImportedPayload(sourcePayload(), new Set());
+const scrubbed = () => toPortablePayload(sourcePayload(), new Set());
 const nodes = (p: SnapshotPayload) => p.workflows[0].nodes as Record<string, { config: Record<string, unknown> }>;
 
-describe("scrubImportedPayload — outbound destinations", () => {
+describe("toPortablePayload — outbound destinations", () => {
   it("resets a custom notify recipient to the importer's owner and clears the address", () => {
     const n1 = nodes(scrubbed()).n1.config;
     expect(n1.recipient).toBe("owner");
     expect(n1.to).toBe("");
     expect(n1.subject).toBe("New lead");
+  });
+
+  it("blanks a form's post-submit redirect and keeps its other settings", () => {
+    const settings = scrubbed().forms[0].settings as unknown as Record<string, unknown>;
+    expect(settings.redirectUrl).toBe("");
+    expect(settings.autoTags).toEqual(["lead"]);
   });
 
   it("blanks a webhook URL", () => {
@@ -66,7 +72,7 @@ describe("scrubImportedPayload — outbound destinations", () => {
   it("leaves no source destination or source doc id anywhere in the copy", () => {
     const body = JSON.stringify(scrubbed());
     for (const leak of [
-      "leak@source.example", "source.example/collect", SOURCE_FORM, SOURCE_TEMPLATE,
+      "leak@source.example", "source.example/collect", "source.example/thanks", SOURCE_FORM, SOURCE_TEMPLATE,
       "sender_src_1T", "tmpl_src_0U", "msg_src_3K", "prod_src_4M", "cf_src_5N",
       "wf_src_6P", "link_src_8R", "pipe_src_2S",
     ]) {
@@ -75,7 +81,7 @@ describe("scrubImportedPayload — outbound destinations", () => {
   });
 });
 
-describe("scrubImportedPayload — form ids", () => {
+describe("toPortablePayload — form ids", () => {
   it("re-mints the form id and points the trigger at the new one", () => {
     const p = scrubbed();
     expect(p.forms[0].sourceId).not.toBe(SOURCE_FORM);
@@ -85,7 +91,7 @@ describe("scrubImportedPayload — form ids", () => {
   it("nulls a trigger form id the snapshot does not carry", () => {
     const src = sourcePayload();
     src.forms = [];
-    expect(scrubImportedPayload(src, new Set()).workflows[0].trigger.formId).toBeNull();
+    expect(toPortablePayload(src, new Set()).workflows[0].trigger.formId).toBeNull();
   });
 
   it("still lets apply link the imported form to its workflow", async () => {

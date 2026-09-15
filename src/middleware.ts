@@ -291,6 +291,13 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // its own on a public path), and applies the widget's origin allow-list,
   // a per-IP limit and a non-enumerating 404 itself. Exactly one segment.
   /^\/api\/public\/gbp\/feed\/[^/]+$/,
+  // Snapshot share link (SP13): the /s/snapshot/{token} page and its file
+  // download /api/public/snapshots/{token}. The recipient usually has no
+  // account on this deployment. The share token is the credential — hashed
+  // and checked against the stored share inside, with the same "invalid"
+  // answer for unknown, revoked, expired and used-up links. Exactly one segment.
+  /^\/s\/snapshot\/[^/]+$/,
+  /^\/api\/public\/snapshots\/[^/]+$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

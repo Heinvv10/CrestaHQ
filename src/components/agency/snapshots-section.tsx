@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SnapshotList, type SnapshotSummary } from "@/components/agency/snapshot-list";
 import { SnapshotShareDialog } from "@/components/agency/snapshot-share-dialog";
 import { SnapshotSharesList } from "@/components/agency/snapshot-shares-list";
+import { SnapshotImportFile } from "@/components/agency/snapshot-import-file";
 import type { SnapshotShareSummary } from "@/types/snapshots";
 
 interface SubOption {
@@ -192,6 +193,10 @@ export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
             )}
           </Button>
         </div>
+      </div>
+
+      <div className="mb-2 flex justify-end">
+        <SnapshotImportFile onImported={loadSnapshots} />
       </div>
 
       <Tabs defaultValue="mine">

@@ -47,7 +47,8 @@ async function mintShare(body: Record<string, unknown> = {}) {
   );
 }
 
-const tokenOf = (url: unknown) => new URL(String(url)).searchParams.get("token")!;
+const tokenOf = (url: unknown) =>
+  decodeURIComponent(new URL(String(url)).pathname.split("/").pop()!);
 
 beforeEach(() => {
   mem.clear();
@@ -64,7 +65,7 @@ describe("snapshot share routes", () => {
     const created = await mintShare({ expiresInDays: 30, singleUse: true });
     expect(created.status).toBe(200);
     const url = String(created.body.url);
-    expect(url.startsWith("https://crm.test/agency/snapshots/import?token=")).toBe(true);
+    expect(url.startsWith("https://crm.test/s/snapshot/")).toBe(true);
     const token = tokenOf(url);
     expect(mem.read(`snapshotShareIndex/${hashShareToken(token)}`)).toMatchObject({ agencyId: "ag_src" });
 

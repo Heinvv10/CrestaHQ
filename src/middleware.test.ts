@@ -188,6 +188,20 @@ describe("isPublicPath — snapshot share links", () => {
   it("keeps the import page and its API behind a session (the token alone is not a login)", () => {
     expect(isPublicPath("/agency/snapshots/import")).toBe(false);
     expect(isPublicPath("/api/agency/snapshots/import")).toBe(false);
+    expect(isPublicPath("/api/agency/snapshots/import-file")).toBe(false);
+  });
+
+  it("opens the share page and its file download to a visitor with no session", () => {
+    expect(isPublicPath("/s/snapshot/AbC-12_x")).toBe(true);
+    expect(isPublicPath("/api/public/snapshots/AbC-12_x")).toBe(true);
+  });
+
+  it("opens exactly one segment — nothing under or beside them", () => {
+    expect(isPublicPath("/s/snapshot")).toBe(false);
+    expect(isPublicPath("/s/snapshot/tok/extra")).toBe(false);
+    expect(isPublicPath("/s/other/tok")).toBe(false);
+    expect(isPublicPath("/api/public/snapshots")).toBe(false);
+    expect(isPublicPath("/api/public/snapshots/tok/extra")).toBe(false);
   });
 });
 

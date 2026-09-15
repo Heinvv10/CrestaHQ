@@ -6,16 +6,19 @@ import type { WorkflowNode } from "@/types/workflows";
 import type { SnapshotPayload, SnapshotWorkflow } from "@/types/snapshots";
 
 /**
- * What an imported snapshot may NOT carry from the agency that shared it.
+ * What a snapshot may carry once it leaves its agency — copied into another
+ * agency through a share link, or downloaded as a portable file (and run again
+ * on a file uploaded anywhere, since that file is untrusted).
  *
- * Same-agency apply trusts its own payload; a cross-agency import does not.
- * Beyond the tenancy stamps capture already strips, three things would let a
- * shared snapshot reach back to its source once the importer activates it:
+ * Same-agency apply trusts its own payload; a portable one does not. Beyond
+ * the tenancy stamps capture already strips, three things would let a shared
+ * snapshot reach back to its source once the recipient activates it:
  *
  *   - outbound destinations — a `notify` step emailing a literal address, a
- *     `webhook` step POSTing contact data to a URL. The sharer chose them; the
- *     importer's contacts would flow to them. Cleared, so the step either
- *     falls back to the importer's own owner (notify) or is skipped as
+ *     `webhook` step POSTing contact data to a URL, a form's post-submit
+ *     `redirectUrl` sending the visitor to the sharer's site. The sharer chose
+ *     them; the recipient's contacts would flow to them. Cleared, so the step
+ *     either falls back to the recipient's own owner (notify) or is skipped as
  *     unconfigured (webhook: the engine refuses a non-http(s) URL).
  *   - source doc ids — `sourceId`, `trigger.formId`/`linkId`/`pipelineId`,
  *     WhatsApp `templateId`/`senderId`. Opaque, but they name documents in
@@ -67,7 +70,7 @@ function clearNodes(nodes: Record<string, WorkflowNode> | undefined) {
 const reminted = <T extends { sourceId: string }>(items: T[] | undefined) =>
   (items ?? []).map((item) => ({ ...item, sourceId: randomUUID() }));
 
-export function scrubImportedPayload(
+export function toPortablePayload(
   payload: SnapshotPayload,
   sourceIds: Set<string>,
 ): SnapshotPayload {
@@ -77,7 +80,11 @@ export function scrubImportedPayload(
   const forms = (clean.forms ?? []).map((form) => {
     const fresh = randomUUID();
     formIds.set(form.sourceId, fresh);
-    return { ...form, sourceId: fresh };
+    return {
+      ...form,
+      sourceId: fresh,
+      ...(form.settings ? { settings: { ...form.settings, redirectUrl: "" } } : {}),
+    };
   });
 
   const workflows = (clean.workflows ?? []).map((w): SnapshotWorkflow => {

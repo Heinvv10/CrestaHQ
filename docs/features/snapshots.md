@@ -47,40 +47,68 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
 - **No new env vars** — snapshots are server-only (default-deny). The share
   links below added explicit deny rules; deploy rules with the PR.
 
-### Share links + import (SP13 b)
+### Share links + portable files (SP13 b)
 
 GHL's "Shared / Imported snapshots". An owner shares a snapshot as a link;
-another agency's owner opens it and imports a **copy** into their own library.
-Logic in [src/lib/snapshots/share.ts](src/lib/snapshots/share.ts); routes are thin.
+whoever opens it downloads a **portable snapshot file** and imports it on their
+own deployment with **Import from file**. A production deployment holds ONE
+agency (signup mints an agency only at bootstrap; a buyer copy is its own
+Firebase project), so the file is the path that actually crosses tenants; an
+owner of another agency on the *same* deployment can also import the link
+directly. Logic in [share.ts](src/lib/snapshots/share.ts) (mint / list /
+revoke / same-deployment import), [share-redeem.ts](src/lib/snapshots/share-redeem.ts)
+(token resolution, preview, download), [portable.ts](src/lib/snapshots/portable.ts)
+(the scrub) and [snapshot-file.ts](src/lib/snapshots/snapshot-file.ts) (file
+format + untrusted-file parser); routes are thin.
+
+- **Share page** `/s/snapshot/{token}` is public (middleware pattern; no
+  session, `noindex`, `no-referrer`). It shows the snapshot's name, counts and
+  expiry, a **Download snapshot file** button (`GET /api/public/snapshots/{token}`
+  — `Content-Disposition: attachment`, `Cache-Control: no-store`, no CORS), and,
+  for a signed-in owner on this deployment, **Import into my agency**. Viewing
+  is free; a download or an import each **count as one use**, so a single-use
+  link downloads once. Not rate limited: the token is 256 random bits and the
+  repo has no shared per-IP limiter for public routes (checkout, booking and
+  the GBP feed each keep their own).
+- **File format** `{ format: "leadstack-snapshot", version, name, exportedAt,
+  payload }`, payload already scrubbed (below).
+- **Import from file** (`POST /api/agency/snapshots/import-file`, owner-only)
+  treats the upload as untrusted: 5 MB cap (413), `format` + integer `version`
+  ≤ `SNAPSHOT_VERSION` (400), and a **whitelist parser** — each entity keeps
+  only its known fields with the right types, unknown fields are dropped,
+  strings are capped at 20k chars, an unknown node type or a missing required
+  field refuses the whole file. The payload is then scrubbed **again** on the
+  server before it is stored with `importedFrom: { importedAt, via: "file" }`.
 
 - **Share** `agencies/{a}/snapshots/{s}/shares/{shareId}` stores `tokenHash`
   (sha256 of a 32-byte base64url token), `expiresAt` (1/7/30 days, default 7),
   `singleUse`, `usedCount`, `revokedAt`. **The raw token is never stored** — it
   exists only in the create response's URL
-  (`${NEXT_PUBLIC_APP_URL}/agency/snapshots/import?token=…`). Lose it and the
-  only move is revoke + re-share.
+  (`${NEXT_PUBLIC_APP_URL}/s/snapshot/<token>`). Lose it and the only move is
+  revoke + re-share.
 - **Index** `snapshotShareIndex/{tokenHash}` → `{agencyId, snapshotId, shareId}`
   so import resolves a token with one read, no collection-group index. Revoke
   deletes it; import still re-checks the share's `revokedAt`.
-- **Import** runs in one transaction: every link refusal (unknown, revoked,
-  expired, used, source gone) is the same 404 `Invalid or expired link`; the
-  owning agency gets 409. The copy gets the importer's `agencyId`/`createdByUid`,
-  `sourceSubAccountId: null`, and `importedFrom: { importedAt }` — no id of the
-  sharing agency, its snapshot or the share. The payload is scrubbed on the way
-  in ([import-scrub.ts](src/lib/snapshots/import-scrub.ts)): nested
+- **Same-deployment import** runs in one transaction: every link refusal
+  (unknown, revoked, expired, used, source gone) is the same 404 `Invalid or
+  expired link`; the owning agency gets 409. The copy gets the importer's
+  `agencyId`/`createdByUid`, `sourceSubAccountId: null`, and
+  `importedFrom: { importedAt }` — no id of the sharing agency, its snapshot or
+  the share. Download and import both leave through `toPortablePayload`: nested
   `agencyId`/`subAccountId`/`createdByUid` keys dropped; strings equal to a
   source tenant id nulled; every `sourceId` re-minted (a random UUID) with
   `trigger.formId` remapped through the same map so apply still links forms to
   workflows; `trigger.linkId`/`pipelineId`, WhatsApp `templateId`/`senderId` and
-  task assignees nulled.
+  task assignees nulled; a form's post-submit `redirectUrl` blanked.
 - **Workflow destinations are cleared on import and must be reconfigured.** A
   `notify` step is reset to `recipient: "owner"` with `to` blank (it emails the
   importer's own owner), and a `webhook` step's `url` is blanked (the engine
   skips a non-http(s) URL as `skipped:bad_url`). Otherwise a shared workflow
   would send the importer's contact data to addresses the sharer picked.
 - **A multi-use link is a bearer link until it expires or is revoked** — anyone
-  who owns an agency and holds it can import. Prefer single use for one
-  recipient. An imported snapshot cannot be shared on (409).
+  who holds it can download the file, and a file, once downloaded, can be
+  imported anywhere any number of times. Prefer single use for one recipient.
+  An imported snapshot cannot be shared on (409).
 - **Applying** an imported snapshot is identical to an own one — the new
   sub-account form's picker lists both.
 - **Routes** (owner-only): `POST /api/agency/snapshots/[snapshotId]/shares`,
@@ -88,12 +116,15 @@ Logic in [src/lib/snapshots/share.ts](src/lib/snapshots/share.ts); routes are th
   `DELETE /api/agency/snapshots/[snapshotId]/shares/[shareId]`,
   `POST /api/agency/snapshots/import`. `GET /api/agency/snapshots` now returns
   `importedFrom` so the panel can split **My snapshots / Imported / Shared** tabs.
-- **Import page** `/agency/snapshots/import` is session-gated like every
-  `/agency` page. A logged-out recipient goes to `/login?redirect=…`; the
+- **Same-deployment import page** `/agency/snapshots/import?token=…` is
+  session-gated like every `/agency` page (the share page links to it for a
+  signed-in owner). A logged-out visitor goes to `/login?redirect=…`; the
   middleware puts path + query in `redirect` (the login form's `safeRedirect`
   still refuses anything off-origin), so `?token` survives sign-in — and is
-  removed from the top-level `/login` query so it appears only there. A pasted
-  link box remains as a fallback when the page has no `?token`.
+  removed from the top-level `/login` query so it appears only there. The page
+  waits for the owner claim before refusing anyone (`useOwnerClaim`); a failed
+  claim read shows a retry, not a refusal. A pasted link box remains as a
+  fallback when the page has no `?token`.
 
 **Not carried yet**: pipelines (`subAccounts/{id}/pipelines`). Apply therefore nulls a workflow's `trigger.pipelineId` and any `move_stage` step's `config.pipelineId` — like an unmapped `formId` — so a copied workflow fires on any pipeline (stage ids kept; the default pipeline's are shared) until the operator re-pins it. Also not carried: booking pages,
 per-channel AI config (the `aiAgent/{channelId}` docs — the persona travels, the

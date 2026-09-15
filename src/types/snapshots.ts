@@ -139,35 +139,12 @@ export interface SnapshotDoc {
  */
 export interface SnapshotImportedFrom {
   importedAt: Timestamp | FieldValue | null;
+  /** "file" when uploaded as a snapshot file; absent for a share-link import. */
+  via?: "file";
 }
 
 /** Link lifetimes an owner can pick when sharing. */
 export const SNAPSHOT_SHARE_EXPIRY_DAYS = [1, 7, 30] as const;
-export type SnapshotShareExpiryDays = (typeof SNAPSHOT_SHARE_EXPIRY_DAYS)[number];
-
-/**
- * A share link for one snapshot, at
- * `agencies/{agencyId}/snapshots/{snapshotId}/shares/{shareId}`. Server-only.
- *
- * Only the sha256 of the link's token is stored — the raw token exists in the
- * create response and nowhere else, so a leaked database read cannot be
- * replayed as an import. `snapshotShareIndex/{tokenHash}` maps the hash back
- * to this doc so import needs no collection-group query.
- */
-export interface SnapshotShareDoc {
-  id: string;
-  agencyId: string;
-  snapshotId: string;
-  snapshotName: string;
-  createdByUid: string;
-  tokenHash: string;
-  expiresAt: Timestamp;
-  singleUse: boolean;
-  usedCount: number;
-  revokedAt: Timestamp | null;
-  createdAt: Timestamp | FieldValue | null;
-  updatedAt: Timestamp | FieldValue | null;
-}
 
 export type SnapshotShareStatus = "active" | "expired" | "revoked" | "used";
 

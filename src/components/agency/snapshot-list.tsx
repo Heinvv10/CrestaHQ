@@ -57,7 +57,7 @@ export function SnapshotList({
       <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
         {variant === "mine"
           ? "No snapshots yet. Capture one above."
-          : "No imported snapshots. Open a share link from another agency to import one."}
+          : "No imported snapshots. Use Import from file with a snapshot file someone shared with you."}
       </p>
     );
   }

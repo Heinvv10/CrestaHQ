@@ -1,5 +1,4 @@
 import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
-import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { readEnv } from "./env";
 
@@ -38,9 +37,4 @@ export function adminDb(): Firestore {
   _db = getFirestore(app());
   _db.settings({ ignoreUndefinedProperties: true });
   return _db;
-}
-
-/** Admin Auth for specs that mint a throwaway user (snapshot-share.spec.ts). */
-export function adminAuth(): Auth {
-  return getAuth(app());
 }

@@ -2,22 +2,28 @@ import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
-import { scrubImportedPayload } from "@/lib/snapshots/import-scrub";
+import { activeShare, countUse, portableOf } from "@/lib/snapshots/share-redeem";
 import {
   SNAPSHOT_SHARE_EXPIRY_DAYS,
-  type SnapshotPayload,
   type SnapshotShareStatus,
   type SnapshotShareSummary,
 } from "@/types/snapshots";
 
 /**
- * Snapshot share links + cross-agency import.
+ * Snapshot share links.
  *
  * A share lives under the snapshot it shares and stores only the sha256 of
  * its token; `snapshotShareIndex/{tokenHash}` resolves a presented token back
- * to it. Importing copies the snapshot into the importer's own agency as a new
- * doc carrying `importedFrom: { importedAt }` and nothing that points back at
- * the source tenant (see import-scrub.ts).
+ * to it. A link is redeemed one of two ways, each counted as a use:
+ *
+ *   - download: the public /s/snapshot/{token} page hands out a portable file,
+ *     importable on ANY deployment — a buyer copy is its own Firebase project
+ *     with one agency, so this is the path that crosses deployments;
+ *   - import: an owner of another agency on THIS deployment copies it in.
+ *
+ * Either way the payload leaves through toPortablePayload, so nothing in it
+ * points back at the source tenant or sends data to the sharer's destinations.
+ * Token resolution, the download and the preview live in share-redeem.ts.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -157,65 +163,36 @@ export type ImportOutcome =
   | { ok: false; status: 404 | 409; error: string };
 
 /**
- * Import the snapshot behind a share token into the caller's agency. Every
- * refusal that concerns the link itself (unknown, revoked, expired, used up,
- * source gone) is the same 404, so a caller learns nothing about which.
+ * Import the snapshot behind a share token into the caller's agency on this
+ * deployment. Every refusal that concerns the link itself is the same 404, so
+ * a caller learns nothing about which; the owning agency gets 409.
  */
 export async function importSharedSnapshot(
   db: Firestore,
   input: { token: string; agencyId: string; uid: string; now?: Date },
 ): Promise<ImportOutcome> {
   const now = input.now ?? new Date();
-  const tokenHash = hashShareToken(input.token);
-  const invalid: ImportOutcome = { ok: false, status: 404, error: INVALID_LINK };
-
   return db.runTransaction(async (tx): Promise<ImportOutcome> => {
-    const indexSnap = await tx.get(db.doc(`snapshotShareIndex/${tokenHash}`));
-    const index = indexSnap.data();
-    if (!indexSnap.exists || !index) return invalid;
-
-    const sourcePath = `agencies/${index.agencyId}/snapshots/${index.snapshotId}`;
-    const shareRef = db.doc(`${sourcePath}/shares/${index.shareId}`);
-    const shareSnap = await tx.get(shareRef);
-    const share = shareSnap.data();
-    if (!shareSnap.exists || !share) return invalid;
-    if (shareStatus(share, now) !== "active") return invalid;
-
-    if (share.agencyId === input.agencyId) {
-      return {
-        ok: false,
-        status: 409,
-        error: "This snapshot already belongs to your agency.",
-      };
+    const found = await activeShare(db, tx, input.token, now);
+    if (!found) return { ok: false, status: 404, error: INVALID_LINK };
+    if (found.share.agencyId === input.agencyId) {
+      return { ok: false, status: 409, error: "This snapshot already belongs to your agency." };
     }
-
-    const sourceSnap = await tx.get(db.doc(sourcePath));
-    const source = sourceSnap.data();
-    if (!sourceSnap.exists || !source) return invalid;
-
-    const sourceIds = new Set(
-      [share.agencyId, source.sourceSubAccountId, source.createdByUid, share.createdByUid]
-        .filter((v): v is string => typeof v === "string" && v.length > 0),
-    );
-    const payload = (source.payload ?? {}) as SnapshotPayload;
 
     const ref = db.collection(`agencies/${input.agencyId}/snapshots`).doc();
     tx.set(ref, {
       id: ref.id,
       agencyId: input.agencyId,
-      name: source.name ?? "",
-      description: source.description ?? "",
-      version: source.version,
+      name: found.source.name ?? "",
+      description: found.source.description ?? "",
+      version: found.source.version,
       sourceSubAccountId: null,
       createdByUid: input.uid,
       createdAt: FieldValue.serverTimestamp(),
-      payload: scrubImportedPayload(payload, sourceIds),
+      payload: portableOf(found),
       importedFrom: { importedAt: FieldValue.serverTimestamp() },
     });
-    tx.update(shareRef, {
-      usedCount: FieldValue.increment(1),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+    countUse(tx, found.shareRef);
     return { ok: true, snapshotId: ref.id };
   });
 }

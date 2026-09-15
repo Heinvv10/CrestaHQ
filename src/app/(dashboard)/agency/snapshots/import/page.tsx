@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Download, Layers, Loader2 } from "lucide-react";
-import { useAuth } from "@/hooks/use-auth";
+import { useOwnerClaim } from "@/hooks/use-owner-claim";
 import { useAgency } from "@/hooks/use-agency";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +30,7 @@ function tokenFrom(value: string): string {
  */
 function ImportSnapshot() {
   const params = useSearchParams();
-  const { loading, agencyRole } = useAuth();
+  const owner = useOwnerClaim();
   const agency = useAgency();
   const [pasted, setPasted] = useState("");
   const [importing, setImporting] = useState(false);
@@ -60,7 +60,7 @@ function ImportSnapshot() {
     }
   }
 
-  if (loading) {
+  if (owner.state === "loading") {
     return (
       <div className="mx-auto w-full max-w-3xl">
         <div className="h-40 animate-pulse rounded-2xl bg-muted/40" />
@@ -68,7 +68,25 @@ function ImportSnapshot() {
     );
   }
 
-  if (agencyRole !== "owner") {
+  if (owner.state === "error") {
+    return (
+      <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card p-8 text-center">
+        <p className="text-sm text-muted-foreground">
+          We couldn&apos;t confirm your account&apos;s permissions.
+        </p>
+        <Button
+          variant="outline"
+          className="mt-4"
+          data-testid="snapshot-import-retry"
+          onClick={owner.retry}
+        >
+          Try again
+        </Button>
+      </div>
+    );
+  }
+
+  if (owner.state === "not_owner") {
     return (
       <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card p-8 text-center">
         <p className="text-sm text-muted-foreground">

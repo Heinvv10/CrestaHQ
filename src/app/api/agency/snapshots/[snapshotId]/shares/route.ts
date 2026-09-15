@@ -12,7 +12,8 @@ interface ShareBody {
 
 /**
  * POST — mint a share link for one of the caller's snapshots. The raw token
- * appears in this response's `url` and is never stored or returned again.
+ * appears in this response's `url` (the public /s/snapshot/{token} page) and
+ * is never stored or returned again.
  */
 export async function POST(
   request: Request,
@@ -63,6 +64,6 @@ export async function POST(
     );
   }
 
-  const url = `${base}/agency/snapshots/import?token=${encodeURIComponent(created.token)}`;
+  const url = `${base}/s/snapshot/${encodeURIComponent(created.token)}`;
   return NextResponse.json({ share: created.share, url });
 }
