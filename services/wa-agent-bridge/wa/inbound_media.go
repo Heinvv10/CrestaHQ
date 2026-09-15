@@ -304,8 +304,8 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 	// V2 / V2Extension into the plain ImageMessage (etc.) below and set
 	// v.IsViewOnce. Nothing here branches on that flag, so a photo the sender
 	// meant to disappear is forwarded and kept exactly like any other. That
-	// is a product and POPIA decision, not whatsmeow's accident: made by Hein
-	// on 2026-09-15, pinned by TestViewOnceMediaIsStoredLikeAnyOther, and
+	// is a deliberate product and POPIA decision (2026-09-15), not whatsmeow's
+	// accident: pinned by TestViewOnceMediaIsStoredLikeAnyOther, and
 	// stated to consumers in docs/hermes-consumer.md because a buyer of this
 	// template inherits the obligation with the bytes.
 	att := attachmentFrom(v.Message)

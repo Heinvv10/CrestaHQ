@@ -489,7 +489,7 @@ func TestHandleMessageDownloadsNothing(t *testing.T) {
 }
 
 // View-once media is stored like any other — a deliberate product and POPIA
-// decision (Hein, 2026-09-15), not whatsmeow's accident. This test starts from
+// decision (2026-09-15), not whatsmeow's accident. This test starts from
 // the RAW wrapped message and runs whatsmeow's own UnwrapRaw, so it pins both
 // halves: that whatsmeow still flattens ViewOnceMessageV2 into an
 // ImageMessage, and that this bridge still forwards the bytes when it does.

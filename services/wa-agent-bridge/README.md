@@ -315,9 +315,9 @@ as an `ALERT` with redacted JIDs and lost, because the bridge stores no body.
 **View-once media is downloaded and stored like any other.** whatsmeow unwraps
 a "view once" photo into a plain image before this bridge sees it, and the
 bridge deliberately does not branch on `IsViewOnce` — a photo the sender meant
-to disappear is forwarded and kept. That is a product and POPIA decision made
-on 2026-09-15 and pinned by a test, not an accident of the library; a buyer of
-this template inherits the obligation that comes with holding those bytes.
+to disappear is forwarded and kept. This is a deliberate product and POPIA
+decision (2026-09-15), pinned by a test, not an accident of the library; a buyer
+of this template inherits the obligation that comes with holding those bytes.
 
 A POST carrying a file gets a 120s deadline (text keeps 10s). If it still
 fails, the message is re-posted **text-only** with `mediaDropped:
