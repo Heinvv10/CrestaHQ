@@ -402,6 +402,40 @@ func TestHandleMessageDownloadsNothing(t *testing.T) {
 	}
 }
 
+// View-once media is stored like any other — a deliberate product and POPIA
+// decision (Hein, 2026-09-15), not whatsmeow's accident. This test starts from
+// the RAW wrapped message and runs whatsmeow's own UnwrapRaw, so it pins both
+// halves: that whatsmeow still flattens ViewOnceMessageV2 into an
+// ImageMessage, and that this bridge still forwards the bytes when it does.
+// A whatsmeow bump that changes UnwrapRaw fails here instead of flipping the
+// behaviour silently.
+func TestViewOnceMediaIsStoredLikeAnyOther(t *testing.T) {
+	dl := &stubDownloader{payload: []byte("disappearing-photo")}
+	c, seen := recordingClient(dl)
+
+	evt := msgEvent("27831234567", "", false, false)
+	evt.RawMessage = &waE2E.Message{ViewOnceMessageV2: &waE2E.FutureProofMessage{
+		Message: imageMsg("for your eyes only", 18),
+	}}
+	evt.Message = nil
+	evt.UnwrapRaw()
+	if !evt.IsViewOnce {
+		t.Fatal("whatsmeow no longer flags the unwrapped message as view-once; re-read the decision in ParseInbound")
+	}
+	c.handleEvent(evt)
+
+	if len(*seen) != 1 {
+		t.Fatalf("dispatched %d inbound, want 1", len(*seen))
+	}
+	got := (*seen)[0]
+	if got.text != "for your eyes only" || got.media == nil {
+		t.Fatalf("view-once must be forwarded like any other media, got text=%q media=%v", got.text, got.media != nil)
+	}
+	if media := got.media(); media == nil || string(media.Data) != "disappearing-photo" {
+		t.Fatalf("view-once bytes must be downloaded and forwarded, got %+v", media)
+	}
+}
+
 func TestNonTextNonMediaEventIsStillDropped(t *testing.T) {
 	c, seen := recordingClient(&stubDownloader{})
 

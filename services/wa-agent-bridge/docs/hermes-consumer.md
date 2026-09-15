@@ -111,6 +111,11 @@ A message that carried a **file** adds exactly one further key, never both:
 - `text` is the attachment's caption, and is `""` for a voice note or a sticker,
   which carry none.
 - A text message posts the four keys and nothing else — no `"media": null`.
+- **View-once media arrives like any other media.** The bridge deliberately
+  forwards a "view once" photo or video with its bytes and does not mark it as
+  such (decided 2026-09-15). Whatever you store, you are storing something the
+  sender intended to disappear — that is a POPIA obligation you inherit with
+  the payload, not one the bridge discharges for you.
 
 `messageId` is WhatsApp's own id for the INBOUND message. Use it to dedupe a
 redelivery on the id rather than on the body. It can be an empty string when

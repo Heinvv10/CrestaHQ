@@ -239,6 +239,16 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 	// carry no text at all, so requiring text is what used to make this bridge
 	// deaf to them; everything else — reactions, receipts, protocol traffic —
 	// is still out of scope and still returns here.
+	//
+	// VIEW-ONCE MEDIA IS DOWNLOADED AND STORED, DELIBERATELY. By the time this
+	// runs, whatsmeow's UnwrapRaw has already flattened a ViewOnceMessage /
+	// V2 / V2Extension into the plain ImageMessage (etc.) below and set
+	// v.IsViewOnce. Nothing here branches on that flag, so a photo the sender
+	// meant to disappear is forwarded and kept exactly like any other. That
+	// is a product and POPIA decision, not whatsmeow's accident: made by Hein
+	// on 2026-09-15, pinned by TestViewOnceMediaIsStoredLikeAnyOther, and
+	// stated to consumers in docs/hermes-consumer.md because a buyer of this
+	// template inherits the obligation with the bytes.
 	att := attachmentFrom(v.Message)
 	if text == "" && att == nil {
 		return nil
