@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 
 /** Mirrors SNAPSHOT_FILE_MAX_BYTES; the server enforces it, this saves the upload. */
-const MAX_BYTES = 5 * 1024 * 1024;
+const MAX_BYTES = 900 * 1024;
 
 /**
  * "Import from file": a snapshot file downloaded from any deployment's share
@@ -19,7 +19,7 @@ export function SnapshotImportFile({ onImported }: { onImported: () => Promise<v
   async function handleFile(file: File | undefined) {
     if (!file || importing) return;
     if (file.size > MAX_BYTES) {
-      toast.error("That file is over 5 MB — it isn't a snapshot file.");
+      toast.error("That snapshot file is too large to import (over 900 KB).");
       return;
     }
     setImporting(true);

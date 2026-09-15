@@ -97,11 +97,26 @@ describe("POST /api/agency/snapshots/import-file", () => {
     expect(stored()).toHaveLength(0);
   });
 
+  it("refuses a node config nested far too deep as malformed, not as a crash", async () => {
+    // Splice a 100k-deep object (under the byte cap, so depth is what refuses it) into the webhook config as raw text —
+    // JSON.stringify would overflow building it, which is rather the point.
+    const depth = 100_000;
+    const marker = "\"__DEEP__\"";
+    const deep = goodFile();
+    (deep.payload.workflows[0].nodes.n2.config as Record<string, unknown>).inner = "__DEEP__";
+    const text = JSON.stringify(deep).replace(marker, "{\"x\":".repeat(depth) + "1" + "}".repeat(depth));
+    const res = await post(text);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "That snapshot file is malformed." });
+    expect(stored()).toHaveLength(0);
+  });
+
   it("refuses an oversized body, declared or actual, and a non-owner", async () => {
-    const declared = await post(JSON.stringify(goodFile()), "u_owner", { "content-length": String(6 * 1024 * 1024) });
+    const declared = await post(JSON.stringify(goodFile()), "u_owner", { "content-length": String(1024 * 1024) });
     expect(declared.status).toBe(413);
+    expect(await declared.json()).toEqual({ error: "That snapshot file is too large to import (over 900 KB)." });
     const big = goodFile();
-    big.payload.messageTemplates[0].body = "x".repeat(5 * 1024 * 1024 + 1);
+    big.payload.messageTemplates[0].body = "x".repeat(900 * 1024 + 1);
     expect((await post(JSON.stringify(big))).status).toBe(413);
     expect((await post(JSON.stringify(goodFile()), "u_member")).status).toBe(403);
     expect(stored()).toHaveLength(0);

@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { parseSnapshotFile } from "./snapshot-file";
+import { MAX_DEPTH, MAX_ENTITIES, MAX_NODES, parseSnapshotFile } from "./snapshot-file";
+
+const nested = (depth: number) => {
+  const root: Record<string, unknown> = {};
+  let cur = root;
+  for (let i = 0; i < depth; i++) { cur.x = {}; cur = cur.x as Record<string, unknown>; }
+  return root;
+};
+const workflowWith = (nodes: Record<string, unknown>) => ({
+  sourceId: "w", name: "W", status: "draft", trigger: { type: "contact.created", filters: { all: [] } }, nodes,
+});
+const waitNode = (id: string, config: Record<string, unknown> = { seconds: 1 }) => ({ id, type: "wait", config });
 
 const file = (payload: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
   format: "leadstack-snapshot", version: 1, name: "N", payload, ...extra,
@@ -31,6 +42,28 @@ describe("parseSnapshotFile", () => {
         nodes: { n1: { id: "n9", type: "wait", config: { seconds: 1 } } } }],
     }));
     expect(out.ok).toBe(false);
+  });
+
+  it("refuses nesting past MAX_DEPTH and accepts nesting at it", () => {
+    // config sits 4 levels down (payload → workflows[] → workflow → nodes → node → config).
+    const at = file({ workflows: [workflowWith({ n1: waitNode("n1", nested(MAX_DEPTH - 6)) })] });
+    expect(parseSnapshotFile(at).ok).toBe(true);
+    const past = file({ workflows: [workflowWith({ n1: waitNode("n1", nested(MAX_DEPTH)) })] });
+    expect(parseSnapshotFile(past)).toEqual({ ok: false, error: "That snapshot file is malformed." });
+    // Far past: must be a refusal, never a RangeError.
+    const far = file({ workflows: [workflowWith({ n1: waitNode("n1", nested(50_000)) })] });
+    expect(parseSnapshotFile(far).ok).toBe(false);
+  });
+
+  it("caps entities per array and nodes per workflow", () => {
+    const product = { sourceId: "p", name: "A", description: "", unitPriceCents: 1, currency: "USD", active: true };
+    expect(parseSnapshotFile(file({ products: Array(MAX_ENTITIES).fill(product) })).ok).toBe(true);
+    expect(parseSnapshotFile(file({ products: Array(MAX_ENTITIES + 1).fill(product) })).ok).toBe(false);
+    const tooManyForms = file({ forms: Array(MAX_ENTITIES + 1).fill({ sourceId: "f", name: "F", slug: "f", enabled: true, fields: [] }) });
+    expect(parseSnapshotFile(tooManyForms).ok).toBe(false);
+    const nodes = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`n${i}`, waitNode(`n${i}`)]));
+    expect(parseSnapshotFile(file({ workflows: [workflowWith(nodes(MAX_NODES))] })).ok).toBe(true);
+    expect(parseSnapshotFile(file({ workflows: [workflowWith(nodes(MAX_NODES + 1))] })).ok).toBe(false);
   });
 
   it("caps oversized strings and refuses a non-integer or missing version", () => {

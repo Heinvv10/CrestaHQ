@@ -16,7 +16,16 @@ import { SNAPSHOT_VERSION, type SnapshotPayload } from "@/types/snapshots";
  */
 
 export const SNAPSHOT_FILE_FORMAT = "leadstack-snapshot";
-export const SNAPSHOT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+/**
+ * Firestore caps a document at 1 MiB and the payload is stored on one doc, so
+ * a bigger file could only ever fail later, as a 500. Refuse it up front.
+ */
+export const SNAPSHOT_FILE_MAX_BYTES = 900 * 1024;
+/** Per-array entity cap and per-workflow node cap — a real snapshot is tens. */
+export const MAX_ENTITIES = 2_000;
+export const MAX_NODES = 500;
+/** Nesting the recursive walks will follow before refusing the file. */
+export const MAX_DEPTH = 32;
 
 export interface SnapshotFile {
   format: typeof SNAPSHOT_FILE_FORMAT;
@@ -74,11 +83,22 @@ function pick(shape: Shape, v: unknown): Record<string, unknown> | null {
 }
 
 const STRING_CAP = 20_000;
-/** Bound every string so a 5 MB file cannot become a 5 MB Firestore field. */
-function capStrings(v: unknown): unknown {
+/** Thrown by capStrings; parseSnapshotFile turns it into "malformed". */
+class TooDeep extends Error {}
+
+/**
+ * Bound every string so a file cannot become an oversized Firestore field, and
+ * refuse nesting past MAX_DEPTH: this is the first recursive walk over the
+ * untrusted structure, and the scrub walks it again afterwards — a 200k-deep
+ * `config` would otherwise overflow the stack there and surface as a 500.
+ */
+function capStrings(v: unknown, depth = 0): unknown {
+  if (depth > MAX_DEPTH) throw new TooDeep();
   if (typeof v === "string") return v.slice(0, STRING_CAP);
-  if (Array.isArray(v)) return v.map(capStrings);
-  if (isPlain(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, capStrings(x)]));
+  if (Array.isArray(v)) return v.map((x) => capStrings(x, depth + 1));
+  if (isPlain(v)) {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, capStrings(x, depth + 1)]));
+  }
   return v;
 }
 
@@ -128,7 +148,7 @@ const NODE_TYPES = new Set([
 
 function list(shape: Shape, v: unknown): Record<string, unknown>[] | null {
   if (v === undefined) return [];
-  if (!Array.isArray(v)) return null;
+  if (!Array.isArray(v) || v.length > MAX_ENTITIES) return null;
   const out: Record<string, unknown>[] = [];
   for (const item of v) {
     const kept = pick(shape, item);
@@ -151,8 +171,10 @@ function workflow(v: unknown): Record<string, unknown> | null {
   if (!w) return null;
   const trigger = pick(TRIGGER, w.trigger);
   if (!trigger) return null;
+  const entries = Object.entries(w.nodes as Record<string, unknown>);
+  if (entries.length > MAX_NODES) return null;
   const nodes: Record<string, unknown> = {};
-  for (const [id, raw] of Object.entries(w.nodes as Record<string, unknown>)) {
+  for (const [id, raw] of entries) {
     const node = pick(NODE, raw);
     if (!node || node.id !== id || !NODE_TYPES.has(node.type as string)) return null;
     nodes[id] = node;
@@ -182,8 +204,10 @@ export function parseSnapshotFile(raw: unknown): ParsedSnapshotFile {
   if (!isPlain(raw.payload)) return { ok: false, error: "That snapshot file has no payload." };
   const p = raw.payload;
 
-  const forms = Array.isArray(p.forms) ? p.forms.map(form) : p.forms === undefined ? [] : null;
-  const workflows = Array.isArray(p.workflows) ? p.workflows.map(workflow) : p.workflows === undefined ? [] : null;
+  const mapped = <T>(v: unknown, fn: (x: unknown) => T) =>
+    v === undefined ? [] : Array.isArray(v) && v.length <= MAX_ENTITIES ? v.map(fn) : null;
+  const forms = mapped(p.forms, form);
+  const workflows = mapped(p.workflows, workflow);
   const messageTemplates = list(TEMPLATE, p.messageTemplates);
   const products = list(PRODUCT, p.products);
   const customFields = list(CUSTOM_FIELD, p.customFields);
@@ -195,9 +219,15 @@ export function parseSnapshotFile(raw: unknown): ParsedSnapshotFile {
     return { ok: false, error: "That snapshot file is malformed." };
   }
 
-  const payload = capStrings({
-    forms, messageTemplates, products, workflows, customFields, aiProfile,
-  }) as unknown as SnapshotPayload;
+  let payload: SnapshotPayload;
+  try {
+    payload = capStrings({
+      forms, messageTemplates, products, workflows, customFields, aiProfile,
+    }) as unknown as SnapshotPayload;
+  } catch (err) {
+    if (err instanceof TooDeep) return { ok: false, error: "That snapshot file is malformed." };
+    throw err;
+  }
   return { ok: true, name, payload };
 }
 

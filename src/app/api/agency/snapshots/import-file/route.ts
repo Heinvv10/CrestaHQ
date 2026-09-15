@@ -10,7 +10,10 @@ import {
 } from "@/lib/snapshots/snapshot-file";
 
 const tooLarge = () =>
-  NextResponse.json({ error: "Snapshot file is larger than 5 MB." }, { status: 413 });
+  NextResponse.json(
+    { error: "That snapshot file is too large to import (over 900 KB)." },
+    { status: 413 },
+  );
 
 /**
  * POST — import an uploaded snapshot file (the JSON a share page downloads)
