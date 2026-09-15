@@ -1,4 +1,5 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
+import type { WhatsappTemplateButton } from "@/types/whatsapp-templates";
 
 /**
  * Per-contact SMS messages — the chat thread lives at:
@@ -52,4 +53,11 @@ export interface MessageDoc {
    * compute unread-count badges. Null until first read.
    */
   readAt: Timestamp | FieldValue | null;
+  /**
+   * WhatsApp only: the buttons the customer actually received, when this
+   * outbound message was sent as an interactive BUTTON message (Cloud or
+   * Twilio in-session) rather than plain text. Absent on every other row,
+   * including historic ones — do not treat missing as an empty array.
+   */
+  buttons?: WhatsappTemplateButton[] | null;
 }

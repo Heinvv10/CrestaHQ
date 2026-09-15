@@ -44,7 +44,7 @@ import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
-import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
+import type { WhatsappTemplateDoc, WhatsappTemplateButton } from "@/types/whatsapp-templates";
 import type { CloudTemplateRef } from "@/lib/comms/whatsapp/cloud-client";
 import type {
   CreateTaskConfig,
@@ -643,6 +643,11 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // Keep recording failures distinct: the message has already been sent.
     const sentTemplate = res.sentAs === "template" || res.sentAs === "interactive";
     const recordedBody = sentTemplate ? templateBody : body;
+    // Only an actual interactive-button send records buttons — a template
+    // send that fell back to plain text (outside the window) shows no
+    // buttons the customer never received.
+    const recordedButtons: WhatsappTemplateButton[] | null =
+      res.sentAs === "interactive" && tplDoc?.buttons?.length ? tplDoc.buttons : null;
     ctx.sent = sentTemplate
       ? { channel: "whatsapp", parts: [], template: tplDoc, templateValues, messageSid: res.messageId ?? null }
       : { channel: "whatsapp", parts: [body], messageSid: res.messageId ?? null };
@@ -656,6 +661,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
           direction: "outbound",
           status: "sent",
           body: recordedBody,
+          buttons: recordedButtons,
           from: readiness.sender.phoneNumber,
           to,
           twilioMessageSid: res.messageId ?? null,
