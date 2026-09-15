@@ -76,13 +76,23 @@ test("two sequential Manage saves both persist", async ({ page }) => {
       page.getByRole("heading", { name: `Manage ${FIXTURE_PRIMARY_NAME}` }),
     ).toBeHidden();
     await ref.update({ [GCAL]: true });
-    await page
-      .getByRole("row", { name: new RegExp(FIXTURE_PRIMARY_NAME) })
-      .getByRole("button", { name: "Manage" })
-      .click();
-    await expect(
-      page.getByRole("checkbox", { name: /Google Calendar sync/ }),
-    ).toBeChecked();
+    // The dialog seeds its state once per mount, so a reopen that beats the
+    // list's onSnapshot delivery would bake in the old value. Reopen until the
+    // listener has caught up — the old component never shows it checked, so
+    // retrying cannot turn a real regression green.
+    await expect(async () => {
+      if (await page.getByRole("dialog").isVisible()) {
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("dialog")).toBeHidden();
+      }
+      await page
+        .getByRole("row", { name: new RegExp(FIXTURE_PRIMARY_NAME) })
+        .getByRole("button", { name: "Manage" })
+        .click();
+      await expect(
+        page.getByRole("checkbox", { name: /Google Calendar sync/ }),
+      ).toBeChecked({ timeout: 2_000 });
+    }).toPass({ timeout: 20_000 });
   } finally {
     await ref.update({
       [GOOGLE]: before.google,
