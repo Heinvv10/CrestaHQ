@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { sanitizeNodes } from "@/lib/snapshots/apply";
+import { sanitizeForm, sanitizeNodes } from "@/lib/snapshots/apply";
 import type { WorkflowNode } from "@/types/workflows";
 import type { SnapshotPayload, SnapshotWorkflow } from "@/types/snapshots";
 
@@ -15,9 +15,11 @@ import type { SnapshotPayload, SnapshotWorkflow } from "@/types/snapshots";
  * snapshot reach back to its source once the recipient activates it:
  *
  *   - outbound destinations — a `notify` step emailing a literal address, a
- *     `webhook` step POSTing contact data to a URL (both cleared by apply's
- *     sanitizeNodes, which every path shares), and a form's post-submit
- *     `redirectUrl` sending the visitor to the sharer's site (cleared here).
+ *     `webhook` step POSTing contact data to a URL, a form's post-submit
+ *     `redirectUrl` sending the visitor to the sharer's site. All three are
+ *     apply's own rules (sanitizeNodes, sanitizeForm), which every apply path
+ *     shares; the pipeline below calls the same functions so a downloaded
+ *     file is already clean, without restating the rule.
  *   - source doc ids — `sourceId`, `trigger.formId`/`linkId`/`pipelineId`,
  *     WhatsApp `templateId`/`senderId`. Opaque, but they name documents in
  *     another tenant. Form ids are re-minted and the trigger remapped through
@@ -74,11 +76,7 @@ export function toPortablePayload(
   const forms = (clean.forms ?? []).map((form) => {
     const fresh = randomUUID();
     formIds.set(form.sourceId, fresh);
-    return {
-      ...form,
-      sourceId: fresh,
-      ...(form.settings ? { settings: { ...form.settings, redirectUrl: "" } } : {}),
-    };
+    return sanitizeForm({ ...form, sourceId: fresh });
   });
 
   const workflows = (clean.workflows ?? []).map((w): SnapshotWorkflow => {

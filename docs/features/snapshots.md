@@ -47,6 +47,8 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   target client's leads; `account_contact` is kept since it resolves on the
   target), and a `webhook` step's `url` is blanked (the engine skips a
   non-http(s) URL). Reconfigure both before activating an applied workflow.
+  A form's post-submit `settings.redirectUrl` is blanked the same way
+  (`sanitizeForm`) — it points at the source client's site.
 - **Routes**: `GET/POST /api/agency/snapshots` (list summaries + counts / capture),
   `POST /api/agency/sub-accounts/[id]/apply-snapshot`. Owner-only.
 - **UI**: [snapshots-section.tsx](src/components/agency/snapshots-section.tsx) on
@@ -106,7 +108,8 @@ format + untrusted-file parser); routes are thin.
   source tenant id nulled; every `sourceId` re-minted (a random UUID) with
   `trigger.formId` remapped through the same map so apply still links forms to
   workflows; `trigger.linkId`/`pipelineId`, WhatsApp `templateId`/`senderId` and
-  task assignees nulled; a form's post-submit `redirectUrl` blanked.
+  task assignees nulled; forms and nodes go through apply's own
+  `sanitizeForm` / `sanitizeNodes` so the file is already clean.
 - **Workflow destinations are cleared and must be reconfigured** — the same
   `sanitizeNodes` rule as any apply (see "do not travel" above); a shared
   workflow would otherwise send the importer's contact data to addresses the

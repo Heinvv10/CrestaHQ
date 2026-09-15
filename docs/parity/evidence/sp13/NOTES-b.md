@@ -24,7 +24,7 @@ at the end.
 | 9 | file carries no source sub-account / agency id | `portableOf` → pass `new Set()` instead of `sourceIds` (the seeded snapshot's `sourceSubAccountId` still appears only via scrub of strings; also plant it in a form field to be sure) | `src/lib/snapshots/share-redeem.ts` |
 | 10 | file carries no notify email | delete `config.to = "";` | `src/lib/snapshots/portable.ts` |
 | 11 | file carries no webhook URL | delete `config.url = "";` | `src/lib/snapshots/portable.ts` |
-| 12 | file carries no form `redirectUrl` | delete the `settings: { ...form.settings, redirectUrl: "" }` spread | `src/lib/snapshots/portable.ts` |
+| 12 | file carries no form `redirectUrl` | `sanitizeForm` → `return form;` (both the download and any apply then leak it) | `src/lib/snapshots/apply.ts` |
 | 13 | trigger `formId` equals the re-minted form id | delete `if (trigger.formId) trigger.formId = formIds.get(…) ?? null;` | `src/lib/snapshots/portable.ts` |
 | 14 | share `usedCount === 1` after download | delete `countUse(tx, found.shareRef);` in `downloadSharedSnapshot` | `src/lib/snapshots/share-redeem.ts` |
 | 15 | second download → 404 | delete `if (share.singleUse && (share.usedCount ?? 0) >= 1) return "used";` | `src/lib/snapshots/share.ts` |

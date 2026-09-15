@@ -402,6 +402,26 @@ describe("applySnapshot — outbound destinations do not cross sub-accounts", ()
     expect(nodes.n3.config.recipient).toBe("account_contact");
   });
 
+  it("blanks a form's post-submit redirectUrl and keeps its other settings", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        forms: [{
+          sourceId: "f_src", name: "Lead", slug: "lead", enabled: true, fields: [],
+          settings: { redirectUrl: "https://client-a.example/thanks", autoTags: ["lead"], thankYouMessage: "Thanks" },
+        }] as unknown as SnapshotPayload["forms"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const form = written.find((w) => w.path.startsWith("forms/"))!.data as {
+      settings: Record<string, unknown>;
+    };
+    expect(form.settings).toEqual({ redirectUrl: "", autoTags: ["lead"], thankYouMessage: "Thanks" });
+  });
+
   it("blanks a webhook URL so the step is skipped until reconfigured", async () => {
     const nodes = await applyNodes({
       n1: { id: "n1", type: "webhook", config: { url: "https://client-a.example/hook" }, next: null },

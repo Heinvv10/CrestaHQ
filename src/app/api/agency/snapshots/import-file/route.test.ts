@@ -122,6 +122,7 @@ describe("POST /api/agency/snapshots/import-file", () => {
     // No content-length, streamed in chunks, never valid JSON: the cap must
     // trip on the byte count while streaming, before any parse.
     let pulled = 0;
+    const cancel = vi.fn();
     const chunk = new TextEncoder().encode("{".repeat(64 * 1024));
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -129,6 +130,7 @@ describe("POST /api/agency/snapshots/import-file", () => {
         if (pulled > 4 * 1024 * 1024) controller.close();
         else controller.enqueue(chunk);
       },
+      cancel,
     });
     const streamed = await POST(
       new Request("https://app.test/api/agency/snapshots/import-file", {
@@ -137,6 +139,7 @@ describe("POST /api/agency/snapshots/import-file", () => {
     );
     expect(streamed.status).toBe(413);
     // Cancelled once over the cap, not drained to the end.
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(pulled).toBeLessThan(2 * 1024 * 1024);
     expect((await post(JSON.stringify(goodFile()), "u_member")).status).toBe(403);
     expect(stored()).toHaveLength(0);

@@ -39,6 +39,16 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
 }
 
 /**
+ * The post-submit redirect points at the SOURCE client's site; a lead
+ * submitting the target's form must not land there. Exported so the portable
+ * scrub applies the same rule before a payload leaves the agency.
+ */
+export function sanitizeForm<T extends { settings?: unknown }>(form: T): T {
+  if (!form.settings || typeof form.settings !== "object") return form;
+  return { ...form, settings: { ...form.settings, redirectUrl: "" } };
+}
+
+/**
  * whatsapp_template nodes reference a `subAccounts/{id}/whatsappTemplates` doc
  * that a snapshot does NOT carry — so the id would dangle in the target. Null
  * it; draft status means the workflow never runs until the operator fixes it.
@@ -171,7 +181,7 @@ export async function applySnapshot(
     formIdMap.set(form.sourceId, ref.id);
     writes.push([
       ref,
-      { ...dropSourceId(form), id: ref.id, ...tenancy(), submissionCount: 0 },
+      { ...dropSourceId(sanitizeForm(form)), id: ref.id, ...tenancy(), submissionCount: 0 },
     ]);
   }
 
