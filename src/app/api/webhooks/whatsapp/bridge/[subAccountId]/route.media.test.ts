@@ -18,6 +18,8 @@ const CREDS = {
   webhookSecret: "whsec_test",
 };
 
+const DELETE_FIELD = "__FIELD_DELETE__";
+
 let contactRows: Array<{ id: string; data: Record<string, unknown> }> = [];
 let subAccountDoc: Record<string, unknown> | undefined;
 let messageWrites: Array<{ contactId: string; docId: string; data: Record<string, unknown> }> = [];
@@ -25,20 +27,26 @@ let conversationUpserts: Array<Record<string, unknown>> = [];
 let existingMessageIds = new Set<string>();
 let inboundActivities = new Map<string, Record<string, unknown>>();
 
-function makeSnap(row: { id: string; data: Record<string, unknown> }) {
+function makeSnap(row_: { id: string; data: Record<string, unknown> }) {
+  const row_id = row_.id;
   const ref = {
-    id: row.id,
+    id: row_id,
     collection: () => ({
       doc: (docId?: string) => ({
         id: docId ?? "generated-id",
-        get: async () => ({ exists: existingMessageIds.has(docId ?? "") }),
+        get: async () => ({
+          exists: existingMessageIds.has(docId ?? ""),
+          data: () => row(row_.id),
+        }),
         set: async (data: Record<string, unknown>) => {
-          messageWrites.push({ contactId: row.id, docId: docId ?? "", data });
+          messageWrites.push({ contactId: row_id, docId: docId ?? "", data });
+          // A stored row is what the next delivery's redelivery check reads.
+          existingMessageIds.add(docId ?? "");
         },
       }),
     }),
   };
-  return { id: row.id, data: () => row.data, ref };
+  return { id: row_id, data: () => row_.data, ref };
 }
 
 const contactsQuery = {
@@ -75,7 +83,7 @@ const fakeDb = {
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => fakeDb }));
 vi.mock("firebase-admin/firestore", () => ({
-  FieldValue: { serverTimestamp: () => "SERVER_TS" },
+  FieldValue: { serverTimestamp: () => "SERVER_TS", delete: () => DELETE_FIELD },
 }));
 vi.mock("@/lib/comms/whatsapp/bridge-credentials", () => ({
   getBridgeCreds: async () => CREDS,
@@ -90,9 +98,15 @@ vi.mock("@/lib/server/conversations-service", () => ({
     conversationUpserts.push(a);
   },
 }));
-vi.mock("@/lib/comms/ai/openrouter", () => ({ aiIsConfigured: () => false }));
-vi.mock("@/lib/comms/ai/agent", () => ({ resolveAgent: async () => null }));
-vi.mock("@/lib/comms/ai/respond", () => ({ maybeRespondWithAi: vi.fn() }));
+let aiOn = false;
+const maybeRespondWithAi = vi.fn();
+vi.mock("@/lib/comms/ai/openrouter", () => ({ aiIsConfigured: () => aiOn }));
+vi.mock("@/lib/comms/ai/agent", () => ({
+  resolveAgent: async () => (aiOn ? { effective: { enabled: true } } : null),
+}));
+vi.mock("@/lib/comms/ai/respond", () => ({
+  maybeRespondWithAi: (...a: unknown[]) => maybeRespondWithAi(...a),
+}));
 
 /** The bucket. Only `putWhatsappMedia` is faked — `whatsappMediaPath` is the
  *  real one, so the test asserts the path the serving route will re-derive. */
@@ -103,6 +117,18 @@ vi.mock("@/lib/comms/whatsapp/media-storage", async (importOriginal) => ({
 }));
 
 import { POST } from "./route";
+
+/** The row as Firestore would hold it after every `{merge:true}` write. */
+function row(contactId: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const w of messageWrites.filter((x) => x.contactId === contactId)) {
+    for (const [k, v] of Object.entries(w.data)) {
+      if (v === DELETE_FIELD) delete out[k];
+      else out[k] = v;
+    }
+  }
+  return out;
+}
 
 function post(
   payload: Record<string, unknown>,
@@ -161,6 +187,8 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     };
     putWhatsappMedia.mockReset();
     putWhatsappMedia.mockResolvedValue({ ok: true });
+    aiOn = false;
+    maybeRespondWithAi.mockReset();
   });
 
   afterEach(() => {
@@ -187,31 +215,30 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     expect(put.contentType).toBe("image/png");
     expect(Buffer.compare(put.bytes, PNG_BYTES)).toBe(0);
 
-    expect(messageWrites).toHaveLength(1);
-    expect(messageWrites[0].data.media).toEqual({
+    expect(row("c1").media).toEqual({
       kind: "image",
       mimeType: "image/png",
       filename: "photo.png",
       sizeBytes: PNG_BYTES.length,
       storagePath: path,
     });
-    expect(messageWrites[0].data.body).toBe("hi there");
-    expect(messageWrites[0].data).not.toHaveProperty("mediaDropped");
+    expect(row("c1").body).toBe("hi there");
+    expect(row("c1")).not.toHaveProperty("mediaDropped");
   });
 
   it("passes a bridge-side `mediaDropped` straight through and never touches the bucket", async () => {
     const res = await post(inbound({ mediaDropped: "too_large" }));
     expect(res.status).toBe(200);
     expect(putWhatsappMedia).not.toHaveBeenCalled();
-    expect(messageWrites[0].data.mediaDropped).toBe("too_large");
-    expect(messageWrites[0].data).not.toHaveProperty("media");
+    expect(row("c1").mediaDropped).toBe("too_large");
+    expect(row("c1")).not.toHaveProperty("media");
   });
 
   it("passes through a dropped reason it has never heard of — the bridge names them, not this route", async () => {
     // PR #145 added `delivery_failed`; the next one will add another. An
     // enumeration here would silently swallow every new reason as undefined.
     await post(inbound({ mediaDropped: "delivery_failed" }));
-    expect(messageWrites[0].data.mediaDropped).toBe("delivery_failed");
+    expect(row("c1").mediaDropped).toBe("delivery_failed");
   });
 
   it("refuses a file that decodes to more than 16 MiB as too_large, bucket untouched", async () => {
@@ -221,17 +248,17 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     );
     expect(res.status).toBe(200);
     expect(putWhatsappMedia).not.toHaveBeenCalled();
-    expect(messageWrites[0].data.mediaDropped).toBe("too_large");
-    expect(messageWrites[0].data).not.toHaveProperty("media");
+    expect(row("c1").mediaDropped).toBe("too_large");
+    expect(row("c1")).not.toHaveProperty("media");
     // The message itself is never lost.
-    expect(messageWrites[0].data.body).toBe("hi there");
+    expect(row("c1").body).toBe("hi there");
   }, 20_000);
 
   it("accepts exactly 16 MiB — the cap is inclusive", async () => {
     const exact = Buffer.alloc(16 * MIB, 0x41).toString("base64");
     await post(inbound({ media: { ...photo, dataBase64: exact } }));
     expect(putWhatsappMedia).toHaveBeenCalledTimes(1);
-    expect((messageWrites[0].data.media as { sizeBytes: number }).sizeBytes).toBe(16 * MIB);
+    expect((row("c1").media as { sizeBytes: number }).sizeBytes).toBe(16 * MIB);
   }, 20_000);
 
   it("a 21 MiB base64 body reaches the handler and is refused by OUR cap", async () => {
@@ -244,7 +271,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     expect(b64.length).toBeGreaterThan(21 * MIB);
     const res = await post(inbound({ media: { ...photo, dataBase64: b64 } }));
     expect(res.status).toBe(200);
-    expect(messageWrites[0].data.mediaDropped).toBe("too_large");
+    expect(row("c1").mediaDropped).toBe("too_large");
   }, 30_000);
 
   it("BACK-COMPAT: today's text-only payload writes exactly the row origin/main writes", async () => {
@@ -315,15 +342,15 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
       const res = await post(inbound({ media }));
       expect(res.status, JSON.stringify(media)).toBe(200);
       expect(putWhatsappMedia, JSON.stringify(media)).not.toHaveBeenCalled();
-      expect(messageWrites[0].data.mediaDropped, JSON.stringify(media)).toBe("fetch_failed");
-      expect(messageWrites[0].data, JSON.stringify(media)).not.toHaveProperty("media");
+      expect(row("c1").mediaDropped, JSON.stringify(media)).toBe("fetch_failed");
+      expect(row("c1"), JSON.stringify(media)).not.toHaveProperty("media");
     }
   });
 
   it("refuses a mime the serving route would never put in a Content-Type", async () => {
     await post(inbound({ media: { ...photo, mimeType: "text/html" } }));
     expect(putWhatsappMedia).not.toHaveBeenCalled();
-    expect(messageWrites[0].data.mediaDropped).toBe("unsupported_type");
+    expect(row("c1").mediaDropped).toBe("unsupported_type");
   });
 
   it("accepts a codec-parameterised voice note and files it as audio", async () => {
@@ -333,7 +360,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
         media: { filename: "voice.ogg", mimeType: "audio/ogg; codecs=opus", dataBase64: photo.dataBase64 },
       }),
     );
-    expect(messageWrites[0].data.media).toMatchObject({
+    expect(row("c1").media).toMatchObject({
       kind: "audio",
       mimeType: "audio/ogg; codecs=opus",
     });
@@ -341,7 +368,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
 
   it("a caption-less file previews as its kind label, and the row body stays empty", async () => {
     await post(inbound({ text: "", media: photo }));
-    expect(messageWrites[0].data.body).toBe("");
+    expect(row("c1").body).toBe("");
     expect(conversationUpserts[0]).toMatchObject({ body: "📷 Photo" });
     expect(inboundActivities.get("c1/inbound_whatsapp_3EB0ABC")).toMatchObject({
       content: "WhatsApp received: 📷 Photo",
@@ -352,9 +379,9 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     putWhatsappMedia.mockResolvedValue({ ok: false, reason: "store_failed" });
     const res = await post(inbound({ media: photo }));
     expect(res.status).toBe(200);
-    expect(messageWrites[0].data.mediaDropped).toBe("fetch_failed");
-    expect(messageWrites[0].data).not.toHaveProperty("media");
-    expect(messageWrites[0].data.body).toBe("hi there");
+    expect(row("c1").mediaDropped).toBe("fetch_failed");
+    expect(row("c1")).not.toHaveProperty("media");
+    expect(row("c1").body).toBe("hi there");
   });
 
   it("stores one object per matched contact, each at its own contact path", async () => {
@@ -368,9 +395,9 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
       whatsappMediaPath({ agencyId: "ag_1", subAccountId: "sa_1", contactId: "c_a", messageDocId: "3EB0ABC" }),
       whatsappMediaPath({ agencyId: "ag_1", subAccountId: "sa_1", contactId: "c_b", messageDocId: "3EB0ABC" }),
     ]);
-    for (const w of messageWrites) {
-      expect((w.data.media as { storagePath: string }).storagePath).toBe(
-        whatsappMediaPath({ agencyId: "ag_1", subAccountId: "sa_1", contactId: w.contactId, messageDocId: "3EB0ABC" }),
+    for (const contactId of ["c_a", "c_b"]) {
+      expect((row(contactId).media as { storagePath: string }).storagePath).toBe(
+        whatsappMediaPath({ agencyId: "ag_1", subAccountId: "sa_1", contactId, messageDocId: "3EB0ABC" }),
       );
     }
   });
@@ -383,5 +410,144 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     await post(inbound());
     expect(conversationUpserts).toHaveLength(0);
     expect([...inboundActivities.keys()]).toEqual(["c1/inbound_whatsapp_3EB0ABC"]);
+  });
+  it("a storage exception never costs the message text — the row lands with fetch_failed", async () => {
+    putWhatsappMedia.mockRejectedValue(new Error("bucket exploded"));
+    const res = await post(inbound({ media: photo }));
+    expect(res.status).toBe(200);
+    expect(row("c1").body).toBe("hi there");
+    expect(row("c1").mediaDropped).toBe("fetch_failed");
+    expect(row("c1")).not.toHaveProperty("media");
+  });
+
+  it("writes the text row BEFORE the upload, so a re-post during a slow upload is a redelivery", async () => {
+    // #145 re-posts the same message id text-only with mediaDropped when a
+    // media POST goes unanswered, and Next does not abort the first handler.
+    // With the upload ahead of the row write, B found no row, passed the
+    // redelivery check, and both requests auto-replied to the customer.
+    aiOn = true;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    putWhatsappMedia.mockImplementation(async () => {
+      await gate;
+      return { ok: true };
+    });
+
+    const a = post(inbound({ media: photo }));
+    // Let A run up to the blocked upload.
+    await vi.waitFor(() => expect(putWhatsappMedia).toHaveBeenCalledTimes(1));
+
+    const b = await post(inbound({ mediaDropped: "delivery_failed" }));
+    expect(b.status).toBe(200);
+
+    release();
+    expect((await a).status).toBe(200);
+
+    expect(maybeRespondWithAi).toHaveBeenCalledTimes(1);
+    expect(conversationUpserts).toHaveLength(1);
+  });
+  it("a text-only delivery_failed re-post never downgrades a row that already holds its file", async () => {
+    // #145 re-posts text-only when a media POST goes unanswered — but that POST
+    // may have landed. The re-post must not add a drop reason beside the file
+    // or rewrite the timeline from "📷 Photo" to "(no text)".
+    await post(inbound({ text: "", media: photo }));
+    expect(row("c1").media).toBeTruthy();
+
+    await post(inbound({ text: "", mediaDropped: "delivery_failed" }));
+    expect(row("c1").media).toMatchObject({ kind: "image", filename: "photo.png" });
+    expect(row("c1")).not.toHaveProperty("mediaDropped");
+    expect(inboundActivities.get("c1/inbound_whatsapp_3EB0ABC")).toMatchObject({
+      content: "WhatsApp received: 📷 Photo",
+    });
+  });
+
+  it("the reverse order upgrades: a text-only drop first, then the file, leaves only the file", async () => {
+    await post(inbound({ text: "", mediaDropped: "delivery_failed" }));
+    expect(row("c1").mediaDropped).toBe("delivery_failed");
+
+    await post(inbound({ text: "", media: photo }));
+    expect(row("c1").media).toMatchObject({ kind: "image" });
+    expect(row("c1")).not.toHaveProperty("mediaDropped");
+    expect(inboundActivities.get("c1/inbound_whatsapp_3EB0ABC")).toMatchObject({
+      content: "WhatsApp received: 📷 Photo",
+    });
+  });
+
+  it("rejects base64 that Node would silently mis-decode", async () => {
+    // Node skips characters outside the alphabet and stops at the first "=",
+    // so each of these decoded to SOMETHING — "!!!!" to a 0-byte image.
+    for (const dataBase64 of ["!!!!", "aGVsbG8=GARBAGE", "aGVs-G8_", "aGVsbG8", "aGVs bG8="]) {
+      messageWrites = [];
+      existingMessageIds = new Set();
+      putWhatsappMedia.mockClear();
+      await post(inbound({ media: { ...photo, dataBase64 } }));
+      expect(putWhatsappMedia, dataBase64).not.toHaveBeenCalled();
+      expect(row("c1").mediaDropped, dataBase64).toBe("fetch_failed");
+      expect(row("c1"), dataBase64).not.toHaveProperty("media");
+    }
+  });
+
+  it("accepts every padding form of valid base64", async () => {
+    for (const [dataBase64, size] of [["aGVsbG8=", 5], ["aGVsbA==", 4], ["aGVs", 3]] as const) {
+      messageWrites = [];
+      existingMessageIds = new Set();
+      await post(inbound({ media: { ...photo, dataBase64 } }));
+      expect((row("c1").media as { sizeBytes: number }).sizeBytes, dataBase64).toBe(size);
+    }
+  });
+
+  it("caps a huge filename at 255 bytes, keeping the extension, on the row and in the preview", async () => {
+    const name = `${"a".repeat(10_000)}.pdf`;
+    await post(
+      inbound({ text: "", media: { filename: name, mimeType: "application/pdf", dataBase64: photo.dataBase64 } }),
+    );
+    const stored = (row("c1").media as { filename: string }).filename;
+    expect(Buffer.byteLength(stored, "utf8")).toBeLessThanOrEqual(255);
+    expect(stored.endsWith(".pdf")).toBe(true);
+    expect(conversationUpserts[0]).toMatchObject({ body: `📄 ${stored}` });
+  });
+
+  it("cuts a multi-byte filename on a character boundary, never mid-character", async () => {
+    // 251 bytes of budget before ".pdf" / ".jpg": odd for 2-byte "é", and not
+    // a multiple of 4 for the emoji — a byte slice would split both.
+    for (const [name, mimeType] of [
+      [`${"é".repeat(200)}.pdf`, "application/pdf"],
+      [`${"😀".repeat(100)}.jpg`, "image/jpeg"],
+    ] as const) {
+      messageWrites = [];
+      existingMessageIds = new Set();
+      await post(inbound({ media: { filename: name, mimeType, dataBase64: photo.dataBase64 } }));
+      const stored = (row("c1").media as { filename: string }).filename;
+      expect(Buffer.byteLength(stored, "utf8"), name).toBeLessThanOrEqual(255);
+      expect(stored, name).not.toContain("\uFFFD");
+      expect(Buffer.from(stored, "utf8").toString("utf8"), name).toBe(stored);
+      expect(stored.endsWith(name.slice(-4)), name).toBe(true);
+    }
+  });
+
+  it("ignores a mediaDropped that is not a string — the text path, unmarked", async () => {
+    for (const mediaDropped of [42, { reason: "x" }, true, ["too_large"]]) {
+      messageWrites = [];
+      existingMessageIds = new Set();
+      const res = await post(inbound({ mediaDropped }));
+      expect(res.status).toBe(200);
+      expect(messageWrites, JSON.stringify(mediaDropped)).toHaveLength(1);
+      expect(row("c1"), JSON.stringify(mediaDropped)).not.toHaveProperty("mediaDropped");
+      expect(row("c1").body).toBe("hi there");
+    }
+  });
+
+  it("files video and document mimes under their own kinds", async () => {
+    for (const [mimeType, kind] of [
+      ["video/mp4", "video"],
+      ["application/pdf", "document"],
+    ] as const) {
+      messageWrites = [];
+      existingMessageIds = new Set();
+      await post(inbound({ media: { ...photo, mimeType } }));
+      expect(row("c1").media, mimeType).toMatchObject({ kind, mimeType });
+    }
   });
 });

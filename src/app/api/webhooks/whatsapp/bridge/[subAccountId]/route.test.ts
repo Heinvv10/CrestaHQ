@@ -56,6 +56,7 @@ function makeSnap(row: { id: string; data: Record<string, unknown> }) {
             exists:
               existingMessageIds.has(`${row.id}/${docId ?? ""}`) ||
               existingMessageIds.has(docId ?? ""),
+            data: () => undefined,
           };
         },
         set: async (data: Record<string, unknown>, opts: unknown) => {
