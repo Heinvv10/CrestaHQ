@@ -155,6 +155,13 @@ describe("isPublicPath — the GBP sync routes", () => {
   });
 });
 
+describe("isPublicPath — snapshot share links", () => {
+  it("keeps the import page and its API behind a session (the token alone is not a login)", () => {
+    expect(isPublicPath("/agency/snapshots/import")).toBe(false);
+    expect(isPublicPath("/api/agency/snapshots/import")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the GBP public reviews feed", () => {
   it("lets any website reach the feed without a session (the opaque id is the credential)", () => {
     expect(isPublicPath("/api/public/gbp/feed/AbCdEfGhIjKlMnOpQrStUvWxYz012345")).toBe(true);

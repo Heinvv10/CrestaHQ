@@ -5,29 +5,16 @@ import { Camera, Layers, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SnapshotList, type SnapshotSummary } from "@/components/agency/snapshot-list";
+import { SnapshotShareDialog } from "@/components/agency/snapshot-share-dialog";
+import { SnapshotSharesList } from "@/components/agency/snapshot-shares-list";
+import type { SnapshotShareSummary } from "@/types/snapshots";
 
 interface SubOption {
   id: string;
   name: string;
   accountNumber?: number;
-}
-
-interface SnapshotSummary {
-  id: string;
-  name: string;
-  description: string;
-  sourceSubAccountId: string | null;
-  createdAt: number | null;
-  counts: {
-    forms: number;
-    messageTemplates: number;
-    products: number;
-    workflows: number;
-    /** Absent on snapshots captured before these were carried. */
-    customFields?: number;
-    /** 1 when the snapshot carries an AI persona, 0 otherwise. */
-    aiProfile?: number;
-  };
 }
 
 const selectClass =
@@ -45,6 +32,9 @@ const selectClass =
 export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [shares, setShares] = useState<SnapshotShareSummary[]>([]);
+  const [sharesLoading, setSharesLoading] = useState(true);
+  const [sharing, setSharing] = useState<SnapshotSummary | null>(null);
 
   const [sourceId, setSourceId] = useState("");
   const [name, setName] = useState("");
@@ -76,9 +66,29 @@ export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
     }
   }, []);
 
+  const loadShares = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agency/snapshots/shares");
+      const data = (await res.json().catch(() => ({}))) as {
+        shares?: SnapshotShareSummary[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? "Failed to load share links.");
+      setShares(data.shares ?? []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load.");
+    } finally {
+      setSharesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadSnapshots();
-  }, [loadSnapshots]);
+    void loadShares();
+  }, [loadSnapshots, loadShares]);
+
+  const mine = snapshots.filter((s) => !s.importedFrom);
+  const imported = snapshots.filter((s) => s.importedFrom);
 
   async function handleCapture() {
     if (capturing) return;
@@ -184,33 +194,50 @@ export function SnapshotsSection({ subs }: { subs: SubOption[] }) {
         </div>
       </div>
 
-      {/* List + apply */}
-      <div className="space-y-2">
-        {loading ? (
-          <div className="h-20 animate-pulse rounded-lg bg-muted/50" />
-        ) : snapshots.length === 0 ? (
-          <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-            No snapshots yet. Capture one above.
-          </p>
-        ) : (
-          snapshots.map((snap) => (
-            <div
-              key={snap.id}
-              className="rounded-lg border bg-background p-4"
-            >
-              <p className="truncate text-sm font-medium">{snap.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {snap.counts.forms} forms · {snap.counts.workflows} workflows ·{" "}
-                {snap.counts.messageTemplates} templates ·{" "}
-                {snap.counts.products} products ·{" "}
-                {snap.counts.customFields ?? 0} custom fields
-                {snap.counts.aiProfile ? " · AI persona" : ""} · from{" "}
-                {subLabel(snap.sourceSubAccountId)}
-              </p>
-            </div>
-          ))
-        )}
-      </div>
+      <Tabs defaultValue="mine">
+        <TabsList>
+          <TabsTrigger value="mine">My snapshots ({mine.length})</TabsTrigger>
+          <TabsTrigger value="imported" data-testid="snapshot-tab-imported">
+            Imported ({imported.length})
+          </TabsTrigger>
+          <TabsTrigger value="shared" data-testid="snapshot-tab-shared">
+            Shared
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="mine" className="mt-2">
+          <SnapshotList
+            variant="mine"
+            snapshots={mine}
+            loading={loading}
+            subLabel={subLabel}
+            onShare={setSharing}
+          />
+        </TabsContent>
+        <TabsContent value="imported" className="mt-2">
+          <SnapshotList
+            variant="imported"
+            snapshots={imported}
+            loading={loading}
+            subLabel={subLabel}
+            onShare={setSharing}
+          />
+        </TabsContent>
+        <TabsContent value="shared" className="mt-2">
+          <SnapshotSharesList
+            shares={shares}
+            loading={sharesLoading}
+            onChanged={loadShares}
+          />
+        </TabsContent>
+      </Tabs>
+
+      <SnapshotShareDialog
+        snapshot={sharing}
+        onOpenChange={(open) => {
+          if (!open) setSharing(null);
+        }}
+        onCreated={() => void loadShares()}
+      />
 
       <p className="mt-3 text-xs text-muted-foreground">
         Apply a snapshot when you{" "}
