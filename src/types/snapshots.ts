@@ -121,11 +121,67 @@ export interface SnapshotDoc {
   name: string;
   description: string;
   version: typeof SNAPSHOT_VERSION;
-  /** The sub-account this snapshot was captured from (provenance only). */
-  sourceSubAccountId: string;
+  /**
+   * The sub-account this snapshot was captured from (provenance only). Null
+   * on an imported copy — the source sub-account belongs to another agency.
+   */
+  sourceSubAccountId: string | null;
   createdByUid: string;
   createdAt: Timestamp | FieldValue | null;
   payload: SnapshotPayload;
+  /** Set only on a copy imported through another agency's share link. */
+  importedFrom?: SnapshotImportedFrom;
+}
+
+/** Provenance of an imported snapshot — the only source ids it may carry. */
+export interface SnapshotImportedFrom {
+  agencyId: string;
+  snapshotId: string;
+  shareId: string;
+  importedAt: Timestamp | FieldValue | null;
+}
+
+/** Link lifetimes an owner can pick when sharing. */
+export const SNAPSHOT_SHARE_EXPIRY_DAYS = [1, 7, 30] as const;
+export type SnapshotShareExpiryDays = (typeof SNAPSHOT_SHARE_EXPIRY_DAYS)[number];
+
+/**
+ * A share link for one snapshot, at
+ * `agencies/{agencyId}/snapshots/{snapshotId}/shares/{shareId}`. Server-only.
+ *
+ * Only the sha256 of the link's token is stored — the raw token exists in the
+ * create response and nowhere else, so a leaked database read cannot be
+ * replayed as an import. `snapshotShareIndex/{tokenHash}` maps the hash back
+ * to this doc so import needs no collection-group query.
+ */
+export interface SnapshotShareDoc {
+  id: string;
+  agencyId: string;
+  snapshotId: string;
+  snapshotName: string;
+  createdByUid: string;
+  tokenHash: string;
+  expiresAt: Timestamp;
+  singleUse: boolean;
+  usedCount: number;
+  revokedAt: Timestamp | null;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
+}
+
+export type SnapshotShareStatus = "active" | "expired" | "revoked" | "used";
+
+/** A share as the owner UI sees it — no token hash, millis timestamps. */
+export interface SnapshotShareSummary {
+  id: string;
+  snapshotId: string;
+  snapshotName: string;
+  expiresAt: number;
+  singleUse: boolean;
+  usedCount: number;
+  revokedAt: number | null;
+  createdAt: number | null;
+  status: SnapshotShareStatus;
 }
 
 /** Returned by applySnapshot + the apply API route. */

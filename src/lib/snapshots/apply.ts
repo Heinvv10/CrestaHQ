@@ -43,7 +43,7 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
  * that a snapshot does NOT carry — so the id would dangle in the target. Null
  * it; draft status means the workflow never runs until the operator fixes it.
  */
-function sanitizeNodes(
+export function sanitizeNodes(
   nodes: Record<string, WorkflowNode> | undefined,
 ): Record<string, WorkflowNode> {
   const out: Record<string, WorkflowNode> = {};

@@ -6,7 +6,9 @@
 | `agencies/{agencyId}` | agency-read | Agency profile + Stripe billing (one per deployment in v1) |
 | `agencies/{agencyId}/agencyMembers/{uid}` | agency-read | Owner / staff list |
 | `agencies/{agencyId}/plans/{planId}` | server-only | Client Billing v1 plan docs (monthly price + feature-gate bundle + Stripe product/price ids). All access via the owner-only `/api/agency/plans` routes |
-| `agencies/{agencyId}/snapshots/{snapshotId}` | server-only | Agency config template — forms/workflows/templates/products/custom-fields/AI-persona payload captured from one sub-account, applied to another. Carries no customer data and no credentials. All access via the owner-only `/api/agency/snapshots` + apply routes |
+| `agencies/{agencyId}/snapshots/{snapshotId}` | server-only | Agency config template — forms/workflows/templates/products/custom-fields/AI-persona payload captured from one sub-account, applied to another. Carries no customer data and no credentials. All access via the owner-only `/api/agency/snapshots` + apply routes. An imported copy carries `importedFrom` `{agencyId, snapshotId, shareId, importedAt}` and `sourceSubAccountId: null` |
+| `agencies/{agencyId}/snapshots/{snapshotId}/shares/{shareId}` | server-only | Snapshot share link: `snapshotName`, `tokenHash` (sha256 hex — the raw token is never stored), `expiresAt`, `singleUse`, `usedCount`, `revokedAt` + tenancy stamps. Via `/api/agency/snapshots/[snapshotId]/shares` and `/api/agency/snapshots/shares` |
+| `snapshotShareIndex/{tokenHash}` | server-only | `{agencyId, snapshotId, shareId, createdByUid, createdAt}` — resolves a presented share token to its share without a collection-group query. Deleted on revoke; read by `POST /api/agency/snapshots/import` |
 | `billingEvents/{id}` | server-only | Client Billing v1 append-only audit trail (plan assigned/switched, comped, activated, dunning transitions) |
 | `subAccounts/{subAccountId}` | members + agency owner | Workspace metadata; reserved fields for Workflow-Recipes Twilio/Resend/booking/sendWindow |
 | `subAccounts/{subAccountId}/subAccountMembers/{uid}` | admins | Per-sub-account membership rows |
