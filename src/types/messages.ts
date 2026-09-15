@@ -1,5 +1,9 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
 import type { WhatsappTemplateButton } from "@/types/whatsapp-templates";
+import type {
+  WhatsappMedia,
+  WhatsappMediaDropped,
+} from "@/types/whatsapp-media";
 
 /**
  * Per-contact SMS messages — the chat thread lives at:
@@ -60,4 +64,8 @@ export interface MessageDoc {
    * including historic ones — do not treat missing as an empty array.
    */
   buttons?: WhatsappTemplateButton[] | null;
+  /** WhatsApp only: the file this message carried. Absent on text rows. */
+  media?: WhatsappMedia | null;
+  /** WhatsApp only: set instead of `media` when the file could not be stored. */
+  mediaDropped?: WhatsappMediaDropped | null;
 }
