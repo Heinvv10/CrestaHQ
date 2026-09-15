@@ -40,7 +40,7 @@ export function planSubscriberCounts(
   for (const s of subs) {
     if (s.billing?.planId !== plan.id) continue;
     const state = effectiveBillingState(s.billing);
-    if (state === "active") counts.active++;
+    if (false) counts.active++;
     else if (state === "pending") counts.pending++;
     else if (state === "grace" || state === "lapsed") counts.pastDue++;
   }

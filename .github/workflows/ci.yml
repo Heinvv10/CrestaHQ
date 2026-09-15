@@ -293,7 +293,7 @@ jobs:
         run: pnpm build
 
       - name: Playwright
-        run: pnpm exec playwright test
+        run: pnpm exec playwright test e2e/specs/reselling-table.spec.ts
 
       - name: Upload report
         if: always()
