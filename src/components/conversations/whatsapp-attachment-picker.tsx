@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Paperclip, X } from "lucide-react";
+import { Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { capabilitiesFor, type WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import { mediaKindForMime } from "@/types/whatsapp-media";
@@ -20,33 +20,48 @@ function humanSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-/**
- * Paperclip + hidden file input for the WhatsApp composers. Renders nothing on
- * a rail whose capabilities say it cannot carry a file (Twilio), and derives
- * its accept-list and size cap from the SAME capability record the rails
- * enforce — so an operator is never offered a file the rail will then refuse
- * after the upload.
- *
- * The check here is a courtesy; the rail decides. A file that passes here and
- * is still refused (Meta's own per-kind caps, say) comes back as a 400 the
- * composer already shows.
- */
-export function WhatsappAttachmentPicker({
-  provider,
-  value,
-  onChange,
-  disabled,
-}: {
-  provider: WhatsAppProviderId;
-  value: ComposerAttachment | null;
-  onChange: (next: ComposerAttachment | null) => void;
-  disabled: boolean;
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const caps = capabilitiesFor(provider);
-  if (!caps.supportsMedia) return null;
+export interface WhatsappAttachmentState {
+  /** Null while nothing is attached, and while a file is still being read. */
+  attachment: ComposerAttachment | null;
+  /** True between picking a file and its bytes being ready. Send waits. */
+  reading: boolean;
+  pick: (file: File) => void;
+  clear: () => void;
+}
 
-  async function pick(file: File) {
+/**
+ * The composer's one attachment, scoped to `resetKey` (contact + channel).
+ *
+ * Reading a file is asynchronous, and both ways of getting that wrong reach a
+ * customer: Send pressed mid-read goes out as the caption alone, and a read
+ * that lands after the operator moved on attaches the file to the NEXT
+ * message — possibly on another channel or to another contact. So `reading`
+ * is exposed for the composer to block Send on, and every read carries a
+ * generation that a newer pick, a clear, or a `resetKey` change invalidates;
+ * a stale result is dropped, never applied.
+ */
+export function useWhatsappAttachment(
+  provider: WhatsAppProviderId | null,
+  resetKey: string,
+): WhatsappAttachmentState {
+  const [state, setState] = useState<{
+    key: string;
+    gen: number;
+    attachment: ComposerAttachment | null;
+    reading: boolean;
+  }>({ key: resetKey, gen: 0, attachment: null, reading: false });
+  const genRef = useRef(0);
+
+  useEffect(() => {
+    genRef.current += 1;
+  }, [resetKey]);
+
+  // A state written under another key is not this composer's attachment.
+  const current = state.key === resetKey ? state : null;
+
+  function pick(file: File) {
+    if (!provider) return;
+    const caps = capabilitiesFor(provider);
     if (!caps.mediaMimeTypes.includes(file.type)) {
       toast.error(`${file.name}: this file type cannot be sent on WhatsApp here.`);
       return;
@@ -59,15 +74,67 @@ export function WhatsappAttachmentPicker({
       );
       return;
     }
-    const buf = new Uint8Array(await file.arrayBuffer());
-    // Chunked: String.fromCharCode(...buf) overflows the argument list on a
-    // file of any real size.
-    let binary = "";
-    for (let i = 0; i < buf.length; i += 0x8000) {
-      binary += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-    }
-    onChange({ filename: file.name, contentType: file.type, dataBase64: btoa(binary) });
+    const gen = ++genRef.current;
+    const key = resetKey;
+    setState({ key, gen, attachment: null, reading: true });
+    const settle = (attachment: ComposerAttachment | null) =>
+      setState((s) => (s.gen === gen ? { ...s, attachment, reading: false } : s));
+    const reader = new FileReader();
+    reader.onload = () => {
+      // Stale: a newer pick, a clear, or a contact/channel change since.
+      if (genRef.current !== gen) {
+        settle(null);
+        return;
+      }
+      const url = typeof reader.result === "string" ? reader.result : "";
+      settle({
+        filename: file.name,
+        contentType: file.type,
+        dataBase64: url.slice(url.indexOf(",") + 1),
+      });
+    };
+    reader.onerror = () => {
+      settle(null);
+      if (genRef.current === gen) toast.error(`Couldn't read ${file.name}.`);
+    };
+    reader.readAsDataURL(file);
   }
+
+  function clear() {
+    genRef.current += 1;
+    setState({ key: resetKey, gen: genRef.current, attachment: null, reading: false });
+  }
+
+  return {
+    attachment: current?.attachment ?? null,
+    reading: current?.reading ?? false,
+    pick,
+    clear,
+  };
+}
+
+/**
+ * Paperclip + hidden file input for the WhatsApp composers. Renders nothing on
+ * a rail whose capabilities say it cannot carry a file (Twilio), and derives
+ * its accept-list and per-kind size caps from the SAME capability record the
+ * rails enforce — so an operator is never offered a file the rail will then
+ * refuse after the upload.
+ *
+ * The check here is a courtesy; the rail decides.
+ */
+export function WhatsappAttachmentPicker({
+  provider,
+  state,
+  disabled,
+}: {
+  provider: WhatsAppProviderId;
+  state: WhatsappAttachmentState;
+  disabled: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const caps = capabilitiesFor(provider);
+  if (!caps.supportsMedia) return null;
+  const { attachment, reading } = state;
 
   return (
     <>
@@ -75,25 +142,31 @@ export function WhatsappAttachmentPicker({
         ref={inputRef}
         type="file"
         hidden
+        data-testid="whatsapp-attachment-input"
         accept={caps.mediaMimeTypes.join(",")}
         onChange={(e) => {
           const file = e.target.files?.[0];
           // Reset so picking the same file again re-fires onChange.
           e.target.value = "";
-          if (file) void pick(file);
+          if (file) state.pick(file);
         }}
       />
-      {value ? (
+      {reading ? (
+        <span className="text-muted-foreground inline-flex items-center gap-1 px-2 py-1 text-xs">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Reading file…
+        </span>
+      ) : attachment ? (
         <span className="bg-muted inline-flex max-w-[16rem] items-center gap-1 rounded-md px-2 py-1 text-xs">
           <Paperclip className="h-3 w-3 shrink-0" />
-          <span className="truncate" title={value.filename}>
-            {value.filename}
+          <span className="truncate" title={attachment.filename}>
+            {attachment.filename}
           </span>
           <button
             type="button"
             aria-label="Remove attachment"
             className="ml-1 shrink-0 opacity-70 hover:opacity-100"
-            onClick={() => onChange(null)}
+            onClick={state.clear}
             disabled={disabled}
           >
             <X className="h-3 w-3" />
@@ -114,4 +187,22 @@ export function WhatsappAttachmentPicker({
       )}
     </>
   );
+}
+
+/**
+ * Why Send is blocked by the attachment, or null. Shared by both composers so
+ * the caption rule reads the same capability the rail enforces.
+ */
+export function attachmentSendBlock(
+  provider: WhatsAppProviderId | null,
+  state: WhatsappAttachmentState,
+  body: string,
+): string | null {
+  if (state.reading) return "Reading file…";
+  if (!state.attachment || !provider) return null;
+  const max = capabilitiesFor(provider).maxMediaCaptionChars;
+  const len = body.trim().length;
+  return len > max
+    ? `With a file attached the message is its caption: ${len} of ${max} characters allowed.`
+    : null;
 }
