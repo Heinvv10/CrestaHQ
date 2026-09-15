@@ -48,7 +48,23 @@ Test 2 (storage.rules cross-tenant):
 | collaborator upload → 403 | `storage.rules` `allow create: if (isOwner() \|\| isMember())` (drop the admin role check) |
 | admin upload → 200 | `storage.rules` `isAdmin()`: compare `member().role == "owner"` |
 
-Note: the storage rules must be DEPLOYED for test 2 (and for the owner upload
-in test 1) — `firebase deploy --only storage,firestore:rules`. The first deploy
-of rules that call `firestore.get()` asks to grant the Storage rules service
-agent read access to Firestore; without that grant every read/create is denied.
+## Deploy prerequisite (proven in CI, 2026-09-15)
+
+The storage rules must be DEPLOYED for test 2 and for the owner upload in
+test 1 — `firebase deploy --only storage,firestore:rules`. On first run CI
+failed every media upload with 403 despite correct claims: the rules'
+cross-service `firestore.get()` needs `roles/firebaserules.firestoreServiceAgent`
+granted to the **Storage** service agent
+`service-<projectNumber>@gcp-sa-firebasestorage.iam.gserviceaccount.com` (NOT
+the firebase-rules agent). An interactive `firebase deploy` offers the grant;
+`--non-interactive` skips it silently (firebase-tools `rulesDeploy.js`
+`checkStorageRulesIamPermissions` returns early). Fixed on crestahq-app with:
+
+```bash
+gcloud projects add-iam-policy-binding crestahq-app \
+  --member="serviceAccount:service-<projectNumber>@gcp-sa-firebasestorage.iam.gserviceaccount.com" \
+  --role="roles/firebaserules.firestoreServiceAgent"
+```
+
+Propagation took about two minutes. Documented for buyers in SETUP.md
+(Phase 3 → "Storage rules + the Media Library IAM grant").
