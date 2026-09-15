@@ -315,17 +315,55 @@ export async function POST(request: Request) {
         whatsappOptedOut: nextOptedOut,
         updatedAt: FieldValue.serverTimestamp(),
       });
-      batch.set(docSnap.ref.collection("activities").doc(), {
+      // Deterministic id, keyed on the message this opt-out came from, so a
+      // redelivery overwrites its own activity row instead of appending a
+      // second one. A generated id made this write non-idempotent, which is
+      // what would stop the whole branch from being safe to re-run — and
+      // re-running it on every delivery is exactly what the guard above
+      // commits us to. No fallback for a missing id: `parseCloudInbound`
+      // refuses a payload without a wamid, so there is no such state here.
+      batch.set(
+        docSnap.ref
+          .collection("activities")
+          .doc(`whatsapp-optout-${inbound.providerMessageId}`),
+        {
         type: "automation_step_skipped",
         content: nextOptedOut
           ? `WhatsApp opt-out (${word}) received from ${from}.`
           : `WhatsApp opt-in (${word}) received from ${from}.`,
-        createdBy: "whatsapp_cloud_inbound",
-        meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
-        createdAt: FieldValue.serverTimestamp(),
-      });
+          createdBy: "whatsapp_cloud_inbound",
+          meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
+          createdAt: FieldValue.serverTimestamp(),
+        },
+      );
     }
-    await batch.commit();
+    try {
+      await batch.commit();
+    } catch (err) {
+      // The ONE place this handler deliberately answers non-2xx, and it is
+      // stated rather than accidental.
+      //
+      // Everything else here acks 200 and degrades to a logged warning,
+      // because Meta retries anything >= 300 and eventually disables the
+      // subscription outright — which would stop ALL inbound WhatsApp for
+      // this WABA, not just the message that failed. Here the opposite
+      // holds: the customer asked to stop being messaged and we did not
+      // record it, so we want the retry — and the retry now honours it,
+      // because nothing above returns early on a redelivery and the
+      // activity row above is keyed deterministically.
+      //
+      // 503 rather than letting the throw become a 500: same retry from
+      // Meta's side, but it names the condition instead of surfacing as an
+      // unhandled exception that reads like a bug in the parser.
+      console.error(
+        `[whatsapp-cloud] opt-out commit failed (sa=${route.subAccountId}) — asking Meta to retry`,
+        err,
+      );
+      return NextResponse.json(
+        { ok: false, error: "optout_not_recorded" },
+        { status: 503 },
+      );
+    }
     return ok({ ok: true, persisted: true, optedOut: nextOptedOut });
   }
 

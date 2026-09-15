@@ -20,6 +20,12 @@ const m = vi.hoisted(() => ({
   aiCalls: [] as Array<Record<string, unknown>>,
   contactUpdates: [] as Array<Record<string, unknown>>,
   optOutCommits: 0,
+  /** Activity rows the opt-out batch committed, as `${contactId}/${docId}`. */
+  optOutActivities: [] as string[],
+  /** Contacts the phone-number query resolves to. One number can match several. */
+  contactIds: ["c_1"],
+  /** Set to make the opt-out batch commit fail, as contention would. */
+  commitThrows: false,
 }));
 
 vi.mock("firebase-admin/firestore", () => ({
@@ -64,8 +70,11 @@ function contactRef(id: string) {
   return {
     id,
     collection: (name: string) => ({
-      doc: (docId: string) => ({
+      // `docId` is undefined when the route calls `.doc()` with no argument —
+      // which is exactly the non-idempotent shape the opt-out test forbids.
+      doc: (docId?: string) => ({
         id: docId,
+        contactId: id,
         get: async () => ({ exists: m.stored.has(`${id}/${docId}`) }),
         set: async () => {
           if (name === "whatsappMessages") {
@@ -107,29 +116,36 @@ vi.mock("@/lib/firebase/admin", () => ({
         limit: () => q,
         get: async () => ({
           empty: false,
-          docs: [
-            {
-              id: "c_1",
-              ref: contactRef("c_1"),
-              data: () => ({ name: "Thandi", phone: "+27821234567" }),
-            },
-          ],
+          docs: m.contactIds.map((id) => ({
+            id,
+            ref: contactRef(id),
+            data: () => ({ name: "Thandi", phone: "+27821234567" }),
+          })),
         }),
         doc: (id: string) => contactRef(id),
       };
       return q;
     },
-    // A batch is atomic: buffer, and only record on a successful commit.
+    // A batch is atomic: nothing it buffers is visible until commit succeeds.
+    // Recording at call time would report writes that never landed — and the
+    // whole point of the 503 test is what survives a commit that throws.
     batch: () => {
-      const pending: Array<Record<string, unknown>> = [];
+      const pendingUpdates: Array<Record<string, unknown>> = [];
+      const pendingSets: string[] = [];
       return {
         update: (_ref: unknown, data: Record<string, unknown>) => {
-          pending.push(data);
+          pendingUpdates.push(data);
         },
-        set: () => {},
+        set: (ref: { id?: string; contactId?: string }) => {
+          // A missing id is a GENERATED id, and a generated id is what makes
+          // this write non-idempotent. Recorded as such rather than collapsed.
+          pendingSets.push(`${ref.contactId}/${ref.id ?? "GENERATED"}`);
+        },
         commit: async () => {
+          if (m.commitThrows) throw new Error("contention");
           m.optOutCommits += 1;
-          m.contactUpdates.push(...pending);
+          m.contactUpdates.push(...pendingUpdates);
+          m.optOutActivities.push(...pendingSets);
         },
       };
     },
@@ -181,6 +197,9 @@ beforeEach(() => {
   m.aiCalls.length = 0;
   m.contactUpdates.length = 0;
   m.optOutCommits = 0;
+  m.optOutActivities.length = 0;
+  m.contactIds = ["c_1"];
+  m.commitThrows = false;
 });
 
 describe("cloud inbound suppresses only the non-idempotent effects on a redelivery", () => {
@@ -210,6 +229,57 @@ describe("cloud inbound suppresses only the non-idempotent effects on a redelive
     expect(m.contactUpdates.every((u) => u.whatsappOptedOut === true)).toBe(true);
     // And still no second AI reply on the STOP path.
     expect(m.aiCalls).toHaveLength(0);
+  });
+
+  it("asks EVERY matched contact, not just the first", async () => {
+    // One phone number can match several contacts, and the row is written to
+    // all of them. Consulting only `contactDocs[0]` makes the answer depend on
+    // Firestore's `__name__` ordering: a contact created between two
+    // deliveries with a smaller id becomes the new `[0]`, has no row, and the
+    // message reads as fresh — re-running the AI auto-reply and sending the
+    // customer a second real message.
+    //
+    // So: two contacts, and only the SECOND holds the row. `some` says
+    // redelivery; `seen[0].exists` and `seen.every(...)` both say fresh.
+    m.contactIds = ["c_1", "c_2"];
+    m.stored.add("c_2/wamid.DUP");
+
+    expect((await post(payload())).status).toBe(200);
+
+    expect(m.conversationUpserts).toHaveLength(0);
+    expect(m.inboundActivities).toHaveLength(0);
+    expect(m.aiCalls).toHaveLength(0);
+    // The row write still fans out to BOTH, so the contact that missed it
+    // earlier is filled in regardless.
+    expect(m.messageSets).toEqual(["c_1/wamid.DUP", "c_2/wamid.DUP"]);
+  });
+
+  it("writes the opt-out activity row once across a redelivered STOP", async () => {
+    // Keyed on the message the opt-out came from. A generated id would append
+    // a second row on every retry, and re-running the branch on every delivery
+    // is precisely what the guard above commits this route to.
+    await post(payload({ body: "STOP" }));
+    await post(payload({ body: "STOP" }));
+
+    expect(m.optOutActivities).toEqual([
+      "c_1/whatsapp-optout-wamid.DUP",
+      "c_1/whatsapp-optout-wamid.DUP",
+    ]);
+    expect(new Set(m.optOutActivities).size).toBe(1);
+  });
+
+  it("answers a stated 503 when the opt-out commit fails, never a 500", async () => {
+    // The one deliberate non-2xx. Meta disables a subscription that keeps
+    // failing, which would stop ALL inbound WhatsApp for this WABA — so every
+    // other path acks 200. Here we want the retry, and it must be named
+    // rather than surfacing as an unhandled throw.
+    m.commitThrows = true;
+
+    const res = await post(payload({ body: "STOP" }));
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ ok: false, error: "optout_not_recorded" });
+    expect(m.contactUpdates).toHaveLength(0);
   });
 
   it("treats a genuinely new wamid as a first delivery", async () => {
