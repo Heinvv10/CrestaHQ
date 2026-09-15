@@ -94,8 +94,10 @@ test("saves a workflow and an email template to the library, pushes both to the 
   try {
     // --- save the workflow from the sub-account's workflow list ---------
     await page.goto(`/sa/${primary}/workflows`);
-    const workflowRow = page.locator("div").filter({ hasText: WORKFLOW_NAME }).last();
-    await expect(page.getByText(WORKFLOW_NAME)).toBeVisible({ timeout: 30_000 });
+    const workflowRow = page.locator(
+      `[data-testid="workflow-row"][data-name="${WORKFLOW_NAME}"]`,
+    );
+    await expect(workflowRow).toBeVisible({ timeout: 30_000 });
     await workflowRow.getByTestId("save-to-library").click();
     await page.getByTestId("save-to-library-submit").click();
     await expect(page.getByText("Saved to library")).toBeVisible({ timeout: 30_000 });

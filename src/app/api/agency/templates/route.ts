@@ -14,6 +14,8 @@ import {
   type AgencyTemplateSummary,
 } from "@/types/templates";
 
+const ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+
 /** GET — list this agency's library templates. Summaries only, no payload. */
 export async function GET(request: Request) {
   const caller = await requireAgencyOwnerAny(request);
@@ -61,7 +63,9 @@ export async function POST(request: Request) {
   const entityId =
     typeof body.entityId === "string" ? body.entityId.trim() : "";
   const kind = body.kind as AgencyTemplateKind;
-  if (!subAccountId || !entityId) {
+  // Doc-id shape, not just presence: a "/" would make db.doc() throw a 500
+  // instead of the 404 the guards below would return.
+  if (!ID_SHAPE.test(subAccountId) || !ID_SHAPE.test(entityId)) {
     return NextResponse.json(
       { error: "subAccountId and entityId are required." },
       { status: 400 },

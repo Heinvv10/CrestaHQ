@@ -147,6 +147,9 @@ describe("POST /api/agency/templates", () => {
 
   it.each([
     [{ kind: "workflow", entityId: "w1" }, "subAccountId"],
+    [{ subAccountId: "sa1/x", kind: "workflow", entityId: "w1" }, "subAccountId"],
+    [{ subAccountId: "sa1", kind: "workflow", entityId: "a/b" }, "entityId"],
+    [{ subAccountId: "sa1", kind: "workflow", entityId: "w".repeat(65) }, "entityId"],
     [{ subAccountId: "sa1", kind: "sms", entityId: "w1" }, "kind"],
     [{ subAccountId: "sa1", kind: "workflow", entityId: "w1", name: "x".repeat(81) }, "Name"],
     [{ subAccountId: "sa1", kind: "workflow", entityId: "w1", description: "x".repeat(301) }, "Description"],

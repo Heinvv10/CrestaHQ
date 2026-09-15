@@ -27,9 +27,12 @@ there is no second stripping or remapping implementation.
   apply's `formId` remap keeps the pair linked on the target — the UI says
   "includes its trigger form".
 - **Push** ([src/lib/templates/push.ts](../../src/lib/templates/push.ts)) —
-  `applySnapshot` unchanged per target: create-only, fresh ids, workflows
-  arrive as **drafts**, source-scoped references (`pipelineId`,
-  `bookingPageSlug`, WhatsApp template ids, assignee uids) nulled. Each target
+  `applySnapshot` unchanged per target: create-only, fresh ids, pushed
+  workflows arrive as **drafts with outbound destinations reset** — source-
+  scoped references (`pipelineId`, `bookingPageSlug`, WhatsApp template ids,
+  assignee uids) are nulled, and once PR #154's `sanitizeNodes` change lands
+  so are notify recipients and webhook URLs, so a copy can never message the
+  source client's team or endpoints. Each target
   is re-anchored to the caller's agency; a foreign id is a per-target failure,
   not a thrown error, so one bad id never hides the rest. Results:
   `[{ subAccountId, ok, error?, created: { forms, messageTemplates, workflows } }]`.

@@ -190,7 +190,12 @@ export function WorkflowsList({ saId }: { saId: string }) {
       ) : (
         <div className="divide-y overflow-hidden rounded-xl border bg-card">
           {rows.map((w) => (
-            <div key={w.id} className="flex items-center gap-3 p-4 hover:bg-muted/40">
+            <div
+              key={w.id}
+              data-testid="workflow-row"
+              data-name={w.name}
+              className="flex items-center gap-3 p-4 hover:bg-muted/40"
+            >
               <Link href={`/sa/${saId}/workflows/${w.id}`} className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate font-medium">{w.name}</span>
