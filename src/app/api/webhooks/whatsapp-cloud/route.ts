@@ -200,6 +200,43 @@ export async function POST(request: Request) {
     }
   }
 
+  // A redelivery must stop HERE, not merely write the same row twice.
+  //
+  // Meta retries a webhook it considers failed. The row below is idempotent on
+  // its own doc id, but nothing after it is: the conversation upsert bumps the
+  // thread again, and the AI auto-reply sends another real WhatsApp message to
+  // a real person and spends another LLM call. This is the same defect the
+  // bridge route was already burned by, and this is its guard, ported.
+  //
+  // A redelivery suppresses the two effects that are NOT idempotent, and
+  // nothing else. It deliberately does not return early.
+  //
+  // Returning early was wrong in a way that only shows up on the unhappy path:
+  // if a first delivery wrote the message row and then failed before the
+  // opt-out flip, Meta would retry, the retry would be swallowed as a
+  // duplicate, and the customer's STOP would be dropped permanently. Honouring
+  // an opt-out is a POPIA obligation, not a best effort, so the only safe
+  // design is one where every delivery re-runs everything idempotent and skips
+  // only what is not.
+  //
+  // Asked of EVERY matched contact, not just the first. One phone number can
+  // match several contacts and the row is written to all of them; consulting
+  // only `contactDocs[0]` would make the answer depend on Firestore's
+  // `__name__` ordering, so a contact created between two deliveries with a
+  // smaller id becomes the new `[0]`, has no row, and the message reads as
+  // fresh. `some` is the right quantifier because the question is "have we
+  // handled this message before", and one stored row answers yes; the row
+  // write below still fans out to all of them and merges.
+  let isRedelivery = false;
+  if (contactDocs.length > 0) {
+    const seen = await Promise.all(
+      contactDocs.map((d) =>
+        d.ref.collection("whatsappMessages").doc(inbound.providerMessageId).get(),
+      ),
+    );
+    isRedelivery = seen.some((s) => s.exists);
+  }
+
   // Message row first, so it captures what the customer actually sent even
   // when that word is STOP. Doc id is Meta's wamid, which makes a webhook
   // retry idempotent the same way the Twilio MessageSid does.
@@ -235,35 +272,42 @@ export async function POST(request: Request) {
     console.warn("[whatsapp-cloud] message-row write failed", err);
   }
 
-  await Promise.all(
-    contactDocs.map((d) => {
-      const cdata = d.data() as { name?: string; phone?: string } | undefined;
-      return upsertConversationForMessage({
-        contactId: d.id,
-        subAccountId: route.subAccountId,
-        agencyId: route.agencyId,
-        contactName: cdata?.name ?? "",
-        contactPhone: cdata?.phone ?? from,
-        channel: "whatsapp",
-        direction: "inbound",
-        body: inbound.text,
-        buttonTap: inbound.buttonPayload !== null,
-      });
-    }),
-  );
-  await Promise.all(
-    contactDocs.map((d) =>
-      writeInboundMessageActivity(db, {
-        contactId: d.id,
-        channel: "whatsapp",
-        preview: inbound.text,
-        messageId: inbound.providerMessageId,
-        agencyId: route.agencyId,
-        subAccountId: route.subAccountId,
+  // Skipped on a redelivery: the row above already carries this message, and
+  // re-upserting only re-bumps the thread to the top of the inbox.
+  if (!isRedelivery) {
+    await Promise.all(
+      contactDocs.map((d) => {
+        const cdata = d.data() as { name?: string; phone?: string } | undefined;
+        return upsertConversationForMessage({
+          contactId: d.id,
+          subAccountId: route.subAccountId,
+          agencyId: route.agencyId,
+          contactName: cdata?.name ?? "",
+          contactPhone: cdata?.phone ?? from,
+          channel: "whatsapp",
+          direction: "inbound",
+          body: inbound.text,
+          buttonTap: inbound.buttonPayload !== null,
+        });
       }),
-    ),
-  );
+    );
+    await Promise.all(
+      contactDocs.map((d) =>
+        writeInboundMessageActivity(db, {
+          contactId: d.id,
+          channel: "whatsapp",
+          preview: inbound.text,
+          messageId: inbound.providerMessageId,
+          agencyId: route.agencyId,
+          subAccountId: route.subAccountId,
+        }),
+      ),
+    );
+  }
 
+  // Runs on EVERY delivery, redelivery included. An opt-out is a POPIA
+  // obligation, so the one thing this handler must never do is drop a STOP
+  // because it thinks it has seen the message before.
   if (nextOptedOut !== null) {
     const batch = db.batch();
     for (const docSnap of contactDocs) {
@@ -285,7 +329,10 @@ export async function POST(request: Request) {
     return ok({ ok: true, persisted: true, optedOut: nextOptedOut });
   }
 
-  if (contactDocs.length > 0 && aiIsConfigured()) {
+  // Gated on redelivery: this sends a real WhatsApp message to a real person
+  // and spends an LLM call, so it is the effect a replayed request must never
+  // repeat. It is also the last step, so skipping it strands nothing.
+  if (!isRedelivery && contactDocs.length > 0 && aiIsConfigured()) {
     try {
       const agent = await resolveAgent(route.subAccountId, "whatsapp");
       if (agent?.effective.enabled) {
