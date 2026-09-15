@@ -5,7 +5,7 @@ import { withMedia } from "@/lib/media/route-support";
 import { deleteMediaFolder, updateMediaFolder } from "@/lib/media/service";
 
 /**
- * PATCH  — `{ name }` renames, `{ parentId }` moves (never into itself).
+ * PATCH  — `{ name }` renames.
  * DELETE — refused with 409 while the folder holds files or sub-folders.
  */
 

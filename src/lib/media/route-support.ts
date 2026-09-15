@@ -1,14 +1,15 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { MediaError } from "./service";
 
 /**
- * Prologue shared by every `/api/sub-accounts/[id]/media/*` route: any
- * active member (or the agency owner) may manage the library; the body is
- * parsed once; a `MediaError` becomes its status, anything else propagates.
+ * Prologue shared by every `/api/sub-accounts/[id]/media/*` route: only a
+ * sub-account admin (or the agency owner) may change the library — members
+ * read it through Firestore rules, like customFields. The body is parsed
+ * once; a `MediaError` becomes its status, anything else propagates.
  */
 
 export interface MediaRouteContext {
@@ -23,7 +24,7 @@ export async function withMedia(
   subAccountId: string,
   fn: (ctx: MediaRouteContext) => Promise<NextResponse>,
 ): Promise<NextResponse> {
-  const access = await requireSubAccountMember(request, subAccountId);
+  const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
   let body: Record<string, unknown> = {};

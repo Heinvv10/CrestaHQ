@@ -66,8 +66,8 @@ export function isOwnedStoragePath(
   return fileName.length > 0 && !fileName.includes("/") && fileName !== "..";
 }
 
-/** A Firebase token URL for exactly this object, nothing else. */
-function isDownloadUrlFor(url: unknown, storagePath: string): url is string {
+/** A Firebase token URL for exactly this object in OUR bucket, nothing else. */
+function isDownloadUrlFor(url: unknown, storagePath: string, bucketName: string): url is string {
   if (typeof url !== "string") return false;
   let parsed: URL;
   try {
@@ -77,9 +77,14 @@ function isDownloadUrlFor(url: unknown, storagePath: string): url is string {
   }
   return (
     parsed.origin === "https://firebasestorage.googleapis.com" &&
-    parsed.pathname.endsWith(`/o/${encodeURIComponent(storagePath)}`) &&
+    parsed.pathname === `/v0/b/${bucketName}/o/${encodeURIComponent(storagePath)}` &&
     parsed.searchParams.get("alt") === "media"
   );
+}
+
+/** A route param that cannot name a doc is a 404, not a Firestore path. */
+function requireParamId(id: string, label: string): void {
+  if (!MEDIA_ID_RE.test(id)) throw new MediaError(404, `${label} not found`);
 }
 
 const mediaCol = (sa: string) => getAdminDb().collection(`subAccounts/${sa}/media`);
@@ -115,7 +120,8 @@ export async function createMediaAsset(
     throw new MediaError(400, "storagePath is outside this upload's prefix.");
   }
   const storagePath = body.storagePath;
-  if (!isDownloadUrlFor(body.downloadUrl, storagePath)) {
+  const bucket = getAdminStorage().bucket();
+  if (!isDownloadUrlFor(body.downloadUrl, storagePath, bucket.name)) {
     throw new MediaError(400, "downloadUrl does not point at this object.");
   }
   const name = requireName(body.name);
@@ -127,7 +133,7 @@ export async function createMediaAsset(
     throw new MediaError(409, "This upload is already registered.");
   }
 
-  const file = getAdminStorage().bucket().file(storagePath);
+  const file = bucket.file(storagePath);
   const [exists] = await file.exists();
   if (!exists) throw new MediaError(404, "Uploaded file not found in storage.");
   const [meta] = await file.getMetadata();
@@ -164,6 +170,7 @@ export async function updateMediaAsset(
   mediaId: string,
   body: Record<string, unknown>,
 ): Promise<void> {
+  requireParamId(mediaId, "File");
   const ref = mediaCol(subAccountId).doc(mediaId);
   if (!(await ref.get()).exists) throw new MediaError(404, "File not found");
   const update: Record<string, unknown> = {
@@ -183,6 +190,7 @@ export async function deleteMediaAsset(
   subAccountId: string,
   mediaId: string,
 ): Promise<void> {
+  requireParamId(mediaId, "File");
   const ref = mediaCol(subAccountId).doc(mediaId);
   const snap = await ref.get();
   if (!snap.exists) throw new MediaError(404, "File not found");
@@ -216,39 +224,17 @@ export async function createMediaFolder(input: CreateMediaInput): Promise<string
   return ref.id;
 }
 
-/** Walk up from `startId`; true when `target` is on the chain. */
-async function isAncestorOrSelf(
-  sa: string,
-  startId: string,
-  target: string,
-): Promise<boolean> {
-  let cursor: string | null = startId;
-  for (let hops = 0; cursor && hops < 50; hops++) {
-    if (cursor === target) return true;
-    const snap = await folderCol(sa).doc(cursor).get();
-    cursor = snap.exists ? ((snap.data() as MediaFolderDoc).parentId ?? null) : null;
-  }
-  return false;
-}
-
 export async function updateMediaFolder(
   subAccountId: string,
   folderId: string,
   body: Record<string, unknown>,
 ): Promise<void> {
+  requireParamId(folderId, "Folder");
   await requireFolder(subAccountId, folderId);
-  const update: Record<string, unknown> = {
+  await folderCol(subAccountId).doc(folderId).update({
+    name: requireName(body.name),
     updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (body.name !== undefined) update.name = requireName(body.name);
-  if (body.parentId !== undefined) {
-    const parentId = optionalId(body.parentId, "parentId");
-    if (parentId && (await isAncestorOrSelf(subAccountId, parentId, folderId))) {
-      throw new MediaError(400, "A folder cannot be moved into itself.");
-    }
-    update.parentId = parentId;
-  }
-  await folderCol(subAccountId).doc(folderId).update(update);
+  });
 }
 
 /** Refuses (409) while the folder still holds files or sub-folders. */
@@ -256,6 +242,7 @@ export async function deleteMediaFolder(
   subAccountId: string,
   folderId: string,
 ): Promise<void> {
+  requireParamId(folderId, "Folder");
   await requireFolder(subAccountId, folderId);
   const [files, children] = await Promise.all([
     mediaCol(subAccountId).where("folderId", "==", folderId).limit(1).get(),
