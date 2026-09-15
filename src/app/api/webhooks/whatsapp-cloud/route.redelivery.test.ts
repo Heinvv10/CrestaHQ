@@ -213,8 +213,14 @@ describe("cloud inbound suppresses only the non-idempotent effects on a redelive
 
     // Not idempotent: each of these bumps the inbox or spends a real send.
     expect(m.conversationUpserts).toHaveLength(1);
-    expect(m.inboundActivities).toEqual(["c_1/wamid.DUP"]);
     expect(m.aiCalls).toHaveLength(1);
+
+    // Idempotent (deterministic doc id, merge) — so re-run on every delivery.
+    // Gating it would buy nothing and could lose the row for good: a first
+    // delivery that died between the message row and this call leaves
+    // `isRedelivery` true on every retry, and a gated write is never tried
+    // again. Re-running is how a retry self-heals.
+    expect(m.inboundActivities).toEqual(["c_1/wamid.DUP", "c_1/wamid.DUP"]);
   });
 
   it("honours a redelivered STOP instead of swallowing it as a duplicate", async () => {
@@ -247,11 +253,11 @@ describe("cloud inbound suppresses only the non-idempotent effects on a redelive
     expect((await post(payload())).status).toBe(200);
 
     expect(m.conversationUpserts).toHaveLength(0);
-    expect(m.inboundActivities).toHaveLength(0);
     expect(m.aiCalls).toHaveLength(0);
-    // The row write still fans out to BOTH, so the contact that missed it
-    // earlier is filled in regardless.
+    // The idempotent writes still fan out to BOTH, so the contact that missed
+    // them earlier is filled in regardless.
     expect(m.messageSets).toEqual(["c_1/wamid.DUP", "c_2/wamid.DUP"]);
+    expect(m.inboundActivities).toEqual(["c_1/wamid.DUP", "c_2/wamid.DUP"]);
   });
 
   it("writes the opt-out activity row once across a redelivered STOP", async () => {

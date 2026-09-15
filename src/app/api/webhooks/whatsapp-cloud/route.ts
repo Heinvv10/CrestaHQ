@@ -272,8 +272,9 @@ export async function POST(request: Request) {
     console.warn("[whatsapp-cloud] message-row write failed", err);
   }
 
-  // Skipped on a redelivery: the row above already carries this message, and
-  // re-upserting only re-bumps the thread to the top of the inbox.
+  // Skipped on a redelivery, and the ONLY thing here that is: the upsert
+  // increments `unreadCount`, emits a webhook event and resumes waiting
+  // workflow runs, none of which converge on a second call.
   if (!isRedelivery) {
     await Promise.all(
       contactDocs.map((d) => {
@@ -291,19 +292,27 @@ export async function POST(request: Request) {
         });
       }),
     );
-    await Promise.all(
-      contactDocs.map((d) =>
-        writeInboundMessageActivity(db, {
-          contactId: d.id,
-          channel: "whatsapp",
-          preview: inbound.text,
-          messageId: inbound.providerMessageId,
-          agencyId: route.agencyId,
-          subAccountId: route.subAccountId,
-        }),
-      ),
-    );
   }
+
+  // Runs on EVERY delivery, redelivery included. This is idempotent — it keys
+  // the row `inbound_{channel}_{messageId}` and merges — so re-running it is a
+  // no-op overwrite, and gating it would buy nothing while risking the row
+  // outright: a first delivery that wrote the message row and then died before
+  // this call leaves `isRedelivery` true forever after, and a gated write
+  // would never be attempted again. Re-run everything idempotent; skip only
+  // what is not.
+  await Promise.all(
+    contactDocs.map((d) =>
+      writeInboundMessageActivity(db, {
+        contactId: d.id,
+        channel: "whatsapp",
+        preview: inbound.text,
+        messageId: inbound.providerMessageId,
+        agencyId: route.agencyId,
+        subAccountId: route.subAccountId,
+      }),
+    ),
+  );
 
   // Runs on EVERY delivery, redelivery included. An opt-out is a POPIA
   // obligation, so the one thing this handler must never do is drop a STOP
@@ -327,10 +336,10 @@ export async function POST(request: Request) {
           .collection("activities")
           .doc(`whatsapp-optout-${inbound.providerMessageId}`),
         {
-        type: "automation_step_skipped",
-        content: nextOptedOut
-          ? `WhatsApp opt-out (${word}) received from ${from}.`
-          : `WhatsApp opt-in (${word}) received from ${from}.`,
+          type: "automation_step_skipped",
+          content: nextOptedOut
+            ? `WhatsApp opt-out (${word}) received from ${from}.`
+            : `WhatsApp opt-in (${word}) received from ${from}.`,
           createdBy: "whatsapp_cloud_inbound",
           meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
           createdAt: FieldValue.serverTimestamp(),
