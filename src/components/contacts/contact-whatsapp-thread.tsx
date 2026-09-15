@@ -22,6 +22,10 @@ import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { MessageDoc } from "@/types/messages";
 import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
+import {
+  WhatsappAttachmentPicker,
+  type ComposerAttachment,
+} from "@/components/conversations/whatsapp-attachment-picker";
 import { whatsappSenderNumber } from "@/lib/comms/whatsapp/sender-configured";
 import {
   capabilitiesFor,
@@ -45,6 +49,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   const [messages, setMessages] = useState<MessageDoc[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [body, setBody] = useState("");
+  const [attachment, setAttachment] = useState<ComposerAttachment | null>(null);
   const [sending, setSending] = useState(false);
   const [templateMode, setTemplateMode] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -119,9 +124,8 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   // would disable the composer and tell the operator to use a template that
   // rail has no way to send. The send route makes the real decision per rail;
   // this only decides what to grey out.
-  const railCaps = capabilitiesFor(
-    resolveWhatsAppProviderId(subAccount?.whatsappProvider),
-  );
+  const railProvider = resolveWhatsAppProviderId(subAccount?.whatsappProvider);
+  const railCaps = capabilitiesFor(railProvider);
   const railEnforcesWindow = railCaps.enforcesWindow;
   const railSupportsTemplates = railCaps.supportsTemplates;
   const windowBlocks = railEnforcesWindow && !windowOpen;
@@ -138,7 +142,11 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
       const res = await fetch("/api/comms/whatsapp/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ contactId: contact.id, body: trimmed }),
+        body: JSON.stringify({
+          contactId: contact.id,
+          body: trimmed,
+          ...(attachment ? { attachment } : {}),
+        }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -148,6 +156,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
         throw new Error(data.error ?? "Couldn't send.");
       }
       setBody("");
+      setAttachment(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send.");
     } finally {
@@ -242,6 +251,12 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
             className="resize-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
           />
           <div className="mt-2 flex items-center justify-between gap-2">
+            <WhatsappAttachmentPicker
+              provider={railProvider}
+              value={attachment}
+              onChange={setAttachment}
+              disabled={!canSend || sending}
+            />
             {/* Templates are a Meta-rail feature. Offering the button on a
                 rail that cannot send one (capabilities: supportsTemplates
                 false) is a control whose every use fails. */}

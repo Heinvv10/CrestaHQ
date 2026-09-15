@@ -29,28 +29,82 @@ export interface WhatsAppProviderCapabilities {
   /** Subject to Meta's 24-hour customer-service window. */
   enforcesWindow: boolean;
   /**
-   * Can carry a file alongside the message. Only the bridge can: it uploads
-   * the bytes to WhatsApp directly, while Twilio and Cloud take media as a
-   * publicly reachable URL through their own APIs, which this seam does not
-   * implement.
+   * Can carry a file alongside the message. The bridge uploads the bytes to
+   * WhatsApp directly; Cloud uploads them to Graph and sends by media id.
+   * Twilio takes media only as a publicly reachable URL, which this seam does
+   * not implement.
    *
-   * Declared here rather than inferred from `provider === "bridge"` for the
-   * same reason the other two flags are: a fourth rail must be forced to state
+   * Declared here rather than inferred from the provider name for the same
+   * reason the other two flags are: a fourth rail must be forced to state
    * what it can do, instead of silently inheriting whichever default the last
    * comparison happened to produce.
    */
   supportsMedia: boolean;
+  /** Decoded-byte cap for one attachment; 0 when `supportsMedia` is false. */
+  maxMediaBytes: number;
+  /** Exact MIME types this rail will put on the wire. Empty when it sends none. */
+  mediaMimeTypes: readonly string[];
 }
 
 export type WhatsAppProviderId = "twilio" | "cloud" | "bridge";
+
+/**
+ * The bridge's limits, restated from `decodeMedia` in
+ * services/wa-agent-bridge/api/server.go (`maxMediaBytes`,
+ * `allowedMediaMimeTypes`). A deliberate duplication: the alternative is a
+ * limits endpoint on the bridge and a fetch on every composer render, for two
+ * values that have changed once. provider.test.ts parses the Go source and
+ * fails when the two disagree.
+ */
+const BRIDGE_MAX_MEDIA_BYTES = 8 << 20;
+const BRIDGE_MEDIA_MIME_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "application/pdf",
+];
+
+/**
+ * What the Cloud rail will upload. A subset of Meta's supported types: audio
+ * is left out because Meta accepts no caption on an audio message, and the
+ * composer always sends the typed text as the caption — an audio file would
+ * silently lose it. 16 MiB is Meta's cap for audio/video; images are capped
+ * lower (5 MB) by Meta itself and come back as a 400 the operator can read.
+ */
+const CLOUD_MAX_MEDIA_BYTES = 16 << 20;
+const CLOUD_MEDIA_MIME_TYPES: readonly string[] = [
+  "image/jpeg",
+  "image/png",
+  "video/mp4",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
 
 export const WHATSAPP_PROVIDER_CAPABILITIES: Record<
   WhatsAppProviderId,
   WhatsAppProviderCapabilities
 > = {
-  twilio: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
-  cloud: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
-  bridge: { supportsTemplates: false, enforcesWindow: false, supportsMedia: true },
+  twilio: {
+    supportsTemplates: true,
+    enforcesWindow: true,
+    supportsMedia: false,
+    maxMediaBytes: 0,
+    mediaMimeTypes: [],
+  },
+  cloud: {
+    supportsTemplates: true,
+    enforcesWindow: true,
+    supportsMedia: true,
+    maxMediaBytes: CLOUD_MAX_MEDIA_BYTES,
+    mediaMimeTypes: CLOUD_MEDIA_MIME_TYPES,
+  },
+  bridge: {
+    supportsTemplates: false,
+    enforcesWindow: false,
+    supportsMedia: true,
+    maxMediaBytes: BRIDGE_MAX_MEDIA_BYTES,
+    mediaMimeTypes: BRIDGE_MEDIA_MIME_TYPES,
+  },
 };
 
 /**

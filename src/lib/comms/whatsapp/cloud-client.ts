@@ -9,6 +9,8 @@ import {
 import { resolveWaSendMode, type WaSendMode } from "./send-mode";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
 import type { CloudInteractive } from "./interactive";
+import type { BridgeAttachment } from "./bridge-client";
+import { mediaKindForMime, type WhatsappMediaKind } from "@/types/whatsapp-media";
 
 /**
  * Meta WhatsApp Cloud API sender — the `cloud` arm of the provider seam.
@@ -42,6 +44,14 @@ export function normalizeWaPhone(raw: string): string {
   return bare.replace(/[^\d]/g, "");
 }
 
+/** An uploaded file, ready to be referenced by a message. */
+export interface CloudMediaRef {
+  id: string;
+  kind: WhatsappMediaKind;
+  /** Shown to the recipient on a document; ignored by Meta for other kinds. */
+  filename: string;
+}
+
 export function buildCloudMessageBody(
   decision: WaSendMode,
   to: string,
@@ -50,10 +60,24 @@ export function buildCloudMessageBody(
   /** In-window buttons. Used only in text mode: interactive messages are
    *  free-form, so like plain text they are allowed only inside the window. */
   interactive: CloudInteractive | null = null,
+  /** An uploaded file. Text mode only — the message rides as its caption. */
+  media: CloudMediaRef | null = null,
 ): Record<string, unknown> {
   const recipient = normalizeWaPhone(to);
   if (decision.mode === "text" && interactive) {
     return { messaging_product: "whatsapp", to: recipient, type: "interactive", interactive };
+  }
+  if (decision.mode === "text" && media) {
+    return {
+      messaging_product: "whatsapp",
+      to: recipient,
+      type: media.kind,
+      [media.kind]: {
+        id: media.id,
+        caption: message,
+        ...(media.kind === "document" ? { filename: media.filename } : {}),
+      },
+    };
   }
   if (decision.mode === "template" && template) {
     return {
@@ -85,6 +109,62 @@ function redact(text: string, accessToken: string): string {
   return accessToken ? text.split(accessToken).join("[redacted]") : text;
 }
 
+/**
+ * `POST /{phoneNumberId}/media` — multipart, returns the media id a message
+ * then references. Never throws.
+ *
+ * Every failure is DEFINITELY_REJECTED, whatever the status: the upload
+ * strictly precedes the send, so nothing has reached the customer and a retry
+ * cannot double-message. That is the same invariant the bridge's
+ * `ErrMediaUpload` documents, and it is what lets the route answer 400.
+ */
+export async function uploadCloudMedia(opts: {
+  creds: WhatsappCloudSecret;
+  filename: string;
+  contentType: string;
+  bytes: Buffer;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<
+  | { ok: true; mediaId: string }
+  | { ok: false; error: string; providerErrorCode: "media_upload_failed"; providerOutcome: "DEFINITELY_REJECTED" }
+> {
+  const fail = (error: string) =>
+    ({
+      ok: false,
+      error,
+      providerErrorCode: "media_upload_failed",
+      providerOutcome: "DEFINITELY_REJECTED",
+    }) as const;
+  const form = new FormData();
+  form.set("messaging_product", "whatsapp");
+  form.set("type", opts.contentType);
+  form.set(
+    "file",
+    new File([new Uint8Array(opts.bytes)], opts.filename, { type: opts.contentType }),
+  );
+  const url = `https://graph.facebook.com/${graphVersion()}/${opts.creds.phoneNumberId}/media`;
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(url, {
+      method: "POST",
+      // No Content-Type: fetch writes the multipart boundary itself.
+      headers: { Authorization: `Bearer ${opts.creds.accessToken}` },
+      body: form,
+      signal: opts.signal ?? AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "unknown error");
+      return fail(`WhatsApp Cloud media upload ${res.status}: ${redact(text, opts.creds.accessToken)}`);
+    }
+    const data = (await res.json()) as { id?: string };
+    const mediaId = data.id?.trim();
+    if (!mediaId) return fail("WhatsApp Cloud media upload returned no id");
+    return { ok: true, mediaId };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "WhatsApp Cloud media upload failed");
+  }
+}
+
 export async function sendWhatsappCloud(opts: {
   subAccountId: string;
   creds: WhatsappCloudSecret;
@@ -94,11 +174,14 @@ export async function sendWhatsappCloud(opts: {
   lastInboundAt: Date | null;
   template: CloudTemplateRef | null;
   interactive?: CloudInteractive | null;
+  /** Uploaded before the send; the message then carries its id. */
+  media?: BridgeAttachment | null;
   windowHours?: number;
   provider?: WhatsAppProviderId;
   now?: Date;
   signal?: AbortSignal;
 }): Promise<WhatsAppSendResult> {
+  const capabilities = capabilitiesFor(opts.provider ?? "cloud");
   const decision = resolveWaSendMode({
     lastInboundAt: opts.lastInboundAt,
     // An unapproved template is treated as no template at all: Meta rejects it
@@ -106,7 +189,7 @@ export async function sendWhatsappCloud(opts: {
     hasApprovedTemplate: opts.template?.approved === true,
     now: opts.now ?? new Date(),
     windowHours: opts.windowHours,
-    capabilities: capabilitiesFor(opts.provider ?? "cloud"),
+    capabilities,
   });
 
   if (decision.mode === "error") {
@@ -117,12 +200,61 @@ export async function sendWhatsappCloud(opts: {
     };
   }
 
+  let media: CloudMediaRef | null = null;
+  if (opts.media) {
+    // A file rides only on a plain in-window message. A template cannot carry
+    // one, and buttons are their own message type; refusing beats sending the
+    // caption without the file, which is the one outcome nobody can detect.
+    if (decision.mode !== "text" || opts.interactive) {
+      return {
+        ok: false,
+        error: "An attachment can only go with a plain in-window message.",
+        providerOutcome: "DEFINITELY_REJECTED",
+        providerErrorCode: "media_invalid",
+      };
+    }
+    // The rail enforces what it declares, so a caller that skipped the
+    // composer's picker gets the same answer as one that used it — and an
+    // oversized file is never pushed at Graph only to be refused there.
+    const bytes = Buffer.from(opts.media.dataBase64, "base64");
+    if (bytes.length > capabilities.maxMediaBytes) {
+      return {
+        ok: false,
+        error: `Attachment is ${bytes.length} bytes; the limit is ${capabilities.maxMediaBytes}.`,
+        providerOutcome: "DEFINITELY_REJECTED",
+        providerErrorCode: "media_too_large",
+      };
+    }
+    if (!capabilities.mediaMimeTypes.includes(opts.media.contentType)) {
+      return {
+        ok: false,
+        error: `Attachment type ${opts.media.contentType} cannot be sent on this rail.`,
+        providerOutcome: "DEFINITELY_REJECTED",
+        providerErrorCode: "media_unsupported_type",
+      };
+    }
+    const up = await uploadCloudMedia({
+      creds: opts.creds,
+      filename: opts.media.filename,
+      contentType: opts.media.contentType,
+      bytes,
+      signal: opts.signal,
+    });
+    if (!up.ok) return up;
+    media = {
+      id: up.mediaId,
+      kind: mediaKindForMime(opts.media.contentType),
+      filename: opts.media.filename,
+    };
+  }
+
   const body = buildCloudMessageBody(
     decision,
     opts.to,
     opts.message,
     opts.template?.approved ? opts.template : null,
     opts.interactive ?? null,
+    media,
   );
 
   const url = `https://graph.facebook.com/${graphVersion()}/${opts.creds.phoneNumberId}/messages`;

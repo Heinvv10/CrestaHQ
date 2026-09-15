@@ -222,4 +222,40 @@ describe("sendWhatsappCloud", () => {
     const r = await send();
     expect(r.error).not.toContain("EAAG");
   });
+
+  const media = { filename: "a.png", contentType: "image/png", dataBase64: "AAEC" };
+
+  it("refuses media outside the window even with an approved template, WITHOUT calling Meta", async () => {
+    // A template cannot carry a file. Sending the template alone would drop
+    // the file silently — the one outcome nobody in the thread can detect.
+    const r = await send({
+      lastInboundAt: new Date(Date.now() - 30 * 3600_000),
+      template: { name: "t", language: "en", components: [], approved: true },
+      media,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.providerErrorCode).toBe("media_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses media alongside in-window buttons, WITHOUT calling Meta", async () => {
+    const r = await send({
+      interactive: { type: "button", body: { text: "x" }, action: { buttons: [] } },
+      media,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.providerErrorCode).toBe("media_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never puts the access token in an upload error string", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => "invalid token EAAG",
+    });
+    const r = await send({ media });
+    expect(r.ok).toBe(false);
+    expect(r.error).not.toContain("EAAG");
+  });
 });

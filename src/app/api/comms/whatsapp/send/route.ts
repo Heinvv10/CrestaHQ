@@ -9,11 +9,12 @@ type Body = {
   contactId?: string;
   body?: string;
   /**
-   * Optional file to send alongside the text. Bridge rail only — see
-   * `dispatchWhatsappSend`, which refuses one on Twilio and Cloud.
+   * Optional file to send alongside the text. Bridge and Cloud rails — see
+   * `dispatchWhatsappSend`, which refuses one on Twilio.
    *
-   * No size or type check here: the bridge owns both limits, and a second copy
-   * of either in this file would be a second number to keep in step. What this
+   * No size or type check here: each rail owns its limits (`capabilitiesFor`),
+   * and a second copy of either in this file would be a second number to keep
+   * in step. What this
    * route does check is SHAPE — a half-filled attachment is a caller bug and
    * would otherwise reach the bridge as an unnamed or empty file.
    */

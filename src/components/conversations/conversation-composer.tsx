@@ -18,6 +18,12 @@ import type { EmailMessageDoc } from "@/types/email";
 import { Textarea } from "@/components/ui/textarea";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { useWhatsappWindow } from "@/hooks/use-whatsapp-window";
+import { useSubAccount } from "@/context/sub-account-context";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
+import {
+  WhatsappAttachmentPicker,
+  type ComposerAttachment,
+} from "./whatsapp-attachment-picker";
 import { ChannelSwitcher, WhatsappWindowBadge } from "./channel-switcher";
 import { WhatsappTemplatePicker } from "./whatsapp-template-picker";
 import {
@@ -100,8 +106,15 @@ export function ConversationComposer({
     }
   }, [emailReply]);
   const [body, setBody] = useState("");
+  const [attachment, setAttachment] = useState<ComposerAttachment | null>(null);
   const [sending, setSending] = useState(false);
   const toggle = <ComposerModeToggle mode={mode} onChange={setMode} />;
+  // The rail, for the attachment picker — the same resolution the window
+  // hook and the send route make, so the picker appears exactly on the rails
+  // that will accept the file.
+  const { subAccount } = useSubAccount();
+  const waSender = resolveWhatsappSender(subAccount);
+  const waProvider = waSender.ok ? waSender.provider : null;
 
   const merge = useMergeTagComposer({
     contact,
@@ -130,6 +143,9 @@ export function ConversationComposer({
       value={channel}
       onChange={(ch) => {
         setChannel(ch);
+        // A file only goes on WhatsApp; it must not ride along silently on
+        // the next channel's send.
+        setAttachment(null);
         merge.reset();
       }}
     />
@@ -195,6 +211,8 @@ export function ConversationComposer({
     // SP2 T7/T8: what cannot be sent now cannot be booked either — a channel
     // this contact is blocked on, or free-form WhatsApp outside the window.
     if (blockedReason || windowClosed) return null;
+    // Scheduled sends carry no file (the worker does not accept one).
+    if (attachment) return null;
     // Stored FINAL and never rendered by the worker, so a raw `{{…}}` blocks
     // booking exactly as it blocks Send (ruling 5).
     if (merge.blockSend()) return null;
@@ -240,6 +258,7 @@ export function ConversationComposer({
           ...(isEmail
             ? { ...emailReplyFields(emailReply), subject: subject.trim() }
             : {}),
+          ...(channel === "whatsapp" && attachment ? { attachment } : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -266,6 +285,7 @@ export function ConversationComposer({
         throw new Error(data.error ?? `Couldn't send (HTTP ${res.status}).`);
       }
       setBody("");
+      setAttachment(null);
       // Snapshot listener appends the row.
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send.");
@@ -353,6 +373,14 @@ export function ConversationComposer({
             onSubject={merge.applySnippetSubject}
             textareaRef={merge.textareaRef}
           />
+          {channel === "whatsapp" && waProvider && (
+            <WhatsappAttachmentPicker
+              provider={waProvider}
+              value={attachment}
+              onChange={setAttachment}
+              disabled={disabled}
+            />
+          )}
           {merge.reviewConfigured && (
             <Button
               type="button"
@@ -368,7 +396,7 @@ export function ConversationComposer({
           )}
         </div>
         <SendLaterMenu
-          disabled={!body.trim() || (isEmail && !subject.trim()) || disabled}
+          disabled={!body.trim() || (isEmail && !subject.trim()) || disabled || !!attachment}
           buildRequest={scheduleRequest}
           onScheduled={() => setBody("")}
         >

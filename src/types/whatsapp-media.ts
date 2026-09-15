@@ -107,6 +107,19 @@ export function isAllowedWhatsappMediaMime(mimeType: string): boolean {
   return WHATSAPP_MEDIA_MIME_TYPES.includes(bare);
 }
 
+/**
+ * The WhatsApp message kind an outbound file goes as. Meta and the thread
+ * renderer both key on this, not on the mime. Stickers are never sent from
+ * the composer, so a `image/webp` upload goes as an image.
+ */
+export function mediaKindForMime(mimeType: string): WhatsappMediaKind {
+  const bare = mimeType.split(";")[0]!.trim().toLowerCase();
+  if (bare.startsWith("image/")) return "image";
+  if (bare.startsWith("video/")) return "video";
+  if (bare.startsWith("audio/")) return "audio";
+  return "document";
+}
+
 /** Conversation-preview label for a caption-less media message. */
 export function mediaPreviewLabel(m: WhatsappMedia): string {
   switch (m.kind) {

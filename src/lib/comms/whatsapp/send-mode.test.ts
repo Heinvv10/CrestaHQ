@@ -52,7 +52,7 @@ describe("resolveWaSendMode", () => {
       hasApprovedTemplate: true,
       now: NOW,
       windowHours: 24,
-      capabilities: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
+      capabilities: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false, maxMediaBytes: 0, mediaMimeTypes: [] },
     });
     expect(d.mode).toBe("text");
   });
@@ -63,7 +63,7 @@ describe("resolveWaSendMode", () => {
       hasApprovedTemplate: true,
       now: NOW,
       windowHours: 24,
-      capabilities: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
+      capabilities: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false, maxMediaBytes: 0, mediaMimeTypes: [] },
     });
     expect(d.mode).toBe("template");
   });
@@ -74,7 +74,7 @@ describe("resolveWaSendMode", () => {
       hasApprovedTemplate: false,
       now: NOW,
       windowHours: 24,
-      capabilities: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false },
+      capabilities: { supportsTemplates: true, enforcesWindow: true, supportsMedia: false, maxMediaBytes: 0, mediaMimeTypes: [] },
     });
     expect(d).toEqual({
       mode: "error",
@@ -91,7 +91,7 @@ describe("resolveWaSendMode", () => {
       hasApprovedTemplate: true,
       now: NOW,
       windowHours: 24,
-      capabilities: { supportsTemplates: false, enforcesWindow: true, supportsMedia: false },
+      capabilities: { supportsTemplates: false, enforcesWindow: true, supportsMedia: false, maxMediaBytes: 0, mediaMimeTypes: [] },
     });
     expect(d.mode).toBe("error");
   });
@@ -105,7 +105,7 @@ describe("resolveWaSendMode", () => {
       hasApprovedTemplate: false,
       now: NOW,
       windowHours: 24,
-      capabilities: { supportsTemplates: false, enforcesWindow: false, supportsMedia: false },
+      capabilities: { supportsTemplates: false, enforcesWindow: false, supportsMedia: false, maxMediaBytes: 0, mediaMimeTypes: [] },
     });
     expect(d.mode).toBe("text");
   });
@@ -116,7 +116,7 @@ describe("resolveWaSendMode", () => {
       hasApprovedTemplate: true,
       now: NOW,
       windowHours: 24,
-      capabilities: { supportsTemplates: false, enforcesWindow: false, supportsMedia: false },
+      capabilities: { supportsTemplates: false, enforcesWindow: false, supportsMedia: false, maxMediaBytes: 0, mediaMimeTypes: [] },
     });
     expect(d.mode).toBe("text");
   });
