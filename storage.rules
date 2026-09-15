@@ -19,6 +19,16 @@ service firebase.storage {
       allow delete: if request.auth != null;
     }
 
+    // WhatsApp media (inbound photos, voice notes, documents). Written and
+    // read only by the Admin SDK, which bypasses rules; reads reach operators
+    // through /api/comms/whatsapp/media/[contactId]/[messageId], which
+    // authorises the caller. The catch-all below would already deny this, but
+    // the one path holding customers' photos states its own rule so a future
+    // edit to the catch-all cannot silently open it.
+    match /whatsapp-media/{allPaths=**} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{allPaths=**} {
       allow read, write: if false;

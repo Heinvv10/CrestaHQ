@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import type { MessageDoc } from "@/types/messages";
 import type { ConversationChannel } from "@/types/conversations";
 import type { ConversationTheme } from "@/hooks/use-conversation-theme";
+import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
 import type { Note } from "@/types/contacts";
 import { ThreadNote } from "./thread-note";
 import { ThreadScheduled } from "./thread-scheduled";
@@ -304,6 +305,7 @@ export function ConversationThread({
             <ChannelBubble
               key={item.key}
               message={item.message}
+              contactId={contactId}
               theme={theme}
               onEmailReply={onEmailReply}
             />
@@ -357,10 +359,13 @@ function bubbleClasses(
 
 function ChannelBubble({
   message,
+  contactId,
   theme,
   onEmailReply,
 }: {
   message: ChannelMessage;
+  /** Needed to build the media URL; empty in web-chat mode, which has no media. */
+  contactId: string;
   onEmailReply?: (message: EmailMessageDoc) => void;
   theme: ConversationTheme;
 }) {
@@ -396,6 +401,14 @@ function ChannelBubble({
               To: {message.to.join(", ")}
             </p>
           </div>
+        )}
+        {message.channel === "whatsapp" && (
+          <WhatsappMediaAttachment
+            contactId={contactId}
+            messageId={message.id}
+            media={"media" in message ? message.media : null}
+            dropped={"mediaDropped" in message ? message.mediaDropped : null}
+          />
         )}
         <p className="break-words whitespace-pre-wrap">{message.body}</p>
         {"buttons" in message && message.buttons && message.buttons.length > 0 && (

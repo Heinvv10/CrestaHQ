@@ -6,7 +6,13 @@ import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 let _app: App | null = null;
 
-function getAdminApp(): App {
+/**
+ * Exported because `getStorage()` with no argument resolves the DEFAULT app,
+ * which only exists once something else has initialised it. Callers that reach
+ * Storage without having touched Firestore or Auth first must pass this
+ * explicitly rather than rely on call ordering elsewhere in the request.
+ */
+export function getAdminApp(): App {
   if (!_app) {
     if (getApps().length > 0) {
       _app = getApps()[0];
