@@ -316,7 +316,8 @@ waiting and post text-only at once, in parallel, without a slot — so a backlog
 drains in roughly one POST's time, not one POST per slot per message — all
 within the 25s `fanoutDrainBudget`; anything still running after that is logged
 as an `ALERT` with redacted JIDs and lost, because the bridge stores no body.
-`TimeoutStopSec=90` in the unit funds the 35s HTTP drain plus this 25s.
+`TimeoutStopSec=90` in the unit funds the 35s HTTP drain, the 5s whatsmeow
+waits for its handler queue on disconnect, and this 25s — 65s in all.
 
 **View-once media is downloaded and stored like any other.** whatsmeow unwraps
 a "view once" photo into a plain image before this bridge sees it, and the

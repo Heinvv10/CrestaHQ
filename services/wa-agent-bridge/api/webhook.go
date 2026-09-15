@@ -60,7 +60,10 @@ type Fanout struct {
 	// closed is set by Drain under the same lock, and Deliver checks it under
 	// that lock before wg.Add — sync.WaitGroup forbids an Add racing a Wait
 	// whose counter is at zero, which is exactly what a message arriving
-	// during shutdown would otherwise do.
+	// during shutdown would otherwise do. That is not hypothetical: whatsmeow's
+	// Disconnect gives up waiting for its handler queue after 5s
+	// (client.go:715) and returns with a handler still running, so main.go can
+	// be inside Drain while that handler reaches Deliver.
 	inFlightMu sync.Mutex
 	inFlight   map[string]int
 	closed     bool

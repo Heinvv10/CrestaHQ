@@ -268,10 +268,14 @@ func main() {
 	// inbound arrives, then drain the webhook deliveries already in flight.
 	// shutdownBudget (35s) outlasts the 30s send-queue timeout so an in-flight
 	// send gets to finish or time out on its own terms before Disconnect pulls
-	// the socket out from under it. fanout.Drain then gets fanoutDrainBudget
-	// (25s): it abandons file work immediately and the messages go text-only.
-	// Worst case end to end is 60s; TimeoutStopSec=90 in the systemd unit
-	// leaves 30s of headroom before SIGKILL. An unbounded Wait here would let
+	// the socket out from under it. client.Disconnect then waits up to 5s for
+	// whatsmeow's handler queue to finish (unlockedDisconnect, client.go:715) —
+	// a handler still running there can call fanout.Deliver during the drain,
+	// which is why Deliver refuses new work once Drain has begun. fanout.Drain
+	// then gets fanoutDrainBudget (25s): it abandons file work immediately and
+	// the messages go text-only. Worst case end to end is 35s + 5s + 25s = 65s;
+	// TimeoutStopSec=90 in the systemd unit leaves 25s of headroom before
+	// SIGKILL. An unbounded Wait here would let
 	// one in-flight 16MiB attachment (120s download + 120s POST) run straight
 	// into SIGKILL and lose every delivery behind it, message and all.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownBudget)

@@ -698,3 +698,37 @@ func TestWhatsmeowBodyForcesReadFrom(t *testing.T) {
 		t.Fatal("whatsmeowBody implements io.WriterTo; io.Copy would bypass cappedFile.ReadFrom in every test using it")
 	}
 }
+
+// The whatsmeow sequence that makes Read's offset load-bearing: host 1's
+// response is written, validateMediaFile rewinds and reads the whole file to
+// check the MAC, fails, and host 2 writes on from where that read left the
+// file — with no rewind. If Read did not advance the offset the cap measures,
+// host 2 would be checked from 0 while the OS writes from the end, and the cap
+// would become per HOST (times however many hosts) instead of per FILE. The
+// host-switch relabelling (errMediaCorruptOverflow) must not loosen that
+// either: only the label changes, never whether the write is refused.
+func TestCapIsPerFileAcrossAValidatedHostSwitch(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "capped-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	c := &cappedFile{f: f, limit: 16, runStart: -1}
+
+	if _, err := io.Copy(c, whatsmeowBody(make([]byte, 10))); err != nil {
+		t.Fatalf("host 1: %v", err)
+	}
+	if _, err := c.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, c); err != nil { // validateMediaFile's read
+		t.Fatal(err)
+	}
+	_, err = io.Copy(c, whatsmeowBody(make([]byte, 10))) // host 2, no rewind
+	if err == nil {
+		t.Fatal("host 2 crossed the per-file cap unrefused")
+	}
+	if st, _ := c.Stat(); st.Size() > 16 {
+		t.Fatalf("file is %d bytes against a 16-byte cap — the cap is per host, not per file", st.Size())
+	}
+}
