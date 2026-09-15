@@ -155,6 +155,8 @@ export interface MemoryQuery {
   /** Projection is ignored — full docs come back, which is a superset. */
   select: (...fields: string[]) => MemoryQuery;
   get: () => Promise<{ empty: boolean; size: number; docs: MemoryDocSnapshot[] }>;
+  /** Aggregate count — same filters, one number instead of the docs. */
+  count: () => { get: () => Promise<{ data: () => { count: number } }> };
 }
 
 type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
@@ -260,6 +262,9 @@ export function createMemoryFirestore() {
         const docs = paths.map(snapshot);
         return tick().then(() => ({ empty: docs.length === 0, size: docs.length, docs }));
       },
+      count: () => ({
+        get: () => query(inScope, filters, order, max, after).get().then((r) => ({ data: () => ({ count: r.size }) })),
+      }),
     };
   }
 

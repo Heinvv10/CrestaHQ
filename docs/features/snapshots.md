@@ -139,3 +139,7 @@ format + untrusted-file parser); routes are thin.
 per-channel AI config (the `aiAgent/{channelId}` docs — the persona travels, the
 channel toggles do not, deliberately: a new workspace must not start replying to
 customers before the operator reviews the imported persona).
+
+**Single-entity templates** — to move ONE workflow, email template or form
+rather than a whole config, see the [Template library](template-library.md),
+which reuses this capture/apply pair.

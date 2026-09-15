@@ -216,6 +216,15 @@ service cloud.firestore {
         }
       }
 
+      // Template library — one workflow / email template / form per doc,
+      // pushed into sub-accounts through applySnapshot. Same posture as
+      // snapshots: owner-readable, every write via the owner-only
+      // /api/agency/templates routes.
+      match /templates/{templateId} {
+        allow read: if isAgencyOwner(agencyId);
+        allow write: if false;
+      }
+
       // Client Billing v1 — agency plan docs (monthly price + gate bundle).
       // ALL access goes through the owner-only /api/agency/plans routes via
       // the Admin SDK; no client reads or writes. Per-sub-account billing
