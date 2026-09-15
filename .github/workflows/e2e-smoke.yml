@@ -15,7 +15,8 @@ on:
 jobs:
   smoke:
     name: Playwright vs crm.crestahq.com
-    runs-on: [self-hosted, linux, velo, crestahq]
+    # Same fixture sub-accounts as the ci.yml E2E job, so the same runner.
+    runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     timeout-minutes: 30
     env:
       # No build step: the target is already running. Only the values the
