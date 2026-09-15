@@ -12,6 +12,7 @@ import { PlanEditorDialog } from "@/components/agency/plan-editor-dialog";
 import { BillingStatusBadge } from "@/components/agency/billing-status-badge";
 import { UsageQuotaBadge } from "@/components/agency/usage-quota-badge";
 import { SubAccountManageDialog } from "@/components/agency/sub-account-manage-dialog";
+import { ResellingTable } from "@/components/agency/reselling-table";
 import {
   effectiveBillingState,
   formatBillingPrice,
@@ -414,6 +415,8 @@ export default function AgencyBillingPage() {
           .
         </p>
       </section>
+
+      {plans !== null && <ResellingTable plans={plans} subs={subs} />}
 
       <PlanEditorDialog
         plan={editingPlan}
