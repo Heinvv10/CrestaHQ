@@ -347,43 +347,84 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(saved).toHaveLength(0);
   });
 
-  it("caps a 10,000-character document filename at 255 UTF-8 bytes, keeping the extension", async () => {
-    fetchMock
-      .mockResolvedValueOnce(graphOk({ id: "MEDIA9" }))
-      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT9" }] }));
+  it("refuses a filename over 255 UTF-8 bytes at the route, before any Graph call", async () => {
+    // The row and the activity store the name verbatim, and are written only
+    // after the send; an unbounded name could fail those writes with the
+    // customer already holding the file. Same bound the bridge enforces.
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { ...attachment, filename: `${"é".repeat(10_000)}.pdf`, contentType: "application/pdf" },
+      attachment: { ...attachment, filename: `${"a".repeat(252)}.pdf`, contentType: "application/pdf" },
     });
-    expect(res.status).toBe(200);
-    const uploaded = (graphCalls()[0]!.init.body as FormData).get("file") as File;
-    const sent = JSON.parse(graphCalls()[1]!.init.body as string).document.filename as string;
-    for (const name of [uploaded.name, sent]) {
-      expect(Buffer.byteLength(name, "utf8")).toBeLessThanOrEqual(255);
-      expect(name.endsWith(".pdf")).toBe(true);
-      expect(name).not.toContain("\uFFFD");
-    }
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("media_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+    expect(messageRow).toBeUndefined();
   });
 
-  it("cuts an astral-character filename on a code point, never mid surrogate pair", async () => {
-    // 62 emoji are 248 bytes; with the 4-byte ".pdf" the base may hold 251.
-    // A cut on UTF-16 units stops on a lone high surrogate (3 bytes, 251
-    // total) \u2014 a malformed name Meta would show as a replacement glyph.
+  it("accepts a filename of exactly 255 UTF-8 bytes", async () => {
     fetchMock
-      .mockResolvedValueOnce(graphOk({ id: "MEDIA11" }))
-      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT11" }] }));
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA12" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT12" }] }));
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { ...attachment, filename: `${"\uD83D\uDE00".repeat(3000)}.pdf`, contentType: "application/pdf" },
+      attachment: { ...attachment, filename: `${"a".repeat(251)}.pdf`, contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ["a right-to-left override", "invoice\u202efdp.exe", "invoicefdp.exe"],
+    ["a C1 control", "quo\u0085te.pdf", "quote.pdf"],
+    ["a line separator", "quo\u2028te.pdf", "quote.pdf"],
+  ])("strips %s from the filename sent to Meta", async (_label, filename, expected) => {
+    // With the override left in, the first name displays on the customer's
+    // phone as "invoiceexe.pdf", under the business's own name.
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA13" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT13" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, filename, contentType: "application/pdf" },
     });
     expect(res.status).toBe(200);
     const sent = JSON.parse(graphCalls()[1]!.init.body as string).document.filename as string;
-    // Well-formed UTF-16 survives a UTF-8 round trip unchanged; a lone
-    // surrogate does not.
-    expect(Buffer.from(sent, "utf8").toString("utf8")).toBe(sent);
-    expect(sent).toBe(`${"\uD83D\uDE00".repeat(62)}.pdf`);
+    expect(sent).toBe(expected);
+    expect(((graphCalls()[0]!.init.body as FormData).get("file") as File).name).toBe(expected);
+  });
+
+  it("replaces a lone surrogate, so the multipart name and document.filename agree", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA14" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT14" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, filename: "a\uD83D.pdf", contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(graphCalls()[1]!.init.body as string).document.filename as string;
+    const uploaded = ((graphCalls()[0]!.init.body as FormData).get("file") as File).name;
+    expect(sent).toBe("a\ufffd.pdf");
+    expect(uploaded).toBe(sent);
+  });
+
+  it("falls back to `file` when stripping leaves nothing", async () => {
+    // Neither character is whitespace to String.prototype.trim, so the route's
+    // shape check admits the name; only the strip empties it.
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA15" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT15" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, filename: "\u202e\u200b", contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(graphCalls()[1]!.init.body as string).document.filename).toBe("file");
   });
 
   it("strips CR/LF and other control characters from the filename sent to Meta", async () => {

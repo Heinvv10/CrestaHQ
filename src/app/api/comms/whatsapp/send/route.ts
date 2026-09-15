@@ -88,6 +88,17 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    // Bounded here, for every rail, before anything is sent — the same 255
+    // bytes the bridge already refuses over (send.go). The thread row and the
+    // activity store this name verbatim; an unbounded one could exceed
+    // Firestore's limits AFTER the customer had the file, and both writes are
+    // best-effort, so the thread would show nothing was sent.
+    if (Buffer.byteLength(filename, "utf8") > 255) {
+      return NextResponse.json(
+        { error: "attachment filename is longer than 255 bytes.", code: "media_invalid" },
+        { status: 400 },
+      );
+    }
     attachment = { filename, contentType, dataBase64 };
   }
 

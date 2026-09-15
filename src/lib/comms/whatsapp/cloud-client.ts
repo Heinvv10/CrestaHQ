@@ -169,16 +169,29 @@ export async function uploadCloudMedia(opts: {
 const MAX_FILENAME_BYTES = 255;
 
 /**
- * The filename as it goes to Graph: control characters (CR/LF included)
- * stripped, then cut to 255 UTF-8 bytes on a code-point boundary with the
- * extension kept, so a 10,000-character or header-shaped name never reaches
- * Meta or the recipient's phone.
+ * Characters stripped from an outbound filename: C0, DEL and C1 controls, the
+ * line/paragraph separators, zero-width space, BOM, and every bidi control.
+ * The bidi ones are the reason this is more than hygiene: a right-to-left
+ * override turns `invoice<RLO>fdp.exe` into "invoiceexe.pdf" on the customer's
+ * phone, under the business's name.
+ */
+const FILENAME_STRIP =
+  /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/**
+ * The filename as it goes to Graph: lone surrogates replaced (so the
+ * multipart name and `document.filename` cannot diverge on the wire), the
+ * characters above stripped, then cut to 255 UTF-8 bytes on a code-point
+ * boundary with the extension kept.
+ *
+ * The send route already refuses a name over 255 bytes, so the cut guards
+ * only a caller that reaches this rail some other way.
  *
  * The same rule exists on the inbound branches (#148, #151); the three copies
  * should become one once those merge.
  */
 function cloudFilename(raw: string): string {
-  const clean = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim() || "file";
+  const clean = raw.toWellFormed().replace(FILENAME_STRIP, "").trim() || "file";
   const bytes = (s: string) => Buffer.byteLength(s, "utf8");
   if (bytes(clean) <= MAX_FILENAME_BYTES) return clean;
   const dot = clean.lastIndexOf(".");
