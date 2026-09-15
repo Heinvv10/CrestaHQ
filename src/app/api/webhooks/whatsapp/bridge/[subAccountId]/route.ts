@@ -12,6 +12,12 @@ import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { getBridgeCreds } from "@/lib/comms/whatsapp/bridge-credentials";
 import { isGroupJid, isLidJid, isPhoneJid, jidToE164, redactJid } from "@/lib/comms/whatsapp/bridge-client";
 import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
+import { putWhatsappMedia, whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
+import {
+  isAllowedWhatsappMediaMime,
+  mediaPreviewLabel,
+} from "@/types/whatsapp-media";
+import type { WhatsappMedia, WhatsappMediaKind } from "@/types/whatsapp-media";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
@@ -55,6 +61,63 @@ interface BridgeInbound {
   text?: string;
   messageId?: string;
   at?: string;
+  /** The file the message carried, base64 in the JSON body (the bridge has no
+   *  other channel to us). Present only when the bridge downloaded one. */
+  media?: { filename?: string; mimeType?: string; dataBase64?: string };
+  /** Set by the bridge INSTEAD of `media` when it had a file and could not
+   *  forward it. Passed through verbatim — the bridge names the reasons. */
+  mediaDropped?: string;
+}
+
+/** Decoded-byte cap. Matches WhatsApp's own per-message media limit, and the
+ *  bridge's `maxInboundMediaBytes`. Inclusive. */
+const MAX_INBOUND_MEDIA_BYTES = 16 << 20;
+
+/** A ready-to-store file, or the reason there is none. Decoded once, before
+ *  the row fan-out, so several matched contacts share one decode. */
+type InboundMedia =
+  | { bytes: Buffer; meta: Omit<WhatsappMedia, "storagePath"> }
+  | { dropped: string };
+
+function mediaKindFor(mimeType: string): WhatsappMediaKind {
+  const bare = mimeType.split(";")[0]!.trim().toLowerCase();
+  if (bare.startsWith("image/")) return "image";
+  if (bare.startsWith("audio/")) return "audio";
+  if (bare.startsWith("video/")) return "video";
+  return "document";
+}
+
+function decodeInboundMedia(payload: BridgeInbound): InboundMedia | null {
+  if (payload.mediaDropped) return { dropped: payload.mediaDropped };
+  const m = payload.media;
+  if (m === undefined) return null;
+  // A half-filled object is a bridge bug, not a file. Storing it would put an
+  // unnamed or untyped object in the bucket that the serving route then has to
+  // reason about; the row says the file was lost instead.
+  if (
+    !m ||
+    typeof m !== "object" ||
+    typeof m.filename !== "string" ||
+    m.filename.length === 0 ||
+    typeof m.mimeType !== "string" ||
+    m.mimeType.length === 0 ||
+    typeof m.dataBase64 !== "string" ||
+    m.dataBase64.length === 0
+  ) {
+    return { dropped: "fetch_failed" };
+  }
+  if (!isAllowedWhatsappMediaMime(m.mimeType)) return { dropped: "unsupported_type" };
+  const bytes = Buffer.from(m.dataBase64, "base64");
+  if (bytes.length > MAX_INBOUND_MEDIA_BYTES) return { dropped: "too_large" };
+  return {
+    bytes,
+    meta: {
+      kind: mediaKindFor(m.mimeType),
+      mimeType: m.mimeType,
+      filename: m.filename,
+      sizeBytes: bytes.length,
+    },
+  };
 }
 
 /** Constant-time bearer comparison. Length is checked first because
@@ -318,7 +381,44 @@ export async function POST(
     createdAt = new Date(Math.min(Math.max(at.getTime(), now - DAY_MS), now));
   }
 
-  const writes = contactDocs.map((d) =>
+  // Decoded once, here, after every guard that could still drop the message —
+  // a 16 MiB decode for a payload about to be refused is wasted work.
+  const inboundMedia = decodeInboundMedia(payload);
+
+  // The object is stored BEFORE the row that points at it, per contact, so a
+  // row never references an object that is not there. A store failure
+  // degrades to `mediaDropped` and the row still lands — the message is never
+  // lost for want of its attachment. Re-run on a redelivery like the row
+  // write: `save` to the same path is idempotent.
+  //
+  // A text-only payload adds NO keys to the row. This is the live rail; the
+  // row it writes today is the row it writes tomorrow.
+  async function mediaFields(contactId: string): Promise<
+    { media: WhatsappMedia } | { mediaDropped: string } | Record<never, never>
+  > {
+    if (inboundMedia === null) return {};
+    if ("dropped" in inboundMedia) return { mediaDropped: inboundMedia.dropped };
+    const storagePath = whatsappMediaPath({
+      agencyId,
+      subAccountId,
+      contactId,
+      messageDocId: docId,
+    });
+    const stored = await putWhatsappMedia({
+      path: storagePath,
+      bytes: inboundMedia.bytes,
+      contentType: inboundMedia.meta.mimeType,
+    });
+    if (!stored.ok) {
+      console.warn(
+        `[whatsapp-bridge] media store failed (sa=${subAccountId}) reason=${stored.reason}`
+      );
+      return { mediaDropped: "fetch_failed" };
+    }
+    return { media: { ...inboundMedia.meta, storagePath } };
+  }
+
+  const writes = contactDocs.map(async (d) =>
     d.ref
       .collection("whatsappMessages")
       .doc(docId)
@@ -339,6 +439,7 @@ export async function POST(
           error: null,
           readAt: null,
           createdAt,
+          ...(await mediaFields(d.id)),
         },
         { merge: true }
       )
@@ -348,6 +449,15 @@ export async function POST(
   } catch (err) {
     console.warn("[whatsapp-bridge] message-row write failed", err);
   }
+
+  // What the inbox list and the timeline show for a caption-less file. The row
+  // body itself stays as sent — empty — so the thread renders the file alone.
+  // The label reads kind and filename only; the path is irrelevant to it.
+  const preview =
+    body ||
+    (inboundMedia && "bytes" in inboundMedia
+      ? mediaPreviewLabel({ ...inboundMedia.meta, storagePath: "" })
+      : body);
 
   // Wrapped for the same reason the message-row write above is: this runs
   // AFTER the row is committed, so an uncaught throw here would 500 a webhook
@@ -371,26 +481,31 @@ export async function POST(
             contactPhone: cdata?.phone ?? from,
             channel: "whatsapp",
             direction: "inbound",
-            body,
+            body: preview,
           });
         })
       );
     } catch (err) {
       console.warn("[whatsapp-bridge] conversation upsert failed", err);
     }
-    await Promise.all(
-      contactDocs.map((d) =>
-        writeInboundMessageActivity(db, {
-          contactId: d.id,
-          channel: "whatsapp",
-          preview: body,
-          messageId: docId,
-          agencyId,
-          subAccountId,
-        })
-      )
-    );
   }
+
+  // NOT gated on redelivery. The activity row has a deterministic id and is
+  // written with `{merge:true}`, so re-running it lands on the same row —
+  // whereas gating it loses the row for good when a first delivery wrote the
+  // message and died before reaching this line. Same fix as the Cloud route.
+  await Promise.all(
+    contactDocs.map((d) =>
+      writeInboundMessageActivity(db, {
+        contactId: d.id,
+        channel: "whatsapp",
+        preview,
+        messageId: docId,
+        agencyId,
+        subAccountId,
+      })
+    )
+  );
 
   // Runs on EVERY delivery, redelivery included. An opt-out is a POPIA
   // obligation, so the one thing this handler must never do is drop a STOP
