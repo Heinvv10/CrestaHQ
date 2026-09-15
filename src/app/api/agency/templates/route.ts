@@ -22,7 +22,7 @@ export async function GET(request: Request) {
   if (caller instanceof NextResponse) return caller;
 
   const snap = await getAdminDb()
-    .collection(`agencies/${caller.agencyId}/templates`)
+    .collection(`agencies/${caller.agencyId}/snapshots`)
     .orderBy("createdAt", "desc")
     .get();
 
