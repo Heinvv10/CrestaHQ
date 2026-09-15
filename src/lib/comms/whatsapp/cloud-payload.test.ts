@@ -70,6 +70,7 @@ describe("parseCloudInbound", () => {
       providerMessageId: "wamid.ABC",
       profileName: "Hein",
       buttonPayload: null,
+      media: null,
     });
   });
 

@@ -218,7 +218,7 @@ Each sub-account connects its own Meta WhatsApp Cloud sender (phone number id, W
 
 | Var | Purpose |
 |---|---|
-| `WHATSAPP_GRAPH_VERSION` | Optional. Graph API version for every WhatsApp Cloud call (sends, templates, settings). Default `v23.0`. |
+| `WHATSAPP_GRAPH_VERSION` | Optional. Graph API version for every WhatsApp Cloud call (sends, templates, settings, inbound media download). Default `v23.0`. Inbound photos, voice notes and documents are stored in `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`; without it the message still lands and the row records `mediaDropped: "fetch_failed"`. |
 
 **Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER`):
 

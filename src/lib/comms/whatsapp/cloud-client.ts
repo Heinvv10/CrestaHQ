@@ -7,6 +7,7 @@ import {
   type WhatsAppSendResult,
 } from "./provider";
 import { resolveWaSendMode, type WaSendMode } from "./send-mode";
+import { graphVersion } from "./graph-version";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
 import type { CloudInteractive } from "./interactive";
 
@@ -17,10 +18,6 @@ import type { CloudInteractive } from "./interactive";
  * treat every rail identically (the `WaResult` contract borrowed from
  * ndzinga-lms). Errors become `ok: false` with a retry verdict attached.
  */
-
-function graphVersion(): string {
-  return process.env.WHATSAPP_GRAPH_VERSION ?? "v23.0";
-}
 
 /** A resolved, approved template ready to send. `approved` is carried
  *  explicitly because an unapproved template must be treated as absent. */

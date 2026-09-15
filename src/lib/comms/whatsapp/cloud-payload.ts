@@ -13,6 +13,8 @@
  * distinguished only by which key is present.
  */
 
+import type { WhatsappMediaKind } from "@/types/whatsapp-media";
+
 type Json = Record<string, unknown>;
 
 function asObject(v: unknown): Json | null {
@@ -59,9 +61,101 @@ export interface CloudInbound {
   /** The tapped button's payload (quick reply) or id (interactive reply);
    *  null for anything that was not a button tap. */
   buttonPayload: string | null;
+  /** The file Meta says this message carried, before it has been fetched.
+   *  Null for text, buttons, and a media block with no id. */
+  media: CloudMediaRef | null;
+}
+
+export interface CloudMediaRef {
+  /** From the message `type`, not the mime: a sticker is `image/webp`. */
+  kind: WhatsappMediaKind;
+  /** Meta's media id — the handle for `GET /{version}/{id}`. */
+  id: string;
+  /** As Meta declared it. Checked against the allow-list by the caller. */
+  mimeType: string;
+  /** `document.filename`, capped; otherwise synthesised from kind + mime. */
+  filename: string;
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+const MEDIA_KINDS: readonly WhatsappMediaKind[] = [
+  "image",
+  "audio",
+  "video",
+  "document",
+  "sticker",
+];
+
+/** The name is the sender's and unbounded, and it lands on the row. Matches
+ *  the bridge's `maxMediaFilenameBytes`. */
+const MAX_MEDIA_FILENAME_BYTES = 255;
+
+/** Longest prefix of `s` that fits in `maxBytes` of UTF-8, cut on a code point
+ *  so a multi-byte character is never split into a replacement char. */
+function truncateUtf8(s: string, maxBytes: number): string {
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > maxBytes) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+
+/**
+ * Caps a filename at MAX_MEDIA_FILENAME_BYTES, keeping a short extension so the
+ * operator still sees what kind of file it was.
+ *
+ * Deliberately the same algorithm as `capFilename` in the bridge webhook route
+ * (PR #148), written again rather than imported from an unmerged branch. The
+ * two should become one helper once both have landed.
+ */
+function capFilename(name: string): string {
+  if (Buffer.byteLength(name, "utf8") <= MAX_MEDIA_FILENAME_BYTES) return name;
+  const dot = name.lastIndexOf(".");
+  const ext =
+    dot > 0 && Buffer.byteLength(name.slice(dot), "utf8") <= 16
+      ? name.slice(dot)
+      : "";
+  const stem = truncateUtf8(
+    name.slice(0, name.length - ext.length),
+    MAX_MEDIA_FILENAME_BYTES - Buffer.byteLength(ext, "utf8"),
+  );
+  return stem + ext;
+}
+
+const SYNTH_STEM: Record<WhatsappMediaKind, string> = {
+  image: "photo",
+  audio: "voice-note",
+  video: "video",
+  document: "document",
+  sticker: "sticker",
+};
+
+/** `image/jpeg` → `jpg`, `audio/ogg; codecs=opus` → `ogg`. Only for display. */
+function extensionFor(mimeType: string): string {
+  const sub = mimeType.split(";")[0]!.trim().toLowerCase().split("/")[1] ?? "";
+  if (sub === "jpeg") return "jpg";
+  if (sub === "mpeg") return "mp3";
+  return /^[a-z0-9]{1,8}$/.test(sub) ? sub : "bin";
+}
+
+function parseMediaRef(kind: string, message: Json): CloudMediaRef | null {
+  if (!(MEDIA_KINDS as readonly string[]).includes(kind)) return null;
+  const block = asObject(message[kind]);
+  const id = str(block?.id).trim();
+  if (!id) return null;
+  const mediaKind = kind as WhatsappMediaKind;
+  const mimeType = str(block?.mime_type).trim();
+  const given = str(block?.filename).trim();
+  const filename = given
+    ? capFilename(given)
+    : `${SYNTH_STEM[mediaKind]}.${extensionFor(mimeType)}`;
+  return { kind: mediaKind, id, mimeType, filename };
+}
 
 /**
  * Pulls the first inbound customer message.
@@ -114,7 +208,14 @@ export function parseCloudInbound(payload: unknown): CloudInbound | null {
     if (typeof caption === "string") text = caption;
   }
 
-  return { fromPhone, text, providerMessageId, profileName, buttonPayload };
+  return {
+    fromPhone,
+    text,
+    providerMessageId,
+    profileName,
+    buttonPayload,
+    media: parseMediaRef(kind, message),
+  };
 }
 
 export interface CloudStatus {
