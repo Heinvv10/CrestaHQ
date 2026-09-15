@@ -35,6 +35,7 @@ import {
   FlaskConical,
   MonitorPlay,
   Star,
+  Library,
 } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
@@ -337,6 +338,20 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
               >
                 <Users className="h-4 w-4" />
                 Sub-accounts
+              </Link>
+            )}
+            {agencyRole === "owner" && (
+              <Link
+                href="/agency/templates"
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  pathname.startsWith("/agency/templates")
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <Library className="h-4 w-4" />
+                Template library
               </Link>
             )}
             {agencyRole === "owner" && !trimmed && (

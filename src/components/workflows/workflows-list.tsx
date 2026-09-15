@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WorkflowStatusBadge } from "./workflow-status-badge";
+import { SaveToLibraryButton } from "@/components/templates/save-to-library-dialog";
 import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
 import type { WorkflowStatus, WorkflowTriggerType } from "@/types/workflows";
 
@@ -200,6 +201,13 @@ export function WorkflowsList({ saId }: { saId: string }) {
                   {w.stats?.enrolled ?? 0} enrolled
                 </div>
               </Link>
+              <SaveToLibraryButton
+                subAccountId={saId}
+                kind="workflow"
+                entityId={w.id}
+                entityName={w.name}
+                iconOnly
+              />
               <Button
                 variant="ghost"
                 size="icon"
