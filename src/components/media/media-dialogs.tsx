@@ -177,7 +177,7 @@ export function PreviewDialog({
               <video src={asset.downloadUrl} controls className="max-h-[70vh] w-full" />
             )}
             {asset.kind === "document" && (
-              <iframe src={asset.downloadUrl} title={asset.name} sandbox="" className="h-[70vh] w-full" />
+              <iframe src={asset.downloadUrl} title={asset.name} className="h-[70vh] w-full" />
             )}
           </div>
         )}
