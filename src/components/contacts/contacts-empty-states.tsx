@@ -41,8 +41,8 @@ function useLoadingHint(): "offline" | "slow" | null {
 
 /**
  * Loading state: the newest page once it lands, otherwise the skeleton. No
- * checkboxes: select-all must mean the full list, which has not arrived. It
- * mounts when loading starts, so the slow timer measures this load.
+ * checkboxes: select-all must mean the full list, which has not arrived. The
+ * page keys it per load, so the slow timer always measures the current one.
  */
 export function ContactsLoading({
   preview,
@@ -61,7 +61,7 @@ export function ContactsLoading({
         >
           {hint === "offline"
             ? "You're offline. Contacts will load when your connection is back."
-            : "Still loading contacts — this is taking longer than usual. Check your connection."}
+            : "Still loading contacts — this is taking longer than usual. If it doesn't finish, reload the page."}
         </p>
       )}
       {preview?.length ? (

@@ -261,7 +261,7 @@ export default function ContactsPage() {
       />
 
       {loading ? (
-        <ContactsLoading preview={preview} territories={territories} />
+        <ContactsLoading key={`${subAccountId}|${territoryFilter}`} preview={preview} territories={territories} />
       ) : contacts.length === 0 ? (
         <EmptyState onImport={() => setImportOpen(true)} />
       ) : visible.length === 0 ? (
