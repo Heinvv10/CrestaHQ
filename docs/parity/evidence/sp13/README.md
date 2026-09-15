@@ -12,7 +12,7 @@ prefix remains. All names in the frames are fake.
 **Prod #1000 frames await a Hein-approved deploy.** Until then these local
 frames are the browser evidence for the rows below.
 
-Build: `main` @ `<SHA — filled in by the orchestrator after the run>`
+Build: `main` @ `main `152f44f` + capture commit `0f37d60` (run 2026-09-15 23:16 SAST, local standalone build, loopback app URL, all 6 captures + cleanup assertion passed)`
 
 PNG groups: x1 manage dialog · m1/m4 media library · n3/n4 snapshot share · t1/t2 template library · l1 launchpad · r1 reselling
 
@@ -29,3 +29,5 @@ PNG groups: x1 manage dialog · m1/m4 media library · n3/n4 snapshot share · t
 | `r1-reselling-overview.png` | R1 | `/agency/billing` Reselling overview with a seeded ZAR plan and the fixture primary as an active subscriber. |
 
 The `NOTES-*.md` files beside this README are the per-PR mutation notes, not frames.
+
+> **About the `#1000` label in the sidebar:** that is the E2E fixture agency's own account number for "E2E Fixture Primary" — a separate test agency with only the two fixture sub-accounts. It is **not** the production CrestaHQ #1000 tenant. Production #1000 frames still await a Hein-approved deploy.
