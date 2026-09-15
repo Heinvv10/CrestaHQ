@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -657,8 +658,8 @@ func TestHostSwitchOverflowIsNotReportedAsTooLarge(t *testing.T) {
 		}
 	})
 
-	t.Run("through the fetch", func(t *testing.T) {
-		dl := &twoHostDownloader{perHost: 10 << 20} // 10MiB from each of two hosts
+	t.Run("through the fetch: two normal responses", func(t *testing.T) {
+		dl := &hostLoopDownloader{bodies: []int{10 << 20, 10 << 20}}
 		c, seen := recordingClient(dl)
 		_, media := deliver(t, c, seen, imageMsg("normal photo", 10<<20))
 		if media == nil || media.Dropped != "fetch_failed" {
@@ -667,19 +668,42 @@ func TestHostSwitchOverflowIsNotReportedAsTooLarge(t *testing.T) {
 	})
 }
 
-// twoHostDownloader reproduces whatsmeow's host loop: io.Copy one response,
-// fail it, io.Copy the next into the same file with no rewind.
-type twoHostDownloader struct{ perHost int }
+// hostLoopDownloader copies whatsmeow's DownloadMediaWithPathToFile host loop
+// (download-to-file.go:102-118) as exactly as a stub can. The previous stub
+// returned on the first io.Copy error, which whatsmeow does NOT do: it moves
+// to the next host after every error outside a short early-return set —
+// errMediaTooLarge included — with no rewind, and wraps the LAST host's error.
+// A stub that modelled what we believed hid a mislabel on every download
+// WhatsApp served from two or more hosts.
+//
+// Each host serves bodies[i]. A body that copies in completely stands in for a
+// response whose ciphertext hash then fails (ErrInvalidMediaEncSHA256), which
+// is the realistic reason a normal-sized response moves on.
+type hostLoopDownloader struct{ bodies []int }
 
-func (d *twoHostDownloader) DownloadToFile(_ context.Context, _ whatsmeow.DownloadableMessage, file whatsmeow.File) error {
+func (d *hostLoopDownloader) DownloadToFile(ctx context.Context, _ whatsmeow.DownloadableMessage, file whatsmeow.File) error {
 	var err error
-	for host := 0; host < 2; host++ {
-		_, err = io.Copy(file, io.TeeReader(bytes.NewReader(make([]byte, d.perHost)), sha256.New()))
-		if err != nil {
+	for i, size := range d.bodies {
+		err = hostAttempt(file, size)
+		if err == nil ||
+			errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) ||
+			errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith403) ||
+			errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) ||
+			errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) ||
+			errors.Is(err, context.Canceled) {
 			return err
+		} else if i >= len(d.bodies)-1 {
+			return fmt.Errorf("failed to download media from last host: %w", err)
 		}
 	}
-	return errors.New("hash of media ciphertext doesn't match")
+	return err
+}
+
+func hostAttempt(file whatsmeow.File, size int) error {
+	if _, err := io.Copy(file, whatsmeowBody(make([]byte, size))); err != nil {
+		return err
+	}
+	return whatsmeow.ErrInvalidMediaEncSHA256
 }
 
 // whatsmeowBody is a source shaped like whatsmeow's: an io.TeeReader, which
@@ -730,5 +754,27 @@ func TestCapIsPerFileAcrossAValidatedHostSwitch(t *testing.T) {
 	}
 	if st, _ := c.Stat(); st.Size() > 16 {
 		t.Fatalf("file is %d bytes against a 16-byte cap — the cap is per host, not per file", st.Size())
+	}
+}
+
+// An oversize file stays too_large however many hosts WhatsApp offers. Host 1
+// hits the cap; whatsmeow moves on without rewinding; host 2's first chunk
+// crosses the cap having written only ~32KiB itself, which on its own looks
+// like the two-normal-responses case. Once a file has been refused as too
+// large, it is too large.
+func TestOversizeIsTooLargeOnAnyNumberOfHosts(t *testing.T) {
+	const oversize = 40 << 20 // declared small, served at 40MiB
+	for hosts := 1; hosts <= 3; hosts++ {
+		t.Run(fmt.Sprintf("%d hosts", hosts), func(t *testing.T) {
+			bodies := make([]int, hosts)
+			for i := range bodies {
+				bodies[i] = oversize
+			}
+			c, seen := recordingClient(&hostLoopDownloader{bodies: bodies})
+			_, media := deliver(t, c, seen, imageMsg("trust me", 1<<20))
+			if media == nil || media.Dropped != "too_large" {
+				t.Fatalf("Dropped = %q, want too_large for an oversize body served by %d host(s)", media.Dropped, hosts)
+			}
+		})
 	}
 }

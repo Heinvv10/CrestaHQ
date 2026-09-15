@@ -706,8 +706,52 @@ func TestDeliverAfterDrainStartsNothing(t *testing.T) {
 	if len(body) != 0 {
 		t.Fatalf("a delivery after Drain was posted (%d); nothing was accounting for it", len(body))
 	}
-	if ok, _ := st.HasInboundFrom(knownJID); !ok {
-		t.Fatal("a message arriving during shutdown must still be recorded")
+	// NOT recorded, deliberately — see TestLateMessagesAreAdmittedOnRedelivery
+	// for why recording it would lose messages.
+	if ok, _ := st.HasInboundFrom(knownJID); ok {
+		t.Fatal("a message arriving during shutdown was recorded; it will be redelivered, and recording it now raises the watermark over its siblings")
+	}
+}
+
+// A message arriving after Drain has closed intake cannot be acked — the socket
+// is already gone — so WhatsApp redelivers it after the restart. If two arrive
+// in that window and are recorded now, the watermark rises to the newer; on
+// redelivery the older is strictly below it, admitDuringReplay calls it
+// history, and it is dropped for good. Not recording them costs nothing: the
+// redelivery records them.
+func TestLateMessagesAreAdmittedOnRedelivery(t *testing.T) {
+	st := store.NewMemory()
+	older := time.Now().Add(-2 * time.Second)
+	newer := time.Now().Add(-1 * time.Second)
+
+	// Before restart: intake closed, then two messages land.
+	srv1, _, _ := captureOne(t)
+	before := openFanout(srv1.URL, "", st, false)
+	if err := before.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before.Deliver(knownJID, "first", "wamid.OLDER", older, nil)
+	before.Deliver(knownJID, "second", "wamid.NEWER", newer, nil)
+
+	// After restart: same store, a new connection inside its replay window,
+	// WhatsApp redelivers both in order.
+	srv2, body, _ := captureOne(t)
+	after := openFanout(srv2.URL, "", st, true)
+	after.Deliver(knownJID, "first", "wamid.OLDER", older, nil)
+	after.Deliver(knownJID, "second", "wamid.NEWER", newer, nil)
+	after.Wait()
+
+	got := map[string]bool{}
+	for len(got) < 2 {
+		select {
+		case b := <-body:
+			var p map[string]any
+			_ = json.Unmarshal(b, &p)
+			got[fmt.Sprint(p["messageId"])] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %v were forwarded on redelivery; the rest were dropped as history "+
+				"because the late messages had been recorded before the restart", got)
+		}
 	}
 }
 
@@ -737,5 +781,59 @@ func TestDeliverConcurrentWithDrainIsSafe(t *testing.T) {
 		cancel()
 		wg.Wait()
 		f.Wait()
+	}
+}
+
+// A failed media POST's text-only FALLBACK carries no file and must not hold a
+// media slot. Saturate both slots with deliveries whose media POST fails and
+// whose fallback then blocks: if the fallback held the slot, a third
+// file-carrying delivery could never start its fetch.
+func TestFallbackDoesNotHoldAMediaSlot(t *testing.T) {
+	fallbacks := make(chan struct{}, maxConcurrentMediaDeliveries)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		if p["messageId"] == "wamid.THIRD" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if _, hasMedia := p["media"]; hasMedia {
+			w.WriteHeader(http.StatusRequestEntityTooLarge) // the media POST fails fast
+			return
+		}
+		fallbacks <- struct{}{} // the text-only fallback blocks
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	defer close(release)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	file := func(context.Context) *wa.InboundMedia {
+		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("bytes")}
+	}
+	for i := 0; i < maxConcurrentMediaDeliveries; i++ {
+		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.BLOCKED%d", i), time.Now(), file)
+	}
+	for i := 0; i < maxConcurrentMediaDeliveries; i++ {
+		select {
+		case <-fallbacks:
+		case <-time.After(2 * time.Second):
+			t.Fatal("setup: the fallbacks never reached the consumer")
+		}
+	}
+
+	started := make(chan struct{})
+	f.Deliver(knownJID, "third", "wamid.THIRD", time.Now(), func(context.Context) *wa.InboundMedia {
+		close(started)
+		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("b")}
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatalf("with %d fallbacks blocked, a new file-carrying delivery could not get a media slot — "+
+			"the text-only fallbacks are holding them", maxConcurrentMediaDeliveries)
 	}
 }

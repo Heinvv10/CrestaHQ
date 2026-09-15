@@ -268,10 +268,12 @@ by what the sender declared.** whatsmeow's `Download` ends in a plain
 all of it; this bridge uses `DownloadToFile` streaming into a temp file
 (`wa.cappedFile`) whose `Write`, `WriteAt`, `ReadFrom` and `Truncate` all
 refuse to grow it past `wa.maxInboundCiphertextBytes` (16MiB + 4KiB of
-AES-CBC/MAC slack). A refusal is labelled `too_large` only when one media
-host's response is itself over the cap; whatsmeow appends a second host's
-response after a failed first one without rewinding, and a cap crossed that way
-is a corrupt download, reported as `fetch_failed`. That list matters: `io.Copy` — which is what whatsmeow
+AES-CBC/MAC slack). whatsmeow tries every media host WhatsApp offers, moving
+on after a failed attempt without rewinding the file. So a refusal is labelled
+`too_large` when one host's response is itself over the cap — and stays
+`too_large` for every later host on that file — while two normal-sized
+responses that cross the cap only between them are a corrupt download,
+reported as `fetch_failed`. That list matters: `io.Copy` — which is what whatsmeow
 calls — uses the destination's `ReadFrom` when it has one, and a first version
 of this type that embedded `*os.File` inherited one and was bypassed entirely.
 The type embeds nothing now, and is deliberately not an `*os.File`, so

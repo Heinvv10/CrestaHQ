@@ -32,10 +32,16 @@ const maxInboundCiphertextBytes = maxInboundMediaBytes + 4096
 
 // errMediaTooLarge aborts a download the moment it grows past the cap.
 //
-// It is returned from cappedFile.Write, so it surfaces out of whatsmeow's
-// io.Copy. whatsmeow's shouldRetryMediaDownload does not match it (it is
-// neither a net.Error nor an HTTP error), so the download fails immediately
-// rather than being retried five times against the same oversize file.
+// It is returned from cappedFile's growth methods, so it surfaces out of
+// whatsmeow's io.Copy. whatsmeow's shouldRetryMediaDownload does not match it
+// (neither a net.Error nor an HTTP error), so the SAME host is not retried.
+// It is NOT an early return from the host loop, though: DownloadMediaWithPathToFile
+// (download-to-file.go:102-118) returns early only on success,
+// ErrInvalidMediaSHA256, 403/404/410 and context.Canceled, so an oversize file
+// is attempted once on every media host WhatsApp offers, each attempt refused
+// at the cap. That is bounded work, and it is why cappedFile makes this error
+// sticky: whatsmeow reports the LAST host's error, and that host's refusal
+// must still say too large.
 var errMediaTooLarge = errors.New("wa: inbound media exceeded the cap mid-download")
 
 // errMediaCorruptOverflow refuses growth past the cap that was caused by
@@ -126,6 +132,8 @@ type cappedFile struct {
 	f     *os.File
 	limit int64
 	pos   int64
+	// tooLarge latches once errMediaTooLarge has been returned. See grow.
+	tooLarge bool
 	// runStart is the offset the current ReadFrom began at. whatsmeow makes
 	// exactly one io.Copy — so exactly one ReadFrom — per media host attempt,
 	// which makes this the one place a response boundary is observable. It is
@@ -139,11 +147,23 @@ func (c *cappedFile) grow(end int64) error {
 	if end <= c.limit {
 		return nil
 	}
-	// Refused either way — the disk bound does not care why. The label does:
-	// only a single response that is itself over the cap is "too large".
+	// Refused either way — the disk bound does not care why. The label does.
+	//
+	// Too large is STICKY. whatsmeow tries the next host after an oversize
+	// refusal without rewinding, so host 2's first chunk crosses the cap
+	// having written only ~32KiB itself — indistinguishable, from here, from
+	// two normal responses crossing it together. whatsmeow then reports that
+	// last host's error. Once any response on this file has been refused as
+	// too large, the file is too large.
+	if c.tooLarge {
+		return errMediaTooLarge
+	}
+	// Otherwise only a single response that is itself over the cap is "too
+	// large"; normal responses appended across a host switch are corrupt.
 	if c.runStart > 0 && end-c.runStart <= c.limit {
 		return errMediaCorruptOverflow
 	}
+	c.tooLarge = true
 	return errMediaTooLarge
 }
 

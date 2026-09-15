@@ -255,6 +255,24 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 //     inside a third-party library, so the fix is to never be slow on that
 //     goroutine.
 func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
+	// The intake lock is held from here to wg.Add, so "closed" cannot change
+	// between the check and the Add — see Fanout.closed.
+	f.inFlightMu.Lock()
+
+	// Closed intake is checked FIRST, before the watermark and before
+	// RecordInbound. A message arriving now cannot be acked (the socket is
+	// gone), so WhatsApp redelivers it after the restart and it is recorded
+	// then. Recording it now instead would raise the watermark: with two such
+	// messages, the newer's timestamp becomes the watermark and the older is
+	// dropped as history on redelivery — permanently, because this bridge
+	// stores no body.
+	if f.closed {
+		f.inFlightMu.Unlock()
+		log.Printf("ALERT inbound arrived during shutdown jid=%s len=%s — not recorded, not forwarded; "+
+			"WhatsApp redelivers it after restart", redact.JID(jid), redact.Body(text))
+		return
+	}
+
 	// Before RecordInbound, or this very message raises the watermark above
 	// itself and every message looks like history.
 	f.refreshWatermark()
@@ -275,12 +293,14 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(
 	// non-owner messages during the window would otherwise exhaust the cap and
 	// the owner's genuinely new message would be the one dropped.
 	if !f.fromOwner(jid) {
+		f.inFlightMu.Unlock()
 		log.Printf("inbound from non-owner jid=%s len=%s — recorded, not forwarded",
 			redact.JID(jid), redact.Body(text))
 		return
 	}
 
 	if f.inReplayWindow() && !f.admitDuringReplay(jid, text, at) {
+		f.inFlightMu.Unlock()
 		return
 	}
 
@@ -291,15 +311,6 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(
 		"at":        at.UTC().Format(time.RFC3339),
 	}
 
-	f.inFlightMu.Lock()
-	if f.closed {
-		f.inFlightMu.Unlock()
-		// Recorded above, so reply-only still knows this contact. Not posted:
-		// the drain budget was set before this arrived and cannot fund it.
-		log.Printf("ALERT inbound arrived during shutdown jid=%s len=%s — recorded, not forwarded",
-			redact.JID(jid), redact.Body(text))
-		return
-	}
 	f.wg.Add(1)
 	f.inFlight[redact.JID(jid)]++
 	f.inFlightMu.Unlock()
