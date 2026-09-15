@@ -11,7 +11,8 @@ import { ONE_PX_PNG } from "../lib/wa";
  * fixture owner (folder → upload → rename → move → open folder → delete),
  * checking Firestore and the bucket at each step so a UI that only re-renders
  * locally fails. Test 2 proves storage.rules fence objects by sub-account: a
- * member of SECONDARY reads SECONDARY's object and is refused PRIMARY's.
+ * member of SECONDARY reads SECONDARY's object and is refused PRIMARY's, and
+ * may upload only once their membership role is admin.
  */
 
 /** Bucket delete, fenced to the two fixture sub-accounts' media prefixes. */
@@ -114,13 +115,14 @@ test("owner creates a folder, uploads, renames, moves, and deletes a file", asyn
   }
 });
 
-test("storage.rules: a SECONDARY member reads SECONDARY's object, not PRIMARY's", async () => {
+test("storage.rules: a SECONDARY member reads SECONDARY's object, not PRIMARY's; only an admin uploads", async () => {
   const env = readEnv();
   const [primary, secondary] = fixtureSubAccountIds();
   const bucket = adminBucket();
   const stamp = Date.now();
   const primaryPath = `media/${primary}/${randomUUID()}/e2e-${stamp}.png`;
   const secondaryPath = `media/${secondary}/${randomUUID()}/e2e-${stamp}.png`;
+  const uploadPath = `media/${secondary}/${randomUUID()}/x.png`;
   const email = `e2e-media-${stamp}@example.com`;
   const password = randomBytes(18).toString("base64url");
   let uid: string | null = null;
@@ -173,8 +175,26 @@ test("storage.rules: a SECONDARY member reads SECONDARY's object, not PRIMARY's"
       );
     expect((await read(primaryPath)).status, "member of SECONDARY read PRIMARY's object").toBe(403);
     expect((await read(secondaryPath)).status, "member could not read their own sub-account's object").toBe(200);
+
+    // The create rule: a collaborator may read but not upload; the same
+    // request succeeds once the membership row says admin. The rules read the
+    // row on each request, so no new token is needed.
+    const upload = () =>
+      fetch(
+        `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o?name=${encodeURIComponent(uploadPath)}`,
+        {
+          method: "POST",
+          headers: { Authorization: `Firebase ${idToken}`, "Content-Type": "image/png" },
+          body: new Uint8Array(ONE_PX_PNG),
+        },
+      );
+    expect((await upload()).status, "a collaborator uploaded to the library").toBe(403);
+    expect((await bucket.file(uploadPath).exists())[0]).toBe(false);
+    await memberRef().update({ role: "admin", updatedAt: FieldValue.serverTimestamp() });
+    expect((await upload()).status, "an admin could not upload to the library").toBe(200);
+    expect((await bucket.file(uploadPath).exists())[0]).toBe(true);
   } finally {
-    for (const path of [primaryPath, secondaryPath]) await deleteFixtureObject(path);
+    for (const path of [primaryPath, secondaryPath, uploadPath]) await deleteFixtureObject(path);
     if (uid) {
       await deleteScoped(memberRef());
       // Only the account this test created — its uid came from createUser above.

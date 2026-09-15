@@ -45,10 +45,8 @@ Test 2 (storage.rules cross-tenant):
 | PRIMARY read → 403 | `storage.rules` media `allow read: if request.auth != null;` |
 | SECONDARY read → 200 | `storage.rules` `isMember()`: compare `.data.status == "removed"` |
 
-Not covered by any spec: `allow create` now requires owner OR member with
-`role == "admin"` (a collaborator can read but not upload). Adding a third E2E
-case (collaborator PUT → 403) is the way to prove it; mutation would be
-`isAdmin()` → `isMember()`.
+| collaborator upload → 403 | `storage.rules` `allow create: if (isOwner() \|\| isMember())` (drop the admin role check) |
+| admin upload → 200 | `storage.rules` `isAdmin()`: compare `member().role == "owner"` |
 
 Note: the storage rules must be DEPLOYED for test 2 (and for the owner upload
 in test 1) — `firebase deploy --only storage,firestore:rules`. The first deploy
