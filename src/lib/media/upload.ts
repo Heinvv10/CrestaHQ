@@ -52,7 +52,7 @@ export async function uploadMediaFile(
   });
   const downloadUrl = await getDownloadURL(storageRef);
 
-  const res = await fetch(`/api/sub-accounts/${subAccountId}/media`, {
+  const res = await fetch(`/api/sub-accounts/${subAccountId}/mediaz`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
