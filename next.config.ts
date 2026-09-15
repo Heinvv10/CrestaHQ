@@ -19,10 +19,17 @@ const nextConfig: NextConfig = {
     // route handler then reads the truncated copy, silently, with no error.
     // The wa-agent-bridge posts a 16 MiB attachment as ~21.5 MiB of base64 JSON
     // to /api/webhooks/whatsapp/bridge/*; truncated, that body fails the HMAC
-    // and the WHOLE message is lost, text included. The composer's attachment
-    // path (/api/comms/whatsapp/send, base64 in JSON) hits the same cap above
-    // ~7.5 MiB. 24 MB = 16 MiB × 4/3 + envelope. Build-time: takes effect on
-    // the next deploy. Reproduced on Next 15.5.12 (PR #148).
+    // (403) and the file is lost — the bridge then re-posts text-only, so the
+    // text survives. The composer's attachment path (/api/comms/whatsapp/send,
+    // base64 in JSON) hits the same cap above ~7.5 MiB. 24 MB = 16 MiB × 4/3 +
+    // envelope. Build-time: takes effect on the next deploy. Reproduced on
+    // Next 15.5.12 (PR #148).
+    //
+    // Trade-off, accepted: Next has no per-route form of this, so EVERY
+    // middleware-matched route may now buffer up to 24 MB (was 10 MB) for an
+    // unauthenticated request — ~2.4x the memory an abusive client can pin
+    // per request, including the bridge webhook, which must read the raw body
+    // before it can check the HMAC. No route was found to become exploitable.
     middlewareClientMaxBodySize: "24mb",
   },
   async headers() {
