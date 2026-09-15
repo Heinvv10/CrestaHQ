@@ -21,6 +21,7 @@ import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { MessageDoc } from "@/types/messages";
+import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
 import { whatsappSenderNumber } from "@/lib/comms/whatsapp/sender-configured";
 import {
   capabilitiesFor,
@@ -199,7 +200,9 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
             </p>
           </div>
         ) : (
-          messages.map((m) => <MessageBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <MessageBubble key={m.id} message={m} contactId={contact.id} />
+          ))
         )}
       </div>
 
@@ -273,7 +276,13 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   );
 }
 
-function MessageBubble({ message }: { message: MessageDoc }) {
+function MessageBubble({
+  message,
+  contactId,
+}: {
+  message: MessageDoc;
+  contactId: string;
+}) {
   const isOutbound = message.direction === "outbound";
   const ts = toDate(message.createdAt);
   return (
@@ -287,6 +296,12 @@ function MessageBubble({ message }: { message: MessageDoc }) {
           message.status === "failed" && "ring-2 ring-destructive",
         )}
       >
+        <WhatsappMediaAttachment
+          contactId={contactId}
+          messageId={message.id}
+          media={message.media}
+          dropped={message.mediaDropped}
+        />
         <p className="whitespace-pre-wrap break-words">{message.body}</p>
         {message.buttons && message.buttons.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-current/10 pt-2">
