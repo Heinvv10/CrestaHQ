@@ -54,6 +54,26 @@ describe("QContactClient", () => {
     await expect(qc.signIn()).rejects.toThrow("no token headers");
   });
 
+  it("getLocation reads the c__contactlocation entity by id", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/auth/sign_in")) return new Response("{}", { status: 200, headers: tokenHeaders(1) });
+      expect(url).toBe("https://qc.test/api/v2/entities/c__contactlocation/99");
+      return new Response(JSON.stringify({ id: 99, label: "Loc", fields: { c__latitude: -26.1, c__longitude: 28.5 } }), { status: 200 });
+    });
+    const qc = new QContactClient(cfg, fetchImpl as unknown as typeof fetch);
+    const loc = await qc.getLocation(99);
+    expect(loc.fields).toEqual({ c__latitude: -26.1, c__longitude: 28.5 });
+  });
+
+  it("getLocation throws on a non-2xx (e.g. a pin that no longer exists)", async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.endsWith("/auth/sign_in")
+        ? new Response("{}", { status: 200, headers: tokenHeaders(1) })
+        : new Response("", { status: 404 }));
+    const qc = new QContactClient(cfg, fetchImpl as unknown as typeof fetch);
+    await expect(qc.getLocation(99)).rejects.toThrow("HTTP 404");
+  });
+
   it("follows pagination.next until it is null", async () => {
     const pages: Record<string, { ids: number[]; next: number | null }> = {
       "1": { ids: [1, 2], next: 2 }, "2": { ids: [3, 4], next: 3 }, "3": { ids: [5], next: null },

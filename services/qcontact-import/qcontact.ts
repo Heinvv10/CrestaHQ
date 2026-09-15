@@ -27,6 +27,19 @@ export type ContactDetail = {
   fields: Record<string, unknown>;
 };
 
+/**
+ * A `c__contactlocation` entity — what a case's `c__location_pin` id
+ * resolves to. Carries `c__latitude`/`c__longitude` plus
+ * `c__google_maps_url`, `c__pop_id`, `c__community_name`,
+ * `c__address_line_1`/`c__address_line_2`, `c__locationtype`,
+ * `c__installrequest` (only lat/lng are read today).
+ */
+export type LocationDetail = {
+  id: number;
+  label: string;
+  fields: Record<string, unknown>;
+};
+
 export type QContactConfig = { baseUrl: string; email: string; password: string };
 
 // Erasable-syntax only (node --experimental-strip-types): no parameter
@@ -96,5 +109,9 @@ export class QContactClient {
 
   getContact(id: number): Promise<ContactDetail> {
     return this.get<ContactDetail>(`/api/v2/entities/Contact/${id}`);
+  }
+
+  getLocation(id: number): Promise<LocationDetail> {
+    return this.get<LocationDetail>(`/api/v2/entities/c__contactlocation/${id}`);
   }
 }

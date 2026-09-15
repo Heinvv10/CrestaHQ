@@ -30,11 +30,43 @@ case's linked Contact (`telephone`, `e164:27…`); the case's own
 | `custom_fields.qcontact_case_id` | case id |
 | `custom_fields.qcontact_case_ref` | case `reference` (`FT…`) |
 | `custom_fields.qcontact_location_pin` | case `c__location_pin` |
+| `custom_fields.qcontact_location_gps` | resolved from `c__location_pin`, see below |
 | `custom_fields.velocity_dr_number` | Contact `c__drop_number` |
 
 The upsert refuses unknown custom-field keys, so every key above must exist
 as a contact custom field on the Velocity sub-account before the first real
 run. A case whose contact has no phone or name is skipped and logged.
+
+### Location pin → coordinates
+
+`c__location_pin` on a case is **not** coordinates — it is the id of a
+separate `c__contactlocation` entity, resolved via
+`GET /api/v2/entities/c__contactlocation/{pin}` (`QContactClient#getLocation`
+in `qcontact.ts`). That record's `c__latitude`/`c__longitude` are the
+customer's real coordinates; `qcontact_location_pin` keeps storing the raw id
+as-is (other tooling may already rely on it), while `qcontact_location_gps`
+gets the parsed `"<lat>,<lng>"` — a **dedicated** field, not
+`velocity_install_gps`. That field is populated later, from a field worker's
+install-completion flow, and can legitimately differ from the pin's
+coordinates (an install can happen at a different spot than the case's
+initial pin, e.g. a different sub-unit on the same property); overwriting it
+with a pre-install pin value would conflate two distinct,
+independently-sourced facts. `qcontact_location_gps` must be created as a
+contact custom field on the Velocity sub-account the same way the others are
+(see above) before it will start being written.
+
+Coordinates are only written when both `c__latitude` and `c__longitude`
+parse as finite numbers inside South Africa's bounding box (lat -35..-22,
+lng 16..33) — see `gpsFromLocationFields` in `map.ts`. Anything else (out of
+bounds, non-numeric, missing) is dropped silently from the upsert and
+counted under `summary.locationsSkippedInvalid`.
+
+Each pin is resolved **at most once per run**, cached by pin id, even when
+multiple fresh cases share it. A failed lookup (404, 500, etc.) does not
+fail the case import — the case still imports without coordinates, and it's
+counted under `summary.locationsLookupFailed` with a log line naming the
+case ref (never a phone number). Successful resolutions are counted under
+`summary.locationsResolved`.
 
 ## Deals
 
