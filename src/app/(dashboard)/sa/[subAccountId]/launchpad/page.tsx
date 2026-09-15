@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Circle, Loader2 } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, MinusCircle } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +16,7 @@ import {
  * so it can't drift from what the feature it points at actually did.
  */
 export default function LaunchpadPage() {
-  const { subAccountId, subAccount, loading, saPath } = useSubAccount();
+  const { subAccountId, subAccount, loading, isAdmin, saPath } = useSubAccount();
   const [counts, setCounts] = useState<LaunchpadCounts | null>(null);
   const [countsError, setCountsError] = useState(false);
 
@@ -60,10 +60,14 @@ export default function LaunchpadPage() {
     );
   }
 
-  const items = buildLaunchpadChecklist(subAccount, counts);
-  const done = items.filter((i) => i.done).length;
-  const total = items.length;
-  const percent = Math.round((done / total) * 100);
+  const items = buildLaunchpadChecklist(subAccount, counts, { isAdmin });
+  // An item this viewer cannot complete (locked agency gate, not an admin)
+  // is excluded from the denominator — it was never "1 of 7 to do" for them,
+  // it's just not theirs to do.
+  const available = items.filter((i) => i.available);
+  const done = available.filter((i) => i.done).length;
+  const total = available.length;
+  const percent = total === 0 ? 0 : Math.round((done / total) * 100);
 
   return (
     <div className="mx-auto w-full max-w-3xl">
@@ -104,23 +108,26 @@ export default function LaunchpadPage() {
             data-testid="launchpad-item"
             data-id={item.id}
             data-done={item.done}
+            data-available={item.available}
           >
             {item.done ? (
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
-            ) : (
+            ) : item.available ? (
               <Circle className="text-muted-foreground mt-0.5 h-5 w-5 shrink-0" />
+            ) : (
+              <MinusCircle className="text-muted-foreground/50 mt-0.5 h-5 w-5 shrink-0" />
             )}
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium">{item.title}</p>
               <p className="text-muted-foreground mt-0.5 text-xs">
-                {item.description}
+                {item.done || item.available ? item.description : item.reason}
               </p>
             </div>
             {item.done ? (
               <span className="text-muted-foreground shrink-0 self-center text-xs font-medium">
                 Done
               </span>
-            ) : (
+            ) : item.available ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -129,6 +136,10 @@ export default function LaunchpadPage() {
               >
                 Set up
               </Button>
+            ) : (
+              <span className="text-muted-foreground/70 shrink-0 self-center text-xs font-medium">
+                Not available
+              </span>
             )}
           </div>
         ))}

@@ -48,11 +48,16 @@ directly after Dashboard.
   done if ANY member has a connection with `status === "connected"` — the
   item is "can this workspace's bookings reach a calendar", not "did the
   current caller connect one".
-- **Settings CTAs land on `/dashboard/settings` (Messaging tab) for email and
-  GBP**, not a deep-linked tab — that page has no query-param tab routing
-  today (`Tabs defaultValue="admin"`, no `useSearchParams`), and adding one
-  was out of scope for this ticket. WhatsApp has its own dedicated page
-  (`/dashboard/settings/whatsapp`) so that CTA does deep-link.
+- **Settings CTAs deep-link to the Messaging tab.** Originally this said
+  "lands on `/dashboard/settings`, not deep-linked — out of scope" — wrong,
+  and caught by absence review: that page opens on the Admin tab by default,
+  so email/GBP's cards (on the Messaging tab) were invisible on arrival.
+  Fixed minimally: the settings page now reads `?tab=` and seeds the (still
+  uncontrolled) `Tabs`'s `defaultValue` with it when it names a real tab,
+  falling back to `"admin"` otherwise — see "PR #156 absence review" below.
+  Email and GBP CTAs now point at `/dashboard/settings?tab=messaging`.
+  WhatsApp still points at its own dedicated page
+  (`/dashboard/settings/whatsapp`), unchanged.
 
 ## PR #156 review fix — WhatsApp missed the Twilio rail
 
@@ -87,6 +92,69 @@ leftover-Twilio-meta-after-migrating-to-Cloud case — all against the real
 route uses `.count().get()` on four collections) so the route could be tested
 against the same in-memory Firestore fake other API route tests use, instead
 of a one-off harness.
+
+## PR #156 absence review — two LOWs
+
+**(1) Messaging-tab deep link.** `src/app/(dashboard)/sa/[subAccountId]/dashboard/settings/page.tsx`
+gained a `?tab=` query param: `useSearchParams().get("tab")`, validated
+against the five real tab values, seeds `Tabs`'s `defaultValue` (Base UI's
+Tabs is uncontrolled, so this is read once on first render — no controlled
+state, no extra re-renders). An unrecognised or missing `tab` falls back to
+`"admin"`, unchanged from before. `checklist.ts`'s email/gbp hrefs now read
+`/dashboard/settings?tab=messaging`.
+
+**(2) "Not available" instead of a dead CTA.** Added `available: boolean` +
+`reason: string | null` to `LaunchpadItem`. Scoped to the two items the
+review named (email, GBP) — WhatsApp/booking/contacts/forms/workflows are
+untouched and always `available: true`, since none of those cards self-gate
+the way email and GBP do and the review didn't ask for them.
+
+- GBP: unavailable when the viewer isn't a sub-account admin, OR
+  `googleEnabledByAgency !== true` — both read straight off
+  `sub-account-google-section.tsx`'s own render guard (`if (!isAdmin) return
+  null;` then the gate check before the card body).
+- Email: checked what `sub-account-smtp-section.tsx` actually requires —
+  `isAdmin` only, no agency gate at all. So `emailDomainEnabledByAgency`
+  being off never blocks setup for an admin; SMTP is always the fallback
+  path. The predicate is still written as the full OR (domain option, SMTP
+  option) rather than collapsed to `viewer.isAdmin`, so it keeps reading
+  correctly if SMTP ever grows its own gate — but today it's unavailable
+  only to a non-admin viewer.
+- **Once an item is done, it stays `available: true`** regardless of the
+  live gate state — a connection made before a gate was later turned off
+  is a completed setup, not something to retroactively hide. This also
+  means `unavailableReason` is only ever computed for a not-yet-done item,
+  which is the only case with a dead CTA to replace.
+- The progress denominator now excludes unavailable items:
+  `total`/`done` on `launchpad-progress` are computed over
+  `items.filter(i => i.available)` — an item that isn't the viewer's to do
+  was never part of their "N of 7".
+- Page: unavailable+not-done items render a muted `MinusCircle`, the
+  `reason` text in place of the description, a "Not available" label
+  instead of the "Set up" button, and no button — `data-available="false"`
+  on the item wrapper.
+
+New `LaunchpadViewer` param on `buildLaunchpadChecklist(sub, counts, viewer)`
+carries only `{ isAdmin: boolean }`, read from `useSubAccount()`'s existing
+`isAdmin` in the page — no new context or fetch needed.
+
+Tests added to `checklist.test.ts` (10 new cases): email available-with-gate-off-for-admin,
+unavailable-for-non-admin, stays-available-once-done; GBP unavailable-gate-off,
+unavailable-non-admin-even-with-gate-on, available-admin-with-gate-on,
+stays-available-once-done-even-with-gate-later-off; whatsapp always-available
+sanity check. `e2e/specs/launchpad.spec.ts` gained a second test (written,
+NOT run): GBP gate off + disconnected → `data-available="false"`, the reason
+text visible, no "Set up" button; email domain gate off → still
+`data-available="true"` (proving the SMTP-fallback read, not just the happy
+path). Both checked against the E2E identity (the fixture agency owner, an
+admin) — the non-admin half of each predicate has no second, non-admin login
+session in this suite to drive it end to end, so that half is unit-tested
+only.
+
+Mutation-tested the two new predicates the same way as the rest (see below):
+flipping `emailAvailability`'s `domainOption || smtpOption` to `&&` and
+`gbpAvailability`'s gate check from `!==` to `===` both turned the relevant
+availability tests red; restored, diffed clean.
 
 ## Mutation testing (every predicate, restored after each)
 
@@ -135,7 +203,12 @@ be true`), all 8 others stayed green. Restored, diffed clean.
 ## Gates
 
 `pnpm ci:check` (lint + typecheck + test + build) green — see command tails
-in the branch's session log. 4487 unit/vitest tests pass, including the 18 in
-`checklist.test.ts`. `pnpm exec tsc --noEmit` clean across `src/` and `e2e/`.
-No `console.log` added. All new files ≤300 lines
-(`checklist.ts` 133, `checklist.test.ts` 148, `route.ts` 66, `page.tsx` 138).
+in the branch's session log. 4502 unit/vitest tests pass (406 files),
+including the 24 in `checklist.test.ts` and the 9 in `route.test.ts`.
+`pnpm exec tsc --noEmit` clean across `src/` and `e2e/`. No `console.log`
+added. All new files ≤300 lines (`checklist.ts` 201, `checklist.test.ts` 207,
+`route.ts` 77, `route.test.ts` 125, `page.tsx` 149). The one pre-existing
+file touched, `dashboard/settings/page.tsx`, was already 353 lines before
+this branch (a large existing settings page, many unrelated sections) —
+added 11 lines surgically for the `?tab=` fix rather than refactoring a file
+outside this ticket's scope.

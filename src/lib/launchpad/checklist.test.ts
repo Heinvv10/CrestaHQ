@@ -3,6 +3,7 @@ import {
   buildLaunchpadChecklist,
   type LaunchpadCounts,
   type LaunchpadSubAccount,
+  type LaunchpadViewer,
 } from "./checklist";
 
 const emptySub: LaunchpadSubAccount = {};
@@ -14,16 +15,23 @@ const zeroCounts: LaunchpadCounts = {
   googleCalendarConnected: false,
   whatsappConnected: false,
 };
+const admin: LaunchpadViewer = { isAdmin: true };
+const nonAdmin: LaunchpadViewer = { isAdmin: false };
 
-function itemFor(id: string, sub: LaunchpadSubAccount, counts: LaunchpadCounts) {
-  const item = buildLaunchpadChecklist(sub, counts).find((i) => i.id === id);
+function itemFor(
+  id: string,
+  sub: LaunchpadSubAccount,
+  counts: LaunchpadCounts,
+  viewer: LaunchpadViewer = admin,
+) {
+  const item = buildLaunchpadChecklist(sub, counts, viewer).find((i) => i.id === id);
   if (!item) throw new Error(`no launchpad item ${id}`);
   return item;
 }
 
 describe("buildLaunchpadChecklist", () => {
   it("returns all 7 items, none done for an empty sub-account", () => {
-    const items = buildLaunchpadChecklist(emptySub, zeroCounts);
+    const items = buildLaunchpadChecklist(emptySub, zeroCounts, admin);
     expect(items).toHaveLength(7);
     expect(items.every((i) => !i.done)).toBe(true);
   });
@@ -62,6 +70,28 @@ describe("buildLaunchpadChecklist", () => {
         itemFor("email", { resendConfig: { status: "failed" } }, zeroCounts).done,
       ).toBe(false);
     });
+
+    describe("availability", () => {
+      it("is available to an admin even with the domain gate off (SMTP has no gate)", () => {
+        const item = itemFor("email", { emailDomainEnabledByAgency: false }, zeroCounts, admin);
+        expect(item.available).toBe(true);
+        expect(item.reason).toBeNull();
+      });
+
+      it("is unavailable to a non-admin viewer, with a reason", () => {
+        const item = itemFor("email", emptySub, zeroCounts, nonAdmin);
+        expect(item.available).toBe(false);
+        expect(item.reason).toBe("Only a workspace admin can set this up.");
+      });
+
+      it("stays available once done, even for a non-admin viewer", () => {
+        const sub: LaunchpadSubAccount = { resendConfig: { status: "verified" } };
+        const item = itemFor("email", sub, zeroCounts, nonAdmin);
+        expect(item.done).toBe(true);
+        expect(item.available).toBe(true);
+        expect(item.reason).toBeNull();
+      });
+    });
   });
 
   describe("whatsapp", () => {
@@ -80,6 +110,10 @@ describe("buildLaunchpadChecklist", () => {
     it("is not done when the route reports no configured sender", () => {
       expect(itemFor("whatsapp", emptySub, zeroCounts).done).toBe(false);
     });
+
+    it("is always available (out of scope for the gating review round)", () => {
+      expect(itemFor("whatsapp", emptySub, zeroCounts, nonAdmin).available).toBe(true);
+    });
   });
 
   describe("gbp", () => {
@@ -96,6 +130,42 @@ describe("buildLaunchpadChecklist", () => {
     it("is not done when connected is explicitly false-shaped (absent)", () => {
       const sub: LaunchpadSubAccount = { googleConnectionMeta: {} };
       expect(itemFor("gbp", sub, zeroCounts).done).toBe(false);
+    });
+
+    describe("availability", () => {
+      it("is unavailable when the agency gate is off, with a reason", () => {
+        const item = itemFor("gbp", { googleEnabledByAgency: false }, zeroCounts, admin);
+        expect(item.available).toBe(false);
+        expect(item.reason).toBe("Turned off by your agency.");
+      });
+
+      it("is unavailable to a non-admin viewer even with the gate on", () => {
+        const item = itemFor(
+          "gbp",
+          { googleEnabledByAgency: true },
+          zeroCounts,
+          nonAdmin,
+        );
+        expect(item.available).toBe(false);
+        expect(item.reason).toBe("Only a workspace admin can set this up.");
+      });
+
+      it("is available to an admin with the gate on", () => {
+        const item = itemFor("gbp", { googleEnabledByAgency: true }, zeroCounts, admin);
+        expect(item.available).toBe(true);
+        expect(item.reason).toBeNull();
+      });
+
+      it("stays available once done, even with the gate later turned off", () => {
+        const sub: LaunchpadSubAccount = {
+          googleConnectionMeta: { connected: true },
+          googleEnabledByAgency: false,
+        };
+        const item = itemFor("gbp", sub, zeroCounts, nonAdmin);
+        expect(item.done).toBe(true);
+        expect(item.available).toBe(true);
+        expect(item.reason).toBeNull();
+      });
     });
   });
 

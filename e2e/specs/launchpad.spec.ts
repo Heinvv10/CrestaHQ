@@ -101,3 +101,51 @@ test("reads real connection state, not a stored flag", async ({ page }) => {
     });
   }
 });
+
+test("shows 'Not available' instead of a dead CTA when an item can't be completed here", async ({
+  page,
+}) => {
+  // Both cases here are checked against the E2E identity, which is the
+  // fixture agency's OWNER — an admin. That proves the agency-gate half of
+  // each predicate; the "not a sub-account admin" half is unit-tested in
+  // checklist.test.ts (no second, non-admin login session exists in this
+  // suite to drive it end to end).
+  const env = readEnv();
+  const sa = env.E2E_SUBACCOUNT_ID;
+  await assertFixtureAgency(sa);
+
+  const db = adminDb();
+  const subRef = db.doc(`subAccounts/${sa}`);
+  const before = (await subRef.get()).data() ?? {};
+  const originalGoogleConnectionMeta = before.googleConnectionMeta ?? null;
+  const originalGoogleGate = before.googleEnabledByAgency ?? null;
+  const originalEmailDomainGate = before.emailDomainEnabledByAgency ?? null;
+
+  const gbpItem = () =>
+    page.getByTestId("launchpad-item").filter({ has: page.getByText("Connect Google Business Profile") });
+  const emailItem = () =>
+    page.getByTestId("launchpad-item").filter({ has: page.getByText("Connect email sending") });
+
+  try {
+    // GBP: agency gate off, not connected -> "Not available", excluded from
+    // the total (data-total drops by one from whatever it was).
+    await subRef.update({ googleConnectionMeta: null, googleEnabledByAgency: false });
+    await page.goto(`/sa/${sa}/launchpad`);
+    await expect(gbpItem()).toHaveAttribute("data-available", "false", { timeout: 30_000 });
+    await expect(gbpItem()).toHaveAttribute("data-done", "false");
+    await expect(gbpItem().getByText("Turned off by your agency.")).toBeVisible();
+    await expect(gbpItem().getByRole("button", { name: "Set up" })).toHaveCount(0);
+
+    // Email: the domain gate being off does NOT make it unavailable — SMTP
+    // has no agency gate, so it's still available to this admin.
+    await subRef.update({ emailDomainEnabledByAgency: false });
+    await page.reload();
+    await expect(emailItem()).toHaveAttribute("data-available", "true", { timeout: 30_000 });
+  } finally {
+    await subRef.update({
+      googleConnectionMeta: originalGoogleConnectionMeta ?? FieldValue.delete(),
+      googleEnabledByAgency: originalGoogleGate ?? FieldValue.delete(),
+      emailDomainEnabledByAgency: originalEmailDomainGate ?? FieldValue.delete(),
+    });
+  }
+});
