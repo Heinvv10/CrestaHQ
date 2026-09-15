@@ -20,10 +20,12 @@ jobs:
     timeout-minutes: 30
     env:
       # No build step: the target is already running. Only the values the
-      # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK,
+      # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK
+      # (+ its Storage bucket),
       # the fixture ids, and the QStash key the enrol spec signs with.
       PLAYWRIGHT_BASE_URL: https://crm.crestahq.com
       NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
       FIREBASE_ADMIN_PROJECT_ID: ${{ secrets.FIREBASE_ADMIN_PROJECT_ID }}
       FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
       FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}

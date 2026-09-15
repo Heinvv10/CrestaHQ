@@ -507,6 +507,25 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Media Library files + folders. Member-readable (the page and the
+      // picker subscribe live); every write goes through the Admin-SDK
+      // routes at /api/sub-accounts/[id]/media — same model as customFields.
+      // The bytes live in Storage under media/{subAccountId}/… (storage.rules).
+      match /media/{mediaId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+      match /mediaFolders/{folderId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
       // Deal pipelines (stages embedded). Server-only: the dashboard reads
       // them through GET /api/sub-accounts/[id]/pipelines (which also seeds
       // the default), and every write goes through those Admin-SDK routes.

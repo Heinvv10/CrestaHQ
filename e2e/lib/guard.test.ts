@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 // to be present, so the whole contract is filled in.
 beforeAll(() => {
   process.env.NEXT_PUBLIC_FIREBASE_API_KEY = "test-api-key";
+  process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET = "test-bucket";
   process.env.FIREBASE_ADMIN_PROJECT_ID = "test-project";
   process.env.FIREBASE_ADMIN_CLIENT_EMAIL = "test@example.com";
   process.env.FIREBASE_ADMIN_PRIVATE_KEY = "test-key";
