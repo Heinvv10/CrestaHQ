@@ -1,3 +1,5 @@
+import type { WhatsappMediaKind } from "@/types/whatsapp-media";
+
 /**
  * The WhatsApp rail contract. Three implementations are planned:
  *
@@ -40,8 +42,13 @@ export interface WhatsAppProviderCapabilities {
    * comparison happened to produce.
    */
   supportsMedia: boolean;
-  /** Decoded-byte cap for one attachment; 0 when `supportsMedia` is false. */
-  maxMediaBytes: number;
+  /**
+   * Decoded-byte cap for one attachment, per message kind
+   * (`mediaKindForMime`); all 0 when `supportsMedia` is false. Per kind
+   * because Meta's caps differ by kind, and a file the picker admits must
+   * not then fail at Graph after a full upload.
+   */
+  maxMediaBytes: Readonly<Record<WhatsappMediaKind, number>>;
   /** Exact MIME types this rail will put on the wire. Empty when it sends none. */
   mediaMimeTypes: readonly string[];
 }
@@ -56,7 +63,7 @@ export type WhatsAppProviderId = "twilio" | "cloud" | "bridge";
  * values that have changed once. provider.test.ts parses the Go source and
  * fails when the two disagree.
  */
-const BRIDGE_MAX_MEDIA_BYTES = 8 << 20;
+const BRIDGE_MAX_MEDIA_BYTES = sameCapForEveryKind(8 << 20);
 const BRIDGE_MEDIA_MIME_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
@@ -67,10 +74,26 @@ const BRIDGE_MEDIA_MIME_TYPES: readonly string[] = [
  * What the Cloud rail will upload. A subset of Meta's supported types: audio
  * is left out because Meta accepts no caption on an audio message, and the
  * composer always sends the typed text as the caption — an audio file would
- * silently lose it. 16 MiB is Meta's cap for audio/video; images are capped
- * lower (5 MB) by Meta itself and come back as a 400 the operator can read.
+ * silently lose it.
+ *
+ * Caps per Meta's media documentation (as encoded by both
+ * @whatsapp-cloudapi/client and @kapso/whatsapp-cloud-api, checked
+ * 2026-09-15): image 5 MB, audio 16 MB, video 16 MB, document 100 MB,
+ * sticker 100 KB. Documents are held at 16 MiB here rather than Meta's
+ * 100 MB — that is this app's own request-body and Storage ceiling.
+ * Stickers are never sent from the composer (webp is not listed), so 0.
  */
-const CLOUD_MAX_MEDIA_BYTES = 16 << 20;
+const CLOUD_MAX_MEDIA_BYTES: Readonly<Record<WhatsappMediaKind, number>> = {
+  image: 5 << 20,
+  audio: 16 << 20,
+  video: 16 << 20,
+  document: 16 << 20,
+  sticker: 0,
+};
+
+function sameCapForEveryKind(bytes: number): Readonly<Record<WhatsappMediaKind, number>> {
+  return { image: bytes, audio: bytes, video: bytes, document: bytes, sticker: bytes };
+}
 const CLOUD_MEDIA_MIME_TYPES: readonly string[] = [
   "image/jpeg",
   "image/png",
@@ -88,7 +111,7 @@ export const WHATSAPP_PROVIDER_CAPABILITIES: Record<
     supportsTemplates: true,
     enforcesWindow: true,
     supportsMedia: false,
-    maxMediaBytes: 0,
+    maxMediaBytes: sameCapForEveryKind(0),
     mediaMimeTypes: [],
   },
   cloud: {

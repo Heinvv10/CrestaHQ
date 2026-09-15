@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { capabilitiesFor, type WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { mediaKindForMime } from "@/types/whatsapp-media";
 
 /** What the send route accepts as `attachment`. */
 export interface ComposerAttachment {
@@ -46,14 +47,16 @@ export function WhatsappAttachmentPicker({
   if (!caps.supportsMedia) return null;
 
   async function pick(file: File) {
-    if (file.size > caps.maxMediaBytes) {
-      toast.error(
-        `${file.name} is ${humanSize(file.size)}; the limit is ${humanSize(caps.maxMediaBytes)}.`,
-      );
-      return;
-    }
     if (!caps.mediaMimeTypes.includes(file.type)) {
       toast.error(`${file.name}: this file type cannot be sent on WhatsApp here.`);
+      return;
+    }
+    const kind = mediaKindForMime(file.type);
+    const cap = caps.maxMediaBytes[kind];
+    if (file.size > cap) {
+      toast.error(
+        `${file.name} is ${humanSize(file.size)}; the limit for a ${kind} is ${humanSize(cap)}.`,
+      );
       return;
     }
     const buf = new Uint8Array(await file.arrayBuffer());
@@ -103,7 +106,7 @@ export function WhatsappAttachmentPicker({
           size="sm"
           disabled={disabled}
           onClick={() => inputRef.current?.click()}
-          title={`Attach a file (up to ${humanSize(caps.maxMediaBytes)})`}
+          title="Attach a file"
         >
           <Paperclip className="mr-1 h-3.5 w-3.5" />
           Attach

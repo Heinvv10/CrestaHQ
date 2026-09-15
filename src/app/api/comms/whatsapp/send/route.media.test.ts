@@ -285,17 +285,46 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(messageRow).toBeUndefined();
   });
 
-  it("refuses a file over the Cloud cap before any Graph call", async () => {
-    const big = Buffer.alloc(16 * 1024 * 1024 + 1, 1);
+  it("refuses a 6 MB image before any Graph call — Meta's image cap is 5 MB", async () => {
+    // A picker that admits the file and a Graph call that then refuses it is
+    // a wasted upload and an operator left guessing; the cap is per kind.
+    const sixMb = Buffer.alloc(6 * 1024 * 1024, 1);
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { ...attachment, dataBase64: big.toString("base64") },
+      attachment: { ...attachment, dataBase64: sixMb.toString("base64") },
     });
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_too_large");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(saved).toHaveLength(0);
+  });
+
+  it("accepts a 6 MB PDF — documents are capped at 16 MiB, not the image cap", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA6" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT6" }] }));
+    const sixMb = Buffer.alloc(6 * 1024 * 1024, 1);
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { filename: "big.pdf", contentType: "application/pdf", dataBase64: sixMb.toString("base64") },
+    });
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(messageRow?.media).toMatchObject({ kind: "document", sizeBytes: sixMb.length });
+  });
+
+  it("refuses a file over 16 MiB on every kind", async () => {
+    const big = Buffer.alloc(16 * 1024 * 1024 + 1, 1);
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { filename: "big.pdf", contentType: "application/pdf", dataBase64: big.toString("base64") },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("media_too_large");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refuses a type the Cloud rail does not declare, before any Graph call", async () => {

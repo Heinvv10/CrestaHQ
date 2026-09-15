@@ -217,10 +217,12 @@ export async function sendWhatsappCloud(opts: {
     // composer's picker gets the same answer as one that used it — and an
     // oversized file is never pushed at Graph only to be refused there.
     const bytes = Buffer.from(opts.media.dataBase64, "base64");
-    if (bytes.length > capabilities.maxMediaBytes) {
+    const kind = mediaKindForMime(opts.media.contentType);
+    const cap = capabilities.maxMediaBytes[kind];
+    if (bytes.length > cap) {
       return {
         ok: false,
-        error: `Attachment is ${bytes.length} bytes; the limit is ${capabilities.maxMediaBytes}.`,
+        error: `Attachment is ${bytes.length} bytes; the limit for ${kind} is ${cap}.`,
         providerOutcome: "DEFINITELY_REJECTED",
         providerErrorCode: "media_too_large",
       };
@@ -241,11 +243,7 @@ export async function sendWhatsappCloud(opts: {
       signal: opts.signal,
     });
     if (!up.ok) return up;
-    media = {
-      id: up.mediaId,
-      kind: mediaKindForMime(opts.media.contentType),
-      filename: opts.media.filename,
-    };
+    media = { id: up.mediaId, kind, filename: opts.media.filename };
   }
 
   const body = buildCloudMessageBody(

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import { resolveWhatsAppProviderId, capabilitiesFor } from "./provider";
+import { mediaKindForMime } from "@/types/whatsapp-media";
 
 describe("resolveWhatsAppProviderId", () => {
   it.each([undefined, null, "", "TWILIO", "meta", "garbage"])(
@@ -62,10 +63,13 @@ describe("capabilitiesFor", () => {
     for (const p of ["twilio", "cloud", "bridge"] as const) {
       const c = capabilitiesFor(p);
       if (c.supportsMedia) {
-        expect(c.maxMediaBytes).toBeGreaterThan(0);
+        // Every kind the rail lists a type for has a cap to check it against.
+        for (const t of c.mediaMimeTypes) {
+          expect(c.maxMediaBytes[mediaKindForMime(t)]).toBeGreaterThan(0);
+        }
         expect(c.mediaMimeTypes.length).toBeGreaterThan(0);
       } else {
-        expect(c.maxMediaBytes).toBe(0);
+        expect(Object.values(c.maxMediaBytes).every((n) => n === 0)).toBe(true);
         expect(c.mediaMimeTypes).toEqual([]);
       }
     }
@@ -82,11 +86,22 @@ describe("bridge capabilities agree with the Go bridge", () => {
     "utf8",
   );
 
-  it("maxMediaBytes matches `const maxMediaBytes` in server.go", () => {
+  it("maxMediaBytes matches `const maxMediaBytes` in server.go for every kind", () => {
+    // The Go bridge has ONE cap for all kinds; the per-kind shape here must
+    // restate that same number under every key.
     const m = /^const maxMediaBytes = (\d+) << (\d+)$/m.exec(goSource);
     expect(m, "maxMediaBytes not found in server.go — the shape changed").not.toBeNull();
     const goBytes = Number(m![1]) << Number(m![2]);
-    expect(capabilitiesFor("bridge").maxMediaBytes).toBe(goBytes);
+    const caps = capabilitiesFor("bridge").maxMediaBytes;
+    expect(Object.keys(caps).sort()).toEqual(["audio", "document", "image", "sticker", "video"]);
+    for (const v of Object.values(caps)) expect(v).toBe(goBytes);
+  });
+
+  it("caps Cloud images at Meta's 5 MB, below the 16 MiB the other kinds get", () => {
+    const caps = capabilitiesFor("cloud").maxMediaBytes;
+    expect(caps.image).toBe(5 << 20);
+    expect(caps.video).toBe(16 << 20);
+    expect(caps.document).toBe(16 << 20);
   });
 
   it("mediaMimeTypes matches the keys of `allowedMediaMimeTypes` in server.go", () => {
