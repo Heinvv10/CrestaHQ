@@ -52,8 +52,12 @@ export interface WhatsAppProviderCapabilities {
   /** Exact MIME types this rail will put on the wire. Empty when it sends none. */
   mediaMimeTypes: readonly string[];
   /**
-   * Longest message (UTF-16 length, as `interactive.ts` counts) that may ride
-   * as a file's caption; 0 when `supportsMedia` is false.
+   * Longest message, in Unicode CODE POINTS (`[...text].length`), that may
+   * ride as a file's caption; 0 when `supportsMedia` is false. Code points
+   * because that is what the bridge's `maxTextRunes` counts; UTF-16 length
+   * would block an emoji-heavy caption at half its real allowance. Meta does
+   * not state its counting unit. If it counts more strictly, the worst case
+   * is a clean 400 from Graph after the upload, never a wrong delivery.
    */
   maxMediaCaptionChars: number;
 }

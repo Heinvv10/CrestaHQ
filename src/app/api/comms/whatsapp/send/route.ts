@@ -77,6 +77,17 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    // Standard base64 or nothing. `Buffer.from` decodes garbage leniently —
+    // "data:" becomes three bytes — so a malformed payload would otherwise
+    // reach a customer as a corrupt file. The client check is bypassable;
+    // this is the one that counts. (Non-empty valid base64 always decodes to
+    // at least one byte, and empty is refused above.)
+    if (dataBase64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(dataBase64)) {
+      return NextResponse.json(
+        { error: "attachment dataBase64 is not valid base64.", code: "media_invalid" },
+        { status: 400 },
+      );
+    }
     attachment = { filename, contentType, dataBase64 };
   }
 

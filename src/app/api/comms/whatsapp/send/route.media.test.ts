@@ -347,6 +347,36 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(saved).toHaveLength(0);
   });
 
+  it("counts the caption in code points: 600 emoji go on Cloud", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA8" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT8" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "😀".repeat(600),
+      attachment: { ...attachment, filename: "q.pdf", contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ["a bare data: prefix", "data:"],
+    ["empty", ""],
+    ["invalid characters at a valid length", "da:a"],
+  ])("refuses dataBase64 that is %s before any Graph call", async (_label, dataBase64) => {
+    // Buffer.from decodes "data:" as three bytes; without this a customer
+    // receives a three-byte "PDF".
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, dataBase64 },
+    });
+    expect(res.status).toBe(400);
+    if (dataBase64) expect((await res.json()).code).toBe("media_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+  });
+
   it("sends a caption of exactly 1024 characters", async () => {
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA7" }))

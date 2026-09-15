@@ -54,8 +54,8 @@ class FakeReader {
     this.file = file;
     FakeReader.reads.push(this);
   }
-  finish() {
-    this.result = `data:${this.file!.type};base64,AAEC`;
+  finish(result = `data:${this.file!.type};base64,AAEC`) {
+    this.result = result;
     this.onload?.();
   }
 }
@@ -91,9 +91,9 @@ async function type(text: string) {
   });
 }
 
-async function pickFile() {
+async function pickFile(name = "site.png", bytes = 3) {
   const input = q<HTMLInputElement>('[data-testid="whatsapp-attachment-input"]')!;
-  const file = new File([new Uint8Array([1, 2, 3])], "site.png", { type: "image/png" });
+  const file = new File([new Uint8Array(bytes)], name, { type: "image/png" });
   await act(async () => {
     Object.defineProperty(input, "files", { value: [file], configurable: true });
     input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -170,6 +170,80 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     await clickSend();
     expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/whatsapp/send");
     expect(postedBody()).not.toHaveProperty("attachment");
+  });
+
+  it("does not revive a FINISHED attachment after a channel round-trip", async () => {
+    // Attach, wander off to SMS without sending, come back and type something
+    // unrelated: the file must be gone, not merely hidden while away.
+    await mount();
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish());
+    expect(container.textContent).toContain("site.png");
+    await switchTo("sms");
+    await switchTo("whatsapp");
+    expect(container.textContent).not.toContain("site.png");
+    await type("unrelated");
+    await clickSend();
+    expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/whatsapp/send");
+    expect(postedBody()).not.toHaveProperty("attachment");
+  });
+
+  it("keeps the LATER pick when an earlier read finishes last", async () => {
+    await mount();
+    await type("second one");
+    await pickFile("first.png");
+    await pickFile("second.png");
+    await act(async () => FakeReader.reads[1]!.finish());
+    await act(async () => FakeReader.reads[0]!.finish());
+    expect(container.textContent).toContain("second.png");
+    await clickSend();
+    expect(postedBody().attachment).toMatchObject({ filename: "second.png" });
+  });
+
+  it("clears the attachment after a successful send, so the next message carries none", async () => {
+    await mount();
+    await type("with file");
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish());
+    await clickSend();
+    expect(postedBody()).toHaveProperty("attachment");
+    await type("follow-up");
+    await clickSend();
+    expect(postedBody()).not.toHaveProperty("attachment");
+  });
+
+  it("keeps the attachment after a FAILED send, so the operator can retry it", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: "nope" }) });
+    await mount();
+    await type("with file");
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish());
+    await clickSend();
+    expect(container.textContent).toContain("site.png");
+  });
+
+  it("refuses an empty file without reading it", async () => {
+    await mount();
+    await pickFile("empty.png", 0);
+    expect(FakeReader.reads).toHaveLength(0);
+  });
+
+  it("treats a bare `data:` read result as a failed read, not a file", async () => {
+    await mount();
+    await type("hi");
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish("data:"));
+    expect(container.textContent).not.toContain("site.png");
+    await clickSend();
+    expect(postedBody()).not.toHaveProperty("attachment");
+  });
+
+  it("counts the caption in code points: 600 emoji fit under Cloud's 1024", async () => {
+    await mount();
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish());
+    await type("😀".repeat(600));
+    expect(sendButton().disabled).toBe(false);
   });
 
   it("never posts a WhatsApp attachment on another channel", async () => {

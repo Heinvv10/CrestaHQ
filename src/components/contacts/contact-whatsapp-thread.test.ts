@@ -60,6 +60,7 @@ class FakeReader {
 
 let root: Root;
 let container: HTMLDivElement;
+let fetchMock: ReturnType<typeof vi.fn>;
 
 async function mount() {
   container = document.createElement("div");
@@ -90,7 +91,37 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("FileReader", FakeReader);
   FakeReader.reads = [];
+  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  vi.stubGlobal("fetch", fetchMock);
 });
+
+async function typeBody(text: string) {
+  const ta = container.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(ta, text);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function pick() {
+  const input = picker()!;
+  await act(async () => {
+    Object.defineProperty(input, "files", {
+      value: [new File([new Uint8Array([1])], "a.png", { type: "image/png" })],
+      configurable: true,
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+/** Submits the form directly — the path a disabled button does not guard. */
+async function submitForm() {
+  await act(async () =>
+    container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+}
+
+const posted = () => JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string);
 
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -133,5 +164,38 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     await act(async () => FakeReader.reads[0]!.finish());
     expect(sendButton().disabled).toBe(false);
     expect(container.textContent).toContain("a.png");
+  });
+
+  it("refuses a form submit while the file is still being read", async () => {
+    subAccount = { whatsappProvider: "cloud" };
+    await mount();
+    await typeBody("photo");
+    await pick();
+    await submitForm();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a form submit when the sender cannot be resolved", async () => {
+    // A registry sender asking for its own credentials is refused by the
+    // route; the composer must not post it either.
+    subAccount = { whatsappSenders: [{ ...sender("bridge"), credentialsId: "x" }] };
+    await mount();
+    await typeBody("hello");
+    expect(sendButton().disabled).toBe(true);
+    await submitForm();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("clears the attachment after a successful send", async () => {
+    subAccount = { whatsappProvider: "cloud" };
+    await mount();
+    await typeBody("photo");
+    await pick();
+    await act(async () => FakeReader.reads[0]!.finish());
+    await submitForm();
+    expect(posted()).toHaveProperty("attachment");
+    await typeBody("follow-up");
+    await submitForm();
+    expect(posted()).not.toHaveProperty("attachment");
   });
 });

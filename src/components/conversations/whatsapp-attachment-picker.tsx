@@ -52,11 +52,19 @@ export function useWhatsappAttachment(
   }>({ key: resetKey, gen: 0, attachment: null, reading: false });
   const genRef = useRef(0);
 
+  // A contact or channel change DISCARDS the attachment — a finished one as
+  // well as a read in flight. Hiding it instead would bring it back on the
+  // way back to the same key, and the next unrelated message would send it.
   useEffect(() => {
     genRef.current += 1;
+    setState((s) =>
+      s.key === resetKey
+        ? s
+        : { key: resetKey, gen: genRef.current, attachment: null, reading: false },
+    );
   }, [resetKey]);
 
-  // A state written under another key is not this composer's attachment.
+  // Covers the one render between a key change and the effect above.
   const current = state.key === resetKey ? state : null;
 
   function pick(file: File) {
@@ -68,6 +76,10 @@ export function useWhatsappAttachment(
     }
     const kind = mediaKindForMime(file.type);
     const cap = caps.maxMediaBytes[kind];
+    if (file.size === 0) {
+      toast.error(`${file.name} is empty.`);
+      return;
+    }
     if (file.size > cap) {
       toast.error(
         `${file.name} is ${humanSize(file.size)}; the limit for a ${kind} is ${humanSize(cap)}.`,
@@ -87,10 +99,18 @@ export function useWhatsappAttachment(
         return;
       }
       const url = typeof reader.result === "string" ? reader.result : "";
+      const comma = url.indexOf(",");
+      // A bare "data:" (Chromium, for an empty blob) has no payload at all;
+      // slicing past a missing comma would send "data:" as the file.
+      if (comma < 0 || comma === url.length - 1) {
+        settle(null);
+        toast.error(`Couldn't read ${file.name}.`);
+        return;
+      }
       settle({
         filename: file.name,
         contentType: file.type,
-        dataBase64: url.slice(url.indexOf(",") + 1),
+        dataBase64: url.slice(comma + 1),
       });
     };
     reader.onerror = () => {
@@ -201,7 +221,8 @@ export function attachmentSendBlock(
   if (state.reading) return "Reading file…";
   if (!state.attachment || !provider) return null;
   const max = capabilitiesFor(provider).maxMediaCaptionChars;
-  const len = body.trim().length;
+  // Code points, as the bridge's maxTextRunes counts — see provider.ts.
+  const len = [...body.trim()].length;
   return len > max
     ? `With a file attached the message is its caption: ${len} of ${max} characters allowed.`
     : null;
