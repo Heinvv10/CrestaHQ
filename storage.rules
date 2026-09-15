@@ -1,7 +1,7 @@
 rules_version = '2';
 
-// Firebase Storage rules. The only writer surface today is the Community
-// feature's group cover/logo uploads. Community group images are PUBLIC (the
+// Firebase Storage rules. Writer surfaces: the Community feature's group
+// cover/logo uploads and the per-sub-account Media Library. Community group images are PUBLIC (the
 // About page at /c/* is public), so reads are open; writes require a signed-in
 // Firebase user (staff — community members are NOT Firebase users, so they
 // can't write here) plus an image content-type + 5 MB size cap.
@@ -27,6 +27,35 @@ service firebase.storage {
     // edit to the catch-all cannot silently open it.
     match /whatsapp-media/{allPaths=**} {
       allow read, write: if false;
+    }
+
+    // Media Library objects (subAccounts/{id}/media docs point here). Same
+    // tenancy as firestore.rules: agency owner passes on claims + one
+    // Firestore get for the sub-account's agencyId; a member passes on one
+    // Firestore get for their own membership row. Reads and creates only —
+    // rename/move/delete go through the Admin-SDK routes, which also read the
+    // object's real size + type back before indexing it.
+    match /media/{subAccountId}/{mediaId}/{fileName} {
+      function isActive() {
+        return request.auth != null && request.auth.token.status == "active";
+      }
+      function isOwner() {
+        return isActive()
+          && request.auth.token.agencyRole == "owner"
+          && firestore.get(/databases/(default)/documents/subAccounts/$(subAccountId)).data.agencyId
+             == request.auth.token.agencyId;
+      }
+      function isMember() {
+        return isActive()
+          && firestore.get(/databases/(default)/documents/subAccounts/$(subAccountId)/subAccountMembers/$(request.auth.uid)).data.status == "active";
+      }
+      allow read: if isOwner() || isMember();
+      allow create: if (isOwner() || isMember())
+        && request.resource.size <= 25 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('video/.*')
+          || request.resource.contentType == 'application/pdf');
+      allow update, delete: if false;
     }
 
     // Default deny everything else.
