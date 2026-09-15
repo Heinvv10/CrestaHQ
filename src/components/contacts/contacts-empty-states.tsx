@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Upload, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AddContactModal } from "@/components/contacts/add-contact-modal";
@@ -10,9 +11,38 @@ import type { TerritoryDoc } from "@/types";
 const NO_SELECTION = new Set<string>();
 const noop = () => undefined;
 
+/** Still loading after this long, with the browser online: say so. */
+export const SLOW_AFTER_MS = 10_000;
+
+/**
+ * Why the list may not be arriving. "offline" only when the browser reports
+ * it; otherwise "slow" after SLOW_AFTER_MS — the cause (a blocked Firestore
+ * connection, a slow network) is not known, so the copy does not name one.
+ */
+function useLoadingHint(): "offline" | "slow" | null {
+  const [offline, setOffline] = useState(false);
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setOffline(!navigator.onLine);
+    const on = () => setOffline(false);
+    const off = () => setOffline(true);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    const timer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+      clearTimeout(timer);
+    };
+  }, []);
+  if (offline) return "offline";
+  return slow ? "slow" : null;
+}
+
 /**
  * Loading state: the newest page once it lands, otherwise the skeleton. No
- * checkboxes: select-all must mean the full list, which has not arrived.
+ * checkboxes: select-all must mean the full list, which has not arrived. The
+ * page keys it per load, so the slow timer always measures the current one.
  */
 export function ContactsLoading({
   preview,
@@ -21,7 +51,35 @@ export function ContactsLoading({
   preview: Contact[] | null;
   territories: TerritoryDoc[];
 }) {
-  if (!preview?.length) return <TableSkeleton />;
+  const hint = useLoadingHint();
+  return (
+    <>
+      {hint && (
+        <p
+          role="status"
+          className="rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+        >
+          {hint === "offline"
+            ? "You're offline. Contacts will load when your connection is back."
+            : "Still loading contacts — this is taking longer than usual. If it doesn't finish, reload the page."}
+        </p>
+      )}
+      {preview?.length ? (
+        <ContactsPreview preview={preview} territories={territories} />
+      ) : (
+        <TableSkeleton />
+      )}
+    </>
+  );
+}
+
+function ContactsPreview({
+  preview,
+  territories,
+}: {
+  preview: Contact[];
+  territories: TerritoryDoc[];
+}) {
   return (
     <>
       <ContactsTable

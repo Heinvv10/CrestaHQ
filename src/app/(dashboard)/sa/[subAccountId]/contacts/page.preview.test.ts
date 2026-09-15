@@ -77,6 +77,7 @@ vi.mock("@/components/contacts/smart-list-tabs", () => ({ SmartListTabs: state.N
 vi.mock("@/components/contacts/bulk-actions-bar", () => ({ BulkActionsBar: state.None }));
 
 import ContactsPage from "./page";
+import { SLOW_AFTER_MS } from "@/components/contacts/contacts-empty-states";
 
 function contacts(prefix: string, n: number): Contact[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -115,6 +116,7 @@ afterEach(async () => {
 const rows = () => el.querySelectorAll("tbody tr").length;
 const loadingNote = () => el.textContent?.includes("Loading all contacts") ?? false;
 const skeleton = () => el.querySelectorAll(".animate-pulse").length > 0;
+const slowHint = () => el.textContent?.includes("taking longer than usual") ?? false;
 const checkboxes = () => el.querySelectorAll('[aria-label^="Select"]').length;
 
 it("paints the newest page first, then the full list replaces it", async () => {
@@ -155,6 +157,22 @@ it("typing a search hides the preview — it would not match the results", async
   });
   expect(rows()).toBe(0);
   expect(skeleton()).toBe(true);
+});
+
+it("a new load mid-flight restarts the slow-load timer", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    state.fetchNewest.mockReturnValue(new Promise(() => undefined));
+    await act(async () => root.render(createElement(ContactsPage)));
+    await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+    expect(slowHint()).toBe(true);
+    // The territory filter changes while the first load is still running.
+    state.territoryFilter = ["t2"];
+    await act(async () => root.render(createElement(ContactsPage)));
+    expect(slowHint()).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("shows the skeleton, not a preview, while a smart-list filter is active", async () => {
