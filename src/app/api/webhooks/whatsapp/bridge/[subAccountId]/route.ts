@@ -132,7 +132,7 @@ function decodeInboundMedia(payload: BridgeInbound): InboundMedia | null {
     return { dropped: payload.mediaDropped };
   }
   const m = payload.media;
-  if (m === undefined) return null;
+  if (m === undefined || m === null) return null;
   // A half-filled object is a bridge bug, not a file. Storing it would put an
   // unnamed or untyped object in the bucket that the serving route then has to
   // reason about; the row says the file was lost instead.
@@ -496,10 +496,14 @@ export async function POST(
   // live rail; the row it writes today is the row it writes tomorrow.
   const messageRef = (d: DocumentSnapshot) =>
     d.ref.collection("whatsappMessages").doc(docId);
+  // Contacts whose row write landed. The media merge is issued only for these:
+  // merged onto a missing row it would create a partial doc — no body, no
+  // direction, no createdAt — that every later delivery then reads as "seen".
+  const rowWritten = new Set<string>();
   try {
     await Promise.all(
-      contactDocs.map((d) =>
-        messageRef(d).set(
+      contactDocs.map(async (d) => {
+        await messageRef(d).set(
           {
             agencyId,
             subAccountId,
@@ -518,37 +522,12 @@ export async function POST(
             createdAt,
           },
           { merge: true }
-        )
-      )
+        );
+        rowWritten.add(d.id);
+      })
     );
   } catch (err) {
     console.warn("[whatsapp-bridge] message-row write failed", err);
-  }
-
-  // Never downgrade. #145 re-posts a message text-only with `mediaDropped`
-  // when a media POST goes unanswered — but that POST may well have landed.
-  // A row that already holds its file keeps it and gains no drop reason.
-  // Storing a file clears any reason an earlier delivery left, so the two
-  // fields stay mutually exclusive. (Two deliveries running truly
-  // concurrently can still interleave; there is no transaction here.)
-  if (inboundMedia !== null) {
-    try {
-      await Promise.all(
-        contactDocs.map(async (d) => {
-          const fields = await mediaFields(d.id, inboundMedia);
-          if ("mediaDropped" in fields) {
-            if (storedMedia.has(d.id)) return;
-            return messageRef(d).set(fields, { merge: true });
-          }
-          return messageRef(d).set(
-            { ...fields, mediaDropped: FieldValue.delete() },
-            { merge: true }
-          );
-        })
-      );
-    } catch (err) {
-      console.warn("[whatsapp-bridge] media field write failed", err);
-    }
   }
 
   // What the inbox list and the timeline show for a caption-less file. The row
@@ -664,13 +643,22 @@ export async function POST(
         { status: 503 }
       );
     }
-    return ok({ ok: true, persisted: true, optedOut: nextOptedOut });
   }
 
   // Gated on redelivery: this sends a real WhatsApp message to a real person
   // and spends an LLM call, so it is the effect a replayed request must never
-  // repeat. It is also the last step, so skipping it strands nothing.
-  if (!isRedelivery && contactDocs.length > 0 && aiIsConfigured()) {
+  // repeat. Never for an opt-out, and never for an empty message: a
+  // caption-less photo would otherwise have the AI send a real reply about
+  // nothing. (The Cloud route already passes an empty body to the AI today;
+  // that is handled separately.) Runs before the upload so it never waits on
+  // one.
+  if (
+    nextOptedOut === null &&
+    !isRedelivery &&
+    body.trim() !== "" &&
+    contactDocs.length > 0 &&
+    aiIsConfigured()
+  ) {
     try {
       const agent = await resolveAgent(subAccountId, "whatsapp");
       if (agent?.effective.enabled) {
@@ -697,5 +685,45 @@ export async function POST(
     }
   }
 
-  return ok({ ok: true, persisted: true });
+  // Never downgrade. #145 re-posts a message text-only with `mediaDropped`
+  // when a media POST goes unanswered — but that POST may well have landed.
+  // A row that already holds its file keeps it and gains no drop reason.
+  // Storing a file clears any reason an earlier delivery left, so the two
+  // fields stay mutually exclusive.
+  //
+  // Accepted, not fixed: two deliveries whose redelivery reads BOTH run before
+  // either writes can still leave both fields on the row. There is no
+  // transaction. The thread renders correctly (`media` wins) and only the
+  // timeline preview can be off, inside a one-round-trip window.
+  //
+  // LAST, after every effect that does not need the stored file. A handler
+  // that stalls or dies in the upload — a deploy restart, a hung `save()` — has
+  // already indexed the conversation and written the timeline row, so the
+  // bridge's text-only re-post, which is a redelivery and skips both, strands
+  // nothing.
+  if (inboundMedia !== null) {
+    try {
+      await Promise.all(
+        contactDocs.filter((d) => rowWritten.has(d.id)).map(async (d) => {
+          const fields = await mediaFields(d.id, inboundMedia);
+          if ("mediaDropped" in fields) {
+            if (storedMedia.has(d.id)) return;
+            return messageRef(d).set(fields, { merge: true });
+          }
+          return messageRef(d).set(
+            { ...fields, mediaDropped: FieldValue.delete() },
+            { merge: true }
+          );
+        })
+      );
+    } catch (err) {
+      console.warn("[whatsapp-bridge] media field write failed", err);
+    }
+  }
+
+  return ok(
+    nextOptedOut === null
+      ? { ok: true, persisted: true }
+      : { ok: true, persisted: true, optedOut: nextOptedOut }
+  );
 }

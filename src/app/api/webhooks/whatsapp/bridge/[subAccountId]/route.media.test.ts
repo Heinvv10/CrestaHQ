@@ -25,6 +25,10 @@ let subAccountDoc: Record<string, unknown> | undefined;
 let messageWrites: Array<{ contactId: string; docId: string; data: Record<string, unknown> }> = [];
 let conversationUpserts: Array<Record<string, unknown>> = [];
 let existingMessageIds = new Set<string>();
+/** Set to make the base row `.set()` fail, as a Firestore outage would. */
+let rowSetThrows = false;
+/** Contact updates committed by the STOP/START batch. */
+let optOutUpdates: Array<Record<string, unknown>> = [];
 let inboundActivities = new Map<string, Record<string, unknown>>();
 
 function makeSnap(row_: { id: string; data: Record<string, unknown> }) {
@@ -39,6 +43,8 @@ function makeSnap(row_: { id: string; data: Record<string, unknown> }) {
           data: () => row(row_.id),
         }),
         set: async (data: Record<string, unknown>) => {
+          // The base row is the write carrying `direction`; the media merge never does.
+          if (rowSetThrows && "direction" in data) throw new Error("firestore unavailable");
           messageWrites.push({ contactId: row_id, docId: docId ?? "", data });
           // A stored row is what the next delivery's redelivery check reads.
           existingMessageIds.add(docId ?? "");
@@ -77,7 +83,16 @@ const fakeDb = {
     };
   },
   batch: () => {
-    throw new Error("no opt-out path in these tests");
+    const pending: Array<Record<string, unknown>> = [];
+    return {
+      update: (_ref: unknown, data: Record<string, unknown>) => {
+        pending.push(data);
+      },
+      set: () => {},
+      commit: async () => {
+        optOutUpdates.push(...pending);
+      },
+    };
   },
 };
 
@@ -189,6 +204,8 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     putWhatsappMedia.mockResolvedValue({ ok: true });
     aiOn = false;
     maybeRespondWithAi.mockReset();
+    rowSetThrows = false;
+    optOutUpdates = [];
   });
 
   afterEach(() => {
@@ -549,5 +566,77 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
       await post(inbound({ media: { ...photo, mimeType } }));
       expect(row("c1").media, mimeType).toMatchObject({ kind, mimeType });
     }
+  });
+  it("indexes the conversation and auto-replies BEFORE the upload, so a stalled upload strands nothing", async () => {
+    // A deploy restart or a hung save() kills the first handler mid-upload.
+    // The bridge re-posts text-only; the row exists, so that re-post is a
+    // redelivery and skips the upsert and the AI. If the first handler had not
+    // done them before uploading, nobody would — the message would never reach
+    // the unified inbox.
+    aiOn = true;
+    putWhatsappMedia.mockImplementation(() => new Promise(() => {}));
+
+    void post(inbound({ media: photo }));
+    await vi.waitFor(() => expect(putWhatsappMedia).toHaveBeenCalledTimes(1));
+
+    const retry = await post(inbound({ mediaDropped: "delivery_failed" }));
+    expect(retry.status).toBe(200);
+
+    expect(conversationUpserts).toHaveLength(1);
+    expect(maybeRespondWithAi).toHaveBeenCalledTimes(1);
+    expect(inboundActivities.get("c1/inbound_whatsapp_3EB0ABC")).toMatchObject({
+      content: "WhatsApp received: hi there",
+    });
+  });
+
+  it("never auto-replies to a caption-less file, but does to a captioned one", async () => {
+    // A caption-less photo has an empty body. Handing it to the AI sends a
+    // real WhatsApp reply to a customer about nothing.
+    aiOn = true;
+    await post(inbound({ text: "  ", media: photo, messageId: "3EB0BARE" }));
+    expect(maybeRespondWithAi).not.toHaveBeenCalled();
+
+    await post(inbound({ text: "is this the right router?", media: photo, messageId: "3EB0CAPT" }));
+    expect(maybeRespondWithAi).toHaveBeenCalledTimes(1);
+    expect(maybeRespondWithAi.mock.calls[0][0]).toMatchObject({
+      incomingMessage: "is this the right router?",
+    });
+  });
+
+  it("does not merge media onto a row whose write failed — no partial doc", async () => {
+    // {media, mediaDropped:<delete>} alone would create a doc with no body,
+    // direction or createdAt, which every later delivery reads as "seen".
+    rowSetThrows = true;
+    const res = await post(inbound({ media: photo }));
+    expect(res.status).toBe(200);
+    expect(messageWrites).toHaveLength(0);
+    expect(putWhatsappMedia).not.toHaveBeenCalled();
+  });
+
+  it("drops an over-long 'extension' rather than letting it blow the 255-byte cap", async () => {
+    const name = `a.${"b".repeat(300)}`;
+    await post(
+      inbound({ media: { filename: name, mimeType: "application/pdf", dataBase64: photo.dataBase64 } }),
+    );
+    const stored = (row("c1").media as { filename: string }).filename;
+    expect(Buffer.byteLength(stored, "utf8")).toBeLessThanOrEqual(255);
+    expect(stored.length).toBeGreaterThan(0);
+  });
+
+  it("treats `media: null` as no media — one write, no drop reason", async () => {
+    const res = await post(inbound({ media: null }));
+    expect(res.status).toBe(200);
+    expect(messageWrites).toHaveLength(1);
+    expect(row("c1")).not.toHaveProperty("mediaDropped");
+    expect(putWhatsappMedia).not.toHaveBeenCalled();
+  });
+
+  it("a STOP sent as a photo caption records the opt-out AND keeps the photo", async () => {
+    aiOn = true;
+    const res = await post(inbound({ text: "STOP", media: photo }));
+    expect(await res.json()).toMatchObject({ persisted: true, optedOut: true });
+    expect(optOutUpdates).toEqual([expect.objectContaining({ whatsappOptedOut: true })]);
+    expect(row("c1").media).toMatchObject({ kind: "image" });
+    expect(maybeRespondWithAi).not.toHaveBeenCalled();
   });
 });
