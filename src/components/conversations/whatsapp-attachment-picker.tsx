@@ -64,7 +64,11 @@ export function useWhatsappAttachment(
     );
   }, [resetKey]);
 
-  // Covers the one render between a key change and the effect above.
+  // LOAD-BEARING, not a nicety. The effect above clears only after the render
+  // that carries the new key has committed; during that render `state` still
+  // holds the old key's file. A caller that changes the key programmatically
+  // (the inbox composer switches to email inside an effect) would otherwise
+  // see that file under the new key. Pinned by whatsapp-attachment-picker.test.ts.
   const current = state.key === resetKey ? state : null;
 
   function pick(file: File) {

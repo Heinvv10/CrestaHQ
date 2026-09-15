@@ -118,10 +118,13 @@ export function ConversationComposer({
   // Keyed on contact AND channel: a file picked for one must never ride along
   // on a send to the other (see useWhatsappAttachment).
   const wa = useWhatsappAttachment(waProvider, `${contact.id}:${channel}`);
-  // No channel test needed: the key includes the channel, so on any other
-  // channel `wa` is empty by construction (see useWhatsappAttachment).
-  const attachment = wa.attachment;
-  const attachmentBlock = attachmentSendBlock(waProvider, wa, body);
+  // The hook's key already scopes the file to this channel. The channel test
+  // is kept anyway, as defence in depth: this is a file on its way to a real
+  // phone, and a future change to the hook's keying must not be the only
+  // thing standing between a WhatsApp attachment and an email or SMS send.
+  const attachment = channel === "whatsapp" ? wa.attachment : null;
+  const attachmentBlock =
+    channel === "whatsapp" ? attachmentSendBlock(waProvider, wa, body) : null;
 
   const merge = useMergeTagComposer({
     contact,

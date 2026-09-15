@@ -238,6 +238,16 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     expect(postedBody()).not.toHaveProperty("attachment");
   });
 
+  it("treats a read with nothing after the comma as a failed read", async () => {
+    await mount();
+    await type("hi");
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish("data:application/pdf;base64,"));
+    expect(container.textContent).not.toContain("site.png");
+    await clickSend();
+    expect(postedBody()).not.toHaveProperty("attachment");
+  });
+
   it("counts the caption in code points: 600 emoji fit under Cloud's 1024", async () => {
     await mount();
     await pickFile();

@@ -165,6 +165,31 @@ export async function uploadCloudMedia(opts: {
   }
 }
 
+/** Meta shows a document's filename to the recipient; the bridge caps at 255. */
+const MAX_FILENAME_BYTES = 255;
+
+/**
+ * The filename as it goes to Graph: control characters (CR/LF included)
+ * stripped, then cut to 255 UTF-8 bytes on a code-point boundary with the
+ * extension kept, so a 10,000-character or header-shaped name never reaches
+ * Meta or the recipient's phone.
+ *
+ * The same rule exists on the inbound branches (#148, #151); the three copies
+ * should become one once those merge.
+ */
+function cloudFilename(raw: string): string {
+  const clean = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim() || "file";
+  const bytes = (s: string) => Buffer.byteLength(s, "utf8");
+  if (bytes(clean) <= MAX_FILENAME_BYTES) return clean;
+  const dot = clean.lastIndexOf(".");
+  const ext = dot > 0 && clean.length - dot <= 16 ? clean.slice(dot) : "";
+  const base = [...clean.slice(0, clean.length - ext.length)];
+  while (base.length > 0 && bytes(base.join("")) + bytes(ext) > MAX_FILENAME_BYTES) {
+    base.pop();
+  }
+  return base.join("") + ext;
+}
+
 export async function sendWhatsappCloud(opts: {
   subAccountId: string;
   creds: WhatsappCloudSecret;
@@ -244,15 +269,16 @@ export async function sendWhatsappCloud(opts: {
         providerErrorCode: "media_unsupported_type",
       };
     }
+    const filename = cloudFilename(opts.media.filename);
     const up = await uploadCloudMedia({
       creds: opts.creds,
-      filename: opts.media.filename,
+      filename,
       contentType: opts.media.contentType,
       bytes,
       signal: opts.signal,
     });
     if (!up.ok) return up;
-    media = { id: up.mediaId, kind, filename: opts.media.filename };
+    media = { id: up.mediaId, kind, filename };
   }
 
   const body = buildCloudMessageBody(

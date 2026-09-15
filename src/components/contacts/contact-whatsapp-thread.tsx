@@ -131,7 +131,10 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   const railEnforcesWindow = resolved.ok ? resolved.capabilities.enforcesWindow : false;
   const railSupportsTemplates = resolved.ok ? resolved.capabilities.supportsTemplates : false;
   const windowBlocks = railEnforcesWindow && !windowOpen;
-  const wa = useWhatsappAttachment(railProvider, contact.id);
+  // Template mode is in the key: entering it DISCARDS a picked file rather than
+  // hiding it until "Back to message", where the next free-form reply would
+  // otherwise carry it.
+  const wa = useWhatsappAttachment(railProvider, `${contact.id}:${templateMode ? "template" : "message"}`);
   const attachmentBlock = attachmentSendBlock(railProvider, wa, body);
 
   // An unresolvable sender is refused by the route; say so here instead.

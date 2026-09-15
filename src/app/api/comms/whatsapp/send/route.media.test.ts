@@ -347,6 +347,60 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(saved).toHaveLength(0);
   });
 
+  it("caps a 10,000-character document filename at 255 UTF-8 bytes, keeping the extension", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA9" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT9" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, filename: `${"é".repeat(10_000)}.pdf`, contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+    const uploaded = (graphCalls()[0]!.init.body as FormData).get("file") as File;
+    const sent = JSON.parse(graphCalls()[1]!.init.body as string).document.filename as string;
+    for (const name of [uploaded.name, sent]) {
+      expect(Buffer.byteLength(name, "utf8")).toBeLessThanOrEqual(255);
+      expect(name.endsWith(".pdf")).toBe(true);
+      expect(name).not.toContain("\uFFFD");
+    }
+  });
+
+  it("cuts an astral-character filename on a code point, never mid surrogate pair", async () => {
+    // 62 emoji are 248 bytes; with the 4-byte ".pdf" the base may hold 251.
+    // A cut on UTF-16 units stops on a lone high surrogate (3 bytes, 251
+    // total) \u2014 a malformed name Meta would show as a replacement glyph.
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA11" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT11" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, filename: `${"\uD83D\uDE00".repeat(3000)}.pdf`, contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(graphCalls()[1]!.init.body as string).document.filename as string;
+    // Well-formed UTF-16 survives a UTF-8 round trip unchanged; a lone
+    // surrogate does not.
+    expect(Buffer.from(sent, "utf8").toString("utf8")).toBe(sent);
+    expect(sent).toBe(`${"\uD83D\uDE00".repeat(62)}.pdf`);
+  });
+
+  it("strips CR/LF and other control characters from the filename sent to Meta", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA10" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT10" }] }));
+    const res = await post({
+      contactId: "c1",
+      body: "here",
+      attachment: { ...attachment, filename: "quote\r\nX-Evil: 1.pdf", contentType: "application/pdf" },
+    });
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(graphCalls()[1]!.init.body as string).document.filename as string;
+    expect(sent).toBe("quoteX-Evil: 1.pdf");
+    expect(((graphCalls()[0]!.init.body as FormData).get("file") as File).name).toBe(sent);
+  });
+
   it("counts the caption in code points: 600 emoji go on Cloud", async () => {
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA8" }))
@@ -363,6 +417,9 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     ["a bare data: prefix", "data:"],
     ["empty", ""],
     ["invalid characters at a valid length", "da:a"],
+    // Valid alphabet, wrong length: Buffer.from silently drops the tail and a
+    // truncated file would go to Graph.
+    ["valid characters at an invalid length", "AAECA"],
   ])("refuses dataBase64 that is %s before any Graph call", async (_label, dataBase64) => {
     // Buffer.from decodes "data:" as three bytes; without this a customer
     // receives a three-byte "PDF".

@@ -186,6 +186,22 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("discards a picked file on entering template mode, so Back to message does not bring it back", async () => {
+    subAccount = { whatsappProvider: "cloud" };
+    await mount();
+    await pick();
+    await act(async () => FakeReader.reads[0]!.finish());
+    expect(container.textContent).toContain("a.png");
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === label)!;
+    await act(async () => button("Send template").click());
+    await act(async () => button("Back to message").click());
+    expect(container.textContent).not.toContain("a.png");
+    await typeBody("unrelated");
+    await submitForm();
+    expect(posted()).not.toHaveProperty("attachment");
+  });
+
   it("clears the attachment after a successful send", async () => {
     subAccount = { whatsappProvider: "cloud" };
     await mount();
