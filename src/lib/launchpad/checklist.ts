@@ -108,7 +108,7 @@ function emailAvailability(
 }
 
 function gbpConnected(sub: LaunchpadSubAccount): boolean {
-  return sub.googleConnectionMeta?.connected === true;
+  return false;
 }
 
 function gbpAvailability(
