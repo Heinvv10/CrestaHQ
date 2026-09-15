@@ -13,6 +13,14 @@ the E2E ones below are for the orchestrator. Restore after each.
 | service: folder delete refuses non-empty | `deleteMediaFolder`: `if (!files.empty \|\| !children.empty)` → `if (false)` | red |
 | photo JSON: foreign object path | photo `route.ts` `readLibraryPhoto`: drop `\|\| !isOwnedStoragePath(...)` | red |
 | photo JSON: other sub-account's mediaId | drop the ownership check AND read `subAccounts/<other>/media/<id>` | red (either guard alone keeps it green — two independent fences) |
+| service: downloadUrl pinned to our bucket | `isDownloadUrlFor`: `pathname === /v0/b/${bucket}/o/…` → `pathname.endsWith(/o/…)` | red |
+| service: malformed route ids never reach Firestore | `requireParamId`: body → no-op | red (4 tests) |
+| routes: non-admin 403 | `route-support.ts`: ignore the `requireSubAccountAdmin` refusal | red (4 route files) |
+| routes: malformed JSON 400 | `route-support.ts`: swallow the parse error as `{}` | red (4 route files) |
+| routes: MediaError → status | `route-support.ts`: drop the `instanceof MediaError` mapping | red (4 route files) |
+| update/create: missing folder or parent 404 | drop `requireFolder` in `updateMediaAsset` / `createMediaFolder` | red |
+| hook: listener error surfaced | `use-media-library.ts`: error handler → `setAssetsReady(true)` | red |
+| page: error card, admin-only upload/new folder | `media-library.tsx` `if (error)` → false; `canManage &&` → true (input + toolbar) | red |
 | photo JSON: same byte gate | `if (!mime)` → `if (false)`; drop `if (asset.size > MAX_PHOTO_BYTES)` | red |
 
 ## Playwright — `e2e/specs/media-library.spec.ts`
@@ -36,6 +44,11 @@ Test 2 (storage.rules cross-tenant):
 |---|---|
 | PRIMARY read → 403 | `storage.rules` media `allow read: if request.auth != null;` |
 | SECONDARY read → 200 | `storage.rules` `isMember()`: compare `.data.status == "removed"` |
+
+Not covered by any spec: `allow create` now requires owner OR member with
+`role == "admin"` (a collaborator can read but not upload). Adding a third E2E
+case (collaborator PUT → 403) is the way to prove it; mutation would be
+`isAdmin()` → `isMember()`.
 
 Note: the storage rules must be DEPLOYED for test 2 (and for the owner upload
 in test 1) — `firebase deploy --only storage,firestore:rules`. The first deploy
