@@ -639,4 +639,9 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     expect(row("c1").media).toMatchObject({ kind: "image" });
     expect(maybeRespondWithAi).not.toHaveBeenCalled();
   });
+  it("never stores the outbound-only `store_failed` reason on an inbound row", async () => {
+    // Its label reads "Sent — no copy kept here", which is untrue for a message the customer sent us.
+    await post(inbound({ mediaDropped: "store_failed" }));
+    expect(row("c1").mediaDropped).toBe("fetch_failed");
+  });
 });

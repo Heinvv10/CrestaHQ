@@ -129,7 +129,10 @@ function decodeInboundMedia(payload: BridgeInbound): InboundMedia | null {
   // ignored and the message takes the text path, rather than writing an
   // object or a number into a field every reader treats as a string.
   if (typeof payload.mediaDropped === "string" && payload.mediaDropped) {
-    return { dropped: payload.mediaDropped };
+    // `store_failed` is the OUTBOUND reason ("Sent — no copy kept here"); on an inbound row it would claim we sent it.
+    return {
+      dropped: payload.mediaDropped === "store_failed" ? "fetch_failed" : payload.mediaDropped,
+    };
   }
   const m = payload.media;
   if (m === undefined || m === null) return null;
