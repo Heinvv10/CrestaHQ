@@ -9,6 +9,7 @@ import {
   planGateMatrixRow,
   planIncludedGateLabels,
   resellingTotalsByCurrency,
+  unknownPlanSubscribers,
 } from "@/lib/billing/reselling";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS, type BillingPlanResponse } from "@/types/billing";
 import type { SubAccountDoc } from "@/types";
@@ -34,8 +35,9 @@ export function ResellingTable({
   subs: SubAccountDoc[];
 }) {
   const rows = buildResellingRows(plans, subs);
-  const archived = archivedPlanCount(plans);
+  const archived = archivedPlanCount(plans, subs);
   const totals = resellingTotalsByCurrency(rows);
+  const unknown = unknownPlanSubscribers(plans, subs);
 
   return (
     <section className="space-y-3" data-testid="reselling-table">
@@ -45,7 +47,8 @@ export function ResellingTable({
         </h2>
         {archived > 0 && (
           <p className="text-xs text-muted-foreground">
-            {archived} archived plan{archived === 1 ? "" : "s"} not shown.
+            {archived} archived plan{archived === 1 ? "" : "s"} with no
+            remaining subscribers not shown.
           </p>
         )}
       </div>
@@ -80,17 +83,29 @@ export function ResellingTable({
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ plan, counts, mrrCents }) => {
+                {rows.map(({ plan, counts, mrrCents, archived: isArchived }) => {
                   const labels = planIncludedGateLabels(plan);
                   const quotaSummary = formatQuotasSummary(plan.quotas);
                   return (
                     <tr
                       key={plan.id}
-                      className="border-t align-top"
+                      className={
+                        isArchived
+                          ? "border-t align-top opacity-70"
+                          : "border-t align-top"
+                      }
                       data-testid="reselling-row"
                       data-plan-id={plan.id}
+                      data-archived={isArchived}
                     >
-                      <td className="px-4 py-3 font-medium">{plan.name}</td>
+                      <td className="px-4 py-3 font-medium">
+                        {plan.name}
+                        {isArchived && (
+                          <span className="ml-1.5 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            Archived
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 tabular-nums">
                         {formatBillingPrice(plan.priceMonthlyCents, plan.currency)}
                         /mo
@@ -206,6 +221,19 @@ export function ResellingTable({
             </table>
           </div>
         </>
+      )}
+
+      {unknown.total > 0 && (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="reselling-unknown-plan"
+          data-count={unknown.total}
+        >
+          {unknown.total} sub-account{unknown.total === 1 ? "" : "s"} on a
+          deleted or unknown plan ({unknown.active} active, {unknown.pending}{" "}
+          pending, {unknown.pastDue} past due) — not included in the totals
+          above.
+        </p>
       )}
     </section>
   );

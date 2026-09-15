@@ -12,7 +12,10 @@ import type { SubAccountBilling } from "@/types/billing";
  * Seeds one plan doc directly (bypassing Stripe — stripe ids null, the
  * billing page must not try to call Stripe to RENDER a plan) and puts the
  * fixture PRIMARY sub-account on it as an active subscriber, then flips it
- * to past_due and confirms the table's counts move with it.
+ * to past_due and confirms the table's counts move with it. A third test
+ * archives the plan itself and confirms its still-subscribed row stays
+ * visible (marked Archived) and counted in the totals, rather than
+ * disappearing along with the rest of the archived plans.
  */
 
 const primaryId = () => readEnv().E2E_SUBACCOUNT_ID;
@@ -175,4 +178,28 @@ test("moving the subscriber to past_due drops the active count to zero", async (
   await expect(subscribers).toHaveAttribute("data-active", "0");
   await expect(subscribers).toContainText("0 active");
   await expect(subscribers).toContainText("past due");
+});
+
+test("archiving the plan keeps its row (marked Archived) and its subscriber in the total, since it still has one", async ({ page }) => {
+  // Bring the subscriber back to active, then archive the plan itself —
+  // archiving stops new assignments but must not drop an existing
+  // subscriber's MRR off the table (PR #155 review finding).
+  await primaryRef().update({
+    "billing.status": "active",
+    "billing.graceUntil": null,
+  });
+  await planRef().update({ status: "archived" });
+
+  await gotoBilling(page);
+
+  const row = page.locator(`[data-testid="reselling-row"][data-plan-id="${planId}"]`);
+  await expect(row).toBeVisible();
+  await expect(row).toHaveAttribute("data-archived", "true");
+  await expect(row).toContainText("Archived");
+
+  const subscribers = row.getByTestId("reselling-subscribers");
+  await expect(subscribers).toHaveAttribute("data-active", "1");
+
+  const total = page.locator('[data-testid="reselling-total"][data-currency="zar"]');
+  await expect(total).toContainText("499");
 });

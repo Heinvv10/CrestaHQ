@@ -8,6 +8,7 @@ import {
   planMrrCents,
   planSubscriberCounts,
   resellingTotalsByCurrency,
+  unknownPlanSubscribers,
 } from "./reselling";
 import type { BillingPlanResponse, PlanGates } from "@/types/billing";
 import { PLAN_GATE_KEYS } from "@/types/billing";
@@ -103,18 +104,76 @@ describe("planMrrCents", () => {
 });
 
 describe("buildResellingRows / archivedPlanCount", () => {
-  it("excludes archived plans from the rows but counts them separately", () => {
+  it("excludes an archived plan with no subscribers from the rows but counts it separately", () => {
     const active = plan({ id: "p-active", status: "active" });
     const archived = plan({ id: "p-archived", status: "archived" });
     const rows = buildResellingRows([active, archived], []);
     expect(rows).toHaveLength(1);
     expect(rows[0].plan.id).toBe("p-active");
-    expect(archivedPlanCount([active, archived])).toBe(1);
+    expect(archivedPlanCount([active, archived], [])).toBe(1);
+  });
+
+  it("includes an archived plan that still has a subscriber, marked archived, and does NOT count it in archivedPlanCount", () => {
+    const archived = plan({ id: "p-archived", status: "archived" });
+    const subs = [
+      sub({ billing: { status: "active", planId: archived.id, priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: null } }),
+    ];
+    const rows = buildResellingRows([archived], subs);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].archived).toBe(true);
+    expect(rows[0].counts.active).toBe(1);
+    expect(rows[0].mrrCents).toBe(9700);
+    expect(archivedPlanCount([archived], subs)).toBe(0);
+  });
+
+  it("an active plan's row is never marked archived", () => {
+    const active = plan({ id: "p-active", status: "active" });
+    expect(buildResellingRows([active], [])[0].archived).toBe(false);
   });
 
   it("is empty for zero plans", () => {
     expect(buildResellingRows([], [])).toEqual([]);
-    expect(archivedPlanCount([])).toBe(0);
+    expect(archivedPlanCount([], [])).toBe(0);
+  });
+});
+
+describe("unknownPlanSubscribers", () => {
+  it("surfaces a sub whose billing.planId matches no plan doc, bucketed by state", () => {
+    const known = plan({ id: "p-known" });
+    const subs = [
+      sub({ billing: { status: "active", planId: "deleted-plan", priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: null } }),
+      sub({ billing: { status: "pending", planId: "deleted-plan", priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: null } }),
+      sub({ billing: { status: "active", planId: known.id, priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: null } }),
+      sub({ billing: null }),
+    ];
+    expect(unknownPlanSubscribers([known], subs)).toEqual({
+      total: 2,
+      active: 1,
+      pending: 1,
+      pastDue: 0,
+    });
+  });
+
+  it("counts a sub against an ARCHIVED plan as known, not unknown", () => {
+    const archived = plan({ id: "p-archived", status: "archived" });
+    const subs = [
+      sub({ billing: { status: "active", planId: archived.id, priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: null } }),
+    ];
+    expect(unknownPlanSubscribers([archived], subs)).toEqual({
+      total: 0,
+      active: 0,
+      pending: 0,
+      pastDue: 0,
+    });
+  });
+
+  it("is all-zero when there are no plans or subs", () => {
+    expect(unknownPlanSubscribers([], [])).toEqual({
+      total: 0,
+      active: 0,
+      pending: 0,
+      pastDue: 0,
+    });
   });
 });
 

@@ -1,5 +1,39 @@
 # SP13 (e) — Reselling overview, E2E evidence notes
 
+## PR #155 review fix (HIGH)
+
+Reviewer found `buildResellingRows` dropped subscribers on archived plans —
+archiving a plan doesn't move its existing subscribers off it (see
+`docs/features/client-billing.md`), so their MRR was silently missing from
+the per-currency totals. Fixed:
+
+- `buildResellingRows` now includes an archived plan as a row when it has
+  ≥1 subscriber in any state (active/pending/past-due), marked
+  `archived: true`; the component renders an "Archived" badge and
+  `data-archived="true"` on that row. An archived plan with zero
+  subscribers still stays hidden.
+- `archivedPlanCount` takes `subs` now and only counts archived plans with
+  **zero** subscribers (so the "N archived plans not shown" note stays
+  accurate against what's actually hidden).
+- New `unknownPlanSubscribers(plans, subs)` — a sub whose `billing.planId`
+  matches no plan doc at all (deleted or corrupt) is surfaced as a count
+  (bucketed by state) via `data-testid="reselling-unknown-plan"` /
+  `data-count`, instead of silently vanishing from every row and total.
+- Totals need no separate fix: `resellingTotalsByCurrency` sums over
+  whatever rows it's given, so once archived-with-subscribers rows are
+  included, their MRR is included automatically.
+- Three new unit tests (archived+subscribed row included and NOT counted in
+  `archivedPlanCount`; active row never marked archived; `unknownPlanSubscribers`
+  buckets by state and treats an archived-but-still-linked plan as known,
+  not unknown) — mutation-checked: reverting the row filter, reverting
+  `unknownPlanSubscribers` to only look at active plans, and gutting its
+  counter each independently turned a test red.
+- Extended `e2e/specs/reselling-table.spec.ts` with a third test: archive
+  the seeded plan while its subscriber is still active, reload, assert the
+  row stays visible with `data-archived="true"` and the "Archived" text,
+  `data-active="1"`, and the ZAR total still contains "499".
+
+
 Spec: `e2e/specs/reselling-table.spec.ts`. **Not run in this session** — worktree
 rules for this task forbid Playwright and live Firestore writes. This file
 records what the spec does and what it proves so a run can be verified

@@ -71,24 +71,75 @@ export interface ResellingRow {
   plan: BillingPlanResponse;
   counts: PlanSubscriberCounts;
   mrrCents: number;
+  archived: boolean;
 }
 
-/** Active plans only (archived plans are excluded, see `archivedCount`). */
+function totalSubscribers(counts: PlanSubscriberCounts): number {
+  return counts.active + counts.pending + counts.pastDue;
+}
+
+/**
+ * Every active plan, PLUS any archived plan that still has ≥1 subscriber —
+ * archiving a plan stops new assignments but does not move existing
+ * subscribers off it (see docs/features/client-billing.md), so their MRR
+ * must stay visible in the table and the totals. An archived plan with zero
+ * subscribers stays hidden; see `archivedPlanCount` for that count.
+ */
 export function buildResellingRows(
   plans: BillingPlanResponse[],
   subs: SubAccountDoc[],
 ): ResellingRow[] {
   return plans
-    .filter((p) => p.status === "active")
     .map((plan) => ({
       plan,
       counts: planSubscriberCounts(plan, subs),
       mrrCents: planMrrCents(plan, subs),
-    }));
+      archived: plan.status === "archived",
+    }))
+    .filter((row) => !row.archived || totalSubscribers(row.counts) > 0);
 }
 
-export function archivedPlanCount(plans: BillingPlanResponse[]): number {
-  return plans.filter((p) => p.status === "archived").length;
+/** Archived plans with NO remaining subscribers — hidden from the rows above. */
+export function archivedPlanCount(
+  plans: BillingPlanResponse[],
+  subs: SubAccountDoc[],
+): number {
+  return plans.filter(
+    (p) =>
+      p.status === "archived" &&
+      totalSubscribers(planSubscriberCounts(p, subs)) === 0,
+  ).length;
+}
+
+/** Subscribers whose `billing.planId` matches no plan doc at all (deleted plan, or corrupt data). */
+export interface UnknownPlanSubscribers {
+  total: number;
+  active: number;
+  pending: number;
+  pastDue: number;
+}
+
+export function unknownPlanSubscribers(
+  plans: BillingPlanResponse[],
+  subs: SubAccountDoc[],
+): UnknownPlanSubscribers {
+  const knownIds = new Set(plans.map((p) => p.id));
+  const out: UnknownPlanSubscribers = {
+    total: 0,
+    active: 0,
+    pending: 0,
+    pastDue: 0,
+  };
+  for (const s of subs) {
+    const planId = s.billing?.planId;
+    if (!planId || knownIds.has(planId)) continue;
+    const state = effectiveBillingState(s.billing);
+    out.total++;
+    if (state === "active") out.active++;
+    else if (state === "pending") out.pending++;
+    else if (state === "grace" || state === "lapsed") out.pastDue++;
+  }
+  return out;
 }
 
 /** One currency's totals row — MRR and active-subscriber count never sum across currencies. */
