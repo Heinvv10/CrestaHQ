@@ -35,7 +35,20 @@ type Fanout struct {
 	inReplayWindow func() bool
 	connectedAt    func() time.Time
 	client         *http.Client
-	wg             sync.WaitGroup
+	// mediaClient posts payloads carrying a file. Same client, longer
+	// deadline — see post.
+	mediaClient *http.Client
+	// mediaSlots bounds how many attachments may be in flight at once.
+	//
+	// It exists because the alternative bound was an undocumented invariant in
+	// a third-party library. whatsmeow's handlerQueueLoop runs each node
+	// handler in its own goroutine and, after 300s, logs "Continuing handling
+	// ... in background" and moves on to the next node (client.go:944), so
+	// "inbound is serialised per connection" is true only until it is not.
+	// This bridge carries live customer traffic; the bound on its memory must
+	// be written here, where it can be read and changed.
+	mediaSlots chan struct{}
+	wg         sync.WaitGroup
 	// now is the signing clock. Defaulted to time.Now by NewFanout; tests
 	// that need to assert a fixed signature override it directly (same
 	// package, deliberate unexported access — see f.client.Transport above).
@@ -64,6 +77,25 @@ type Fanout struct {
 // than the watermark and all of it genuinely unseen — forwarding is right, but
 // unbounded forwarding turns one re-pair into a flood across every thread.
 const maxCatchUpForward = 200
+
+// maxConcurrentMediaDeliveries bounds how many inbound attachments may be held
+// in memory at once.
+//
+// One 16MiB file costs far more than 16MiB while it is being delivered: the
+// decoded bytes (16MiB), their base64 encoding (21.3MiB), json.Marshal's
+// internal buffer and the copy it returns (~21.3MiB each), all live at the
+// same time and all held until every consumer's POST finishes. Call it ~80MiB
+// per attachment, so this constant is the difference between ~160MiB and
+// however many messages arrive at once.
+//
+// Two, not one: a single slot would let one slow consumer stall every other
+// customer's attachment behind it.
+const maxConcurrentMediaDeliveries = 2
+
+// mediaDeliveryTimeout is the deadline for a POST carrying a file. 21.3MiB
+// inside it needs ~1.5Mbit/s sustained — undemanding for the loopback and
+// Tailscale consumers this bridge actually posts to, and still bounded.
+const mediaDeliveryTimeout = 120 * time.Second
 
 // NewFanout wires a Fanout. inReplayWindow is required — it decides whether
 // an inbound message wakes a consumer or is recorded silently, and getting
@@ -94,6 +126,8 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 		inReplayWindow: inReplayWindow,
 		connectedAt:    connectedAt,
 		client:         &http.Client{Timeout: 10 * time.Second},
+		mediaClient:    &http.Client{Timeout: mediaDeliveryTimeout},
+		mediaSlots:     make(chan struct{}, maxConcurrentMediaDeliveries),
 		now:            time.Now,
 	}
 }
@@ -182,13 +216,24 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 // redelivery on the id rather than on the body. It is empty when the transport
 // did not supply one; consumers must treat empty as "unknown".
 //
-// media is nil for a plain text message and carries the file inline otherwise.
-// It is a parameter rather than a second DeliverMedia method for the same
-// reason wa.Transport.Send takes one: every rail above — the owner filter, the
-// replay watermark, the catch-up cap — must apply identically to a message
-// that happens to carry a file, and a parallel method is a parallel path that
-// would eventually stop matching.
-func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, media *wa.InboundMedia) {
+// fetchMedia is nil for a plain text message. When set, calling it DOWNLOADS
+// the attachment — so it is called only after every rail below has admitted
+// the message, and only on the delivery goroutine. Two things depend on that
+// ordering, and neither is an optimisation:
+//
+//   - A sender the bridge is configured to ignore must not be able to make it
+//     download at a rate they choose, and a reconnect must not re-fetch a day
+//     of replayed history only to discard it.
+//   - Holding whatsmeow's node-handler goroutine is a POPIA leak, not just a
+//     stall. Past 5 seconds whatsmeow logs `Node handling took %s for %s` at
+//     WARN (client.go:919, and again every 30s), and %s on a waBinary.Node
+//     renders its attrs — including `from`, the customer's number in the
+//     clear. wa/whatsmeow.go pins the logger at INFO, which is BELOW Warnf, so
+//     that line is emitted. Before media, node handling never took 5 seconds;
+//     a 16MiB download on a VPS routinely would. redact.JID cannot reach
+//     inside a third-party library, so the fix is to never be slow on that
+//     goroutine.
+func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func() *wa.InboundMedia) {
 	// Before RecordInbound, or this very message raises the watermark above
 	// itself and every message looks like history.
 	f.refreshWatermark()
@@ -218,11 +263,36 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, media *wa.Inboun
 		return
 	}
 
-	body := map[string]any{
+	base := map[string]any{
 		"from":      jid,
 		"text":      text,
 		"messageId": msgID,
 		"at":        at.UTC().Format(time.RFC3339),
+	}
+
+	f.wg.Add(1)
+	go func() {
+		defer f.wg.Done()
+		f.deliverAdmitted(jid, base, fetchMedia)
+	}()
+}
+
+// deliverAdmitted fetches the attachment, if any, and posts to every consumer.
+// It runs on its own goroutine: see Deliver for why nothing here may run on
+// whatsmeow's.
+func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia func() *wa.InboundMedia) {
+	var media *wa.InboundMedia
+	if fetchMedia != nil {
+		// The slot is held across the fetch AND the marshal, because the
+		// marshal is where the memory peak actually is — see mediaSlots.
+		f.mediaSlots <- struct{}{}
+		defer func() { <-f.mediaSlots }()
+		media = fetchMedia()
+	}
+
+	body := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		body[k] = v
 	}
 	// Added ONLY when there is something to say. A text message must keep
 	// posting exactly the four published keys: a `"media": null` on every
@@ -249,17 +319,52 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, media *wa.Inboun
 		log.Printf("WARNING inbound payload marshal failed jid=%s err=%v", redact.JID(jid), err)
 		return
 	}
+	carriesMedia := body["media"] != nil
 
+	var wg sync.WaitGroup
 	for _, c := range f.consumers {
 		if c.WebhookURL == "" {
 			continue
 		}
-		f.wg.Add(1)
+		wg.Add(1)
 		go func(c config.Consumer) {
-			defer f.wg.Done()
-			f.post(c, payload)
+			defer wg.Done()
+			if err := f.post(c, payload, carriesMedia); err == nil {
+				return
+			}
+			if !carriesMedia {
+				return
+			}
+			// The file could not be delivered — but the customer's MESSAGE
+			// must not die with it. A 21MiB body over a slow hop is the one
+			// failure this bridge can still do something about, and it stores
+			// no body to replay from later, so the retry happens now or never.
+			//
+			// A duplicate is safe by construction: the payload carries
+			// WhatsApp's own message id and docs/hermes-consumer.md requires
+			// consumers to dedupe on it.
+			log.Printf("WARNING media delivery failed consumer=%s — retrying text-only jid=%s",
+				c.Name, redact.JID(jid))
+			f.postTextOnly(c, base, jid)
 		}(c)
 	}
+	wg.Wait()
+}
+
+// postTextOnly re-posts a message whose media POST failed, carrying the file's
+// absence as a reason rather than silently dropping the whole message.
+func (f *Fanout) postTextOnly(c config.Consumer, base map[string]any, jid string) {
+	body := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		body[k] = v
+	}
+	body["mediaDropped"] = "delivery_failed"
+	payload, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("WARNING text-only fallback marshal failed jid=%s err=%v", redact.JID(jid), err)
+		return
+	}
+	_ = f.post(c, payload, false)
 }
 
 // fromOwner reports whether jid is the configured owner. An empty ownerJID
@@ -299,15 +404,20 @@ func splitJID(jid string) (user, server string) {
 	return user, server
 }
 
-// post delivers one payload to one consumer's webhook. Failures are logged,
-// never returned — a dead consumer webhook must not block or fail delivery
-// to the others, and the caller (Deliver) has nothing to retry against since
-// the inbound has already been recorded.
-func (f *Fanout) post(c config.Consumer, payload []byte) {
+// post delivers one payload to one consumer's webhook, and reports whether it
+// landed. A dead consumer webhook must not block or fail delivery to the
+// others, so every failure is logged here; the error exists only so a caller
+// carrying a file can fall back to delivering the message without it.
+//
+// carriesMedia picks the deadline. A ~1KB text POST that has not completed in
+// 10 seconds is not going to; a 21MiB one at 10 seconds needs a sustained
+// ~17Mbit/s, so the old single timeout turned every large attachment into a
+// LOST MESSAGE rather than a lost file.
+func (f *Fanout) post(c config.Consumer, payload []byte, carriesMedia bool) error {
 	req, err := http.NewRequest(http.MethodPost, c.WebhookURL, bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("WARNING webhook request build failed consumer=%s err=%v", c.Name, err)
-		return
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -319,15 +429,21 @@ func (f *Fanout) post(c config.Consumer, payload []byte) {
 	if c.WebhookSecret != "" {
 		req.Header.Set("LeadStack-Signature", signPayload(c.WebhookSecret, payload, f.now()))
 	}
-	resp, err := f.client.Do(req)
+	client := f.client
+	if carriesMedia {
+		client = f.mediaClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("WARNING webhook delivery failed consumer=%s err=%v", c.Name, err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		log.Printf("WARNING webhook consumer=%s status=%d", c.Name, resp.StatusCode)
+		return fmt.Errorf("webhook consumer=%s status=%d", c.Name, resp.StatusCode)
 	}
+	return nil
 }
 
 // signPayload produces a Stripe-style "LeadStack-Signature" header value:

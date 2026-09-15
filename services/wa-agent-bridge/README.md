@@ -252,24 +252,47 @@ after a restart. It is not an error.
 A photo, voice note, video, document or sticker is downloaded by the bridge and
 forwarded to each consumer **inline**, base64-encoded, in the same payload the
 message travels in — see the Inbound contract in
-[docs/hermes-consumer.md](docs/hermes-consumer.md) for the exact keys. Media
-passes every rail a text message does: the owner filter, the replay watermark
-and the catch-up cap all apply unchanged, and the `LeadStack-Signature` HMAC
-covers the whole body including the file.
+[docs/hermes-consumer.md](docs/hermes-consumer.md) for the exact keys.
 
-`wa.maxInboundMediaBytes` caps one attachment at **16MiB**, checked against the
-protobuf's declared `FileLength` *before* anything is downloaded and again
-against the real length afterwards. Over the cap, or on a failed download, the
+**The rails run before the download, not just before the POST.** The socket
+handler hands the attachment on as an unresolved thunk (`wa.Inbound.Media`);
+the fanout applies the owner filter, the replay watermark and the catch-up cap,
+and only an admitted message is fetched. A sender the bridge ignores cannot make
+it download anything, and a reconnect does not re-fetch a day of replayed
+history only to discard it. The `LeadStack-Signature` HMAC covers the whole
+body including the file.
+
+**The download is bounded by what it is allowed to write, not by what the
+sender declared.** whatsmeow's `Download` ends in a plain `io.ReadAll`, so a
+sender who declares 10 bytes and ships 100MB would allocate all of it; this
+bridge uses `DownloadToFile` streaming into a temp file that refuses to grow
+past `wa.maxInboundCiphertextBytes` (16MiB + 4KiB of AES-CBC/MAC slack). The
+decrypted file is then measured against **16MiB** (`wa.maxInboundMediaBytes`)
+before it is read into memory. Over either bound, or on a failed download, the
 message is still forwarded with a `mediaDropped` marker — the file is lost, the
 message never is.
 
-**What this costs.** A downloaded file and its base64 encoding are live at the
-same time, so an inbound attachment peaks at ~37MiB of process memory. That is
-a second such peak on top of the ~21MiB `api/server.go` already documents for
-an outbound send, and nothing here caps concurrency. What bounds it is that
-downloads run on whatsmeow's event goroutine, which serialises inbound within
-one connection — not this constant. Watch RSS on a bridge carrying a busy
-number before assuming the default systemd limits are enough.
+**The download never runs on whatsmeow's goroutine.** That is a POPIA
+requirement, not a performance one: past five seconds whatsmeow logs the node
+it is handling at WARN, and a node renders its `from` attribute — the customer's
+number in the clear — through a path `internal/redact` cannot reach. `Deliver`
+returns after the rails and does the fetch, the marshal and the POSTs on its own
+goroutine.
+
+**What this costs, honestly.** During the download itself memory is small (the
+file streams to disk). The peak is the delivery: the decoded bytes (16MiB),
+their base64 encoding (21.3MiB), `json.Marshal`'s internal buffer and the copy
+it returns (~21.3MiB each) are all live until every consumer's POST completes —
+call it **~80MiB per attachment**. `api.maxConcurrentMediaDeliveries` (2) is the
+explicit bound on how many of those may be in flight, so plan for **~160MiB**
+above the baseline, plus the ~21MiB `api/server.go` documents for an outbound
+send. That semaphore is the bound; do not rely on whatsmeow serialising inbound
+— its handler loop moves on to the next node after 300 seconds and runs them
+concurrently.
+
+A POST carrying a file gets a 120s deadline (text keeps 10s). If it still
+fails, the message is re-posted **text-only** with `mediaDropped:
+"delivery_failed"`; consumers dedupe on `messageId`, so the duplicate is safe.
 
 ## Re-pairing after a LoggedOut
 

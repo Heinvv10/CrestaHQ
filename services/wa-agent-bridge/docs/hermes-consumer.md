@@ -87,10 +87,22 @@ A message that carried a **file** adds exactly one further key, never both:
 
 - `media` carries the bytes **inline**, base64-encoded. The bridge downloads
   them before posting, so a consumer never talks to WhatsApp itself.
-- `mediaDropped` is `"too_large"` (over 16MiB) or `"fetch_failed"`. It means a
-  file was sent and could not be delivered — which is NOT the same as a message
-  with no file, and is worth showing an operator rather than rendering a bare
-  caption.
+- `mediaDropped` is `"too_large"` (over 16MiB), `"fetch_failed"` (the bridge
+  could not download it) or `"delivery_failed"` (the bridge downloaded it but
+  the POST carrying it to YOU failed, and this is the text-only retry). Each
+  means a file was sent and could not be delivered — which is NOT the same as a
+  message with no file, and is worth showing an operator rather than rendering
+  a bare caption.
+- **Size your body limit for ~21.5MiB.** A 16MiB file is 21.3MiB as base64,
+  plus the envelope. A consumer whose framework caps request bodies lower —
+  Next.js App Router routes reject large bodies by default, for one — will
+  refuse the media POST; the bridge then retries text-only with
+  `mediaDropped: "delivery_failed"`, so the message survives but every file is
+  lost until the limit is raised. The media POST has a 120s deadline on the
+  bridge's side.
+- A `"delivery_failed"` retry can follow a media POST that actually succeeded
+  but timed out on the bridge's side. **Dedupe on `messageId`** — the retry
+  carries the same one — and keep the copy with `media`.
 - **The message is forwarded either way.** Losing a file is a degradation;
   losing a customer's message is not.
 - `filename` is the sender's own for a document and synthesised otherwise. It

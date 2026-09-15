@@ -2,36 +2,50 @@ package wa
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
 )
 
-// maxInboundMediaBytes caps ONE inbound attachment.
-//
-// It is enforced from the protobuf's own FileLength, before any bytes are
-// pulled, so an oversize file costs this process nothing. 16MiB is above
-// anything WhatsApp lets a phone send on the rails this bridge carries, so it
-// refuses nothing real; it exists to bound the memory a hostile or broken
-// sender can make this process hold.
-//
-// BE HONEST ABOUT THE EXPOSURE, as api/server.go's maxSendBodyBytes comment
-// already is for outbound: a downloaded file and its base64 encoding are live
-// at the same time, so the peak is ~37MiB per inbound attachment, and nothing
-// here caps concurrency. The download happens on whatsmeow's event goroutine,
-// which serialises inbound within one connection — that, not this constant, is
-// what keeps the peak from multiplying.
+// maxInboundMediaBytes caps ONE inbound attachment, measured on the decrypted
+// file. 16MiB is above anything the rails this bridge carries legitimately
+// send and is therefore a bound on abuse, not a product limit.
 const maxInboundMediaBytes = 16 << 20
 
-// inboundMediaTimeout bounds one download. Longer than a send's budget because
-// nothing is waiting on it — a slow download delays one consumer webhook, it
-// does not hold the socket mutex or a caller's HTTP request.
-const inboundMediaTimeout = 60 * time.Second
+// maxInboundCiphertextBytes is what the DOWNLOAD is allowed to write to disk,
+// and it is the number that actually bounds anything.
+//
+// It is larger than maxInboundMediaBytes because what arrives on the wire is
+// the AES-CBC ciphertext: the plaintext rounded up to a 16-byte block, plus a
+// 10-byte MAC appended by WhatsApp. 4KiB of slack covers both many times over
+// while staying far below any size worth worrying about.
+const maxInboundCiphertextBytes = maxInboundMediaBytes + 4096
+
+// errMediaTooLarge aborts a download the moment it grows past the cap.
+//
+// It is returned from cappedFile.Write, so it surfaces out of whatsmeow's
+// io.Copy. whatsmeow's shouldRetryMediaDownload does not match it (it is
+// neither a net.Error nor an HTTP error), so the download fails immediately
+// rather than being retried five times against the same oversize file.
+var errMediaTooLarge = errors.New("wa: inbound media exceeded the cap mid-download")
+
+// inboundMediaTimeout bounds one download.
+//
+// It does NOT bound anything the socket is waiting on: the download runs on
+// the fanout's delivery goroutine, deliberately off whatsmeow's node-handler
+// goroutine (see ParseInbound). What it bounds is how long one delivery may
+// occupy a media slot, and therefore how long a stalled CDN can keep the next
+// customer's attachment waiting.
+const inboundMediaTimeout = 120 * time.Second
 
 // InboundMedia is one file that arrived with an inbound message.
 //
@@ -49,19 +63,61 @@ type InboundMedia struct {
 	Data     []byte
 	// Dropped is "too_large" or "fetch_failed" when the file did not survive,
 	// and empty when Data is good. The MESSAGE is forwarded either way —
-	// losing a file is a degradation, losing a customer's message is not
-	// acceptable.
+	// losing a file is a degradation, losing a customer's message is not.
 	Dropped string
 }
 
-// mediaDownloader is the narrow slice of the whatsmeow client the inbound
+// MediaDownloader is the narrow slice of the whatsmeow client the inbound
 // media path uses. *whatsmeow.Client satisfies it.
 //
-// It exists for the same reason mediaUploader does on the outbound side: the
-// two paths worth asserting are a download that FAILS and a download that is
-// never attempted, and a concrete *whatsmeow.Client can be made to do neither.
-type mediaDownloader interface {
-	Download(ctx context.Context, msg whatsmeow.DownloadableMessage) ([]byte, error)
+// It is DownloadToFile, not Download, and that is the whole safety property of
+// this file. whatsmeow's Download ends in a plain io.ReadAll over the response
+// body (download.go:384) with no LimitReader and no Content-Length check, and
+// downloadAndDecrypt holds the ciphertext and the decrypted copy at once — so
+// a sender who declares FileLength 10 and ships 100MB allocates ~200MB in this
+// process, and WhatsApp's own 2GB document ceiling makes that ~4GB. A declared
+// length cannot defend against a sender who lies about it. DownloadToFile
+// streams through io.Copy into a file we supply, which lets cappedFile stop it
+// at a fixed number of bytes no matter what the sender declared or sends.
+type MediaDownloader interface {
+	DownloadToFile(ctx context.Context, msg whatsmeow.DownloadableMessage, file whatsmeow.File) error
+}
+
+// cappedFile is the temp file whatsmeow streams a download into, refusing to
+// grow past limit.
+//
+// Only sequential Write is capped, because only the download uses it:
+// whatsmeow's downloadMediaToFile copies the response body in with io.Copy,
+// while the decryption that follows reads with ReadFull and writes back
+// in place with WriteAt and Truncate (cbcutil.DecryptFile), which can only
+// ever shrink a file this already bounded.
+type cappedFile struct {
+	*os.File
+	limit   int64
+	written int64
+}
+
+func (f *cappedFile) Write(p []byte) (int, error) {
+	if f.written+int64(len(p)) > f.limit {
+		return 0, errMediaTooLarge
+	}
+	n, err := f.File.Write(p)
+	f.written += int64(n)
+	return n, err
+}
+
+// Seek resets the byte count when the file is rewound.
+//
+// whatsmeow rewinds and re-downloads on a transient network error
+// (downloadPossiblyEncryptedMediaWithRetriesToFile), and without this a retry
+// would inherit the previous attempt's count and trip the cap on a file that
+// is comfortably under it.
+func (f *cappedFile) Seek(offset int64, whence int) (int64, error) {
+	pos, err := f.File.Seek(offset, whence)
+	if err == nil && pos == 0 {
+		f.written = 0
+	}
+	return pos, err
 }
 
 // attachment is the downloadable part of an inbound message, flattened to the
@@ -71,17 +127,13 @@ type attachment struct {
 	caption  string
 	mimeType string
 	filename string
-	// length is the sender's declared size. Trusted only to REFUSE — a lie in
-	// the other direction is caught by the post-download check.
+	// length is the sender's DECLARED size. It is used only to refuse early and
+	// cheaply; it is never trusted to admit anything, because the real bound is
+	// cappedFile.
 	length uint64
 }
 
 // attachmentFrom finds the one downloadable part of a message, or nil.
-//
-// The order matters only in that a message carries at most one of these; it is
-// written as a chain rather than a type switch because each protobuf type has
-// its own accessors and no common interface beyond DownloadableMessage, which
-// exposes none of the metadata below.
 func attachmentFrom(m *waE2E.Message) *attachment {
 	if m == nil {
 		return nil
@@ -94,7 +146,7 @@ func attachmentFrom(m *waE2E.Message) *attachment {
 	}
 	if v := m.GetAudioMessage(); v != nil {
 		// Audio has no caption field at all — a voice note arrives with nothing
-		// but the file, which is why handleMessage must not require text.
+		// but the file, which is why dispatch must not require text.
 		return &attachment{v, "", v.GetMimetype(), synthName("voice-note", v.GetMimetype()), v.GetFileLength()}
 	}
 	if v := m.GetDocumentMessage(); v != nil {
@@ -144,48 +196,145 @@ func synthName(base, mime string) string {
 	return base + ext
 }
 
-// fetchInboundMedia turns one attachment into the value the consumer receives.
-// It never returns nil and never fails: every error becomes a Dropped reason,
-// because the message it belongs to is forwarded regardless.
-func (c *Client) fetchInboundMedia(jid string, a *attachment) *InboundMedia {
+// Inbound is one message ready to be handed to a consumer.
+//
+// Media is a THUNK, not a value, and that is the point of this type. Calling
+// it performs the download; not calling it performs none. The rails that
+// decide whether a message may be forwarded at all — the owner filter, the
+// replay watermark, the catch-up cap — live above this package and run before
+// the thunk is called, so a sender the bridge is configured to ignore cannot
+// make it fetch anything, and a reconnect does not re-download a day of
+// replayed history only to discard it.
+//
+// It is nil when the message carried no attachment.
+type Inbound struct {
+	JID   string
+	Text  string
+	MsgID string
+	At    time.Time
+	Media func() *InboundMedia
+}
+
+// ParseInbound turns one whatsmeow message event into the values a consumer
+// receives, or nil when the event is out of scope.
+//
+// It is exported, and pure apart from the thunk it builds, so that the seam
+// between "what the socket delivered" and "what the fanout posts" can be
+// tested in ONE test rather than two halves that meet nowhere — this bridge's
+// recorded failure mode. Production reaches it through handleMessage.
+//
+// It performs NO download. See Inbound.Media.
+func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
+	if v == nil || v.Info.IsFromMe || v.Info.IsGroup {
+		return nil
+	}
+	text := v.Message.GetConversation()
+	if text == "" {
+		if ext := v.Message.GetExtendedTextMessage(); ext != nil {
+			text = ext.GetText()
+		}
+	}
+
+	// An attachment is a message in its own right. A voice note and a sticker
+	// carry no text at all, so requiring text is what used to make this bridge
+	// deaf to them; everything else — reactions, receipts, protocol traffic —
+	// is still out of scope and still returns here.
+	att := attachmentFrom(v.Message)
+	if text == "" && att == nil {
+		return nil
+	}
+
+	in := &Inbound{
+		JID:   senderAddress(v.Info.MessageSource),
+		Text:  text,
+		MsgID: v.Info.ID,
+		At:    v.Info.Timestamp,
+	}
+	if att != nil {
+		if in.Text == "" {
+			in.Text = att.caption
+		}
+		jid := in.JID
+		in.Media = func() *InboundMedia { return fetchInboundMedia(jid, att, dl) }
+	}
+	return in
+}
+
+// fetchInboundMedia downloads one attachment. It never returns nil and never
+// fails: every error becomes a Dropped reason, because the message it belongs
+// to is forwarded regardless.
+func fetchInboundMedia(jid string, a *attachment, dl MediaDownloader) *InboundMedia {
 	m := &InboundMedia{Filename: a.filename, MimeType: a.mimeType}
 
+	// The declared length is a cheap early refusal, not a defence — see
+	// cappedFile for the one that holds against a sender who lies.
 	if a.length > maxInboundMediaBytes {
-		log.Printf("inbound media too large jid=%s mime=%s bytes=%d — message forwarded without it",
+		log.Printf("inbound media declared too large jid=%s mime=%s bytes=%d — message forwarded without it",
 			redact.JID(jid), a.mimeType, a.length)
 		m.Dropped = "too_large"
 		return m
 	}
-
-	c.mu.Lock()
-	dl := c.downloader
-	if dl == nil && c.wac != nil {
-		dl = c.wac
-	}
-	c.mu.Unlock()
 	if dl == nil {
+		log.Printf("WARNING inbound media has no downloader jid=%s mime=%s", redact.JID(jid), a.mimeType)
 		m.Dropped = "fetch_failed"
 		return m
 	}
 
+	// Streamed to disk rather than held in memory, so the peak during a
+	// download is whatsmeow's copy buffer, not the file.
+	f, err := os.CreateTemp("", "wa-inbound-media-*")
+	if err != nil {
+		log.Printf("WARNING inbound media temp file failed jid=%s: %v", redact.JID(jid), err)
+		m.Dropped = "fetch_failed"
+		return m
+	}
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), inboundMediaTimeout)
 	defer cancel()
-	data, err := dl.Download(ctx, a.msg)
-	if err != nil {
+
+	capped := &cappedFile{File: f, limit: maxInboundCiphertextBytes}
+	if err := dl.DownloadToFile(ctx, a.msg, capped); err != nil {
 		// The mime type and the declared size, never the bytes and never the
 		// filename — a filename is customer data on this rail.
-		log.Printf("WARNING inbound media download failed jid=%s mime=%s bytes=%d: %v",
+		if errors.Is(err, errMediaTooLarge) {
+			log.Printf("inbound media exceeded the cap mid-download jid=%s mime=%s declared=%d",
+				redact.JID(jid), a.mimeType, a.length)
+			m.Dropped = "too_large"
+			return m
+		}
+		log.Printf("WARNING inbound media download failed jid=%s mime=%s declared=%d: %v",
 			redact.JID(jid), a.mimeType, a.length, err)
 		m.Dropped = "fetch_failed"
 		return m
 	}
-	if len(data) > maxInboundMediaBytes {
-		// FileLength is the sender's claim; this is the measurement. A file that
-		// understated itself is refused here rather than forwarded, so the cap
-		// means the same thing whether or not the sender was honest.
-		log.Printf("inbound media exceeded the cap after download jid=%s mime=%s bytes=%d",
-			redact.JID(jid), a.mimeType, len(data))
+
+	// Measured, not declared. Reading only after this check is what keeps the
+	// in-memory copy bounded by the constant rather than by the sender.
+	st, err := f.Stat()
+	if err != nil {
+		log.Printf("WARNING inbound media stat failed jid=%s: %v", redact.JID(jid), err)
+		m.Dropped = "fetch_failed"
+		return m
+	}
+	if st.Size() > maxInboundMediaBytes {
+		log.Printf("inbound media over the cap after decrypt jid=%s mime=%s bytes=%d",
+			redact.JID(jid), a.mimeType, st.Size())
 		m.Dropped = "too_large"
+		return m
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		log.Printf("WARNING inbound media rewind failed jid=%s: %v", redact.JID(jid), err)
+		m.Dropped = "fetch_failed"
+		return m
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		log.Printf("WARNING inbound media read failed jid=%s: %v", redact.JID(jid), err)
+		m.Dropped = "fetch_failed"
 		return m
 	}
 	m.Data = data
