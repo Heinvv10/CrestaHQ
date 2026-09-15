@@ -101,6 +101,15 @@ describe("planMrrCents", () => {
     ];
     expect(planMrrCents(p, subs)).toBe(0);
   });
+
+  it("counts a GRACE (dunning banner, still paying) subscriber toward MRR too — matches the page-header rule", () => {
+    const p = plan();
+    const subs = [
+      sub({ billing: { status: "past_due", planId: p.id, priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: new Date(Date.now() + 86400_000) } }), // grace
+      sub({ billing: { status: "past_due", planId: p.id, priceCents: 9700, currency: "usd", billingInterval: "month", graceUntil: new Date(Date.now() - 86400_000) } }), // lapsed — excluded
+    ];
+    expect(planMrrCents(p, subs)).toBe(9700);
+  });
 });
 
 describe("buildResellingRows / archivedPlanCount", () => {

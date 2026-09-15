@@ -1,4 +1,8 @@
-import { effectiveBillingState, monthlyEquivalentCents } from "./status";
+import {
+  effectiveBillingState,
+  isMrrEligible,
+  monthlyEquivalentCents,
+} from "./status";
 import {
   PLAN_GATE_KEYS,
   PLAN_GATE_LABELS,
@@ -45,10 +49,15 @@ export function planSubscriberCounts(
 
 /**
  * Monthly recurring revenue for one plan, in integer cents: the sum of each
- * ACTIVE subscriber's own charge (their special price if one is set,
+ * MRR-eligible subscriber's own charge (their special price if one is set,
  * otherwise the plan price), normalized to a monthly figure for annual
- * subscriptions (÷12). Pending and past-due subscribers are excluded — they
- * are not currently paying.
+ * subscriptions (÷12). Uses `isMrrEligible` — the SAME active-or-grace
+ * predicate the page-header MRR roll-up uses — so the two MRR figures on
+ * one screen (this table's per-plan MRR and the page's total) always
+ * agree. Pending and lapsed subscribers are excluded — they are not
+ * currently paying. Grace subscribers still count here even though the
+ * "Sub-accounts on plan" column buckets them under "past due" — that
+ * column tracks dunning status, this one tracks money.
  */
 export function planMrrCents(
   plan: Pick<BillingPlanResponse, "id">,
@@ -57,7 +66,7 @@ export function planMrrCents(
   let total = 0;
   for (const s of subs) {
     if (s.billing?.planId !== plan.id) continue;
-    if (effectiveBillingState(s.billing) !== "active") continue;
+    if (!isMrrEligible(effectiveBillingState(s.billing))) continue;
     total += monthlyEquivalentCents(
       s.billing.priceCents,
       s.billing.billingInterval,

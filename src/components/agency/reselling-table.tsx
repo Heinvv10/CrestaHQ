@@ -30,9 +30,16 @@ import type { SubAccountDoc } from "@/types";
 export function ResellingTable({
   plans,
   subs,
+  subsLoading,
+  stripeConfigured,
 }: {
   plans: BillingPlanResponse[];
   subs: SubAccountDoc[];
+  /** The sub-accounts onSnapshot listener hasn't resolved yet — subscriber
+   * counts and MRR would read as zero, not "unknown", so show a skeleton
+   * instead of rendering them. */
+  subsLoading: boolean;
+  stripeConfigured: boolean;
 }) {
   const rows = buildResellingRows(plans, subs);
   const archived = archivedPlanCount(plans, subs);
@@ -53,9 +60,16 @@ export function ResellingTable({
         )}
       </div>
 
-      {rows.length === 0 ? (
+      {subsLoading ? (
+        <div
+          className="h-28 animate-pulse rounded-2xl bg-muted/50"
+          data-testid="reselling-loading"
+        />
+      ) : rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground">
-          No active plans yet — create one above to see it here.
+          {stripeConfigured
+            ? "No active plans yet — create one above to see it here."
+            : "Plans need a payment provider configured before you can create one."}
         </div>
       ) : (
         <>
@@ -76,7 +90,7 @@ export function ResellingTable({
                   </th>
                   <th
                     className="px-4 py-2.5 text-right font-medium"
-                    title="Sum of each ACTIVE subscriber's own charge (special price if set, else the plan price), normalized to monthly for annual subscriptions (÷12). Pending and past-due subscribers are excluded."
+                    title="Sum of each active-or-grace subscriber's own charge (special price if set, else the plan price), normalized to monthly for annual subscriptions (÷12) — the same rule as the page's own MRR total. Pending and lapsed subscribers are excluded."
                   >
                     Monthly recurring
                   </th>

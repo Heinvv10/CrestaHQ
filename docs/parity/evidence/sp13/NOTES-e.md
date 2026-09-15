@@ -1,5 +1,24 @@
 # SP13 (e) — Reselling overview, E2E evidence notes
 
+## PR #155 review follow-ups (3 small fixes)
+
+- MRR agreement: the page header's MRR roll-up counted active+grace
+  subscribers; `planMrrCents` only counted active. Extracted the shared
+  predicate as `isMrrEligible(state)` in `src/lib/billing/status.ts` and
+  both call sites (`agency/billing/page.tsx` and `reselling.ts`) now use it,
+  so the two MRR figures on one screen can't disagree. New unit test +
+  mutation-checked (reverting to `state !== "active"` turns it red). The
+  "Sub-accounts on plan" column still buckets grace under "past due" —
+  unchanged, since that column tracks dunning status, not money.
+- Loading state: `ResellingTable` takes `subsLoading`; while the
+  sub-accounts `onSnapshot` hasn't resolved, it renders a skeleton
+  (`data-testid="reselling-loading"`) instead of rows that would otherwise
+  read as "0 active" for every plan.
+- Empty-state copy: when `stripeConfigured` is false (no payment provider
+  configured on this deployment), the empty state no longer says "create
+  one above" — plan creation is disabled in that state — it says plans
+  need a payment provider configured first.
+
 ## PR #155 review fix (HIGH)
 
 Reviewer found `buildResellingRows` dropped subscribers on archived plans —

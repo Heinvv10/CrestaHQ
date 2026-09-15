@@ -17,6 +17,7 @@ import {
   effectiveBillingState,
   formatBillingPrice,
   formatBillingPriceWithInterval,
+  isMrrEligible,
   monthlyEquivalentCents,
 } from "@/lib/billing/status";
 import {
@@ -103,7 +104,7 @@ export default function AgencyBillingPage() {
     const byCurrency = new Map<string, number>();
     for (const s of subs) {
       const state = effectiveBillingState(s.billing);
-      if (state !== "active" && state !== "grace") continue;
+      if (!isMrrEligible(state)) continue;
       const currency = s.billing?.currency;
       if (typeof s.billing?.priceCents !== "number" || !currency) continue;
       const cents = monthlyEquivalentCents(
@@ -416,7 +417,14 @@ export default function AgencyBillingPage() {
         </p>
       </section>
 
-      {plans !== null && <ResellingTable plans={plans} subs={subs} />}
+      {plans !== null && (
+        <ResellingTable
+          plans={plans}
+          subs={subs}
+          subsLoading={subsLoading}
+          stripeConfigured={stripeConfigured}
+        />
+      )}
 
       <PlanEditorDialog
         plan={editingPlan}
