@@ -105,8 +105,18 @@ export async function openWhatsappMedia(path: string): Promise<{
   } catch (err) {
     // Missing object, unreadable metadata, or Storage that would not
     // initialise — all mean "there is nothing to serve" to the caller, but only
-    // the log can tell them apart.
-    console.error("[whatsapp-media] open failed", err);
+    // the log can tell them apart. A missing object is a normal state (deleted,
+    // or an upload that failed after the row was written), so it is not logged.
+    // Never the raw error: a Storage ApiError carries the request headers,
+    // Authorization bearer token included.
+    const e = err as { code?: unknown; message?: unknown } | null;
+    if (e?.code !== 404) {
+      console.warn("[whatsapp-media] open failed", {
+        path,
+        code: e?.code,
+        message: e?.message,
+      });
+    }
     return null;
   }
 }
