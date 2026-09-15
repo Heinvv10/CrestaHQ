@@ -15,14 +15,18 @@ import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
  * Flow: both gates off → Save 1 turns Google on → full reload (state is
  * re-seeded from a null doc, the exact prod path) → the dialog must show
  * Google ON → Save 2 turns Labs on → both must be true in Firestore.
+ * Then, in the SAME page load: while the dialog is closed Firestore turns
+ * Google Calendar sync on, and reopening must show it — the close/reopen path
+ * where the old component kept its hook state between opens.
  */
 
 const GOOGLE = "googleEnabledByAgency";
 const LABS = "labsEnabledByAgency";
+const GCAL = "googleCalendarEnabledByAgency";
 
 async function gates(sa: string) {
   const d = (await adminDb().doc(`subAccounts/${sa}`).get()).data() ?? {};
-  return { google: d[GOOGLE] === true, labs: d[LABS] === true };
+  return { google: d[GOOGLE] === true, labs: d[LABS] === true, gcal: d[GCAL] === true };
 }
 
 async function openManage(page: Page) {
@@ -41,7 +45,7 @@ test("two sequential Manage saves both persist", async ({ page }) => {
   const sa = env.E2E_SUBACCOUNT_ID;
   const ref = adminDb().doc(`subAccounts/${sa}`);
   const before = await gates(sa);
-  await ref.update({ [GOOGLE]: false, [LABS]: false });
+  await ref.update({ [GOOGLE]: false, [LABS]: false, [GCAL]: false });
 
   try {
     // Save 1 — Google on.
@@ -65,8 +69,25 @@ test("two sequential Manage saves both persist", async ({ page }) => {
     await labs.check();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => gates(sa).then((g) => g.labs), { timeout: 15_000 }).toBe(true);
-    expect(await gates(sa)).toEqual({ google: true, labs: true });
+    expect(await gates(sa)).toEqual({ google: true, labs: true, gcal: false });
+
+    // Close → Firestore changes → reopen, no reload.
+    await expect(
+      page.getByRole("heading", { name: `Manage ${FIXTURE_PRIMARY_NAME}` }),
+    ).toBeHidden();
+    await ref.update({ [GCAL]: true });
+    await page
+      .getByRole("row", { name: new RegExp(FIXTURE_PRIMARY_NAME) })
+      .getByRole("button", { name: "Manage" })
+      .click();
+    await expect(
+      page.getByRole("checkbox", { name: /Google Calendar sync/ }),
+    ).toBeChecked();
   } finally {
-    await ref.update({ [GOOGLE]: before.google, [LABS]: before.labs });
+    await ref.update({
+      [GOOGLE]: before.google,
+      [LABS]: before.labs,
+      [GCAL]: before.gcal,
+    });
   }
 });
