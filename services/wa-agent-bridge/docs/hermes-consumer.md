@@ -68,9 +68,37 @@ The bridge POSTs, with `Authorization: Bearer <token>`:
   "messageId": "3EB0...", "at": "2026-09-04T12:00:00Z" }
 ```
 
-That is the complete payload shape today — **`from`, `text`, `messageId`,
-`at`, nothing else.** In particular there is no `quotedMessageId` (see "Not
-yet built" below).
+Those four keys — **`from`, `text`, `messageId`, `at`** — are on every POST,
+and are the whole payload for a text message. There is no `quotedMessageId`
+(see "Not yet built" below).
+
+A message that carried a **file** adds exactly one further key, never both:
+
+```json
+{ "from": "…", "text": "the caption, or \"\"", "messageId": "3EB0…", "at": "…",
+  "media": { "filename": "photo.jpg", "mimeType": "image/jpeg",
+             "dataBase64": "/9j/4AAQ…" } }
+```
+
+```json
+{ "from": "…", "text": "…", "messageId": "…", "at": "…",
+  "mediaDropped": "too_large" }
+```
+
+- `media` carries the bytes **inline**, base64-encoded. The bridge downloads
+  them before posting, so a consumer never talks to WhatsApp itself.
+- `mediaDropped` is `"too_large"` (over 16MiB) or `"fetch_failed"`. It means a
+  file was sent and could not be delivered — which is NOT the same as a message
+  with no file, and is worth showing an operator rather than rendering a bare
+  caption.
+- **The message is forwarded either way.** Losing a file is a degradation;
+  losing a customer's message is not.
+- `filename` is the sender's own for a document and synthesised otherwise. It
+  is customer-supplied data: never put it in a filesystem path or an HTTP
+  header without sanitising it first.
+- `text` is the attachment's caption, and is `""` for a voice note or a sticker,
+  which carry none.
+- A text message posts the four keys and nothing else — no `"media": null`.
 
 `messageId` is WhatsApp's own id for the INBOUND message. Use it to dedupe a
 redelivery on the id rather than on the body. It can be an empty string when

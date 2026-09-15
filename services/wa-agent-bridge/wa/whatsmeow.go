@@ -55,7 +55,13 @@ type Client struct {
 	// socket — see mediaUploader.
 	uploader mediaUploader
 
-	onInbound   func(jid, text, msgID string, at time.Time)
+	// downloader overrides where inbound attachments are fetched from. Nil in
+	// production, where it falls back to wac. Tests set it to reach the
+	// download-FAILURE path and to prove the oversize path never downloads at
+	// all — see mediaDownloader.
+	downloader mediaDownloader
+
+	onInbound   func(jid, text, msgID string, at time.Time, media *InboundMedia)
 	onLoggedOut func()
 
 	// pairCode is the live QR payload while a pairing is in flight. It is a
@@ -75,7 +81,7 @@ var _ Transport = (*Client)(nil)
 // against.
 func NewClient(
 	sessionDir string,
-	onInbound func(jid, text, msgID string, at time.Time),
+	onInbound func(jid, text, msgID string, at time.Time, media *InboundMedia),
 	onLoggedOut func(),
 ) (*Client, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -227,16 +233,32 @@ func (c *Client) handleMessage(v *events.Message) {
 			text = ext.GetText()
 		}
 	}
-	if text == "" {
-		return // non-text events are out of scope
+
+	// An attachment is a message in its own right. A voice note and a sticker
+	// carry no text at all, so requiring text is what used to make this bridge
+	// deaf to them; everything else — reactions, receipts, protocol traffic —
+	// is still out of scope and still returns here.
+	att := attachmentFrom(v.Message)
+	if text == "" && att == nil {
+		return
 	}
-	if c.onInbound != nil {
-		// v.Info.ID is WhatsApp's own message id. Forwarding it lets a
-		// consumer dedupe a redelivery on the id rather than on the body.
-		// quotedMessageId (which of OUR messages this is a reply to) is a
-		// different lookup into ContextInfo and stays phase-2 work.
-		c.onInbound(senderAddress(v.Info.MessageSource), text, v.Info.ID, v.Info.Timestamp)
+	if c.onInbound == nil {
+		return
 	}
+
+	var media *InboundMedia
+	if att != nil {
+		if text == "" {
+			text = att.caption
+		}
+		media = c.fetchInboundMedia(senderAddress(v.Info.MessageSource), att)
+	}
+
+	// v.Info.ID is WhatsApp's own message id. Forwarding it lets a
+	// consumer dedupe a redelivery on the id rather than on the body.
+	// quotedMessageId (which of OUR messages this is a reply to) is a
+	// different lookup into ContextInfo and stays phase-2 work.
+	c.onInbound(senderAddress(v.Info.MessageSource), text, v.Info.ID, v.Info.Timestamp, media)
 }
 
 // senderAddress picks the address a consumer can actually reply to.

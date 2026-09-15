@@ -247,6 +247,30 @@ duplicate-ack outage, not a hypothetical. A reconnect restarts the window.
 Expect `inbound during replay window … recorded, not forwarded` in the log
 after a restart. It is not an error.
 
+## Inbound attachments
+
+A photo, voice note, video, document or sticker is downloaded by the bridge and
+forwarded to each consumer **inline**, base64-encoded, in the same payload the
+message travels in — see the Inbound contract in
+[docs/hermes-consumer.md](docs/hermes-consumer.md) for the exact keys. Media
+passes every rail a text message does: the owner filter, the replay watermark
+and the catch-up cap all apply unchanged, and the `LeadStack-Signature` HMAC
+covers the whole body including the file.
+
+`wa.maxInboundMediaBytes` caps one attachment at **16MiB**, checked against the
+protobuf's declared `FileLength` *before* anything is downloaded and again
+against the real length afterwards. Over the cap, or on a failed download, the
+message is still forwarded with a `mediaDropped` marker — the file is lost, the
+message never is.
+
+**What this costs.** A downloaded file and its base64 encoding are live at the
+same time, so an inbound attachment peaks at ~37MiB of process memory. That is
+a second such peak on top of the ~21MiB `api/server.go` already documents for
+an outbound send, and nothing here caps concurrency. What bounds it is that
+downloads run on whatsmeow's event goroutine, which serialises inbound within
+one connection — not this constant. Watch RSS on a bridge carrying a busy
+number before assuming the default systemd limits are enough.
+
 ## Re-pairing after a LoggedOut
 
 A `LoggedOut` **sets the kill switch in SQLite** and stops outbound. It does

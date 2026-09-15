@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/wa"
 )
 
 // Fanout records every inbound message and forwards it to each registered
@@ -179,7 +181,14 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 // msgID is WhatsApp's own message id, forwarded so a consumer can dedupe a
 // redelivery on the id rather than on the body. It is empty when the transport
 // did not supply one; consumers must treat empty as "unknown".
-func (f *Fanout) Deliver(jid, text, msgID string, at time.Time) {
+//
+// media is nil for a plain text message and carries the file inline otherwise.
+// It is a parameter rather than a second DeliverMedia method for the same
+// reason wa.Transport.Send takes one: every rail above — the owner filter, the
+// replay watermark, the catch-up cap — must apply identically to a message
+// that happens to carry a file, and a parallel method is a parallel path that
+// would eventually stop matching.
+func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, media *wa.InboundMedia) {
 	// Before RecordInbound, or this very message raises the watermark above
 	// itself and every message looks like history.
 	f.refreshWatermark()
@@ -209,12 +218,33 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time) {
 		return
 	}
 
-	payload, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"from":      jid,
 		"text":      text,
 		"messageId": msgID,
 		"at":        at.UTC().Format(time.RFC3339),
-	})
+	}
+	// Added ONLY when there is something to say. A text message must keep
+	// posting exactly the four published keys: a `"media": null` on every
+	// inbound would change the payload every live consumer already parses, for
+	// messages that have no file.
+	//
+	// The bytes ride inline, base64-encoded, inside the body the HMAC already
+	// covers — so signing is unchanged and the file is authenticated by the
+	// same header the message is.
+	switch {
+	case media == nil:
+	case media.Dropped != "":
+		body["mediaDropped"] = media.Dropped
+	default:
+		body["media"] = map[string]any{
+			"filename":   media.Filename,
+			"mimeType":   media.MimeType,
+			"dataBase64": base64.StdEncoding.EncodeToString(media.Data),
+		}
+	}
+
+	payload, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("WARNING inbound payload marshal failed jid=%s err=%v", redact.JID(jid), err)
 		return

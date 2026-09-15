@@ -48,7 +48,7 @@ func TestCatchUpCapIsScopedToTheReplayWindowNotTheConnection(t *testing.T) {
 		func() time.Time { return connectedAt })
 
 	for i := 0; i < maxCatchUpForward+10; i++ {
-		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", now)
+		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", now, nil)
 	}
 	f.Wait()
 	inWindow := n
@@ -56,7 +56,7 @@ func TestCatchUpCapIsScopedToTheReplayWindowNotTheConnection(t *testing.T) {
 
 	// Now step past the window on the SAME connection.
 	now = connectedAt.Add(10 * time.Minute)
-	f.Deliver("27821234567@s.whatsapp.net", "an hour later", "wamid.LATER", now)
+	f.Deliver("27821234567@s.whatsapp.net", "an hour later", "wamid.LATER", now, nil)
 	f.Wait()
 
 	t.Logf("during window: forwarded=%d capped=%d", inWindow, capped)
