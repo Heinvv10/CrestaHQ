@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -49,6 +50,15 @@ type Fanout struct {
 	// be written here, where it can be read and changed.
 	mediaSlots chan struct{}
 	wg         sync.WaitGroup
+	// drainCtx is cancelled by Drain. Every in-flight download and media POST
+	// runs under it, so shutdown ends the FILE work quickly and the message
+	// itself still gets posted text-only in the time that is left.
+	drainCtx    context.Context
+	drainCancel context.CancelFunc
+	// inFlight is what Drain reports if it has to give up: redacted JIDs of the
+	// deliveries still running, so an operator can see what a deploy cost.
+	inFlightMu sync.Mutex
+	inFlight   map[string]int
 	// now is the signing clock. Defaulted to time.Now by NewFanout; tests
 	// that need to assert a fixed signature override it directly (same
 	// package, deliberate unexported access — see f.client.Transport above).
@@ -119,7 +129,7 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 	if connectedAt == nil {
 		panic("api: NewFanout requires a non-nil connectedAt func")
 	}
-	return &Fanout{
+	f := &Fanout{
 		consumers:      consumers,
 		ownerJID:       ownerJID,
 		store:          st,
@@ -129,7 +139,10 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 		mediaClient:    &http.Client{Timeout: mediaDeliveryTimeout},
 		mediaSlots:     make(chan struct{}, maxConcurrentMediaDeliveries),
 		now:            time.Now,
+		inFlight:       map[string]int{},
 	}
+	f.drainCtx, f.drainCancel = context.WithCancel(context.Background())
+	return f
 }
 
 // refreshWatermark re-reads the watermark once per connection.
@@ -233,7 +246,7 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 //     a 16MiB download on a VPS routinely would. redact.JID cannot reach
 //     inside a third-party library, so the fix is to never be slow on that
 //     goroutine.
-func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func() *wa.InboundMedia) {
+func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
 	// Before RecordInbound, or this very message raises the watermark above
 	// itself and every message looks like history.
 	f.refreshWatermark()
@@ -271,23 +284,35 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(
 	}
 
 	f.wg.Add(1)
+	f.track(jid, +1)
 	go func() {
 		defer f.wg.Done()
+		defer f.track(jid, -1)
 		f.deliverAdmitted(jid, base, fetchMedia)
 	}()
+}
+
+func (f *Fanout) track(jid string, delta int) {
+	key := redact.JID(jid)
+	f.inFlightMu.Lock()
+	defer f.inFlightMu.Unlock()
+	f.inFlight[key] += delta
+	if f.inFlight[key] <= 0 {
+		delete(f.inFlight, key)
+	}
 }
 
 // deliverAdmitted fetches the attachment, if any, and posts to every consumer.
 // It runs on its own goroutine: see Deliver for why nothing here may run on
 // whatsmeow's.
-func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia func() *wa.InboundMedia) {
+func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
 	var media *wa.InboundMedia
 	if fetchMedia != nil {
 		// The slot is held across the fetch AND the marshal, because the
 		// marshal is where the memory peak actually is — see mediaSlots.
 		f.mediaSlots <- struct{}{}
 		defer func() { <-f.mediaSlots }()
-		media = fetchMedia()
+		media = fetchMedia(f.drainCtx)
 	}
 
 	body := make(map[string]any, len(base)+1)
@@ -343,9 +368,15 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia fun
 			// A duplicate is safe by construction: the payload carries
 			// WhatsApp's own message id and docs/hermes-consumer.md requires
 			// consumers to dedupe on it.
-			log.Printf("WARNING media delivery failed consumer=%s — retrying text-only jid=%s",
-				c.Name, redact.JID(jid))
-			f.postTextOnly(c, base, jid)
+			reason := "delivery_failed"
+			if f.drainCtx.Err() != nil {
+				// The POST did not fail; the bridge stopped it. Say so, or an
+				// operator hunts a consumer bug that does not exist.
+				reason = "shutdown"
+			}
+			log.Printf("WARNING media delivery %s consumer=%s — retrying text-only jid=%s",
+				reason, c.Name, redact.JID(jid))
+			f.postTextOnly(c, base, jid, reason)
 		}(c)
 	}
 	wg.Wait()
@@ -353,12 +384,12 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia fun
 
 // postTextOnly re-posts a message whose media POST failed, carrying the file's
 // absence as a reason rather than silently dropping the whole message.
-func (f *Fanout) postTextOnly(c config.Consumer, base map[string]any, jid string) {
+func (f *Fanout) postTextOnly(c config.Consumer, base map[string]any, jid, reason string) {
 	body := make(map[string]any, len(base)+1)
 	for k, v := range base {
 		body[k] = v
 	}
-	body["mediaDropped"] = "delivery_failed"
+	body["mediaDropped"] = reason
 	payload, err := json.Marshal(body)
 	if err != nil {
 		log.Printf("WARNING text-only fallback marshal failed jid=%s err=%v", redact.JID(jid), err)
@@ -414,7 +445,14 @@ func splitJID(jid string) (user, server string) {
 // ~17Mbit/s, so the old single timeout turned every large attachment into a
 // LOST MESSAGE rather than a lost file.
 func (f *Fanout) post(c config.Consumer, payload []byte, carriesMedia bool) error {
-	req, err := http.NewRequest(http.MethodPost, c.WebhookURL, bytes.NewReader(payload))
+	// A media POST runs under the drain context so shutdown can abandon a
+	// 21MiB upload and fall back to the text-only post, which does not: the
+	// message must get out even when the file cannot.
+	ctx := context.Background()
+	if carriesMedia {
+		ctx = f.drainCtx
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.WebhookURL, bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("WARNING webhook request build failed consumer=%s err=%v", c.Name, err)
 		return err
@@ -465,6 +503,38 @@ func signPayload(secret string, body []byte, at time.Time) string {
 	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
-// Wait blocks until in-flight deliveries finish. Used by tests and by
-// shutdown, so an outstanding delivery isn't abandoned mid-flight.
+// Wait blocks until in-flight deliveries finish. Tests use it; shutdown uses
+// Drain, because an in-flight media delivery can legitimately take minutes
+// and systemd will not wait that long.
 func (f *Fanout) Wait() { f.wg.Wait() }
+
+// Drain is Wait for shutdown. It first cancels every in-flight download and
+// media POST — those then fall back to posting the message text-only, which
+// takes seconds, not minutes — and then waits for the deliveries to finish
+// until ctx expires. On expiry it reports what it abandoned, because a
+// delivery cut off here is a customer message this bridge cannot replay: it
+// stores no body.
+func (f *Fanout) Drain(ctx context.Context) error {
+	f.drainCancel()
+	done := make(chan struct{})
+	go func() {
+		f.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		f.inFlightMu.Lock()
+		keys := make([]string, 0, len(f.inFlight))
+		n := 0
+		for k, c := range f.inFlight {
+			keys = append(keys, k)
+			n += c
+		}
+		f.inFlightMu.Unlock()
+		log.Printf("ALERT shutdown abandoned %d inbound deliveries still in flight jids=%s — "+
+			"the bridge stores no body; these messages are lost", n, strings.Join(keys, ","))
+		return fmt.Errorf("fanout drain: %d deliveries abandoned", n)
+	}
+}

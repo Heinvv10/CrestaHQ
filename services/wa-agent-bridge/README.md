@@ -262,11 +262,17 @@ it download anything, and a reconnect does not re-fetch a day of replayed
 history only to discard it. The `LeadStack-Signature` HMAC covers the whole
 body including the file.
 
-**The download is bounded by what it is allowed to write, not by what the
-sender declared.** whatsmeow's `Download` ends in a plain `io.ReadAll`, so a
-sender who declares 10 bytes and ships 100MB would allocate all of it; this
-bridge uses `DownloadToFile` streaming into a temp file that refuses to grow
-past `wa.maxInboundCiphertextBytes` (16MiB + 4KiB of AES-CBC/MAC slack). The
+**The download is bounded by every route that can make the file longer, not
+by what the sender declared.** whatsmeow's `Download` ends in a plain
+`io.ReadAll`, so a sender who declares 10 bytes and ships 100MB would allocate
+all of it; this bridge uses `DownloadToFile` streaming into a temp file
+(`wa.cappedFile`) whose `Write`, `WriteAt`, `ReadFrom` and `Truncate` all
+refuse to grow it past `wa.maxInboundCiphertextBytes` (16MiB + 4KiB of
+AES-CBC/MAC slack). That list matters: `io.Copy` — which is what whatsmeow
+calls — uses the destination's `ReadFrom` when it has one, and a first version
+of this type that embedded `*os.File` inherited one and was bypassed entirely.
+The type embeds nothing now, and is deliberately not an `*os.File`, so
+whatsmeow's fallocate of the sender's `Content-Length` is skipped too. The
 decrypted file is then measured against **16MiB** (`wa.maxInboundMediaBytes`)
 before it is read into memory. Over either bound, or on a failed download, the
 message is still forwarded with a `mediaDropped` marker — the file is lost, the
@@ -288,7 +294,23 @@ explicit bound on how many of those may be in flight, so plan for **~160MiB**
 above the baseline, plus the ~21MiB `api/server.go` documents for an outbound
 send. That semaphore is the bound; do not rely on whatsmeow serialising inbound
 — its handler loop moves on to the next node after 300 seconds and runs them
-concurrently.
+concurrently. The systemd unit sets **no** `MemoryMax`; if you add one, size it
+off these numbers, not the binary's idle RSS.
+
+**What is NOT bounded: goroutines parked on the semaphore.** Every admitted
+message gets a delivery goroutine; with `OWNER_JID` unset, any WhatsApp user
+can send attachments faster than two slots drain and park one goroutine per
+message (a few KB each) waiting its turn. That is the same posture
+`api/server.go` states for outbound: a bound against a buggy sender, not a
+hostile one, on a number that is unpublished. A bounded queue that drops with
+`mediaDropped: "queue_full"` is the escalation if it is ever measured to
+matter.
+
+**Shutdown.** `fanout.Drain` cancels every in-flight download and media POST,
+so each such message is re-posted text-only with `mediaDropped: "shutdown"`
+within the 25s `fanoutDrainBudget`; anything still running after that is logged
+as an `ALERT` with redacted JIDs and lost, because the bridge stores no body.
+`TimeoutStopSec=90` in the unit funds the 35s HTTP drain plus this 25s.
 
 **View-once media is downloaded and stored like any other.** whatsmeow unwraps
 a "view once" photo into a plain image before this bridge sees it, and the

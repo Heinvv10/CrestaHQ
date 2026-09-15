@@ -62,7 +62,7 @@ type Client struct {
 	// see MediaDownloader.
 	downloader MediaDownloader
 
-	onInbound   func(jid, text, msgID string, at time.Time, media func() *InboundMedia)
+	onInbound   func(jid, text, msgID string, at time.Time, media func(ctx context.Context) *InboundMedia)
 	onLoggedOut func()
 
 	// pairCode is the live QR payload while a pairing is in flight. It is a
@@ -82,7 +82,7 @@ var _ Transport = (*Client)(nil)
 // against.
 func NewClient(
 	sessionDir string,
-	onInbound func(jid, text, msgID string, at time.Time, media func() *InboundMedia),
+	onInbound func(jid, text, msgID string, at time.Time, media func(ctx context.Context) *InboundMedia),
 	onLoggedOut func(),
 ) (*Client, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {

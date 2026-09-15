@@ -1,8 +1,12 @@
 package wa
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -61,28 +65,18 @@ func (s *stubDownloader) DownloadToFile(ctx context.Context, _ whatsmeow.Downloa
 		return err
 	}
 
-	// Written in chunks, exactly as io.Copy would, so the cap is exercised
-	// mid-stream rather than on one giant Write the real client never makes.
-	const chunk = 1 << 20
-	written := 0
-	for written < len(payload) {
-		end := written + chunk
-		if end > len(payload) {
-			end = len(payload)
-		}
-		n, werr := file.Write(payload[written:end])
-		written += n
-		if werr != nil {
-			s.mu.Lock()
-			s.accepted, s.writeErr = written, werr
-			s.mu.Unlock()
-			return werr
-		}
-	}
+	// Driven EXACTLY as whatsmeow drives it — download-to-file.go:194 is
+	// `io.Copy(file, io.TeeReader(resp.Body, hasher))`. That matters: io.Copy
+	// prefers dst's ReadFrom when it has one, and a wrapper that embeds
+	// *os.File silently inherits (*os.File).ReadFrom, which writes straight to
+	// the inner file and bypasses any Write override. A stub that called
+	// file.Write in a loop was green against exactly that bug.
+	n, cerr := io.Copy(file, io.TeeReader(bytes.NewReader(payload), sha256.New()))
 	s.mu.Lock()
-	s.accepted = written
+	s.accepted = int(n)
+	s.writeErr = cerr
 	s.mu.Unlock()
-	return nil
+	return cerr
 }
 
 func (s *stubDownloader) stats() (calls, accepted int) {
@@ -93,14 +87,14 @@ func (s *stubDownloader) stats() (calls, accepted int) {
 
 type inboundCall struct {
 	jid, text string
-	media     func() *InboundMedia
+	media     func(context.Context) *InboundMedia
 }
 
 func recordingClient(dl MediaDownloader) (*Client, *[]inboundCall) {
 	var seen []inboundCall
 	c := &Client{
 		downloader: dl,
-		onInbound: func(jid, text, _ string, _ time.Time, media func() *InboundMedia) {
+		onInbound: func(jid, text, _ string, _ time.Time, media func(context.Context) *InboundMedia) {
 			seen = append(seen, inboundCall{jid, text, media})
 		},
 	}
@@ -121,7 +115,7 @@ func deliver(t *testing.T, c *Client, seen *[]inboundCall, e *waE2E.Message) (te
 	if got.media == nil {
 		return got.text, nil
 	}
-	return got.text, got.media()
+	return got.text, got.media(context.Background())
 }
 
 func imageMsg(caption string, declared uint64) *waE2E.Message {
@@ -206,6 +200,98 @@ func TestDownloadIsBoundedRegardlessOfDeclaredLength(t *testing.T) {
 	if media.Data != nil {
 		t.Fatalf("an over-cap download must carry no bytes, got %d", len(media.Data))
 	}
+}
+
+// cappedFile must not BE an *os.File. whatsmeow's downloadMediaToFile does
+// `file.(*os.File)` and, when true, fallocates resp.ContentLength before a
+// byte is checked — so a hostile Content-Length would reserve 2GB of disk.
+// It must also own its ReadFrom (io.Copy's preferred path) rather than
+// inherit one, and must not pick up WriteTo either.
+func TestCappedFileIsNotAnOsFile(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "capped-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var file whatsmeow.File = &cappedFile{f: f, limit: 10}
+
+	if _, isOSFile := file.(*os.File); isOSFile {
+		t.Fatal("cappedFile is an *os.File; whatsmeow will fallocate the sender's Content-Length")
+	}
+	if _, ok := file.(io.ReaderFrom); !ok {
+		t.Fatal("cappedFile must implement ReadFrom itself, or io.Copy's behaviour is whatever Go promotes")
+	}
+	if _, ok := file.(io.WriterTo); ok {
+		t.Fatal("cappedFile picked up a WriteTo; something is being promoted")
+	}
+}
+
+// Every route by which the file can get longer is capped: the download's
+// io.Copy (ReadFrom), a plain Write, the decrypt's WriteAt, and Truncate.
+// In-place rewrites of already-admitted bytes are not refused — the decrypt
+// depends on that — and a rewind-and-retry is measured against the same cap.
+func TestCappedFileRefusesGrowthByEveryRoute(t *testing.T) {
+	newCapped := func(t *testing.T) *cappedFile {
+		f, err := os.CreateTemp(t.TempDir(), "capped-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return &cappedFile{f: f, limit: 8}
+	}
+
+	t.Run("ReadFrom via io.Copy", func(t *testing.T) {
+		c := newCapped(t)
+		n, err := io.Copy(c, bytes.NewReader(make([]byte, 64)))
+		if !errors.Is(err, errMediaTooLarge) {
+			t.Fatalf("io.Copy of 64 bytes into an 8-byte cap: n=%d err=%v, want errMediaTooLarge", n, err)
+		}
+		if st, _ := c.Stat(); st.Size() > 8 {
+			t.Fatalf("file grew to %d on disk past the cap", st.Size())
+		}
+	})
+	t.Run("Write", func(t *testing.T) {
+		c := newCapped(t)
+		if _, err := c.Write(make([]byte, 8)); err != nil {
+			t.Fatalf("a write exactly at the cap must succeed: %v", err)
+		}
+		if _, err := c.Write([]byte{1}); !errors.Is(err, errMediaTooLarge) {
+			t.Fatalf("one byte past the cap: %v", err)
+		}
+	})
+	t.Run("WriteAt", func(t *testing.T) {
+		c := newCapped(t)
+		if _, err := c.Write(make([]byte, 8)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.WriteAt([]byte{1, 2, 3, 4}, 4); err != nil {
+			t.Fatalf("an in-place WriteAt inside the admitted region must succeed (the decrypt needs it): %v", err)
+		}
+		if _, err := c.WriteAt([]byte{1}, 8); !errors.Is(err, errMediaTooLarge) {
+			t.Fatalf("WriteAt extending past the cap: %v", err)
+		}
+	})
+	t.Run("Truncate", func(t *testing.T) {
+		c := newCapped(t)
+		if err := c.Truncate(4); err != nil {
+			t.Fatalf("shrinking or growing within the cap must succeed: %v", err)
+		}
+		if err := c.Truncate(9); !errors.Is(err, errMediaTooLarge) {
+			t.Fatalf("Truncate past the cap: %v", err)
+		}
+	})
+	t.Run("rewind and retry is measured afresh", func(t *testing.T) {
+		c := newCapped(t)
+		if _, err := c.Write(make([]byte, 6)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Write(make([]byte, 8)); err != nil {
+			t.Fatalf("a retry from offset 0 of a file within the cap must succeed: %v", err)
+		}
+	})
 }
 
 // The declared length is still worth checking: it refuses the honest oversize
@@ -394,7 +480,7 @@ func TestHandleMessageDownloadsNothing(t *testing.T) {
 	}
 
 	// And resolving it is what downloads.
-	if media := (*seen)[0].media(); media == nil || string(media.Data) != "bytes" {
+	if media := (*seen)[0].media(context.Background()); media == nil || string(media.Data) != "bytes" {
 		t.Fatalf("resolving the thunk must download, got %+v", media)
 	}
 	if calls, _ := dl.stats(); calls != 1 {
@@ -431,7 +517,7 @@ func TestViewOnceMediaIsStoredLikeAnyOther(t *testing.T) {
 	if got.text != "for your eyes only" || got.media == nil {
 		t.Fatalf("view-once must be forwarded like any other media, got text=%q media=%v", got.text, got.media != nil)
 	}
-	if media := got.media(); media == nil || string(media.Data) != "disappearing-photo" {
+	if media := got.media(context.Background()); media == nil || string(media.Data) != "disappearing-photo" {
 		t.Fatalf("view-once bytes must be downloaded and forwarded, got %+v", media)
 	}
 }
@@ -447,5 +533,42 @@ func TestNonTextNonMediaEventIsStillDropped(t *testing.T) {
 
 	if len(*seen) != 0 {
 		t.Fatalf("dispatched %d inbound for a reaction, want 0", len(*seen))
+	}
+}
+
+// A download the BRIDGE cancels — shutdown — is not a download that failed.
+// The reason on the wire must say so, or an operator reading "fetch_failed"
+// after every deploy goes hunting a media-server problem that does not exist.
+func TestCancelledDownloadIsReportedAsShutdown(t *testing.T) {
+	dl := &stubDownloader{hold: make(chan struct{})}
+	c, seen := recordingClient(dl)
+
+	evt := msgEvent("27831234567", "", false, false)
+	evt.Message = imageMsg("caption", 5)
+	c.handleEvent(evt)
+	if len(*seen) != 1 {
+		t.Fatalf("dispatched %d inbound, want 1", len(*seen))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan *InboundMedia, 1)
+	go func() { got <- (*seen)[0].media(ctx) }()
+
+	// The stub blocks on hold and ignores ctx, as a real HTTP body read would
+	// until the transport notices; cancel, then release, and the fetch must
+	// attribute the resulting error to the cancellation.
+	cancel()
+	dl.mu.Lock()
+	dl.err = context.Canceled
+	dl.mu.Unlock()
+	close(dl.hold)
+
+	select {
+	case media := <-got:
+		if media == nil || media.Dropped != "shutdown" {
+			t.Fatalf("Dropped = %+v, want shutdown", media)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch did not return after cancellation")
 	}
 }

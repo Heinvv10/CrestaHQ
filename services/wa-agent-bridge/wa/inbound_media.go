@@ -44,7 +44,9 @@ var errMediaTooLarge = errors.New("wa: inbound media exceeded the cap mid-downlo
 // the fanout's delivery goroutine, deliberately off whatsmeow's node-handler
 // goroutine (see ParseInbound). What it bounds is how long one delivery may
 // occupy a media slot, and therefore how long a stalled CDN can keep the next
-// customer's attachment waiting.
+// customer's attachment waiting. The caller's context can end it sooner — the
+// fanout cancels every in-flight download on shutdown so the MESSAGE can
+// still be posted text-only before systemd's stop timeout.
 const inboundMediaTimeout = 120 * time.Second
 
 // InboundMedia is one file that arrived with an inbound message.
@@ -61,8 +63,10 @@ type InboundMedia struct {
 	Filename string
 	MimeType string
 	Data     []byte
-	// Dropped is "too_large" or "fetch_failed" when the file did not survive,
-	// and empty when Data is good. The MESSAGE is forwarded either way —
+	// Dropped is "too_large", "fetch_failed" or "shutdown" when the file did
+	// not survive, and empty when Data is good. "shutdown" means the bridge was
+	// stopping and abandoned the download deliberately, so the message could go
+	// out text-only in the time it had left. The MESSAGE is forwarded either way —
 	// losing a file is a degradation, losing a customer's message is not.
 	Dropped string
 }
@@ -84,41 +88,95 @@ type MediaDownloader interface {
 }
 
 // cappedFile is the temp file whatsmeow streams a download into, refusing to
-// grow past limit.
+// grow past limit by ANY route.
 //
-// Only sequential Write is capped, because only the download uses it:
-// whatsmeow's downloadMediaToFile copies the response body in with io.Copy,
-// while the decryption that follows reads with ReadFull and writes back
-// in place with WriteAt and Truncate (cbcutil.DecryptFile), which can only
-// ever shrink a file this already bounded.
+// It holds an *os.File and does NOT embed it. Embedding was the first version
+// of this type and it did not bound anything: an embedded *os.File promotes
+// its ReadFrom, io.Copy prefers a destination's ReadFrom over its Write
+// (download-to-file.go:194 is `io.Copy(file, io.TeeReader(resp.Body, hasher))`),
+// and (*os.File).ReadFrom wrote 64MiB straight past a Write override that was
+// never called. Go also promotes WriteTo and whatever the next release adds.
+// Every method whatsmeow.File requires is therefore written out below, and
+// each one that can make the file longer — Write, WriteAt, ReadFrom, Truncate
+// — goes through grow. Nothing is promoted, so nothing can be bypassed.
+//
+// The cap is on the file's high-water OFFSET, not a count of bytes written,
+// so a retry that rewinds and re-downloads (whatsmeow does, on a transient
+// network error) is measured against the same limit as the first attempt, and
+// the decrypt's in-place WriteAt over already-admitted bytes is free.
+//
+// Not being an *os.File has one more consequence worth pinning: whatsmeow's
+// downloadMediaToFile does `file.(*os.File)` to preallocate resp.ContentLength
+// with fallocate. That assertion is false for this type, so a hostile
+// Content-Length can no longer reserve 2GB of disk before a single byte is
+// checked. TestCappedFileIsNotAnOsFile keeps it that way.
 type cappedFile struct {
-	*os.File
-	limit   int64
-	written int64
+	f     *os.File
+	limit int64
+	pos   int64
 }
 
-func (f *cappedFile) Write(p []byte) (int, error) {
-	if f.written+int64(len(p)) > f.limit {
-		return 0, errMediaTooLarge
+var _ whatsmeow.File = (*cappedFile)(nil)
+
+func (c *cappedFile) grow(end int64) error {
+	if end > c.limit {
+		return errMediaTooLarge
 	}
-	n, err := f.File.Write(p)
-	f.written += int64(n)
+	return nil
+}
+
+func (c *cappedFile) Read(p []byte) (int, error) {
+	n, err := c.f.Read(p)
+	c.pos += int64(n)
 	return n, err
 }
 
-// Seek resets the byte count when the file is rewound.
-//
-// whatsmeow rewinds and re-downloads on a transient network error
-// (downloadPossiblyEncryptedMediaWithRetriesToFile), and without this a retry
-// would inherit the previous attempt's count and trip the cap on a file that
-// is comfortably under it.
-func (f *cappedFile) Seek(offset int64, whence int) (int64, error) {
-	pos, err := f.File.Seek(offset, whence)
-	if err == nil && pos == 0 {
-		f.written = 0
+func (c *cappedFile) Write(p []byte) (int, error) {
+	if err := c.grow(c.pos + int64(len(p))); err != nil {
+		return 0, err
+	}
+	n, err := c.f.Write(p)
+	c.pos += int64(n)
+	return n, err
+}
+
+// ReadFrom is what io.Copy actually calls. It exists so that the choice is
+// made HERE rather than inherited: it funnels the source through Write in
+// fixed chunks, so the cap is checked before each one lands.
+func (c *cappedFile) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(writeOnly{c}, r)
+}
+
+// writeOnly hides ReadFrom from io.Copy so it falls back to the Write loop.
+type writeOnly struct{ w io.Writer }
+
+func (w writeOnly) Write(p []byte) (int, error) { return w.w.Write(p) }
+
+func (c *cappedFile) ReadAt(p []byte, off int64) (int, error) { return c.f.ReadAt(p, off) }
+
+func (c *cappedFile) WriteAt(p []byte, off int64) (int, error) {
+	if err := c.grow(off + int64(len(p))); err != nil {
+		return 0, err
+	}
+	return c.f.WriteAt(p, off)
+}
+
+func (c *cappedFile) Seek(offset int64, whence int) (int64, error) {
+	pos, err := c.f.Seek(offset, whence)
+	if err == nil {
+		c.pos = pos
 	}
 	return pos, err
 }
+
+func (c *cappedFile) Truncate(size int64) error {
+	if err := c.grow(size); err != nil {
+		return err
+	}
+	return c.f.Truncate(size)
+}
+
+func (c *cappedFile) Stat() (os.FileInfo, error) { return c.f.Stat() }
 
 // attachment is the downloadable part of an inbound message, flattened to the
 // handful of fields this bridge needs from five different protobuf types.
@@ -199,7 +257,8 @@ func synthName(base, mime string) string {
 // Inbound is one message ready to be handed to a consumer.
 //
 // Media is a THUNK, not a value, and that is the point of this type. Calling
-// it performs the download; not calling it performs none. The rails that
+// it performs the download; not calling it performs none. Its context ends
+// the download early — the fanout cancels it on shutdown. The rails that
 // decide whether a message may be forwarded at all — the owner filter, the
 // replay watermark, the catch-up cap — live above this package and run before
 // the thunk is called, so a sender the bridge is configured to ignore cannot
@@ -212,7 +271,7 @@ type Inbound struct {
 	Text  string
 	MsgID string
 	At    time.Time
-	Media func() *InboundMedia
+	Media func(ctx context.Context) *InboundMedia
 }
 
 // ParseInbound turns one whatsmeow message event into the values a consumer
@@ -265,7 +324,7 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 			in.Text = att.caption
 		}
 		jid := in.JID
-		in.Media = func() *InboundMedia { return fetchInboundMedia(jid, att, dl) }
+		in.Media = func(ctx context.Context) *InboundMedia { return fetchInboundMedia(ctx, jid, att, dl) }
 	}
 	return in
 }
@@ -273,7 +332,7 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 // fetchInboundMedia downloads one attachment. It never returns nil and never
 // fails: every error becomes a Dropped reason, because the message it belongs
 // to is forwarded regardless.
-func fetchInboundMedia(jid string, a *attachment, dl MediaDownloader) *InboundMedia {
+func fetchInboundMedia(ctx context.Context, jid string, a *attachment, dl MediaDownloader) *InboundMedia {
 	m := &InboundMedia{Filename: a.filename, MimeType: a.mimeType}
 
 	// The declared length is a cheap early refusal, not a defence — see
@@ -303,10 +362,10 @@ func fetchInboundMedia(jid string, a *attachment, dl MediaDownloader) *InboundMe
 		_ = os.Remove(f.Name())
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), inboundMediaTimeout)
+	ctx, cancel := context.WithTimeout(ctx, inboundMediaTimeout)
 	defer cancel()
 
-	capped := &cappedFile{File: f, limit: maxInboundCiphertextBytes}
+	capped := &cappedFile{f: f, limit: maxInboundCiphertextBytes}
 	if err := dl.DownloadToFile(ctx, a.msg, capped); err != nil {
 		// The mime type and the declared size, never the bytes and never the
 		// filename — a filename is customer data on this rail.
@@ -314,6 +373,14 @@ func fetchInboundMedia(jid string, a *attachment, dl MediaDownloader) *InboundMe
 			log.Printf("inbound media exceeded the cap mid-download jid=%s mime=%s declared=%d",
 				redact.JID(jid), a.mimeType, a.length)
 			m.Dropped = "too_large"
+			return m
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// Not a failure of the download but a decision by the bridge: it is
+			// stopping, and the message matters more than the file.
+			log.Printf("inbound media abandoned for shutdown jid=%s mime=%s declared=%d",
+				redact.JID(jid), a.mimeType, a.length)
+			m.Dropped = "shutdown"
 			return m
 		}
 		log.Printf("WARNING inbound media download failed jid=%s mime=%s declared=%d: %v",

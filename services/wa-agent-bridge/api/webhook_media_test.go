@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,7 +229,7 @@ func TestDeliverForwardsMediaDroppedMarker(t *testing.T) {
 	srv, body, _ := captureOne(t)
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "caption only", "wamid.DROP", time.Now(), func() *wa.InboundMedia {
+	f.Deliver(knownJID, "caption only", "wamid.DROP", time.Now(), func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "too_large"}
 	})
 	f.Wait()
@@ -308,7 +309,7 @@ func TestMediaDeliveriesAreBounded(t *testing.T) {
 
 	var mu sync.Mutex
 	inFlight, maxSeen := 0, 0
-	fetch := func() *wa.InboundMedia {
+	fetch := func(context.Context) *wa.InboundMedia {
 		mu.Lock()
 		inFlight++
 		if inFlight > maxSeen {
@@ -345,7 +346,7 @@ func TestDeliverReturnsBeforeTheDownloadRuns(t *testing.T) {
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
 	release := make(chan struct{})
-	fetch := func() *wa.InboundMedia {
+	fetch := func(context.Context) *wa.InboundMedia {
 		<-release
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("b")}
 	}
@@ -387,7 +388,7 @@ func TestFailedMediaDeliveryFallsBackToTextOnly(t *testing.T) {
 	defer srv.Close()
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "the caption", "wamid.BIG", time.Now(), func() *wa.InboundMedia {
+	f.Deliver(knownJID, "the caption", "wamid.BIG", time.Now(), func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("big")}
 	})
 	f.Wait()
@@ -430,5 +431,157 @@ func TestFailedTextDeliveryIsNotRetried(t *testing.T) {
 	defer mu.Unlock()
 	if posts != 1 {
 		t.Fatalf("a failed text POST must not be retried, got %d posts", posts)
+	}
+}
+
+// Shutdown must not lose a message because its FILE was mid-download. Drain
+// cancels the download; the fetch reports "shutdown"; the message goes out
+// text-only, and Drain returns well inside its budget.
+func TestDrainAbandonsTheFileAndStillPostsTheMessage(t *testing.T) {
+	srv, body, _ := captureOne(t)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	fetch := func(ctx context.Context) *wa.InboundMedia {
+		<-ctx.Done() // a download that would take minutes
+		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
+	}
+	f.Deliver(knownJID, "the caption", "wamid.SLOW", time.Now(), fetch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := f.Drain(ctx); err != nil {
+		t.Fatalf("Drain must complete once the download is cancelled: %v", err)
+	}
+
+	payload := awaitBody(t, body)
+	if payload["text"] != "the caption" || payload["messageId"] != "wamid.SLOW" {
+		t.Fatalf("the message must still be posted on shutdown: %v", payload)
+	}
+	if payload["mediaDropped"] != "shutdown" {
+		t.Fatalf("the reason must be shutdown, got %v", payload)
+	}
+}
+
+// A media POST that is mid-flight at shutdown is cancelled, and the message is
+// re-posted text-only with the reason "shutdown" — not "delivery_failed",
+// because the consumer did nothing wrong.
+func TestDrainCancelsAMediaPostAndFallsBackWithShutdownReason(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []map[string]any
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		if _, hasMedia := p["media"]; hasMedia {
+			// Hang the media POST until the test says otherwise; the client
+			// side is cancelled by Drain long before.
+			<-release
+			return
+		}
+		mu.Lock()
+		bodies = append(bodies, p)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	defer close(release)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	f.Deliver(knownJID, "caption", "wamid.MID", time.Now(), func(context.Context) *wa.InboundMedia {
+		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("bytes")}
+	})
+	time.Sleep(100 * time.Millisecond) // let the media POST get in flight
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := f.Drain(ctx); err != nil {
+		t.Fatalf("Drain must complete once the media POST is cancelled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("want exactly one text-only fallback, got %d: %v", len(bodies), bodies)
+	}
+	if bodies[0]["mediaDropped"] != "shutdown" || bodies[0]["messageId"] != "wamid.MID" {
+		t.Fatalf("fallback must carry reason shutdown for the same message: %v", bodies[0])
+	}
+}
+
+// If a delivery ignores cancellation, Drain must still return when its budget
+// expires, and say what it left behind — the alternative is systemd's SIGKILL
+// taking every delivery with it silently.
+func TestDrainGivesUpOnBudgetAndReportsWhatItAbandoned(t *testing.T) {
+	srv, _, _ := captureOne(t)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	release := make(chan struct{})
+	defer close(release)
+	f.Deliver(knownJID, "stuck", "wamid.STUCK", time.Now(), func(context.Context) *wa.InboundMedia {
+		<-release // ignores ctx entirely
+		return &wa.InboundMedia{Dropped: "fetch_failed"}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := f.Drain(ctx)
+	if err == nil {
+		t.Fatal("Drain returned nil while a delivery was still in flight")
+	}
+	if time.Since(start) > 1500*time.Millisecond {
+		t.Fatalf("Drain took %s; it must honour its budget", time.Since(start))
+	}
+	if !strings.Contains(err.Error(), "1 deliveries abandoned") {
+		t.Fatalf("Drain must report the abandoned count, got %v", err)
+	}
+}
+
+// The text-only fallback goes through the same signer as every other POST —
+// asserted on THAT body specifically, since it is a second marshal of a
+// second map and a receiver rejects a stale or missing signature outright.
+func TestFallbackBodyIsSigned(t *testing.T) {
+	var mu sync.Mutex
+	var raw [][]byte
+	var sigs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		mu.Lock()
+		raw = append(raw, b)
+		sigs = append(sigs, r.Header.Get("LeadStack-Signature"))
+		mu.Unlock()
+		if _, hasMedia := p["media"]; hasMedia {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	connectedAt := time.Now()
+	f := NewFanout(
+		[]config.Consumer{{Name: "leadstack", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return connectedAt })
+	fixed := time.Unix(1_700_000_000, 0)
+	f.now = func() time.Time { return fixed }
+
+	f.Deliver(knownJID, "caption", "wamid.SIGFB", time.Now(), func(context.Context) *wa.InboundMedia {
+		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("big")}
+	})
+	f.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(raw) != 2 {
+		t.Fatalf("want media POST + fallback, got %d", len(raw))
+	}
+	mac := hmac.New(sha256.New, []byte("whsec_test"))
+	mac.Write([]byte(fmt.Sprintf("%d.", fixed.Unix())))
+	mac.Write(raw[1])
+	want := fmt.Sprintf("t=%d,v1=%s", fixed.Unix(), hex.EncodeToString(mac.Sum(nil)))
+	if sigs[1] != want {
+		t.Fatalf("fallback body signature mismatch:\n got %q\nwant %q", sigs[1], want)
 	}
 }

@@ -88,8 +88,10 @@ A message that carried a **file** adds exactly one further key, never both:
 - `media` carries the bytes **inline**, base64-encoded. The bridge downloads
   them before posting, so a consumer never talks to WhatsApp itself.
 - `mediaDropped` is `"too_large"` (over 16MiB), `"fetch_failed"` (the bridge
-  could not download it) or `"delivery_failed"` (the bridge downloaded it but
-  the POST carrying it to YOU failed, and this is the text-only retry). Each
+  could not download it), `"delivery_failed"` (the bridge downloaded it but
+  the POST carrying it to YOU failed, and this is the text-only retry) or
+  `"shutdown"` (the bridge was restarting — a deploy — and abandoned the file
+  so the message could still reach you in time). Each
   means a file was sent and could not be delivered — which is NOT the same as a
   message with no file, and is worth showing an operator rather than rendering
   a bare caption.

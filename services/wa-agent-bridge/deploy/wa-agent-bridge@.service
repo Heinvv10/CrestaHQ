@@ -50,11 +50,13 @@ StandardError=append:/opt/wa-agent-bridge/%i/bridge.log
 # WhatsApp socket, then drains in-flight webhook deliveries. Give it room.
 # main.go's shutdownBudget const bounds the first step (HTTP graceful drain,
 # which covers an in-flight send) at 35s — chosen to outlast QueueOpts.Timeout
-# (30s). The second step, fanout.Wait(), is bounded by the webhook http.Client's
-# own 10s timeout. Worst case end to end: 35s + 10s = 45s, so TimeoutStopSec
-# must stay above that; 60s leaves 15s of headroom before SIGKILL.
+# (30s). The second step, fanout.Drain, cancels in-flight media downloads and
+# media POSTs (which alone could run 120s + 120s) so the messages go out
+# text-only, and is bounded by fanoutDrainBudget (25s). Worst case end to end:
+# 35s + 25s = 60s, so TimeoutStopSec must stay above that; 90s leaves 30s of
+# headroom before SIGKILL. Anything Drain abandons is logged as an ALERT.
 KillSignal=SIGTERM
-TimeoutStopSec=60
+TimeoutStopSec=90
 
 # The bridge holds a WhatsApp session and a token file; nothing else on the box
 # needs to read them.
