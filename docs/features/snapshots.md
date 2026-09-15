@@ -40,6 +40,13 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   client's homepage — factual content about the wrong business is worse than no
   KB, because the agent states it confidently). What travels is the reusable
   half: persona prompt, hours, timezone, escalation keywords.
+- **Workflow destinations do not travel either** (`sanitizeNodes` in apply, so
+  EVERY apply path — same-agency, template push, share import, file import —
+  gets it): a `notify` step with a typed address is reset to `recipient:
+  "owner"` with `to` blank (the source client's inbox must not receive the
+  target client's leads; `account_contact` is kept since it resolves on the
+  target), and a `webhook` step's `url` is blanked (the engine skips a
+  non-http(s) URL). Reconfigure both before activating an applied workflow.
 - **Routes**: `GET/POST /api/agency/snapshots` (list summaries + counts / capture),
   `POST /api/agency/sub-accounts/[id]/apply-snapshot`. Owner-only.
 - **UI**: [snapshots-section.tsx](src/components/agency/snapshots-section.tsx) on
@@ -100,11 +107,10 @@ format + untrusted-file parser); routes are thin.
   `trigger.formId` remapped through the same map so apply still links forms to
   workflows; `trigger.linkId`/`pipelineId`, WhatsApp `templateId`/`senderId` and
   task assignees nulled; a form's post-submit `redirectUrl` blanked.
-- **Workflow destinations are cleared on import and must be reconfigured.** A
-  `notify` step is reset to `recipient: "owner"` with `to` blank (it emails the
-  importer's own owner), and a `webhook` step's `url` is blanked (the engine
-  skips a non-http(s) URL as `skipped:bad_url`). Otherwise a shared workflow
-  would send the importer's contact data to addresses the sharer picked.
+- **Workflow destinations are cleared and must be reconfigured** — the same
+  `sanitizeNodes` rule as any apply (see "do not travel" above); a shared
+  workflow would otherwise send the importer's contact data to addresses the
+  sharer picked.
 - **A multi-use link is a bearer link until it expires or is revoked** — anyone
   who holds it can download the file, and a file, once downloaded, can be
   imported anywhere any number of times. Prefer single use for one recipient.

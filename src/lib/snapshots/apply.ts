@@ -58,6 +58,16 @@ export function sanitizeNodes(
       // A member uid is the source's; one who also sits on the target (say
       // the agency owner) would silently start receiving its tasks.
       out[id] = { ...node, config: { ...node.config, assignedToUid: null } };
+    } else if (node.type === "notify" && node.config.recipient !== "account_contact") {
+      // A typed address is the SOURCE client's inbox — like the persona's
+      // escalationNotifyEmail, carrying it routes one client's leads to
+      // another's team. Fall back to the agency owner. (Legacy configs with
+      // no `recipient` mean "custom", so they are reset too.)
+      out[id] = { ...node, config: { ...node.config, recipient: "owner", to: "" } };
+    } else if (node.type === "webhook") {
+      // The URL is an endpoint the source client chose; the target's contact
+      // data must not be POSTed there. Blank = the engine skips the step.
+      out[id] = { ...node, config: { ...node.config, url: "" } };
     } else {
       out[id] = node;
     }

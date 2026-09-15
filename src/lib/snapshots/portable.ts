@@ -15,11 +15,9 @@ import type { SnapshotPayload, SnapshotWorkflow } from "@/types/snapshots";
  * snapshot reach back to its source once the recipient activates it:
  *
  *   - outbound destinations — a `notify` step emailing a literal address, a
- *     `webhook` step POSTing contact data to a URL, a form's post-submit
- *     `redirectUrl` sending the visitor to the sharer's site. The sharer chose
- *     them; the recipient's contacts would flow to them. Cleared, so the step
- *     either falls back to the recipient's own owner (notify) or is skipped as
- *     unconfigured (webhook: the engine refuses a non-http(s) URL).
+ *     `webhook` step POSTing contact data to a URL (both cleared by apply's
+ *     sanitizeNodes, which every path shares), and a form's post-submit
+ *     `redirectUrl` sending the visitor to the sharer's site (cleared here).
  *   - source doc ids — `sourceId`, `trigger.formId`/`linkId`/`pipelineId`,
  *     WhatsApp `templateId`/`senderId`. Opaque, but they name documents in
  *     another tenant. Form ids are re-minted and the trigger remapped through
@@ -41,21 +39,17 @@ function scrub(value: unknown, sourceIds: Set<string>): unknown {
   return out;
 }
 
-/** Blank every step config that names a destination or a source-tenant doc. */
+/**
+ * On top of apply's sanitizeNodes (which already clears destinations, member
+ * uids, template and pipeline ids), null the ids that only dangle across
+ * deployments.
+ */
 function clearNodes(nodes: Record<string, WorkflowNode> | undefined) {
   const out: Record<string, WorkflowNode> = {};
   for (const [id, node] of Object.entries(sanitizeNodes(nodes))) {
     const config = { ...node.config };
     switch (node.type) {
-      case "notify":
-        config.recipient = "owner";
-        config.to = "";
-        break;
-      case "webhook":
-        config.url = "";
-        break;
       case "whatsapp_template":
-        // templateId is already nulled by sanitizeNodes above.
         config.senderId = null;
         break;
       case "send_whatsapp":
