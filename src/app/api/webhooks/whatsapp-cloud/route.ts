@@ -524,11 +524,14 @@ export async function POST(request: Request) {
 
   // Gated on redelivery: this sends a real WhatsApp message to a real person
   // and spends an LLM call, so it is the effect a replayed request must never
-  // repeat. Never for an opt-out. Runs before the media step so it never
-  // waits on a download.
+  // repeat. Never for an opt-out, and never for an empty message: a
+  // caption-less photo would otherwise have the AI send a real reply about
+  // nothing. The inbox entry and the file still land. Same rule as the bridge
+  // route. Runs before the media step so it never waits on a download.
   if (
     nextOptedOut === null &&
     !isRedelivery &&
+    inbound.text.trim() !== "" &&
     contactDocs.length > 0 &&
     aiIsConfigured()
   ) {

@@ -416,9 +416,9 @@ describe("cloud inbound media — ordering against the redelivery guard", () => 
       return metaJson();
     };
 
-    const first = post(image());
+    const first = post(image("is this the right pole?"));
     await vi.waitFor(() => expect(fetchCalls.length).toBe(1));
-    expect((await post(image())).status).toBe(200);
+    expect((await post(image("is this the right pole?"))).status).toBe(200);
     release();
     expect((await first).status).toBe(200);
 
@@ -634,9 +634,9 @@ describe("cloud inbound media — nothing that doesn't need the file waits for i
       return metaJson();
     };
 
-    const first = post(image());
+    const first = post(image("is this the right pole?"));
     await vi.waitFor(() => expect(fetchCalls.length).toBe(1));
-    await post(image());
+    await post(image("is this the right pole?"));
 
     // Asserted WHILE the first delivery is still blocked in Graph.
     expect(m.conversationUpserts).toHaveLength(1);
@@ -748,5 +748,53 @@ describe("cloud inbound media — opt-outs", () => {
     ]);
     expect(parseWhatsappMedia(row().media)).not.toBeNull();
     expect(m.aiCalls).toHaveLength(0);
+  });
+});
+
+describe("cloud inbound — the AI never replies to an empty message", () => {
+  const text = (body: string) => ({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: "pn_1" },
+              messages: [
+                { from: "27821234567", id: "wamid.M1", type: "text", text: { body } },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  it("skips the AI for a caption-less photo but still indexes it and stores the file", async () => {
+    await post(image());
+
+    expect(m.aiCalls).toHaveLength(0);
+    expect(m.conversationUpserts).toHaveLength(1);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+  });
+
+  it("skips the AI for a whitespace-only caption", async () => {
+    await post(image(" \n\t "));
+
+    expect(m.aiCalls).toHaveLength(0);
+    expect(m.conversationUpserts).toHaveLength(1);
+  });
+
+  it("replies to a captioned photo with the caption", async () => {
+    await post(image("does this look installed?"));
+
+    expect(m.aiCalls).toHaveLength(1);
+    expect(m.aiCalls[0]!.incomingMessage).toBe("does this look installed?");
+  });
+
+  it("replies to an emoji-only text — an emoji is not empty", async () => {
+    await post(text("👍"));
+
+    expect(m.aiCalls).toHaveLength(1);
+    expect(m.aiCalls[0]!.incomingMessage).toBe("👍");
   });
 });
