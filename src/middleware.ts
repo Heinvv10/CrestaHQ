@@ -296,7 +296,6 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // account on this deployment. The share token is the credential — hashed
   // and checked against the stored share inside, with the same "invalid"
   // answer for unknown, revoked, expired and used-up links. Exactly one segment.
-  /^\/s\/snapshot\/[^/]+$/,
   /^\/api\/public\/snapshots\/[^/]+$/,
 ];
 
