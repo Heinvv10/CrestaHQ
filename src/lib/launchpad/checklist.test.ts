@@ -12,6 +12,7 @@ const zeroCounts: LaunchpadCounts = {
   activeWorkflows: 0,
   bookingPages: 0,
   googleCalendarConnected: false,
+  whatsappConnected: false,
 };
 
 function itemFor(id: string, sub: LaunchpadSubAccount, counts: LaunchpadCounts) {
@@ -64,32 +65,20 @@ describe("buildLaunchpadChecklist", () => {
   });
 
   describe("whatsapp", () => {
-    it("is done with a connected Cloud number", () => {
-      const sub: LaunchpadSubAccount = {
-        whatsappCloudMeta: { phoneNumberId: "123" },
-      };
-      expect(itemFor("whatsapp", sub, zeroCounts).done).toBe(true);
+    // This item reads `counts.whatsappConnected`, computed by the launchpad
+    // API route through `whatsappSenderConfigured()` — the same function
+    // readiness/composer/settings already resolve through — rather than by
+    // this module inspecting Cloud/bridge meta directly, which would miss a
+    // Twilio-only workspace (see route.ts's comment). The route's own
+    // Twilio/Cloud/bridge/none coverage lives in route.test.ts; this only
+    // needs to prove the item passes the boolean through unchanged.
+    it("is done when the route reports a configured sender", () => {
+      const counts: LaunchpadCounts = { ...zeroCounts, whatsappConnected: true };
+      expect(itemFor("whatsapp", emptySub, counts).done).toBe(true);
     });
 
-    it("is done with a paired bridge sender", () => {
-      const sub: LaunchpadSubAccount = {
-        whatsappBridgeMeta: { displayPhoneNumber: "+27784356159" },
-      };
-      expect(itemFor("whatsapp", sub, zeroCounts).done).toBe(true);
-    });
-
-    it("is not done with a disconnected Cloud meta (null id)", () => {
-      const sub: LaunchpadSubAccount = {
-        whatsappCloudMeta: { phoneNumberId: null },
-      };
-      expect(itemFor("whatsapp", sub, zeroCounts).done).toBe(false);
-    });
-
-    it("is not done with a disconnected bridge meta (null number)", () => {
-      const sub: LaunchpadSubAccount = {
-        whatsappBridgeMeta: { displayPhoneNumber: null },
-      };
-      expect(itemFor("whatsapp", sub, zeroCounts).done).toBe(false);
+    it("is not done when the route reports no configured sender", () => {
+      expect(itemFor("whatsapp", emptySub, zeroCounts).done).toBe(false);
     });
   });
 

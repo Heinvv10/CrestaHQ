@@ -9,9 +9,11 @@
  * owns fetching `LaunchpadSubAccount` and `LaunchpadCounts`.
  *
  * Predicates are deliberately reused, not reinvented, from the settings
- * cards that already own each connection's "connected" meaning:
+ * cards / helpers that already own each connection's "connected" meaning:
  *   - email: `sub-account-smtp-section.tsx` (SMTP) / resend domain verify
- *   - whatsapp: `lib/comms/whatsapp/sender-configured.ts`
+ *   - whatsapp: `lib/comms/whatsapp/sender-configured.ts`, called by the
+ *     launchpad API ROUTE (it needs `twilioConfig` too, which this module
+ *     deliberately does not carry — see `LaunchpadCounts.whatsappConnected`)
  *   - gbp: `components/settings/sub-account-google-section.tsx`
  */
 
@@ -29,18 +31,23 @@ export interface LaunchpadSubAccount {
   emailProvider?: "resend" | "smtp";
   smtpConfig?: { verifiedAt?: string | null } | null;
   resendConfig?: { status?: "pending" | "verified" | "failed" } | null;
-  whatsappCloudMeta?: { phoneNumberId?: string | null } | null;
-  whatsappBridgeMeta?: { displayPhoneNumber?: string | null } | null;
   googleConnectionMeta?: { connected?: boolean } | null;
 }
 
-/** Counts that need a read the client can't (or shouldn't) do itself. */
+/**
+ * Counts (and rail-aware booleans) that need a read the client can't (or
+ * shouldn't) do itself. `whatsappConnected` is computed by the route via
+ * `whatsappSenderConfigured()` rather than by this module reading meta
+ * fields directly, so a Twilio-only workspace (no Cloud/bridge meta at all)
+ * is never misread as unconfigured.
+ */
 export interface LaunchpadCounts {
   contacts: number;
   forms: number;
   activeWorkflows: number;
   bookingPages: number;
   googleCalendarConnected: boolean;
+  whatsappConnected: boolean;
 }
 
 export interface LaunchpadItem {
@@ -58,16 +65,6 @@ function emailConnected(sub: LaunchpadSubAccount): boolean {
   // dedicated domain verifies (sub-account-email-domain-section.tsx).
   if (sub.emailProvider === "smtp") return !!sub.smtpConfig?.verifiedAt;
   return sub.resendConfig?.status === "verified";
-}
-
-function whatsappConnected(sub: LaunchpadSubAccount): boolean {
-  // Rail-agnostic on purpose, same reasoning as whatsappSenderConfigured():
-  // asking a bridge workspace for a Cloud number (or vice versa) is the
-  // wrong check, not a stricter one.
-  return (
-    !!sub.whatsappCloudMeta?.phoneNumberId ||
-    !!sub.whatsappBridgeMeta?.displayPhoneNumber
-  );
 }
 
 function gbpConnected(sub: LaunchpadSubAccount): boolean {
@@ -91,7 +88,7 @@ export function buildLaunchpadChecklist(
       id: "whatsapp",
       title: "Connect WhatsApp",
       description: "Connect a WhatsApp number to message and text leads.",
-      done: whatsappConnected(sub),
+      done: counts.whatsappConnected,
       href: "/dashboard/settings/whatsapp",
     },
     {

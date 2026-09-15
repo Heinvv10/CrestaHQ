@@ -3,16 +3,25 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import type { LaunchpadCounts } from "@/lib/launchpad/checklist";
 
 /**
- * GET /api/sub-accounts/[id]/launchpad — the counts the Launchpad checklist
- * can't (or shouldn't) read client-side. Any active member.
+ * GET /api/sub-accounts/[id]/launchpad — the counts (and rail-aware
+ * booleans) the Launchpad checklist can't (or shouldn't) read client-side.
+ * Any active member.
  *
  * `workflows` denies all client reads (server-only, like every other
  * automation collection), so this route is Admin SDK for every count rather
  * than mixing client Firestore reads with one server exception — one place
  * to read, one shape to test.
+ *
+ * WhatsApp connectedness is NOT re-derived here — it goes through
+ * `whatsappSenderConfigured`, the one function every other rail-aware check
+ * (readiness, the composer, settings) already resolves through. Reading
+ * `whatsappCloudMeta`/`whatsappBridgeMeta` directly, as an earlier version of
+ * this route did, silently misses a Twilio-connected workspace: it has
+ * neither meta field, so a two-rail check reports it as never set up.
  *
  * A per-member Google Calendar connection has no member-readable summary
  * field on the sub-account doc (only the credential-bearing per-uid doc at
@@ -29,8 +38,9 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
 
   const db = getAdminDb();
 
-  const [contactsSnap, formsSnap, bookingPagesSnap, workflowsSnap, privateSnap] =
+  const [subSnap, contactsSnap, formsSnap, bookingPagesSnap, workflowsSnap, privateSnap] =
     await Promise.all([
+      db.doc(`subAccounts/${id}`).get(),
       db.collection("contacts").where("subAccountId", "==", id).count().get(),
       db.collection("forms").where("subAccountId", "==", id).count().get(),
       db.collection(`subAccounts/${id}/bookingPages`).count().get(),
@@ -60,6 +70,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     activeWorkflows,
     bookingPages: bookingPagesSnap.data().count,
     googleCalendarConnected,
+    whatsappConnected: whatsappSenderConfigured(subSnap.data()),
   };
 
   return NextResponse.json(counts);

@@ -13,7 +13,7 @@ directly after Dashboard.
 | Item | Source | Predicate |
 |---|---|---|
 | Connect email sending | `SubAccountDoc.emailProvider` / `smtpConfig` / `resendConfig` | SMTP: `smtpConfig.verifiedAt` truthy. Else: `resendConfig.status === "verified"` |
-| Connect WhatsApp | `whatsappCloudMeta` / `whatsappBridgeMeta` | `whatsappCloudMeta.phoneNumberId` OR `whatsappBridgeMeta.displayPhoneNumber` truthy — mirrors `lib/comms/whatsapp/sender-configured.ts` |
+| Connect WhatsApp | `whatsappSenderConfigured(subAccount)` (Twilio + Cloud + bridge, whichever rail is active) | Computed in the API ROUTE, not the pure module — see "PR #156 review fix" below |
 | Connect Google Business Profile | `googleConnectionMeta` | `connected === true` — mirrors `sub-account-google-section.tsx`'s own `connected` |
 | Set up calendar/booking | `subAccounts/{id}/bookingPages` count OR any `subAccounts/{id}/private/googleCalendar_{uid}` with `status === "connected"` | count > 0 OR any connected |
 | Import contacts | `contacts` where `subAccountId==` | count > 0 |
@@ -54,6 +54,40 @@ directly after Dashboard.
   was out of scope for this ticket. WhatsApp has its own dedicated page
   (`/dashboard/settings/whatsapp`) so that CTA does deep-link.
 
+## PR #156 review fix — WhatsApp missed the Twilio rail
+
+The original `checklist.ts` computed `whatsappConnected` from
+`whatsappCloudMeta`/`whatsappBridgeMeta` only, re-implementing (badly) what
+`lib/comms/whatsapp/sender-configured.ts` already owns. A Twilio-only
+workspace carries neither meta field, so it read as never set up — HIGH,
+caught in blind review.
+
+Fixed by moving the predicate out of the pure module entirely: the route
+(`route.ts`) now reads the sub-account doc and calls the real
+`whatsappSenderConfigured()`, returning `whatsappConnected: boolean` as part
+of `LaunchpadCounts`. `checklist.ts` no longer carries `whatsappCloudMeta` /
+`whatsappBridgeMeta` in `LaunchpadSubAccount` at all — the whatsapp item just
+reads `counts.whatsappConnected`. This also means a future fourth rail only
+needs `sender-configured.ts` to know about it; the checklist can't drift.
+
+Checked whether the same "call the feature's own helper" rule applies to
+email: the closest candidate, `emailIsConfigured()` in `lib/comms/resend.ts`,
+answers a different question — "can this deployment send at all" (true
+whenever `RESEND_API_KEY`/`EMAIL_FROM` env vars are set, which is every
+production deployment) — not "did THIS workspace connect its own sender".
+Reusing it would make the email item read "done" for every sub-account
+regardless of setup, which is worse than the current SMTP/resend-domain
+check, so the email predicate is unchanged. Left as a callout since the
+reviewer asked explicitly.
+
+New tests: `route.test.ts` (Twilio-only, Cloud-only, bridge-only, none, and a
+leftover-Twilio-meta-after-migrating-to-Cloud case — all against the real
+`whatsappSenderConfigured` through a real route) plus
+`src/test/memory-firestore.ts` gained `.count()` support (it had none; the
+route uses `.count().get()` on four collections) so the route could be tested
+against the same in-memory Firestore fake other API route tests use, instead
+of a one-off harness.
+
 ## Mutation testing (every predicate, restored after each)
 
 Ran `pnpm vitest run src/lib/launchpad/checklist.test.ts` against each
@@ -71,6 +105,12 @@ the original afterward):
 8. `workflows` item: `> 0` → `>= 0` → 2 tests failed.
 
 All 8 caught; none passed dirty.
+
+Also mutation-tested the regression the review specifically flagged: reverted
+`route.ts`'s `whatsappConnected` to the OLD two-rail check
+(`!!(whatsappCloudMeta?.phoneNumberId || whatsappBridgeMeta?.displayPhoneNumber)`)
+and ran `route.test.ts` — the "Twilio-only" case went red (`expected false to
+be true`), all 8 others stayed green. Restored, diffed clean.
 
 ## What would need to happen in production for each E2E assertion to go red
 
