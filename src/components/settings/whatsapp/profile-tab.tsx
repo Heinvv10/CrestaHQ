@@ -237,6 +237,7 @@ export function ProfileTab({
       {isAdmin && (
         <MediaPickerDialog
           subAccountId={subAccountId}
+          canManage={isAdmin}
           open={pickerOpen}
           onOpenChange={setPickerOpen}
           accept="image"

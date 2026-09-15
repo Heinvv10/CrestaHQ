@@ -94,10 +94,12 @@ const ASSET_ITEMS: Array<{ id: AssetAction; label: string; destructive?: boolean
 
 export function AssetTile({
   asset,
+  canManage,
   onOpen,
   onAction,
 }: {
   asset: MediaAssetDoc;
+  canManage: boolean;
   onOpen: () => void;
   onAction: (a: AssetAction) => void;
 }) {
@@ -119,7 +121,11 @@ export function AssetTile({
         <p className="truncate text-xs font-medium" title={asset.name}>{asset.name}</p>
         <p className="text-[11px] text-muted-foreground">{formatBytes(asset.size)}</p>
       </div>
-      <Kebab label={`Actions for ${asset.name}`} items={ASSET_ITEMS} onAction={onAction} />
+      <Kebab
+        label={`Actions for ${asset.name}`}
+        items={canManage ? ASSET_ITEMS : ASSET_ITEMS.filter((i) => i.id === "preview" || i.id === "copy")}
+        onAction={onAction}
+      />
     </div>
   );
 }
@@ -131,10 +137,12 @@ const FOLDER_ITEMS: Array<{ id: FolderAction; label: string; destructive?: boole
 
 export function FolderTile({
   folder,
+  canManage,
   onOpen,
   onAction,
 }: {
   folder: MediaFolderDoc;
+  canManage: boolean;
   onOpen: () => void;
   onAction: (a: FolderAction) => void;
 }) {
@@ -151,7 +159,7 @@ export function FolderTile({
     >
       <Folder className="h-5 w-5 shrink-0 text-amber-500" />
       <span className="truncate pr-6 text-sm font-medium" title={folder.name}>{folder.name}</span>
-      <Kebab label={`Actions for folder ${folder.name}`} items={FOLDER_ITEMS} onAction={onAction} />
+      {canManage && <Kebab label={`Actions for folder ${folder.name}`} items={FOLDER_ITEMS} onAction={onAction} />}
     </div>
   );
 }

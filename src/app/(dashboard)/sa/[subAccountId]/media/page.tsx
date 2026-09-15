@@ -6,10 +6,10 @@ import { MediaLibrary } from "@/components/media/media-library";
 
 /**
  * Media Library — every file this sub-account has uploaded (images, videos,
- * PDFs), in folders, with live updates. Any active member may manage it.
+ * PDFs), in folders, with live updates. Members browse it; admins manage it.
  */
 export default function MediaPage() {
-  const { subAccountId, loading } = useSubAccount();
+  const { subAccountId, isAdmin, loading } = useSubAccount();
 
   if (loading) {
     return (
@@ -34,7 +34,7 @@ export default function MediaPage() {
           them anywhere a file is asked for.
         </p>
       </header>
-      <MediaLibrary subAccountId={subAccountId} />
+      <MediaLibrary subAccountId={subAccountId} canManage={isAdmin} />
     </div>
   );
 }

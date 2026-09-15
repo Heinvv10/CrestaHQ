@@ -17,20 +17,23 @@ import { UploadProgress, type UploadItem } from "./upload-progress";
  * first, then files, scoped to the open folder; search and the type filter
  * run over the whole library so a match in another folder is still found.
  * In `selectable` mode a click hands the asset to `onSelect` instead of
- * opening the preview.
+ * opening the preview. Without `canManage` (a non-admin member) the library
+ * is read-only: no upload, no folders, only Preview / Copy link.
  */
 export function MediaLibrary({
   subAccountId,
+  canManage,
   selectable = false,
   accept = "any",
   onSelect,
 }: {
   subAccountId: string;
+  canManage: boolean;
   selectable?: boolean;
   accept?: "image" | "any";
   onSelect?: (asset: MediaAssetDoc) => void;
 }) {
-  const { assets, folders, hydrated } = useMediaLibrary(subAccountId);
+  const { assets, folders, error, hydrated } = useMediaLibrary(subAccountId);
   const api = useMemo(() => mediaApi(subAccountId), [subAccountId]);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -101,6 +104,7 @@ export function MediaLibrary({
   function onDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setDragging(false);
+    if (!canManage) return;
     void uploadFiles(Array.from(e.dataTransfer.files));
   }
 
@@ -132,6 +136,14 @@ export function MediaLibrary({
     );
   }
 
+  if (error) {
+    return (
+      <div className="rounded-2xl border bg-card p-5 text-sm" data-testid="media-load-error">
+        <p className="text-rose-600 dark:text-rose-400">Couldn&apos;t load the media library.</p>
+        <p className="mt-1 text-xs text-muted-foreground">{error.message}</p>
+      </div>
+    );
+  }
   if (!hydrated) {
     return <div className="h-64 animate-pulse rounded-2xl bg-muted/40" data-testid="media-loading" />;
   }
@@ -148,24 +160,27 @@ export function MediaLibrary({
         onNavigate={(id) => { setFolderId(id); setSearch(""); }}
         onSearch={setSearch}
         onFilter={setFilter}
+        canManage={canManage}
         onNewFolder={() => setNewFolderOpen(true)}
         onUpload={() => inputRef.current?.click()}
       />
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        accept={accept === "image" ? "image/*" : MEDIA_ACCEPT}
-        className="hidden"
-        data-testid="media-upload-input"
-        onChange={(e) => {
-          void uploadFiles(Array.from(e.target.files ?? []));
-          e.target.value = "";
-        }}
-      />
+      {canManage && (
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept={accept === "image" ? "image/*" : MEDIA_ACCEPT}
+          className="hidden"
+          data-testid="media-upload-input"
+          onChange={(e) => {
+            void uploadFiles(Array.from(e.target.files ?? []));
+            e.target.value = "";
+          }}
+        />
+      )}
 
       <div
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragOver={(e) => { e.preventDefault(); setDragging(canManage); }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         className={`min-h-[240px] rounded-2xl border-2 border-dashed p-3 transition-colors ${
@@ -176,7 +191,7 @@ export function MediaLibrary({
         {empty ? (
           <div className="flex h-56 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
             <ImageIcon className="h-8 w-8" />
-            <p>{searching ? "No files match your search." : "No files here yet. Drop files or click Upload."}</p>
+            <p>{searching ? "No files match your search." : canManage ? "No files here yet. Drop files or click Upload." : "No files here yet."}</p>
           </div>
         ) : (
           <>
@@ -186,6 +201,7 @@ export function MediaLibrary({
                   <FolderTile
                     key={f.id}
                     folder={f}
+                    canManage={canManage}
                     onOpen={() => setFolderId(f.id)}
                     onAction={(a) => onFolderAction(f, a)}
                   />
@@ -197,6 +213,7 @@ export function MediaLibrary({
                 <AssetTile
                   key={a.id}
                   asset={a}
+                  canManage={canManage}
                   onOpen={() => (selectable && onSelect ? onSelect(a) : setPreview(a))}
                   onAction={(action) => onAssetAction(a, action)}
                 />

@@ -12,17 +12,20 @@ import { MediaLibrary } from "./media-library";
 
 /**
  * Pick a file from the sub-account's Media Library. The same grid as the
- * Media page (uploading from inside the picker works); clicking a tile hands
+ * Media page (admins can upload from inside the picker); clicking a tile hands
  * the asset to `onSelect` and closes the dialog.
  */
 export function MediaPickerDialog({
   subAccountId,
+  canManage,
   open,
   onOpenChange,
   accept = "any",
   onSelect,
 }: {
   subAccountId: string;
+  /** Sub-account admin: may upload from inside the picker. */
+  canManage: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   accept?: "image" | "any";
@@ -40,6 +43,7 @@ export function MediaPickerDialog({
         {open && (
           <MediaLibrary
             subAccountId={subAccountId}
+            canManage={canManage}
             selectable
             accept={accept}
             onSelect={(asset) => {

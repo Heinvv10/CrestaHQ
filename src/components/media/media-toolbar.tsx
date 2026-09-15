@@ -34,6 +34,7 @@ export function MediaToolbar({
   onNavigate,
   onSearch,
   onFilter,
+  canManage,
   onNewFolder,
   onUpload,
 }: {
@@ -44,6 +45,7 @@ export function MediaToolbar({
   onNavigate: (folderId: string | null) => void;
   onSearch: (v: string) => void;
   onFilter: (f: KindFilter) => void;
+  canManage: boolean;
   onNewFolder: () => void;
   onUpload: () => void;
 }) {
@@ -99,12 +101,16 @@ export function MediaToolbar({
             </button>
           ))}
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={onNewFolder} data-testid="media-new-folder">
-          <FolderPlus className="mr-1 h-4 w-4" />New folder
-        </Button>
-        <Button type="button" size="sm" onClick={onUpload} data-testid="media-upload-button">
-          <Upload className="mr-1 h-4 w-4" />Upload
-        </Button>
+        {canManage && (
+          <>
+            <Button type="button" variant="outline" size="sm" onClick={onNewFolder} data-testid="media-new-folder">
+              <FolderPlus className="mr-1 h-4 w-4" />New folder
+            </Button>
+            <Button type="button" size="sm" onClick={onUpload} data-testid="media-upload-button">
+              <Upload className="mr-1 h-4 w-4" />Upload
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );
