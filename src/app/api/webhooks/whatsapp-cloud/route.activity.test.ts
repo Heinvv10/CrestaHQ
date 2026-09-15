@@ -38,6 +38,8 @@ function contactRef(id: string) {
     id,
     collection: (name: string) => ({
       doc: (docId: string) => ({
+        // The redelivery guard reads the message doc before writing it.
+        get: async () => ({ exists: false }),
         set: async (data: Record<string, unknown>) => {
           if (name === "activities") {
             m.activityAdds.push({ path: `contacts/${id}/${name}/${docId}`, data });
