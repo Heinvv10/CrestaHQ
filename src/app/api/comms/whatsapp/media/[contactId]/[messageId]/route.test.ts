@@ -245,6 +245,37 @@ describe("GET /api/comms/whatsapp/media/[contactId]/[messageId]", () => {
     expect(Buffer.from(await res.arrayBuffer())).toEqual(BYTES.subarray(2, 6));
   });
 
+  it("clamps a range whose end runs past the object, so Content-Length matches the body", async () => {
+    // Without the clamp this would send `bytes 0-99999/24`, Content-Length
+    // 100000 and a 24-byte body — the header/body disagreement this route
+    // claims cannot happen.
+    const res = await call({ ...AUTHED, range: "bytes=0-99999" });
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe(
+      `bytes 0-${BYTES.length - 1}/${BYTES.length}`,
+    );
+    expect(res.headers.get("content-length")).toBe(String(BYTES.length));
+    expect(readCalls).toEqual([{ start: 0, end: BYTES.length - 1 }]);
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(BYTES);
+  });
+
+  it("passes a voice note's parameterised mime type through untouched", async () => {
+    // WhatsApp voice notes arrive as `audio/ogg; codecs=opus`. The allow-list
+    // must match on the bare type, or every voice note is served as an opaque
+    // download and the audio element will not play.
+    withMedia({
+      kind: "audio",
+      mimeType: "audio/ogg; codecs=opus",
+      filename: "voice-note.ogg",
+      sizeBytes: BYTES.length,
+      storagePath: EXPECTED_PATH,
+    });
+    const res = await call(AUTHED);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/ogg; codecs=opus");
+    expect(res.headers.get("content-disposition")).toMatch(/^inline/);
+  });
+
   it("416s on a range that starts past the end of the object", async () => {
     const res = await call({ ...AUTHED, range: `bytes=${BYTES.length + 10}-` });
     expect(res.status).toBe(416);
