@@ -12,7 +12,7 @@ prefix remains. All names in the frames are fake.
 **Prod #1000 frames await a Hein-approved deploy.** Until then these local
 frames are the browser evidence for the rows below.
 
-Build: `main` @ `main `152f44f` + capture commit `0f37d60` (run 2026-09-15 23:16 SAST, local standalone build, loopback app URL, all 6 captures + cleanup assertion passed)`
+Build: main @ `152f44f` + capture commit `0f37d60` (run 2026-09-15 23:16 SAST, local standalone build, loopback app URL, all 6 captures + cleanup assertion passed)
 
 PNG groups: x1 manage dialog · m1/m4 media library · n3/n4 snapshot share · t1/t2 template library · l1 launchpad · r1 reselling
 
@@ -30,4 +30,12 @@ PNG groups: x1 manage dialog · m1/m4 media library · n3/n4 snapshot share · t
 
 The `NOTES-*.md` files beside this README are the per-PR mutation notes, not frames.
 
-> **About the `#1000` label in the sidebar:** that is the E2E fixture agency's own account number for "E2E Fixture Primary" — a separate test agency with only the two fixture sub-accounts. It is **not** the production CrestaHQ #1000 tenant. Production #1000 frames still await a Hein-approved deploy.
+> **About the `#1000` label (sidebar, header switcher, template card, push dialog):** that is the E2E fixture agency's own account number for "E2E Fixture Primary" — a separate test agency with only the two fixture sub-accounts. It is **not** the production CrestaHQ #1000 tenant. Production #1000 frames still await a Hein-approved deploy.
+
+## How to re-run
+
+Only when CrestaHQ CI has **0 in-progress and 0 queued** runs (the capture shares the E2E fixture tenant). From a worktree of `main` with `.env.local`, Node 22:
+
+1. Build with the same overrides CI's `e2e` job uses: `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100` (loopback — `instrumentation.ts` then skips QStash schedules and the heartbeat), dead `QSTASH_*` values, `GBP/WHATSAPP_SETTINGS/GCAL/SMS/REVIEWS_AI_PROVIDER=fake` with their `*_FAKE_ALLOW_PROD_BUILD=1` and `*_FAKE_AGENCY_ID=$E2E_AGENCY_ID`, and `RESEND_API_KEY`, `TWILIO_*`, `VAPI_API_KEY`, `OPENROUTER_API_KEY` unset; then `pnpm build`.
+2. With the same env: `flock /tmp/crestahq-e2e.lock pnpm exec playwright test --config e2e/evidence/playwright.config.ts e2e/evidence/sp13.capture.ts`.
+3. The evidence config matches every `*.capture.ts`; pass the full sp13 path so SP3's frames are not regenerated (if they are, `git restore docs/parity/evidence/sp3`).

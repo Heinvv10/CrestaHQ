@@ -28,7 +28,15 @@ export async function shot(page: Page, file: string) {
   await page.screenshot({ path: `${OUT}/${file}` });
 }
 
-const mine = (v: unknown) => String(v ?? "").startsWith(PREFIX) || String(v ?? "").startsWith(TITLE);
+/**
+ * Exactly the names this capture seeds, plus the PREFIX. NOT the shared TITLE:
+ * sp3.capture.ts uses "E2E Evidence" too, and a title match would purge its data.
+ */
+export const SEEDED_NAMES = new Set([
+  `${TITLE} Brand assets`, // media folder (m1)
+  `${TITLE} new-lead welcome`, // draft workflow + its library template (t1)
+]);
+const mine = (v: unknown) => String(v ?? "").startsWith(PREFIX) || SEEDED_NAMES.has(String(v ?? ""));
 
 export async function seedSnapshot(ownerUid: string) {
   const { E2E_AGENCY_ID: agencyId, E2E_SUBACCOUNT_ID: sa } = readEnv();
