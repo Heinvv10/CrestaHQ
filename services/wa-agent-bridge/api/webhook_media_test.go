@@ -873,3 +873,54 @@ func TestPanicInsideIntakeDoesNotWedgeTheFanout(t *testing.T) {
 		t.Fatal("Drain blocked after a panic inside intake")
 	}
 }
+
+// "ALERT inbound LOST" must fire only for a message that would really have been
+// forwarded. A non-owner message, or replayed history, is never posted whether
+// or not the bridge is shutting down, so reporting it as lost on every drain
+// would train operators to ignore the one ALERT that means a customer's
+// message is gone. The closed check therefore sits after the owner filter and
+// the replay gate; this pins that order.
+func TestNoLostAlertForMessagesThatWouldNotHaveBeenForwarded(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	t.Run("non-owner", func(t *testing.T) {
+		logged.Reset()
+		srv, body, _ := captureOne(t)
+		f := openFanout(srv.URL, "27821234567@s.whatsapp.net", store.NewMemory(), false)
+		if err := f.Drain(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		f.Deliver("27829999999@s.whatsapp.net", "stranger", "wamid.STRANGER", time.Now(), nil)
+		f.Wait()
+		if strings.Contains(logged.String(), "LOST") {
+			t.Fatalf("a non-owner message was reported LOST on shutdown: %q", logged.String())
+		}
+		if len(body) != 0 {
+			t.Fatalf("non-owner message posted (%d)", len(body))
+		}
+	})
+
+	t.Run("replayed history", func(t *testing.T) {
+		logged.Reset()
+		srv, body, _ := captureOne(t)
+		st := store.NewMemory()
+		watermark := time.Now()
+		if err := st.RecordInbound("27820000000@s.whatsapp.net", watermark); err != nil {
+			t.Fatal(err)
+		}
+		f := openFanout(srv.URL, "", st, true)
+		if err := f.Drain(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		f.Deliver(knownJID, "yesterday", "wamid.HISTORY", watermark.Add(-30*time.Minute), nil)
+		f.Wait()
+		if strings.Contains(logged.String(), "LOST") {
+			t.Fatalf("replayed history was reported LOST on shutdown: %q", logged.String())
+		}
+		if len(body) != 0 {
+			t.Fatalf("replayed history posted (%d)", len(body))
+		}
+	})
+}
