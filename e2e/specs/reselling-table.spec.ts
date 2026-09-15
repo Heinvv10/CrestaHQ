@@ -177,7 +177,8 @@ test("moving the subscriber to past_due drops the active count to zero", async (
   const subscribers = row.getByTestId("reselling-subscribers");
   await expect(subscribers).toHaveAttribute("data-active", "0");
   await expect(subscribers).toContainText("0 active");
-  await expect(subscribers).toContainText("past due");
+  // The past-due count renders beside the active count, not inside it.
+  await expect(row).toContainText("1 past due");
 });
 
 test("archiving the plan keeps its row (marked Archived) and its subscriber in the total, since it still has one", async ({ page }) => {
