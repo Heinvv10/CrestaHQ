@@ -94,7 +94,10 @@ function ImportSnapshot() {
               Another agency shared a snapshot with you. Importing adds a copy
               to your snapshot library — forms, workflows, templates, products,
               custom fields and AI persona. It carries no customer data or
-              credentials, and changes none of your sub-accounts.
+              credentials, and changes none of your sub-accounts. Workflow
+              destinations are cleared on import — notification recipients
+              reset to you, webhook URLs are blank — so reconfigure them
+              before activating an imported workflow.
             </p>
           </div>
         </div>

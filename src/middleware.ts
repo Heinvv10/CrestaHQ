@@ -335,6 +335,9 @@ export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
   const url = request.nextUrl.clone();
   url.pathname = "/login";
   url.searchParams.set("redirect", `${pathname}${request.nextUrl.search}`);
+  // A share link's bearer token belongs only inside `redirect` — not as a
+  // top-level /login param where analytics and referrers would see it twice.
+  url.searchParams.delete("token");
 
   const configured = process.env.NEXT_PUBLIC_APP_URL;
   if (configured) {

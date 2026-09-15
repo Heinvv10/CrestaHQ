@@ -2,13 +2,12 @@ import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
-import { sanitizeNodes } from "@/lib/snapshots/apply";
+import { scrubImportedPayload } from "@/lib/snapshots/import-scrub";
 import {
   SNAPSHOT_SHARE_EXPIRY_DAYS,
   type SnapshotPayload,
   type SnapshotShareStatus,
   type SnapshotShareSummary,
-  type SnapshotWorkflow,
 } from "@/types/snapshots";
 
 /**
@@ -17,7 +16,8 @@ import {
  * A share lives under the snapshot it shares and stores only the sha256 of
  * its token; `snapshotShareIndex/{tokenHash}` resolves a presented token back
  * to it. Importing copies the snapshot into the importer's own agency as a new
- * doc carrying `importedFrom` — and no other id from the source tenant.
+ * doc carrying `importedFrom: { importedAt }` and nothing that points back at
+ * the source tenant (see import-scrub.ts).
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -65,12 +65,13 @@ interface CreateShareInput {
 
 /**
  * Mint a share for a snapshot in the caller's agency. Returns the raw token
- * exactly once; null when the snapshot is not in that agency.
+ * exactly once. Refuses a snapshot not in that agency, and one that was itself
+ * imported — a copy is the importer's to apply, not to redistribute.
  */
 export async function createSnapshotShare(
   db: Firestore,
   input: CreateShareInput,
-): Promise<{ share: SnapshotShareSummary; token: string } | null> {
+): Promise<{ share: SnapshotShareSummary; token: string } | "not_found" | "imported"> {
   const { agencyId, snapshotId, uid, expiresInDays, singleUse } = input;
   const now = input.now ?? new Date();
   const snapshotRef = db.doc(`agencies/${agencyId}/snapshots/${snapshotId}`);
@@ -80,7 +81,8 @@ export async function createSnapshotShare(
 
   const share = await db.runTransaction(async (tx) => {
     const snapshot = await tx.get(snapshotRef);
-    if (!snapshot.exists) return null;
+    if (!snapshot.exists) return "not_found" as const;
+    if (snapshot.data()?.importedFrom) return "imported" as const;
     const doc = {
       id: ref.id,
       agencyId,
@@ -105,7 +107,7 @@ export async function createSnapshotShare(
     });
     return doc;
   });
-  if (!share) return null;
+  if (typeof share === "string") return share;
 
   return { share: toSummary(ref.id, { ...share, createdAt: null }, now), token };
 }
@@ -148,41 +150,6 @@ export async function revokeSnapshotShare(
     tx.delete(db.doc(`snapshotShareIndex/${share.tokenHash}`));
     return true;
   });
-}
-
-const TENANCY_KEYS = new Set(["agencyId", "subAccountId", "createdByUid"]);
-
-/**
- * Deep-copy a payload with every trace of the source tenant removed: nested
- * tenancy keys are dropped, and any string equal to a source tenant id is
- * nulled. Capture already strips top-level stamps; this catches what hides
- * deeper (a stray stamp inside a config map, a member uid on a task node).
- */
-function scrub(value: unknown, sourceIds: Set<string>): unknown {
-  if (typeof value === "string") return sourceIds.has(value) ? null : value;
-  if (Array.isArray(value)) return value.map((v) => scrub(v, sourceIds));
-  if (value === null || typeof value !== "object") return value;
-  if (Object.getPrototypeOf(value) !== Object.prototype) return value;
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value)) {
-    if (!TENANCY_KEYS.has(k)) out[k] = scrub(v, sourceIds);
-  }
-  return out;
-}
-
-export function scrubImportedPayload(
-  payload: SnapshotPayload,
-  sourceIds: Set<string>,
-): SnapshotPayload {
-  const clean = scrub(payload, sourceIds) as SnapshotPayload;
-  return {
-    ...clean,
-    // A member uid on a task node is a person in the source agency — null it
-    // the same way apply does, whether or not it matched a known id above.
-    workflows: (clean.workflows ?? []).map(
-      (w): SnapshotWorkflow => ({ ...w, nodes: sanitizeNodes(w.nodes) }),
-    ),
-  };
 }
 
 export type ImportOutcome =
@@ -243,12 +210,7 @@ export async function importSharedSnapshot(
       createdByUid: input.uid,
       createdAt: FieldValue.serverTimestamp(),
       payload: scrubImportedPayload(payload, sourceIds),
-      importedFrom: {
-        agencyId: share.agencyId,
-        snapshotId: index.snapshotId,
-        shareId: index.shareId,
-        importedAt: FieldValue.serverTimestamp(),
-      },
+      importedFrom: { importedAt: FieldValue.serverTimestamp() },
     });
     tx.update(shareRef, {
       usedCount: FieldValue.increment(1),

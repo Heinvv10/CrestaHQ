@@ -84,7 +84,9 @@ export function SnapshotShareDialog({ snapshot, onOpenChange, onCreated }: Props
           <DialogTitle>Share &ldquo;{snapshot?.name}&rdquo;</DialogTitle>
           <DialogDescription>
             Anyone who owns an agency and opens this link can import a copy of
-            the snapshot. Customer data and credentials are never included.
+            the snapshot — a multi-use link keeps working for whoever holds it
+            until it expires or you revoke it. Customer data, credentials and
+            workflow destinations are never included.
           </DialogDescription>
         </DialogHeader>
 

@@ -93,6 +93,17 @@ describe("snapshot share routes", () => {
     expect((await mintShare({ expiresInDays: 90 })).status).toBe(400);
   });
 
+  it("refuses with 409 to share a snapshot that was itself imported", async () => {
+    mem.seed("agencies/ag_src/snapshots/snap_1", {
+      id: "snap_1", agencyId: "ag_src", name: "Copy", version: 1, sourceSubAccountId: null,
+      createdByUid: "u_src", createdAt: new Date(), importedFrom: { importedAt: new Date() },
+      payload: { forms: [], messageTemplates: [], products: [], workflows: [] },
+    });
+    const res = await mintShare();
+    expect(res.status).toBe(409);
+    expect(mem.list("agencies/ag_src/snapshots/snap_1/shares")).toHaveLength(0);
+  });
+
   it("refuses to mint when the app URL is unset, before writing anything", async () => {
     delete process.env.NEXT_PUBLIC_APP_URL;
     expect((await mintShare()).status).toBe(500);

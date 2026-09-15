@@ -53,8 +53,14 @@ export async function POST(
     expiresInDays,
     singleUse: body.singleUse === true,
   });
-  if (!created) {
+  if (created === "not_found") {
     return NextResponse.json({ error: "Snapshot not found." }, { status: 404 });
+  }
+  if (created === "imported") {
+    return NextResponse.json(
+      { error: "An imported snapshot can't be shared on." },
+      { status: 409 },
+    );
   }
 
   const url = `${base}/agency/snapshots/import?token=${encodeURIComponent(created.token)}`;

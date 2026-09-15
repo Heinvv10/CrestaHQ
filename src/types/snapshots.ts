@@ -133,11 +133,11 @@ export interface SnapshotDoc {
   importedFrom?: SnapshotImportedFrom;
 }
 
-/** Provenance of an imported snapshot — the only source ids it may carry. */
+/**
+ * Marks an imported snapshot. Deliberately carries no id of the sharing
+ * agency, its snapshot, or the share — only when the copy arrived.
+ */
 export interface SnapshotImportedFrom {
-  agencyId: string;
-  snapshotId: string;
-  shareId: string;
   importedAt: Timestamp | FieldValue | null;
 }
 

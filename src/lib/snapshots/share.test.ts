@@ -59,7 +59,7 @@ async function share(opts: { singleUse?: boolean; days?: 1 | 7 | 30 } = {}) {
     singleUse: opts.singleUse ?? false,
     now: T0,
   });
-  if (!out) throw new Error("share not created");
+  if (typeof out === "string") throw new Error(`share not created: ${out}`);
   return out;
 }
 
@@ -84,11 +84,23 @@ describe("createSnapshotShare", () => {
     expect(Buffer.from(token, "base64url")).toHaveLength(32);
   });
 
+  it("refuses to share a snapshot that was itself imported", async () => {
+    mem.seed(`agencies/${SRC}/snapshots/snap_imp`, {
+      id: "snap_imp", agencyId: SRC, name: "Copy", importedFrom: { importedAt: T0 },
+      payload: { forms: [], messageTemplates: [], products: [], workflows: [] },
+    });
+    const out = await createSnapshotShare(db, {
+      agencyId: SRC, snapshotId: "snap_imp", uid: "u", expiresInDays: 7, singleUse: false, now: T0,
+    });
+    expect(out).toBe("imported");
+    expect(mem.list(`agencies/${SRC}/snapshots/snap_imp/shares`)).toHaveLength(0);
+  });
+
   it("refuses a snapshot that is not in the caller's agency", async () => {
     const out = await createSnapshotShare(db, {
       agencyId: DST, snapshotId: SNAP, uid: "u", expiresInDays: 7, singleUse: false, now: T0,
     });
-    expect(out).toBeNull();
+    expect(out).toBe("not_found");
     expect(mem.list(`agencies/${DST}/snapshots/${SNAP}/shares`)).toHaveLength(0);
   });
 });
@@ -107,8 +119,11 @@ describe("importSharedSnapshot", () => {
       createdByUid: "u_dst_owner",
       name: "Plumber starter",
       sourceSubAccountId: null,
-      importedFrom: { agencyId: SRC, snapshotId: SNAP, shareId: s.id },
+      importedFrom: { importedAt: expect.anything() },
     });
+    expect(Object.keys(doc.importedFrom as object)).toEqual(["importedAt"]);
+    expect(JSON.stringify(doc)).not.toContain(s.id);
+    expect(JSON.stringify(doc)).not.toContain(SNAP);
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { importedFrom, ...rest } = doc;
     const body = JSON.stringify(rest);
@@ -119,7 +134,6 @@ describe("importSharedSnapshot", () => {
     }
     // The config itself survives the scrub.
     expect(body).toContain("Call-out");
-    expect(body).toContain('"formId":"f1"');
   });
 
   it("refuses an import into the agency that owns the snapshot", async () => {

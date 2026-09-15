@@ -191,7 +191,7 @@ test("a single-use share link imports once into another agency, then refuses", a
       expect(doc).toMatchObject({
         agencyId,
         sourceSubAccountId: null,
-        importedFrom: { agencyId: env.E2E_AGENCY_ID, snapshotId, shareId: shares.docs[0].id },
+        importedFrom: { importedAt: expect.anything() },
       });
 
       await importerPage.goto("/agency/sub-accounts");

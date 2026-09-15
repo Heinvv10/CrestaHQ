@@ -65,12 +65,22 @@ Logic in [src/lib/snapshots/share.ts](src/lib/snapshots/share.ts); routes are th
 - **Import** runs in one transaction: every link refusal (unknown, revoked,
   expired, used, source gone) is the same 404 `Invalid or expired link`; the
   owning agency gets 409. The copy gets the importer's `agencyId`/`createdByUid`,
-  `sourceSubAccountId: null`, and `importedFrom` — the ONLY source ids it may
-  carry. The payload is deep-scrubbed on the way in: nested
-  `agencyId`/`subAccountId`/`createdByUid` keys dropped, strings equal to a
-  source tenant id nulled, and workflow nodes run through apply's
-  `sanitizeNodes` (source member uids, template and pipeline ids). Opaque source
-  doc ids that apply already remaps (`sourceId`, `trigger.formId`) stay.
+  `sourceSubAccountId: null`, and `importedFrom: { importedAt }` — no id of the
+  sharing agency, its snapshot or the share. The payload is scrubbed on the way
+  in ([import-scrub.ts](src/lib/snapshots/import-scrub.ts)): nested
+  `agencyId`/`subAccountId`/`createdByUid` keys dropped; strings equal to a
+  source tenant id nulled; every `sourceId` re-minted (a random UUID) with
+  `trigger.formId` remapped through the same map so apply still links forms to
+  workflows; `trigger.linkId`/`pipelineId`, WhatsApp `templateId`/`senderId` and
+  task assignees nulled.
+- **Workflow destinations are cleared on import and must be reconfigured.** A
+  `notify` step is reset to `recipient: "owner"` with `to` blank (it emails the
+  importer's own owner), and a `webhook` step's `url` is blanked (the engine
+  skips a non-http(s) URL as `skipped:bad_url`). Otherwise a shared workflow
+  would send the importer's contact data to addresses the sharer picked.
+- **A multi-use link is a bearer link until it expires or is revoked** — anyone
+  who owns an agency and holds it can import. Prefer single use for one
+  recipient. An imported snapshot cannot be shared on (409).
 - **Applying** an imported snapshot is identical to an own one — the new
   sub-account form's picker lists both.
 - **Routes** (owner-only): `POST /api/agency/snapshots/[snapshotId]/shares`,
@@ -81,7 +91,8 @@ Logic in [src/lib/snapshots/share.ts](src/lib/snapshots/share.ts); routes are th
 - **Import page** `/agency/snapshots/import` is session-gated like every
   `/agency` page. A logged-out recipient goes to `/login?redirect=…`; the
   middleware puts path + query in `redirect` (the login form's `safeRedirect`
-  still refuses anything off-origin), so `?token` survives sign-in. A pasted
+  still refuses anything off-origin), so `?token` survives sign-in — and is
+  removed from the top-level `/login` query so it appears only there. A pasted
   link box remains as a fallback when the page has no `?token`.
 
 **Not carried yet**: pipelines (`subAccounts/{id}/pipelines`). Apply therefore nulls a workflow's `trigger.pipelineId` and any `move_stage` step's `config.pipelineId` — like an unmapped `formId` — so a copied workflow fires on any pipeline (stage ids kept; the default pipeline's are shared) until the operator re-pins it. Also not carried: booking pages,

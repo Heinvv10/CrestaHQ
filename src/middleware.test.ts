@@ -134,6 +134,7 @@ describe("loginRedirectUrl", () => {
     expect(url.pathname).toBe("/login");
     const redirect = url.searchParams.get("redirect");
     expect(redirect).toBe("/agency/snapshots/import?token=abc");
+    expect(url.searchParams.has("token")).toBe(false);
     // And the login form lands the visitor back on exactly that.
     expect(safeRedirect(redirect)).toBe("/agency/snapshots/import?token=abc");
   });
