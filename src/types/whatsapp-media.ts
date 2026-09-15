@@ -7,12 +7,15 @@
  * voice notes (POPIA). See `src/lib/comms/whatsapp/media-storage.ts`.
  */
 
-export type WhatsappMediaKind =
-  | "image"
-  | "audio"
-  | "video"
-  | "document"
-  | "sticker";
+export const WHATSAPP_MEDIA_KINDS = [
+  "image",
+  "audio",
+  "video",
+  "document",
+  "sticker",
+] as const;
+
+export type WhatsappMediaKind = (typeof WHATSAPP_MEDIA_KINDS)[number];
 
 /**
  * Present on a `whatsappMessages` row that carried a file. Absent on text rows
@@ -26,7 +29,43 @@ export interface WhatsappMedia {
   sizeBytes: number;
   /** Object path inside the bucket. Not a URL — see the serving route. */
   storagePath: string;
-  sha256?: string;
+}
+
+/**
+ * Narrow a Firestore `media` value to the shape above, or null.
+ *
+ * A stored row is DATA, not a type. Casting one with `as` and then calling
+ * `.split()` on a field that a partial write left undefined turns a bad row
+ * into an unhandled 500; every consumer must get a row it can trust or nothing
+ * at all.
+ */
+export function parseWhatsappMedia(value: unknown): WhatsappMedia | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const { kind, mimeType, filename, sizeBytes, storagePath } = v;
+  if (
+    typeof kind !== "string" ||
+    !(WHATSAPP_MEDIA_KINDS as readonly string[]).includes(kind)
+  ) {
+    return null;
+  }
+  if (typeof mimeType !== "string" || mimeType.length === 0) return null;
+  if (typeof filename !== "string") return null;
+  if (typeof storagePath !== "string" || storagePath.length === 0) return null;
+  if (
+    typeof sizeBytes !== "number" ||
+    !Number.isFinite(sizeBytes) ||
+    sizeBytes < 0
+  ) {
+    return null;
+  }
+  return {
+    kind: kind as WhatsappMediaKind,
+    mimeType,
+    filename,
+    sizeBytes,
+    storagePath,
+  };
 }
 
 /** Why a message that HAD a file arrived without one. Mutually exclusive with `media`. */

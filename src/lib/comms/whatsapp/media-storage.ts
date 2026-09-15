@@ -2,6 +2,8 @@ import "server-only";
 
 import { getStorage } from "firebase-admin/storage";
 
+import { getAdminApp } from "@/lib/firebase/admin";
+
 /**
  * WhatsApp media objects in Firebase Storage.
  *
@@ -32,7 +34,10 @@ export function whatsappMediaPath(a: {
 function bucket() {
   const name = process.env[BUCKET_ENV];
   if (!name) return null;
-  return getStorage().bucket(name);
+  // The app is passed explicitly: a webhook may reach Storage before anything
+  // has initialised the default app, and `getStorage()` would then throw
+  // "The default Firebase app does not exist".
+  return getStorage(getAdminApp()).bucket(name);
 }
 
 /**
@@ -62,11 +67,24 @@ export async function putWhatsappMedia(opts: {
   }
 }
 
-/** Stream one object back. Null when the bucket is unconfigured or the object is gone. */
+/** A half-open byte range, both ends inclusive, as HTTP `Range` expresses it. */
+export interface MediaByteRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Open one object. Null when the bucket is unconfigured or the object is gone.
+ *
+ * Returns the object's size and a `read` that can be called for the whole
+ * object or for one byte range — the size comes back BEFORE any bytes are
+ * requested, because the caller needs it to decide whether a client's `Range`
+ * is satisfiable, and a second metadata round trip would let the two disagree.
+ */
 export async function openWhatsappMedia(path: string): Promise<{
-  stream: AsyncIterable<Buffer>;
   sizeBytes: number;
   contentType: string;
+  read: (range?: MediaByteRange) => AsyncIterable<Buffer>;
 } | null> {
   const b = bucket();
   if (!b) return null;
@@ -82,5 +100,12 @@ export async function openWhatsappMedia(path: string): Promise<{
     // and both mean "there is nothing to serve".
     return null;
   }
-  return { stream: file.createReadStream(), sizeBytes, contentType };
+  return {
+    sizeBytes,
+    contentType,
+    read: (range) =>
+      range
+        ? file.createReadStream({ start: range.start, end: range.end })
+        : file.createReadStream(),
+  };
 }
