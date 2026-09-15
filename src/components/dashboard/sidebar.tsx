@@ -36,6 +36,7 @@ import {
   FlaskConical,
   MonitorPlay,
   Star,
+  Rocket,
   Library,
 } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
@@ -70,6 +71,7 @@ interface NavItem {
 // render time; `matchPrefix` is the stem used to highlight the active link.
 const SUB_ACCOUNT_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: Home, enabled: true },
+  { href: "/launchpad", label: "Launchpad", icon: Rocket, enabled: true },
   {
     href: "/ai-suite",
     label: "Workspace Assistant",
