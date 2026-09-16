@@ -153,6 +153,35 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     });
   });
 
+  it("enables Send for a finished file with no text, and posts it with an empty body", async () => {
+    await mount();
+    expect(sendButton().disabled).toBe(true);
+    await pickFile();
+    // Still reading: nothing to send yet.
+    expect(sendButton().disabled).toBe(true);
+    await act(async () => FakeReader.reads[0]!.finish());
+    expect(sendButton().disabled).toBe(false);
+    await clickSend();
+    expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/whatsapp/send");
+    expect(postedBody()).toMatchObject({ body: "", attachment: { filename: "site.png" } });
+  });
+
+  it("keeps Send disabled with no text and no file", async () => {
+    await mount();
+    await type("   ");
+    expect(sendButton().disabled).toBe(true);
+    await clickSend();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not let a WhatsApp file enable an empty send on another channel", async () => {
+    await mount();
+    await pickFile();
+    await act(async () => FakeReader.reads[0]!.finish());
+    await switchTo("sms");
+    expect(sendButton().disabled).toBe(true);
+  });
+
   it("discards a read that lands after a channel switch, even on switching back", async () => {
     await mount();
     await type("hello");

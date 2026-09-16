@@ -110,7 +110,8 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if body.To == "" || body.Text == "" {
+	// A file may go without a caption; only a send with neither is empty.
+	if body.To == "" || (body.Text == "" && body.Media == nil) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "to and text are required"})
 		return
 	}

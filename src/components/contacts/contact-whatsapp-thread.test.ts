@@ -166,6 +166,35 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     expect(container.textContent).toContain("a.png");
   });
 
+  it("enables Send for a finished file with no text, and posts it with an empty body", async () => {
+    subAccount = { whatsappProvider: "cloud" };
+    await mount();
+    expect(sendButton().disabled).toBe(true);
+    await pick();
+    expect(sendButton().disabled).toBe(true);
+    await act(async () => FakeReader.reads[0]!.finish());
+    expect(sendButton().disabled).toBe(false);
+    await submitForm();
+    expect(posted()).toMatchObject({ body: "", attachment: { filename: "a.png" } });
+  });
+
+  it("keeps Send disabled and refuses a submit with no text and no file", async () => {
+    subAccount = { whatsappProvider: "cloud" };
+    await mount();
+    await typeBody("   ");
+    expect(sendButton().disabled).toBe(true);
+    await submitForm();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a form submit with no text while the file is still being read", async () => {
+    subAccount = { whatsappProvider: "cloud" };
+    await mount();
+    await pick();
+    await submitForm();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a form submit while the file is still being read", async () => {
     subAccount = { whatsappProvider: "cloud" };
     await mount();

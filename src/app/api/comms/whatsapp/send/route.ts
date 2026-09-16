@@ -54,9 +54,12 @@ export async function POST(request: Request) {
   }
 
   const contactId = payload.contactId?.trim();
-  const body = payload.body?.trim();
+  const body = payload.body?.trim() ?? "";
 
-  if (!contactId || !body) {
+  // A photo or document may go without a caption, as it can from a phone;
+  // the attachment itself is validated below. Only a send carrying neither
+  // text nor a file is empty.
+  if (!contactId || (!body && !payload.attachment)) {
     return NextResponse.json(
       { error: "contactId and body are required" },
       { status: 400 },

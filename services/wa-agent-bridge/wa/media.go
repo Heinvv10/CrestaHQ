@@ -107,13 +107,16 @@ func uploadKindFor(mime string) whatsmeow.MediaType {
 // Send so the shape decision is testable without a WhatsApp socket — the
 // upload is the only part that genuinely needs one.
 //
-// caption carries the request's Text. The API requires a non-empty text on
-// every send, media or not, so an attachment always arrives with a line of
-// explanation rather than as a bare file from an unknown number.
+// caption carries the request's Text, which may be empty on a media send: the
+// Caption field is then left unset, as a phone sends a file with no caption.
 func mediaMessage(up whatsmeow.UploadResponse, caption string, media *rails.Media) *waE2E.Message {
+	var captionField *string
+	if caption != "" {
+		captionField = proto.String(caption)
+	}
 	if isImageMime(media.MimeType) {
 		return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
-			Caption:       proto.String(caption),
+			Caption:       captionField,
 			Mimetype:      proto.String(media.MimeType),
 			URL:           proto.String(up.URL),
 			DirectPath:    proto.String(up.DirectPath),
@@ -124,7 +127,7 @@ func mediaMessage(up whatsmeow.UploadResponse, caption string, media *rails.Medi
 		}}
 	}
 	return &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
-		Caption:  proto.String(caption),
+		Caption:  captionField,
 		Mimetype: proto.String(media.MimeType),
 		// FileName is what the recipient sees on the file card; Title is what
 		// some clients show above it. Both come from the caller's filename so
