@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MediaPickerDialog } from "@/components/media/media-picker-dialog";
 import { WA_PROFILE_LIMITS } from "@/lib/comms/whatsapp/settings/types";
 import { PhonePreview } from "./phone-preview";
 import { VERTICAL_LABELS, errorOf, type WaBusinessProfile, type WaPhoneStatus } from "./types";
@@ -43,6 +44,7 @@ export function ProfileTab({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function load() {
@@ -98,11 +100,16 @@ export function ProfileTab({
   async function handlePhoto(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    await sendPhoto({ method: "POST", body: fd });
+  }
+
+  // Both sources land on the same route and the same byte check server-side.
+  async function sendPhoto(init: RequestInit) {
     setUploading(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${base}/photo`, { method: "POST", body: fd }).catch(() => null);
+      const res = await fetch(`${base}/photo`, init).catch(() => null);
       if (!res?.ok) {
         toast.error(await errorOf(res, "Couldn't upload the photo."));
         return;
@@ -154,6 +161,9 @@ export function ProfileTab({
               />
               <Button type="button" variant="outline" size="sm" disabled={uploading} onClick={() => fileRef.current?.click()} data-testid="wa-profile-photo-button">
                 {uploading ? (<><Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />Uploading…</>) : "Upload photo"}
+              </Button>
+              <Button type="button" variant="ghost" size="sm" className="ml-2" disabled={uploading} onClick={() => setPickerOpen(true)} data-testid="wa-profile-photo-library">
+                Choose from library
               </Button>
               <p className="mt-1 text-[11px] text-muted-foreground">JPEG or PNG, up to 5 MB.</p>
             </div>
@@ -222,6 +232,24 @@ export function ProfileTab({
           </div>
         )}
       </form>
+      {/* Outside the <form>: React bubbles the picker's own submit events
+          through the portal, which would otherwise save this profile. */}
+      {isAdmin && (
+        <MediaPickerDialog
+          subAccountId={subAccountId}
+          canManage={isAdmin}
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          accept="image"
+          onSelect={(asset) =>
+            void sendPhoto({
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mediaId: asset.id }),
+            })
+          }
+        />
+      )}
       <PhonePreview profile={form} verifiedName={phone.verifiedName} displayPhoneNumber={phone.displayPhoneNumber} />
     </div>
   );

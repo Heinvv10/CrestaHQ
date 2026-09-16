@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WorkflowStatusBadge } from "./workflow-status-badge";
+import { SaveToLibraryButton } from "@/components/templates/save-to-library-dialog";
 import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
 import type { WorkflowStatus, WorkflowTriggerType } from "@/types/workflows";
 
@@ -189,7 +190,12 @@ export function WorkflowsList({ saId }: { saId: string }) {
       ) : (
         <div className="divide-y overflow-hidden rounded-xl border bg-card">
           {rows.map((w) => (
-            <div key={w.id} className="flex items-center gap-3 p-4 hover:bg-muted/40">
+            <div
+              key={w.id}
+              data-testid="workflow-row"
+              data-name={w.name}
+              className="flex items-center gap-3 p-4 hover:bg-muted/40"
+            >
               <Link href={`/sa/${saId}/workflows/${w.id}`} className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate font-medium">{w.name}</span>
@@ -200,6 +206,13 @@ export function WorkflowsList({ saId }: { saId: string }) {
                   {w.stats?.enrolled ?? 0} enrolled
                 </div>
               </Link>
+              <SaveToLibraryButton
+                subAccountId={saId}
+                kind="workflow"
+                entityId={w.id}
+                entityName={w.name}
+                iconOnly
+              />
               <Button
                 variant="ghost"
                 size="icon"

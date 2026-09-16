@@ -1,0 +1,98 @@
+import "server-only";
+
+import { randomUUID } from "node:crypto";
+import { sanitizeForm, sanitizeNodes } from "@/lib/snapshots/apply";
+import type { WorkflowNode } from "@/types/workflows";
+import type { SnapshotPayload, SnapshotWorkflow } from "@/types/snapshots";
+
+/**
+ * What a snapshot may carry once it leaves its agency — copied into another
+ * agency through a share link, or downloaded as a portable file (and run again
+ * on a file uploaded anywhere, since that file is untrusted).
+ *
+ * Same-agency apply trusts its own payload; a portable one does not. Beyond
+ * the tenancy stamps capture already strips, three things would let a shared
+ * snapshot reach back to its source once the recipient activates it:
+ *
+ *   - outbound destinations — a `notify` step emailing a literal address, a
+ *     `webhook` step POSTing contact data to a URL, a form's post-submit
+ *     `redirectUrl` sending the visitor to the sharer's site. All three are
+ *     apply's own rules (sanitizeNodes, sanitizeForm), which every apply path
+ *     shares; the pipeline below calls the same functions so a downloaded
+ *     file is already clean, without restating the rule.
+ *   - source doc ids — `sourceId`, `trigger.formId`/`linkId`/`pipelineId`,
+ *     WhatsApp `templateId`/`senderId`. Opaque, but they name documents in
+ *     another tenant. Form ids are re-minted and the trigger remapped through
+ *     the same map, so apply still links an imported form to its workflow.
+ *   - any nested tenancy stamp or string equal to a source tenant id.
+ */
+
+const TENANCY_KEYS = new Set(["agencyId", "subAccountId", "createdByUid"]);
+
+function scrub(value: unknown, sourceIds: Set<string>): unknown {
+  if (typeof value === "string") return sourceIds.has(value) ? null : value;
+  if (Array.isArray(value)) return value.map((v) => scrub(v, sourceIds));
+  if (value === null || typeof value !== "object") return value;
+  if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (!TENANCY_KEYS.has(k)) out[k] = scrub(v, sourceIds);
+  }
+  return out;
+}
+
+/**
+ * On top of apply's sanitizeNodes (which already clears destinations, member
+ * uids, template and pipeline ids), null the ids that only dangle across
+ * deployments.
+ */
+function clearNodes(nodes: Record<string, WorkflowNode> | undefined) {
+  const out: Record<string, WorkflowNode> = {};
+  for (const [id, node] of Object.entries(sanitizeNodes(nodes))) {
+    const config = { ...node.config };
+    switch (node.type) {
+      case "whatsapp_template":
+        config.senderId = null;
+        break;
+      case "send_whatsapp":
+        config.templateId = null;
+        break;
+    }
+    out[id] = { ...node, config };
+  }
+  return out;
+}
+
+const reminted = <T extends { sourceId: string }>(items: T[] | undefined) =>
+  (items ?? []).map((item) => ({ ...item, sourceId: randomUUID() }));
+
+export function toPortablePayload(
+  payload: SnapshotPayload,
+  sourceIds: Set<string>,
+): SnapshotPayload {
+  const clean = scrub(payload, sourceIds) as SnapshotPayload;
+
+  const formIds = new Map<string, string>();
+  const forms = (clean.forms ?? []).map((form) => {
+    const fresh = randomUUID();
+    formIds.set(form.sourceId, fresh);
+    return sanitizeForm({ ...form, sourceId: fresh });
+  });
+
+  const workflows = (clean.workflows ?? []).map((w): SnapshotWorkflow => {
+    const trigger = { ...w.trigger };
+    if (trigger.formId) trigger.formId = formIds.get(trigger.formId) ?? null;
+    if (trigger.linkId) trigger.linkId = null;
+    if (trigger.pipelineId) trigger.pipelineId = null;
+    return { ...w, sourceId: randomUUID(), trigger, nodes: clearNodes(w.nodes) };
+  });
+
+  return {
+    ...clean,
+    forms,
+    messageTemplates: reminted(clean.messageTemplates),
+    products: reminted(clean.products),
+    workflows,
+    ...(clean.customFields ? { customFields: reminted(clean.customFields) } : {}),
+  };
+}

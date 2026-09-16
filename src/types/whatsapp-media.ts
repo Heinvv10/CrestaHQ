@@ -142,8 +142,13 @@ export function mediaPreviewLabel(m: WhatsappMedia): string {
   }
 }
 
-/** Human-facing reason shown in the thread when the file could not be stored. */
-export function mediaDroppedLabel(reason: WhatsappMediaDropped): string {
+/**
+ * Human-facing reason shown in the thread when the file could not be stored.
+ * Takes any string: the bridge names its own reasons (`delivery_failed`,
+ * `shutdown`, …) and the row stores them verbatim, so an unknown one must
+ * still say the file was lost rather than render blank.
+ */
+export function mediaDroppedLabel(reason: WhatsappMediaDropped | string): string {
   switch (reason) {
     case "too_large":
       return "Attachment not saved — too large";
@@ -153,5 +158,7 @@ export function mediaDroppedLabel(reason: WhatsappMediaDropped): string {
       return "Sent — no copy kept here";
     case "fetch_failed":
       return "Attachment not saved — download failed";
+    default:
+      return "Attachment not saved";
   }
 }

@@ -39,11 +39,21 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
 }
 
 /**
+ * The post-submit redirect points at the SOURCE client's site; a lead
+ * submitting the target's form must not land there. Exported so the portable
+ * scrub applies the same rule before a payload leaves the agency.
+ */
+export function sanitizeForm<T extends { settings?: unknown }>(form: T): T {
+  if (!form.settings || typeof form.settings !== "object") return form;
+  return { ...form, settings: { ...form.settings, redirectUrl: "" } };
+}
+
+/**
  * whatsapp_template nodes reference a `subAccounts/{id}/whatsappTemplates` doc
  * that a snapshot does NOT carry — so the id would dangle in the target. Null
  * it; draft status means the workflow never runs until the operator fixes it.
  */
-function sanitizeNodes(
+export function sanitizeNodes(
   nodes: Record<string, WorkflowNode> | undefined,
 ): Record<string, WorkflowNode> {
   const out: Record<string, WorkflowNode> = {};
@@ -58,6 +68,16 @@ function sanitizeNodes(
       // A member uid is the source's; one who also sits on the target (say
       // the agency owner) would silently start receiving its tasks.
       out[id] = { ...node, config: { ...node.config, assignedToUid: null } };
+    } else if (node.type === "notify" && node.config.recipient !== "account_contact") {
+      // A typed address is the SOURCE client's inbox — like the persona's
+      // escalationNotifyEmail, carrying it routes one client's leads to
+      // another's team. Fall back to the agency owner. (Legacy configs with
+      // no `recipient` mean "custom", so they are reset too.)
+      out[id] = { ...node, config: { ...node.config, recipient: "owner", to: "" } };
+    } else if (node.type === "webhook") {
+      // The URL is an endpoint the source client chose; the target's contact
+      // data must not be POSTed there. Blank = the engine skips the step.
+      out[id] = { ...node, config: { ...node.config, url: "" } };
     } else {
       out[id] = node;
     }
@@ -161,7 +181,7 @@ export async function applySnapshot(
     formIdMap.set(form.sourceId, ref.id);
     writes.push([
       ref,
-      { ...dropSourceId(form), id: ref.id, ...tenancy(), submissionCount: 0 },
+      { ...dropSourceId(sanitizeForm(form)), id: ref.id, ...tenancy(), submissionCount: 0 },
     ]);
   }
 

@@ -1,5 +1,7 @@
 import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import { getAuth, type Auth } from "firebase-admin/auth";
+import { getStorage } from "firebase-admin/storage";
 import { readEnv } from "./env";
 
 /**
@@ -26,6 +28,7 @@ function app(): App {
         clientEmail: env.FIREBASE_ADMIN_CLIENT_EMAIL,
         privateKey: env.FIREBASE_ADMIN_PRIVATE_KEY,
       }),
+      storageBucket: env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
     },
     "e2e",
   );
@@ -37,4 +40,13 @@ export function adminDb(): Firestore {
   _db = getFirestore(app());
   _db.settings({ ignoreUndefinedProperties: true });
   return _db;
+}
+
+export function adminAuth(): Auth {
+  return getAuth(app());
+}
+
+/** The app's default Storage bucket (Media Library objects live here). */
+export function adminBucket() {
+  return getStorage(app()).bucket();
 }

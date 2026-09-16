@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { CreditCard, Download } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
@@ -69,10 +70,19 @@ const PLAN_LABEL: Record<SubscriptionStatus, { label: string; tone: string }> =
     },
   };
 
+const TAB_VALUES = ["admin", "messaging", "api", "custom-fields", "import"] as const;
+
 export default function SettingsPage() {
   const { user, role } = useAuth();
   const { subAccountId, agencyId, subAccount } = useSubAccount();
   const workspaceName = subAccount?.name ?? "this sub-account";
+  // `?tab=` lets a CTA elsewhere (e.g. the Launchpad) land straight on a
+  // tab — Base UI's Tabs is uncontrolled, so this only needs to seed
+  // `defaultValue`, read once on first render.
+  const requestedTab = useSearchParams().get("tab");
+  const initialTab = (TAB_VALUES as readonly string[]).includes(requestedTab ?? "")
+    ? (requestedTab as (typeof TAB_VALUES)[number])
+    : "admin";
   const [profile, setProfile] = useState<UserDoc | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
 
@@ -139,7 +149,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <Tabs defaultValue="admin">
+      <Tabs defaultValue={initialTab}>
         <TabsList>
           <TabsTrigger value="admin">Admin</TabsTrigger>
           <TabsTrigger value="messaging">Messaging</TabsTrigger>

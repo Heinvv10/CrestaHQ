@@ -65,6 +65,9 @@ export async function GET(request: Request) {
       sourceSubAccountId: data.sourceSubAccountId ?? null,
       version: data.version ?? SNAPSHOT_VERSION,
       createdAt: data.createdAt?.toMillis?.() ?? null,
+      importedFrom: data.importedFrom
+        ? { importedAt: data.importedFrom.importedAt?.toMillis?.() ?? null }
+        : null,
       counts: {
         forms: payload.forms?.length ?? 0,
         messageTemplates: payload.messageTemplates?.length ?? 0,

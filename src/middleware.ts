@@ -291,6 +291,13 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // its own on a public path), and applies the widget's origin allow-list,
   // a per-IP limit and a non-enumerating 404 itself. Exactly one segment.
   /^\/api\/public\/gbp\/feed\/[^/]+$/,
+  // Snapshot share link (SP13): the /s/snapshot/{token} page and its file
+  // download /api/public/snapshots/{token}. The recipient usually has no
+  // account on this deployment. The share token is the credential — hashed
+  // and checked against the stored share inside, with the same "invalid"
+  // answer for unknown, revoked, expired and used-up links. Exactly one segment.
+  /^\/s\/snapshot\/[^/]+$/,
+  /^\/api\/public\/snapshots\/[^/]+$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {
@@ -322,6 +329,10 @@ export function isPublicPath(pathname: string): boolean {
  * the configured origin fixes this by making them agree, rather than by
  * literally shipping the public origin in the header.
  *
+ * `?redirect` carries the path AND query, so a deep link whose query is the
+ * point (a snapshot share link's `?token=`) survives sign-in. The login form
+ * runs it through `safeRedirect`, which refuses anything not same-origin.
+ *
  * The path and query are still taken from `nextUrl` (preserving any existing
  * query string, as before); only protocol + host are pinned to
  * NEXT_PUBLIC_APP_URL. If that var is unset or malformed we fall back to the
@@ -330,7 +341,10 @@ export function isPublicPath(pathname: string): boolean {
 export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
   const url = request.nextUrl.clone();
   url.pathname = "/login";
-  url.searchParams.set("redirect", pathname);
+  url.searchParams.set("redirect", `${pathname}${request.nextUrl.search}`);
+  // A share link's bearer token belongs only inside `redirect` — not as a
+  // top-level /login param where analytics and referrers would see it twice.
+  url.searchParams.delete("token");
 
   const configured = process.env.NEXT_PUBLIC_APP_URL;
   if (configured) {
