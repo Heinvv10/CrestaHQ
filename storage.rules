@@ -1,7 +1,7 @@
 rules_version = '2';
 
-// Firebase Storage rules. The only writer surface today is the Community
-// feature's group cover/logo uploads. Community group images are PUBLIC (the
+// Firebase Storage rules. Writer surfaces: the Community feature's group
+// cover/logo uploads and the per-sub-account Media Library. Community group images are PUBLIC (the
 // About page at /c/* is public), so reads are open; writes require a signed-in
 // Firebase user (staff — community members are NOT Firebase users, so they
 // can't write here) plus an image content-type + 5 MB size cap.
@@ -17,6 +17,52 @@ service firebase.storage {
         && request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
       allow delete: if request.auth != null;
+    }
+
+    // WhatsApp media (inbound photos, voice notes, documents). Written and
+    // read only by the Admin SDK, which bypasses rules; reads reach operators
+    // through /api/comms/whatsapp/media/[contactId]/[messageId], which
+    // authorises the caller. The catch-all below would already deny this, but
+    // the one path holding customers' photos states its own rule so a future
+    // edit to the catch-all cannot silently open it.
+    match /whatsapp-media/{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Media Library objects (subAccounts/{id}/media docs point here). Same
+    // tenancy as firestore.rules: agency owner passes on claims + one
+    // Firestore get for the sub-account's agencyId; a member passes on one
+    // Firestore get for their own membership row. Any member reads; only an
+    // owner or sub-account admin creates. Reads and creates only —
+    // rename/move/delete go through the Admin-SDK routes, which also read the
+    // object's real size + type back before indexing it.
+    match /media/{subAccountId}/{mediaId}/{fileName} {
+      function isActive() {
+        return request.auth != null && request.auth.token.status == "active";
+      }
+      function isOwner() {
+        return isActive()
+          && request.auth.token.agencyRole == "owner"
+          && firestore.get(/databases/(default)/documents/subAccounts/$(subAccountId)).data.agencyId
+             == request.auth.token.agencyId;
+      }
+      function member() {
+        return firestore.get(/databases/(default)/documents/subAccounts/$(subAccountId)/subAccountMembers/$(request.auth.uid)).data;
+      }
+      function isMember() {
+        return isActive() && member().status == "active";
+      }
+      // Mirrors firestore.rules isSubAdmin: only admins change the library.
+      function isAdmin() {
+        return isMember() && member().role == "admin";
+      }
+      allow read: if isOwner() || isMember();
+      allow create: if (isOwner() || isAdmin())
+        && request.resource.size <= 25 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('video/.*')
+          || request.resource.contentType == 'application/pdf');
+      allow update, delete: if false;
     }
 
     // Default deny everything else.

@@ -5,6 +5,7 @@ import { Upload, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AddContactModal } from "@/components/contacts/add-contact-modal";
 import { ContactsTable } from "@/components/contacts/contacts-table";
+import { useOnlineStatus } from "@/hooks/use-online-status";
 import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 
@@ -20,22 +21,14 @@ export const SLOW_AFTER_MS = 10_000;
  * connection, a slow network) is not known, so the copy does not name one.
  */
 function useLoadingHint(): "offline" | "slow" | null {
-  const [offline, setOffline] = useState(false);
+  const online = useOnlineStatus();
   const [slow, setSlow] = useState(false);
   useEffect(() => {
-    setOffline(!navigator.onLine);
-    const on = () => setOffline(false);
-    const off = () => setOffline(true);
-    window.addEventListener("online", on);
-    window.addEventListener("offline", off);
+    setSlow(false);
     const timer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
-    return () => {
-      window.removeEventListener("online", on);
-      window.removeEventListener("offline", off);
-      clearTimeout(timer);
-    };
+    return () => clearTimeout(timer);
   }, []);
-  if (offline) return "offline";
+  if (!online) return "offline";
   return slow ? "slow" : null;
 }
 

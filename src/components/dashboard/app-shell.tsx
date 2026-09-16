@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/dashboard/sidebar";
 import { Header } from "@/components/dashboard/header";
 import { CommandPalette } from "@/components/search/command-palette";
 import { InstallBanner } from "@/components/pwa/install-banner";
+import { OfflineBanner } from "@/components/dashboard/offline-banner";
 import { BottomTabBar } from "@/components/pwa/bottom-tab-bar";
 import { AppBadge } from "@/components/pwa/app-badge";
 import { AppAccent } from "@/components/theme/app-accent";
@@ -51,6 +52,7 @@ export function DashboardAppShell({
           onMenuClick={() => setSidebarOpen(true)}
           onOpenSearch={() => setSearchOpen(true)}
         />
+        <OfflineBanner />
         <InstallBanner />
         <main
           className={cn(
