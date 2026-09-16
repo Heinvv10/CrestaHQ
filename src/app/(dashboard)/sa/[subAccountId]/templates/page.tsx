@@ -23,6 +23,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
+import { SaveToLibraryButton } from "@/components/templates/save-to-library-dialog";
 import { toDate } from "@/lib/format";
 import type { MessageTemplateDoc } from "@/types";
 
@@ -138,17 +139,28 @@ export default function TemplatesListPage() {
                   </p>
                 </div>
               </div>
-              {isAdmin && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDelete(t)}
-                  className="text-destructive hover:text-destructive"
-                  aria-label="Delete template"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              )}
+              <div className="flex shrink-0 items-center gap-1">
+                {t.type === "email" && (
+                  <SaveToLibraryButton
+                    subAccountId={subAccountId}
+                    kind="email"
+                    entityId={t.id}
+                    entityName={t.name}
+                    iconOnly
+                  />
+                )}
+                {isAdmin && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDelete(t)}
+                    className="text-destructive hover:text-destructive"
+                    aria-label="Delete template"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </div>
             </li>
           ))}
         </ul>

@@ -29,7 +29,7 @@ const TENANCY_STAMPS = [
  * from a stored doc, keeping the original doc id as `sourceId`. The `sourceId`
  * lets apply build an old→new form-id map and remap workflow triggers.
  */
-function stripDoc(
+export function stripDoc(
   id: string,
   data: FirebaseFirestore.DocumentData,
   extraOmit: readonly string[] = [],
