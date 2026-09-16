@@ -368,6 +368,68 @@ describe("applySnapshot — task assignees do not cross sub-accounts", () => {
   });
 });
 
+describe("applySnapshot — outbound destinations do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const applyNodes = async (nodes: Record<string, unknown>) => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [{
+          sourceId: "wf_src", name: "Notify", status: "active", startNodeId: "n1",
+          trigger: { type: "contact.created", filters: { all: [] } }, nodes,
+        }] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    return (written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      nodes: Record<string, { config: Record<string, unknown> }>;
+    }).nodes;
+  };
+
+  it("resets a custom notify recipient to the owner and drops the typed address", async () => {
+    const nodes = await applyNodes({
+      n1: { id: "n1", type: "notify", config: { recipient: "custom", to: "ops@client-a.example", subject: "Lead", body: "b" }, next: "n2" },
+      n2: { id: "n2", type: "notify", config: { to: "legacy@client-a.example", subject: "L", body: "b" }, next: null },
+      n3: { id: "n3", type: "notify", config: { recipient: "account_contact", to: "", subject: "A", body: "b" }, next: null },
+    });
+    expect(nodes.n1.config).toEqual({ recipient: "owner", to: "", subject: "Lead", body: "b" });
+    // Legacy (no recipient) means custom — reset as well.
+    expect(nodes.n2.config).toEqual({ recipient: "owner", to: "", subject: "L", body: "b" });
+    // account_contact resolves on the TARGET at run time; nothing to strip.
+    expect(nodes.n3.config.recipient).toBe("account_contact");
+  });
+
+  it("blanks a form's post-submit redirectUrl and keeps its other settings", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        forms: [{
+          sourceId: "f_src", name: "Lead", slug: "lead", enabled: true, fields: [],
+          settings: { redirectUrl: "https://client-a.example/thanks", autoTags: ["lead"], thankYouMessage: "Thanks" },
+        }] as unknown as SnapshotPayload["forms"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const form = written.find((w) => w.path.startsWith("forms/"))!.data as {
+      settings: Record<string, unknown>;
+    };
+    expect(form.settings).toEqual({ redirectUrl: "", autoTags: ["lead"], thankYouMessage: "Thanks" });
+  });
+
+  it("blanks a webhook URL so the step is skipped until reconfigured", async () => {
+    const nodes = await applyNodes({
+      n1: { id: "n1", type: "webhook", config: { url: "https://client-a.example/hook" }, next: null },
+    });
+    expect(nodes.n1.config).toEqual({ url: "" });
+  });
+});
+
 describe("applySnapshot — booking page slugs do not cross sub-accounts", () => {
   const scope = { agencyId: "ag_1", createdByUid: "u_1" };
 
