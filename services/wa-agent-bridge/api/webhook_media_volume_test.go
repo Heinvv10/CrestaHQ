@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"encoding/json"
 	"fmt"
@@ -686,5 +687,138 @@ func TestForgetOnlyUndoesItsOwnRecord(t *testing.T) {
 	g.forget("jid@s.whatsapp.net", "k", now)
 	if r := g.admit("jid@s.whatsapp.net", "k", now); r != "" {
 		t.Fatalf("forget with the record's own timestamp did not undo it: %q", r)
+	}
+}
+
+// A file that was FETCHED but never DELIVERED must not suppress the resend.
+//
+// From the customer's side a download the consumer never received is identical
+// to one that failed: the file did not arrive. The dedupe entry is taken before
+// the fetch, so without the rollback on this path their resend is answered
+// "duplicate" for a file no consumer ever got.
+func TestAFailedConsumerPostDoesNotSuppressTheResend(t *testing.T) {
+	var fallbacks int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		if _, carries := p["media"]; carries {
+			// The file-carrying POST fails; the message still gets out on the
+			// text-only retry below.
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		mu.Lock()
+		fallbacks++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	const file = "fetched-but-not-delivered"
+	deliverEvent(f, uploadedImageEvent("27821234567", "wamid.POST1", file, "/v/t62/p", time.Now()), dl)
+	f.Wait()
+	mu.Lock()
+	got := fallbacks
+	mu.Unlock()
+	if got != 1 || dl.count() != 1 {
+		t.Fatalf("setup: fallbacks=%d downloads=%d, want 1 and 1", got, dl.count())
+	}
+
+	// The customer resends the same photo. It must be fetched again.
+	deliverEvent(f, uploadedImageEvent("27821234567", "wamid.POST2", file, "/v/t62/p", time.Now()), dl)
+	f.Wait()
+
+	if dl.count() != 2 {
+		t.Fatalf("the resend was downloaded %d times, want 2 — a file the consumer never "+
+			"received is still recorded as delivered", dl.count())
+	}
+	mu.Lock()
+	got = fallbacks
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("fallbacks = %d, want 2: the resend was answered \"duplicate\" instead of retried", got)
+	}
+}
+
+// senderSpend reports what the gate has recorded against one sender.
+//
+// jid is the FULL address the fanout sees ("2782...@s.whatsapp.net"), not the
+// bare user part. Handing it a bare user silently looks up a different key —
+// normalisedJID renders it "2782...@" — and the lookup then returns 0 for
+// every sender, which is an assertion that can never fail. It did exactly that
+// until a mutation caught it, so the shape is checked here.
+func senderSpend(t *testing.T, f *Fanout, jid string) int {
+	t.Helper()
+	if !strings.Contains(jid, "@") {
+		t.Fatalf("senderSpend needs the full JID, got %q", jid)
+	}
+	f.mediaGate.mu.Lock()
+	defer f.mediaGate.mu.Unlock()
+	return f.mediaGate.spent[normalisedJID(jid)].n
+}
+
+// The backlog bound runs BEFORE the gate, and that order is a property, not an
+// implementation detail: a delivery refused for backlog fetched nothing, so it
+// must not have spent its sender's budget on a file that never arrived.
+// Otherwise a burst from other senders quietly bills this one.
+func TestABacklogRefusalSpendsNoBudget(t *testing.T) {
+	release := make(chan struct{})
+	posted := make(chan string, 64)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		if _, carries := p["media"]; carries {
+			<-release // hold every media slot
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		posted <- fmt.Sprint(p["mediaDropped"])
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+	send := func(sender string, i int) {
+		deliverEvent(f, uploadedImageEvent(sender, fmt.Sprintf("wamid.BL%d", i),
+			fmt.Sprintf("bl-file-%d", i), fmt.Sprintf("/v/t62/bl%d", i), time.Now()), dl)
+	}
+
+	// Saturate the slots and then the queue, all from OTHER senders.
+	for i := 0; i < maxConcurrentMediaDeliveries+maxMediaWaiting; i++ {
+		send(fmt.Sprintf("2784000%04d", i), i)
+	}
+	waitForWaiters(t, f, maxMediaWaiting)
+
+	// Our sender arrives into a full queue.
+	const victimJID = "27821234567@s.whatsapp.net"
+	if n := senderSpend(t, f, victimJID); n != 0 {
+		t.Fatalf("setup: victim already has %d spent", n)
+	}
+	send("27821234567", 9999)
+	select {
+	case reason := <-posted:
+		if reason != mediaDroppedBacklog {
+			t.Fatalf("refused with %q, want %q", reason, mediaDroppedBacklog)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the backlog-refused message never reached the consumer")
+	}
+
+	if n := senderSpend(t, f, victimJID); n != 0 {
+		t.Fatalf("a backlog refusal spent %d of the sender's budget on a file that was never "+
+			"fetched — the gate is running before the backlog bound", n)
+	}
+	// And the lookup is live, not a key that never matches: a sender the gate
+	// really did admit shows up through the same helper.
+	if n := senderSpend(t, f, "27840000000@s.whatsapp.net"); n != 1 {
+		t.Fatalf("senderSpend reports %d for an admitted sender; the assertion above cannot fail", n)
 	}
 }

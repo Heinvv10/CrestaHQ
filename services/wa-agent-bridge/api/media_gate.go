@@ -148,12 +148,23 @@ func (g *mediaGate) admit(jid, key string, now time.Time) string {
 			g.dropExpiredSpentLocked(now)
 		}
 		if !known && len(g.spent) >= maxMediaSenders {
-			// Refuse rather than evict. Evicting an existing sender REFUNDS
-			// their budget, which is precisely what an attacker holding many
-			// numbers would be buying — and with every window opened in the
-			// same burst there is no meaningful "oldest" to pick, so eviction
-			// refunds an arbitrary one. Refusing is the fail-safe direction
-			// and costs a file, never a message.
+			// EVICT, do not refuse. An earlier version refused here, on the
+			// reasoning that eviction refunds a budget an attacker would want
+			// refunded. That reasoning trades a bounded cost for an unbounded
+			// one and is wrong: a refund costs at most ONE sender's hourly
+			// allowance, while refusing costs EVERY new sender EVERY file —
+			// and it does not self-heal, because a known sender whose window
+			// rolls over refreshes `since` just below, so an attacker's
+			// entries never expire and dropExpiredSpentLocked reclaims
+			// nothing. Roughly maxMediaSenders messages an hour would keep
+			// every genuinely new customer's photos out of the CRM
+			// indefinitely. Denying real customers' files is a worse outcome
+			// than the bandwidth this gate bounds.
+			//
+			// The refund is affordable because the budget is not the
+			// aggregate defence: maxMediaWaiting and
+			// maxConcurrentMediaDeliveries bound what is fetched at once
+			// however many senders hold budget.
 			g.evictOneLocked(sender)
 		}
 		s = senderMediaSpend{since: now}
@@ -223,6 +234,13 @@ func normalisedJID(jid string) string {
 // The refund is affordable because the budget is no longer the aggregate
 // defence: maxMediaWaiting and maxConcurrentMediaDeliveries bound how much is
 // fetched at once regardless of how many senders hold budget.
+//
+// "Oldest" is NOMINAL, not a strict ordering. Under the burst that fills this
+// table every `since` is the same instant, `Before` never fires, and the loop
+// keeps the first key Go's randomised map iteration happens to yield — so the
+// victim is arbitrary. That is fine and is why this is not an LRU: every
+// possible victim costs the same bounded refund, and the point of the branch
+// is to admit the newcomer, not to choose well.
 func (g *mediaGate) evictOneLocked(incoming string) {
 	var oldest string
 	var oldestAt time.Time

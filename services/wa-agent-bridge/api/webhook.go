@@ -506,6 +506,13 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 // meaningful only alongside a "" reason. The caller hands it back to
 // mediaGate.forget if the file does not survive, so the rollback pins itself
 // to THIS delivery's record.
+//
+// One gap, knowingly left: when the gate admits and the SLOT is then refused
+// for shutdown, the dedupe entry stands with no admittedAt to roll it back
+// with. That entry would suppress the file for the rest of the TTL — except
+// that this path only runs during Drain, and the gate is in-memory, so it dies
+// with the process seconds later. It is recorded here so it is not
+// rediscovered as a bug.
 func (f *Fanout) beginMediaWork(jid, key string) (reason string, admittedAt time.Time) {
 	if !f.enterMediaQueue() {
 		return mediaDroppedBacklog, time.Time{}
