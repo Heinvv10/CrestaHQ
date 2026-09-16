@@ -143,9 +143,10 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = body.trim();
-    if (!trimmed) return;
-    if (!canSend || attachmentBlock) return;
     const attachment = wa.attachment;
+    // A finished file may go on its own, without text.
+    if (!trimmed && !attachment) return;
+    if (!canSend || attachmentBlock) return;
     setSending(true);
     try {
       const res = await fetch("/api/comms/whatsapp/send", {
@@ -290,7 +291,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
               type="submit"
               size="sm"
               className="ml-auto"
-              disabled={!body.trim() || !canSend || sending || !!attachmentBlock}
+              disabled={(!body.trim() && !wa.attachment) || !canSend || sending || !!attachmentBlock}
             >
               {sending ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

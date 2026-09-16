@@ -10,7 +10,7 @@ import {
   putWhatsappMedia,
   whatsappMediaPath,
 } from "@/lib/comms/whatsapp/media-storage";
-import { mediaKindForMime } from "@/types/whatsapp-media";
+import { mediaKindForMime, mediaPreviewLabel } from "@/types/whatsapp-media";
 import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
@@ -189,6 +189,18 @@ export async function sendConversationWhatsapp(
   }
 
   const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;
+  // What the timeline and the inbox list show for a caption-less file — the
+  // same label an inbound one gets. The thread row keeps the empty body.
+  const mediaLabel =
+    attachment && !body
+      ? mediaPreviewLabel({
+          kind: mediaKindForMime(attachment.contentType),
+          mimeType: attachment.contentType,
+          filename: attachment.filename,
+          sizeBytes: 0,
+          storagePath: "",
+        })
+      : "";
 
   // The thread's copy of the file, written only now — after the send — so a
   // file the customer never received cannot appear in the thread as if they
@@ -229,9 +241,11 @@ export async function sendConversationWhatsapp(
       .collection("activities")
       .add({
         type: "whatsapp_sent",
-        content: attachment
-          ? `WhatsApp: ${preview} [${attachment.filename}]`
-          : `WhatsApp: ${preview}`,
+        content: mediaLabel
+          ? `WhatsApp: ${mediaLabel}`
+          : attachment
+            ? `WhatsApp: ${preview} [${attachment.filename}]`
+            : `WhatsApp: ${preview}`,
         createdBy: actor.uid,
         meta: { sid },
         createdAt: FieldValue.serverTimestamp(),
@@ -280,7 +294,7 @@ export async function sendConversationWhatsapp(
     contactPhone: contact.phone,
     channel: "whatsapp",
     direction: "outbound",
-    body,
+    body: body || mediaLabel,
     pauseBot: true,
   });
 

@@ -241,6 +241,45 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(JSON.stringify(messageRow)).not.toContain(attachment.dataBase64);
   });
 
+  it("sends a file with no text: 200, no caption on the wire, the label as the inbox preview", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA0" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT0" }] }));
+
+    const res = await post({ contactId: "c1", body: "", attachment });
+    expect(res.status).toBe(200);
+
+    const body = JSON.parse(graphCalls()[1]!.init.body as string);
+    expect(body).toMatchObject({ type: "image", image: { id: "MEDIA0" } });
+    expect(body.image).not.toHaveProperty("caption");
+    // The thread row keeps the empty body and renders the file alone; the
+    // inbox list gets the same label a caption-less inbound photo does.
+    expect(messageRow?.body).toBe("");
+    expect(messageRow?.media).toMatchObject({ kind: "image", filename: "site-photo.png" });
+    expect(upsertConversationForMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "📷 Photo" }),
+    );
+  });
+
+  it("accepts an attachment with no body field at all", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIA0B" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT0B" }] }));
+    const res = await post({ contactId: "c1", attachment });
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ["an empty body", { contactId: "c1", body: "" }],
+    ["a whitespace body", { contactId: "c1", body: "   " }],
+    ["no body", { contactId: "c1" }],
+  ])("still refuses %s with no attachment, before any send", async (_label, payload) => {
+    const res = await post(payload);
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requireContactAccessible).not.toHaveBeenCalled();
+  });
+
   it("sends a PDF as a document carrying its filename", async () => {
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA2" }))

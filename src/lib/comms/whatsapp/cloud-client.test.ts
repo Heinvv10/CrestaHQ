@@ -248,6 +248,18 @@ describe("sendWhatsappCloud", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("sends a file with no text WITHOUT a caption key, not caption: \"\"", async () => {
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: "MEDIA" }))
+      .mockResolvedValueOnce(ok({ messages: [{ id: "wamid.X" }] }));
+    const r = await send({ message: "", media });
+    expect(r.ok).toBe(true);
+    const sent = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(sent.type).toBe("image");
+    expect(sent.image.id).toBe("MEDIA");
+    expect(sent.image).not.toHaveProperty("caption");
+  });
+
   it("never puts the access token in an upload error string", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,

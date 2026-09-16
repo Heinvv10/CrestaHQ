@@ -71,7 +71,8 @@ export function buildCloudMessageBody(
       type: media.kind,
       [media.kind]: {
         id: media.id,
-        caption: message,
+        // Omitted, not "", on a file sent with no text.
+        ...(message ? { caption: message } : {}),
         ...(media.kind === "document" ? { filename: media.filename } : {}),
       },
     };

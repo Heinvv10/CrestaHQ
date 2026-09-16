@@ -106,6 +106,23 @@ func TestUploadKindMatchesMessageShape(t *testing.T) {
 	}
 }
 
+// An empty text sends the file with the Caption field UNSET, not an empty
+// string — the shape a phone produces for a photo sent with no caption.
+func TestMediaMessageWithoutTextHasNoCaption(t *testing.T) {
+	up := whatsmeow.UploadResponse{URL: "https://mmg.whatsapp.net/x", DirectPath: "/x", FileLength: 10}
+	img := mediaMessage(up, "", &rails.Media{Filename: "a.png", MimeType: "image/png", Data: []byte("x")})
+	if img.ImageMessage == nil || img.ImageMessage.Caption != nil {
+		t.Fatalf("image caption must be unset: %+v", img.ImageMessage)
+	}
+	doc := mediaMessage(up, "", &rails.Media{Filename: "a.pdf", MimeType: "application/pdf", Data: []byte("x")})
+	if doc.DocumentMessage == nil || doc.DocumentMessage.Caption != nil {
+		t.Fatalf("document caption must be unset: %+v", doc.DocumentMessage)
+	}
+	if doc.DocumentMessage.GetFileName() != "a.pdf" {
+		t.Fatalf("filename lost: %q", doc.DocumentMessage.GetFileName())
+	}
+}
+
 // The queue sits between the API and the socket. An attachment that does not
 // survive the hop would send as bare text, which is exactly the failure this
 // feature exists to remove.

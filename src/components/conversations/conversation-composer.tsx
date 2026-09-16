@@ -125,6 +125,8 @@ export function ConversationComposer({
   const attachment = channel === "whatsapp" ? wa.attachment : null;
   const attachmentBlock =
     channel === "whatsapp" ? attachmentSendBlock(waProvider, wa, body) : null;
+  // A finished WhatsApp file is something to send on its own, without text.
+  const hasContent = !!body.trim() || !!attachment;
 
   const merge = useMergeTagComposer({
     contact,
@@ -234,7 +236,7 @@ export function ConversationComposer({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = body.trim();
-    if (!trimmed || sending || (isEmail && !subject.trim())) return;
+    if (!hasContent || sending || (isEmail && !subject.trim())) return;
     if (blockedReason || windowClosed || attachmentBlock) return;
     if (!hasIdentity) {
       toast.error(
@@ -415,7 +417,7 @@ export function ConversationComposer({
             type="submit"
             size="sm"
             className="rounded-r-none"
-            disabled={!body.trim() || (isEmail && !subject.trim()) || disabled || !!attachmentBlock}
+            disabled={!hasContent || (isEmail && !subject.trim()) || disabled || !!attachmentBlock}
           >
             {sending ? (
               <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

@@ -66,6 +66,35 @@ func TestSendMediaReachesTheTransport(t *testing.T) {
 	}
 }
 
+// A photo or document may go without a caption, as it can from a phone.
+func TestSendMediaWithEmptyTextIsAccepted(t *testing.T) {
+	h, st, sender := testHandler(t)
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+
+	rec := post(h, "/v1/send", "tok-hermes",
+		mediaBodyJSON(knownJID, "", "m-nocap", "report.png", "image/png", tinyPNG))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := sender.LastMedia(); got == nil || got.Filename != "report.png" {
+		t.Fatalf("the caption-less attachment never reached the transport: %+v", got)
+	}
+}
+
+// ...but a send with neither text nor a file is still empty.
+func TestSendEmptyTextWithoutMediaIsRejected(t *testing.T) {
+	h, st, sender := testHandler(t)
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+
+	rec := post(h, "/v1/send", "tok-hermes", sendBodyJSON(knownJID, "", "t-empty"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if sender.Calls() != 0 {
+		t.Fatalf("an empty send reached the transport")
+	}
+}
+
 // The text path must be untouched by the media path existing. A handler that
 // synthesised an empty Media for every send would pass every test above and
 // turn every existing text message into a zero-byte document.
