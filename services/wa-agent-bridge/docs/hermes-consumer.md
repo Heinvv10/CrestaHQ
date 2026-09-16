@@ -92,8 +92,9 @@ A message that carried a **file** adds exactly one further key, never both:
   the POST carrying it to YOU failed, and this is the text-only retry),
   `"shutdown"` (the bridge was restarting — a deploy — and abandoned the file
   so the message could still reach you in time), `"duplicate"` (this exact
-  file already arrived and was delivered to you on an earlier message — look
-  it up by its earlier `messageId` rather than asking for it again) or
+  file already arrived FROM THIS SENDER and was delivered to you on an earlier
+  message — look it up by its earlier `messageId` rather than asking for it
+  again; a different sender sending the same file still gets its own copy) or
   `"sender_media_budget"` (this sender has used their hourly media allowance;
   see `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` in the bridge README) or
   `"media_backlog"` (too many attachments were already queued for download, so

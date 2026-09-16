@@ -1,8 +1,12 @@
 package api
 
 import (
+	"context"
+	"errors"
+
 	"encoding/json"
 	"fmt"
+	"go.mau.fi/whatsmeow"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -265,38 +269,64 @@ func TestDedupeTableIsBounded(t *testing.T) {
 	}
 }
 
-// The per-sender table is bounded too, and it must NOT be bounded by evicting
-// a live sender: eviction REFUNDS that sender's budget, which is exactly what
-// an attacker holding many numbers would be buying. A full table refuses the
-// new sender's file instead — fail-safe, and it still forwards the message.
-func TestSenderBudgetTableIsBoundedWithoutRefunding(t *testing.T) {
+// The per-sender table is bounded, and it is bounded by EVICTING rather than
+// by refusing. Refusing was the first version and it failed the wrong way: an
+// eviction refunds at most one sender's hourly allowance, while refusing
+// denies every new sender every file for as long as an attacker keeps the
+// table full — and it does not self-heal, because a known sender whose window
+// rolls over refreshes `since`, so the attacker's entries never expire.
+func TestSenderBudgetTableEvictsRatherThanRefusingNewSenders(t *testing.T) {
 	g := newMediaGate(1)
 	now := time.Now()
 	for i := 0; i < maxMediaSenders; i++ {
-		if r := g.admit(fmt.Sprintf("jid-%d", i), "", now); r != "" {
+		if r := g.admit(fmt.Sprintf("jid-%d@s.whatsapp.net", i), "", now); r != "" {
 			t.Fatalf("jid-%d refused while the table had room: %q", i, r)
 		}
 	}
-	if r := g.admit("jid-overflow", "", now); r != mediaDroppedBudget {
-		t.Fatalf("a new sender arriving at a full table must be refused, got %q", r)
+
+	// A brand-new customer arriving at a full table gets their file.
+	if r := g.admit("newcomer@s.whatsapp.net", "", now); r != "" {
+		t.Fatalf("a new sender at a full table was refused with %q — this denies real "+
+			"customers' files for as long as an attacker holds the table full", r)
 	}
+	// And it stays that way while the attacker keeps sending, rather than
+	// wedging after the first one.
+	for i := 0; i < 5; i++ {
+		if r := g.admit(fmt.Sprintf("newcomer-%d@s.whatsapp.net", i), "", now); r != "" {
+			t.Fatalf("new sender %d refused at a full table with %q", i, r)
+		}
+	}
+
 	g.mu.Lock()
 	n := len(g.spent)
 	g.mu.Unlock()
 	if n > maxMediaSenders {
 		t.Fatalf("sender budget table holds %d entries, above the %d bound", n, maxMediaSenders)
 	}
-	// Nobody already in the table was refunded.
+}
+
+// Eviction is affordable only because it is bounded: each one refunds at most
+// ONE sender, never the whole table.
+func TestEvictionRefundsOnlyOneSender(t *testing.T) {
+	g := newMediaGate(1)
+	now := time.Now()
 	for i := 0; i < maxMediaSenders; i++ {
-		jid := fmt.Sprintf("jid-%d", i)
-		if r := g.admit(jid, "", now); r != mediaDroppedBudget {
-			t.Fatalf("%s was refunded its budget: admit returned %q", jid, r)
+		g.admit(fmt.Sprintf("jid-%d@s.whatsapp.net", i), "", now)
+	}
+	g.admit("newcomer@s.whatsapp.net", "", now) // evicts exactly one
+
+	refunded := 0
+	for i := 0; i < maxMediaSenders; i++ {
+		if g.admit(fmt.Sprintf("jid-%d@s.whatsapp.net", i), "", now) == "" {
+			refunded++
 		}
 	}
-	// And the table empties as windows roll over, rather than staying wedged.
-	later := now.Add(inboundMediaBudgetWindow + time.Minute)
-	if r := g.admit("jid-overflow", "", later); r != "" {
-		t.Fatalf("once the windows expired a new sender must be admitted, got %q", r)
+	// One eviction, so at most one of the originals got its budget back — and
+	// each of those re-admits can itself evict one more, so allow for the
+	// cascade rather than pinning an exact number.
+	if refunded > maxMediaSenders/2 {
+		t.Fatalf("%d of %d senders were refunded by eviction; the refund is meant to be "+
+			"one sender at a time, not the table", refunded, maxMediaSenders)
 	}
 }
 
@@ -497,5 +527,164 @@ func TestMediaQueueDrains(t *testing.T) {
 	f.mediaWaitMu.Unlock()
 	if waiting != 0 {
 		t.Fatalf("media queue left holding %d waiters after everything drained", waiting)
+	}
+}
+
+// Two customers forwarding the SAME file must both get it.
+//
+// This is the accidental half of the cross-sender bug, and it is the one that
+// would have happened in normal use: WhatsApp forwards preserve the plaintext
+// bytes, so one fault photo or price list forwarded by two customers carries
+// ONE fileSHA256. With a global dedupe table the second customer's file would
+// have vanished from the CRM, silently, as a "duplicate" of a file they never
+// sent.
+func TestTwoSendersForwardingOneFileBothGetIt(t *testing.T) {
+	srv, body, _ := captureOne(t)
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	const forwarded = "the-same-forwarded-photo"
+	deliverEvent(f, uploadedImageEvent("27821111111", "wamid.FWD1", forwarded, "/v/t62/fwd", time.Now()), dl)
+	f.Wait()
+	deliverEvent(f, uploadedImageEvent("27832222222", "wamid.FWD2", forwarded, "/v/t62/fwd", time.Now()), dl)
+	f.Wait()
+
+	if dl.count() != 2 {
+		t.Fatalf("downloads = %d; two DIFFERENT customers forwarding one file must each get it", dl.count())
+	}
+	if withFile, dropped := drainBodies(t, body, 2); withFile != 2 {
+		t.Fatalf("%d of 2 payloads carried the file, dropped=%v — one customer's photo was "+
+			"suppressed by another's", withFile, dropped)
+	}
+}
+
+// failingDownloader fetches nothing and fails, as a sender citing a hash with
+// no valid media behind it would.
+type failingDownloader struct{}
+
+func (failingDownloader) DownloadToFile(context.Context, whatsmeow.DownloadableMessage, whatsmeow.File) error {
+	return errors.New("no such media")
+}
+
+// The adversarial half: one sender must not be able to suppress another's
+// file. fileSHA256 is sender-supplied protobuf this bridge never verifies
+// against any bytes, so knowing a file's plaintext hash is enough to claim it
+// — and the claim used to be recorded before the fetch and never rolled back,
+// so a failed fetch still poisoned the entry for everyone.
+//
+// Both halves of the fix are asserted here: the attacker's claim is scoped to
+// the attacker, AND their failed fetch leaves no entry at all.
+func TestOneSenderCannotSuppressAnothersFile(t *testing.T) {
+	srv, body, _ := captureOne(t)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	const victimFile = "the-victims-real-file"
+	// The attacker cites the victim's hash with nothing behind it.
+	deliverEvent(f, uploadedImageEvent("27899999999", "wamid.ATK", victimFile, "/v/t62/atk", time.Now()),
+		failingDownloader{})
+	f.Wait()
+	if p := awaitBody(t, body); p["mediaDropped"] != "fetch_failed" {
+		t.Fatalf("setup: the attacker's fetch should have failed, got %v", p)
+	}
+
+	// The victim's genuine send must still arrive, with its bytes.
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	deliverEvent(f, uploadedImageEvent("27821234567", "wamid.VICTIM", victimFile, "/v/t62/real", time.Now()), dl)
+	f.Wait()
+
+	if dl.count() != 1 {
+		t.Fatalf("the victim's file was downloaded %d times, want 1 — another sender's claim "+
+			"suppressed it", dl.count())
+	}
+	p := awaitBody(t, body)
+	if _, ok := p["media"]; !ok {
+		t.Fatalf("the victim's message arrived without its file (%v) — suppressed by another sender",
+			p["mediaDropped"])
+	}
+}
+
+// A fetch that failed must not suppress the SAME sender's later genuine send
+// either. The entry is taken before the fetch, so without a rollback the
+// customer resends the photo and the bridge answers "duplicate" for a file it
+// never delivered.
+func TestAFailedFetchDoesNotSuppressALaterSend(t *testing.T) {
+	srv, body, _ := captureOne(t)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	const file = "one-file-two-attempts"
+	deliverEvent(f, uploadedImageEvent("27821234567", "wamid.TRY1", file, "/v/t62/x", time.Now()),
+		failingDownloader{})
+	f.Wait()
+	if p := awaitBody(t, body); p["mediaDropped"] != "fetch_failed" {
+		t.Fatalf("setup: want fetch_failed, got %v", p)
+	}
+
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	deliverEvent(f, uploadedImageEvent("27821234567", "wamid.TRY2", file, "/v/t62/x", time.Now()), dl)
+	f.Wait()
+
+	if dl.count() != 1 {
+		t.Fatalf("the resend was downloaded %d times, want 1 — the failed attempt is still "+
+			"recorded as delivered", dl.count())
+	}
+	if p := awaitBody(t, body); p["mediaDropped"] == mediaDroppedDuplicate {
+		t.Fatal("a resend after a FAILED fetch was answered \"duplicate\" for a file that never arrived")
+	}
+	// The budget, unlike the dedupe entry, is NOT refunded: two attempts cost
+	// two. Otherwise a sender gets unlimited failed downloads.
+	g := newMediaGate(2)
+	now := time.Now()
+	g.admit("jid@s.whatsapp.net", "k", now)
+	g.forget("jid@s.whatsapp.net", "k", now)
+	g.admit("jid@s.whatsapp.net", "k2", now)
+	if r := g.admit("jid@s.whatsapp.net", "k3", now); r != mediaDroppedBudget {
+		t.Fatalf("a failed fetch refunded the budget: third admit against a budget of 2 returned %q", r)
+	}
+}
+
+// One human with several linked devices is ONE sender. whatsmeow reports
+// "2782...:12@s.whatsapp.net" on a multi-device account, so keying on the raw
+// string would hand them a fresh budget per device — and defeat the dedupe for
+// the very repeats it exists to catch.
+func TestDeviceSuffixDoesNotSplitTheSender(t *testing.T) {
+	g := newMediaGate(1)
+	now := time.Now()
+
+	if r := g.admit("27821234567:12@s.whatsapp.net", "one-file", now); r != "" {
+		t.Fatalf("first device refused: %q", r)
+	}
+	if r := g.admit("27821234567:47@s.whatsapp.net", "one-file", now); r != mediaDroppedDuplicate {
+		t.Fatalf("the same file from another DEVICE of the same sender returned %q, want %q",
+			r, mediaDroppedDuplicate)
+	}
+	if r := g.admit("27821234567@s.whatsapp.net", "another-file", now); r != mediaDroppedBudget {
+		t.Fatalf("a second device got its own budget: returned %q, want %q", r, mediaDroppedBudget)
+	}
+}
+
+// forget undoes THIS delivery's record and no other.
+//
+// No caller can reach that today — while an entry stands, a second delivery
+// citing the same file from the same sender is refused as a duplicate and
+// never rewrites it, so there is never a newer record for a late forget to
+// destroy. The pin is a precondition of the method rather than a live guard,
+// and it is asserted here so that a future caller which CAN reach it does not
+// silently delete a newer sender's record and reopen the amplification.
+func TestForgetOnlyUndoesItsOwnRecord(t *testing.T) {
+	g := newMediaGate(10)
+	now := time.Now()
+	if r := g.admit("jid@s.whatsapp.net", "k", now); r != "" {
+		t.Fatalf("setup: %q", r)
+	}
+
+	g.forget("jid@s.whatsapp.net", "k", now.Add(-time.Minute))
+	if r := g.admit("jid@s.whatsapp.net", "k", now); r != mediaDroppedDuplicate {
+		t.Fatalf("a forget carrying another delivery's timestamp deleted this record: admit returned %q", r)
+	}
+
+	// Its own timestamp does undo it.
+	g.forget("jid@s.whatsapp.net", "k", now)
+	if r := g.admit("jid@s.whatsapp.net", "k", now); r != "" {
+		t.Fatalf("forget with the record's own timestamp did not undo it: %q", r)
 	}
 }

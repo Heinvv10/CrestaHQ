@@ -426,7 +426,8 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 	// that downloads first has refused nothing. The MESSAGE still goes out —
 	// only the file is skipped — because a bounded bridge that eats customer
 	// messages is worse than the amplification it was bounding.
-	if reason := f.beginMediaWork(jid, att.Key); reason != "" {
+	reason, admittedAt := f.beginMediaWork(jid, att.Key)
+	if reason != "" {
 		log.Printf("inbound media not fetched jid=%s reason=%s — message forwarded without it",
 			redact.JID(jid), reason)
 		f.postEach(jid, withMedia(base, &wa.InboundMedia{Dropped: reason}), false)
@@ -434,6 +435,11 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 	}
 	media := att.Fetch(f.drainCtx)
 	if media == nil || media.Dropped != "" {
+		// The file never reached a consumer, so the dedupe entry taken before
+		// the fetch must not go on suppressing it: the customer resends the
+		// photo and the bridge would answer "duplicate" for a file it never
+		// delivered. The budget stays spent — see mediaGate.forget.
+		f.mediaGate.forget(jid, att.Key, admittedAt)
 		f.releaseMediaSlot()
 		f.postEach(jid, withMedia(base, media), false)
 		return
@@ -455,7 +461,12 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 	// A duplicate is safe by construction: the payload carries WhatsApp's own
 	// message id and docs/hermes-consumer.md requires consumers to dedupe on
 	// it.
-	reason := "delivery_failed"
+	// Same reasoning as the failed fetch above: from the customer's side a
+	// file that was downloaded but never delivered is a file that did not
+	// arrive, and their resend must not be answered "duplicate".
+	f.mediaGate.forget(jid, att.Key, admittedAt)
+
+	reason = "delivery_failed"
 	if f.drainCtx.Err() != nil {
 		// The POST did not fail; the bridge stopped it. Say so, or an
 		// operator hunts a consumer bug that does not exist.
@@ -490,18 +501,24 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 // The queue count is released by defer, so a delivery leaves the queue at the
 // moment it takes a slot. maxMediaWaiting therefore bounds waiters, not
 // waiters plus the two being served.
-func (f *Fanout) beginMediaWork(jid, key string) string {
+//
+// admittedAt is the instant the gate recorded this attachment, and is
+// meaningful only alongside a "" reason. The caller hands it back to
+// mediaGate.forget if the file does not survive, so the rollback pins itself
+// to THIS delivery's record.
+func (f *Fanout) beginMediaWork(jid, key string) (reason string, admittedAt time.Time) {
 	if !f.enterMediaQueue() {
-		return mediaDroppedBacklog
+		return mediaDroppedBacklog, time.Time{}
 	}
 	defer f.leaveMediaQueue()
-	if reason := f.mediaGate.admit(jid, key, f.now()); reason != "" {
-		return reason
+	admittedAt = f.now()
+	if reason := f.mediaGate.admit(jid, key, admittedAt); reason != "" {
+		return reason, time.Time{}
 	}
 	if !f.acquireMediaSlot() {
-		return "shutdown"
+		return "shutdown", time.Time{}
 	}
-	return ""
+	return "", admittedAt
 }
 
 // enterMediaQueue takes a place in the queue for a media slot, or reports
