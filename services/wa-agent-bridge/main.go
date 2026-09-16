@@ -169,7 +169,8 @@ func main() {
 	engine := rails.NewEngine(st, cfg.Rails)
 
 	gate := &clientHolder{}
-	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow, gate.connectedAt)
+	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow, gate.connectedAt,
+		cfg.InboundMediaPerSenderPerHour)
 
 	client, err := wa.NewClient(
 		cfg.SessionDir,
@@ -205,6 +206,23 @@ func main() {
 	// client.Disconnect() close the WhatsApp socket out from under that send
 	// instead of it finishing or timing out cleanly.
 	const shutdownBudget = 35 * time.Second
+
+	// fanoutDrainBudget bounds the second step, the inbound delivery drain.
+	//
+	// The worst case is not one delivery but a BACKLOG of them, so it is worth
+	// being exact about why the backlog drains in parallel. Drain stops intake,
+	// then cancels every in-flight download and media POST. The (at most two)
+	// deliveries holding a media slot finish their abandoned file work — the
+	// HTTP phase stops on cancel; whatsmeow's HMAC, decrypt and hash take no
+	// context but are bounded by the 16MiB cap to a fraction of a second — and
+	// then post text-only. Every delivery still WAITING for a slot stops waiting
+	// and posts text-only at once, without a slot, concurrently with the rest.
+	// So the backlog costs one text POST per consumer in parallel, each on the
+	// 10s client, plus one fallback for the slot holders: ~20s whatever the
+	// backlog size. 25s covers that; anything still running after it is logged
+	// and abandoned rather than holding systemd past TimeoutStopSec, which
+	// would SIGKILL everything including the posts about to succeed.
+	const fanoutDrainBudget = 25 * time.Second
 
 	// The one send path. Everything outbound goes through this queue so that
 	// exactly one message is on the socket at a time and the pacing rails
@@ -248,17 +266,30 @@ func main() {
 	log.Printf("shutting down")
 
 	// Order matters: stop accepting sends, then close the socket so no further
-	// inbound arrives, then wait for the webhook deliveries already in flight.
+	// inbound arrives, then drain the webhook deliveries already in flight.
 	// shutdownBudget (35s) outlasts the 30s send-queue timeout so an in-flight
 	// send gets to finish or time out on its own terms before Disconnect pulls
-	// the socket out from under it. TimeoutStopSec=60 in the systemd unit
-	// funds this 35s drain plus fanout.Wait()'s own worst case (bounded by the
-	// webhook http.Client's 10s timeout), with headroom before SIGKILL.
+	// the socket out from under it. client.Disconnect then waits up to 5s for
+	// whatsmeow's handler queue to finish (unlockedDisconnect, client.go:715).
+	// It can return with a handler still running — after that 5s, or at once
+	// when handlerQueueLoop exits mid-node on connCtx.Done (client.go:936-939)
+	// — and that handler can call fanout.Deliver during the drain, which is why
+	// Deliver refuses new work once Drain has begun. fanout.Drain
+	// then gets fanoutDrainBudget (25s): it abandons file work immediately and
+	// the messages go text-only. Worst case end to end is 35s + 5s + 25s = 65s;
+	// TimeoutStopSec=90 in the systemd unit leaves 25s of headroom before
+	// SIGKILL. An unbounded Wait here would let
+	// one in-flight 16MiB attachment (120s download + 120s POST) run straight
+	// into SIGKILL and lose every delivery behind it, message and all.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("WARNING http shutdown: %v", err)
 	}
 	client.Disconnect()
-	fanout.Wait()
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), fanoutDrainBudget)
+	defer drainCancel()
+	if err := fanout.Drain(drainCtx); err != nil {
+		log.Printf("WARNING %v", err)
+	}
 }

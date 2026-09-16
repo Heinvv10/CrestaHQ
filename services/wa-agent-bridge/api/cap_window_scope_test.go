@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,10 +34,12 @@ func TestCatchUpCapIsScopedToTheReplayWindowNotTheConnection(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	n := 0
+	// Atomic: the handler runs on one goroutine per connection, and the
+	// fanout posts deliveries concurrently.
+	var n atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
-		n++
+		n.Add(1)
 	}))
 	defer srv.Close()
 
@@ -45,23 +48,23 @@ func TestCatchUpCapIsScopedToTheReplayWindowNotTheConnection(t *testing.T) {
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
 		"", st,
 		func() bool { return now.Sub(connectedAt) < 5*time.Minute }, // the real rule
-		func() time.Time { return connectedAt })
+		func() time.Time { return connectedAt }, 0)
 
 	for i := 0; i < maxCatchUpForward+10; i++ {
-		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", now)
+		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", now, nil)
 	}
 	f.Wait()
-	inWindow := n
+	inWindow := n.Load()
 	_, capped := f.SuppressedInbound()
 
 	// Now step past the window on the SAME connection.
 	now = connectedAt.Add(10 * time.Minute)
-	f.Deliver("27821234567@s.whatsapp.net", "an hour later", "wamid.LATER", now)
+	f.Deliver("27821234567@s.whatsapp.net", "an hour later", "wamid.LATER", now, nil)
 	f.Wait()
 
 	t.Logf("during window: forwarded=%d capped=%d", inWindow, capped)
-	t.Logf("after window : forwarded total=%d", n)
-	if n != inWindow+1 {
-		t.Fatalf("LATCHED: a message after the window was not forwarded (total %d, want %d)", n, inWindow+1)
+	t.Logf("after window : forwarded total=%d", n.Load())
+	if n.Load() != inWindow+1 {
+		t.Fatalf("LATCHED: a message after the window was not forwarded (total %d, want %d)", n.Load(), inWindow+1)
 	}
 }
