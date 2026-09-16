@@ -31,6 +31,10 @@ let claims: Record<string, unknown> | null;
 let fileCalls: string[];
 /** Options handed to createReadStream, so a range can be proven to reach the bucket. */
 let readCalls: ({ start: number; end: number } | undefined)[];
+/** When set, `getStorage` throws synchronously — an admin app or Storage init failure. */
+let storageInitError: Error | null;
+/** When set, `getMetadata` rejects with it — how a missing object surfaces. */
+let metadataError: Error | null;
 
 const BYTES = Buffer.from("PNGDATA-not-a-real-image");
 
@@ -67,9 +71,10 @@ const fakeStorage = {
     file: (path: string) => {
       fileCalls.push(path);
       return {
-        getMetadata: async () => [
-          { size: String(BYTES.length), contentType: "image/png" },
-        ],
+        getMetadata: async () => {
+          if (metadataError) throw metadataError;
+          return [{ size: String(BYTES.length), contentType: "image/png" }];
+        },
         createReadStream: (opts?: { start: number; end: number }) => {
           readCalls.push(opts);
           const slice = opts ? BYTES.subarray(opts.start, opts.end + 1) : BYTES;
@@ -90,7 +95,10 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 vi.mock("firebase-admin/storage", () => ({
-  getStorage: () => fakeStorage,
+  getStorage: () => {
+    if (storageInitError) throw storageInitError;
+    return fakeStorage;
+  },
 }));
 
 import { GET } from "./route";
@@ -115,6 +123,9 @@ const AUTHED = { "x-user-uid": "user-1" };
 beforeEach(() => {
   fileCalls = [];
   readCalls = [];
+  storageInitError = null;
+  metadataError = null;
+  vi.restoreAllMocks();
   claims = { status: "active", agencyId: AGENCY_ID, agencyRole: "staff" };
   contactDoc = { agencyId: AGENCY_ID, subAccountId: SUB_ACCOUNT_ID, name: "Ada" };
   memberDoc = { status: "active" };
@@ -315,6 +326,49 @@ describe("GET /api/comms/whatsapp/media/[contactId]/[messageId]", () => {
       "filename*=UTF-8''",
     )[1];
     expect(star).toBe("re%28port%29%2A%21.pdf");
+  });
+
+  it("404s instead of 500 when resolving the bucket throws synchronously", async () => {
+    // The row and the caller are both valid, so only the Storage init failure
+    // stands between this request and a 200. It must end in the route's own
+    // not-found answer, not an unhandled throw.
+    storageInitError = new Error("The default Firebase app does not exist");
+    const res = await call(AUTHED);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Not found" });
+    expect(fileCalls).toEqual([]);
+  });
+
+  it("404s silently when the object is missing — a normal state, not an error", async () => {
+    // A deleted object, or an upload that failed after the row was written.
+    // Logging every such request would bury the init failures the log exists
+    // to catch.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    metadataError = Object.assign(new Error("No such object"), { code: 404 });
+    const res = await call(AUTHED);
+    expect(res.status).toBe(404);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("logs an init failure once, without the request's bearer token", async () => {
+    // A Storage ApiError carries `response.request.headers`, Authorization
+    // included. The log must carry the code and message, never the raw error.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    storageInitError = Object.assign(new Error("init failed"), {
+      code: 500,
+      response: {
+        request: { headers: { Authorization: "Bearer ya29.secret-token" } },
+      },
+    });
+    const res = await call(AUTHED);
+    expect(res.status).toBe(404);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls[0]);
+    expect(logged).toContain("init failed");
+    expect(logged).not.toContain("Authorization");
+    expect(logged).not.toContain("secret-token");
   });
 
   it("404s when the stored path disagrees with the derived one, without touching Storage", async () => {

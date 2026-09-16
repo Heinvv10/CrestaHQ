@@ -9,11 +9,12 @@ type Body = {
   contactId?: string;
   body?: string;
   /**
-   * Optional file to send alongside the text. Bridge rail only — see
-   * `dispatchWhatsappSend`, which refuses one on Twilio and Cloud.
+   * Optional file to send alongside the text. Bridge and Cloud rails — see
+   * `dispatchWhatsappSend`, which refuses one on Twilio.
    *
-   * No size or type check here: the bridge owns both limits, and a second copy
-   * of either in this file would be a second number to keep in step. What this
+   * No size or type check here: each rail owns its limits (`capabilitiesFor`),
+   * and a second copy of either in this file would be a second number to keep
+   * in step. What this
    * route does check is SHAPE — a half-filled attachment is a caller bug and
    * would otherwise reach the bridge as an unnamed or empty file.
    */
@@ -73,6 +74,28 @@ export async function POST(request: Request) {
           error:
             "attachment requires filename, contentType and dataBase64.",
         },
+        { status: 400 },
+      );
+    }
+    // Standard base64 or nothing. `Buffer.from` decodes garbage leniently —
+    // "data:" becomes three bytes — so a malformed payload would otherwise
+    // reach a customer as a corrupt file. The client check is bypassable;
+    // this is the one that counts. (Non-empty valid base64 always decodes to
+    // at least one byte, and empty is refused above.)
+    if (dataBase64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(dataBase64)) {
+      return NextResponse.json(
+        { error: "attachment dataBase64 is not valid base64.", code: "media_invalid" },
+        { status: 400 },
+      );
+    }
+    // Bounded here, for every rail, before anything is sent — the same 255
+    // bytes the bridge already refuses over (send.go). The thread row and the
+    // activity store this name verbatim; an unbounded one could exceed
+    // Firestore's limits AFTER the customer had the file, and both writes are
+    // best-effort, so the thread would show nothing was sent.
+    if (Buffer.byteLength(filename, "utf8") > 255) {
+      return NextResponse.json(
+        { error: "attachment filename is longer than 255 bytes.", code: "media_invalid" },
         { status: 400 },
       );
     }

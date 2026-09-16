@@ -198,29 +198,39 @@ describe("dispatchWhatsappSend", () => {
     expect(r.ok).toBe(false);
     expect(r.provider).toBe("twilio");
     expect(r.providerOutcome).toBe("DEFINITELY_REJECTED");
-    expect(r.error).toContain("bridge");
+    // A code, so the route answers 400 (fix the request) rather than 502.
+    expect(r.providerErrorCode).toBe("media_unsupported_rail");
     expect(input.sendViaTwilio).not.toHaveBeenCalled();
   });
 
-  it("refuses an attachment on Cloud rather than dropping it", async () => {
+  it("passes an attachment through to the cloud sender", async () => {
     getWabaCreds.mockResolvedValue({
       phoneNumberId: "PN",
       wabaId: "WA",
       accessToken: "T",
     });
+    sendWhatsappCloud.mockResolvedValue({ ok: true, messageId: "wamid.1" });
+    const attachment = {
+      filename: "report.png",
+      contentType: "image/png",
+      dataBase64: "AAEC",
+    };
     const r = await dispatchWhatsappSend(
-      baseInput({
-        subAccount: sub("cloud"),
-        attachment: {
-          filename: "report.png",
-          contentType: "image/png",
-          dataBase64: "AAEC",
-        },
-      }),
+      baseInput({ subAccount: sub("cloud"), attachment }),
     );
-    expect(r.ok).toBe(false);
-    expect(r.provider).toBe("cloud");
-    expect(sendWhatsappCloud).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    expect(sendWhatsappCloud).toHaveBeenCalledWith(
+      expect.objectContaining({ media: attachment }),
+    );
+  });
+
+  it("hands the cloud sender no media when the caller attached nothing", async () => {
+    getWabaCreds.mockResolvedValue({ phoneNumberId: "PN", wabaId: "WA", accessToken: "T" });
+    sendWhatsappCloud.mockResolvedValue({ ok: true, messageId: "wamid.1" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("cloud") }));
+    expect(sendWhatsappCloud).toHaveBeenCalledWith(
+      expect.objectContaining({ media: null }),
+    );
   });
 
   it("forwards the window and template to the cloud sender", async () => {

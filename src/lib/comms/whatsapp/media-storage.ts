@@ -50,12 +50,16 @@ export async function putWhatsappMedia(opts: {
   bytes: Buffer;
   contentType: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const b = bucket();
-  if (!b) {
-    console.warn(`[whatsapp-media] ${BUCKET_ENV} is unset — not storing media`);
-    return { ok: false, reason: "bucket_unconfigured" };
-  }
   try {
+    // Inside the try: resolving the bucket can throw synchronously (no admin
+    // app), and on the outbound path this runs AFTER the customer has the
+    // file — a throw here would lose the thread row and answer 500, which
+    // invites a resend.
+    const b = bucket();
+    if (!b) {
+      console.warn(`[whatsapp-media] ${BUCKET_ENV} is unset — not storing media`);
+      return { ok: false, reason: "bucket_unconfigured" };
+    }
     await b.file(opts.path).save(opts.bytes, {
       resumable: false,
       metadata: { contentType: opts.contentType },
@@ -86,26 +90,37 @@ export async function openWhatsappMedia(path: string): Promise<{
   contentType: string;
   read: (range?: MediaByteRange) => AsyncIterable<Buffer>;
 } | null> {
-  const b = bucket();
-  if (!b) return null;
-  const file = b.file(path);
-  let sizeBytes = 0;
-  let contentType = "application/octet-stream";
   try {
+    // Inside the try: resolving the bucket can throw synchronously (no admin
+    // app), and the serving route would then answer an unhandled 500 instead
+    // of its 404.
+    const b = bucket();
+    if (!b) return null;
+    const file = b.file(path);
     const [meta] = await file.getMetadata();
-    sizeBytes = Number(meta.size ?? 0);
-    contentType = meta.contentType ?? contentType;
-  } catch {
-    // Missing object, or metadata unreadable — indistinguishable to the caller,
-    // and both mean "there is nothing to serve".
+    return {
+      sizeBytes: Number(meta.size ?? 0),
+      contentType: meta.contentType ?? "application/octet-stream",
+      read: (range) =>
+        range
+          ? file.createReadStream({ start: range.start, end: range.end })
+          : file.createReadStream(),
+    };
+  } catch (err) {
+    // Missing object, unreadable metadata, or Storage that would not
+    // initialise — all mean "there is nothing to serve" to the caller, but only
+    // the log can tell them apart. A missing object is a normal state (deleted,
+    // or an upload that failed after the row was written), so it is not logged.
+    // Never the raw error: a Storage ApiError carries the request headers,
+    // Authorization bearer token included.
+    const e = err as { code?: unknown; message?: unknown } | null;
+    if (e?.code !== 404) {
+      console.warn("[whatsapp-media] open failed", {
+        path,
+        code: e?.code,
+        message: e?.message,
+      });
+    }
     return null;
   }
-  return {
-    sizeBytes,
-    contentType,
-    read: (range) =>
-      range
-        ? file.createReadStream({ start: range.start, end: range.end })
-        : file.createReadStream(),
-  };
 }

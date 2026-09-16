@@ -6,6 +6,11 @@ import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
 import type { BridgeAttachment } from "@/lib/comms/whatsapp/bridge-client";
+import {
+  putWhatsappMedia,
+  whatsappMediaPath,
+} from "@/lib/comms/whatsapp/media-storage";
+import { mediaKindForMime } from "@/types/whatsapp-media";
 import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
@@ -184,11 +189,38 @@ export async function sendConversationWhatsapp(
   }
 
   const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;
-  // The filename, never the bytes. A thread that shows only the caption is a
-  // thread where nobody can tell whether the report actually went.
-  const attachmentMeta = attachment
-    ? { filename: attachment.filename, contentType: attachment.contentType }
-    : null;
+
+  // The thread's copy of the file, written only now — after the send — so a
+  // file the customer never received cannot appear in the thread as if they
+  // had. The row gets `media` pointing at the object, or `mediaDropped` when
+  // the copy failed: a thread showing only the caption cannot answer "did the
+  // report actually go?", and that is the first question asked.
+  let mediaFields: Record<string, unknown> = {};
+  if (attachment) {
+    const bytes = Buffer.from(attachment.dataBase64, "base64");
+    const storagePath = whatsappMediaPath({
+      agencyId: contact.agencyId,
+      subAccountId: contact.subAccountId,
+      contactId,
+      messageDocId: sid,
+    });
+    const stored = await putWhatsappMedia({
+      path: storagePath,
+      bytes,
+      contentType: attachment.contentType,
+    });
+    mediaFields = stored.ok
+      ? {
+          media: {
+            kind: mediaKindForMime(attachment.contentType),
+            mimeType: attachment.contentType,
+            filename: attachment.filename,
+            sizeBytes: bytes.length,
+            storagePath,
+          },
+        }
+      : { mediaDropped: "store_failed" };
+  }
 
   try {
     await db
@@ -197,8 +229,8 @@ export async function sendConversationWhatsapp(
       .collection("activities")
       .add({
         type: "whatsapp_sent",
-        content: attachmentMeta
-          ? `WhatsApp: ${preview} [${attachmentMeta.filename}]`
+        content: attachment
+          ? `WhatsApp: ${preview} [${attachment.filename}]`
           : `WhatsApp: ${preview}`,
         createdBy: actor.uid,
         meta: { sid },
@@ -227,9 +259,9 @@ export async function sendConversationWhatsapp(
         from: fromNumber,
         to: contact.phone,
         twilioMessageSid: sid,
-        // Null rather than omitted, so a thread row is the same shape whether
-        // or not a file went with it.
-        attachment: attachmentMeta,
+        // `media` / `mediaDropped` only on a row that carried a file — absent,
+        // not null, on text rows (see src/types/whatsapp-media.ts).
+        ...mediaFields,
         sentByUid: actor.uid,
         error: null,
         readAt: null,
