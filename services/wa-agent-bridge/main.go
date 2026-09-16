@@ -169,7 +169,8 @@ func main() {
 	engine := rails.NewEngine(st, cfg.Rails)
 
 	gate := &clientHolder{}
-	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow, gate.connectedAt)
+	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow, gate.connectedAt,
+		cfg.InboundMediaPerSenderPerHour)
 
 	client, err := wa.NewClient(
 		cfg.SessionDir,

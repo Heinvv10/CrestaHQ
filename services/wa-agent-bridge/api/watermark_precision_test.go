@@ -39,7 +39,7 @@ func realStoreFanout(t *testing.T, connectedAt time.Time) (*Fanout, *store.SQLit
 	t.Cleanup(srv.Close)
 
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
-		"", st, func() bool { return true }, func() time.Time { return connectedAt })
+		"", st, func() bool { return true }, func() time.Time { return connectedAt }, 0)
 	return f, st, func() int { return int(n.Load()) }
 }
 
@@ -123,7 +123,7 @@ func TestUnreadableWatermarkAdmitsRatherThanMutes(t *testing.T) {
 	st := failingWatermarkStore{store.NewMemory()}
 	connectedAt := time.Now()
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
-		"", st, func() bool { return true }, func() time.Time { return connectedAt })
+		"", st, func() bool { return true }, func() time.Time { return connectedAt }, 0)
 
 	// Deliberately OLD: with no readable watermark there is nothing to judge it
 	// against, and silence is the one outcome that cannot be undone.
@@ -165,7 +165,7 @@ func TestNonOwnerTrafficDoesNotSpendTheCatchUpBudget(t *testing.T) {
 
 	connectedAt := time.Now()
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
-		owner, st, func() bool { return true }, func() time.Time { return connectedAt })
+		owner, st, func() bool { return true }, func() time.Time { return connectedAt }, 0)
 
 	// A burst from strangers, more than the whole budget.
 	for i := 0; i < maxCatchUpForward+50; i++ {

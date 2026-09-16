@@ -55,6 +55,14 @@ type Config struct {
 	OwnerJID   string
 	Consumers  []Consumer
 	Rails      rails.Config
+	// InboundMediaPerSenderPerHour caps how many DISTINCT attachments one
+	// sender can make the bridge download in a rolling hour
+	// (CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR). It sits here rather than in
+	// rails.Config because rails.Config is the OUTBOUND engine's — this bounds
+	// what arrives, and nothing in rails ever consults it. Zero or unset takes
+	// the api package's default; see api.mediaGate for why there is no
+	// unlimited setting.
+	InboundMediaPerSenderPerHour int
 }
 
 func envInt(key string, def int) int {
@@ -92,6 +100,10 @@ func Load() (Config, error) {
 		DBPath:     os.Getenv("DB_PATH"),
 		SessionDir: os.Getenv("SESSION_DIR"),
 		OwnerJID:   os.Getenv("OWNER_JID"),
+		// 0 means "unset", which api resolves to its own default. Not
+		// defaulted here, so the number lives in one place next to the gate
+		// that enforces it rather than in two that can drift.
+		InboundMediaPerSenderPerHour: envInt("CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR", 0),
 		Rails: rails.Config{
 			PerContactPerDay: envInt("CAP_PER_CONTACT_PER_DAY", 10),
 			ConsecutiveMax:   envInt("CAP_CONSECUTIVE", 3),

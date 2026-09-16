@@ -94,14 +94,14 @@ func (s *stubDownloader) stats() (calls, accepted int) {
 
 type inboundCall struct {
 	jid, text string
-	media     func(context.Context) *InboundMedia
+	media     *InboundAttachment
 }
 
 func recordingClient(dl MediaDownloader) (*Client, *[]inboundCall) {
 	var seen []inboundCall
 	c := &Client{
 		downloader: dl,
-		onInbound: func(jid, text, _ string, _ time.Time, media func(context.Context) *InboundMedia) {
+		onInbound: func(jid, text, _ string, _ time.Time, media *InboundAttachment) {
 			seen = append(seen, inboundCall{jid, text, media})
 		},
 	}
@@ -122,7 +122,7 @@ func deliver(t *testing.T, c *Client, seen *[]inboundCall, e *waE2E.Message) (te
 	if got.media == nil {
 		return got.text, nil
 	}
-	return got.text, got.media(context.Background())
+	return got.text, got.media.Fetch(context.Background())
 }
 
 func imageMsg(caption string, declared uint64) *waE2E.Message {
@@ -487,7 +487,7 @@ func TestHandleMessageDownloadsNothing(t *testing.T) {
 	}
 
 	// And resolving it is what downloads.
-	if media := (*seen)[0].media(context.Background()); media == nil || string(media.Data) != "bytes" {
+	if media := (*seen)[0].media.Fetch(context.Background()); media == nil || string(media.Data) != "bytes" {
 		t.Fatalf("resolving the thunk must download, got %+v", media)
 	}
 	if calls, _ := dl.stats(); calls != 1 {
@@ -524,7 +524,7 @@ func TestViewOnceMediaIsStoredLikeAnyOther(t *testing.T) {
 	if got.text != "for your eyes only" || got.media == nil {
 		t.Fatalf("view-once must be forwarded like any other media, got text=%q media=%v", got.text, got.media != nil)
 	}
-	if media := got.media(context.Background()); media == nil || string(media.Data) != "disappearing-photo" {
+	if media := got.media.Fetch(context.Background()); media == nil || string(media.Data) != "disappearing-photo" {
 		t.Fatalf("view-once bytes must be downloaded and forwarded, got %+v", media)
 	}
 }
@@ -559,7 +559,7 @@ func TestCancelledDownloadIsReportedAsShutdown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan *InboundMedia, 1)
-	go func() { got <- (*seen)[0].media(ctx) }()
+	go func() { got <- (*seen)[0].media.Fetch(ctx) }()
 
 	// The stub blocks on hold and ignores ctx, as a real HTTP body read would
 	// until the transport notices; cancel, then release, and the fetch must
@@ -831,5 +831,63 @@ func TestCapHoldsAtPeakAcrossRealisticHostSwitches(t *testing.T) {
 		t.Fatalf("file peaked at %d bytes against a %d cap — asserted at peak because whatsmeow "+
 			"truncates between hosts, so the final size can understate a breach",
 			dl.peak, maxInboundCiphertextBytes)
+	}
+}
+
+// The attachment's Key identifies the FILE. Two messages with different ids
+// citing one upload must carry the SAME key, or the fanout's dedupe sees
+// nothing at all — which is the amplification, not a redelivery.
+func TestAttachmentKeyIdentifiesTheFileNotTheMessage(t *testing.T) {
+	sha := []byte("content-hash-of-the-uploaded-file")
+	first := msgEvent("27831234567", "", false, false)
+	first.Info.ID = "wamid.ONE"
+	first.Message = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: proto.String("image/jpeg"), FileLength: proto.Uint64(4),
+		FileSHA256: sha, DirectPath: proto.String("/v/t62/a"),
+	}}
+	second := msgEvent("27831234567", "", false, false)
+	second.Info.ID = "wamid.TWO"
+	second.Message = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: proto.String("image/jpeg"), FileLength: proto.Uint64(4),
+		// A different CDN path for the same file — WhatsApp does re-issue
+		// these — so a key built on the path alone would miss the repeat.
+		FileSHA256: sha, DirectPath: proto.String("/v/t62/b"),
+	}}
+
+	a := ParseInbound(first, &stubDownloader{}).Media
+	b := ParseInbound(second, &stubDownloader{}).Media
+	if a.Key == "" || a.Key != b.Key {
+		t.Fatalf("two messages citing one file have keys %q and %q; they must match and be non-empty", a.Key, b.Key)
+	}
+
+	other := msgEvent("27831234567", "", false, false)
+	other.Info.ID = "wamid.ONE" // SAME message id, different file
+	other.Message = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: proto.String("image/jpeg"), FileLength: proto.Uint64(4),
+		FileSHA256: []byte("a-completely-different-file-hash!"),
+	}}
+	if c := ParseInbound(other, &stubDownloader{}).Media; c.Key == a.Key {
+		t.Fatalf("a different file produced the same key %q — the key is not on the content", c.Key)
+	}
+}
+
+// A sender who omits the hash still gets an identity, from the CDN object the
+// bytes come from. Without the fallback such a message would be undedupable
+// and the budget would carry the whole load alone.
+func TestAttachmentKeyFallsBackToTheDirectPath(t *testing.T) {
+	e := msgEvent("27831234567", "", false, false)
+	e.Message = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: proto.String("image/jpeg"), FileLength: proto.Uint64(4),
+		DirectPath: proto.String("/v/t62/only-a-path"),
+	}}
+	got := ParseInbound(e, &stubDownloader{}).Media.Key
+	if got != "path:/v/t62/only-a-path" {
+		t.Fatalf("key = %q, want the direct-path fallback", got)
+	}
+
+	bare := msgEvent("27831234567", "", false, false)
+	bare.Message = imageMsg("caption", 4)
+	if got := ParseInbound(bare, &stubDownloader{}).Media.Key; got != "" {
+		t.Fatalf("with neither hash nor path the key must be empty, got %q", got)
 	}
 }

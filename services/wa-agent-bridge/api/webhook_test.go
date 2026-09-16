@@ -39,6 +39,7 @@ func TestFanoutRecordsInboundAndPostsToConsumers(t *testing.T) {
 		st,
 		func() bool { return false },
 		func() time.Time { return time.Time{} },
+		0,
 	)
 
 	// The message must be OLDER than the watermark to count as history. A
@@ -86,6 +87,7 @@ func TestFanoutRecordsButDoesNotNotifyDuringReplay(t *testing.T) {
 		st,
 		func() bool { return true }, // in replay window
 		func() time.Time { return time.Now() },
+		0,
 	)
 
 	jid := "27821234567@s.whatsapp.net"
@@ -121,7 +123,7 @@ func TestNewFanoutPanicsOnNilInReplayWindow(t *testing.T) {
 			t.Fatal("expected panic on nil inReplayWindow")
 		}
 	}()
-	NewFanout(nil, "", nil, nil, nil)
+	NewFanout(nil, "", nil, nil, nil, 0)
 }
 
 // countingRoundTripper counts every HTTP request attempted, including one
@@ -166,6 +168,7 @@ func TestFanoutSkipsConsumersWithNoWebhook(t *testing.T) {
 		st,
 		func() bool { return false },
 		func() time.Time { return time.Time{} },
+		0,
 	)
 	f.client.Transport = rt // same package: unexported field access is deliberate here
 	f.Deliver("27821234567@s.whatsapp.net", "hi", "wamid.TEST", time.Now(), nil)
@@ -193,6 +196,7 @@ func TestFanoutDropsNonOwnerButStillRecordsIt(t *testing.T) {
 		st,
 		func() bool { return false },
 		func() time.Time { return time.Time{} },
+		0,
 	)
 	f.client.Transport = rt
 
@@ -226,6 +230,7 @@ func TestFanoutForwardsOwnerIncludingDeviceSuffix(t *testing.T) {
 			store.NewMemory(),
 			func() bool { return false },
 			func() time.Time { return time.Time{} },
+			0,
 		)
 		f.client.Transport = rt
 
@@ -252,6 +257,7 @@ func TestFanoutWithNoOwnerConfiguredAcceptsEverySender(t *testing.T) {
 		store.NewMemory(),
 		func() bool { return false },
 		func() time.Time { return time.Time{} },
+		0,
 	)
 	f.client.Transport = rt
 
@@ -279,7 +285,7 @@ func TestInboundPayloadCarriesTheMessageID(t *testing.T) {
 
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL}},
-		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} })
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
 	f.Deliver(knownJID, "hello", "wamid.ABC123", time.Now(), nil)
 	f.Wait()
 
@@ -322,7 +328,7 @@ func TestFanoutSignsWebhookWhenConsumerHasASecret(t *testing.T) {
 
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
-		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} })
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
 	fixed := time.Unix(1_700_000_000, 0)
 	f.now = func() time.Time { return fixed }
 
@@ -363,7 +369,7 @@ func TestFanoutOmitsSignatureWhenConsumerHasNoSecret(t *testing.T) {
 
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL}},
-		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} })
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
 	f.Deliver(knownJID, "hello", "wamid.NOSIG", time.Now(), nil)
 	f.Wait()
 
@@ -394,7 +400,7 @@ func TestFanoutSignsWithAFreshTimestampEachSend(t *testing.T) {
 
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
-		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} })
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
 	fixed := time.Unix(1_700_000_000, 0)
 	f.now = func() time.Time { return fixed }
 
@@ -465,6 +471,7 @@ func TestFanoutForwardsAMessageNewerThanTheWatermarkDuringReplay(t *testing.T) {
 		"", st,
 		func() bool { return true }, // still inside the replay window
 		func() time.Time { return connectedAt },
+		0,
 	)
 
 	f.Deliver("27821234567@s.whatsapp.net", "sent while we were restarting", "wamid.NEW", time.Now(), nil)
@@ -491,6 +498,7 @@ func TestFanoutStillSuppressesHistoryOlderThanTheWatermark(t *testing.T) {
 		"", st,
 		func() bool { return true },
 		func() time.Time { return connectedAt },
+		0,
 	)
 
 	jid := "27821234567@s.whatsapp.net"
@@ -518,6 +526,7 @@ func TestFanoutCapsTheCatchUpBurst(t *testing.T) {
 		"", st,
 		func() bool { return true },
 		func() time.Time { return connectedAt },
+		0,
 	)
 
 	for i := 0; i < maxCatchUpForward+25; i++ {
@@ -545,6 +554,7 @@ func TestFanoutIgnoresTheWatermarkOutsideTheReplayWindow(t *testing.T) {
 		"", st,
 		func() bool { return false }, // window closed
 		func() time.Time { return time.Now() },
+		0,
 	)
 	f.Deliver("27821234567@s.whatsapp.net", "normal traffic", "wamid.X", time.Now().Add(-2*time.Hour), nil)
 	f.Wait()

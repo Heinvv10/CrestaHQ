@@ -89,9 +89,13 @@ A message that carried a **file** adds exactly one further key, never both:
   them before posting, so a consumer never talks to WhatsApp itself.
 - `mediaDropped` is `"too_large"` (over 16MiB), `"fetch_failed"` (the bridge
   could not download it), `"delivery_failed"` (the bridge downloaded it but
-  the POST carrying it to YOU failed, and this is the text-only retry) or
+  the POST carrying it to YOU failed, and this is the text-only retry),
   `"shutdown"` (the bridge was restarting — a deploy — and abandoned the file
-  so the message could still reach you in time). Each
+  so the message could still reach you in time), `"duplicate"` (this exact
+  file already arrived and was delivered to you on an earlier message — look
+  it up by its earlier `messageId` rather than asking for it again) or
+  `"sender_media_budget"` (this sender has used their hourly media allowance;
+  see `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` in the bridge README). Each
   means a file was sent and could not be delivered — which is NOT the same as a
   message with no file, and is worth showing an operator rather than rendering
   a bare caption.

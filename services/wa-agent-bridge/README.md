@@ -104,6 +104,7 @@ Everything comes from the environment (systemd reads
 | `CAP_PER_CONTACT_PER_DAY` | `10` | Rail 5 |
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |
 | `CAP_GLOBAL_DAILY` | `150` | Rail 6 |
+| `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` | `60` | **Inbound**, unlike every cap above it. How many DISTINCT files one sender can make the bridge download in a rolling hour. WhatsApp uploads a file once and any number of messages may cite it, so the bridge also dedupes on the file's own content hash: one upload costs one download however many messages reference it, and the repeats arrive as `mediaDropped: "duplicate"`. Past the budget a sender's files arrive as `mediaDropped: "sender_media_budget"`. **The MESSAGE is always forwarded** — only the file is skipped. Unset takes the default; there is no unlimited setting, because unlimited is the amplification this bounds. |
 | `QUIET_START_HOUR` / `QUIET_END_HOUR` | `21` / `7` | Rail 8, the DEPLOYMENT-WIDE window; equal values disable. A consumer may override it in `CONSUMERS`. |
 | `QUIET_TZ` | `Africa/Johannesburg` | Local time for quiet hours |
 

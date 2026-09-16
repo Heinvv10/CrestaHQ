@@ -2,6 +2,7 @@ package wa
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -86,6 +87,11 @@ type InboundMedia struct {
 	// stopping and abandoned the download deliberately, so the message could go
 	// out text-only in the time it had left. The MESSAGE is forwarded either way —
 	// losing a file is a degradation, losing a customer's message is not.
+	//
+	// The fanout sets two more reasons WITHOUT reaching this package at all —
+	// "duplicate" and "sender_media_budget" (see api.mediaGate) — because a
+	// download it refuses is a download that must not happen, so the refusal
+	// has to sit above the code that fetches.
 	Dropped string
 }
 
@@ -315,7 +321,45 @@ type Inbound struct {
 	Text  string
 	MsgID string
 	At    time.Time
-	Media func(ctx context.Context) *InboundMedia
+	Media *InboundAttachment
+}
+
+// InboundAttachment is one pending download: the identity of the file, and the
+// thunk that fetches it.
+//
+// Key is a struct field rather than something the fetch derives because it has
+// to be readable BEFORE the fetch runs — a caller that must decide whether to
+// download at all cannot learn the answer from the download.
+//
+// It identifies the FILE, not the message. WhatsApp uploads a file once and
+// every message citing it repeats the same fileSHA256 (the plaintext content
+// hash) and the same directPath (the CDN object), while each carries its own
+// message id. A key built from the message id would therefore dedupe an
+// accidental redelivery and see nothing at all when one upload is cited by a
+// thousand messages — which is the amplification, not the redelivery.
+//
+// It is empty only when the sender supplied neither hash nor path. Nothing can
+// be deduped then, and the caller's volume budget is the only bound left; it
+// is not a licence to download.
+type InboundAttachment struct {
+	Key   string
+	Fetch func(ctx context.Context) *InboundMedia
+}
+
+// mediaKey is the content identity of one downloadable message.
+//
+// The hash is preferred because it is of the PLAINTEXT file: the same bytes
+// re-uploaded get a fresh directPath and a fresh mediaKey, but the same
+// fileSHA256. The path is the fallback, and the prefixes keep the two
+// namespaces from ever colliding.
+func mediaKey(m whatsmeow.DownloadableMessage) string {
+	if sha := m.GetFileSHA256(); len(sha) > 0 {
+		return "sha256:" + hex.EncodeToString(sha)
+	}
+	if p := m.GetDirectPath(); p != "" {
+		return "path:" + p
+	}
+	return ""
 }
 
 // ParseInbound turns one whatsmeow message event into the values a consumer
@@ -368,7 +412,10 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 			in.Text = att.caption
 		}
 		jid := in.JID
-		in.Media = func(ctx context.Context) *InboundMedia { return fetchInboundMedia(ctx, jid, att, dl) }
+		in.Media = &InboundAttachment{
+			Key:   mediaKey(att.msg),
+			Fetch: func(ctx context.Context) *InboundMedia { return fetchInboundMedia(ctx, jid, att, dl) },
+		}
 	}
 	return in
 }

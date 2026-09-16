@@ -281,3 +281,26 @@ func TestConsumerQuietHoursRejectNonHours(t *testing.T) {
 		}
 	}
 }
+
+// The inbound media budget is read from the environment like every other cap.
+// Unset stays 0 — "unset", which api resolves to its own default — rather than
+// being defaulted here, so the number lives in exactly one place.
+func TestInboundMediaBudgetFromEnv(t *testing.T) {
+	t.Setenv("CONSUMERS", "hermes|tok")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.InboundMediaPerSenderPerHour != 0 {
+		t.Fatalf("unset budget = %d, want 0 so api can apply its default", cfg.InboundMediaPerSenderPerHour)
+	}
+
+	t.Setenv("CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR", "7")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.InboundMediaPerSenderPerHour != 7 {
+		t.Fatalf("budget = %d, want 7", cfg.InboundMediaPerSenderPerHour)
+	}
+}

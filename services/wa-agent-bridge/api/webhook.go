@@ -49,7 +49,12 @@ type Fanout struct {
 	// This bridge carries live customer traffic; the bound on its memory must
 	// be written here, where it can be read and changed.
 	mediaSlots chan struct{}
-	wg         sync.WaitGroup
+	// mediaGate bounds how much media gets downloaded, as opposed to how much
+	// is in flight at once. mediaSlots bounds CONCURRENCY and therefore memory;
+	// it is not a volume limit, and until this existed there was none outside
+	// the replay window. See mediaGate.
+	mediaGate *mediaGate
+	wg        sync.WaitGroup
 	// drainCtx is cancelled by Drain. Every in-flight download and media POST
 	// runs under it, so shutdown ends the FILE work quickly and the message
 	// itself still gets posted text-only in the time that is left.
@@ -131,7 +136,10 @@ const mediaDeliveryTimeout = 120 * time.Second
 // Deliver). Empty accepts every sender — the phase-2 shape, and the only safe
 // default: empty meaning "accept none" would brick any deployment that omits
 // the variable, silently and with no error to read.
-func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inReplayWindow func() bool, connectedAt func() time.Time) *Fanout {
+// mediaPerSenderPerHour is the inbound media budget (CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR);
+// non-positive takes defaultInboundMediaPerSenderPerHour, because there is no
+// unlimited setting — see mediaGate.
+func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inReplayWindow func() bool, connectedAt func() time.Time, mediaPerSenderPerHour int) *Fanout {
 	if inReplayWindow == nil {
 		panic("api: NewFanout requires a non-nil inReplayWindow func")
 	}
@@ -150,6 +158,7 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 		client:         &http.Client{Timeout: 10 * time.Second},
 		mediaClient:    &http.Client{Timeout: mediaDeliveryTimeout},
 		mediaSlots:     make(chan struct{}, maxConcurrentMediaDeliveries),
+		mediaGate:      newMediaGate(mediaPerSenderPerHour),
 		now:            time.Now,
 		inFlight:       map[string]int{},
 	}
@@ -241,7 +250,7 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 // redelivery on the id rather than on the body. It is empty when the transport
 // did not supply one; consumers must treat empty as "unknown".
 //
-// fetchMedia is nil for a plain text message. When set, calling it DOWNLOADS
+// att is nil for a plain text message. When set, calling its Fetch DOWNLOADS
 // the attachment — so it is called only after every rail below has admitted
 // the message, and only on the delivery goroutine. Two things depend on that
 // ordering, and neither is an optimisation:
@@ -258,7 +267,7 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 //     a 16MiB download on a VPS routinely would. redact.JID cannot reach
 //     inside a third-party library, so the fix is to never be slow on that
 //     goroutine.
-func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
+func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, att *wa.InboundAttachment) {
 	if !f.intake(jid, text, msgID, at) {
 		return
 	}
@@ -271,7 +280,7 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, fetchMedia func(
 	go func() {
 		defer f.wg.Done()
 		defer f.track(jid, -1)
-		f.deliverAdmitted(jid, base, fetchMedia)
+		f.deliverAdmitted(jid, base, att)
 	}()
 }
 
@@ -369,6 +378,8 @@ func (f *Fanout) track(jid string, delta int) {
 }
 
 // deliverAdmitted fetches the attachment, if any, and posts to every consumer.
+// "If any" now means "if there is one AND the media gate admits it" — see
+// mediaGate for what an admitted download is bounded by.
 // It runs on its own goroutine: see Deliver for why nothing here may run on
 // whatsmeow's.
 //
@@ -379,16 +390,26 @@ func (f *Fanout) track(jid string, delta int) {
 // shutdown has begun, a message still waiting for a slot stops waiting: it is
 // posted text-only straight away, because at that point the slots would only
 // queue messages behind file work that is being abandoned anyway.
-func (f *Fanout) deliverAdmitted(jid string, base map[string]any, fetchMedia func(ctx context.Context) *wa.InboundMedia) {
-	if fetchMedia == nil {
+func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.InboundAttachment) {
+	if att == nil || att.Fetch == nil {
 		f.postEach(jid, withMedia(base, nil), false)
+		return
+	}
+	// Before the slot, and before a single byte: a refusal that downloads
+	// first has refused nothing. The MESSAGE still goes out — only the file is
+	// skipped — because a bounded bridge that eats customer messages is worse
+	// than the amplification it was bounding.
+	if reason := f.mediaGate.admit(jid, att.Key, f.now()); reason != "" {
+		log.Printf("inbound media not fetched jid=%s reason=%s — message forwarded without it",
+			redact.JID(jid), reason)
+		f.postEach(jid, withMedia(base, &wa.InboundMedia{Dropped: reason}), false)
 		return
 	}
 	if !f.acquireMediaSlot() {
 		f.postEach(jid, withMedia(base, &wa.InboundMedia{Dropped: "shutdown"}), false)
 		return
 	}
-	media := fetchMedia(f.drainCtx)
+	media := att.Fetch(f.drainCtx)
 	if media == nil || media.Dropped != "" {
 		f.releaseMediaSlot()
 		f.postEach(jid, withMedia(base, media), false)

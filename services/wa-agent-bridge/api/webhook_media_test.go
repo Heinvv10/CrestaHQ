@@ -74,6 +74,13 @@ func imageEvent(sender, caption string, at time.Time) *events.Message {
 	}
 }
 
+// attach wraps a bare fetch thunk as the attachment the fanout now takes.
+// Key is empty, which is what a sender who supplied neither a content hash nor
+// a direct path produces: nothing to dedupe on, budget still applies.
+func attach(fetch func(context.Context) *wa.InboundMedia) *wa.InboundAttachment {
+	return &wa.InboundAttachment{Fetch: fetch}
+}
+
 // deliverEvent joins the two halves: the socket's event goes through
 // wa.ParseInbound exactly as handleMessage does it, and the result goes into
 // Deliver exactly as main.go wires it. No half-built *wa.InboundMedia is ever
@@ -116,7 +123,7 @@ func openFanout(url string, owner string, st rails.Store, replaying bool) *Fanou
 	connectedAt := time.Now()
 	return NewFanout(
 		[]config.Consumer{{Name: "leadstack", Token: "tok", WebhookURL: url}},
-		owner, st, func() bool { return replaying }, func() time.Time { return connectedAt })
+		owner, st, func() bool { return replaying }, func() time.Time { return connectedAt }, 0)
 }
 
 // Socket event in, HTTP body out. The file must reach the consumer inline,
@@ -208,6 +215,11 @@ func TestMediaIsSubjectToTheCatchUpCap(t *testing.T) {
 	defer srv.Close()
 	dl := &countingDownloader{payload: []byte("bytes")}
 	f := openFanout(srv.URL, "", store.NewMemory(), true)
+	// This test isolates the CATCH-UP cap, so the per-sender media budget is
+	// lifted above it: with the production default the budget would refuse
+	// first and the assertion below would be measuring the wrong guard.
+	// TestMediaBudgetBoundsOneSender covers the budget itself.
+	f.mediaGate = newMediaGate(maxCatchUpForward + 10)
 
 	for i := 0; i < maxCatchUpForward+5; i++ {
 		deliverEvent(f, imageEvent("27821234567", "burst", time.Now()), dl)
@@ -232,9 +244,9 @@ func TestDeliverForwardsMediaDroppedMarker(t *testing.T) {
 	srv, body, _ := captureOne(t)
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "caption only", "wamid.DROP", time.Now(), func(context.Context) *wa.InboundMedia {
+	f.Deliver(knownJID, "caption only", "wamid.DROP", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "too_large"}
-	})
+	}))
 	f.Wait()
 
 	payload := awaitBody(t, body)
@@ -275,7 +287,7 @@ func TestMediaPayloadIsSignedOverTheWholeBody(t *testing.T) {
 	connectedAt := time.Now()
 	f := NewFanout(
 		[]config.Consumer{{Name: "leadstack", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
-		"", store.NewMemory(), func() bool { return false }, func() time.Time { return connectedAt })
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return connectedAt }, 0)
 	fixed := time.Unix(1_700_000_000, 0)
 	f.now = func() time.Time { return fixed }
 
@@ -312,7 +324,7 @@ func TestMediaDeliveriesAreBounded(t *testing.T) {
 
 	var mu sync.Mutex
 	inFlight, maxSeen := 0, 0
-	fetch := func(context.Context) *wa.InboundMedia {
+	fetch := attach(func(context.Context) *wa.InboundMedia {
 		mu.Lock()
 		inFlight++
 		if inFlight > maxSeen {
@@ -324,7 +336,7 @@ func TestMediaDeliveriesAreBounded(t *testing.T) {
 		inFlight--
 		mu.Unlock()
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("b")}
-	}
+	})
 
 	for i := 0; i < 20; i++ {
 		f.Deliver(knownJID, "burst", fmt.Sprintf("wamid.%d", i), time.Now(), fetch)
@@ -349,10 +361,10 @@ func TestDeliverReturnsBeforeTheDownloadRuns(t *testing.T) {
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
 	release := make(chan struct{})
-	fetch := func(context.Context) *wa.InboundMedia {
+	fetch := attach(func(context.Context) *wa.InboundMedia {
 		<-release
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("b")}
-	}
+	})
 
 	returned := make(chan struct{})
 	go func() {
@@ -391,9 +403,9 @@ func TestFailedMediaDeliveryFallsBackToTextOnly(t *testing.T) {
 	defer srv.Close()
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "the caption", "wamid.BIG", time.Now(), func(context.Context) *wa.InboundMedia {
+	f.Deliver(knownJID, "the caption", "wamid.BIG", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("big")}
-	})
+	}))
 	f.Wait()
 
 	mu.Lock()
@@ -445,11 +457,11 @@ func TestDrainAbandonsTheFileAndStillPostsTheMessage(t *testing.T) {
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
 	started := make(chan struct{})
-	fetch := func(ctx context.Context) *wa.InboundMedia {
+	fetch := attach(func(ctx context.Context) *wa.InboundMedia {
 		close(started)
 		<-ctx.Done() // a download that would take minutes
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
-	}
+	})
 	f.Deliver(knownJID, "the caption", "wamid.SLOW", time.Now(), fetch)
 	<-started // the download is in flight; Drain must cancel it, not pre-empt it
 
@@ -494,9 +506,9 @@ func TestDrainCancelsAMediaPostAndFallsBackWithShutdownReason(t *testing.T) {
 	defer close(release)
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "caption", "wamid.MID", time.Now(), func(context.Context) *wa.InboundMedia {
+	f.Deliver(knownJID, "caption", "wamid.MID", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("bytes")}
-	})
+	}))
 	time.Sleep(100 * time.Millisecond) // let the media POST get in flight
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -525,11 +537,11 @@ func TestDrainGivesUpOnBudgetAndReportsWhatItAbandoned(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	started := make(chan struct{})
-	f.Deliver(knownJID, "stuck", "wamid.STUCK", time.Now(), func(context.Context) *wa.InboundMedia {
+	f.Deliver(knownJID, "stuck", "wamid.STUCK", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		close(started)
 		<-release // ignores ctx entirely
 		return &wa.InboundMedia{Dropped: "fetch_failed"}
-	})
+	}))
 	// The premise is a fetch ALREADY in flight. Without this, Drain can win
 	// the race to the slot, and a message that never started file work is —
 	// correctly — posted text-only with nothing left to abandon.
@@ -575,13 +587,13 @@ func TestFallbackBodyIsSigned(t *testing.T) {
 	connectedAt := time.Now()
 	f := NewFanout(
 		[]config.Consumer{{Name: "leadstack", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
-		"", store.NewMemory(), func() bool { return false }, func() time.Time { return connectedAt })
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return connectedAt }, 0)
 	fixed := time.Unix(1_700_000_000, 0)
 	f.now = func() time.Time { return fixed }
 
-	f.Deliver(knownJID, "caption", "wamid.SIGFB", time.Now(), func(context.Context) *wa.InboundMedia {
+	f.Deliver(knownJID, "caption", "wamid.SIGFB", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("big")}
-	})
+	}))
 	f.Wait()
 
 	mu.Lock()
@@ -624,11 +636,11 @@ func TestDrainDeliversAParkedBacklogWithinBudget(t *testing.T) {
 	defer srv.Close()
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	fetch := func(ctx context.Context) *wa.InboundMedia {
+	fetch := attach(func(ctx context.Context) *wa.InboundMedia {
 		<-ctx.Done()
 		time.Sleep(200 * time.Millisecond) // decrypt + hash ignore ctx
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
-	}
+	})
 	for i := 0; i < n; i++ {
 		f.Deliver(knownJID, "photo", fmt.Sprintf("wamid.%d", i), time.Now(), fetch)
 	}
@@ -670,9 +682,9 @@ func TestTextOnlyPostsDoNotHoldAMediaSlot(t *testing.T) {
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
 	for i := 0; i < 8; i++ {
-		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.%d", i), time.Now(), func(context.Context) *wa.InboundMedia {
+		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.%d", i), time.Now(), attach(func(context.Context) *wa.InboundMedia {
 			return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "too_large"}
-		})
+		}))
 	}
 	f.Wait()
 
@@ -789,9 +801,9 @@ func TestFallbackDoesNotHoldAMediaSlot(t *testing.T) {
 	defer close(release)
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	file := func(context.Context) *wa.InboundMedia {
+	file := attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("bytes")}
-	}
+	})
 	for i := 0; i < maxConcurrentMediaDeliveries; i++ {
 		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.BLOCKED%d", i), time.Now(), file)
 	}
@@ -804,10 +816,10 @@ func TestFallbackDoesNotHoldAMediaSlot(t *testing.T) {
 	}
 
 	started := make(chan struct{})
-	f.Deliver(knownJID, "third", "wamid.THIRD", time.Now(), func(context.Context) *wa.InboundMedia {
+	f.Deliver(knownJID, "third", "wamid.THIRD", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		close(started)
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("b")}
-	})
+	}))
 	select {
 	case <-started:
 	case <-time.After(time.Second):

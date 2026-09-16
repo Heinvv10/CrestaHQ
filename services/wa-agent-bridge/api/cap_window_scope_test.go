@@ -48,7 +48,7 @@ func TestCatchUpCapIsScopedToTheReplayWindowNotTheConnection(t *testing.T) {
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
 		"", st,
 		func() bool { return now.Sub(connectedAt) < 5*time.Minute }, // the real rule
-		func() time.Time { return connectedAt })
+		func() time.Time { return connectedAt }, 0)
 
 	for i := 0; i < maxCatchUpForward+10; i++ {
 		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", now, nil)
