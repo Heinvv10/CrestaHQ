@@ -50,12 +50,16 @@ export async function putWhatsappMedia(opts: {
   bytes: Buffer;
   contentType: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const b = bucket();
-  if (!b) {
-    console.warn(`[whatsapp-media] ${BUCKET_ENV} is unset — not storing media`);
-    return { ok: false, reason: "bucket_unconfigured" };
-  }
   try {
+    // Inside the try: resolving the bucket can throw synchronously (no admin
+    // app), and on the outbound path this runs AFTER the customer has the
+    // file — a throw here would lose the thread row and answer 500, which
+    // invites a resend.
+    const b = bucket();
+    if (!b) {
+      console.warn(`[whatsapp-media] ${BUCKET_ENV} is unset — not storing media`);
+      return { ok: false, reason: "bucket_unconfigured" };
+    }
     await b.file(opts.path).save(opts.bytes, {
       resumable: false,
       metadata: { contentType: opts.contentType },

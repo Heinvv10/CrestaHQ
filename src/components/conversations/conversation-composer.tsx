@@ -18,6 +18,13 @@ import type { EmailMessageDoc } from "@/types/email";
 import { Textarea } from "@/components/ui/textarea";
 import { GoogleGIcon } from "@/components/brand/google-g-icon";
 import { useWhatsappWindow } from "@/hooks/use-whatsapp-window";
+import { useSubAccount } from "@/context/sub-account-context";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
+import {
+  WhatsappAttachmentPicker,
+  attachmentSendBlock,
+  useWhatsappAttachment,
+} from "./whatsapp-attachment-picker";
 import { ChannelSwitcher, WhatsappWindowBadge } from "./channel-switcher";
 import { WhatsappTemplatePicker } from "./whatsapp-template-picker";
 import {
@@ -102,6 +109,22 @@ export function ConversationComposer({
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const toggle = <ComposerModeToggle mode={mode} onChange={setMode} />;
+  // The rail, for the attachment picker — the same resolution the window
+  // hook and the send route make, so the picker appears exactly on the rails
+  // that will accept the file.
+  const { subAccount } = useSubAccount();
+  const waSender = resolveWhatsappSender(subAccount);
+  const waProvider = waSender.ok ? waSender.provider : null;
+  // Keyed on contact AND channel: a file picked for one must never ride along
+  // on a send to the other (see useWhatsappAttachment).
+  const wa = useWhatsappAttachment(waProvider, `${contact.id}:${channel}`);
+  // The hook's key already scopes the file to this channel. The channel test
+  // is kept anyway, as defence in depth: this is a file on its way to a real
+  // phone, and a future change to the hook's keying must not be the only
+  // thing standing between a WhatsApp attachment and an email or SMS send.
+  const attachment = channel === "whatsapp" ? wa.attachment : null;
+  const attachmentBlock =
+    channel === "whatsapp" ? attachmentSendBlock(waProvider, wa, body) : null;
 
   const merge = useMergeTagComposer({
     contact,
@@ -195,6 +218,8 @@ export function ConversationComposer({
     // SP2 T7/T8: what cannot be sent now cannot be booked either — a channel
     // this contact is blocked on, or free-form WhatsApp outside the window.
     if (blockedReason || windowClosed) return null;
+    // Scheduled sends carry no file (the worker does not accept one).
+    if (attachment || attachmentBlock) return null;
     // Stored FINAL and never rendered by the worker, so a raw `{{…}}` blocks
     // booking exactly as it blocks Send (ruling 5).
     if (merge.blockSend()) return null;
@@ -210,7 +235,7 @@ export function ConversationComposer({
     e.preventDefault();
     const trimmed = body.trim();
     if (!trimmed || sending || (isEmail && !subject.trim())) return;
-    if (blockedReason || windowClosed) return;
+    if (blockedReason || windowClosed || attachmentBlock) return;
     if (!hasIdentity) {
       toast.error(
         isEmail
@@ -240,6 +265,7 @@ export function ConversationComposer({
           ...(isEmail
             ? { ...emailReplyFields(emailReply), subject: subject.trim() }
             : {}),
+          ...(attachment ? { attachment } : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -266,6 +292,7 @@ export function ConversationComposer({
         throw new Error(data.error ?? `Couldn't send (HTTP ${res.status}).`);
       }
       setBody("");
+      wa.clear();
       // Snapshot listener appends the row.
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send.");
@@ -343,6 +370,9 @@ export function ConversationComposer({
         )}
       />
       {merge.notice}
+      {attachment && attachmentBlock && (
+        <p className="text-destructive mt-1 text-xs">{attachmentBlock}</p>
+      )}
       <div className="mt-2 flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1">
           <ComposerInserts
@@ -353,6 +383,13 @@ export function ConversationComposer({
             onSubject={merge.applySnippetSubject}
             textareaRef={merge.textareaRef}
           />
+          {channel === "whatsapp" && waProvider && (
+            <WhatsappAttachmentPicker
+              provider={waProvider}
+              state={wa}
+              disabled={disabled}
+            />
+          )}
           {merge.reviewConfigured && (
             <Button
               type="button"
@@ -368,7 +405,9 @@ export function ConversationComposer({
           )}
         </div>
         <SendLaterMenu
-          disabled={!body.trim() || (isEmail && !subject.trim()) || disabled}
+          disabled={
+            !body.trim() || (isEmail && !subject.trim()) || disabled || !!attachment || wa.reading
+          }
           buildRequest={scheduleRequest}
           onScheduled={() => setBody("")}
         >
@@ -376,7 +415,7 @@ export function ConversationComposer({
             type="submit"
             size="sm"
             className="rounded-r-none"
-            disabled={!body.trim() || (isEmail && !subject.trim()) || disabled}
+            disabled={!body.trim() || (isEmail && !subject.trim()) || disabled || !!attachmentBlock}
           >
             {sending ? (
               <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

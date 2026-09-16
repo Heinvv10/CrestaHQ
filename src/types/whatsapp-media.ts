@@ -72,7 +72,13 @@ export function parseWhatsappMedia(value: unknown): WhatsappMedia | null {
 export type WhatsappMediaDropped =
   | "too_large"
   | "fetch_failed"
-  | "unsupported_type";
+  | "unsupported_type"
+  /**
+   * Outbound only: the file REACHED the customer, but this app's copy of it
+   * could not be kept. Never "fetch_failed" — an operator reading "download
+   * failed" on an outbound row resends a file the customer already has.
+   */
+  | "store_failed";
 
 /**
  * MIME types this app will put in a `Content-Type` on a media response.
@@ -107,6 +113,19 @@ export function isAllowedWhatsappMediaMime(mimeType: string): boolean {
   return WHATSAPP_MEDIA_MIME_TYPES.includes(bare);
 }
 
+/**
+ * The WhatsApp message kind an outbound file goes as. Meta and the thread
+ * renderer both key on this, not on the mime. Stickers are never sent from
+ * the composer, so a `image/webp` upload goes as an image.
+ */
+export function mediaKindForMime(mimeType: string): WhatsappMediaKind {
+  const bare = mimeType.split(";")[0]!.trim().toLowerCase();
+  if (bare.startsWith("image/")) return "image";
+  if (bare.startsWith("video/")) return "video";
+  if (bare.startsWith("audio/")) return "audio";
+  return "document";
+}
+
 /** Conversation-preview label for a caption-less media message. */
 export function mediaPreviewLabel(m: WhatsappMedia): string {
   switch (m.kind) {
@@ -135,6 +154,8 @@ export function mediaDroppedLabel(reason: WhatsappMediaDropped | string): string
       return "Attachment not saved — too large";
     case "unsupported_type":
       return "Attachment not saved — unsupported file type";
+    case "store_failed":
+      return "Sent — no copy kept here";
     case "fetch_failed":
       return "Attachment not saved — download failed";
     default:

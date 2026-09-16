@@ -97,11 +97,11 @@ export interface WhatsappDispatchInput {
    */
   humanReply?: boolean;
   /**
-   * Optional attachment. ONLY the bridge rail carries one — Twilio and Cloud
-   * send media by public URL through their own APIs, which this seam does not
-   * implement. An attachment on either of those is refused below rather than
-   * dropped: a caller that asked for a report to be sent and got back a bare
-   * "ok" with no file is the worst of the three outcomes.
+   * Optional attachment. Carried by the rails whose capabilities declare
+   * `supportsMedia` (bridge, cloud). Twilio takes media only by public URL,
+   * which this seam does not implement, so an attachment there is refused
+   * below rather than dropped: a caller that asked for a report to be sent
+   * and got back a bare "ok" with no file is the worst of the three outcomes.
    */
   attachment?: BridgeAttachment | null;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
@@ -138,8 +138,11 @@ export async function dispatchWhatsappSend(
     return {
       provider,
       ok: false,
-      error: `The ${provider} rail cannot send attachments; only the WhatsApp bridge rail can.`,
+      error: `The ${provider} rail cannot send attachments.`,
       providerOutcome: "DEFINITELY_REJECTED",
+      // A request error the caller can act on (drop the file, or move the
+      // workspace to a rail that carries one) — not a gateway failure.
+      providerErrorCode: "media_unsupported_rail",
     };
   }
 
@@ -216,6 +219,7 @@ export async function dispatchWhatsappSend(
       lastInboundAt,
       template: input.template ?? null,
       interactive,
+      media: input.attachment ?? null,
       windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
       provider,
       now,

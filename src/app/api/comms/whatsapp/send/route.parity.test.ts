@@ -136,12 +136,15 @@ it("dispatches a human free-form reply (no template) and records it", async () =
     })
   );
   expect(m.dispatch.mock.calls[0][0]).not.toHaveProperty("idempotencyKey");
-  expect(mem.read("contacts/c1/whatsappMessages/WA1")).toMatchObject({
+  const row = mem.read("contacts/c1/whatsappMessages/WA1");
+  expect(row).toMatchObject({
     direction: "outbound",
     body: "Hi",
     sentByUid: "u1",
-    attachment: null,
   });
+  // A text row carries no media field at all — absent, not null.
+  expect(row).not.toHaveProperty("media");
+  expect(row).not.toHaveProperty("attachment");
   expect(mem.list("contacts/c1/activities")).toEqual([
     expect.objectContaining({ type: "whatsapp_sent", content: "WhatsApp: Hi", createdBy: "u1", meta: { sid: "WA1" } }),
   ]);

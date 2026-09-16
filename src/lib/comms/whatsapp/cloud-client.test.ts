@@ -222,4 +222,76 @@ describe("sendWhatsappCloud", () => {
     const r = await send();
     expect(r.error).not.toContain("EAAG");
   });
+
+  const media = { filename: "a.png", contentType: "image/png", dataBase64: "AAEC" };
+
+  it("refuses media outside the window even with an approved template, WITHOUT calling Meta", async () => {
+    // A template cannot carry a file. Sending the template alone would drop
+    // the file silently — the one outcome nobody in the thread can detect.
+    const r = await send({
+      lastInboundAt: new Date(Date.now() - 30 * 3600_000),
+      template: { name: "t", language: "en", components: [], approved: true },
+      media,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.providerErrorCode).toBe("media_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses media alongside in-window buttons, WITHOUT calling Meta", async () => {
+    const r = await send({
+      interactive: { type: "button", body: { text: "x" }, action: { buttons: [] } },
+      media,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.providerErrorCode).toBe("media_invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never puts the access token in an upload error string", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => "invalid token EAAG",
+    });
+    const r = await send({ media });
+    expect(r.ok).toBe(false);
+    expect(r.error).not.toContain("EAAG");
+  });
+
+  // The filename cut. The send route refuses a name over 255 bytes, so these
+  // go through the rail directly — the cut guards any caller that does not.
+  async function sendDocumentNamed(filename: string) {
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: "MEDIA" }))
+      .mockResolvedValueOnce(ok({ messages: [{ id: "wamid.X" }] }));
+    const r = await send({ media: { filename, contentType: "application/pdf", dataBase64: "AAEC" } });
+    expect(r.ok).toBe(true);
+    const uploaded = (fetchMock.mock.calls[0][1].body as FormData).get("file") as File;
+    const sent = JSON.parse(fetchMock.mock.calls[1][1].body as string).document.filename as string;
+    expect(uploaded.name).toBe(sent);
+    return sent;
+  }
+
+  it("cuts a 10,000-character filename to 255 UTF-8 bytes, keeping the extension", async () => {
+    const sent = await sendDocumentNamed(`${"é".repeat(10_000)}.pdf`);
+    expect(Buffer.byteLength(sent, "utf8")).toBeLessThanOrEqual(255);
+    expect(sent.endsWith(".pdf")).toBe(true);
+  });
+
+  it("cuts an astral-character filename on a code point, never mid surrogate pair", async () => {
+    // 62 emoji are 248 bytes; with the 4-byte ".pdf" the base may hold 251.
+    // A cut on UTF-16 units stops on a lone high surrogate (3 bytes, 251
+    // total) — a malformed name.
+    const sent = await sendDocumentNamed(`${"😀".repeat(3000)}.pdf`);
+    expect(Buffer.from(sent, "utf8").toString("utf8")).toBe(sent);
+    expect(sent).toBe(`${"😀".repeat(62)}.pdf`);
+  });
+
+  it("does not treat a long dotted tail as an extension to keep", async () => {
+    // A tail over 16 characters is part of the name, not an extension: kept
+    // whole it would eat the budget and leave a name that is all "tail".
+    const sent = await sendDocumentNamed(`${"a".repeat(300)}.${"b".repeat(20)}`);
+    expect(sent).toBe("a".repeat(255));
+  });
 });

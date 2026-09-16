@@ -1,0 +1,84 @@
+// @vitest-environment jsdom
+import { act, createElement, useLayoutEffect } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  useWhatsappAttachment,
+  type WhatsappAttachmentState,
+} from "./whatsapp-attachment-picker";
+
+/**
+ * The hook, directly — not through a composer, whose own channel guard would
+ * mask a regression here.
+ *
+ * `state.key === resetKey ? state : null` is the only thing hiding the old
+ * key's file during the render that carries a NEW key: the clearing effect has
+ * not run yet. A caller that changes the key from inside an effect (the inbox
+ * composer switching to email) reads the hook in exactly that render.
+ */
+
+class FakeReader {
+  static reads: FakeReader[] = [];
+  result: string | null = null;
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  file: File | null = null;
+  readAsDataURL(file: File) {
+    this.file = file;
+    FakeReader.reads.push(this);
+  }
+  finish() {
+    this.result = `data:${this.file!.type};base64,AAEC`;
+    this.onload?.();
+  }
+}
+
+let root: Root;
+let latest: WhatsappAttachmentState | null = null;
+/** Every value of `attachment` observed, tagged with the key it was read under. */
+let seen: Array<{ phase: "render" | "layout"; key: string; filename: string | null }>;
+
+function Probe({ resetKey }: { resetKey: string }) {
+  const wa = useWhatsappAttachment("cloud", resetKey);
+  latest = wa;
+  seen.push({ phase: "render", key: resetKey, filename: wa.attachment?.filename ?? null });
+  useLayoutEffect(() => {
+    seen.push({ phase: "layout", key: resetKey, filename: wa.attachment?.filename ?? null });
+  });
+  return null;
+}
+
+const render = (resetKey: string) =>
+  act(async () => root.render(createElement(Probe, { resetKey })));
+
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("FileReader", FakeReader);
+  FakeReader.reads = [];
+  seen = [];
+  root = createRoot(document.createElement("div"));
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  vi.unstubAllGlobals();
+});
+
+it("never exposes the old key's file under a new key, in render or layout effect", async () => {
+  await render("c1:whatsapp");
+  await act(async () =>
+    latest!.pick(new File([new Uint8Array([1])], "site.png", { type: "image/png" })),
+  );
+  await act(async () => FakeReader.reads[0]!.finish());
+  expect(latest!.attachment?.filename).toBe("site.png");
+
+  seen = [];
+  await render("c1:email");
+  const underNewKey = seen.filter((s) => s.key === "c1:email");
+  expect(underNewKey.length).toBeGreaterThan(0);
+  expect(underNewKey.every((s) => s.filename === null)).toBe(true);
+
+  // And it stays gone on the way back.
+  await render("c1:whatsapp");
+  expect(latest!.attachment).toBeNull();
+});
