@@ -95,7 +95,10 @@ A message that carried a **file** adds exactly one further key, never both:
   file already arrived and was delivered to you on an earlier message — look
   it up by its earlier `messageId` rather than asking for it again) or
   `"sender_media_budget"` (this sender has used their hourly media allowance;
-  see `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` in the bridge README). Each
+  see `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` in the bridge README) or
+  `"media_backlog"` (too many attachments were already queued for download, so
+  the bridge delivered the message now rather than hold it behind a queue it
+  would not reach the front of in useful time). Each
   means a file was sent and could not be delivered — which is NOT the same as a
   message with no file, and is worth showing an operator rather than rendering
   a bare caption.

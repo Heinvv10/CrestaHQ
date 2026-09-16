@@ -215,11 +215,13 @@ func TestMediaIsSubjectToTheCatchUpCap(t *testing.T) {
 	defer srv.Close()
 	dl := &countingDownloader{payload: []byte("bytes")}
 	f := openFanout(srv.URL, "", store.NewMemory(), true)
-	// This test isolates the CATCH-UP cap, so the per-sender media budget is
-	// lifted above it: with the production default the budget would refuse
-	// first and the assertion below would be measuring the wrong guard.
-	// TestMediaBudgetBoundsOneSender covers the budget itself.
+	// This test isolates the CATCH-UP cap, so the two VOLUME guards are lifted
+	// above it: with the production values the per-sender budget and the
+	// backlog bound would refuse first and the assertion below would be
+	// measuring the wrong guard. TestMediaBudgetBoundsOneSenderOutsideTheReplayWindow
+	// and TestMediaBacklogIsBoundedAcrossDistinctSenders cover those.
 	f.mediaGate = newMediaGate(maxCatchUpForward + 10)
+	f.maxWaiting = maxCatchUpForward + 10
 
 	for i := 0; i < maxCatchUpForward+5; i++ {
 		deliverEvent(f, imageEvent("27821234567", "burst", time.Now()), dl)

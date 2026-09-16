@@ -54,7 +54,17 @@ type Fanout struct {
 	// it is not a volume limit, and until this existed there was none outside
 	// the replay window. See mediaGate.
 	mediaGate *mediaGate
-	wg        sync.WaitGroup
+	// mediaWaiting counts the deliveries queued for a slot, guarded by
+	// mediaWaitMu. Its own lock rather than inFlightMu: it is taken on the
+	// delivery goroutines and inFlightMu is taken on whatsmeow's, and those
+	// must not contend.
+	mediaWaitMu  sync.Mutex
+	mediaWaiting int
+	// maxWaiting is maxMediaWaiting, held as a field so a test isolating one
+	// of the other guards can lift this one — the same in-package override as
+	// f.now and f.mediaGate.
+	maxWaiting int
+	wg         sync.WaitGroup
 	// drainCtx is cancelled by Drain. Every in-flight download and media POST
 	// runs under it, so shutdown ends the FILE work quickly and the message
 	// itself still gets posted text-only in the time that is left.
@@ -119,6 +129,22 @@ const maxCatchUpForward = 200
 // customer's attachment behind it.
 const maxConcurrentMediaDeliveries = 2
 
+// maxMediaWaiting bounds how many deliveries may be WAITING to start file
+// work. It is the aggregate bound, and it is a different quantity from both of
+// the guards either side of it: maxConcurrentMediaDeliveries bounds how much is
+// in flight, the per-sender budget bounds one abuser, and neither bounds a
+// flood of DISTINCT senders each comfortably inside their own budget. Those
+// used to queue on the semaphore without limit — a goroutine and a held
+// message each, for as long as the queue ahead of them took.
+//
+// Sized by LATENCY, not by memory. A queued delivery is a queued MESSAGE: the
+// text rides with the file and neither is posted until the file work finishes
+// or is refused. At maxConcurrentMediaDeliveries slots this is eight rounds of
+// media delivery deep, and past that the honest trade is to deliver the
+// message NOW without the file rather than hold a customer's message behind a
+// queue it will not reach the front of in any useful time.
+const maxMediaWaiting = 16
+
 // mediaDeliveryTimeout is the deadline for a POST carrying a file. 21.3MiB
 // inside it needs ~1.5Mbit/s sustained — undemanding for the loopback and
 // Tailscale consumers this bridge actually posts to, and still bounded.
@@ -159,6 +185,7 @@ func NewFanout(consumers []config.Consumer, ownerJID string, st rails.Store, inR
 		mediaClient:    &http.Client{Timeout: mediaDeliveryTimeout},
 		mediaSlots:     make(chan struct{}, maxConcurrentMediaDeliveries),
 		mediaGate:      newMediaGate(mediaPerSenderPerHour),
+		maxWaiting:     maxMediaWaiting,
 		now:            time.Now,
 		inFlight:       map[string]int{},
 	}
@@ -395,18 +422,14 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 		f.postEach(jid, withMedia(base, nil), false)
 		return
 	}
-	// Before the slot, and before a single byte: a refusal that downloads
-	// first has refused nothing. The MESSAGE still goes out — only the file is
-	// skipped — because a bounded bridge that eats customer messages is worse
-	// than the amplification it was bounding.
-	if reason := f.mediaGate.admit(jid, att.Key, f.now()); reason != "" {
+	// Every refusal below happens before a single byte is fetched: a refusal
+	// that downloads first has refused nothing. The MESSAGE still goes out —
+	// only the file is skipped — because a bounded bridge that eats customer
+	// messages is worse than the amplification it was bounding.
+	if reason := f.beginMediaWork(jid, att.Key); reason != "" {
 		log.Printf("inbound media not fetched jid=%s reason=%s — message forwarded without it",
 			redact.JID(jid), reason)
 		f.postEach(jid, withMedia(base, &wa.InboundMedia{Dropped: reason}), false)
-		return
-	}
-	if !f.acquireMediaSlot() {
-		f.postEach(jid, withMedia(base, &wa.InboundMedia{Dropped: "shutdown"}), false)
 		return
 	}
 	media := att.Fetch(f.drainCtx)
@@ -449,6 +472,56 @@ func (f *Fanout) deliverAdmitted(jid string, base map[string]any, att *wa.Inboun
 		}(c)
 	}
 	wg.Wait()
+}
+
+// beginMediaWork decides whether this delivery may fetch its file. It reports
+// "" holding a media slot the caller must release, or the reason it will not
+// fetch.
+//
+// The order of the three refusals is deliberate:
+//
+//   - The backlog bound first. It is the cheapest refusal, it needs no key,
+//     and putting it first is what keeps a delivery refused for backlog from
+//     having spent its sender's budget on a file that was never fetched.
+//   - The gate second, so a duplicate or an over-budget file never joins the
+//     queue for a slot at all.
+//   - The slot last, because it is the only one of the three that blocks.
+//
+// The queue count is released by defer, so a delivery leaves the queue at the
+// moment it takes a slot. maxMediaWaiting therefore bounds waiters, not
+// waiters plus the two being served.
+func (f *Fanout) beginMediaWork(jid, key string) string {
+	if !f.enterMediaQueue() {
+		return mediaDroppedBacklog
+	}
+	defer f.leaveMediaQueue()
+	if reason := f.mediaGate.admit(jid, key, f.now()); reason != "" {
+		return reason
+	}
+	if !f.acquireMediaSlot() {
+		return "shutdown"
+	}
+	return ""
+}
+
+// enterMediaQueue takes a place in the queue for a media slot, or reports
+// false when the queue is full.
+func (f *Fanout) enterMediaQueue() bool {
+	f.mediaWaitMu.Lock()
+	defer f.mediaWaitMu.Unlock()
+	if f.mediaWaiting >= f.maxWaiting {
+		log.Printf("ALERT inbound media backlog full at %d waiting — files skipped, messages still forwarded",
+			f.mediaWaiting)
+		return false
+	}
+	f.mediaWaiting++
+	return true
+}
+
+func (f *Fanout) leaveMediaQueue() {
+	f.mediaWaitMu.Lock()
+	f.mediaWaiting--
+	f.mediaWaitMu.Unlock()
 }
 
 // acquireMediaSlot waits for a media slot, or reports false once shutdown has

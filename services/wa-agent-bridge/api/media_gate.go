@@ -18,6 +18,7 @@ import (
 const (
 	mediaDroppedDuplicate = "duplicate"
 	mediaDroppedBudget    = "sender_media_budget"
+	mediaDroppedBacklog   = "media_backlog"
 )
 
 // defaultInboundMediaPerSenderPerHour is how many DISTINCT files one sender

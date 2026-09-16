@@ -105,6 +105,22 @@ Everything comes from the environment (systemd reads
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |
 | `CAP_GLOBAL_DAILY` | `150` | Rail 6 |
 | `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` | `60` | **Inbound**, unlike every cap above it. How many DISTINCT files one sender can make the bridge download in a rolling hour. WhatsApp uploads a file once and any number of messages may cite it, so the bridge also dedupes on the file's own content hash: one upload costs one download however many messages reference it, and the repeats arrive as `mediaDropped: "duplicate"`. Past the budget a sender's files arrive as `mediaDropped: "sender_media_budget"`. **The MESSAGE is always forwarded** — only the file is skipped. Unset takes the default; there is no unlimited setting, because unlimited is the amplification this bounds. |
+
+Two more bounds on inbound media are constants rather than environment
+variables, because both are derived from `maxConcurrentMediaDeliveries` and
+mean nothing apart from it (`api/webhook.go`):
+
+- **`maxConcurrentMediaDeliveries` (2)** bounds how many attachments are in
+  flight at once, and therefore memory.
+- **`maxMediaWaiting` (16)** bounds how many deliveries may QUEUE for one of
+  those slots. Without it a flood of DISTINCT senders — each comfortably inside
+  its own `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` — queued on the semaphore
+  without limit, a goroutine and a held message each; the per-sender budget
+  bounds one abuser, not an aggregate. Past the bound the file is skipped and
+  the message goes out at once as `mediaDropped: "media_backlog"`. It is sized
+  by LATENCY, not memory: a queued file is a queued MESSAGE, and past eight
+  rounds of media delivery the honest trade is to deliver the message without
+  the file.
 | `QUIET_START_HOUR` / `QUIET_END_HOUR` | `21` / `7` | Rail 8, the DEPLOYMENT-WIDE window; equal values disable. A consumer may override it in `CONSUMERS`. |
 | `QUIET_TZ` | `Africa/Johannesburg` | Local time for quiet hours |
 

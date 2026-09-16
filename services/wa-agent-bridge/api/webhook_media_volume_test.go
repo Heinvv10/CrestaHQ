@@ -1,7 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -330,5 +335,167 @@ func TestARefusedDownloadBurnsNeitherTable(t *testing.T) {
 	}
 	if r := g2.admit("jid", "g", now); r != "" {
 		t.Fatalf("the duplicate spent budget: a genuine second file was refused with %q", r)
+	}
+}
+
+// waitForWaiters blocks until exactly n deliveries are queued for a media slot.
+func waitForWaiters(t *testing.T, f *Fanout, n int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		f.mediaWaitMu.Lock()
+		got := f.mediaWaiting
+		f.mediaWaitMu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("media queue holds %d waiters, want %d", got, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// The aggregate bound. A per-sender budget bounds ONE abuser; it does nothing
+// about a flood of DISTINCT senders, each comfortably inside its own budget,
+// all arriving at once. They used to queue on the media semaphore without
+// limit — a goroutine and a held message each.
+//
+// Every sender here is distinct and every file is distinct, so neither the
+// dedupe nor the per-sender budget can be what refuses them: this test fails
+// if the ONLY thing bounding the queue is one of the other two guards.
+func TestMediaBacklogIsBoundedAcrossDistinctSenders(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var reasons []string
+	posted := make(chan struct{}, 256)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		if _, carries := p["media"]; carries {
+			// The file-carrying POSTs block, holding every media slot, which
+			// is what makes everything behind them queue.
+			<-release
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		reasons = append(reasons, fmt.Sprint(p["mediaDropped"]))
+		mu.Unlock()
+		posted <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	send := func(i int) {
+		deliverEvent(f, uploadedImageEvent(fmt.Sprintf("2782000%04d", i),
+			fmt.Sprintf("wamid.FLOOD%d", i), fmt.Sprintf("file-%d", i),
+			fmt.Sprintf("/v/t62/f%d", i), time.Now()), dl)
+	}
+
+	// Fill every slot. These download and then block in their media POST.
+	for i := 0; i < maxConcurrentMediaDeliveries; i++ {
+		send(i)
+	}
+	// Fill the queue behind them.
+	for i := maxConcurrentMediaDeliveries; i < maxConcurrentMediaDeliveries+maxMediaWaiting; i++ {
+		send(i)
+	}
+	waitForWaiters(t, f, maxMediaWaiting)
+
+	// Everything past the bound is refused at once, by name, without waiting
+	// and without fetching.
+	const overflow = 5
+	base := maxConcurrentMediaDeliveries + maxMediaWaiting
+	for i := base; i < base+overflow; i++ {
+		send(i)
+	}
+	for i := 0; i < overflow; i++ {
+		select {
+		case <-posted:
+		case <-time.After(3 * time.Second):
+			t.Fatal("an overflow message never reached the consumer — it is queued, not refused")
+		}
+	}
+
+	mu.Lock()
+	got := append([]string(nil), reasons...)
+	mu.Unlock()
+	if len(got) != overflow {
+		t.Fatalf("consumer saw %d refusals %v, want %d", len(got), got, overflow)
+	}
+	for _, r := range got {
+		if r != mediaDroppedBacklog {
+			t.Fatalf("refusal reason %q, want %q — the message was dropped by the wrong guard", r, mediaDroppedBacklog)
+		}
+	}
+	// The queue never grew past the bound, and the overflow fetched nothing.
+	f.mediaWaitMu.Lock()
+	waiting := f.mediaWaiting
+	f.mediaWaitMu.Unlock()
+	if waiting > maxMediaWaiting {
+		t.Fatalf("media queue grew to %d waiters, above the %d bound", waiting, maxMediaWaiting)
+	}
+	if dl.count() != maxConcurrentMediaDeliveries {
+		t.Fatalf("downloads = %d; only the %d slot holders may have fetched — the queued and "+
+			"refused deliveries must not have", dl.count(), maxConcurrentMediaDeliveries)
+	}
+}
+
+// The queue must DRAIN. A waiter that takes a place and never gives it back
+// wedges the bound permanently: after maxMediaWaiting deliveries in the whole
+// life of the process every later file would be refused as backlog, which
+// looks exactly like a working bound until you count.
+func TestMediaQueueDrains(t *testing.T) {
+	n := maxMediaWaiting + 2
+	// Its own consumer rather than captureOne: this test posts more messages
+	// than that helper's channels buffer, and a handler blocked writing to
+	// one of them would hold the very delivery the assertion waits for.
+	var mu sync.Mutex
+	var missing []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var p map[string]any
+		_ = json.Unmarshal(b, &p)
+		if _, ok := p["media"]; !ok {
+			mu.Lock()
+			missing = append(missing, fmt.Sprint(p["mediaDropped"]))
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	dl := &countingDownloader{payload: []byte{1, 2, 3, 4}}
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	// More deliveries than the bound, one at a time so nothing legitimately
+	// queues: every one of them must get its file.
+	for i := 0; i < n; i++ {
+		deliverEvent(f, uploadedImageEvent(fmt.Sprintf("2783000%04d", i),
+			fmt.Sprintf("wamid.SEQ%d", i), fmt.Sprintf("seq-file-%d", i),
+			fmt.Sprintf("/v/t62/s%d", i), time.Now()), dl)
+		f.Wait()
+	}
+
+	mu.Lock()
+	lost := append([]string(nil), missing...)
+	mu.Unlock()
+	if len(lost) != 0 {
+		t.Fatalf("%d of %d deliveries carried no file (%v) — the media queue is not giving "+
+			"places back", len(lost), n, lost)
+	}
+	if dl.count() != n {
+		t.Fatalf("downloads = %d over %d sequential deliveries", dl.count(), n)
+	}
+	f.mediaWaitMu.Lock()
+	waiting := f.mediaWaiting
+	f.mediaWaitMu.Unlock()
+	if waiting != 0 {
+		t.Fatalf("media queue left holding %d waiters after everything drained", waiting)
 	}
 }
