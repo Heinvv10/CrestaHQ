@@ -30,7 +30,7 @@ async function firstEnrolment(subAccountId: string, workflowId: string) {
   return snap.empty ? null : snap.docs[0];
 }
 
-test("a second pipeline, a deal in it, and a pinned stage-change trigger", async ({
+test("a second pipeline, a deal in it, and a pinned stage-change trigger @enrols-workflows", async ({
   page,
 }) => {
   const env = readEnv();

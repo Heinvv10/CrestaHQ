@@ -75,7 +75,7 @@ async function createPastBooking(opts: {
   return ref.id;
 }
 
-test("mark no-show, correct to showed, and the page-pinned workflow only enrols page X", async ({
+test("mark no-show, correct to showed, and the page-pinned workflow only enrols page X @enrols-workflows", async ({
   page,
 }) => {
   const env = readEnv();
