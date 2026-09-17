@@ -34,7 +34,7 @@ explicitly reuse the **same sub-account's** saved SMTP credentials. Verification
 discovers the Inbox and Sent folder before saving the connection.
 
 Connected mailboxes import the last 30 days initially, in bounded batches, then
-check for newer messages automatically every five minutes through QStash. An admin
+check for newer messages automatically every fifteen minutes through QStash. An admin
 can also run a manual sync. Check the displayed last-sync time and errors; a saved
 connection alone does not prove the scheduler is running.
 
