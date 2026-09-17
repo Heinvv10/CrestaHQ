@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 /**
  * Every state of Reputation → Requests, rendered for real (jsdom) from the
@@ -149,6 +149,15 @@ describe("the list", () => {
   });
 
   it("clicks and reminders (SP5 d2): a Clicked status and a reminder column", async () => {
+    // The scheduled reminder's nextAt is a fixed date, and the component treats
+    // a nextAt that has gone stale as "Stopped — outcome unknown". Pin the clock
+    // (Date only; real timers keep the async render working) so this fixture
+    // does not expire.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-15T12:00:00.000Z"));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     pages[""] = {
       body: {
         requests: [
