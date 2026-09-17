@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
@@ -135,6 +137,18 @@ const attachment = {
   dataBase64: PNG_BYTES.toString("base64"),
 };
 const creds = { phoneNumberId: "PN1", wabaId: "WA1", accessToken: "EAAG" };
+/** Real files from __fixtures__/video — see generate.sh there. */
+function mp4(name: string) {
+  return {
+    filename: "clip.mp4",
+    contentType: "video/mp4",
+    dataBase64: readFileSync(
+      join(__dirname, "../../../../../lib/comms/whatsapp/__fixtures__/video", name),
+    ).toString("base64"),
+  };
+}
+const h264 = mp4("h264-aac-faststart.mp4");
+const hevc = mp4("hevc-hvc1-aac.mp4");
 
 function post(body: unknown) {
   return POST(
@@ -526,14 +540,45 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(res.status).toBe(200);
   });
 
-  it("refuses video/mp4 on Cloud until a live proof", async () => {
+  it("sends an H.264 MP4 as a video by media id, caption omitted when there is no text", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "MEDIAV" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.V1" }] }));
+    const res = await post({ contactId: "c1", body: "", attachment: h264 });
+    expect(res.status).toBe(200);
+
+    const [upload, send] = graphCalls();
+    expect(upload!.url).toMatch(/\/PN1\/media$/);
+    expect(((upload!.init.body as FormData).get("file") as File).type).toBe("video/mp4");
+    const body = JSON.parse(send!.init.body as string);
+    expect(body).toEqual({
+      messaging_product: "whatsapp",
+      to: "27821234567",
+      type: "video",
+      video: { id: "MEDIAV" },
+    });
+    expect(messageRow?.media).toMatchObject({ kind: "video", mimeType: "video/mp4", filename: "clip.mp4" });
+  });
+
+  it("refuses an HEVC MP4 with video_codec_unsupported before any Graph call — the upload never happens", async () => {
+    const res = await post({ contactId: "c1", body: "here", attachment: hevc });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.code).toBe("video_codec_unsupported");
+    expect(json.error).toContain("HEVC (H.265)");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+    expect(messageRow).toBeUndefined();
+  });
+
+  it("refuses garbage labelled video/mp4 as media_invalid before any Graph call", async () => {
     const res = await post({
       contactId: "c1",
       body: "here",
       attachment: { filename: "clip.mp4", contentType: "video/mp4", dataBase64: "AAEC" },
     });
     expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("media_unsupported_type");
+    expect((await res.json()).code).toBe("media_invalid");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -596,6 +641,30 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     });
     expect(messageRow).not.toHaveProperty("attachment");
     expect(saved).toHaveLength(1);
+  });
+
+  it("refuses an HEVC MP4 on the bridge rail before the bridge client is called", async () => {
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
+    checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+
+    const res = await post({ contactId: "c1", body: "here", attachment: hevc });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("video_codec_unsupported");
+    expect(sendWhatsappBridge).not.toHaveBeenCalled();
+    expect(messageRow).toBeUndefined();
+  });
+
+  it("hands the bridge an H.264 MP4 unchanged", async () => {
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
+    checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EBV" });
+
+    const res = await post({ contactId: "c1", body: "here", attachment: h264 });
+    expect(res.status).toBe(200);
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(expect.objectContaining({ media: h264 }));
+    expect(messageRow?.media).toMatchObject({ kind: "video", filename: "clip.mp4" });
   });
 
   it("marks the row store_failed — never fetch_failed — when the send succeeded but the copy failed", async () => {

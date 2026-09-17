@@ -72,7 +72,7 @@ func mediaUploadBudget(ctx context.Context) time.Duration {
 	return budget
 }
 
-// isImageMime decides which of the two message shapes an attachment takes.
+// isImageMime decides whether an attachment takes the image message shape.
 //
 // image/* renders inline in the chat; everything else arrives as a file the
 // recipient taps to open. A PNG audit report sent as a DocumentMessage is not
@@ -85,11 +85,22 @@ func mediaUploadBudget(ctx context.Context) time.Duration {
 // "IMAGE/PNG; charset=binary" — but it is written not to depend on that, since
 // a mis-shaped type here would silently downgrade an image to a document.
 func isImageMime(mime string) bool {
+	return strings.HasPrefix(bareMime(mime), "image/")
+}
+
+// isVideoMime is isImageMime's counterpart for the third shape: video/* plays
+// inline as a VideoMessage. The API layer admits only a codec-checked
+// video/mp4, so nothing unplayable reaches here as a video.
+func isVideoMime(mime string) bool {
+	return strings.HasPrefix(bareMime(mime), "video/")
+}
+
+func bareMime(mime string) string {
 	m := strings.ToLower(strings.TrimSpace(mime))
 	if i := strings.IndexByte(m, ';'); i >= 0 {
 		m = strings.TrimSpace(m[:i])
 	}
-	return strings.HasPrefix(m, "image/")
+	return m
 }
 
 // uploadKindFor is the whatsmeow media class an attachment is encrypted under.
@@ -99,6 +110,9 @@ func isImageMime(mime string) bool {
 func uploadKindFor(mime string) whatsmeow.MediaType {
 	if isImageMime(mime) {
 		return whatsmeow.MediaImage
+	}
+	if isVideoMime(mime) {
+		return whatsmeow.MediaVideo
 	}
 	return whatsmeow.MediaDocument
 }
@@ -116,6 +130,21 @@ func mediaMessage(up whatsmeow.UploadResponse, caption string, media *rails.Medi
 	}
 	if isImageMime(media.MimeType) {
 		return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+			Caption:       captionField,
+			Mimetype:      proto.String(media.MimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+		}}
+	}
+	if isVideoMime(media.MimeType) {
+		// Seconds, Width and Height are left unset: filling them means parsing
+		// far more of the file than the codec check does, and WhatsApp plays
+		// the video without them.
+		return &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
 			Caption:       captionField,
 			Mimetype:      proto.String(media.MimeType),
 			URL:           proto.String(up.URL),

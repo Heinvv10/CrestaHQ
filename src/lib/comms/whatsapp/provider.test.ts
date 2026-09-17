@@ -98,9 +98,11 @@ describe("bridge capabilities agree with the Go bridge", () => {
     for (const v of Object.values(caps)) expect(v).toBe(goBytes);
   });
 
-  it("offers neither audio nor video on Cloud, and caps captions at 1024", () => {
+  it("offers no audio and only video/mp4 on Cloud, and caps captions at 1024", () => {
     const c = capabilitiesFor("cloud");
-    expect(c.mediaMimeTypes.some((t) => t.startsWith("audio/") || t.startsWith("video/"))).toBe(false);
+    expect(c.mediaMimeTypes.some((t) => t.startsWith("audio/"))).toBe(false);
+    // The only video type is the one the send route inspects codecs for.
+    expect(c.mediaMimeTypes.filter((t) => t.startsWith("video/"))).toEqual(["video/mp4"]);
     expect(c.maxMediaCaptionChars).toBe(1024);
   });
 

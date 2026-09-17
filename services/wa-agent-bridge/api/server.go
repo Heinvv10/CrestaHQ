@@ -164,6 +164,8 @@ var allowedMediaMimeTypes = map[string]bool{
 	"image/png":       true,
 	"image/jpeg":      true,
 	"application/pdf": true,
+	// Only once decodeMedia has read its codecs: see internal/videocodec.
+	"video/mp4": true,
 }
 
 // maxAdminBodyBytes bounds the admin bodies, which are a JID or a boolean. The
