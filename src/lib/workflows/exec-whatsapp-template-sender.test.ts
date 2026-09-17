@@ -51,7 +51,8 @@ vi.mock("@/lib/firebase/admin", () => ({
         data: () => templateDoc,
       }),
     }),
-    collection: () => ({ doc: () => ({ id: "x" }) }),
+    collection: () => ({ doc: () => ({ id: "x", set: async () => {} }) }),
+    runTransaction: async () => undefined,
   }),
 }));
 

@@ -76,7 +76,9 @@ export type StepResult =
   | { kind: "next" }
   | { kind: "wait"; seconds: number }
   | { kind: "branch"; value: boolean }
-  | { kind: "end" };
+  | { kind: "end" }
+  /** The step definitely did not do its job; the run stops as `failed`. */
+  | { kind: "fail" };
 
 interface NodeContext {
   node: WorkflowNode;
@@ -117,6 +119,42 @@ interface NodeContext {
 type NodeExecutor = (
   ctx: NodeContext
 ) => Promise<{ result: StepResult; log: string }>;
+
+/**
+ * A failed template send stops the run only when the message definitely did
+ * not go out. Continuing past a send that never happened parks the run on a
+ * wait_for_reply for a message the customer never got, and its "no reply"
+ * branch then files a misleading follow-up. An AMBIGUOUS failure (a timeout
+ * after the request left, a provider 5xx) continues: the customer may well
+ * have the message, and acting as if they don't is the worse mistake.
+ *
+ * Template node only. `send_whatsapp` continues on every failure: its next
+ * steps (a follow-up task, a tag) are work that must still happen for the
+ * customer whether or not the message went out.
+ */
+function whatsappSendFailed(
+  log: string,
+  definitelyNotSent: boolean
+): { result: StepResult; log: string } {
+  return { result: definitelyNotSent ? { kind: "fail" } : { kind: "next" }, log };
+}
+
+/** No provider call, a rail refusal, or a provider's definite rejection. An
+ *  AMBIGUOUS outcome wins over all three — the bridge names a refusal such as
+ *  `in_flight` for a send that may still go out.
+ *  Exported for tests only: no template rail returns `refusedBy` today. */
+export function definitelyNotSent(res: {
+  attempted?: boolean;
+  refusedBy?: string;
+  providerOutcome?: "DEFINITELY_REJECTED" | "AMBIGUOUS";
+}): boolean {
+  if (res.providerOutcome === "AMBIGUOUS") return false;
+  return (
+    res.attempted !== true ||
+    Boolean(res.refusedBy) ||
+    res.providerOutcome === "DEFINITELY_REJECTED"
+  );
+}
 
 function mergeSubject(
   ctx: NodeContext,
@@ -380,7 +418,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   // builder surfaces this as a red node, but re-check here in case the gate
   // flipped off after the workflow was built.
   if (ctx.subAccount?.whatsappEnabledByAgency !== true) {
-    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+    return whatsappSendFailed("error:whatsapp_not_configured", true);
   }
   // Per-rail, and it must agree with the builder's red-node readiness or the
   // builder promises a step the run then skips. The old Twilio-shaped check
@@ -391,7 +429,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     senderId: cfg.senderId,
   });
   if (!tplReadiness.ready) {
-    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+    return whatsappSendFailed("error:whatsapp_not_configured", true);
   }
   // The bridge has no templates at all; its own dispatcher refuses, but
   // skipping here keeps the log honest about WHY rather than surfacing a send
@@ -413,7 +451,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   // twice is how a step gets admitted on one rail and refused on another.
   if (!tpl || !isTemplateApprovedFor(tpl, tplReadiness.provider)) {
     // Deleted, never approved on this rail, or approval lost (paused/disabled).
-    return { result: { kind: "next" }, log: "error:template_not_approved" };
+    return whatsappSendFailed("error:template_not_approved", true);
   }
 
   const subject = mergeSubject(ctx, "");
@@ -454,22 +492,63 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     });
     if (!res.ok) {
       ctx.sent.attempted = res.attempted === true && !res.refusedBy;
-      return {
-        result: { kind: "next" },
-        log: `error:${res.error ?? "send_failed"}`,
-      };
+      return whatsappSendFailed(`error:${res.error ?? "send_failed"}`, definitelyNotSent(res));
     }
     ctx.sent.messageSid = res.messageId ?? null;
+    // Recorded exactly as send_whatsapp and the manual template route record
+    // it, so an operator reads the rendered template in the thread. A record
+    // failure after a real send does not fail the run: the message went out.
+    const rendered = (tpl.body ?? "").replace(
+      /\{\{\s*(\d+)\s*\}\}/g,
+      (_match, position: string) => contentVariables[Number(position) - 1] ?? "",
+    );
+    try {
+      const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
+      const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();
+      await messageRef.set({
+        agencyId: ctx.agencyId,
+        subAccountId: ctx.subAccountId,
+        contactId: contact.id,
+        direction: "outbound",
+        status: "sent",
+        body: rendered,
+        buttons: null,
+        from: tplReadiness.sender.phoneNumber,
+        to,
+        twilioMessageSid: res.messageId ?? null,
+        sentByUid: null,
+        error: null,
+        readAt: null,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn("[workflows] WhatsApp template message-row write failed", err);
+      return { result: { kind: "next" }, log: "sent:message_record_failed" };
+    }
+    await upsertConversationForMessage({
+      contactId: contact.id,
+      subAccountId: ctx.subAccountId,
+      agencyId: ctx.agencyId,
+      contactName: contact.name ?? "",
+      contactPhone: to,
+      channel: "whatsapp",
+      direction: "outbound",
+      body: rendered || `[Template: ${tpl.displayName}]`,
+    });
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {
-      return { result: { kind: "next" }, log: "skipped:quota" };
+      // Stops the run. The quota is checked before the provider is called, so
+      // nothing went out — waiting on a reply to it would only manufacture a
+      // "no reply" follow-up. The log stays `skipped:` so it is not counted as
+      // a failed review ask.
+      return whatsappSendFailed("skipped:quota", true);
     }
     ctx.sent.attempted = providerAttempted(err);
-    return {
-      result: { kind: "next" },
-      log: `error:${err instanceof Error ? err.message : "send_failed"}`,
-    };
+    return whatsappSendFailed(
+      `error:${err instanceof Error ? err.message : "send_failed"}`,
+      !ctx.sent.attempted,
+    );
   }
 };
 
@@ -1525,6 +1604,18 @@ export async function runStep(
   let delay = 0;
   if (result.kind === "end") {
     await completeRun(runRef, run, wf);
+    return;
+  } else if (result.kind === "fail") {
+    await runRef.update({
+      status: "failed",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await writeRunActivity(
+      run,
+      wf.name ?? null,
+      "automation_failed",
+      `the ${node.type} step failed (${log})`
+    );
     return;
   } else if (result.kind === "branch") {
     const b = node.branches;
