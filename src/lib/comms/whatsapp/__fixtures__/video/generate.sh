@@ -23,6 +23,14 @@ ff "${V[@]}" "${A[@]}" "${HEVC[@]}" -tag:v hvc1 "${AAC[@]}" -shortest hevc-hvc1-
 ff "${V[@]}" "${A[@]}" "${HEVC[@]}" -tag:v hev1 "${AAC[@]}" -shortest hevc-hev1-aac.mp4
 ff "${V[@]}" -f lavfi -i sine=frequency=440:sample_rate=48000:duration=1 "${H264[@]}" \
   -c:a libopus -b:a 6k -ac 1 -shortest h264-opus.mp4
+# MP3 rides in the same `mp4a` sample entry as AAC; only the esds
+# objectTypeIndication (0x69 here) tells them apart.
+ff "${V[@]}" -f lavfi -i sine=frequency=440:sample_rate=22050:duration=1 "${H264[@]}" \
+  -c:a libmp3lame -b:a 8k -ac 1 -shortest h264-mp3.mp4
+# Two audio tracks: the first AAC, the SECOND MP3.
+ff "${V[@]}" "${A[@]}" -f lavfi -i sine=frequency=880:sample_rate=22050:duration=1 \
+  -map 0 -map 1 -map 2 "${H264[@]}" -c:a:0 aac -b:a:0 8k -ac:a:0 1 \
+  -c:a:1 libmp3lame -b:a:1 8k -ac:a:1 1 -shortest h264-aac-then-mp3.mp4
 
 # Decoys: grow the mdat of a moov-at-end file with bytes that spell the OTHER
 # codec's sample-entry fourcc, dressed as box headers. mdat precedes moov, so

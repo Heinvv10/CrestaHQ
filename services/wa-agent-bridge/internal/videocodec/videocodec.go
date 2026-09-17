@@ -15,6 +15,14 @@
 // enforces before it ever calls the bridge. The bridge keeps its own copy
 // because /v1/send has callers other than the CRM. Both are tested against the
 // same fixtures in src/lib/comms/whatsapp/__fixtures__/video/.
+//
+// KNOWN LIMITS. The rule is the sample-entry fourcc (avc1/avc3 video, mp4a
+// audio) plus, for mp4a, the esds objectTypeIndication (AAC only). It does NOT
+// read the avcC profile, so H.264 High 4:2:2 or High 10 passes and may still
+// not play. It does NOT check that an avc1 entry really holds avcC rather than
+// hvcC, so an HEVC stream deliberately relabelled avc1 passes. A fragmented
+// MP4 with more than maxBoxes top-level boxes (one per frame) is refused as
+// unreadable; phones do not produce those.
 package videocodec
 
 import (
@@ -64,10 +72,18 @@ func fourcc(b []byte) string {
 }
 
 // children returns the boxes inside [start, end). Any size that does not fit
-// is unreadable.
+// is unreadable — except, at the top level only, fewer than 8 trailing bytes
+// after the last box, which some writers leave as padding.
 func (w *walker) children(start, end int) ([]box, error) {
+	return w.walk(start, end, false)
+}
+
+func (w *walker) walk(start, end int, topLevel bool) ([]box, error) {
 	var out []box
 	for at := start; at < end; {
+		if topLevel && end-at < 8 {
+			break
+		}
 		w.budget--
 		if w.budget < 0 || end-at < 8 {
 			return nil, errUnreadable
@@ -116,11 +132,23 @@ func only(boxes []box, typ string) (box, error) {
 	return found[0], nil
 }
 
+// aacOTI are the esds objectTypeIndication values that are AAC: MPEG-4, then
+// MPEG-2 Main/LC/SSR. 0x69 and 0x6B are MPEG-2 and MPEG-1 Layer 3 (MP3),
+// which ride in the same mp4a entry.
+var aacOTI = map[byte]bool{0x40: true, 0x66: true, 0x67: true, 0x68: true}
+
+func isMP3OTI(oti byte) bool { return oti == 0x69 || oti == 0x6b }
+
+func audioMessage(what string) string {
+	return "This video's sound is " + what + ", which WhatsApp can't play. Export it with AAC audio and try again."
+}
+
 // Check returns nil when data is an MP4 with exactly one H.264 (avc1/avc3)
 // video track and no audio other than AAC (mp4a). It never panics on any
 // input.
 func Check(data []byte) *Refusal {
-	video, audio, err := sampleEntries(data)
+	w := &walker{b: data, budget: maxBoxes}
+	video, audio, err := w.sampleEntries()
 	if err != nil {
 		return &Refusal{CodeUnreadable, "This video couldn't be read as an MP4. " + exportHint}
 	}
@@ -139,9 +167,26 @@ func Check(data []byte) *Refusal {
 			return unsupported(fmt.Sprintf("This video uses the %q codec, which WhatsApp can't play. %s", trim(e), exportHint))
 		}
 	}
+	// Every audio track, not only the first: WhatsApp may pick any of them.
 	for _, e := range audio {
-		if e != "mp4a" {
-			return unsupported(fmt.Sprintf("This video's sound is %q, which WhatsApp can't play. Export it with AAC audio and try again.", trim(e)))
+		if e.typ != "mp4a" {
+			return unsupported(audioMessage(fmt.Sprintf("%q", trim(e.typ))))
+		}
+		// mp4a is only the container for an MPEG-4 audio stream; MP3 uses it
+		// too. The esds objectTypeIndication is what says AAC.
+		oti, ok := w.objectTypeIndication(e)
+		switch {
+		case !ok:
+			// video_codec_unsupported, not media_invalid: the file itself
+			// parsed, and what is missing is proof the sound is AAC. The
+			// operator's fix is the same as for any wrong audio — re-export
+			// with AAC — and calling the whole file unreadable would send
+			// them looking for corruption.
+			return unsupported("This video's sound couldn't be confirmed as AAC, which is all WhatsApp plays. Export it with AAC audio and try again.")
+		case isMP3OTI(oti):
+			return unsupported(audioMessage("MP3"))
+		case !aacOTI[oti]:
+			return unsupported(audioMessage(fmt.Sprintf("not AAC (object type 0x%02x)", oti)))
 		}
 	}
 	return nil
@@ -157,10 +202,9 @@ func trim(s string) string {
 }
 
 // sampleEntries returns each video track's sample-entry fourccs and every
-// audio sample-entry fourcc.
-func sampleEntries(data []byte) (video [][]string, audio []string, err error) {
-	w := &walker{b: data, budget: maxBoxes}
-	top, err := w.children(0, len(data))
+// audio sample entry.
+func (w *walker) sampleEntries() (video [][]string, audio []box, err error) {
+	top, err := w.walk(0, len(w.b), true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -187,7 +231,11 @@ func sampleEntries(data []byte) (video [][]string, audio []string, err error) {
 		}
 		switch handler {
 		case "vide":
-			video = append(video, entries)
+			fourccs := make([]string, len(entries))
+			for i, e := range entries {
+				fourccs[i] = e.typ
+			}
+			video = append(video, fourccs)
 		case "soun":
 			audio = append(audio, entries...)
 		}
@@ -198,7 +246,7 @@ func sampleEntries(data []byte) (video [][]string, audio []string, err error) {
 }
 
 // track returns a trak's handler type and, for vide/soun, its sample entries.
-func (w *walker) track(trak box) (string, []string, error) {
+func (w *walker) track(trak box) (string, []box, error) {
 	kids, err := w.children(trak.start, trak.end)
 	if err != nil {
 		return "", nil, err
@@ -251,9 +299,109 @@ func (w *walker) track(trak box) (string, []string, error) {
 	if count == 0 || uint64(len(boxes)) != uint64(count) {
 		return "", nil, errUnreadable
 	}
-	entries := make([]string, len(boxes))
-	for i, b := range boxes {
-		entries[i] = b.typ
+	return handler, boxes, nil
+}
+
+// objectTypeIndication reads the OTI from an mp4a entry's esds. ok is false
+// when there is no esds or it cannot be parsed; it never panics.
+func (w *walker) objectTypeIndication(mp4a box) (byte, bool) {
+	// SampleEntry (8) + AudioSampleEntry fields (20); QuickTime sound
+	// description version 1 adds 16 bytes, version 2 adds 36.
+	if mp4a.end-mp4a.start < 28 {
+		return 0, false
 	}
-	return handler, entries, nil
+	var fields int
+	switch binary.BigEndian.Uint16(w.b[mp4a.start+8:]) {
+	case 0:
+		fields = 28
+	case 1:
+		fields = 44
+	case 2:
+		fields = 64
+	default:
+		return 0, false
+	}
+	if mp4a.end-mp4a.start < fields {
+		return 0, false
+	}
+	kids, err := w.children(mp4a.start+fields, mp4a.end)
+	if err != nil {
+		return 0, false
+	}
+	esds, err := only(kids, "esds")
+	if err != nil {
+		// QuickTime-style files nest esds inside a `wave` box.
+		wave, werr := only(kids, "wave")
+		if werr != nil {
+			return 0, false
+		}
+		if kids, err = w.children(wave.start, wave.end); err != nil {
+			return 0, false
+		}
+		if esds, err = only(kids, "esds"); err != nil {
+			return 0, false
+		}
+	}
+
+	// FullBox version/flags (4), then ES_Descriptor.
+	tag, start, end, ok := w.descriptor(esds.start+4, esds.end)
+	if !ok || tag != 0x03 || end-start < 3 {
+		return 0, false
+	}
+	flags := w.b[start+2]
+	at := start + 3 // ES_ID (2) + flags (1)
+	if flags&0x80 != 0 {
+		at += 2 // dependsOn_ES_ID
+	}
+	if flags&0x40 != 0 {
+		if at >= end {
+			return 0, false
+		}
+		at += 1 + int(w.b[at]) // URLlength + URLstring
+	}
+	if flags&0x20 != 0 {
+		at += 2 // OCR_ES_Id
+	}
+	// The nested descriptors; DecoderConfigDescriptor is the one wanted.
+	for steps := 0; at < end && steps < 16; steps++ {
+		t, s, e, ok := w.descriptor(at, end)
+		if !ok {
+			return 0, false
+		}
+		if t == 0x04 {
+			if e > s {
+				return w.b[s], true
+			}
+			return 0, false
+		}
+		at = e
+	}
+	return 0, false
+}
+
+// descriptor reads one MPEG-4 descriptor at `at` within `limit`: its tag and
+// payload bounds. The size is expandable: 1–4 bytes, high bit set means another
+// byte follows.
+func (w *walker) descriptor(at, limit int) (tag byte, start, end int, ok bool) {
+	if limit-at < 2 {
+		return 0, 0, 0, false
+	}
+	tag = w.b[at]
+	size := 0
+	i := at + 1
+	for n := 0; ; n++ {
+		if n == 4 || i >= limit {
+			return 0, 0, 0, false
+		}
+		b := w.b[i]
+		i++
+		size = size<<7 | int(b&0x7f)
+		if b&0x80 == 0 {
+			break
+		}
+	}
+	if size > limit-i {
+		return 0, 0, 0, false
+	}
+	return tag, i, i + size, true
 }

@@ -456,6 +456,8 @@ func TestSendVideoWithUnplayableCodecsIsRejected(t *testing.T) {
 		"hevc-hev1-aac.mp4":                "video_codec_unsupported",
 		"hevc-with-avc1-bytes-in-mdat.mp4": "video_codec_unsupported",
 		"h264-opus.mp4":                    "video_codec_unsupported",
+		"h264-mp3.mp4":                     "video_codec_unsupported",
+		"h264-aac-then-mp3.mp4":            "video_codec_unsupported",
 		"garbage.mp4":                      "media_invalid",
 		"truncated.mp4":                    "media_invalid",
 	}

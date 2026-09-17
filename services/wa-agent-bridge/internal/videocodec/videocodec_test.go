@@ -3,6 +3,7 @@ package videocodec
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,74 @@ func TestOpusAudioRefused(t *testing.T) {
 	if !strings.Contains(r.Message, `sound is "Opus"`) {
 		t.Fatalf("message does not name the audio codec: %q", r.Message)
 	}
+}
+
+// mp4a holding MP3 is not AAC, including when only the SECOND audio track is.
+func TestMP3InMp4aRefused(t *testing.T) {
+	want := "This video's sound is MP3, which WhatsApp can't play. Export it with AAC audio and try again."
+	for _, name := range []string{"h264-mp3.mp4", "h264-aac-then-mp3.mp4"} {
+		if r := wantRefused(t, name, fixture(t, name), CodeUnsupported); r.Message != want {
+			t.Fatalf("%s: message %q, want %q", name, r.Message, want)
+		}
+	}
+}
+
+// esdsOti locates the first esds and its OTI byte. ffmpeg writes 4-byte
+// expandable sizes: FullBox(4) · 0x03 size(4) ES_ID(2) flags(1) · 0x04 size(4) · OTI.
+func esdsOti(t *testing.T, b []byte) (esds, oti int) {
+	t.Helper()
+	esds = bytes.Index(b, []byte("esds"))
+	if esds < 0 || b[esds+8] != 0x03 || b[esds+16] != 0x04 {
+		t.Fatal("fixture esds layout changed")
+	}
+	return esds, esds + 21
+}
+
+func TestAACObjectTypeIndications(t *testing.T) {
+	for oti, allowed := range map[byte]bool{0x40: true, 0x66: true, 0x67: true, 0x68: true, 0x69: false, 0x6b: false, 0x20: false} {
+		b := bytes.Clone(fixture(t, "h264-aac-faststart.mp4"))
+		_, at := esdsOti(t, b)
+		b[at] = oti
+		if got := Check(b) == nil; got != allowed {
+			t.Fatalf("OTI 0x%02x: allowed=%v, want %v (%+v)", oti, got, allowed, Check(b))
+		}
+	}
+	b := bytes.Clone(fixture(t, "h264-aac-faststart.mp4"))
+	_, at := esdsOti(t, b)
+	b[at] = 0x20
+	if r := Check(b); r == nil || !strings.Contains(r.Message, "not AAC (object type 0x20)") {
+		t.Fatalf("an unknown OTI is not named: %+v", r)
+	}
+}
+
+func TestMissingOrBrokenEsdsRefused(t *testing.T) {
+	noEsds := bytes.Clone(fixture(t, "h264-aac-faststart.mp4"))
+	esds, _ := esdsOti(t, noEsds)
+	copy(noEsds[esds:], "xxxx")
+	wantRefused(t, "no esds", noEsds, CodeUnsupported)
+
+	for name, size := range map[string][]byte{
+		"descriptor size overruns esds": {0xff, 0xff, 0xff, 0x7f},
+		"expandable size needs 5 bytes": {0x80, 0x80, 0x80, 0x80},
+	} {
+		b := bytes.Clone(fixture(t, "h264-aac-faststart.mp4"))
+		esds, _ := esdsOti(t, b)
+		copy(b[esds+9:], size)
+		wantRefused(t, name, b, CodeUnsupported)
+	}
+}
+
+func TestTrailingPaddingToleratedAtTopLevelOnly(t *testing.T) {
+	src := fixture(t, "h264-aac-faststart.mp4")
+	for _, n := range []int{1, 7} {
+		wantAllowed(t, fmt.Sprintf("%d trailing bytes", n), append(bytes.Clone(src), make([]byte, n)...))
+	}
+	// Three junk bytes inside moov, after its last child: must stay strict.
+	moov := topLevel(t, src, "moov")
+	moovEnd := moov + int(binary.BigEndian.Uint32(src[moov:]))
+	nested := bytes.Join([][]byte{src[:moovEnd], {0, 0, 0}, src[moovEnd:]}, nil)
+	binary.BigEndian.PutUint32(nested[moov:], uint32(moovEnd-moov+3))
+	wantRefused(t, "trailing bytes inside moov", nested, CodeUnreadable)
 }
 
 func TestUnreadableRefusedWithoutPanic(t *testing.T) {

@@ -65,6 +65,14 @@ describe("checkWhatsappVideoCodecs — real files", () => {
     expect(r.ok === false && r.message).toContain('sound is "Opus"');
   });
 
+  it.each(["h264-mp3.mp4", "h264-aac-then-mp3.mp4"])("refuses %s — mp4a holding MP3 is not AAC", (name) => {
+    expect(checkWhatsappVideoCodecs(fixture(name))).toEqual({
+      ok: false,
+      code: "video_codec_unsupported",
+      message: "This video's sound is MP3, which WhatsApp can't play. Export it with AAC audio and try again.",
+    });
+  });
+
   it.each(["garbage.mp4", "truncated.mp4"])("refuses %s as unreadable without throwing", (name) => {
     expect(checkWhatsappVideoCodecs(fixture(name))).toMatchObject({ ok: false, code: "media_invalid" });
   });
@@ -113,6 +121,69 @@ describe("checkWhatsappVideoCodecs — parses boxes, never scans bytes", () => {
     const mdat = topLevel(bytes, "mdat");
     new DataView(bytes.buffer).setUint32(mdat, 0);
     expect(checkWhatsappVideoCodecs(bytes)).toEqual({ ok: true });
+  });
+});
+
+/** Offset of the first esds in a file, and of its DecoderConfigDescriptor OTI byte. */
+function esdsOti(bytes: Uint8Array): { esds: number; oti: number } {
+  const esds = Buffer.from(bytes).indexOf("esds");
+  // ffmpeg writes 4-byte expandable sizes: FullBox(4) · 0x03 size(4) ES_ID(2) flags(1) · 0x04 size(4) · OTI
+  expect(bytes[esds + 8]).toBe(0x03);
+  expect(bytes[esds + 16]).toBe(0x04);
+  return { esds, oti: esds + 21 };
+}
+
+describe("checkWhatsappVideoCodecs — AAC is read from esds, not assumed from mp4a", () => {
+  it.each([
+    ["0x66", 0x66, true],
+    ["0x67", 0x67, true],
+    ["0x68", 0x68, true],
+    ["0x6b", 0x6b, false],
+    ["0x20", 0x20, false],
+  ])("objectTypeIndication %s allowed: %s", (_label, oti, allowed) => {
+    const bytes = fixture("h264-aac-faststart.mp4").slice();
+    bytes[esdsOti(bytes).oti] = oti;
+    expect(checkWhatsappVideoCodecs(bytes).ok).toBe(allowed);
+  });
+
+  it("names a non-AAC, non-MP3 object type by its number", () => {
+    const bytes = fixture("h264-aac-faststart.mp4").slice();
+    bytes[esdsOti(bytes).oti] = 0x20;
+    const r = checkWhatsappVideoCodecs(bytes);
+    expect(r.ok === false && r.message).toContain("not AAC (object type 0x20)");
+  });
+
+  it("refuses an mp4a with no esds as video_codec_unsupported", () => {
+    const bytes = fixture("h264-aac-faststart.mp4").slice();
+    bytes.set(new TextEncoder().encode("xxxx"), esdsOti(bytes).esds);
+    expect(checkWhatsappVideoCodecs(bytes)).toMatchObject({ ok: false, code: "video_codec_unsupported" });
+  });
+
+  it("refuses, without throwing, an esds whose descriptor sizes overrun it", () => {
+    const bytes = fixture("h264-aac-faststart.mp4").slice();
+    const { esds } = esdsOti(bytes);
+    bytes.set([0xff, 0xff, 0xff, 0x7f], esds + 9); // ES_Descriptor size ≈ 256 MiB
+    expect(checkWhatsappVideoCodecs(bytes)).toMatchObject({ ok: false, code: "video_codec_unsupported" });
+    bytes.set([0x80, 0x80, 0x80, 0x80], esds + 9); // a fifth size byte would be needed
+    expect(checkWhatsappVideoCodecs(bytes)).toMatchObject({ ok: false, code: "video_codec_unsupported" });
+  });
+});
+
+describe("checkWhatsappVideoCodecs — trailing padding", () => {
+  it.each([1, 7])("tolerates %i trailing bytes after the last top-level box", (n) => {
+    const bytes = concat(fixture("h264-aac-faststart.mp4"), new Uint8Array(n));
+    expect(checkWhatsappVideoCodecs(bytes)).toEqual({ ok: true });
+  });
+
+  it("stays strict inside nested boxes", () => {
+    // Grow moov by 3 bytes of trailing junk inside it: the trak walk must refuse.
+    const src = fixture("h264-aac-faststart.mp4");
+    const view = new DataView(src.buffer, src.byteOffset, src.byteLength);
+    const moov = topLevel(src, "moov");
+    const moovSize = view.getUint32(moov);
+    const bytes = concat(src.subarray(0, moov + moovSize), new Uint8Array(3), src.subarray(moov + moovSize));
+    new DataView(bytes.buffer).setUint32(moov, moovSize + 3);
+    expect(checkWhatsappVideoCodecs(bytes)).toMatchObject({ ok: false, code: "media_invalid" });
   });
 });
 

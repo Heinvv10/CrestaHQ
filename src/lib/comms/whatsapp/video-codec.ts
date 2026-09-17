@@ -15,6 +15,14 @@
  * services/wa-agent-bridge/internal/videocodec is the Go mirror of this rule,
  * for the bridge's non-CRM callers. Both are tested against the same fixtures
  * in __fixtures__/video/.
+ *
+ * KNOWN LIMITS. The rule is the sample-entry fourcc (avc1/avc3 video, mp4a
+ * audio) plus, for mp4a, the esds objectTypeIndication (AAC only). It does
+ * NOT read the avcC profile, so H.264 High 4:2:2 or High 10 passes and may
+ * still not play. It does NOT check that an avc1 entry really holds avcC
+ * rather than hvcC, so an HEVC stream deliberately relabelled avc1 passes.
+ * A fragmented MP4 with more than MAX_BOXES top-level boxes (one per frame)
+ * is refused as unreadable; phones do not produce those.
  */
 
 export type VideoCodecCheck =
@@ -29,7 +37,11 @@ export type VideoCodecCheck =
 
 const H264 = new Set(["avc1", "avc3"]);
 const HEVC = new Set(["hvc1", "hev1"]);
-const AAC = "mp4a";
+const MP4A = "mp4a";
+/** esds objectTypeIndication values that are AAC: MPEG-4, then MPEG-2 Main/LC/SSR. */
+const AAC_OTI = new Set([0x40, 0x66, 0x67, 0x68]);
+/** MPEG-2 and MPEG-1 Layer 3 — MP3 in the same mp4a entry AAC uses. */
+const MP3_OTI = new Set([0x69, 0x6b]);
 
 /** More boxes than any real file has; reaching it means a hostile or broken one. */
 const MAX_BOXES = 10_000;
@@ -71,11 +83,16 @@ function check(bytes: Uint8Array): VideoCodecCheck {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let budget = MAX_BOXES;
 
-  /** The child boxes of [start, end). Any size that does not fit is unreadable. */
-  function children(start: number, end: number): Box[] {
+  /**
+   * The child boxes of [start, end). Any size that does not fit is
+   * unreadable — except, at the top level only, fewer than 8 trailing bytes
+   * after the last box, which some writers leave as padding.
+   */
+  function children(start: number, end: number, topLevel = false): Box[] {
     const out: Box[] = [];
     let at = start;
     while (at < end) {
+      if (topLevel && end - at < 8) break;
       if (--budget < 0 || end - at < 8) throw new Unreadable();
       let size = view.getUint32(at);
       const type = fourcc(bytes, at + 4);
@@ -102,13 +119,13 @@ function check(bytes: Uint8Array): VideoCodecCheck {
     return found[0]!;
   }
 
-  const top = children(0, bytes.length);
+  const top = children(0, bytes.length, true);
   const moov = only(top, "moov");
   // A file cut off exactly where its media begins still has a well-formed
   // moov, and nothing to play.
   if (!top.some((b) => b.type === "mdat" && b.end > b.start)) throw new Unreadable();
   const videoEntries: string[][] = [];
-  const audioEntries: string[] = [];
+  const audioEntries: Box[] = [];
 
   for (const trak of children(moov.start, moov.end).filter((b) => b.type === "trak")) {
     const mdia = only(children(trak.start, trak.end), "mdia");
@@ -127,10 +144,10 @@ function check(bytes: Uint8Array): VideoCodecCheck {
     // version/flags (4) + entry_count (4), then the sample entries as boxes.
     if (stsd.end - stsd.start < 8) throw new Unreadable();
     const count = view.getUint32(stsd.start + 4);
-    const entries = children(stsd.start + 8, stsd.end).map((b) => b.type);
+    const entries = children(stsd.start + 8, stsd.end);
     if (count === 0 || entries.length !== count) throw new Unreadable();
 
-    if (handler === "vide") videoEntries.push(entries);
+    if (handler === "vide") videoEntries.push(entries.map((b) => b.type));
     else audioEntries.push(...entries);
   }
 
@@ -148,14 +165,95 @@ function check(bytes: Uint8Array): VideoCodecCheck {
       return refuse(`This video uses the "${entry.trim()}" codec, which WhatsApp can't play. ${EXPORT_HINT}`);
     }
   }
+  // Every audio track, not only the first: WhatsApp may pick any of them.
   for (const entry of audioEntries) {
-    if (entry !== AAC) {
-      return refuse(
-        `This video's sound is "${entry.trim()}", which WhatsApp can't play. Export it with AAC audio and try again.`,
-      );
+    if (entry.type !== MP4A) {
+      return refuse(audioMessage(`"${entry.type.trim()}"`));
+    }
+    // mp4a is only the container for an MPEG-4 audio stream; MP3 uses it
+    // too. The esds objectTypeIndication is what says AAC.
+    const oti = objectTypeIndication(entry);
+    if (oti === null) {
+      // video_codec_unsupported, not media_invalid: the file itself parsed,
+      // and what is missing is proof the sound is AAC. The operator's fix is
+      // the same as for any wrong audio — re-export with AAC — and calling
+      // the whole file unreadable would send them looking for corruption.
+      return refuse("This video's sound couldn't be confirmed as AAC, which is all WhatsApp plays. Export it with AAC audio and try again.");
+    }
+    if (MP3_OTI.has(oti)) return refuse(audioMessage("MP3"));
+    if (!AAC_OTI.has(oti)) {
+      return refuse(audioMessage(`not AAC (object type 0x${oti.toString(16).padStart(2, "0")})`));
     }
   }
   return { ok: true };
+
+  /**
+   * The objectTypeIndication in an mp4a entry's esds, or null when there is
+   * no esds or it cannot be parsed. Never throws on malformed descriptors.
+   */
+  function objectTypeIndication(mp4a: Box): number | null {
+    // SampleEntry (8) + AudioSampleEntry fields (20); QuickTime sound
+    // description version 1 adds 16 bytes, version 2 adds 36.
+    if (mp4a.end - mp4a.start < 28) return null;
+    const version = view.getUint16(mp4a.start + 8);
+    const fields = version === 0 ? 28 : version === 1 ? 44 : version === 2 ? 64 : -1;
+    if (fields < 0 || mp4a.end - mp4a.start < fields) return null;
+    let esds: Box;
+    try {
+      const kids = children(mp4a.start + fields, mp4a.end);
+      if (kids.some((b) => b.type === "esds")) {
+        esds = only(kids, "esds");
+      } else {
+        // QuickTime-style files nest esds inside a `wave` box.
+        const wave = only(kids, "wave");
+        esds = only(children(wave.start, wave.end), "esds");
+      }
+    } catch (err) {
+      if (err instanceof Unreadable) return null;
+      throw err;
+    }
+
+    /** One descriptor at `at` within `end`: its tag and payload bounds. */
+    function descriptor(at: number, end: number): { tag: number; start: number; end: number } | null {
+      if (end - at < 2) return null;
+      const tag = bytes[at]!;
+      let size = 0;
+      let i = at + 1;
+      // Expandable size: 1–4 bytes, high bit set means another byte follows.
+      for (let n = 0; ; n++) {
+        if (n === 4 || i >= end) return null;
+        const b = bytes[i++]!;
+        size = size * 128 + (b & 0x7f);
+        if (!(b & 0x80)) break;
+      }
+      if (size > end - i) return null;
+      return { tag, start: i, end: i + size };
+    }
+
+    // FullBox version/flags (4), then ES_Descriptor.
+    const es = descriptor(esds.start + 4, esds.end);
+    if (!es || es.tag !== 0x03 || es.end - es.start < 3) return null;
+    const flags = bytes[es.start + 2]!;
+    let at = es.start + 3; // ES_ID (2) + flags (1)
+    if (flags & 0x80) at += 2; // dependsOn_ES_ID
+    if (flags & 0x40) {
+      if (at >= es.end) return null;
+      at += 1 + bytes[at]!; // URLlength + URLstring
+    }
+    if (flags & 0x20) at += 2; // OCR_ES_Id
+    // The nested descriptors; DecoderConfigDescriptor is the one wanted.
+    for (let steps = 0; at < es.end && steps < 16; steps++) {
+      const d = descriptor(at, es.end);
+      if (!d) return null;
+      if (d.tag === 0x04) return d.end > d.start ? bytes[d.start]! : null;
+      at = d.end;
+    }
+    return null;
+  }
+}
+
+function audioMessage(what: string): string {
+  return `This video's sound is ${what}, which WhatsApp can't play. Export it with AAC audio and try again.`;
 }
 
 function refuse(message: string): VideoCodecCheck {
