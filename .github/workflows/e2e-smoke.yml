@@ -5,8 +5,15 @@ name: E2E smoke (production)
 # so a red run here means "production is unhappy", not "this change is bad".
 # The blocking Playwright job lives in ci.yml and tests the PR's own build.
 #
-# Expect the enrol spec to fail here until QStash credentials are present on
-# the deployment — see docs/parity/sp0.md, "Remaining risks".
+# Specs tagged @enrols-workflows (form-submit, workflow-enrol,
+# appointment-status, pipelines) are excluded below: against a PR's own
+# build they enrol a FIXTURE workflow that publishes to a CI-only QStash
+# project, but against production the app runs with production's own
+# QStash token, so the same enrolment publishes a REAL scheduled step —
+# on 14-16 Sep 2026 that put ~307 real QStash steps through this account's
+# 1,000/day limit and silently dropped real scheduled work once it ran out.
+# workflow-enrol was previously expected to fail here (a signed step call
+# 401s against a deployment); it is now excluded instead of run-and-ignored.
 on:
   workflow_dispatch:
   push:
@@ -52,7 +59,7 @@ jobs:
         run: pnpm exec playwright install chromium
 
       - name: Playwright
-        run: pnpm exec playwright test
+        run: pnpm exec playwright test --grep-invert "@enrols-workflows"
 
       - name: Upload report
         if: always()

@@ -11,7 +11,7 @@ import { ensureSeed } from "../lib/seed";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test("an anonymous form submission creates a contact", async ({ page }) => {
+test("an anonymous form submission creates a contact @enrols-workflows", async ({ page }) => {
   const env = readEnv();
   const { formId } = await ensureSeed();
   const stamp = Date.now();
