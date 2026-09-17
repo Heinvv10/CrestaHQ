@@ -45,7 +45,7 @@ const SCHEDULES: ScheduleSpec[] = [
   {
     scheduleId: "leadstack-email-sync",
     path: "/api/cron/email-sync",
-    cron: "*/5 * * * *",
+    cron: "*/15 * * * *",
     description: "Read-only mailbox sync for connected sub-accounts.",
   },
   {
@@ -95,7 +95,7 @@ const SCHEDULES: ScheduleSpec[] = [
   },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-11-whatsapp-quality";
+const BASE_SCHEDULE_VERSION = "2026-09-17-email-sync-15m";
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment

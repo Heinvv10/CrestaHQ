@@ -31,12 +31,12 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
   expect(mock.create).toHaveBeenCalledWith(
     expect.objectContaining({
       scheduleId: "leadstack-email-sync",
-      cron: "*/5 * * * *",
+      cron: "*/15 * * * *",
       destination: "https://app.example.com/api/cron/email-sync",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-11-whatsapp-quality" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-17-email-sync-15m" }),
     { merge: true }
   );
 });
@@ -97,7 +97,7 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-11-whatsapp-quality+gbp-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-17-email-sync-15m+gbp-sync" }),
     { merge: true }
   );
 });
