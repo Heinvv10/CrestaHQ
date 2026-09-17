@@ -13,8 +13,10 @@ import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
  * Two properties:
  *  - a template sent by a workflow shows in the contact's thread and inbox,
  *    as a manual template send does;
- *  - a send that definitely did not go out stops the run (`failed`), while
- *    one that may have gone out continues to the next node.
+ *  - a TEMPLATE send that definitely did not go out stops the run (`failed`),
+ *    while one that may have gone out continues to the next node;
+ *  - a FREE-FORM send continues on every failure: its next steps (a follow-up
+ *    task, a tag) must still happen for the customer.
  */
 
 const mem = createMemoryFirestore();
@@ -66,7 +68,7 @@ vi.mock("@/lib/comms/twilio", async (importOriginal) => ({
   },
 }));
 
-const { runStep } = await import("./engine");
+const { runStep, definitelyNotSent } = await import("./engine");
 
 type Graph = (req: Record<string, unknown>) => Response | Promise<Response>;
 const requests: Record<string, unknown>[] = [];
@@ -88,7 +90,7 @@ function seedWorkflow(first: Record<string, unknown>) {
     trigger: { type: "contact.tag.added", filters: { all: [] } },
     nodes: {
       n1: { id: "n1", ...first, next: "n2" },
-      n2: { id: "n2", type: "add_tag", config: { tag: "checked" }, next: null },
+      n2: { id: "n2", type: "create_task", config: { title: "Install problem" }, next: null },
     },
   });
 }
@@ -175,7 +177,7 @@ describe("a workflow template send is visible in the CRM", () => {
   });
 });
 
-describe("a definitely-unsent WhatsApp stops the run", () => {
+describe("a definitely-unsent template stops the run", () => {
   const rejected: Graph = () =>
     new Response(JSON.stringify({ error: { message: "invalid parameter" } }), { status: 400 });
 
@@ -206,13 +208,49 @@ describe("a definitely-unsent WhatsApp stops the run", () => {
     expect(scheduled).toEqual([]);
   });
 
-  it("free-form: window shut and no template, refused before dispatch", async () => {
+});
+
+/** The run went on: n2 was scheduled, and running it created the task. */
+async function expectFollowUpTaskCreated() {
+  expect(run().status).not.toBe("failed");
+  expect(scheduled).toEqual(["n2"]);
+  await runStep("run1", "n2");
+  expect(run().history.map((h) => h.result)).toContain("task_created");
+  expect(mem.list("tasks")).toMatchObject([{ title: "Install problem", contactId: "c1" }]);
+}
+
+describe("a definitely-unsent free-form WhatsApp still continues the run", () => {
+  it("window shut and no template, refused before dispatch", async () => {
     seedWorkflow(freeFormNode);
     graph(accepted);
     await runStep("run1", "n1");
     expect(requests).toEqual([]);
-    expect(run().status).toBe("failed");
-    expect(scheduled).toEqual([]);
+    expect(run().history[0].result).toMatch(/^error:/);
+    await expectFollowUpTaskCreated();
+  });
+
+  it("Meta rejects the request (4xx)", async () => {
+    mem.seed("contacts/c1/whatsappMessages/in1", {
+      direction: "inbound", createdAt: Timestamp.now(),
+    });
+    seedWorkflow(freeFormNode);
+    graph(() => new Response("{}", { status: 400 }));
+    await runStep("run1", "n1");
+    expect(run().history[0].result).toMatch(/^error:WhatsApp Cloud 400/);
+    await expectFollowUpTaskCreated();
+  });
+});
+
+describe("definitelyNotSent", () => {
+  it("an AMBIGUOUS outcome wins over a named refusal", () => {
+    // The bridge answers `refusedBy: "in_flight"` for a send that may still go out.
+    expect(
+      definitelyNotSent({ attempted: true, refusedBy: "in_flight", providerOutcome: "AMBIGUOUS" }),
+    ).toBe(false);
+    expect(definitelyNotSent({ attempted: false, providerOutcome: "AMBIGUOUS" })).toBe(false);
+    expect(definitelyNotSent({ attempted: true, refusedBy: "reply_only" })).toBe(true);
+    expect(definitelyNotSent({ attempted: true, providerOutcome: "DEFINITELY_REJECTED" })).toBe(true);
+    expect(definitelyNotSent({ attempted: true })).toBe(false);
   });
 });
 
@@ -275,26 +313,36 @@ describe("a thrown send on the Twilio rail", () => {
     expect(scheduled).toEqual(["n2"]);
   });
 
-  it.each([
-    ["template", templateNode],
-    ["free-form", freeFormNode],
-  ])("%s: stops when it failed before the provider was called", async (_name, node) => {
+  it("template: stops when it failed before the provider was called", async () => {
     twilioThrows = () => new Error("WhatsApp is not configured for this sub-account.");
-    seedWorkflow(node);
+    seedWorkflow(templateNode);
     await runStep("run1", "n1");
     expect(run().status).toBe("failed");
     expect(scheduled).toEqual([]);
   });
 
-  it.each([
-    ["template", templateNode],
-    ["free-form", freeFormNode],
-  ])("%s: stops on an exhausted quota, logged as a skip", async (_name, node) => {
+  it("template: stops on an exhausted quota, logged as a skip", async () => {
     twilioThrows = () => new UsageQuotaExceededError("whatsappMessages");
-    seedWorkflow(node);
+    seedWorkflow(templateNode);
     await runStep("run1", "n1");
     expect(run().history[0].result).toBe("skipped:quota");
     expect(run().status).toBe("failed");
     expect(scheduled).toEqual([]);
+  });
+
+  it("free-form: continues when it failed before the provider was called", async () => {
+    twilioThrows = () => new Error("WhatsApp is not configured for this sub-account.");
+    seedWorkflow(freeFormNode);
+    await runStep("run1", "n1");
+    expect(run().history[0].result).toBe("error:WhatsApp is not configured for this sub-account.");
+    await expectFollowUpTaskCreated();
+  });
+
+  it("free-form: continues on an exhausted quota, logged as a skip", async () => {
+    twilioThrows = () => new UsageQuotaExceededError("whatsappMessages");
+    seedWorkflow(freeFormNode);
+    await runStep("run1", "n1");
+    expect(run().history[0].result).toBe("skipped:quota");
+    await expectFollowUpTaskCreated();
   });
 });

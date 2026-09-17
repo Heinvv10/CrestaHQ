@@ -121,12 +121,16 @@ type NodeExecutor = (
 ) => Promise<{ result: StepResult; log: string }>;
 
 /**
- * A failed WhatsApp send stops the run only when the message definitely did
+ * A failed template send stops the run only when the message definitely did
  * not go out. Continuing past a send that never happened parks the run on a
  * wait_for_reply for a message the customer never got, and its "no reply"
  * branch then files a misleading follow-up. An AMBIGUOUS failure (a timeout
  * after the request left, a provider 5xx) continues: the customer may well
  * have the message, and acting as if they don't is the worse mistake.
+ *
+ * Template node only. `send_whatsapp` continues on every failure: its next
+ * steps (a follow-up task, a tag) are work that must still happen for the
+ * customer whether or not the message went out.
  */
 function whatsappSendFailed(
   log: string,
@@ -135,12 +139,16 @@ function whatsappSendFailed(
   return { result: definitelyNotSent ? { kind: "fail" } : { kind: "next" }, log };
 }
 
-/** No provider call, a rail refusal, or a provider's definite rejection. */
-function definitelyNotSent(res: {
+/** No provider call, a rail refusal, or a provider's definite rejection. An
+ *  AMBIGUOUS outcome wins over all three — the bridge names a refusal such as
+ *  `in_flight` for a send that may still go out.
+ *  Exported for tests only: no template rail returns `refusedBy` today. */
+export function definitelyNotSent(res: {
   attempted?: boolean;
   refusedBy?: string;
   providerOutcome?: "DEFINITELY_REJECTED" | "AMBIGUOUS";
 }): boolean {
+  if (res.providerOutcome === "AMBIGUOUS") return false;
   return (
     res.attempted !== true ||
     Boolean(res.refusedBy) ||
@@ -573,14 +581,14 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   const to = contact.phone;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
   if (ctx.subAccount?.whatsappEnabledByAgency !== true) {
-    return whatsappSendFailed("error:whatsapp_not_configured", true);
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
   }
   const readiness = await checkWhatsappReadiness({
     subAccountId: ctx.subAccountId,
     subAccount: ctx.subAccount,
   });
   if (!readiness.ready) {
-    return whatsappSendFailed("error:whatsapp_not_configured", true);
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
   }
 
   const subject = mergeSubject(ctx, "");
@@ -704,7 +712,10 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     });
     if (!res.ok) {
       ctx.sent.attempted = res.attempted === true && !res.refusedBy;
-      return whatsappSendFailed(`error:${res.error ?? "send_failed"}`, definitelyNotSent(res));
+      return {
+        result: { kind: "next" },
+        log: `error:${res.error ?? "send_failed"}`,
+      };
     }
     // A successful provider call does not write the CRM thread. Use the same
     // provider message id as the manual composer so the row is addressable.
@@ -755,14 +766,13 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {
-      // Stops the run, as in execWhatsappTemplate: nothing was sent.
-      return whatsappSendFailed("skipped:quota", true);
+      return { result: { kind: "next" }, log: "skipped:quota" };
     }
     ctx.sent.attempted = providerAttempted(err);
-    return whatsappSendFailed(
-      `error:${err instanceof Error ? err.message : "send_failed"}`,
-      !ctx.sent.attempted,
-    );
+    return {
+      result: { kind: "next" },
+      log: `error:${err instanceof Error ? err.message : "send_failed"}`,
+    };
   }
 };
 
