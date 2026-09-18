@@ -23,6 +23,10 @@
  * rather than hvcC, so an HEVC stream deliberately relabelled avc1 passes.
  * A fragmented MP4 with more than MAX_BOXES top-level boxes (one per frame)
  * is refused as unreadable; phones do not produce those.
+ * OTI 0x40 means "MPEG-4 Audio", not strictly AAC: a hand-built esds with
+ * OTI 0x40 whose DecoderSpecificInfo names a non-AAC audioObjectType (e.g.
+ * 34, MP3-on-MP4, or 42, USAC) passes. ffmpeg never writes that; it uses
+ * 0x69/0x6B for MP3.
  */
 
 export type VideoCodecCheck =

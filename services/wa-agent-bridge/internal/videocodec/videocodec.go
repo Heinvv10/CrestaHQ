@@ -22,7 +22,10 @@
 // not play. It does NOT check that an avc1 entry really holds avcC rather than
 // hvcC, so an HEVC stream deliberately relabelled avc1 passes. A fragmented
 // MP4 with more than maxBoxes top-level boxes (one per frame) is refused as
-// unreadable; phones do not produce those.
+// unreadable; phones do not produce those. OTI 0x40 means "MPEG-4 Audio",
+// not strictly AAC: a hand-built esds with OTI 0x40 whose DecoderSpecificInfo
+// names a non-AAC audioObjectType (e.g. 34, MP3-on-MP4, or 42, USAC) passes.
+// ffmpeg never writes that; it uses 0x69/0x6B for MP3.
 package videocodec
 
 import (
@@ -130,6 +133,16 @@ func only(boxes []box, typ string) (box, error) {
 		return box{}, errUnreadable
 	}
 	return found[0], nil
+}
+
+// hasType reports whether any box in boxes has type typ.
+func hasType(boxes []box, typ string) bool {
+	for _, b := range boxes {
+		if b.typ == typ {
+			return true
+		}
+	}
+	return false
 }
 
 // aacOTI are the esds objectTypeIndication values that are AAC: MPEG-4, then
@@ -328,8 +341,16 @@ func (w *walker) objectTypeIndication(mp4a box) (byte, bool) {
 	if err != nil {
 		return 0, false
 	}
-	esds, err := only(kids, "esds")
-	if err != nil {
+	var esds box
+	if hasType(kids, "esds") {
+		// One esds or refuse. Falling back to `wave` when there are two would
+		// let a direct esds holding MP3 be outvoted by a nested AAC one, and
+		// the TS inspector does not do that (video-codec.ts: it reads `wave`
+		// only when no esds exists), so the rails would disagree.
+		if esds, err = only(kids, "esds"); err != nil {
+			return 0, false
+		}
+	} else {
 		// QuickTime-style files nest esds inside a `wave` box.
 		wave, werr := only(kids, "wave")
 		if werr != nil {

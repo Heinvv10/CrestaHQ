@@ -60,3 +60,10 @@ PY
 # Not an MP4 at all, and an MP4 cut off mid-mdat.
 printf 'this is not a video, just text labelled video/mp4\n' > garbage.mp4
 head -c 1200 h264-aac-moov-at-end.mp4 > truncated.mp4
+
+# mp3-esds-twice-aac-in-wave.mp4 is HAND-CRAFTED, not made by ffmpeg: an mp4a
+# entry with two esds boxes (OTI 0x69, MP3) plus a nested wave{esds(OTI 0x40)}.
+# Both inspectors must refuse it. The Go one once fell back to `wave` when
+# there were TWO esds, not only when there were none, so it allowed the file
+# while the TS one refused it. ffprobe reports its audio as AAC. Kept as a
+# committed binary; regenerating it needs a box editor, not ffmpeg.

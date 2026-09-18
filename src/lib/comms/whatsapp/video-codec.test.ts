@@ -65,6 +65,17 @@ describe("checkWhatsappVideoCodecs — real files", () => {
     expect(r.ok === false && r.message).toContain('sound is "Opus"');
   });
 
+  it("refuses an mp4a with two esds instead of trusting a nested wave (the Go inspector must agree)", () => {
+    // Two direct esds (MP3) plus wave{esds(AAC)}: ambiguous, so refused as
+    // unconfirmed rather than resolved by the nested box. ffprobe calls it AAC.
+    expect(checkWhatsappVideoCodecs(fixture("mp3-esds-twice-aac-in-wave.mp4"))).toEqual({
+      ok: false,
+      code: "video_codec_unsupported",
+      message:
+        "This video's sound couldn't be confirmed as AAC, which is all WhatsApp plays. Export it with AAC audio and try again.",
+    });
+  });
+
   it.each(["h264-mp3.mp4", "h264-aac-then-mp3.mp4"])("refuses %s — mp4a holding MP3 is not AAC", (name) => {
     expect(checkWhatsappVideoCodecs(fixture(name))).toEqual({
       ok: false,

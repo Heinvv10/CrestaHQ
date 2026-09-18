@@ -234,3 +234,14 @@ func TestEveryTruncationIsSafe(t *testing.T) {
 		}
 	}
 }
+
+// Two direct esds (MP3) plus wave{esds(AAC)} is ambiguous and must be refused
+// as unconfirmed, the same as the TS inspector. This once fell back to wave
+// whenever finding exactly one esds failed, so Go allowed what TS refused.
+func TestTwoEsdsDoNotFallBackToWave(t *testing.T) {
+	const name = "mp3-esds-twice-aac-in-wave.mp4"
+	want := "This video's sound couldn't be confirmed as AAC, which is all WhatsApp plays. Export it with AAC audio and try again."
+	if r := wantRefused(t, name, fixture(t, name), CodeUnsupported); r.Message != want {
+		t.Fatalf("%s: message %q, want %q", name, r.Message, want)
+	}
+}
