@@ -79,6 +79,7 @@ const BRIDGE_MEDIA_MIME_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
   "application/pdf",
+  "video/mp4",
 ];
 
 /** Meta's caption limit, the same 1024 `interactive.ts` holds a body to. */
@@ -90,11 +91,12 @@ const CLOUD_MAX_CAPTION_CHARS = 1024;
  * - audio is left out because Meta accepts no caption on an audio message,
  *   and the composer always sends the typed text as the caption — an audio
  *   file would silently lose it.
- * - video/mp4 is left out until a live proof. Meta requires H.264 + AAC
- *   inside the container; an iPhone's HEVC `.mp4` passes a MIME check,
+ * - video/mp4 goes only once its codecs are checked. Meta requires H.264 +
+ *   AAC inside the container; an iPhone's HEVC `.mp4` passes a MIME check,
  *   uploads, gets a wamid, and then fails asynchronously while the thread
- *   row says "sent". Restoring it is this one line, after a real handset has
- *   received one.
+ *   row says "sent". The send route reads the codecs out of the file first
+ *   (`checkWhatsappVideoCodecs` in video-codec.ts) and refuses anything else
+ *   before the upload. NOT YET PROVEN: a real handset receiving one.
  *
  * Caps per Meta's media documentation (as encoded by both
  * @whatsapp-cloudapi/client and @kapso/whatsapp-cloud-api, checked
@@ -123,6 +125,7 @@ const CLOUD_MEDIA_MIME_TYPES: readonly string[] = [
   "image/jpeg",
   "image/png",
   "application/pdf",
+  "video/mp4",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];

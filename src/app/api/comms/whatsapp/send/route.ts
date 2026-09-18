@@ -4,6 +4,7 @@ import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { sendConversationWhatsapp } from "@/lib/server/conversation-send/whatsapp";
 import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
 import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
+import { checkWhatsappVideoCodecs } from "@/lib/comms/whatsapp/video-codec";
 
 type Body = {
   contactId?: string;
@@ -101,6 +102,15 @@ export async function POST(request: Request) {
         { error: "attachment filename is longer than 255 bytes.", code: "media_invalid" },
         { status: 400 },
       );
+    }
+    // An MP4 WhatsApp cannot play is accepted by Meta, gets a wamid, and then
+    // fails after the thread row already says "sent" — so the codecs are read
+    // here, before either rail uploads anything (see video-codec.ts).
+    if (contentType.split(";")[0]!.trim().toLowerCase() === "video/mp4") {
+      const codecs = checkWhatsappVideoCodecs(Buffer.from(dataBase64, "base64"));
+      if (!codecs.ok) {
+        return NextResponse.json({ error: codecs.message, code: codecs.code }, { status: 400 });
+      }
     }
     attachment = { filename, contentType, dataBase64 };
   }

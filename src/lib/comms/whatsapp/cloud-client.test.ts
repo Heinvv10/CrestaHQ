@@ -73,6 +73,23 @@ describe("buildCloudMessageBody", () => {
     );
     expect(body.type).toBe("text");
   });
+
+  it("sends a video by id, with the text as caption and no filename", () => {
+    const media = { id: "MV", kind: "video" as const, filename: "clip.mp4" };
+    expect(buildCloudMessageBody({ mode: "text" }, "+27784356159", "the install", null, null, media)).toEqual({
+      messaging_product: "whatsapp",
+      to: "27784356159",
+      type: "video",
+      video: { id: "MV", caption: "the install" },
+    });
+    // Omitted, not "", when there is no text.
+    expect(buildCloudMessageBody({ mode: "text" }, "+27784356159", "", null, null, media)).toEqual({
+      messaging_product: "whatsapp",
+      to: "27784356159",
+      type: "video",
+      video: { id: "MV" },
+    });
+  });
 });
 
 describe("sendWhatsappCloud", () => {

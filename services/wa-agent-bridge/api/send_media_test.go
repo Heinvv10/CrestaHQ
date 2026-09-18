@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -220,11 +221,14 @@ func TestSendMediaUnsupportedTypeIsRejected(t *testing.T) {
 // Every type on the allow-list must actually be sendable, or the list is
 // decorative and the feature works only for whichever one has a happy-path test.
 func TestSendMediaAllowedTypesAreAccepted(t *testing.T) {
-	for _, mime := range []string{"image/png", "image/jpeg", "application/pdf"} {
+	for mime, data := range map[string][]byte{
+		"image/png": tinyPNG, "image/jpeg": tinyPNG, "application/pdf": tinyPNG,
+		"video/mp4": videoFixture(t, "h264-aac-faststart.mp4"),
+	} {
 		h, st, sender := testHandler(t)
 		st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
 		rec := post(h, "/v1/send", "tok-hermes",
-			mediaBodyJSON(knownJID, "report", "m1", "f", mime, tinyPNG))
+			mediaBodyJSON(knownJID, "report", "m1", "f", mime, data))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: want 200, got %d body=%s", mime, rec.Code, rec.Body.String())
 		}
@@ -414,5 +418,91 @@ func TestFilenamesAreNeverLogged(t *testing.T) {
 	// whether the filename was the problem.
 	if !strings.Contains(buf.String(), redactedLen(secret)) {
 		t.Fatalf("want the redacted filename length in the log, got: %s", buf.String())
+	}
+}
+
+// videoFixture reads one of the real MP4s shared with the CRM's inspector
+// tests — see src/lib/comms/whatsapp/__fixtures__/video/generate.sh.
+func videoFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "src", "lib", "comms", "whatsapp", "__fixtures__", "video", name))
+	if err != nil {
+		t.Fatalf("read video fixture: %v", err)
+	}
+	return b
+}
+
+func TestSendVideoH264ReachesTheTransport(t *testing.T) {
+	h, st, sender := testHandler(t)
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+
+	clip := videoFixture(t, "h264-aac-moov-at-end.mp4")
+	rec := post(h, "/v1/send", "tok-hermes",
+		mediaBodyJSON(knownJID, "", "v1", "clip.mp4", "video/mp4", clip))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := sender.LastMedia()
+	if got == nil || got.MimeType != "video/mp4" || !bytes.Equal(got.Data, clip) {
+		t.Fatalf("the video did not reach the transport intact: %+v", got)
+	}
+}
+
+// The case the check exists for: an iPhone HEVC .mp4 is refused before the
+// rails, so it spends no cap slot and never reaches the socket.
+func TestSendVideoWithUnplayableCodecsIsRejected(t *testing.T) {
+	cases := map[string]string{
+		"hevc-hvc1-aac.mp4":                "video_codec_unsupported",
+		"hevc-hev1-aac.mp4":                "video_codec_unsupported",
+		"hevc-with-avc1-bytes-in-mdat.mp4": "video_codec_unsupported",
+		"h264-opus.mp4":                    "video_codec_unsupported",
+		"h264-mp3.mp4":                     "video_codec_unsupported",
+		"h264-aac-then-mp3.mp4":            "video_codec_unsupported",
+		"mp3-esds-twice-aac-in-wave.mp4":   "video_codec_unsupported",
+		"garbage.mp4":                      "media_invalid",
+		"truncated.mp4":                    "media_invalid",
+	}
+	for name, code := range cases {
+		h, st, sender := testHandler(t)
+		st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+		rec := post(h, "/v1/send", "tok-hermes",
+			mediaBodyJSON(knownJID, "here", "v1", "clip.mp4", "video/mp4", videoFixture(t, name)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d body=%s", name, rec.Code, rec.Body.String())
+		}
+		out := decode(t, rec)
+		if out["code"] != code {
+			t.Fatalf("%s: want code %s, got %v", name, code, out)
+		}
+		if name == "hevc-hvc1-aac.mp4" && !strings.Contains(fmt.Sprint(out["error"]), "HEVC (H.265)") {
+			t.Fatalf("the HEVC refusal does not name HEVC: %v", out["error"])
+		}
+		if sender.Calls() != 0 {
+			t.Fatalf("%s: an unplayable video reached the transport", name)
+		}
+		if n, _ := st.OutboundCountForContact(knownJID, time.Time{}); n != 0 {
+			t.Fatalf("%s: a rejected video consumed %d cap slots, want 0", name, n)
+		}
+	}
+}
+
+// Video shares the bridge's single cap; the size check runs before the codec
+// check, so an oversize file is refused as too large without being parsed.
+func TestSendVideoOverTheSizeCapIsRejected(t *testing.T) {
+	h, st, sender := testHandler(t)
+	st.RecordInbound(knownJID, fixedNow.Add(-time.Hour))
+
+	clip := videoFixture(t, "h264-aac-faststart.mp4")
+	oversize := append(bytes.Clone(clip), bytes.Repeat([]byte{0}, maxMediaBytes+1-len(clip))...)
+	rec := post(h, "/v1/send", "tok-hermes",
+		mediaBodyJSON(knownJID, "here", "v1", "clip.mp4", "video/mp4", oversize))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if out := decode(t, rec); out["code"] != "media_too_large" {
+		t.Fatalf("want code media_too_large, got %v", out)
+	}
+	if sender.Calls() != 0 {
+		t.Fatal("an oversize video reached the transport")
 	}
 }

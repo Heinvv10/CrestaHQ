@@ -17,6 +17,7 @@ PR body are meaningful only against the plan they deviate from.
 | A3 — Go bridge downloads and forwards media | `feat/wa-bridge-inbound-media` | [#145](https://github.com/Heinvv10/CrestaHQ/pull/145) | open |
 | B1 — Cloud outbound media + composer file picker | `feat/wa-media-outbound` | [#149](https://github.com/Heinvv10/CrestaHQ/pull/149) | open |
 | follow-up — media route answers cleanly when the bucket cannot be resolved | `fix/wa-media-serve-bucket-throw` | [#157](https://github.com/Heinvv10/CrestaHQ/pull/157) | open, not part of the original plan |
+| follow-up — outbound video on both rails, H.264/AAC only (codecs read from the MP4 before upload; `video-codec.ts` + bridge `internal/videocodec`) | `feat/whatsapp-video-send` | [#172](https://github.com/Heinvv10/CrestaHQ/pull/172) | open; real-handset delivery NOT yet proven. **Bridge-rail video works only after `scripts/deploy-wa.sh` has rolled the fleet** — deploying the app alone offers video in the picker while every un-rolled bridge still refuses `video/mp4` |
 
 Each PR body records where it deviated from this plan and why. §5 ("Explicitly NOT
 building") is the list a future session should read before assuming a capability

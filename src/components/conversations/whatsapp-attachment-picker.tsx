@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { capabilitiesFor, type WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { checkWhatsappVideoCodecs } from "@/lib/comms/whatsapp/video-codec";
 import { mediaKindForMime } from "@/types/whatsapp-media";
 
 /** What the send route accepts as `attachment`. */
@@ -111,10 +112,23 @@ export function useWhatsappAttachment(
         toast.error(`Couldn't read ${file.name}.`);
         return;
       }
+      const dataBase64 = url.slice(comma + 1);
+      // Early word on a video WhatsApp cannot play, instead of after Send.
+      // The send route runs the same check, and that one is what counts.
+      if (file.type === "video/mp4") {
+        const codecs = checkWhatsappVideoCodecs(
+          Uint8Array.from(atob(dataBase64), (c) => c.charCodeAt(0)),
+        );
+        if (!codecs.ok) {
+          settle(null);
+          toast.error(`${file.name}: ${codecs.message}`);
+          return;
+        }
+      }
       settle({
         filename: file.name,
         contentType: file.type,
-        dataBase64: url.slice(comma + 1),
+        dataBase64,
       });
     };
     reader.onerror = () => {
