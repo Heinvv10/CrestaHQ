@@ -197,6 +197,8 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
 
   const sends: Array<{ url: string; body: Record<string, unknown> }> = [];
   await page.route("**/api/comms/**", async (route) => {
+    // Only a POST is a send; the picker's capability GET goes through.
+    if (route.request().method() !== "POST") return route.fallback();
     sends.push({ url: route.request().url(), body: route.request().postDataJSON() });
     await route.abort();
   });

@@ -82,7 +82,8 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
   // Every browser request to a send route, for the "nothing is sent" check.
   const sends: string[] = [];
   const onRequest = (r: Request) => {
-    if (new URL(r.url()).pathname.startsWith("/api/comms/")) sends.push(r.url());
+    // Only a POST is a send; the attachment picker's capability GET is not.
+    if (r.method() === "POST" && new URL(r.url()).pathname.startsWith("/api/comms/")) sends.push(r.url());
   };
 
   const list = page.getByTestId("inbox-list");
