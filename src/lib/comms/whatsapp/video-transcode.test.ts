@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -142,6 +142,18 @@ describe.skipIf(!tools)("fitVideo, with real ffmpeg", () => {
     }, "video/quicktime", MiB16);
     expect(mode).toBe(0o700);
     expect(fit).toMatchObject({ ok: false, code: "media_invalid" });
+  });
+
+  it("sweeps a temp directory a killed transcode left behind, on the first video of a process", async () => {
+    const crashed = join(work, "wa-video-crashed");
+    mkdirSync(crashed);
+    writeFileSync(join(crashed, "in"), clips.hevcMov);
+    const old = (Date.now() - 20 * 60_000) / 1000;
+    utimesSync(crashed, old, old);
+    vi.resetModules();
+    const fresh = await import("./video-transcode");
+    expect((await fresh.fitVideo(from(clips.h264), "video/mp4", MiB16)).ok).toBe(true);
+    expect(readdirSync(work)).toEqual([]);
   });
 
   it("answers 'busy' after 5 s while another transcode holds the one slot, and runs once it is free", async () => {

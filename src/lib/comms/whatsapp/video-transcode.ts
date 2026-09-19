@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { videoTranscodeSlots } from "./media-budget";
 import { checkWhatsappVideoCodecs } from "./video-codec";
+import { sweepStaleVideoTempOnce, VIDEO_TEMP_PREFIX } from "./video-temp-sweep";
 import { PROBE_TIMEOUT_MS, run, videoTools, type VideoTools } from "./video-tools";
 
 /**
@@ -31,7 +32,8 @@ import { PROBE_TIMEOUT_MS, run, videoTools, type VideoTools } from "./video-tool
  * every protocol but `file` by `-protocol_whitelist`; `-nostdin`; `nice`;
  * a hard wall-clock budget ending in SIGKILL; a capped stderr; one transcode
  * at a time. The file lives in a private mkdtemp directory removed on every
- * path, and never in this process's memory until the ≤cap result is read.
+ * path (and swept by the next process if this one is killed mid-transcode —
+ * video-temp-sweep.ts), and never in this process's memory until the ≤cap result is read.
  *
  * METADATA, as for photos (image-shrink.ts), because the business uses it
  * for maintenance: capture time (`creation_time`) and location are KEPT;
@@ -72,6 +74,7 @@ export type VideoFit = { ok: true; bytes: Buffer; transcoded: boolean } | Refusa
 
 /** The input half of every ffprobe/ffmpeg call: guards, then the forced demuxer. */
 export function guardedInput(path: string): string[] {
+  // Forcing `-f mov` is defence in depth behind FORMAT_GUARD, which already leaves only the mov demuxer.
   return [...PROTOCOL_GUARD, ...FORMAT_GUARD, "-f", "mov", "-i", `file:${path}`];
 }
 
@@ -174,10 +177,12 @@ export async function fitVideo(
 ): Promise<VideoFit> {
   const t = await videoTools();
   if (!t) return refuse("media_invalid", "Videos can't be converted here. Export it as H.264 MP4 and try again.");
+  // What a killed process left behind; once per process, never throws.
+  await sweepStaleVideoTempOnce();
   let dir: string | null = null;
   try {
     // 0700, and a name no other request can guess or share.
-    dir = await mkdtemp(join(tmpdir(), "wa-video-"));
+    dir = await mkdtemp(join(tmpdir(), VIDEO_TEMP_PREFIX));
     const input = join(dir, "in");
     try {
       await write(input);
