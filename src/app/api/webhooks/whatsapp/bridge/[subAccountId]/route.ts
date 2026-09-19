@@ -19,6 +19,7 @@ import {
   parseWhatsappMedia,
 } from "@/types/whatsapp-media";
 import type { WhatsappMedia, WhatsappMediaKind } from "@/types/whatsapp-media";
+import { locationPreviewLabel, parseWhatsappLocation } from "@/types/whatsapp-location";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
@@ -68,6 +69,9 @@ interface BridgeInbound {
   /** Set by the bridge INSTEAD of `media` when it had a file and could not
    *  forward it. Passed through verbatim — the bridge names the reasons. */
   mediaDropped?: string;
+  /** A shared location, as the bridge read it off whatsmeow. Untrusted like
+   *  the rest of the body: validated by `parseWhatsappLocation`. */
+  location?: unknown;
 }
 
 /** Decoded-byte cap. Matches WhatsApp's own per-message media limit, and the
@@ -299,6 +303,18 @@ export async function POST(
 
   const agencyId = subAccount.agencyId ?? "";
   const body = payload.text ?? "";
+  // Coordinates are the customer's personal data: the log never carries them.
+  const location =
+    payload.location == null ? null : parseWhatsappLocation(payload.location);
+  if (payload.location != null && location === null) {
+    console.warn(
+      `[whatsapp-bridge] location with unusable coordinates (sa=${subAccountId}) — stored without them`
+    );
+  }
+  // The row and the inbox get a readable label; `body` itself stays what the
+  // customer typed (usually nothing), which keeps the AI gate below from
+  // answering a bare location. Same rule as the Cloud route.
+  const rowBody = body || (location ? locationPreviewLabel(location) : "");
   const word = firstKeyword(body);
   let nextOptedOut: boolean | null = null;
   if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
@@ -513,11 +529,12 @@ export async function POST(
             contactId: d.id,
             direction: "inbound",
             status: "received",
-            body,
+            body: rowBody,
             from,
             to: subAccount.whatsappBridgeMeta?.displayPhoneNumber ?? null,
             provider: "bridge",
             providerMessageId: providerMessageId || null,
+            ...(location ? { location } : {}),
             twilioMessageSid: null,
             sentByUid: null,
             error: null,
@@ -543,7 +560,7 @@ export async function POST(
       : "";
   const previewFor = (contactId: string): string => {
     const stored = storedMedia.get(contactId);
-    return body || incomingLabel || (stored ? mediaPreviewLabel(stored) : "");
+    return rowBody || incomingLabel || (stored ? mediaPreviewLabel(stored) : "");
   };
 
   // Wrapped for the same reason the message-row write above is: this runs

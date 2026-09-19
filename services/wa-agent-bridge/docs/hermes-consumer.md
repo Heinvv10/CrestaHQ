@@ -127,6 +127,23 @@ A message that carried a **file** adds exactly one further key, never both:
   sender intended to disappear — that is a POPIA obligation you inherit with
   the payload, not one the bridge discharges for you.
 
+A message where the customer **shared a location** adds a `location` key:
+
+```json
+{ "from": "…", "text": "", "messageId": "…", "at": "…",
+  "location": { "latitude": -26.3812, "longitude": 27.8123,
+                "name": "…", "address": "…", "url": "…" } }
+```
+
+- `latitude` and `longitude` are always present, finite and in range; a
+  message whose coordinates are not is forwarded without the key (or not at
+  all, when it carried nothing else).
+- `name`, `address` and `url` are omitted when empty. They are the sender's
+  own text: render them as text, and never use `url` as a link.
+- A **live** location arrives once, at its position when sharing started, with
+  its caption as `text`. The bridge does not follow the updates.
+- The coordinates are usually the customer's home. Keep them out of logs.
+
 `messageId` is WhatsApp's own id for the INBOUND message. Use it to dedupe a
 redelivery on the id rather than on the body. It can be an empty string when
 the transport supplied none — treat empty as unknown, never as a value to key

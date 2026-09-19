@@ -322,6 +322,8 @@ type Inbound struct {
 	MsgID string
 	At    time.Time
 	Media *InboundAttachment
+	// Location is nil unless the customer shared one. See locationFrom.
+	Location *InboundLocation
 }
 
 // InboundAttachment is one pending download: the identity of the file, and the
@@ -397,15 +399,28 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 	// stated to consumers in docs/hermes-consumer.md because a buyer of this
 	// template inherits the obligation with the bytes.
 	att := attachmentFrom(v.Message)
-	if text == "" && att == nil {
+	// A shared location carries no text either, and is the one reliable way a
+	// customer can tell the team where their house is (WhatsApp strips GPS
+	// from photos). Unusable coordinates are logged — without the values —
+	// and the message is treated as if it carried none.
+	loc, locCaption, hadLoc := locationFrom(v.Message)
+	if hadLoc && loc == nil {
+		log.Printf("inbound location with unusable coordinates jid=%s — forwarded without them",
+			redact.JID(senderAddress(v.Info.MessageSource)))
+	}
+	if text == "" {
+		text = locCaption
+	}
+	if text == "" && att == nil && loc == nil {
 		return nil
 	}
 
 	in := &Inbound{
-		JID:   senderAddress(v.Info.MessageSource),
-		Text:  text,
-		MsgID: v.Info.ID,
-		At:    v.Info.Timestamp,
+		JID:      senderAddress(v.Info.MessageSource),
+		Text:     text,
+		MsgID:    v.Info.ID,
+		At:       v.Info.Timestamp,
+		Location: loc,
 	}
 	if att != nil {
 		if in.Text == "" {

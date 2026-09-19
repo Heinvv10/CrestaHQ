@@ -62,7 +62,7 @@ type Client struct {
 	// see MediaDownloader.
 	downloader MediaDownloader
 
-	onInbound   func(jid, text, msgID string, at time.Time, media *InboundAttachment)
+	onInbound   func(jid, text, msgID string, at time.Time, media *InboundAttachment, loc *InboundLocation)
 	onLoggedOut func()
 
 	// pairCode is the live QR payload while a pairing is in flight. It is a
@@ -82,7 +82,7 @@ var _ Transport = (*Client)(nil)
 // against.
 func NewClient(
 	sessionDir string,
-	onInbound func(jid, text, msgID string, at time.Time, media *InboundAttachment),
+	onInbound func(jid, text, msgID string, at time.Time, media *InboundAttachment, loc *InboundLocation),
 	onLoggedOut func(),
 ) (*Client, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -237,7 +237,7 @@ func (c *Client) handleMessage(v *events.Message) {
 	// it lets a consumer dedupe a redelivery on the id rather than on the
 	// body. quotedMessageId (which of OUR messages this is a reply to) is a
 	// different lookup into ContextInfo and stays phase-2 work.
-	c.onInbound(in.JID, in.Text, in.MsgID, in.At, in.Media)
+	c.onInbound(in.JID, in.Text, in.MsgID, in.At, in.Media, in.Location)
 }
 
 // mediaDownloader is where inbound attachments come from: the test override if

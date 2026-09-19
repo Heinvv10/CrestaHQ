@@ -71,7 +71,50 @@ describe("parseCloudInbound", () => {
       profileName: "Hein",
       buttonPayload: null,
       media: null,
+      location: null,
+      locationRejected: false,
     });
+  });
+
+  it("parses a shared location as Meta sends it, with no text", () => {
+    const parsed = parseCloudInbound(
+      withMessage({
+        from: "27821234567",
+        id: "wamid.LOC",
+        type: "location",
+        location: {
+          latitude: -26.3812,
+          longitude: 27.8123,
+          name: "Thandi's house",
+          address: "12 Main Rd, Lawley",
+          url: "https://maps.example/p",
+        },
+      }),
+    );
+    expect(parsed).toMatchObject({
+      text: "",
+      media: null,
+      locationRejected: false,
+      location: {
+        latitude: -26.3812,
+        longitude: 27.8123,
+        name: "Thandi's house",
+        address: "12 Main Rd, Lawley",
+        url: "https://maps.example/p",
+      },
+    });
+  });
+
+  it("flags a location whose coordinates are unusable instead of keeping it", () => {
+    const parsed = parseCloudInbound(
+      withMessage({
+        from: "27821234567",
+        id: "wamid.LOC",
+        type: "location",
+        location: { latitude: 200, longitude: 27.8 },
+      }),
+    );
+    expect(parsed).toMatchObject({ location: null, locationRejected: true });
   });
 
   // Shapes as Meta documents them for the two kinds of button reply.

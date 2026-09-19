@@ -4,6 +4,7 @@ import type {
   WhatsappMedia,
   WhatsappMediaDropped,
 } from "@/types/whatsapp-media";
+import type { WhatsappLocation } from "@/types/whatsapp-location";
 
 /**
  * Per-contact SMS messages — the chat thread lives at:
@@ -68,4 +69,6 @@ export interface MessageDoc {
   media?: WhatsappMedia | null;
   /** WhatsApp only: set instead of `media` when the file could not be stored. */
   mediaDropped?: WhatsappMediaDropped | null;
+  /** WhatsApp only, inbound: a location the customer shared. Absent otherwise. */
+  location?: WhatsappLocation | null;
 }

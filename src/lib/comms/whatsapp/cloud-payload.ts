@@ -14,6 +14,10 @@
  */
 
 import type { WhatsappMediaKind } from "@/types/whatsapp-media";
+import {
+  parseWhatsappLocation,
+  type WhatsappLocation,
+} from "@/types/whatsapp-location";
 
 type Json = Record<string, unknown>;
 
@@ -64,6 +68,11 @@ export interface CloudInbound {
   /** The file Meta says this message carried, before it has been fetched.
    *  Null for text, buttons, and a media block with no id. */
   media: CloudMediaRef | null;
+  /** A shared location (`type: "location"`), validated. Null otherwise. */
+  location: WhatsappLocation | null;
+  /** True when the message WAS a location but its coordinates were unusable,
+   *  so the caller can log the drop. */
+  locationRejected: boolean;
 }
 
 export interface CloudMediaRef {
@@ -208,6 +217,11 @@ export function parseCloudInbound(payload: unknown): CloudInbound | null {
     if (typeof caption === "string") text = caption;
   }
 
+  // Meta: `location: { latitude, longitude, name?, address?, url? }`. No
+  // caption field, so `text` stays empty and the AI gate skips it.
+  const location =
+    kind === "location" ? parseWhatsappLocation(message.location) : null;
+
   return {
     fromPhone,
     text,
@@ -215,6 +229,8 @@ export function parseCloudInbound(payload: unknown): CloudInbound | null {
     profileName,
     buttonPayload,
     media: parseMediaRef(kind, message),
+    location,
+    locationRejected: kind === "location" && location === null,
   };
 }
 
