@@ -23,6 +23,10 @@ import type { Contact } from "@/types/contacts";
 import type { MessageDoc } from "@/types/messages";
 import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
 import {
+  isLocationLabelBody,
+  WhatsappLocationAttachment,
+} from "@/components/conversations/whatsapp-location-attachment";
+import {
   WhatsappAttachmentPicker,
   attachmentSendBlock,
   useWhatsappAttachment,
@@ -338,7 +342,10 @@ function MessageBubble({
           media={message.media}
           dropped={message.mediaDropped}
         />
-        <p className="whitespace-pre-wrap break-words">{message.body}</p>
+        <WhatsappLocationAttachment location={message.location} />
+        {!isLocationLabelBody(message.body, message.location) && (
+          <p className="whitespace-pre-wrap break-words">{message.body}</p>
+        )}
         {message.buttons && message.buttons.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-current/10 pt-2">
             {message.buttons.map((btn, i) => (

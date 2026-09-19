@@ -14,6 +14,10 @@ import type { MessageDoc } from "@/types/messages";
 import type { ConversationChannel } from "@/types/conversations";
 import type { ConversationTheme } from "@/hooks/use-conversation-theme";
 import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
+import {
+  isLocationLabelBody,
+  WhatsappLocationAttachment,
+} from "@/components/conversations/whatsapp-location-attachment";
 import type { Note } from "@/types/contacts";
 import { ThreadNote } from "./thread-note";
 import { ThreadScheduled } from "./thread-scheduled";
@@ -410,7 +414,14 @@ function ChannelBubble({
             dropped={"mediaDropped" in message ? message.mediaDropped : null}
           />
         )}
-        <p className="break-words whitespace-pre-wrap">{message.body}</p>
+        {message.channel === "whatsapp" && "location" in message && (
+          <WhatsappLocationAttachment location={message.location} />
+        )}
+        {!(
+          message.channel === "whatsapp" &&
+          "location" in message &&
+          isLocationLabelBody(message.body, message.location)
+        ) && <p className="break-words whitespace-pre-wrap">{message.body}</p>}
         {"buttons" in message && message.buttons && message.buttons.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-current/10 pt-2">
             {message.buttons.map((btn, i) => (

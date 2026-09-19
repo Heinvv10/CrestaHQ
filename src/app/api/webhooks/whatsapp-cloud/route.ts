@@ -32,6 +32,7 @@ import {
   type WhatsappMedia,
   type WhatsappMediaDropped,
 } from "@/types/whatsapp-media";
+import { locationPreviewLabel } from "@/types/whatsapp-location";
 import {
   firstKeyword,
   WHATSAPP_START_WORDS,
@@ -285,6 +286,20 @@ export async function POST(request: Request) {
   const from = toE164(inbound.fromPhone);
   if (!from) return ok({ ok: true, ignored: "no_sender" });
 
+  // Coordinates are the customer's personal data: the log names the sub-account
+  // and never the values.
+  if (inbound.locationRejected) {
+    console.warn(
+      `[whatsapp-cloud] location message with unusable coordinates (sa=${route.subAccountId}) — stored without them`,
+    );
+  }
+  // A shared location carries no text. The row gets a readable body so no
+  // reader sees an empty message; `inbound.text` stays empty, which is what
+  // keeps the AI from replying to it (see the AI gate below).
+  const locationLabel = inbound.location
+    ? locationPreviewLabel(inbound.location)
+    : "";
+
   const db = getAdminDb();
   const word = firstKeyword(inbound.text);
   let nextOptedOut: boolean | null = null;
@@ -381,12 +396,13 @@ export async function POST(request: Request) {
           contactId: d.id,
           direction: "inbound",
           status: "received",
-          body: inbound.text,
+          body: inbound.text || locationLabel,
           from,
           to: phoneNumberId,
           provider: "cloud",
           providerMessageId: inbound.providerMessageId,
           ...(inbound.buttonPayload ? { buttonPayload: inbound.buttonPayload } : {}),
+          ...(inbound.location ? { location: inbound.location } : {}),
           twilioMessageSid: null,
           sentByUid: null,
           error: null,
@@ -408,6 +424,7 @@ export async function POST(request: Request) {
   // file nor depends on whether storing it worked for this particular contact.
   const preview =
     inbound.text ||
+    locationLabel ||
     (inbound.media
       ? mediaPreviewLabel({
           kind: inbound.media.kind,
@@ -530,6 +547,11 @@ export async function POST(request: Request) {
   // caption-less photo would otherwise have the AI send a real reply about
   // nothing. The inbox entry and the file still land. Same rule as the bridge
   // route. Runs before the media step so it never waits on a download.
+  //
+  // A shared location is skipped by the same test — its row body is a label,
+  // but `inbound.text` is empty. Deliberate: the location is for the team (a
+  // technician finding the house), there is nothing in it for the AI to
+  // answer, and replying would send the customer's coordinates to the LLM.
   if (
     nextOptedOut === null &&
     !isRedelivery &&

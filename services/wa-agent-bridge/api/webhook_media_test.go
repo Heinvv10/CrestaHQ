@@ -87,7 +87,7 @@ func attach(fetch func(context.Context) *wa.InboundMedia) *wa.InboundAttachment 
 // constructed by hand here.
 func deliverEvent(f *Fanout, evt *events.Message, dl wa.MediaDownloader) {
 	in := wa.ParseInbound(evt, dl)
-	f.Deliver(in.JID, in.Text, in.MsgID, in.At, in.Media)
+	f.Deliver(in.JID, in.Text, in.MsgID, in.At, in.Media, in.Location)
 }
 
 func captureOne(t *testing.T) (srv *httptest.Server, body chan []byte, sig chan string) {
@@ -248,7 +248,7 @@ func TestDeliverForwardsMediaDroppedMarker(t *testing.T) {
 
 	f.Deliver(knownJID, "caption only", "wamid.DROP", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "too_large"}
-	}))
+	}), nil)
 	f.Wait()
 
 	payload := awaitBody(t, body)
@@ -268,7 +268,7 @@ func TestDeliverWithoutMediaKeepsTodaysPayload(t *testing.T) {
 	srv, body, _ := captureOne(t)
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "hello", "wamid.TEXT", time.Now(), nil)
+	f.Deliver(knownJID, "hello", "wamid.TEXT", time.Now(), nil, nil)
 	f.Wait()
 
 	payload := awaitBody(t, body)
@@ -341,7 +341,7 @@ func TestMediaDeliveriesAreBounded(t *testing.T) {
 	})
 
 	for i := 0; i < 20; i++ {
-		f.Deliver(knownJID, "burst", fmt.Sprintf("wamid.%d", i), time.Now(), fetch)
+		f.Deliver(knownJID, "burst", fmt.Sprintf("wamid.%d", i), time.Now(), fetch, nil)
 	}
 	f.Wait()
 
@@ -370,7 +370,7 @@ func TestDeliverReturnsBeforeTheDownloadRuns(t *testing.T) {
 
 	returned := make(chan struct{})
 	go func() {
-		f.Deliver(knownJID, "slow", "wamid.SLOW", time.Now(), fetch)
+		f.Deliver(knownJID, "slow", "wamid.SLOW", time.Now(), fetch, nil)
 		close(returned)
 	}()
 	select {
@@ -407,7 +407,7 @@ func TestFailedMediaDeliveryFallsBackToTextOnly(t *testing.T) {
 
 	f.Deliver(knownJID, "the caption", "wamid.BIG", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("big")}
-	}))
+	}), nil)
 	f.Wait()
 
 	mu.Lock()
@@ -441,7 +441,7 @@ func TestFailedTextDeliveryIsNotRetried(t *testing.T) {
 	defer srv.Close()
 	f := openFanout(srv.URL, "", store.NewMemory(), false)
 
-	f.Deliver(knownJID, "hello", "wamid.T", time.Now(), nil)
+	f.Deliver(knownJID, "hello", "wamid.T", time.Now(), nil, nil)
 	f.Wait()
 
 	mu.Lock()
@@ -464,7 +464,7 @@ func TestDrainAbandonsTheFileAndStillPostsTheMessage(t *testing.T) {
 		<-ctx.Done() // a download that would take minutes
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
 	})
-	f.Deliver(knownJID, "the caption", "wamid.SLOW", time.Now(), fetch)
+	f.Deliver(knownJID, "the caption", "wamid.SLOW", time.Now(), fetch, nil)
 	<-started // the download is in flight; Drain must cancel it, not pre-empt it
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -510,7 +510,7 @@ func TestDrainCancelsAMediaPostAndFallsBackWithShutdownReason(t *testing.T) {
 
 	f.Deliver(knownJID, "caption", "wamid.MID", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("bytes")}
-	}))
+	}), nil)
 	time.Sleep(100 * time.Millisecond) // let the media POST get in flight
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -543,7 +543,7 @@ func TestDrainGivesUpOnBudgetAndReportsWhatItAbandoned(t *testing.T) {
 		close(started)
 		<-release // ignores ctx entirely
 		return &wa.InboundMedia{Dropped: "fetch_failed"}
-	}))
+	}), nil)
 	// The premise is a fetch ALREADY in flight. Without this, Drain can win
 	// the race to the slot, and a message that never started file work is —
 	// correctly — posted text-only with nothing left to abandon.
@@ -595,7 +595,7 @@ func TestFallbackBodyIsSigned(t *testing.T) {
 
 	f.Deliver(knownJID, "caption", "wamid.SIGFB", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("big")}
-	}))
+	}), nil)
 	f.Wait()
 
 	mu.Lock()
@@ -644,7 +644,7 @@ func TestDrainDeliversAParkedBacklogWithinBudget(t *testing.T) {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "shutdown"}
 	})
 	for i := 0; i < n; i++ {
-		f.Deliver(knownJID, "photo", fmt.Sprintf("wamid.%d", i), time.Now(), fetch)
+		f.Deliver(knownJID, "photo", fmt.Sprintf("wamid.%d", i), time.Now(), fetch, nil)
 	}
 	time.Sleep(50 * time.Millisecond) // two hold slots, eighteen park
 
@@ -686,7 +686,7 @@ func TestTextOnlyPostsDoNotHoldAMediaSlot(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.%d", i), time.Now(), attach(func(context.Context) *wa.InboundMedia {
 			return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Dropped: "too_large"}
-		}))
+		}), nil)
 	}
 	f.Wait()
 
@@ -719,7 +719,7 @@ func TestDeliverAfterDrainStartsNothing(t *testing.T) {
 	if err := f.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver(knownJID, "too late", "wamid.LATE", time.Now(), nil)
+	f.Deliver(knownJID, "too late", "wamid.LATE", time.Now(), nil, nil)
 
 	done := make(chan struct{})
 	go func() { f.Wait(); close(done) }()
@@ -763,7 +763,7 @@ func TestDeliverConcurrentWithDrainIsSafe(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				f.Deliver(knownJID, "x", fmt.Sprintf("wamid.%d", i), time.Now(), nil)
+				f.Deliver(knownJID, "x", fmt.Sprintf("wamid.%d", i), time.Now(), nil, nil)
 			}(i)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -807,7 +807,7 @@ func TestFallbackDoesNotHoldAMediaSlot(t *testing.T) {
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("bytes")}
 	})
 	for i := 0; i < maxConcurrentMediaDeliveries; i++ {
-		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.BLOCKED%d", i), time.Now(), file)
+		f.Deliver(knownJID, "caption", fmt.Sprintf("wamid.BLOCKED%d", i), time.Now(), file, nil)
 	}
 	for i := 0; i < maxConcurrentMediaDeliveries; i++ {
 		select {
@@ -821,7 +821,7 @@ func TestFallbackDoesNotHoldAMediaSlot(t *testing.T) {
 	f.Deliver(knownJID, "third", "wamid.THIRD", time.Now(), attach(func(context.Context) *wa.InboundMedia {
 		close(started)
 		return &wa.InboundMedia{Filename: "photo.jpg", MimeType: "image/jpeg", Data: []byte("b")}
-	}))
+	}), nil)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -860,12 +860,12 @@ func TestPanicInsideIntakeDoesNotWedgeTheFanout(t *testing.T) {
 
 	func() {
 		defer func() { _ = recover() }() // what whatsmeow's dispatchEvent does
-		f.Deliver(knownJID, "boom", "wamid.PANIC", time.Now(), nil)
+		f.Deliver(knownJID, "boom", "wamid.PANIC", time.Now(), nil, nil)
 	}()
 
 	next := make(chan struct{})
 	go func() {
-		f.Deliver(knownJID, "after", "wamid.AFTER", time.Now(), nil)
+		f.Deliver(knownJID, "after", "wamid.AFTER", time.Now(), nil, nil)
 		close(next)
 	}()
 	select {
@@ -906,7 +906,7 @@ func TestNoLostAlertForMessagesThatWouldNotHaveBeenForwarded(t *testing.T) {
 		if err := f.Drain(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		f.Deliver("27829999999@s.whatsapp.net", "stranger", "wamid.STRANGER", time.Now(), nil)
+		f.Deliver("27829999999@s.whatsapp.net", "stranger", "wamid.STRANGER", time.Now(), nil, nil)
 		f.Wait()
 		if strings.Contains(logged.String(), "LOST") {
 			t.Fatalf("a non-owner message was reported LOST on shutdown: %q", logged.String())
@@ -928,7 +928,7 @@ func TestNoLostAlertForMessagesThatWouldNotHaveBeenForwarded(t *testing.T) {
 		if err := f.Drain(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		f.Deliver(knownJID, "yesterday", "wamid.HISTORY", watermark.Add(-30*time.Minute), nil)
+		f.Deliver(knownJID, "yesterday", "wamid.HISTORY", watermark.Add(-30*time.Minute), nil, nil)
 		f.Wait()
 		if strings.Contains(logged.String(), "LOST") {
 			t.Fatalf("replayed history was reported LOST on shutdown: %q", logged.String())

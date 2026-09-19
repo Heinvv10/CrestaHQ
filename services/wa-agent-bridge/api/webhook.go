@@ -294,7 +294,7 @@ func (f *Fanout) SuppressedInbound() (history, capped int) {
 //     a 16MiB download on a VPS routinely would. redact.JID cannot reach
 //     inside a third-party library, so the fix is to never be slow on that
 //     goroutine.
-func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, att *wa.InboundAttachment) {
+func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, att *wa.InboundAttachment, loc *wa.InboundLocation) {
 	if !f.intake(jid, text, msgID, at) {
 		return
 	}
@@ -303,6 +303,11 @@ func (f *Fanout) Deliver(jid, text, msgID string, at time.Time, att *wa.InboundA
 		"text":      text,
 		"messageId": msgID,
 		"at":        at.UTC().Format(time.RFC3339),
+	}
+	// Only when there is one, for the same reason withMedia adds nothing to a
+	// text message. In base, so the text-only media fallback keeps it too.
+	if loc != nil {
+		base["location"] = locationBody(loc)
 	}
 	go func() {
 		defer f.wg.Done()
@@ -565,6 +570,18 @@ func (f *Fanout) acquireMediaSlot() bool {
 }
 
 func (f *Fanout) releaseMediaSlot() { <-f.mediaSlots }
+
+// locationBody is the `location` key of the webhook body. Empty strings are
+// omitted, so a consumer never mistakes "" for a place name.
+func locationBody(loc *wa.InboundLocation) map[string]any {
+	body := map[string]any{"latitude": loc.Latitude, "longitude": loc.Longitude}
+	for k, v := range map[string]string{"name": loc.Name, "address": loc.Address, "url": loc.URL} {
+		if v != "" {
+			body[k] = v
+		}
+	}
+	return body
+}
 
 // withMedia is base plus the media key the file's outcome calls for.
 //

@@ -53,7 +53,7 @@ func TestWatermarkIgnoresOutboundHostClock(t *testing.T) {
 	if err := st.RecordOutbound("27820000000@s.whatsapp.net", "app", "m1", base.Add(30*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver("27821234567@s.whatsapp.net", "arrived while we were down", "wamid.A", base.Add(10*time.Second), nil)
+	f.Deliver("27821234567@s.whatsapp.net", "arrived while we were down", "wamid.A", base.Add(10*time.Second), nil, nil)
 	f.Wait()
 
 	if got := count(); got != 1 {
@@ -72,7 +72,7 @@ func TestWatermarkAdmitsTheSameSecond(t *testing.T) {
 	if err := st.RecordInbound("27820000000@s.whatsapp.net", at); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver("27821234567@s.whatsapp.net", "same second", "wamid.S", at, nil)
+	f.Deliver("27821234567@s.whatsapp.net", "same second", "wamid.S", at, nil, nil)
 	f.Wait()
 
 	if got := count(); got != 1 {
@@ -88,7 +88,7 @@ func TestWatermarkStillSuppressesAnOlderSecond(t *testing.T) {
 	if err := st.RecordInbound("27820000000@s.whatsapp.net", at); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver("27821234567@s.whatsapp.net", "a second earlier", "wamid.O", at.Add(-time.Second), nil)
+	f.Deliver("27821234567@s.whatsapp.net", "a second earlier", "wamid.O", at.Add(-time.Second), nil, nil)
 	f.Wait()
 
 	if got := count(); got != 0 {
@@ -127,7 +127,7 @@ func TestUnreadableWatermarkAdmitsRatherThanMutes(t *testing.T) {
 
 	// Deliberately OLD: with no readable watermark there is nothing to judge it
 	// against, and silence is the one outcome that cannot be undone.
-	f.Deliver("27821234567@s.whatsapp.net", "cannot be judged", "wamid.E", time.Now().Add(-48*time.Hour), nil)
+	f.Deliver("27821234567@s.whatsapp.net", "cannot be judged", "wamid.E", time.Now().Add(-48*time.Hour), nil, nil)
 	f.Wait()
 
 	if n != 1 {
@@ -169,10 +169,10 @@ func TestNonOwnerTrafficDoesNotSpendTheCatchUpBudget(t *testing.T) {
 
 	// A burst from strangers, more than the whole budget.
 	for i := 0; i < maxCatchUpForward+50; i++ {
-		f.Deliver("27829999999@s.whatsapp.net", "not the owner", "wamid.N", at, nil)
+		f.Deliver("27829999999@s.whatsapp.net", "not the owner", "wamid.N", at, nil, nil)
 	}
 	// Then the one message that must get through.
-	f.Deliver(owner, "the owner's real message", "wamid.OWNER", at, nil)
+	f.Deliver(owner, "the owner's real message", "wamid.OWNER", at, nil, nil)
 	f.Wait()
 
 	mu.Lock()
@@ -196,7 +196,7 @@ func TestInboundDropAgeReflectsARealDrop(t *testing.T) {
 
 	at := time.Now()
 	for i := 0; i < maxCatchUpForward+1; i++ {
-		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", at, nil)
+		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", at, nil, nil)
 	}
 	f.Wait()
 

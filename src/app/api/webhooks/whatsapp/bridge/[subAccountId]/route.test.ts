@@ -680,4 +680,85 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(await res.json()).toEqual({ ok: true, persisted: false });
     expect(messageWrites).toHaveLength(0);
   });
+
+  describe("shared location", () => {
+    const pin = {
+      latitude: -26.3812,
+      longitude: 27.8123,
+      name: "Thabo's house",
+      address: "12 Main Rd, Lawley",
+      url: "https://maps.example/p",
+    };
+
+    it("stores the location with a readable body and inbox preview", async () => {
+      const res = await post(inbound({ text: "", messageId: "3EB0LOC", location: pin }));
+      expect(res.status).toBe(200);
+      expect(messageWrites).toHaveLength(1);
+      expect(messageWrites[0].data).toMatchObject({
+        body: "📍 Thabo's house",
+        location: pin,
+      });
+      expect(conversationUpserts[0]).toMatchObject({ body: "📍 Thabo's house" });
+      expect(inboundActivities.get("c1/inbound_whatsapp_3EB0LOC")).toMatchObject({
+        content: expect.stringContaining("📍 Thabo's house"),
+      });
+    });
+
+    it("never auto-replies to a bare location", async () => {
+      aiOn = true;
+      await post(inbound({ text: "", messageId: "3EB0LOCAI", location: pin }));
+      expect(messageWrites[0].data.body).toBe("📍 Thabo's house");
+      expect(maybeRespondWithAi).not.toHaveBeenCalled();
+    });
+
+    it("keeps a live-location caption as the body and still stores the point", async () => {
+      await post(
+        inbound({ text: "on my way", location: { latitude: -33.9, longitude: 18.4 } }),
+      );
+      expect(messageWrites[0].data).toMatchObject({
+        body: "on my way",
+        location: { latitude: -33.9, longitude: 18.4 },
+      });
+    });
+
+    it.each([
+      ["latitude out of range", { latitude: 90.5, longitude: 10 }],
+      ["longitude out of range", { latitude: 10, longitude: -181 }],
+      ["string coordinates", { latitude: "-26.3", longitude: "27.8" }],
+      ["missing longitude", { latitude: 10 }],
+      ["not an object", "somewhere"],
+    ])("drops an unusable location (%s) without throwing or logging it", async (_, location) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await post(inbound({ text: "", location }));
+      expect(res.status).toBe(200);
+      expect(messageWrites).toHaveLength(1);
+      expect("location" in messageWrites[0].data).toBe(false);
+      const logged = warn.mock.calls.flat().map(String).join(" ");
+      expect(logged).toContain("unusable coordinates");
+      expect(logged).not.toMatch(/90\.5|181|26\.3|27\.8|somewhere/);
+      warn.mockRestore();
+    });
+
+    it("labels a location whose name is all invisible characters as a plain location", async () => {
+      await post(
+        inbound({ text: "", location: { latitude: -26.3, longitude: 27.8, name: "\u200b\u202e\ufeff" } }),
+      );
+      expect(messageWrites[0].data.body).toBe("📍 Location");
+      expect(conversationUpserts[0]).toMatchObject({ body: "📍 Location" });
+    });
+
+    it("caps and cleans the customer's strings", async () => {
+      await post(
+        inbound({
+          text: "",
+          location: { ...pin, name: `Home\u0000\u001b[31m${"x".repeat(400)}`, address: 42 },
+        }),
+      );
+      const stored = messageWrites[0].data.location as Record<string, unknown>;
+      expect(stored.name).toMatch(/^Home /);
+      expect(String(stored.name)).not.toMatch(/[\u0000-\u001f]/);
+      expect(Array.from(String(stored.name))).toHaveLength(256);
+      expect("address" in stored).toBe(false);
+    });
+  });
 });

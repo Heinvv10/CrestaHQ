@@ -101,7 +101,7 @@ func recordingClient(dl MediaDownloader) (*Client, *[]inboundCall) {
 	var seen []inboundCall
 	c := &Client{
 		downloader: dl,
-		onInbound: func(jid, text, _ string, _ time.Time, media *InboundAttachment) {
+		onInbound: func(jid, text, _ string, _ time.Time, media *InboundAttachment, _ *InboundLocation) {
 			seen = append(seen, inboundCall{jid, text, media})
 		},
 	}
