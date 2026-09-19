@@ -18,8 +18,8 @@ vi.mock("./whatsapp-attachment-picker", async (importOriginal) => {
   return {
     ...actual,
     useWhatsappAttachment: () => ({
-      attachment: { filename: "site.png", contentType: "image/png", dataBase64: "AAEC" },
-      reading: false,
+      attachment: { stagedId: "staged1", filename: "site.png", contentType: "image/png" },
+      uploading: false,
       pick: () => undefined,
       clear: () => undefined,
     }),

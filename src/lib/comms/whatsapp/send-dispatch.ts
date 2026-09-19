@@ -7,11 +7,12 @@ import { getWabaCreds } from "./cloud-credentials";
 import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
 import type { InteractiveResult } from "./interactive";
-import { sendWhatsappBridge, type BridgeAttachment } from "./bridge-client";
+import { sendWhatsappBridge } from "./bridge-client";
 import { resolveWhatsappSender } from "./resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
 import {
   resolveWhatsAppProviderId,
+  type OutboundAttachment,
   type WhatsAppProviderId,
   type WhatsAppSendResult,
 } from "./provider";
@@ -103,7 +104,7 @@ export interface WhatsappDispatchInput {
    * below rather than dropped: a caller that asked for a report to be sent
    * and got back a bare "ok" with no file is the worst of the three outcomes.
    */
-  attachment?: BridgeAttachment | null;
+  attachment?: OutboundAttachment | null;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
 }
@@ -242,13 +243,22 @@ export async function dispatchWhatsappSend(
         providerOutcome: "DEFINITELY_REJECTED",
       };
     }
+    // The bridge's /v1/send takes the file as base64 JSON; encoded here, at
+    // the wire, so nothing upstream carries a second copy of the bytes.
+    const a = input.attachment;
     const r = await sendWhatsappBridge({
       creds,
       to: input.to,
       message: input.body,
       idempotencyKey: input.idempotencyKey,
       humanReply: input.humanReply === true,
-      media: input.attachment ?? null,
+      media: a
+        ? {
+            filename: a.filename,
+            contentType: a.contentType,
+            dataBase64: Buffer.from(await a.data.arrayBuffer()).toString("base64"),
+          }
+        : null,
     });
     return { ...r, provider, attempted: true };
   }

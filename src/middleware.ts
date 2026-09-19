@@ -49,6 +49,8 @@ const PUBLIC_PATHS = [
   "/api/cron/gbp-retention",
   // Hourly WhatsApp Cloud quality-rating poll (SP15). Same auth: the signature.
   "/api/cron/whatsapp-quality",
+  // Daily sweep of abandoned WhatsApp composer uploads. Same auth: the signature.
+  "/api/cron/whatsapp-staging-cleanup",
   // Review-request reminders (SP5 d2) — one QStash message per scheduled
   // reminder. Same auth: the signature, bound to this route's URL.
   "/api/cron/review-reminder",

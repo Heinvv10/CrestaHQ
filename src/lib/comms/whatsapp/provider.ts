@@ -103,18 +103,18 @@ const CLOUD_MAX_CAPTION_CHARS = 1024;
  * 2026-09-15): image 5 MB, audio 16 MB, video 16 MB, document 100 MB,
  * sticker 100 KB. Meta's image cap is DECIMAL megabytes, so it is 5_000_000
  * here: a binary 5 MiB would admit a 5.1 MB photo that Meta then refuses
- * after the upload. Documents are held at 16 MiB rather than Meta's 100 MB
- * because the composer posts the file as base64 JSON, and that body passes
- * through src/middleware.ts: `experimental.middlewareClientMaxBodySize` in
- * next.config.ts must admit 16 MiB × 4/3 plus the envelope (Next's default
- * 10 MB truncates anything over ~7.5 MiB). Stickers are never sent from the
- * composer (webp is not listed), so 0.
+ * after the upload. Documents get Meta's full 100 MB, also decimal: the
+ * composer PUTs the file straight to a Storage staging object
+ * (staged-upload.ts), so it no longer rides through src/middleware.ts as
+ * base64 and the body cap there does not bound it; the upload URL is signed
+ * for at most this cap. Stickers are never sent from the composer (webp is
+ * not listed), so 0.
  */
 const CLOUD_MAX_MEDIA_BYTES: Readonly<Record<WhatsappMediaKind, number>> = {
   image: 5_000_000,
   audio: 16 << 20,
   video: 16 << 20,
-  document: 16 << 20,
+  document: 100_000_000,
   sticker: 0,
 };
 
@@ -178,6 +178,22 @@ export function capabilitiesFor(
   provider: WhatsAppProviderId,
 ): WhatsAppProviderCapabilities {
   return WHATSAPP_PROVIDER_CAPABILITIES[provider];
+}
+
+/**
+ * A file on its way out, as the dispatcher and the Cloud client carry it.
+ *
+ * A Blob rather than a Buffer or base64: a Blob built from a Storage stream
+ * holds one copy of the bytes outside the JS heap, a `File` made from it for
+ * Graph's multipart upload references that copy instead of duplicating it,
+ * and undici streams it onto the wire. At 100 MB that is the difference
+ * between one copy and four. The bridge's wire format is base64 JSON, so the
+ * dispatcher encodes it there, under the bridge's 8 MiB cap.
+ */
+export interface OutboundAttachment {
+  filename: string;
+  contentType: string;
+  data: Blob;
 }
 
 /**

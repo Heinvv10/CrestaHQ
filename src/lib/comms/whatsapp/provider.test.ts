@@ -113,12 +113,13 @@ describe("bridge capabilities agree with the Go bridge", () => {
     expect(capabilitiesFor("bridge").maxMediaCaptionChars).toBe(Number(m![1]));
   });
 
-  it("caps Cloud images at Meta's 5 MB, below the 16 MiB the other kinds get", () => {
+  it("caps Cloud images at Meta's 5 MB and documents at Meta's 100 MB, video at 16 MiB", () => {
     const caps = capabilitiesFor("cloud").maxMediaBytes;
-    // Decimal, as Meta states it — not 5 MiB.
+    // Decimal, as Meta states them — not 5 MiB or 100 MiB.
     expect(caps.image).toBe(5_000_000);
     expect(caps.video).toBe(16 << 20);
-    expect(caps.document).toBe(16 << 20);
+    expect(caps.audio).toBe(16 << 20);
+    expect(caps.document).toBe(100_000_000);
   });
 
   it("mediaMimeTypes matches the keys of `allowedMediaMimeTypes` in server.go", () => {

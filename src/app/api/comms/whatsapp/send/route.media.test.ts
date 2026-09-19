@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
+import { bucketFake, resetBucketFake, stageObject } from "@/test/staged-bucket";
 
 /**
  * Outbound media through the WHOLE seam: route → conversation send →
@@ -29,11 +30,6 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let subAccountDoc: Record<string, unknown> | undefined;
 let messageRow: Record<string, unknown> | undefined;
 let messageRowId: string | undefined;
-/** What the bucket received: path → bytes + contentType. */
-let saved: Array<{ path: string; bytes: Buffer; contentType: string }>;
-let saveThrows: Error | null;
-/** getStorage itself throws, synchronously, before any file handle exists. */
-let getStorageThrows: Error | null;
 
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
@@ -65,21 +61,7 @@ vi.mock("@/lib/reviews/review-ask", () => ({
   askOutcomeOf: () => "not_a_review_ask",
   logInboxReviewAsk: async () => undefined,
 }));
-vi.mock("firebase-admin/storage", () => ({
-  getStorage: () => {
-    if (getStorageThrows) throw getStorageThrows;
-    return {
-      bucket: () => ({
-        file: (path: string) => ({
-          save: async (bytes: Buffer, opts: { metadata: { contentType: string } }) => {
-            if (saveThrows) throw saveThrows;
-            saved.push({ path, bytes, contentType: opts.metadata.contentType });
-          },
-        }),
-      }),
-    };
-  },
-}));
+vi.mock("firebase-admin/storage", async () => (await import("@/test/staged-bucket")).storageMock());
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminApp: () => ({ name: "test-app" }),
   getAdminDb: () => ({
@@ -131,10 +113,11 @@ vi.mock("@/lib/firebase/admin", () => ({
 import { POST } from "./route";
 
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A file as the composer would have uploaded it; `post` stages it first. */
 const attachment = {
   filename: "site-photo.png",
   contentType: "image/png",
-  dataBase64: PNG_BYTES.toString("base64"),
+  bytes: PNG_BYTES,
 };
 const creds = { phoneNumberId: "PN1", wabaId: "WA1", accessToken: "EAAG" };
 /** Real files from __fixtures__/video — see generate.sh there. */
@@ -142,22 +125,36 @@ function mp4(name: string) {
   return {
     filename: "clip.mp4",
     contentType: "video/mp4",
-    dataBase64: readFileSync(
+    bytes: readFileSync(
       join(__dirname, "../../../../../lib/comms/whatsapp/__fixtures__/video", name),
-    ).toString("base64"),
+    ),
   };
 }
 const h264 = mp4("h264-aac-faststart.mp4");
 const hevc = mp4("hevc-hvc1-aac.mp4");
 
-function post(body: unknown) {
+const STAGED_ID = "AbCdEfGhIjKlMnOpQrStUv_-";
+const STAGED_PATH = `whatsapp-staging/ag1/sa1/u1/${STAGED_ID}`;
+
+/** Stages `attachment.bytes` where the composer's upload would have put it, then sends by id. */
+function post(body: { attachment?: { filename: string; contentType: string; bytes: Buffer } } & Record<string, unknown>) {
+  const { attachment: file, ...rest } = body;
+  if (file) stageObject(STAGED_PATH, file.bytes, file.contentType);
   return POST(
     new Request("https://crm.test/api/comms/whatsapp/send", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...rest,
+        ...(file ? { attachment: { stagedId: STAGED_ID, filename: file.filename, contentType: file.contentType } } : {}),
+      }),
     }) as never,
   );
+}
+
+/** Thread copies made, as Storage copies out of the staging object. */
+function copies() {
+  return bucketFake.log.filter((l) => l.startsWith("copy "));
 }
 
 function graphOk(body: unknown) {
@@ -176,9 +173,7 @@ beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "test-bucket");
   messageRow = undefined;
   messageRowId = undefined;
-  saved = [];
-  saveThrows = null;
-  getStorageThrows = null;
+  resetBucketFake();
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "cloud" };
   requireUid.mockReturnValue({ uid: "u1" });
   requireContactAccessible.mockResolvedValue({
@@ -247,12 +242,11 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
       sizeBytes: PNG_BYTES.length,
       storagePath: expectedPath,
     });
-    expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({ path: expectedPath, contentType: "image/png" });
-    expect(saved[0]!.bytes).toEqual(PNG_BYTES);
+    expect(copies()).toEqual([`copy ${STAGED_PATH}@7 -> ${expectedPath}`]);
+    expect(bucketFake.objects.get(expectedPath)).toMatchObject({ bytes: PNG_BYTES, contentType: "image/png" });
     // §0.1: `media` is the one field. No second description of the same file.
     expect(messageRow).not.toHaveProperty("attachment");
-    expect(JSON.stringify(messageRow)).not.toContain(attachment.dataBase64);
+    expect(JSON.stringify(messageRow)).not.toContain(PNG_BYTES.toString("base64"));
   });
 
   it("sends a file with no text: 200, no caption on the wire, the label as the inbox preview", async () => {
@@ -328,7 +322,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     // The upload strictly precedes the send: nothing reached the customer,
     // so nothing may appear in the thread as if it had.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
     expect(messageRow).toBeUndefined();
     expect(upsertConversationForMessage).not.toHaveBeenCalled();
   });
@@ -340,7 +334,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
 
     const res = await post({ contactId: "c1", body: "here", attachment });
     expect(res.ok).toBe(false);
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
     expect(messageRow).toBeUndefined();
   });
 
@@ -351,15 +345,15 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { ...attachment, dataBase64: sixMb.toString("base64") },
+      attachment: { ...attachment, bytes: sixMb },
     });
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_too_large");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
   });
 
-  it("accepts a 6 MB PDF — documents are capped at 16 MiB, not the image cap", async () => {
+  it("accepts a 6 MB PDF — documents are not held to the image cap", async () => {
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA6" }))
       .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT6" }] }));
@@ -367,7 +361,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { filename: "big.pdf", contentType: "application/pdf", dataBase64: sixMb.toString("base64") },
+      attachment: { filename: "big.pdf", contentType: "application/pdf", bytes: sixMb },
     });
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -379,7 +373,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { ...attachment, dataBase64: justOver.toString("base64") },
+      attachment: { ...attachment, bytes: justOver },
     });
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_too_large");
@@ -397,7 +391,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("caption_too_long");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
   });
 
   it("refuses a filename over 255 UTF-8 bytes at the route, before any Graph call", async () => {
@@ -412,7 +406,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_invalid");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
     expect(messageRow).toBeUndefined();
   });
 
@@ -507,27 +501,6 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(res.status).toBe(200);
   });
 
-  it.each([
-    ["a bare data: prefix", "data:"],
-    ["empty", ""],
-    ["invalid characters at a valid length", "da:a"],
-    // Valid alphabet, wrong length: Buffer.from silently drops the tail and a
-    // truncated file would go to Graph.
-    ["valid characters at an invalid length", "AAECA"],
-  ])("refuses dataBase64 that is %s before any Graph call", async (_label, dataBase64) => {
-    // Buffer.from decodes "data:" as three bytes; without this a customer
-    // receives a three-byte "PDF".
-    const res = await post({
-      contactId: "c1",
-      body: "here",
-      attachment: { ...attachment, dataBase64 },
-    });
-    expect(res.status).toBe(400);
-    if (dataBase64) expect((await res.json()).code).toBe("media_invalid");
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
-  });
-
   it("sends a caption of exactly 1024 characters", async () => {
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA7" }))
@@ -567,7 +540,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(json.code).toBe("video_codec_unsupported");
     expect(json.error).toContain("HEVC (H.265)");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
     expect(messageRow).toBeUndefined();
   });
 
@@ -575,24 +548,16 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     const res = await post({
       contactId: "c1",
       body: "here",
-      attachment: { filename: "clip.mp4", contentType: "video/mp4", dataBase64: "AAEC" },
+      attachment: { filename: "clip.mp4", contentType: "video/mp4", bytes: Buffer.from([0, 1, 2]) },
     });
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_invalid");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a file over 16 MiB on every kind", async () => {
-    const big = Buffer.alloc(16 * 1024 * 1024 + 1, 1);
-    const res = await post({
-      contactId: "c1",
-      body: "here",
-      attachment: { filename: "big.pdf", contentType: "application/pdf", dataBase64: big.toString("base64") },
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("media_too_large");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+  // Documents over Meta's 100 MB are refused by their real size on the staged
+  // path — route.staged.test.ts. Over this base64 path the middleware body cap
+  // (next.config.ts) bounds a request long before that.
 
   it("refuses a type the Cloud rail does not declare, before any Graph call", async () => {
     const res = await post({
@@ -615,7 +580,7 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     expect(res.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(getWabaCreds).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
     expect(messageRow).toBeUndefined();
   });
 
@@ -627,7 +592,12 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
 
     const res = await post({ contactId: "c1", body: "here", attachment });
     expect(res.status).toBe(200);
-    expect(sendWhatsappBridge).toHaveBeenCalledWith(expect.objectContaining({ media: attachment }));
+    // Encoded for the bridge's JSON wire at the last step, from the staged bytes.
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        media: { filename: "site-photo.png", contentType: "image/png", dataBase64: PNG_BYTES.toString("base64") },
+      }),
+    );
     expect(fetchMock).not.toHaveBeenCalled();
     expect(messageRow?.media).toMatchObject({
       kind: "image",
@@ -640,7 +610,7 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
       }),
     });
     expect(messageRow).not.toHaveProperty("attachment");
-    expect(saved).toHaveLength(1);
+    expect(copies()).toHaveLength(1);
   });
 
   it("refuses an HEVC MP4 on the bridge rail before the bridge client is called", async () => {
@@ -663,7 +633,11 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
 
     const res = await post({ contactId: "c1", body: "here", attachment: h264 });
     expect(res.status).toBe(200);
-    expect(sendWhatsappBridge).toHaveBeenCalledWith(expect.objectContaining({ media: h264 }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        media: { filename: "clip.mp4", contentType: "video/mp4", dataBase64: h264.bytes.toString("base64") },
+      }),
+    );
     expect(messageRow?.media).toMatchObject({ kind: "video", filename: "clip.mp4" });
   });
 
@@ -672,7 +646,7 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
     getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
     sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB1" });
-    saveThrows = new Error("bucket down");
+    bucketFake.copyThrows = new Error("bucket down");
 
     const res = await post({ contactId: "c1", body: "here", attachment });
     // The customer got the file. The row must still say a file went, and
@@ -682,17 +656,16 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     expect(messageRow?.mediaDropped).toBe("store_failed");
   });
 
-  it("still writes the row (store_failed) and answers 200 when resolving the bucket throws", async () => {
+  it("answers 400 and sends nothing when Storage cannot be resolved at all", async () => {
     subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
     checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
     getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
-    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB2" });
-    getStorageThrows = new Error("The default Firebase app does not exist");
+    bucketFake.getStorageThrows = new Error("The default Firebase app does not exist");
 
     const res = await post({ contactId: "c1", body: "here", attachment });
-    expect(res.status).toBe(200);
-    expect(messageRowId).toBe("3EB2");
-    expect(messageRow?.mediaDropped).toBe("store_failed");
+    expect(res.status).toBe(400);
+    expect(sendWhatsappBridge).not.toHaveBeenCalled();
+    expect(messageRow).toBeUndefined();
   });
 
   it("writes neither media field on a plain text row", async () => {
@@ -702,6 +675,6 @@ describe("POST /api/comms/whatsapp/send — media on the other rails", () => {
     expect(messageRow).not.toHaveProperty("media");
     expect(messageRow).not.toHaveProperty("mediaDropped");
     expect(messageRow).not.toHaveProperty("attachment");
-    expect(saved).toHaveLength(0);
+    expect(copies()).toHaveLength(0);
   });
 });

@@ -240,7 +240,7 @@ describe("sendWhatsappCloud", () => {
     expect(r.error).not.toContain("EAAG");
   });
 
-  const media = { filename: "a.png", contentType: "image/png", dataBase64: "AAEC" };
+  const media = { filename: "a.png", contentType: "image/png", data: new Blob([new Uint8Array([0, 1, 2])]) };
 
   it("refuses media outside the window even with an approved template, WITHOUT calling Meta", async () => {
     // A template cannot carry a file. Sending the template alone would drop
@@ -277,6 +277,14 @@ describe("sendWhatsappCloud", () => {
     expect(sent.image).not.toHaveProperty("caption");
   });
 
+  it("uploads with redirects refused — undici would otherwise hold a second copy of the file", async () => {
+    fetchMock
+      .mockResolvedValueOnce(ok({ id: "MEDIA" }))
+      .mockResolvedValueOnce(ok({ messages: [{ id: "wamid.X" }] }));
+    await send({ media });
+    expect(fetchMock.mock.calls[0][1].redirect).toBe("error");
+  });
+
   it("never puts the access token in an upload error string", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
@@ -294,7 +302,7 @@ describe("sendWhatsappCloud", () => {
     fetchMock
       .mockResolvedValueOnce(ok({ id: "MEDIA" }))
       .mockResolvedValueOnce(ok({ messages: [{ id: "wamid.X" }] }));
-    const r = await send({ media: { filename, contentType: "application/pdf", dataBase64: "AAEC" } });
+    const r = await send({ media: { filename, contentType: "application/pdf", data: new Blob([new Uint8Array([0, 1, 2])]) } });
     expect(r.ok).toBe(true);
     const uploaded = (fetchMock.mock.calls[0][1].body as FormData).get("file") as File;
     const sent = JSON.parse(fetchMock.mock.calls[1][1].body as string).document.filename as string;

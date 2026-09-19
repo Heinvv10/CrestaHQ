@@ -31,7 +31,8 @@ export function whatsappMediaPath(a: {
   return `whatsapp-media/${a.agencyId}/${a.subAccountId}/${a.contactId}/${a.messageDocId}`;
 }
 
-function bucket() {
+/** The media bucket, or null when the env var is unset. Shared with staged-upload.ts. */
+export function bucket() {
   const name = process.env[BUCKET_ENV];
   if (!name) return null;
   // The app is passed explicitly: a webhook may reach Storage before anything

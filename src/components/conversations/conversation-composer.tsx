@@ -117,7 +117,7 @@ export function ConversationComposer({
   const waProvider = waSender.ok ? waSender.provider : null;
   // Keyed on contact AND channel: a file picked for one must never ride along
   // on a send to the other (see useWhatsappAttachment).
-  const wa = useWhatsappAttachment(waProvider, `${contact.id}:${channel}`);
+  const wa = useWhatsappAttachment(waProvider, contact.id, `${contact.id}:${channel}`);
   // The hook's key already scopes the file to this channel. The channel test
   // is kept anyway, as defence in depth: this is a file on its way to a real
   // phone, and a future change to the hook's keying must not be the only
@@ -297,7 +297,12 @@ export function ConversationComposer({
       wa.clear();
       // Snapshot listener appends the row.
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't send.");
+      const message = err instanceof Error ? err.message : "Couldn't send.";
+      // The send route deletes the uploaded file whatever the outcome, so a
+      // retry needs a fresh upload; keeping the chip would promise a file
+      // that is no longer there.
+      if (attachment) wa.clear();
+      toast.error(attachment ? `${message} Attach the file again to retry.` : message);
     } finally {
       setSending(false);
     }
@@ -408,7 +413,7 @@ export function ConversationComposer({
         </div>
         <SendLaterMenu
           disabled={
-            !body.trim() || (isEmail && !subject.trim()) || disabled || !!attachment || wa.reading
+            !body.trim() || (isEmail && !subject.trim()) || disabled || !!attachment || wa.uploading
           }
           buildRequest={scheduleRequest}
           onScheduled={() => setBody("")}

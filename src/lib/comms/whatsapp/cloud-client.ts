@@ -3,6 +3,7 @@ import "server-only";
 import {
   capabilitiesFor,
   httpFailureOutcome,
+  type OutboundAttachment,
   type WhatsAppProviderId,
   type WhatsAppSendResult,
 } from "./provider";
@@ -10,7 +11,6 @@ import { resolveWaSendMode, type WaSendMode } from "./send-mode";
 import { graphVersion } from "./graph-version";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
 import type { CloudInteractive } from "./interactive";
-import type { BridgeAttachment } from "./bridge-client";
 import { mediaKindForMime, type WhatsappMediaKind } from "@/types/whatsapp-media";
 
 /**
@@ -120,7 +120,7 @@ export async function uploadCloudMedia(opts: {
   creds: WhatsappCloudSecret;
   filename: string;
   contentType: string;
-  bytes: Buffer;
+  data: Blob;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<
@@ -137,10 +137,8 @@ export async function uploadCloudMedia(opts: {
   const form = new FormData();
   form.set("messaging_product", "whatsapp");
   form.set("type", opts.contentType);
-  form.set(
-    "file",
-    new File([new Uint8Array(opts.bytes)], opts.filename, { type: opts.contentType }),
-  );
+  // A File over the Blob references its bytes rather than copying them.
+  form.set("file", new File([opts.data], opts.filename, { type: opts.contentType }));
   const url = `https://graph.facebook.com/${graphVersion()}/${opts.creds.phoneNumberId}/media`;
   try {
     const res = await (opts.fetchImpl ?? fetch)(url, {
@@ -148,7 +146,15 @@ export async function uploadCloudMedia(opts: {
       // No Content-Type: fetch writes the multipart boundary itself.
       headers: { Authorization: `Bearer ${opts.creds.accessToken}` },
       body: form,
-      signal: opts.signal ?? AbortSignal.timeout(30_000),
+      // Measured, not decorative: with redirects allowed undici holds a full
+      // second copy of the body for a possible replay — +95 MiB on a 100 MB
+      // document. Graph does not redirect this call, and a redirect would
+      // carry the bearer token wherever it pointed.
+      redirect: "error",
+      // 30 s plus a second per MB: a flat 30 s would need ~27 Mbit/s of
+      // upstream to get a 100 MB document to Graph in time.
+      signal:
+        opts.signal ?? AbortSignal.timeout(30_000 + Math.ceil(opts.data.size / 1_000_000) * 1_000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "unknown error");
@@ -211,7 +217,7 @@ export async function sendWhatsappCloud(opts: {
   template: CloudTemplateRef | null;
   interactive?: CloudInteractive | null;
   /** Uploaded before the send; the message then carries its id. */
-  media?: BridgeAttachment | null;
+  media?: OutboundAttachment | null;
   windowHours?: number;
   provider?: WhatsAppProviderId;
   now?: Date;
@@ -261,13 +267,13 @@ export async function sendWhatsappCloud(opts: {
         providerErrorCode: "caption_too_long",
       };
     }
-    const bytes = Buffer.from(opts.media.dataBase64, "base64");
+    const size = opts.media.data.size;
     const kind = mediaKindForMime(opts.media.contentType);
     const cap = capabilities.maxMediaBytes[kind];
-    if (bytes.length > cap) {
+    if (size > cap) {
       return {
         ok: false,
-        error: `Attachment is ${bytes.length} bytes; the limit for ${kind} is ${cap}.`,
+        error: `Attachment is ${size} bytes; the limit for ${kind} is ${cap}.`,
         providerOutcome: "DEFINITELY_REJECTED",
         providerErrorCode: "media_too_large",
       };
@@ -285,7 +291,7 @@ export async function sendWhatsappCloud(opts: {
       creds: opts.creds,
       filename,
       contentType: opts.media.contentType,
-      bytes,
+      data: opts.media.data,
       signal: opts.signal,
     });
     if (!up.ok) return up;
