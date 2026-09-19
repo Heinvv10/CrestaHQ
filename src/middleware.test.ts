@@ -228,6 +228,11 @@ describe("isPublicPath — the WhatsApp settings routes (SP15)", () => {
     expect(isPublicPath("/api/cron/whatsapp-quality")).toBe(true);
   });
 
+  it("lets QStash reach the signed staging cleanup, and keeps upload-url behind a session", () => {
+    expect(isPublicPath("/api/cron/whatsapp-staging-cleanup")).toBe(true);
+    expect(isPublicPath("/api/comms/whatsapp/upload-url")).toBe(false);
+  });
+
   it("keeps the settings routes behind a session", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/whatsapp/status")).toBe(false);
     expect(isPublicPath("/api/sub-accounts/sa1/whatsapp/profile")).toBe(false);

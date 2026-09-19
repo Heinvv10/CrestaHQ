@@ -42,21 +42,8 @@ vi.mock("@/components/contacts/whatsapp-template-sender", () => ({
 
 import { ContactWhatsappThread } from "./contact-whatsapp-thread";
 
-class FakeReader {
-  static reads: FakeReader[] = [];
-  result: string | null = null;
-  onload: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  file: File | null = null;
-  readAsDataURL(file: File) {
-    this.file = file;
-    FakeReader.reads.push(this);
-  }
-  finish() {
-    this.result = `data:${this.file!.type};base64,AAEC`;
-    this.onload?.();
-  }
-}
+/** Storage PUTs that finish only when a test says so. */
+let puts: Array<{ finish: (ok?: boolean) => void }>;
 
 let root: Root;
 let container: HTMLDivElement;
@@ -89,9 +76,22 @@ const sender = (provider: string) => ({
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("FileReader", FakeReader);
-  FakeReader.reads = [];
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  puts = [];
+  fetchMock = vi.fn(async (url: string) => {
+    if (url === "/api/comms/whatsapp/upload-url") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ stagedId: "staged1", uploadUrl: "https://storage.test/put/1" }),
+      };
+    }
+    if (url.startsWith("https://storage.test/")) {
+      return new Promise((resolve) =>
+        puts.push({ finish: (ok = true) => resolve({ ok, status: ok ? 200 : 403 }) }),
+      );
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  });
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -103,6 +103,20 @@ async function typeBody(text: string) {
   });
 }
 
+/** Lets the hook's async upload chain reach its next await. */
+const flush = () =>
+  act(async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  });
+
+async function finishPut(i: number) {
+  await act(async () => puts[i]!.finish());
+  await flush();
+}
+
+/** Calls to the send route — uploads excluded. */
+const sends = () => fetchMock.mock.calls.filter((c) => c[0] === "/api/comms/whatsapp/send");
+
 async function pick() {
   const input = picker()!;
   await act(async () => {
@@ -112,6 +126,7 @@ async function pick() {
     });
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
+  await flush();
 }
 
 /** Submits the form directly — the path a disabled button does not guard. */
@@ -121,7 +136,7 @@ async function submitForm() {
   );
 }
 
-const posted = () => JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string);
+const posted = () => JSON.parse(sends().at(-1)![1].body as string);
 
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -142,7 +157,7 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     expect(picker()).toBeNull();
   });
 
-  it("disables Send while the file is being read", async () => {
+  it("disables Send while the file is uploading", async () => {
     subAccount = { whatsappProvider: "cloud" };
     await mount();
     const ta = container.querySelector("textarea")!;
@@ -160,8 +175,9 @@ describe("ContactWhatsappThread — rail and attachments", () => {
       });
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    await flush();
     expect(sendButton().disabled).toBe(true);
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     expect(sendButton().disabled).toBe(false);
     expect(container.textContent).toContain("a.png");
   });
@@ -172,7 +188,7 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     expect(sendButton().disabled).toBe(true);
     await pick();
     expect(sendButton().disabled).toBe(true);
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     expect(sendButton().disabled).toBe(false);
     await submitForm();
     expect(posted()).toMatchObject({ body: "", attachment: { filename: "a.png" } });
@@ -187,21 +203,21 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a form submit with no text while the file is still being read", async () => {
+  it("refuses a form submit with no text while the file is still uploading", async () => {
     subAccount = { whatsappProvider: "cloud" };
     await mount();
     await pick();
     await submitForm();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sends()).toHaveLength(0);
   });
 
-  it("refuses a form submit while the file is still being read", async () => {
+  it("refuses a form submit while the file is still uploading", async () => {
     subAccount = { whatsappProvider: "cloud" };
     await mount();
     await typeBody("photo");
     await pick();
     await submitForm();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sends()).toHaveLength(0);
   });
 
   it("refuses a form submit when the sender cannot be resolved", async () => {
@@ -219,7 +235,7 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     subAccount = { whatsappProvider: "cloud" };
     await mount();
     await pick();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     expect(container.textContent).toContain("a.png");
     const button = (label: string) =>
       [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === label)!;
@@ -236,7 +252,7 @@ describe("ContactWhatsappThread — rail and attachments", () => {
     await mount();
     await typeBody("photo");
     await pick();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     await submitForm();
     expect(posted()).toHaveProperty("attachment");
     await typeBody("follow-up");

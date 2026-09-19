@@ -93,9 +93,16 @@ const SCHEDULES: ScheduleSpec[] = [
     description:
       "Hourly WhatsApp Cloud sender quality-rating poll; alerts on a drop from GREEN.",
   },
+  {
+    scheduleId: "leadstack-whatsapp-staging-cleanup",
+    path: "/api/cron/whatsapp-staging-cleanup",
+    cron: "45 4 * * *",
+    description:
+      "Daily delete of abandoned WhatsApp composer uploads (whatsapp-staging/ objects over an hour old).",
+  },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-17-email-sync-15m";
+const BASE_SCHEDULE_VERSION = "2026-09-19-whatsapp-staging-cleanup";
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment

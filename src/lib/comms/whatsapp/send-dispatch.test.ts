@@ -163,11 +163,14 @@ describe("dispatchWhatsappSend", () => {
     const attachment = {
       filename: "report.png",
       contentType: "image/png",
-      dataBase64: "AAEC",
+      data: new Blob([new Uint8Array([0, 1, 2])]),
     };
     await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge"), attachment }));
+    // Encoded for the bridge's JSON wire format at the last step.
     expect(sendWhatsappBridge).toHaveBeenCalledWith(
-      expect.objectContaining({ media: attachment }),
+      expect.objectContaining({
+        media: { filename: "report.png", contentType: "image/png", dataBase64: "AAEC" },
+      }),
     );
   });
 
@@ -191,7 +194,7 @@ describe("dispatchWhatsappSend", () => {
     const attachment = {
       filename: "report.png",
       contentType: "image/png",
-      dataBase64: "AAEC",
+      data: new Blob([new Uint8Array([0, 1, 2])]),
     };
     const input = baseInput({ attachment });
     const r = await dispatchWhatsappSend(input);
@@ -213,7 +216,7 @@ describe("dispatchWhatsappSend", () => {
     const attachment = {
       filename: "report.png",
       contentType: "image/png",
-      dataBase64: "AAEC",
+      data: new Blob([new Uint8Array([0, 1, 2])]),
     };
     const r = await dispatchWhatsappSend(
       baseInput({ subAccount: sub("cloud"), attachment }),

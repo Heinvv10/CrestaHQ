@@ -5,11 +5,12 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
-import type { BridgeAttachment } from "@/lib/comms/whatsapp/bridge-client";
+import type { OutboundAttachment } from "@/lib/comms/whatsapp/provider";
 import {
   putWhatsappMedia,
   whatsappMediaPath,
 } from "@/lib/comms/whatsapp/media-storage";
+import { copyStagedTo, type StagedObject } from "@/lib/comms/whatsapp/staged-upload";
 import { mediaKindForMime, mediaPreviewLabel } from "@/types/whatsapp-media";
 import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
@@ -76,7 +77,13 @@ export async function prepareWhatsappSend(
 
 export async function sendConversationWhatsapp(
   input: ChannelSendBase & {
-    attachment?: BridgeAttachment | null;
+    attachment?: OutboundAttachment | null;
+    /**
+     * The staged Storage object `attachment` was read from, when it came that
+     * way. The thread's copy is then made by Storage from that object rather
+     * than by uploading the bytes a second time.
+     */
+    stagedObject?: StagedObject | null;
     /**
      * True only when a person pressed Send in a thread right now. It relaxes
      * the bridge's quiet-hours guard inside an open session; every other
@@ -209,25 +216,26 @@ export async function sendConversationWhatsapp(
   // report actually go?", and that is the first question asked.
   let mediaFields: Record<string, unknown> = {};
   if (attachment) {
-    const bytes = Buffer.from(attachment.dataBase64, "base64");
     const storagePath = whatsappMediaPath({
       agencyId: contact.agencyId,
       subAccountId: contact.subAccountId,
       contactId,
       messageDocId: sid,
     });
-    const stored = await putWhatsappMedia({
-      path: storagePath,
-      bytes,
-      contentType: attachment.contentType,
-    });
+    const stored = input.stagedObject
+      ? await copyStagedTo(input.stagedObject, storagePath)
+      : await putWhatsappMedia({
+          path: storagePath,
+          bytes: Buffer.from(await attachment.data.arrayBuffer()),
+          contentType: attachment.contentType,
+        });
     mediaFields = stored.ok
       ? {
           media: {
             kind: mediaKindForMime(attachment.contentType),
             mimeType: attachment.contentType,
             filename: attachment.filename,
-            sizeBytes: bytes.length,
+            sizeBytes: attachment.data.size,
             storagePath,
           },
         }

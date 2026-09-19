@@ -8,12 +8,20 @@ import { capabilitiesFor, type WhatsAppProviderId } from "@/lib/comms/whatsapp/p
 import { checkWhatsappVideoCodecs } from "@/lib/comms/whatsapp/video-codec";
 import { mediaKindForMime } from "@/types/whatsapp-media";
 
-/** What the send route accepts as `attachment`. */
+/**
+ * What the send route accepts as `attachment`: a file already uploaded to
+ * Storage, named by the id `/api/comms/whatsapp/upload-url` issued. The route
+ * reads the object's real type and size from Storage; `contentType` here is
+ * informational.
+ */
 export interface ComposerAttachment {
+  stagedId: string;
   filename: string;
   contentType: string;
-  dataBase64: string;
 }
+
+/** A failure whose message is written for the operator. Anything else gets the generic line. */
+class UploadRefused extends Error {}
 
 function humanSize(bytes: number): string {
   if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
@@ -22,10 +30,10 @@ function humanSize(bytes: number): string {
 }
 
 export interface WhatsappAttachmentState {
-  /** Null while nothing is attached, and while a file is still being read. */
+  /** Null while nothing is attached, and while a file is still uploading. */
   attachment: ComposerAttachment | null;
-  /** True between picking a file and its bytes being ready. Send waits. */
-  reading: boolean;
+  /** True between picking a file and its upload finishing. Send waits. */
+  uploading: boolean;
   pick: (file: File) => void;
   clear: () => void;
 }
@@ -33,35 +41,38 @@ export interface WhatsappAttachmentState {
 /**
  * The composer's one attachment, scoped to `resetKey` (contact + channel).
  *
- * Reading a file is asynchronous, and both ways of getting that wrong reach a
- * customer: Send pressed mid-read goes out as the caption alone, and a read
- * that lands after the operator moved on attaches the file to the NEXT
- * message — possibly on another channel or to another contact. So `reading`
- * is exposed for the composer to block Send on, and every read carries a
- * generation that a newer pick, a clear, or a `resetKey` change invalidates;
- * a stale result is dropped, never applied.
+ * The file is uploaded to Storage as soon as it is picked — a signed URL from
+ * `/api/comms/whatsapp/upload-url`, then a PUT of the raw file — so Send posts
+ * only its id. That upload is asynchronous, and both ways of getting that
+ * wrong reach a customer: Send pressed mid-upload goes out as the caption
+ * alone, and an upload that finishes after the operator moved on attaches the
+ * file to the NEXT message — possibly on another channel or to another
+ * contact. So `uploading` is exposed for the composer to block Send on, and
+ * every upload carries a generation that a newer pick, a clear, or a
+ * `resetKey` change invalidates; a stale result is dropped, never applied.
  */
 export function useWhatsappAttachment(
   provider: WhatsAppProviderId | null,
+  contactId: string,
   resetKey: string,
 ): WhatsappAttachmentState {
   const [state, setState] = useState<{
     key: string;
     gen: number;
     attachment: ComposerAttachment | null;
-    reading: boolean;
-  }>({ key: resetKey, gen: 0, attachment: null, reading: false });
+    uploading: boolean;
+  }>({ key: resetKey, gen: 0, attachment: null, uploading: false });
   const genRef = useRef(0);
 
   // A contact or channel change DISCARDS the attachment — a finished one as
-  // well as a read in flight. Hiding it instead would bring it back on the
+  // well as an upload in flight. Hiding it instead would bring it back on the
   // way back to the same key, and the next unrelated message would send it.
   useEffect(() => {
     genRef.current += 1;
     setState((s) =>
       s.key === resetKey
         ? s
-        : { key: resetKey, gen: genRef.current, attachment: null, reading: false },
+        : { key: resetKey, gen: genRef.current, attachment: null, uploading: false },
     );
   }, [resetKey]);
 
@@ -93,59 +104,67 @@ export function useWhatsappAttachment(
     }
     const gen = ++genRef.current;
     const key = resetKey;
-    setState({ key, gen, attachment: null, reading: true });
+    setState({ key, gen, attachment: null, uploading: true });
     const settle = (attachment: ComposerAttachment | null) =>
-      setState((s) => (s.gen === gen ? { ...s, attachment, reading: false } : s));
-    const reader = new FileReader();
-    reader.onload = () => {
-      // Stale: a newer pick, a clear, or a contact/channel change since.
-      if (genRef.current !== gen) {
+      setState((s) => (s.gen === gen ? { ...s, attachment, uploading: false } : s));
+    // Stale: a newer pick, a clear, or a contact/channel change since.
+    const stale = () => genRef.current !== gen;
+
+    void (async () => {
+      try {
+        // Early word on a video WhatsApp cannot play, instead of after Send.
+        // The send route runs the same check, and that one is what counts.
+        // The raw bytes, not base64; a video is capped at 16 MiB.
+        if (file.type === "video/mp4") {
+          const codecs = checkWhatsappVideoCodecs(new Uint8Array(await file.arrayBuffer()));
+          if (stale()) return settle(null);
+          if (!codecs.ok) {
+            settle(null);
+            toast.error(`${file.name}: ${codecs.message}`);
+            return;
+          }
+        }
+        const res = await fetch("/api/comms/whatsapp/upload-url", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contactId, contentType: file.type, sizeBytes: file.size }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          stagedId?: string;
+          uploadUrl?: string;
+          error?: string;
+        };
+        if (stale()) return settle(null);
+        if (!res.ok || !data.stagedId || !data.uploadUrl) {
+          throw new UploadRefused(data.error ?? `Couldn't upload ${file.name}.`);
+        }
+        // The Content-Type is part of the URL's signature: it must be exactly
+        // the type the URL was issued for, or Storage refuses the PUT.
+        const put = await fetch(data.uploadUrl, {
+          method: "PUT",
+          headers: { "content-type": file.type },
+          body: file,
+        });
+        if (stale()) return settle(null);
+        if (!put.ok) throw new UploadRefused(`Couldn't upload ${file.name}.`);
+        settle({ stagedId: data.stagedId, filename: file.name, contentType: file.type });
+      } catch (err) {
         settle(null);
-        return;
-      }
-      const url = typeof reader.result === "string" ? reader.result : "";
-      const comma = url.indexOf(",");
-      // A bare "data:" (Chromium, for an empty blob) has no payload at all;
-      // slicing past a missing comma would send "data:" as the file.
-      if (comma < 0 || comma === url.length - 1) {
-        settle(null);
-        toast.error(`Couldn't read ${file.name}.`);
-        return;
-      }
-      const dataBase64 = url.slice(comma + 1);
-      // Early word on a video WhatsApp cannot play, instead of after Send.
-      // The send route runs the same check, and that one is what counts.
-      if (file.type === "video/mp4") {
-        const codecs = checkWhatsappVideoCodecs(
-          Uint8Array.from(atob(dataBase64), (c) => c.charCodeAt(0)),
-        );
-        if (!codecs.ok) {
-          settle(null);
-          toast.error(`${file.name}: ${codecs.message}`);
-          return;
+        if (!stale()) {
+          toast.error(err instanceof UploadRefused ? err.message : `Couldn't upload ${file.name}.`);
         }
       }
-      settle({
-        filename: file.name,
-        contentType: file.type,
-        dataBase64,
-      });
-    };
-    reader.onerror = () => {
-      settle(null);
-      if (genRef.current === gen) toast.error(`Couldn't read ${file.name}.`);
-    };
-    reader.readAsDataURL(file);
+    })();
   }
 
   function clear() {
     genRef.current += 1;
-    setState({ key: resetKey, gen: genRef.current, attachment: null, reading: false });
+    setState({ key: resetKey, gen: genRef.current, attachment: null, uploading: false });
   }
 
   return {
     attachment: current?.attachment ?? null,
-    reading: current?.reading ?? false,
+    uploading: current?.uploading ?? false,
     pick,
     clear,
   };
@@ -172,7 +191,7 @@ export function WhatsappAttachmentPicker({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const caps = capabilitiesFor(provider);
   if (!caps.supportsMedia) return null;
-  const { attachment, reading } = state;
+  const { attachment, uploading } = state;
 
   return (
     <>
@@ -189,10 +208,10 @@ export function WhatsappAttachmentPicker({
           if (file) state.pick(file);
         }}
       />
-      {reading ? (
+      {uploading ? (
         <span className="text-muted-foreground inline-flex items-center gap-1 px-2 py-1 text-xs">
           <Loader2 className="h-3 w-3 animate-spin" />
-          Reading file…
+          Uploading file…
         </span>
       ) : attachment ? (
         <span className="bg-muted inline-flex max-w-[16rem] items-center gap-1 rounded-md px-2 py-1 text-xs">
@@ -236,7 +255,7 @@ export function attachmentSendBlock(
   state: WhatsappAttachmentState,
   body: string,
 ): string | null {
-  if (state.reading) return "Reading file…";
+  if (state.uploading) return "Uploading file…";
   if (!state.attachment || !provider) return null;
   const max = capabilitiesFor(provider).maxMediaCaptionChars;
   // Code points, as the bridge's maxTextRunes counts — see provider.ts.

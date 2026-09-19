@@ -36,7 +36,7 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-17-email-sync-15m" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-19-whatsapp-staging-cleanup" }),
     { merge: true }
   );
 });
@@ -97,7 +97,7 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-17-email-sync-15m+gbp-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-19-whatsapp-staging-cleanup+gbp-sync" }),
     { merge: true }
   );
 });
@@ -112,6 +112,22 @@ it("registers the hourly WhatsApp quality poll (SP15) with the base schedules", 
       scheduleId: "leadstack-whatsapp-quality",
       cron: "15 * * * *",
       destination: "https://app.example.com/api/cron/whatsapp-quality",
+    })
+  );
+});
+
+it("registers the daily WhatsApp staging cleanup — over a marker fresh from the previous version", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
+  // The marker production holds today. Without a version bump it would skip
+  // registration for 24h at a time, and the schedule would never exist.
+  freshMarker({ scheduleVersion: "2026-09-17-email-sync-15m" });
+  await ensureSchedulesRegistered();
+  expect(mock.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      scheduleId: "leadstack-whatsapp-staging-cleanup",
+      cron: "45 4 * * *",
+      destination: "https://app.example.com/api/cron/whatsapp-staging-cleanup",
     })
   );
 });

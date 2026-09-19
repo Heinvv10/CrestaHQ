@@ -134,7 +134,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   // Template mode is in the key: entering it DISCARDS a picked file rather than
   // hiding it until "Back to message", where the next free-form reply would
   // otherwise carry it.
-  const wa = useWhatsappAttachment(railProvider, `${contact.id}:${templateMode ? "template" : "message"}`);
+  const wa = useWhatsappAttachment(railProvider, contact.id, `${contact.id}:${templateMode ? "template" : "message"}`);
   const attachmentBlock = attachmentSendBlock(railProvider, wa, body);
 
   // An unresolvable sender is refused by the route; say so here instead.
@@ -168,7 +168,12 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
       setBody("");
       wa.clear();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't send.");
+      const message = err instanceof Error ? err.message : "Couldn't send.";
+      // The send route deletes the uploaded file whatever the outcome, so a
+      // retry needs a fresh upload; keeping the chip would promise a file
+      // that is no longer there.
+      if (attachment) wa.clear();
+      toast.error(attachment ? `${message} Attach the file again to retry.` : message);
     } finally {
       setSending(false);
     }

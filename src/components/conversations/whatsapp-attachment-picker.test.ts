@@ -22,20 +22,28 @@ import {
 const toastError = vi.fn();
 vi.mock("sonner", () => ({ toast: { error: (...a: unknown[]) => toastError(...a) } }));
 
-class FakeReader {
-  static reads: FakeReader[] = [];
-  result: string | null = null;
-  onload: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  file: File | null = null;
-  readAsDataURL(file: File) {
-    this.file = file;
-    FakeReader.reads.push(this);
-  }
-  finish(dataBase64 = "AAEC") {
-    this.result = `data:${this.file!.type};base64,${dataBase64}`;
-    this.onload?.();
-  }
+/** Storage PUTs that finish only when a test says so. */
+let puts: Array<{ url: string; init: RequestInit; finish: (ok?: boolean) => void }>;
+let fetchMock: ReturnType<typeof vi.fn>;
+
+function installFetch() {
+  let issued = 0;
+  puts = [];
+  fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+    if (url === "/api/comms/whatsapp/upload-url") {
+      issued += 1;
+      const n = issued;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ stagedId: `staged${n}`, uploadUrl: `https://storage.test/put/${n}` }),
+      };
+    }
+    return new Promise((resolve) =>
+      puts.push({ url, init, finish: (ok = true) => resolve({ ok, status: ok ? 200 : 403 }) }),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
 }
 
 let root: Root;
@@ -43,8 +51,8 @@ let latest: WhatsappAttachmentState | null = null;
 /** Every value of `attachment` observed, tagged with the key it was read under. */
 let seen: Array<{ phase: "render" | "layout"; key: string; filename: string | null }>;
 
-function Probe({ resetKey }: { resetKey: string }) {
-  const wa = useWhatsappAttachment("cloud", resetKey);
+function Probe({ contactId, resetKey }: { contactId: string; resetKey: string }) {
+  const wa = useWhatsappAttachment("cloud", contactId, resetKey);
   latest = wa;
   seen.push({ phase: "render", key: resetKey, filename: wa.attachment?.filename ?? null });
   useLayoutEffect(() => {
@@ -53,13 +61,29 @@ function Probe({ resetKey }: { resetKey: string }) {
   return null;
 }
 
-const render = (resetKey: string) =>
-  act(async () => root.render(createElement(Probe, { resetKey })));
+const render = (resetKey: string, contactId = resetKey.split(":")[0]!) =>
+  act(async () => root.render(createElement(Probe, { contactId, resetKey })));
+
+/** Lets the hook's async upload chain reach its next await. */
+const settle = () => act(async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+});
+
+async function pick(file: File) {
+  await act(async () => latest!.pick(file));
+  await settle();
+}
+
+async function finishPut(i: number, ok = true) {
+  await act(async () => puts[i]!.finish(ok));
+  await settle();
+}
+
+const png = (name = "site.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("FileReader", FakeReader);
-  FakeReader.reads = [];
+  installFetch();
   toastError.mockReset();
   seen = [];
   root = createRoot(document.createElement("div"));
@@ -70,12 +94,78 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+it("asks for a URL with the declared type and size, then PUTs the raw file with that exact Content-Type", async () => {
+  await render("c1:whatsapp");
+  const file = png();
+  await pick(file);
+
+  expect(fetchMock.mock.calls[0]![0]).toBe("/api/comms/whatsapp/upload-url");
+  expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+    contactId: "c1",
+    contentType: "image/png",
+    sizeBytes: 3,
+  });
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.url).toBe("https://storage.test/put/1");
+  expect(puts[0]!.init.method).toBe("PUT");
+  expect(puts[0]!.init.headers).toEqual({ "content-type": "image/png" });
+  // The File itself — no FileReader, no base64.
+  expect(puts[0]!.init.body).toBe(file);
+
+  expect(latest!.uploading).toBe(true);
+  expect(latest!.attachment).toBeNull();
+  await finishPut(0);
+  expect(latest!.uploading).toBe(false);
+  expect(latest!.attachment).toEqual({ stagedId: "staged1", filename: "site.png", contentType: "image/png" });
+});
+
+it("drops the file and says so when the PUT is refused", async () => {
+  await render("c1:whatsapp");
+  await pick(png());
+  await finishPut(0, false);
+  expect(latest!.attachment).toBeNull();
+  expect(latest!.uploading).toBe(false);
+  expect(toastError).toHaveBeenCalledWith("Couldn't upload site.png.");
+});
+
+it("shows the route's own words when no URL is issued, and never PUTs", async () => {
+  fetchMock.mockImplementationOnce(async () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({ error: "Attachment is 6000000 bytes; the limit for a image is 5000000." }),
+  }));
+  await render("c1:whatsapp");
+  await pick(png());
+  expect(puts).toHaveLength(0);
+  expect(latest!.attachment).toBeNull();
+  expect(toastError).toHaveBeenCalledWith(expect.stringContaining("the limit for a image"));
+});
+
+it("discards an upload that finishes after a switch to another contact, even on switching back", async () => {
+  await render("c1:whatsapp");
+  await pick(png());
+  await render("c2:whatsapp");
+  await finishPut(0);
+  expect(latest!.attachment).toBeNull();
+  expect(latest!.uploading).toBe(false);
+  await render("c1:whatsapp");
+  expect(latest!.attachment).toBeNull();
+  expect(toastError).not.toHaveBeenCalled();
+});
+
+it("keeps the LATER pick when an earlier upload finishes last", async () => {
+  await render("c1:whatsapp");
+  await pick(png("first.png"));
+  await pick(png("second.png"));
+  await finishPut(1);
+  await finishPut(0);
+  expect(latest!.attachment).toMatchObject({ stagedId: "staged2", filename: "second.png" });
+});
+
 it("never exposes the old key's file under a new key, in render or layout effect", async () => {
   await render("c1:whatsapp");
-  await act(async () =>
-    latest!.pick(new File([new Uint8Array([1])], "site.png", { type: "image/png" })),
-  );
-  await act(async () => FakeReader.reads[0]!.finish());
+  await pick(png());
+  await finishPut(0);
   expect(latest!.attachment?.filename).toBe("site.png");
 
   seen = [];
@@ -89,26 +179,28 @@ it("never exposes the old key's file under a new key, in render or layout effect
   expect(latest!.attachment).toBeNull();
 });
 
-function videoBase64(name: string): string {
-  return readFileSync(
-    join(__dirname, "../../lib/comms/whatsapp/__fixtures__/video", name),
-  ).toString("base64");
+function videoFile(name: string): File {
+  const bytes = readFileSync(join(__dirname, "../../lib/comms/whatsapp/__fixtures__/video", name));
+  const file = new File([new Uint8Array(bytes)], "clip.mp4", { type: "video/mp4" });
+  // jsdom's File has no arrayBuffer(); every browser the composer runs in does.
+  Object.defineProperty(file, "arrayBuffer", {
+    value: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  });
+  return file;
 }
 
-it("drops an HEVC video at pick time and says why; keeps an H.264 one", async () => {
+it("drops an HEVC video at pick time and says why, before asking for a URL; uploads an H.264 one", async () => {
   await render("c1:whatsapp");
-  const clip = () => new File([new Uint8Array([1])], "clip.mp4", { type: "video/mp4" });
 
-  await act(async () => latest!.pick(clip()));
-  await act(async () => FakeReader.reads[0]!.finish(videoBase64("hevc-hvc1-aac.mp4")));
+  await pick(videoFile("hevc-hvc1-aac.mp4"));
   expect(latest!.attachment).toBeNull();
-  expect(latest!.reading).toBe(false);
+  expect(latest!.uploading).toBe(false);
   expect(toastError).toHaveBeenCalledWith(expect.stringContaining("HEVC (H.265)"));
+  expect(fetchMock).not.toHaveBeenCalled();
 
   toastError.mockReset();
-  const h264 = videoBase64("h264-aac-faststart.mp4");
-  await act(async () => latest!.pick(clip()));
-  await act(async () => FakeReader.reads[1]!.finish(h264));
-  expect(latest!.attachment).toEqual({ filename: "clip.mp4", contentType: "video/mp4", dataBase64: h264 });
+  await pick(videoFile("h264-aac-faststart.mp4"));
+  await finishPut(0);
+  expect(latest!.attachment).toEqual({ stagedId: "staged1", filename: "clip.mp4", contentType: "video/mp4" });
   expect(toastError).not.toHaveBeenCalled();
 });

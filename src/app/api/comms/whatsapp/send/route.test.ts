@@ -165,9 +165,10 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
 
     const res = await post({ contactId: "c1", body: "here it is", attachment });
     expect(res.status).toBe(200);
-    expect(dispatchWhatsappSend).toHaveBeenCalledWith(
-      expect.objectContaining({ attachment }),
-    );
+    // Decoded once, here, and carried as a Blob from then on.
+    const sent = dispatchWhatsappSend.mock.calls[0]![0].attachment;
+    expect(sent).toMatchObject({ filename: "report.png", contentType: "image/png" });
+    expect(Buffer.from(await (sent.data as Blob).arrayBuffer()).toString("base64")).toBe("AAEC");
   });
 
   it("marks the row store_failed when no bucket is configured, and never carries the bytes", async () => {

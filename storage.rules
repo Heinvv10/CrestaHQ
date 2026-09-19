@@ -29,6 +29,15 @@ service firebase.storage {
       allow read, write: if false;
     }
 
+    // Composer attachments on their way out. The browser writes these only
+    // through a short-lived signed URL issued by
+    // /api/comms/whatsapp/upload-url (signed URLs bypass these rules), and
+    // the send route reads them with the Admin SDK. No client SDK path in or
+    // out, stated here for the same reason as whatsapp-media above.
+    match /whatsapp-staging/{allPaths=**} {
+      allow read, write: if false;
+    }
+
     // Media Library objects (subAccounts/{id}/media docs point here). Same
     // tenancy as firestore.rules: agency owner passes on claims + one
     // Firestore get for the sub-account's agencyId; a member passes on one

@@ -43,22 +43,8 @@ vi.mock("./whatsapp-template-picker", () => ({ WhatsappTemplatePicker: () => nul
 
 import { ConversationComposer } from "./conversation-composer";
 
-/** FileReader whose reads finish only when a test says so. */
-class FakeReader {
-  static reads: FakeReader[] = [];
-  result: string | null = null;
-  onload: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  file: File | null = null;
-  readAsDataURL(file: File) {
-    this.file = file;
-    FakeReader.reads.push(this);
-  }
-  finish(result = `data:${this.file!.type};base64,AAEC`) {
-    this.result = result;
-    this.onload?.();
-  }
-}
+/** Storage PUTs that finish only when a test says so. */
+let puts: Array<{ url: string; init: RequestInit; finish: (ok?: boolean) => void }>;
 
 let root: Root;
 let container: HTMLDivElement;
@@ -91,6 +77,12 @@ async function type(text: string) {
   });
 }
 
+/** Lets the hook's async upload chain reach its next await. */
+const flush = () =>
+  act(async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  });
+
 async function pickFile(name = "site.png", bytes = 3) {
   const input = q<HTMLInputElement>('[data-testid="whatsapp-attachment-input"]')!;
   const file = new File([new Uint8Array(bytes)], name, { type: "image/png" });
@@ -98,6 +90,19 @@ async function pickFile(name = "site.png", bytes = 3) {
     Object.defineProperty(input, "files", { value: [file], configurable: true });
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
+  await flush();
+}
+
+async function finishPut(i: number, ok = true) {
+  await act(async () => puts[i]!.finish(ok));
+  await flush();
+}
+
+/** The last call that was not part of an upload: the send itself. */
+function lastSend() {
+  return fetchMock.mock.calls.filter(
+    (c) => c[0] !== "/api/comms/whatsapp/upload-url" && !String(c[0]).startsWith("https://storage.test/"),
+  ).at(-1)!;
 }
 
 async function switchTo(channel: string) {
@@ -109,14 +114,30 @@ async function clickSend() {
 }
 
 function postedBody(): Record<string, unknown> {
-  return JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string);
+  return JSON.parse(lastSend()[1].body as string);
 }
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("FileReader", FakeReader);
-  FakeReader.reads = [];
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  puts = [];
+  let issued = 0;
+  fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+    if (url === "/api/comms/whatsapp/upload-url") {
+      issued += 1;
+      const n = issued;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ stagedId: `staged${n}`, uploadUrl: `https://storage.test/put/${n}` }),
+      };
+    }
+    if (url.startsWith("https://storage.test/")) {
+      return new Promise((resolve) =>
+        puts.push({ url, init, finish: (ok = true) => resolve({ ok, status: ok ? 200 : 403 }) }),
+      );
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  });
   vi.stubGlobal("fetch", fetchMock);
   subAccount = { whatsappProvider: "cloud", whatsappEnabledByAgency: true };
 });
@@ -134,22 +155,22 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     expect(q('[data-testid="whatsapp-attachment-input"]')).toBeNull();
   });
 
-  it("disables Send while the file is still being read, then sends it with the message", async () => {
+  it("disables Send while the file is still uploading, then sends it by staged id with the message", async () => {
     await mount();
     await type("here is the site");
     await pickFile();
     // Send now would post the caption alone, and the late read would attach
     // the file to whatever is typed next.
     expect(sendButton().disabled).toBe(true);
-    expect(container.textContent).toContain("Reading file");
+    expect(container.textContent).toContain("Uploading file");
 
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     expect(sendButton().disabled).toBe(false);
     await clickSend();
     expect(postedBody().attachment).toEqual({
+      stagedId: "staged1",
       filename: "site.png",
       contentType: "image/png",
-      dataBase64: "AAEC",
     });
   });
 
@@ -157,12 +178,12 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     await mount();
     expect(sendButton().disabled).toBe(true);
     await pickFile();
-    // Still reading: nothing to send yet.
+    // Still uploading: nothing to send yet.
     expect(sendButton().disabled).toBe(true);
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     expect(sendButton().disabled).toBe(false);
     await clickSend();
-    expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/whatsapp/send");
+    expect(lastSend()[0]).toBe("/api/comms/whatsapp/send");
     expect(postedBody()).toMatchObject({ body: "", attachment: { filename: "site.png" } });
   });
 
@@ -177,27 +198,27 @@ describe("ConversationComposer — WhatsApp attachments", () => {
   it("does not let a WhatsApp file enable an empty send on another channel", async () => {
     await mount();
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     await switchTo("sms");
     expect(sendButton().disabled).toBe(true);
   });
 
-  it("discards a read that lands after a channel switch, even on switching back", async () => {
+  it("discards an upload that lands after a channel switch, even on switching back", async () => {
     await mount();
     await type("hello");
     await pickFile();
     await switchTo("sms");
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
 
     // The operator moved on before the file was ready. Coming back to
     // WhatsApp must not find it silently attached to the next message.
     await switchTo("whatsapp");
     expect(container.textContent).not.toContain("site.png");
-    expect(container.textContent).not.toContain("Reading file");
+    expect(container.textContent).not.toContain("Uploading file");
     await type("hello again");
     expect(sendButton().disabled).toBe(false);
     await clickSend();
-    expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/whatsapp/send");
+    expect(lastSend()[0]).toBe("/api/comms/whatsapp/send");
     expect(postedBody()).not.toHaveProperty("attachment");
   });
 
@@ -206,24 +227,24 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     // unrelated: the file must be gone, not merely hidden while away.
     await mount();
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     expect(container.textContent).toContain("site.png");
     await switchTo("sms");
     await switchTo("whatsapp");
     expect(container.textContent).not.toContain("site.png");
     await type("unrelated");
     await clickSend();
-    expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/whatsapp/send");
+    expect(lastSend()[0]).toBe("/api/comms/whatsapp/send");
     expect(postedBody()).not.toHaveProperty("attachment");
   });
 
-  it("keeps the LATER pick when an earlier read finishes last", async () => {
+  it("keeps the LATER pick when an earlier upload finishes last", async () => {
     await mount();
     await type("second one");
     await pickFile("first.png");
     await pickFile("second.png");
-    await act(async () => FakeReader.reads[1]!.finish());
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(1);
+    await finishPut(0);
     expect(container.textContent).toContain("second.png");
     await clickSend();
     expect(postedBody().attachment).toMatchObject({ filename: "second.png" });
@@ -233,7 +254,7 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     await mount();
     await type("with file");
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     await clickSend();
     expect(postedBody()).toHaveProperty("attachment");
     await type("follow-up");
@@ -241,37 +262,29 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     expect(postedBody()).not.toHaveProperty("attachment");
   });
 
-  it("keeps the attachment after a FAILED send, so the operator can retry it", async () => {
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: "nope" }) });
+  it("drops the attachment after a FAILED send and says to attach it again — the route deleted the upload", async () => {
     await mount();
     await type("with file");
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: "nope" }) });
     await clickSend();
-    expect(container.textContent).toContain("site.png");
+    expect(container.textContent).not.toContain("site.png");
+    // The text survives for the retry; only the file has to be picked again.
+    expect(q<HTMLTextAreaElement>("textarea")!.value).toBe("with file");
   });
 
-  it("refuses an empty file without reading it", async () => {
+  it("refuses an empty file without uploading it", async () => {
     await mount();
     await pickFile("empty.png", 0);
-    expect(FakeReader.reads).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("treats a bare `data:` read result as a failed read, not a file", async () => {
+  it("treats a refused PUT as a failed upload, not a file", async () => {
     await mount();
     await type("hi");
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish("data:"));
-    expect(container.textContent).not.toContain("site.png");
-    await clickSend();
-    expect(postedBody()).not.toHaveProperty("attachment");
-  });
-
-  it("treats a read with nothing after the comma as a failed read", async () => {
-    await mount();
-    await type("hi");
-    await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish("data:application/pdf;base64,"));
+    await finishPut(0, false);
     expect(container.textContent).not.toContain("site.png");
     await clickSend();
     expect(postedBody()).not.toHaveProperty("attachment");
@@ -280,7 +293,7 @@ describe("ConversationComposer — WhatsApp attachments", () => {
   it("counts the caption in code points: 600 emoji fit under Cloud's 1024", async () => {
     await mount();
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     await type("😀".repeat(600));
     expect(sendButton().disabled).toBe(false);
   });
@@ -289,18 +302,18 @@ describe("ConversationComposer — WhatsApp attachments", () => {
     await mount();
     await type("hi");
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     await switchTo("sms");
     await type("hi");
     await clickSend();
-    expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/comms/sms/send");
+    expect(lastSend()[0]).toBe("/api/comms/sms/send");
     expect(postedBody()).not.toHaveProperty("attachment");
   });
 
   it("blocks Send on a caption longer than the rail allows with a file", async () => {
     await mount();
     await pickFile();
-    await act(async () => FakeReader.reads[0]!.finish());
+    await finishPut(0);
     await type("x".repeat(1025));
     expect(sendButton().disabled).toBe(true);
     expect(container.textContent).toContain("1025 of 1024");

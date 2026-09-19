@@ -359,7 +359,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(saved).toHaveLength(0);
   });
 
-  it("accepts a 6 MB PDF — documents are capped at 16 MiB, not the image cap", async () => {
+  it("accepts a 6 MB PDF — documents are not held to the image cap", async () => {
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA6" }))
       .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.OUT6" }] }));
@@ -582,17 +582,9 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a file over 16 MiB on every kind", async () => {
-    const big = Buffer.alloc(16 * 1024 * 1024 + 1, 1);
-    const res = await post({
-      contactId: "c1",
-      body: "here",
-      attachment: { filename: "big.pdf", contentType: "application/pdf", dataBase64: big.toString("base64") },
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("media_too_large");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+  // Documents over Meta's 100 MB are refused by their real size on the staged
+  // path — route.staged.test.ts. Over this base64 path the middleware body cap
+  // (next.config.ts) bounds a request long before that.
 
   it("refuses a type the Cloud rail does not declare, before any Graph call", async () => {
     const res = await post({
