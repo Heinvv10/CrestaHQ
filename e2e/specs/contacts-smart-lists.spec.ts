@@ -75,7 +75,9 @@ test("filters by tag, saves a smart list, deep-links and deletes it", async ({
     await panel.locator("select").last().selectOption("has_tag");
     await panel.getByPlaceholder("value").fill(tag);
 
-    await expect(rowA).toBeVisible();
+    // The rows above came from the newest-page preview; a filter swaps it for
+    // the full list, which has not been waited for until here.
+    await expect(rowA).toBeVisible({ timeout: 30_000 });
     await expect(rowB).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Filters (1)" })).toBeVisible();
 
