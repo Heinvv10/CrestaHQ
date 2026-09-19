@@ -4,15 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  capabilitiesFor,
-  SHRINKABLE_IMAGE_TYPES,
-  uploadCapFor,
-  type WhatsAppProviderCapabilities,
-  type WhatsAppProviderId,
-} from "@/lib/comms/whatsapp/provider";
+import { capabilitiesFor, uploadCapFor, type WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import { checkWhatsappVideoCodecs } from "@/lib/comms/whatsapp/video-codec";
 import { mediaKindForMime } from "@/types/whatsapp-media";
+import { acceptedTypes, humanSize, isHeic, useVideoTranscode } from "./whatsapp-attachment-rules";
 
 /**
  * What the send route accepts as `attachment`: a file already uploaded to
@@ -29,29 +24,13 @@ export interface ComposerAttachment {
 /** A failure whose message is written for the operator. Anything else gets the generic line. */
 class UploadRefused extends Error {}
 
-/** Every type the picker offers: what the rail sends, plus photos the send route converts to JPEG. */
-function acceptedTypes(caps: WhatsAppProviderCapabilities): string[] {
-  return [...new Set([...caps.mediaMimeTypes, ...SHRINKABLE_IMAGE_TYPES])].filter(
-    (t) => uploadCapFor(caps, t) > 0,
-  );
-}
-
-/** By name as well as type: some browsers report a .heic file's type as "". */
-function isHeic(file: File): boolean {
-  return /^image\/hei[cf]/.test(file.type) || /\.hei[cf]$/i.test(file.name);
-}
-
-function humanSize(bytes: number): string {
-  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
-  if (bytes >= 1 << 10) return `${Math.round(bytes / (1 << 10))} KB`;
-  return `${bytes} B`;
-}
-
 export interface WhatsappAttachmentState {
   /** Null while nothing is attached, and while a file is still uploading. */
   attachment: ComposerAttachment | null;
   /** True between picking a file and its upload finishing. Send waits. */
   uploading: boolean;
+  /** The server converts phone videos: they may be larger, HEVC, or `.mov`. */
+  videoTranscode: boolean;
   pick: (file: File) => void;
   clear: () => void;
 }
@@ -81,6 +60,7 @@ export function useWhatsappAttachment(
     uploading: boolean;
   }>({ key: resetKey, gen: 0, attachment: null, uploading: false });
   const genRef = useRef(0);
+  const videoTranscode = useVideoTranscode(provider !== null && capabilitiesFor(provider).supportsMedia);
 
   // A contact or channel change DISCARDS the attachment — a finished one as
   // well as an upload in flight. Hiding it instead would bring it back on the
@@ -111,8 +91,9 @@ export function useWhatsappAttachment(
       return;
     }
     // A photo over the rail's image cap is allowed up to the raw upload cap:
-    // the send route shrinks it to fit.
-    const cap = uploadCapFor(caps, file.type);
+    // the send route shrinks it to fit. So is a video, where the server
+    // transcodes.
+    const cap = uploadCapFor(caps, file.type, { videoTranscode });
     if (cap === 0) {
       toast.error(`${file.name}: this file type cannot be sent on WhatsApp here.`);
       return;
@@ -140,8 +121,9 @@ export function useWhatsappAttachment(
       try {
         // Early word on a video WhatsApp cannot play, instead of after Send.
         // The send route runs the same check, and that one is what counts.
-        // The raw bytes, not base64; a video is capped at 16 MiB.
-        if (file.type === "video/mp4") {
+        // The raw bytes, not base64; a video is capped at 16 MiB. Skipped
+        // where the server transcodes: it converts such a video instead.
+        if (file.type === "video/mp4" && !videoTranscode) {
           const codecs = checkWhatsappVideoCodecs(new Uint8Array(await file.arrayBuffer()));
           if (stale()) return settle(null);
           if (!codecs.ok) {
@@ -196,6 +178,7 @@ export function useWhatsappAttachment(
   return {
     attachment: current?.attachment ?? null,
     uploading: current?.uploading ?? false,
+    videoTranscode,
     pick,
     clear,
   };
@@ -231,7 +214,7 @@ export function WhatsappAttachmentPicker({
         type="file"
         hidden
         data-testid="whatsapp-attachment-input"
-        accept={acceptedTypes(caps).join(",")}
+        accept={acceptedTypes(caps, { videoTranscode: state.videoTranscode }).join(",")}
         onChange={(e) => {
           const file = e.target.files?.[0];
           // Reset so picking the same file again re-fires onChange.

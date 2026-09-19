@@ -78,3 +78,13 @@ export const IMAGE_DECODE_BUDGET_BYTES = 300_000_000;
 export const imageDecodeBudget = createByteBudget(IMAGE_DECODE_BUDGET_BYTES, 10_000);
 /** At most two decodes at once: libvips spreads each across every core. */
 export const imageDecodeSlots = createByteBudget(2, 10_000);
+
+/**
+ * One video transcode at a time, process-wide (video-transcode.ts). This
+ * counts transcodes, not bytes: ffmpeg is a child process reading and
+ * writing temp files, so neither its file bytes nor its memory (~520 MB RSS
+ * measured on a 4K60 source) are held by any ByteBudget here. Allowing one
+ * at a time is the only thing that limits that memory. A second send waits
+ * 5 s, then is told to retry.
+ */
+export const videoTranscodeSlots = createByteBudget(1, 5_000);

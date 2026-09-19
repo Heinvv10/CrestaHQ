@@ -47,7 +47,14 @@ function installFetch() {
       puts.push({ url, init, finish: (ok = true) => resolve({ ok, status: ok ? 200 : 403 }) }),
     );
   });
-  vi.stubGlobal("fetch", fetchMock);
+  // The one-time "does this host convert videos?" GET is answered apart, so
+  // `fetchMock` sees only mints and PUTs. This file pins the host that does
+  // not; whatsapp-attachment-picker.video.test.ts covers the one that does.
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+    init === undefined
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ videoTranscode: false }) })
+      : (fetchMock as (u: string, i: RequestInit) => Promise<unknown>)(url, init),
+  );
 }
 
 let root: Root;

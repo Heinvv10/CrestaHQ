@@ -1,6 +1,9 @@
 import "server-only";
 
 import { randomBytes } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { mediaKindForMime } from "@/types/whatsapp-media";
@@ -86,16 +89,19 @@ export interface MediaRefusal {
  * the staged object's REAL metadata before anything is sent — the second is
  * the one that counts. A photo may exceed the rail's image cap up to the raw
  * upload cap: the send route shrinks it to the rail's cap (image-shrink.ts).
+ * So may a phone video when this host can transcode (`host.videoTranscode`,
+ * video-transcode.ts); both routes pass the same cached answer.
  */
 export function mediaRefusal(
   caps: WhatsAppProviderCapabilities,
   contentType: string,
   sizeBytes: number,
+  host: { videoTranscode: boolean },
 ): MediaRefusal | null {
   if (!caps.supportsMedia) {
     return { code: "media_unsupported_rail", error: "This WhatsApp rail cannot send attachments." };
   }
-  const cap = uploadCapFor(caps, contentType);
+  const cap = uploadCapFor(caps, contentType, host);
   if (cap === 0) {
     return {
       code: "media_unsupported_type",
@@ -115,8 +121,12 @@ export function mediaRefusal(
 }
 
 /** The byte cap a staged upload is signed with. */
-export function stagedUploadCap(caps: WhatsAppProviderCapabilities, contentType: string): number {
-  return uploadCapFor(caps, contentType);
+export function stagedUploadCap(
+  caps: WhatsAppProviderCapabilities,
+  contentType: string,
+  host: { videoTranscode: boolean },
+): number {
+  return uploadCapFor(caps, contentType, host);
 }
 
 /**
@@ -230,6 +240,27 @@ export async function readStaged(obj: StagedObject): Promise<Blob> {
   if (total !== obj.sizeBytes) throw new Error("staged object read short");
   parts.push(new Blob(pending));
   return new Blob(parts, { type: obj.contentType });
+}
+
+/**
+ * The object's bytes streamed to a NEW file at `dest` (created 0600, refused
+ * if it exists), never held in memory: a video to transcode may be 250 MB.
+ * Throws, as `readStaged` does, when the stream yields more or fewer bytes
+ * than the checked size; the caller owns the file either way.
+ */
+export async function downloadStaged(obj: StagedObject, dest: string): Promise<void> {
+  const b = bucket();
+  if (!b) throw new Error("bucket_unconfigured");
+  const file = b.file(obj.path, obj.generation ? { generation: Number(obj.generation) } : {});
+  let total = 0;
+  const counted = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      total += chunk.length;
+      done(total > obj.sizeBytes ? new Error("staged object grew after it was checked") : null, chunk);
+    },
+  });
+  await pipeline(file.createReadStream(), counted, createWriteStream(dest, { flags: "wx", mode: 0o600 }));
+  if (total !== obj.sizeBytes) throw new Error("staged object read short");
 }
 
 /**
