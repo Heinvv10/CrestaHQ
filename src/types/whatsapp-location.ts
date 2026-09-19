@@ -24,9 +24,16 @@ export const MAX_LOCATION_TEXT = 256;
 // C0 and C1 control characters, DEL included.
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 
+// Zero-width characters, bidi marks/embeddings/overrides/isolates, and the BOM.
+// Removed outright: they render as nothing, so a name made only of them is
+// no name, and a bidi override can make shown text read differently.
+const INVISIBLE_CHARS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
 function cleanText(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
-  const cleaned = Array.from(v.replace(CONTROL_CHARS, " ").trim())
+  const cleaned = Array.from(
+    v.replace(CONTROL_CHARS, " ").replace(INVISIBLE_CHARS, "").trim(),
+  )
     .slice(0, MAX_LOCATION_TEXT)
     .join("")
     .trim();
@@ -70,7 +77,9 @@ export function locationPreviewLabel(loc: WhatsappLocation): string {
   return loc.name ? `📍 ${loc.name}` : "📍 Location";
 }
 
-/** Six decimals is ~0.1 m, and `toFixed` never emits exponent notation. */
+/** Six decimals is about 0.1 m (sub-metre) — exactly that north–south, and
+ *  finer east–west away from the equator. `toFixed` never emits exponent
+ *  notation. */
 export function formatCoordinates(loc: WhatsappLocation): string {
   return `${loc.latitude.toFixed(6)}, ${loc.longitude.toFixed(6)}`;
 }

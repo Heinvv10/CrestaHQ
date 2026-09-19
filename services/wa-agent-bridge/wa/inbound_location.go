@@ -28,8 +28,8 @@ func validCoordinates(lat, lng float64) bool {
 }
 
 // locationFrom finds a shared location in a message. It returns the location
-// (nil when there is none or its coordinates are unusable), any caption the
-// customer typed with it, and whether the message tried to carry one at all.
+// (nil when there is none or its coordinates are unusable), any text the
+// customer typed with it (a static pin's Comment, a live one's Caption), and whether the message tried to carry one at all.
 //
 // A LIVE location is taken as its current position only. WhatsApp follows it
 // with a stream of updates for the sharing period; those are not followed, so
@@ -40,10 +40,12 @@ func locationFrom(m *waE2E.Message) (loc *InboundLocation, caption string, prese
 	}
 	if v := m.GetLocationMessage(); v != nil {
 		lat, lng := v.GetDegreesLatitude(), v.GetDegreesLongitude()
+		// Comment is what the customer typed with a static pin; it is their
+		// message text, exactly as a live location's Caption is.
 		if !validCoordinates(lat, lng) {
-			return nil, "", true
+			return nil, v.GetComment(), true
 		}
-		return &InboundLocation{lat, lng, v.GetName(), v.GetAddress(), v.GetURL()}, "", true
+		return &InboundLocation{lat, lng, v.GetName(), v.GetAddress(), v.GetURL()}, v.GetComment(), true
 	}
 	if v := m.GetLiveLocationMessage(); v != nil {
 		lat, lng := v.GetDegreesLatitude(), v.GetDegreesLongitude()

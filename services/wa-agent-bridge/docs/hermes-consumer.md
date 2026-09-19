@@ -140,9 +140,18 @@ A message where the customer **shared a location** adds a `location` key:
   all, when it carried nothing else).
 - `name`, `address` and `url` are omitted when empty. They are the sender's
   own text: render them as text, and never use `url` as a link.
-- A **live** location arrives once, at its position when sharing started, with
-  its caption as `text`. The bridge does not follow the updates.
-- The coordinates are usually the customer's home. Keep them out of logs.
+- `text` is whatever the customer typed with the location: a static pin's
+  comment, or a live location's caption. It is `""` when they typed nothing.
+- A **live** location arrives once, at its position when sharing started. The
+  bridge does not follow the updates.
+- **Every consumer receives the coordinates**, and they are usually the
+  customer's home (POPIA). A consumer **must not** put `latitude` /
+  `longitude` into an LLM prompt or a log line. LeadStack's own AI never
+  receives them: it does not auto-reply to a bare location, and the row it
+  stores keeps the coordinates in a separate `location` field. The one part
+  that can reach the CRM AI is the place `name`: the row body reads
+  `📍 {name}`, and that body can appear in the AI's conversation history on a
+  later turn.
 
 `messageId` is WhatsApp's own id for the INBOUND message. Use it to dedupe a
 redelivery on the id rather than on the body. It can be an empty string when

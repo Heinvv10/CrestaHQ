@@ -739,6 +739,14 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
       warn.mockRestore();
     });
 
+    it("labels a location whose name is all invisible characters as a plain location", async () => {
+      await post(
+        inbound({ text: "", location: { latitude: -26.3, longitude: 27.8, name: "\u200b\u202e\ufeff" } }),
+      );
+      expect(messageWrites[0].data.body).toBe("📍 Location");
+      expect(conversationUpserts[0]).toMatchObject({ body: "📍 Location" });
+    });
+
     it("caps and cleans the customer's strings", async () => {
       await post(
         inbound({

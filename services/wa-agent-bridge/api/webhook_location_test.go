@@ -183,12 +183,50 @@ func TestUnusableCoordinatesAreDroppedAndNeverLogged(t *testing.T) {
 	}
 
 	out := logs.String()
-	if !strings.Contains(out, "unusable coordinates") {
-		t.Fatalf("the drop must be logged, got %q", out)
+	// The log says what actually happened to each message.
+	if strings.Count(out, "unusable coordinates") != 5 ||
+		strings.Count(out, "message dropped") != 4 ||
+		strings.Count(out, "forwarded text-only") != 1 {
+		t.Fatalf("each outcome must be logged as what happened, got %q", out)
 	}
 	for _, leak := range []string{"91.5", "180.25", "123.456789", "NaN", "Inf"} {
 		if strings.Contains(out, leak) {
 			t.Fatalf("a log line carries a coordinate (%s): %q", leak, out)
+		}
+	}
+}
+
+// A comment typed with a static pin is the customer's text, like a live
+// location's caption — it must not be dropped.
+func TestStaticLocationCommentIsTheMessageText(t *testing.T) {
+	srv, body, _ := captureOne(t)
+	f := openFanout(srv.URL, "", store.NewMemory(), false)
+
+	msg := pinMessage(-26.3812, 27.8123)
+	msg.LocationMessage.Comment = proto.String("gate is round the back")
+	deliverEvent(f, locationEvent("27821234567", time.Now(), msg), nil)
+	f.Wait()
+
+	payload := awaitBody(t, body)
+	if payload["text"] != "gate is round the back" {
+		t.Fatalf("text = %v, want the pin's comment", payload["text"])
+	}
+	if _, ok := payload["location"].(map[string]any); !ok {
+		t.Fatalf("the location must still be forwarded, got %v", payload)
+	}
+}
+
+// The poles and the antimeridian are points on Earth; a hair past them is not.
+func TestLocationCoordinateBoundaries(t *testing.T) {
+	for _, c := range [][2]float64{{90, 180}, {-90, -180}, {90, -180}, {-90, 180}} {
+		in := wa.ParseInbound(locationEvent("27821234567", time.Now(), pinMessage(c[0], c[1])), nil)
+		if in == nil || in.Location == nil || in.Location.Latitude != c[0] || in.Location.Longitude != c[1] {
+			t.Fatalf("boundary %v must be accepted, got %+v", c, in)
+		}
+	}
+	for _, c := range [][2]float64{{90.0000001, 0}, {-90.0000001, 0}, {0, 180.0000001}, {0, -180.0000001}} {
+		if in := wa.ParseInbound(locationEvent("27821234567", time.Now(), pinMessage(c[0], c[1])), nil); in != nil {
+			t.Fatalf("%v is past the boundary and must be refused, got %+v", c, in)
 		}
 	}
 }

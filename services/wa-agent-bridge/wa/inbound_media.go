@@ -401,15 +401,23 @@ func ParseInbound(v *events.Message, dl MediaDownloader) *Inbound {
 	att := attachmentFrom(v.Message)
 	// A shared location carries no text either, and is the one reliable way a
 	// customer can tell the team where their house is (WhatsApp strips GPS
-	// from photos). Unusable coordinates are logged — without the values —
-	// and the message is treated as if it carried none.
+	// from photos). Unusable coordinates are treated as no location at all.
+	// With typed text the message still goes, text-only; with nothing else it
+	// is DROPPED — an empty message with no location tells the team nothing,
+	// and WhatsApp's own clients cannot produce out-of-range coordinates, so
+	// this is a malformed or hostile message, not a customer's. Either way the
+	// log says which happened, and never carries the values.
 	loc, locCaption, hadLoc := locationFrom(v.Message)
-	if hadLoc && loc == nil {
-		log.Printf("inbound location with unusable coordinates jid=%s — forwarded without them",
-			redact.JID(senderAddress(v.Info.MessageSource)))
-	}
 	if text == "" {
 		text = locCaption
+	}
+	if hadLoc && loc == nil {
+		outcome := "forwarded text-only"
+		if text == "" && att == nil {
+			outcome = "message dropped"
+		}
+		log.Printf("inbound location with unusable coordinates jid=%s — %s",
+			redact.JID(senderAddress(v.Info.MessageSource)), outcome)
 	}
 	if text == "" && att == nil && loc == nil {
 		return nil
