@@ -225,3 +225,39 @@ it("drops an HEVC video at pick time and says why, before asking for a URL; uplo
   expect(latest!.attachment).toEqual({ stagedId: "staged1", filename: "clip.mp4", contentType: "video/mp4" });
   expect(toastError).not.toHaveBeenCalled();
 });
+
+/** A photo of `size` bytes without allocating it: only the declared size is read before the PUT. */
+function photoOfSize(size: number, name = "IMG_0001.jpg", type = "image/jpeg"): File {
+  const file = new File([new Uint8Array([0xff, 0xd8])], name, { type });
+  Object.defineProperty(file, "size", { value: size });
+  return file;
+}
+
+it("admits a 20 MB phone photo on Cloud (over the 5 MB image cap, under the 25 MB raw cap): the send route shrinks it", async () => {
+  await render("c1:whatsapp");
+  await pick(photoOfSize(20_000_000));
+  expect(toastError).not.toHaveBeenCalled();
+  expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toMatchObject({
+    contentType: "image/jpeg",
+    sizeBytes: 20_000_000,
+  });
+});
+
+it("refuses a photo over the 25 MB raw cap before asking for a URL", async () => {
+  await render("c1:whatsapp");
+  await pick(photoOfSize(25_000_001));
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(toastError).toHaveBeenCalledWith(expect.stringContaining("the limit for a image is 23.8 MB"));
+});
+
+it.each([
+  ["by type", "IMG_0002.HEIC", "image/heic"],
+  ["by name when the browser reports no type", "IMG_0003.heic", ""],
+])("refuses an iPhone HEIC photo %s and says how to send it instead", async (_l, name, type) => {
+  await render("c1:whatsapp");
+  await pick(photoOfSize(3_000_000, name, type));
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(toastError).toHaveBeenCalledWith(
+    `${name}: iPhone HEIC photos aren't supported yet — set iPhone Camera to 'Most Compatible' or send as JPEG.`,
+  );
+});

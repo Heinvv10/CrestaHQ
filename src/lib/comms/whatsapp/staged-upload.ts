@@ -6,7 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { mediaKindForMime } from "@/types/whatsapp-media";
 import type { SubAccountDoc } from "@/types";
 import { bucket } from "./media-storage";
-import type { OutboundAttachment, WhatsAppProviderCapabilities } from "./provider";
+import { uploadCapFor, type OutboundAttachment, type WhatsAppProviderCapabilities } from "./provider";
 import { resolveWhatsappSender } from "./resolve-sender";
 
 /**
@@ -81,10 +81,11 @@ export interface MediaRefusal {
 }
 
 /**
- * Whether a file of this type and size may go on this rail. Called with the
- * client's DECLARED values before a URL is issued, and again with the staged
- * object's REAL metadata before anything is sent — the second is the one
- * that counts.
+ * Whether a file of this type and size may be uploaded for this rail. Called
+ * with the client's DECLARED values before a URL is issued, and again with
+ * the staged object's REAL metadata before anything is sent — the second is
+ * the one that counts. A photo may exceed the rail's image cap up to the raw
+ * upload cap: the send route shrinks it to the rail's cap (image-shrink.ts).
  */
 export function mediaRefusal(
   caps: WhatsAppProviderCapabilities,
@@ -94,7 +95,8 @@ export function mediaRefusal(
   if (!caps.supportsMedia) {
     return { code: "media_unsupported_rail", error: "This WhatsApp rail cannot send attachments." };
   }
-  if (!caps.mediaMimeTypes.includes(contentType)) {
+  const cap = uploadCapFor(caps, contentType);
+  if (cap === 0) {
     return {
       code: "media_unsupported_type",
       error: `Attachment type ${contentType || "(none)"} cannot be sent on this rail.`,
@@ -103,20 +105,18 @@ export function mediaRefusal(
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
     return { code: "media_invalid", error: "The attachment is empty." };
   }
-  const kind = mediaKindForMime(contentType);
-  const cap = caps.maxMediaBytes[kind];
   if (sizeBytes > cap) {
     return {
       code: "media_too_large",
-      error: `Attachment is ${sizeBytes} bytes; the limit for a ${kind} is ${cap}.`,
+      error: `Attachment is ${sizeBytes} bytes; the limit for a ${mediaKindForMime(contentType)} is ${cap}.`,
     };
   }
   return null;
 }
 
-/** The byte cap a staged upload is signed with: the rail's cap for the file's kind. */
+/** The byte cap a staged upload is signed with. */
 export function stagedUploadCap(caps: WhatsAppProviderCapabilities, contentType: string): number {
-  return caps.maxMediaBytes[mediaKindForMime(contentType)];
+  return uploadCapFor(caps, contentType);
 }
 
 /**
@@ -165,6 +165,12 @@ export interface StagedObject {
 export interface StagedAttachment {
   outbound: OutboundAttachment;
   staged: StagedObject;
+  /**
+   * True when `outbound` is not the staged object's bytes — a photo re-encoded
+   * to fit the rail. The thread's copy is then written from `outbound`, so it
+   * is what the customer received, not what the operator picked.
+   */
+  rewritten?: true;
 }
 
 /** Null when the object is missing (never uploaded, expired, already sent). */

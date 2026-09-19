@@ -338,9 +338,10 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(messageRow).toBeUndefined();
   });
 
-  it("refuses a 6 MB image before any Graph call — Meta's image cap is 5 MB", async () => {
-    // A picker that admits the file and a Graph call that then refuses it is
-    // a wasted upload and an operator left guessing; the cap is per kind.
+  it("refuses a 6 MB 'image' that is not one before any Graph call — it cannot be shrunk to Meta's 5 MB", async () => {
+    // An over-cap photo is re-encoded to fit (route.shrink.test.ts, which
+    // also pins the decimal 5,000,000 ceiling); bytes that are not the photo
+    // type they claim are refused by their magic bytes before anything else.
     const sixMb = Buffer.alloc(6 * 1024 * 1024, 1);
     const res = await post({
       contactId: "c1",
@@ -348,7 +349,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
       attachment: { ...attachment, bytes: sixMb },
     });
     expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("media_too_large");
+    expect((await res.json()).code).toBe("media_unsupported_type");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(copies()).toHaveLength(0);
   });
@@ -366,18 +367,6 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(messageRow?.media).toMatchObject({ kind: "document", sizeBytes: sixMb.length });
-  });
-
-  it("refuses an image between 5,000,000 and 5 MiB bytes — Meta's 5 MB is decimal", async () => {
-    const justOver = Buffer.alloc(5_100_000, 1);
-    const res = await post({
-      contactId: "c1",
-      body: "here",
-      attachment: { ...attachment, bytes: justOver },
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("media_too_large");
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refuses a caption over Meta's 1024 characters before any Graph call", async () => {

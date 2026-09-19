@@ -66,3 +66,15 @@ export function createByteBudget(totalBytes: number, waitMs: number): ByteBudget
  * watching a spinner.
  */
 export const stagedMediaBudget = createByteBudget(200_000_000, 10_000);
+
+/**
+ * Decoded-pixel memory for photos being shrunk (image-shrink.ts), kept apart
+ * from `stagedMediaBudget`, which holds only file bytes: a shrink reserves
+ * from its header what its decode can really use, and never blocks a
+ * document send while it runs. 300 MB admits the worst photo it takes (a
+ * 50 MP 8-bit RGBA PNG, ~265 MB reserved) or several ordinary ones.
+ */
+export const IMAGE_DECODE_BUDGET_BYTES = 300_000_000;
+export const imageDecodeBudget = createByteBudget(IMAGE_DECODE_BUDGET_BYTES, 10_000);
+/** At most two decodes at once: libvips spreads each across every core. */
+export const imageDecodeSlots = createByteBudget(2, 10_000);
