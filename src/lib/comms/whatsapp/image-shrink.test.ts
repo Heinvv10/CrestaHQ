@@ -121,12 +121,12 @@ describe("jpegFilename", () => {
 
 describe("shrinkImage deadline", () => {
   it("never hands sharp a timeout under 1 s — 0 would mean no limit — and stops when the time is gone", async () => {
-    // A clock that jumps 1.5 s at every read, and a cap no encode can meet,
+    // A clock that jumps 1.6 s at every read, and a cap no encode can meet,
     // so the fit loop runs until the deadline.
     const input = await solid(64, 48, 3).jpeg().toBuffer();
     let reads = 0;
     const base = Date.now();
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => base + 1500 * reads++);
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => base + 1600 * reads++);
     timeouts.length = 0;
     try {
       const r = await shrinkImage(input, "image/jpeg", 1);

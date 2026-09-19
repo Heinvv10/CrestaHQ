@@ -11,16 +11,20 @@ import { SHRINKABLE_IMAGE_TYPES, type WhatsAppProviderCapabilities } from "./pro
  * whose cap is 5 MB (Cloud) or 8 MiB (bridge).
  *
  * A photo that already fits, in a type the rail sends, goes out byte for
- * byte — no recompression. Anything else is decoded once, turned upright
- * from its EXIF orientation, flattened onto white (JPEG has no alpha, and a
+ * byte — no recompression. Anything else is decoded, turned upright from
+ * its EXIF orientation, flattened onto white (JPEG has no alpha, and a
  * transparent PNG left to the encoder turns black), shrunk to at most
  * MAX_EDGE on its longest side and encoded as JPEG, stepping quality and
- * then dimensions down until it fits.
+ * then dimensions down until it fits. Each step decodes the original again:
+ * at today's caps the first encode always fits, so that is one decode.
  *
- * The re-encoded file carries NO metadata: the encoder starts from raw
- * pixels, so a phone photo's EXIF — GPS position included — cannot survive
- * into it. That is a POPIA win for every photo this shrinks; a photo sent
- * unchanged keeps whatever metadata it had.
+ * METADATA IS KEPT, deliberately, at the business's request: the shrunk
+ * JPEG carries the original's EXIF — GPS position and capture time
+ * included — and it reaches the customer's phone. (`keepExif()`; after
+ * `.rotate()` sharp writes Orientation 1, so an upright photo is not turned
+ * twice.) The ICC profile is NOT kept: sharp converts the pixels to sRGB,
+ * which is what WhatsApp and every phone assume, so a Display-P3 iPhone
+ * photo shows the right colours without a profile riding along.
  *
  * FORMAT. The staged type is only what the uploader signed for, and sharp
  * decodes by sniffing the bytes — prebuilt sharp also renders SVG (librsvg:
@@ -64,7 +68,7 @@ const QUALITIES = [85, 75, 65, 55] as const;
 const TIMEOUT_MS = 20_000;
 
 /**
- * libvips' per-thread buffers, the ≤2560² raw working copy (~20 MB) and the
+ * libvips' per-thread buffers, the ≤2560² resized frame (~20 MB) and the
  * output. Measured on velo (32 cores), peak RSS over the decoded pixels:
  * ~47 MB for a 108 MP JPEG decoded at 1/4 scale.
  */
@@ -217,24 +221,20 @@ async function encodeToFit(input: Buffer, type: PhotoType, capBytes: number): Pr
   const deadline = Date.now() + TIMEOUT_MS;
   const seconds = () => Math.floor((deadline - Date.now()) / 1000);
   try {
-    const { data, info } = await open(input, type)
-      .timeout({ seconds: seconds() })
-      .rotate()
-      .flatten({ background: "#ffffff" })
-      .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const raw = { width: info.width, height: info.height, channels: info.channels };
     for (const edge of EDGES) {
       for (const quality of QUALITIES) {
         // Read once: a second read could fall to 0, which sharp takes as "no limit".
         const left = seconds();
         if (left < 1) return tookTooLong();
-        const out = await sharp(data, { raw })
+        const out = await open(input, type)
           .timeout({ seconds: left })
+          .rotate()
+          .flatten({ background: "#ffffff" })
           .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
           .jpeg({ quality })
+          .keepExif()
           .toBuffer();
+        // The EXIF is inside `out`, so the cap counts it.
         if (out.length <= capBytes) return { ok: true, bytes: out, contentType: "image/jpeg" };
       }
     }

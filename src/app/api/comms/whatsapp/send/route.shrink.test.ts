@@ -138,7 +138,11 @@ import { createByteBudget, IMAGE_DECODE_BUDGET_BYTES } from "@/lib/comms/whatsap
 
 const STAGED_ID = "AbCdEfGhIjKlMnOpQrStUv_-";
 const OWN_PATH = `whatsapp-staging/ag1/sa1/u1/${STAGED_ID}`;
-const GPS = { IFD3: { GPSLatitudeRef: "S", GPSLatitude: "26/1 12/1 0/1" } };
+const TAKEN = "2026:09:19 10:11:12";
+const GPS = {
+  IFD2: { DateTimeOriginal: TAKEN },
+  IFD3: { GPSLatitudeRef: "S", GPSLatitude: "26/1 12/1 0/1" },
+};
 
 function post(filename: string, body = "") {
   return POST(
@@ -159,9 +163,21 @@ function photoPixels(width: number, height: number): Buffer {
   return px;
 }
 
-/** GPS IFD pointer tag 0x8825, in either byte order. */
-const hasGps = (exif?: Buffer) =>
-  !!exif && (exif.includes(Buffer.from([0x88, 0x25])) || exif.includes(Buffer.from([0x25, 0x88])));
+/**
+ * The fixture's GPS latitude (26/1 12/1 0/1 as three RATIONALs, in either
+ * TIFF byte order) and its DateTimeOriginal, read out of an EXIF block.
+ */
+function exifOf(exif?: Buffer) {
+  const rationals = (le: boolean) => {
+    const b = Buffer.alloc(24);
+    [26, 1, 12, 1, 0, 1].forEach((v, i) => (le ? b.writeUInt32LE(v, i * 4) : b.writeUInt32BE(v, i * 4)));
+    return b;
+  };
+  return {
+    gps: !!exif && (exif.includes(rationals(true)) || exif.includes(rationals(false))),
+    taken: !!exif && exif.includes(Buffer.from(TAKEN)),
+  };
+}
 
 /** The file Graph was given, and the thread copy's bytes. */
 async function sentToGraph(): Promise<Buffer> {
@@ -209,11 +225,11 @@ afterEach(() => {
 });
 
 describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
-  it("shrinks an over-cap phone JPEG to the Cloud cap, upright and without GPS; the thread copy IS the sent bytes", async () => {
+  it("shrinks an over-cap phone JPEG to the Cloud cap, upright, KEEPING its GPS and capture time; the thread copy IS the sent bytes", async () => {
     const inMeta = await sharp(phoneJpeg).metadata();
     expect(phoneJpeg.length).toBeGreaterThan(8 << 20);
     expect(inMeta.orientation).toBe(6);
-    expect(hasGps(inMeta.exif)).toBe(true);
+    expect(exifOf(inMeta.exif)).toEqual({ gps: true, taken: true });
     stageObject(OWN_PATH, phoneJpeg, "image/jpeg");
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "M1" }))
@@ -231,8 +247,9 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     expect(out.format).toBe("jpeg");
     // Orientation 6 on a 4000×3000 sensor image is a portrait photo.
     expect([out.width, out.height]).toEqual([1920, 2560]);
-    expect(out.exif).toBeUndefined();
-    expect(out.orientation).toBeUndefined();
+    // Kept at the business's request — and counted in the 5,000,000 above.
+    expect(exifOf(out.exif)).toEqual({ gps: true, taken: true });
+    expect(out.orientation).toBe(1);
 
     const stored = storedCopy("wamid.S1")!;
     expect(stored.bytes.equals(sent)).toBe(true);
@@ -247,6 +264,39 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     });
     expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
     expect(held.budget.inFlight()).toBe(0);
+  });
+
+  it("turns a rotated-EXIF photo's pixels upright and writes Orientation 1, so it is not turned twice", async () => {
+    // 400×200 landscape, top half red, bottom half blue, tagged Orientation 6
+    // (display rotated 90° clockwise): upright it is 200×400, red on the RIGHT.
+    const px = Buffer.alloc(400 * 200 * 3);
+    for (let i = 0; i < 400 * 200; i++) {
+      const top = i < 400 * 100;
+      px[i * 3] = top ? 220 : 20;
+      px[i * 3 + 2] = top ? 20 : 220;
+    }
+    const tagged = await sharp(px, { raw: { width: 400, height: 200, channels: 3 } })
+      .jpeg({ quality: 95 })
+      .withExif(GPS)
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    override.imageCap = tagged.length - 1;
+    stageObject(OWN_PATH, tagged, "image/jpeg");
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "M7" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.S7" }] }));
+    expect((await post("rotated.jpg")).status).toBe(200);
+
+    const sent = await sentToGraph();
+    const meta = await sharp(sent).metadata();
+    expect([meta.width, meta.height, meta.orientation]).toEqual([200, 400, 1]);
+    // Raw stored pixels, read without applying any orientation.
+    const { data } = await sharp(sent).raw().toBuffer({ resolveWithObject: true });
+    const at = (x: number, y: number) => [data[(y * 200 + x) * 3]!, data[(y * 200 + x) * 3 + 2]!];
+    const [rightR, rightB] = at(190, 200);
+    const [leftR, leftB] = at(10, 200);
+    expect(rightR).toBeGreaterThan(rightB);
+    expect(leftB).toBeGreaterThan(leftR);
   });
 
   it("sends an under-cap JPEG byte for byte — no recompression — and copies it by Storage", async () => {
@@ -365,7 +415,7 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     const sent = Buffer.from(media.dataBase64, "base64");
     expect([media.filename, media.contentType]).toEqual(["IMG_0003.jpg", "image/jpeg"]);
     expect(sent.length).toBeLessThanOrEqual(8 << 20);
-    expect((await sharp(sent).metadata()).exif).toBeUndefined();
+    expect(exifOf((await sharp(sent).metadata()).exif)).toEqual({ gps: true, taken: true });
     const rowId = String((messageRow?.media as { storagePath: string }).storagePath.split("/").pop());
     expect(storedCopy(rowId)!.bytes.equals(sent)).toBe(true);
   });
@@ -462,7 +512,10 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
   });
 
   it("re-encodes a real PNG signed as a JPEG, under the cap, so what is sent and stored is a JPEG", async () => {
-    const png = await sharp(photoPixels(640, 480), { raw: { width: 640, height: 480, channels: 3 } }).png().toBuffer();
+    const png = await sharp(photoPixels(640, 480), { raw: { width: 640, height: 480, channels: 3 } })
+      .png()
+      .withExif(GPS)
+      .toBuffer();
     stageObject(OWN_PATH, png, "image/jpeg");
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "M6" }))
@@ -475,6 +528,7 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     expect(sent.equals(png)).toBe(false);
     expect(storedCopy("wamid.S6")!.bytes.equals(sent)).toBe(true);
     expect(messageRow?.media).toMatchObject({ mimeType: "image/jpeg", sizeBytes: sent.length });
+    expect(exifOf((await sharp(sent).metadata()).exif)).toEqual({ gps: true, taken: true });
   });
 
   it("refuses a large progressive JPEG by its header, with a message that says why", async () => {
