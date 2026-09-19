@@ -29,6 +29,13 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let subAccountDoc: Record<string, unknown> | undefined;
 let messageRow: Record<string, unknown> | undefined;
 
+// This file pins behaviour on a host WITHOUT ffmpeg — every Vercel deploy.
+// velo has it, so it is switched off here rather than left to the runner;
+// route.video.test.ts covers the host that transcodes.
+vi.mock("@/lib/comms/whatsapp/video-tools", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/comms/whatsapp/video-tools")>()),
+  videoTranscodeAvailable: async () => false,
+}));
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
   requireContactAccessible: (...a: unknown[]) => requireContactAccessible(...a),

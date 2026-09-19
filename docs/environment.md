@@ -218,6 +218,7 @@ Each sub-account connects its own Meta WhatsApp Cloud sender (phone number id, W
 
 | Var | Purpose |
 |---|---|
+| `FFMPEG_PATH` / `FFPROBE_PATH` | Optional. Absolute paths to ffmpeg and ffprobe (≥ 5, ffmpeg built with libx264 and aac); unset, both are looked up on `PATH`. When both are found and pass a version check (once per process), composer videos are converted server-side to fit the rail (`src/lib/comms/whatsapp/video-transcode.ts`): phone `.mov`/`.3gp`/`.mp4` up to 250 MB and 180 s. When either is missing — the norm on Vercel — videos keep the rail's own cap (16 MiB Cloud, 8 MiB bridge) and must already be H.264/AAC MP4. A set path that does not work turns conversion off; it never falls back to `PATH`. |
 | `WHATSAPP_GRAPH_VERSION` | Optional. Graph API version for every WhatsApp Cloud call (sends, templates, settings, inbound media download). Default `v23.0`. Inbound photos, voice notes and documents are stored in `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`; without it the message still lands and the row records `mediaDropped: "fetch_failed"`. |
 
 **Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER`):

@@ -6,6 +6,7 @@ import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import { checkWhatsappVideoCodecs } from "@/lib/comms/whatsapp/video-codec";
 import {
   deleteStaged,
+  downloadStaged,
   mediaRefusal,
   readStaged,
   stagingPath,
@@ -22,7 +23,9 @@ import {
   sniffImageType,
   type PhotoType,
 } from "@/lib/comms/whatsapp/image-shrink";
-import type { WhatsAppProviderCapabilities } from "@/lib/comms/whatsapp/provider";
+import { fitVideo, mp4Filename } from "@/lib/comms/whatsapp/video-transcode";
+import { videoTranscodeAvailable } from "@/lib/comms/whatsapp/video-tools";
+import { transcodesVideo, type WhatsAppProviderCapabilities } from "@/lib/comms/whatsapp/provider";
 import type { Contact } from "@/types/contacts";
 import { mediaKindForMime } from "@/types/whatsapp-media";
 
@@ -148,13 +151,19 @@ export async function POST(request: Request) {
   try {
     let attachment: StagedAttachment | null = null;
     if (staged && stagedPath) {
-      const checked = await checkStaged(contact, stagedPath);
+      const host = { videoTranscode: await videoTranscodeAvailable() };
+      const checked = await checkStaged(contact, stagedPath, host);
       if (checked instanceof NextResponse) return checked;
       const { obj, caps } = checked;
+      // A video this host transcodes goes to a temp file, not memory; what
+      // this process then holds is at most the rail's video cap.
+      const toDisk = host.videoTranscode && transcodesVideo(caps, obj.contentType);
       // Held from before the read until the rail has the file — the whole
       // time its bytes are in this process. A shrink's decode is reserved
       // separately, from the photo's header (image-shrink.ts).
-      releaseBudget = await stagedMediaBudget.acquire(obj.sizeBytes);
+      releaseBudget = await stagedMediaBudget.acquire(
+        toDisk ? Math.min(obj.sizeBytes, caps.maxMediaBytes.video) : obj.sizeBytes,
+      );
       if (!releaseBudget) {
         return NextResponse.json(
           {
@@ -164,7 +173,9 @@ export async function POST(request: Request) {
           { status: 503, headers: { "Retry-After": "30" } },
         );
       }
-      const loaded = await loadStaged(obj, staged.filename, caps);
+      const loaded = toDisk
+        ? await loadVideo(obj, staged.filename, caps)
+        : await loadStaged(obj, staged.filename, caps);
       if (loaded instanceof NextResponse) return loaded;
       attachment = loaded;
     }
@@ -214,6 +225,7 @@ function videoCodecRefusal(contentType: string, bytes: Uint8Array): NextResponse
 async function checkStaged(
   contact: Contact,
   path: string,
+  host: { videoTranscode: boolean },
 ): Promise<{ obj: StagedObject; caps: WhatsAppProviderCapabilities } | NextResponse> {
   const obj = await statStaged(path);
   if (!obj) {
@@ -224,7 +236,7 @@ async function checkStaged(
   }
   const rail = await stagingRail(contact.subAccountId);
   if (!rail.ok) return NextResponse.json({ error: rail.error }, { status: rail.status });
-  const refusal = mediaRefusal(rail.capabilities, obj.contentType, obj.sizeBytes);
+  const refusal = mediaRefusal(rail.capabilities, obj.contentType, obj.sizeBytes, host);
   if (refusal) return NextResponse.json(refusal, { status: 400 });
   return { obj, caps: rail.capabilities };
 }
@@ -291,4 +303,26 @@ async function loadStaged(
     if (codecs) return codecs;
   }
   return { outbound: { filename, contentType: obj.contentType, data }, staged: obj };
+}
+
+/**
+ * A phone video on a host that transcodes: streamed to a temp file, sent
+ * unchanged when it is already an H.264/AAC MP4 within the rail's cap, else
+ * converted to one (video-transcode.ts). The thread's copy is what was sent.
+ */
+async function loadVideo(
+  obj: StagedObject,
+  filename: string,
+  caps: WhatsAppProviderCapabilities,
+): Promise<StagedAttachment | NextResponse> {
+  const fit = await fitVideo((dest) => downloadStaged(obj, dest), obj.contentType, caps.maxMediaBytes.video);
+  if (!fit.ok) {
+    return fit.code === "media_busy"
+      ? NextResponse.json({ error: fit.error, code: fit.code }, { status: 503, headers: { "Retry-After": "30" } })
+      : NextResponse.json({ error: fit.error, code: fit.code }, { status: 400 });
+  }
+  const data = new Blob([new Uint8Array(fit.bytes)], { type: "video/mp4" });
+  return fit.transcoded
+    ? { outbound: { filename: mp4Filename(filename), contentType: "video/mp4", data }, staged: obj, rewritten: true }
+    : { outbound: { filename, contentType: obj.contentType, data }, staged: obj };
 }

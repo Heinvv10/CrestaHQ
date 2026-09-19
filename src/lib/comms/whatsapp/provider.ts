@@ -196,11 +196,35 @@ export const SHRINKABLE_IMAGE_TYPES: readonly string[] = ["image/jpeg", "image/p
 export const RAW_IMAGE_UPLOAD_BYTES = 25_000_000;
 
 /**
+ * Phone video types the send route can transcode to H.264/AAC MP4 to fit the
+ * rail (video-transcode.ts) — only on a host where ffmpeg was found. `.mov`
+ * is what an iPhone records; `.3gp` what older Android phones do.
+ */
+export const TRANSCODABLE_VIDEO_TYPES: readonly string[] = ["video/mp4", "video/quicktime", "video/3gpp"];
+
+/**
+ * The most a composer video may be UPLOADED at when the host can transcode;
+ * the rail's video cap still bounds what is SENT. A phone records 1080p30 at
+ * roughly 60 MB a minute in HEVC and 130 MB in H.264, so 250 MB admits a
+ * 2–3 minute clip — the 180-second limit the transcode enforces anyway
+ * (video-transcode.ts). The file goes to a temp file on disk, never into
+ * memory, so this bounds disk and download time, not the heap.
+ */
+export const RAW_VIDEO_UPLOAD_BYTES = 250_000_000;
+
+/**
  * The upload cap for a file of this type on this rail, or 0 when the rail
  * takes no such file. Photos the rail can receive as JPEG get the raw upload
- * cap; everything else gets the rail's own cap for its kind.
+ * cap, and so do phone videos when the host can transcode them
+ * (`videoTranscode`: ffmpeg found — the server's `videoTranscodeAvailable`,
+ * which the browser learns from `GET /api/comms/whatsapp/upload-url`).
+ * Everything else gets the rail's own cap for its kind.
  */
-export function uploadCapFor(caps: WhatsAppProviderCapabilities, contentType: string): number {
+export function uploadCapFor(
+  caps: WhatsAppProviderCapabilities,
+  contentType: string,
+  host: { videoTranscode: boolean },
+): number {
   if (!caps.supportsMedia) return 0;
   if (
     SHRINKABLE_IMAGE_TYPES.includes(contentType) &&
@@ -209,8 +233,18 @@ export function uploadCapFor(caps: WhatsAppProviderCapabilities, contentType: st
   ) {
     return RAW_IMAGE_UPLOAD_BYTES;
   }
+  if (host.videoTranscode && transcodesVideo(caps, contentType)) return RAW_VIDEO_UPLOAD_BYTES;
   if (!caps.mediaMimeTypes.includes(contentType)) return 0;
   return caps.maxMediaBytes[mediaKindForMime(contentType)];
+}
+
+/** Whether a file of this type goes through the video transcode path on this rail, given ffmpeg. */
+export function transcodesVideo(caps: WhatsAppProviderCapabilities, contentType: string): boolean {
+  return (
+    TRANSCODABLE_VIDEO_TYPES.includes(contentType) &&
+    caps.mediaMimeTypes.includes("video/mp4") &&
+    caps.maxMediaBytes.video > 0
+  );
 }
 
 /**

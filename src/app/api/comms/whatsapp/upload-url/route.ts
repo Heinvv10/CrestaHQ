@@ -9,8 +9,21 @@ import {
   stagingRail,
 } from "@/lib/comms/whatsapp/staged-upload";
 import { checkUploadUrlRateLimit } from "@/lib/comms/whatsapp/upload-rate-limit";
+import { videoTranscodeAvailable } from "@/lib/comms/whatsapp/video-tools";
 
 type Body = { contactId?: string; contentType?: string; sizeBytes?: number };
+
+/**
+ * What this host can do with an attachment beyond the rail's own caps:
+ * `videoTranscode` — ffmpeg is here, so phone videos are uploaded up to
+ * RAW_VIDEO_UPLOAD_BYTES and converted at send (video-transcode.ts). The
+ * picker reads it so it offers exactly what POST below will sign.
+ */
+export async function GET(request: Request) {
+  const auth = requireUid(request);
+  if (auth instanceof NextResponse) return auth;
+  return NextResponse.json({ videoTranscode: await videoTranscodeAvailable() });
+}
 
 /**
  * Issue a short-lived signed PUT URL for one composer attachment, so the
@@ -61,7 +74,8 @@ export async function POST(request: Request) {
 
   const rail = await stagingRail(contact.subAccountId);
   if (!rail.ok) return NextResponse.json({ error: rail.error }, { status: rail.status });
-  const refusal = mediaRefusal(rail.capabilities, contentType, sizeBytes);
+  const host = { videoTranscode: await videoTranscodeAvailable() };
+  const refusal = mediaRefusal(rail.capabilities, contentType, sizeBytes, host);
   if (refusal) return NextResponse.json(refusal, { status: 400 });
 
   const stagedId = newStagedId();
@@ -73,7 +87,7 @@ export async function POST(request: Request) {
   })!;
   let signed: Awaited<ReturnType<typeof signStagedUpload>>;
   try {
-    signed = await signStagedUpload(path, contentType, stagedUploadCap(rail.capabilities, contentType));
+    signed = await signStagedUpload(path, contentType, stagedUploadCap(rail.capabilities, contentType, host));
   } catch (err) {
     console.error("[whatsapp/upload-url] signing failed", err instanceof Error ? err.message : typeof err);
     signed = null;

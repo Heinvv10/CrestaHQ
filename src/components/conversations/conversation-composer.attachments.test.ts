@@ -121,7 +121,11 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   puts = [];
   let issued = 0;
-  fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+  fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    // The picker's one-time "does this host convert videos?" GET: not a mint.
+    if (url === "/api/comms/whatsapp/upload-url" && init === undefined) {
+      return { ok: true, status: 200, json: async () => ({ videoTranscode: false }) };
+    }
     if (url === "/api/comms/whatsapp/upload-url") {
       issued += 1;
       const n = issued;
@@ -137,7 +141,7 @@ beforeEach(() => {
     }
     if (url.startsWith("https://storage.test/")) {
       return new Promise((resolve) =>
-        puts.push({ url, init, finish: (ok = true) => resolve({ ok, status: ok ? 200 : 403 }) }),
+        puts.push({ url, init: init!, finish: (ok = true) => resolve({ ok, status: ok ? 200 : 403 }) }),
       );
     }
     return { ok: true, status: 200, json: async () => ({ ok: true }) };

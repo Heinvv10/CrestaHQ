@@ -13,6 +13,13 @@ const requireContactAccessible = vi.fn();
 let subAccountDoc: Record<string, unknown> | undefined;
 let signed: Array<{ path: string; opts: Record<string, unknown> }>;
 
+// Whether this host transcodes videos (ffmpeg found). Off unless a test says
+// so: velo's runner has ffmpeg, and most of this file pins the host without.
+const host = vi.hoisted(() => ({ videoTranscode: false }));
+vi.mock("@/lib/comms/whatsapp/video-tools", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/comms/whatsapp/video-tools")>()),
+  videoTranscodeAvailable: async () => host.videoTranscode,
+}));
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
   requireContactAccessible: (...a: unknown[]) => requireContactAccessible(...a),
@@ -36,7 +43,7 @@ vi.mock("firebase-admin/storage", () => ({
   }),
 }));
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 function post(body: Record<string, unknown>) {
   return POST(
@@ -64,6 +71,7 @@ beforeEach(() => {
   uid = `u${++uidSeq}`;
   requireUid.mockReturnValue({ uid, email: "" });
   requireContactAccessible.mockResolvedValue({ id: "c1", agencyId: "ag1", subAccountId: "sa1" });
+  host.videoTranscode = false;
 });
 
 describe("POST /api/comms/whatsapp/upload-url", () => {
@@ -199,5 +207,53 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
     // Per user: someone else is unaffected.
     requireUid.mockReturnValue({ uid: `${uid}-other`, email: "" });
     expect((await post(pdf)).status).toBe(200);
+  });
+});
+
+describe("videos, by whether this host transcodes them", () => {
+  const RAW = "0,250000000";
+
+  it.each([
+    ["a 200 MB iPhone .mov on Cloud", "cloud", "video/quicktime"],
+    ["a 200 MB MP4 on Cloud", "cloud", "video/mp4"],
+    ["a 200 MB .3gp on the bridge", "bridge", "video/3gpp"],
+  ])("with ffmpeg: signs %s at the 250 MB raw video cap", async (_l, rail, contentType) => {
+    host.videoTranscode = true;
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: rail };
+    const res = await post({ contactId: "c1", contentType, sizeBytes: 200_000_000 });
+    expect(res.status).toBe(200);
+    expect(signed[0]!.opts.extensionHeaders).toEqual({ "x-goog-content-length-range": RAW });
+    expect((await res.json()).contentLengthRange).toBe(RAW);
+  });
+
+  it("with ffmpeg: still refuses a video over 250 MB, and any video on Twilio", async () => {
+    host.videoTranscode = true;
+    const over = await post({ contactId: "c1", contentType: "video/mp4", sizeBytes: 250_000_001 });
+    expect(over.status).toBe(400);
+    expect((await over.json()).code).toBe("media_too_large");
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "twilio" };
+    expect((await post({ contactId: "c1", contentType: "video/quicktime", sizeBytes: 1000 })).status).toBe(400);
+    expect(signed).toHaveLength(0);
+  });
+
+  it("without ffmpeg: exactly the rail's rules — .mov refused, an MP4 over 16 MiB refused, one under signed at 16 MiB", async () => {
+    const mov = await post({ contactId: "c1", contentType: "video/quicktime", sizeBytes: 1000 });
+    expect(mov.status).toBe(400);
+    expect((await mov.json()).code).toBe("media_unsupported_type");
+    const big = await post({ contactId: "c1", contentType: "video/mp4", sizeBytes: (16 << 20) + 1 });
+    expect(big.status).toBe(400);
+    expect((await big.json()).code).toBe("media_too_large");
+    expect(signed).toHaveLength(0);
+    const ok = await post({ contactId: "c1", contentType: "video/mp4", sizeBytes: 16 << 20 });
+    expect((await ok.json()).contentLengthRange).toBe(`0,${16 << 20}`);
+  });
+
+  it("GET tells a signed-in picker which host it is on, and nobody else", async () => {
+    const get = () => GET(new Request("https://crm.test/api/comms/whatsapp/upload-url"));
+    expect(await (await get()).json()).toEqual({ videoTranscode: false });
+    host.videoTranscode = true;
+    expect(await (await get()).json()).toEqual({ videoTranscode: true });
+    requireUid.mockReturnValue(NextResponse.json({ error: "Unauthorized" }, { status: 401 }));
+    expect((await get()).status).toBe(401);
   });
 });
