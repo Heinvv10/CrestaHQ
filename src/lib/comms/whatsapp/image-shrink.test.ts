@@ -1,7 +1,23 @@
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { jpegFilename, planDecode, sniffImageType } from "./image-shrink";
+import { jpegFilename, planDecode, shrinkImage, sniffImageType } from "./image-shrink";
+
+// Real sharp, with every `.timeout()` argument recorded.
+const timeouts = vi.hoisted(() => [] as number[]);
+vi.mock("sharp", async (importOriginal) => {
+  const real = (await importOriginal<{ default: typeof import("sharp") }>()).default;
+  const wrapped = (...a: Parameters<typeof real>) => {
+    const inst = real(...a);
+    const timeout = inst.timeout.bind(inst);
+    inst.timeout = (o: { seconds: number }) => {
+      timeouts.push(o.seconds);
+      return timeout(o);
+    };
+    return inst;
+  };
+  return { default: Object.assign(wrapped, real) };
+});
 
 /**
  * The decode reservation is read from the photo's header, so it tracks what
@@ -21,6 +37,25 @@ describe("planDecode", () => {
     const input = await solid(w, h, 3).jpeg().toBuffer();
     const plan = await planDecode(input, "image/jpeg");
     expect(plan).toEqual({ ok: true, reserveBytes: Math.ceil((w * h * 3) / factor ** 2) + 60_000_000 + input.length });
+  });
+
+  it.each([
+    ["4000×3000", 4000, 3000],
+    ["5200×3900 (no 1/2 shrink-on-load discount)", 5200, 3900],
+  ])("reserves a progressive %s JPEG at its full-size coefficient buffer, 2 bytes a sample, +25%", async (_l, w, h) => {
+    const input = await solid(w, h, 3).jpeg({ progressive: true }).toBuffer();
+    expect(await planDecode(input, "image/jpeg")).toEqual({
+      ok: true,
+      reserveBytes: Math.ceil(w * h * 3 * 2 * 1.25) + 60_000_000 + input.length,
+    });
+  });
+
+  it("reserves a WebP at its pixels +25%", async () => {
+    const input = await solid(1000, 800, 3).webp().toBuffer();
+    expect(await planDecode(input, "image/webp")).toEqual({
+      ok: true,
+      reserveBytes: Math.ceil(1000 * 800 * 3 * 1.25) + 60_000_000 + input.length,
+    });
   });
 
   it("reserves a 16-bit RGBA PNG at 8 bytes a pixel", async () => {
@@ -66,5 +101,25 @@ describe("jpegFilename", () => {
     ["x".repeat(253), `${"x".repeat(251)}.jpg`],
   ])("%s → %s", (name, want) => {
     expect(jpegFilename(name)).toBe(want);
+  });
+});
+
+describe("shrinkImage deadline", () => {
+  it("never hands sharp a timeout under 1 s — 0 would mean no limit — and stops when the time is gone", async () => {
+    // A clock that jumps 1.5 s at every read, and a cap no encode can meet,
+    // so the fit loop runs until the deadline.
+    const input = await solid(64, 48, 3).jpeg().toBuffer();
+    let reads = 0;
+    const base = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => base + 1500 * reads++);
+    timeouts.length = 0;
+    try {
+      const r = await shrinkImage(input, "image/jpeg", 1);
+      expect(r).toMatchObject({ ok: false, error: expect.stringContaining("took too long") });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(timeouts.length).toBeGreaterThan(1);
+    expect(Math.min(...timeouts)).toBeGreaterThanOrEqual(1);
   });
 });

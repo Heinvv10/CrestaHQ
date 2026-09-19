@@ -70,6 +70,9 @@ const TIMEOUT_MS = 20_000;
  */
 const DECODE_OVERHEAD_BYTES = 60_000_000;
 
+/** Headroom on decodes that hold a whole full-size frame at once (below). */
+const FULL_FRAME_MARGIN = 1.25;
+
 const BYTES_PER_SAMPLE: Record<string, number> = {
   uchar: 1, char: 1, ushort: 2, short: 2, uint: 4, int: 4, float: 4, complex: 8, double: 8, dpcomplex: 16,
 };
@@ -141,13 +144,49 @@ export async function planDecode(
       error: `This photo is over ${MAX_PIXELS[type] / 1_000_000} megapixels. Send a smaller photo.`,
     };
   }
-  const scale = type === "image/jpeg" ? jpegShrinkFactor(width, height) ** 2 : 1;
-  const pixels = Math.ceil((width * height * channels * BYTES_PER_SAMPLE[depth]!) / scale);
-  const reserveBytes = pixels + DECODE_OVERHEAD_BYTES + input.length;
+  const reserveBytes = decodedBytes(type, meta, width, height, channels, BYTES_PER_SAMPLE[depth]!) +
+    DECODE_OVERHEAD_BYTES + input.length;
   if (reserveBytes > IMAGE_DECODE_BUDGET_BYTES) {
-    return { ok: false, code: "media_too_large", error: "This photo is too large to process. Send a smaller photo." };
+    return {
+      ok: false,
+      code: "media_too_large",
+      error: meta.isProgressive
+        ? "This is a very large progressive JPEG, which takes too much memory to process. Save it as a standard JPEG, or send a smaller photo."
+        : "This photo is too large to process. Send a smaller photo.",
+    };
   }
   return { ok: true, reserveBytes };
+}
+
+/**
+ * What the decoder itself holds, measured per case (PR body):
+ *
+ * - baseline JPEG: the pixels at libjpeg's shrink-on-load scale.
+ * - PROGRESSIVE JPEG: libjpeg keeps the full-size DCT coefficient buffer —
+ *   2 bytes per sample, every component at full resolution — for the whole
+ *   decode, so no shrink-on-load discount applies. At 12000×9000 that is
+ *   ~650–900 MB. Reserved as that buffer plus 25%: at 25 MP CMYK the buffer
+ *   alone left only a 5% margin over what was measured. So progressive RGB
+ *   files over ~30 MP (CMYK ~23 MP) are refused. Phones write baseline
+ *   JPEGs; progressive ones come from web exports and editors.
+ * - WebP: the pixels plus 25%. libwebp decodes the whole frame, and a
+ *   rotated 49 MP RGBA WebP measured 273 MB against 275 MB reserved without
+ *   it — no margin for a box under load.
+ * - PNG: the pixels.
+ */
+function decodedBytes(
+  type: PhotoType,
+  meta: sharp.Metadata,
+  width: number,
+  height: number,
+  channels: number,
+  bytesPerSample: number,
+): number {
+  const full = width * height * channels * bytesPerSample;
+  if (type === "image/webp") return Math.ceil(full * FULL_FRAME_MARGIN);
+  if (type !== "image/jpeg") return full;
+  if (meta.isProgressive) return Math.ceil(width * height * channels * 2 * FULL_FRAME_MARGIN);
+  return Math.ceil(full / jpegShrinkFactor(width, height) ** 2);
 }
 
 /**
@@ -185,9 +224,11 @@ async function encodeToFit(input: Buffer, type: PhotoType, capBytes: number): Pr
     const raw = { width: info.width, height: info.height, channels: info.channels };
     for (const edge of EDGES) {
       for (const quality of QUALITIES) {
-        if (seconds() < 1) return tookTooLong();
+        // Read once: a second read could fall to 0, which sharp takes as "no limit".
+        const left = seconds();
+        if (left < 1) return tookTooLong();
         const out = await sharp(data, { raw })
-          .timeout({ seconds: seconds() })
+          .timeout({ seconds: left })
           .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
           .jpeg({ quality })
           .toBuffer();

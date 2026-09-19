@@ -151,9 +151,6 @@ export async function POST(request: Request) {
       const checked = await checkStaged(contact, stagedPath);
       if (checked instanceof NextResponse) return checked;
       const { obj, caps } = checked;
-      // A photo over the rail's image cap (or in a type it does not send) is
-      // re-encoded to fit — see image-shrink.ts. Null: sent as uploaded.
-      const shrinkTo = needsShrink(caps, obj.contentType, obj.sizeBytes) ? caps.maxMediaBytes.image : null;
       // Held from before the read until the rail has the file — the whole
       // time its bytes are in this process. A shrink's decode is reserved
       // separately, from the photo's header (image-shrink.ts).
@@ -167,7 +164,7 @@ export async function POST(request: Request) {
           { status: 503, headers: { "Retry-After": "30" } },
         );
       }
-      const loaded = await loadStaged(obj, staged.filename, shrinkTo);
+      const loaded = await loadStaged(obj, staged.filename, caps);
       if (loaded instanceof NextResponse) return loaded;
       attachment = loaded;
     }
@@ -234,12 +231,12 @@ async function checkStaged(
 
 /**
  * The checked object's bytes, with the video codec check run on them — or,
- * for a photo that must shrink, the JPEG made from them.
+ * for a photo that must be re-encoded, the JPEG made from them.
  */
 async function loadStaged(
   obj: StagedObject,
   filename: string,
-  shrinkTo: number | null,
+  caps: WhatsAppProviderCapabilities,
 ): Promise<StagedAttachment | NextResponse> {
   let data: Blob;
   try {
@@ -251,23 +248,29 @@ async function loadStaged(
       { status: 400 },
     );
   }
-  // Every photo, sent unchanged or not: its bytes must be the type it was
-  // signed for, and one of the three sharp is let near. See image-shrink.ts.
+  // Every photo, sent unchanged or not, must be one of the three types sharp
+  // is let near, by its bytes. See image-shrink.ts.
   let photoType: PhotoType | null = null;
   if (mediaKindForMime(obj.contentType) === "image") {
     photoType = sniffImageType(new Uint8Array(await data.slice(0, 12).arrayBuffer()));
-    if (photoType !== obj.contentType) {
+    if (!photoType) {
       return NextResponse.json(
         {
-          error: "This photo isn't the JPEG, PNG or WebP image it claims to be. Save it as a JPEG and attach it again.",
+          error: "This file isn't a JPEG, PNG or WebP photo. Save it as a JPEG and attach it again.",
           code: "media_unsupported_type",
         },
         { status: 400 },
       );
     }
   }
-  if (shrinkTo !== null && photoType) {
-    const shrunk = await shrinkImage(Buffer.from(await data.arrayBuffer()), photoType, shrinkTo);
+  // A photo over the rail's image cap, or in a type it does not send, is
+  // re-encoded to fit. So is a real photo signed as another photo type (a
+  // PNG named .jpg): as a JPEG, what goes out and what is stored agree.
+  const reencode =
+    photoType !== null &&
+    (photoType !== obj.contentType || needsShrink(caps, obj.contentType, obj.sizeBytes));
+  if (reencode && photoType) {
+    const shrunk = await shrinkImage(Buffer.from(await data.arrayBuffer()), photoType, caps.maxMediaBytes.image);
     if (!shrunk.ok) {
       return shrunk.code === "media_busy"
         ? NextResponse.json({ error: shrunk.error, code: shrunk.code }, { status: 503, headers: { "Retry-After": "30" } })

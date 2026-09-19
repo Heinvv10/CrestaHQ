@@ -438,7 +438,6 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     ["a TIFF declared JPEG", "tiff", "image/jpeg"],
     ["a GIF declared JPEG", "gif", "image/jpeg"],
     ["an AVIF declared WebP", "avif", "image/webp"],
-    ["a PNG declared JPEG", "png", "image/jpeg"],
   ])("refuses %s by its magic bytes — before sharp sees it, with zero Graph calls", async (_l, format, declared) => {
     const bytes =
       format === "svg"
@@ -448,7 +447,7 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
               `</filter><rect width="100%" height="100%" filter="url(#f)"/></svg>`,
           )
         : await sharp(photoPixels(64, 48), { raw: { width: 64, height: 48, channels: 3 } })
-            .toFormat(format as "tiff" | "gif" | "avif" | "png")
+            .toFormat(format as "tiff" | "gif" | "avif")
             .toBuffer();
     stageObject(OWN_PATH, bytes, declared);
     sharpCalls.n = 0;
@@ -456,10 +455,45 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.code).toBe("media_unsupported_type");
-    expect(json.error).toContain("isn't the JPEG, PNG or WebP image it claims to be");
+    expect(json.error).toContain("isn't a JPEG, PNG or WebP photo");
     expect(sharpCalls.n).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
+  });
+
+  it("re-encodes a real PNG signed as a JPEG, under the cap, so what is sent and stored is a JPEG", async () => {
+    const png = await sharp(photoPixels(640, 480), { raw: { width: 640, height: 480, channels: 3 } }).png().toBuffer();
+    stageObject(OWN_PATH, png, "image/jpeg");
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "M6" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.S6" }] }));
+    expect((await post("screenshot.jpg")).status).toBe(200);
+    const sent = await sentToGraph();
+    const file = (fetchMock.mock.calls[0]![1].body as FormData).get("file") as File;
+    expect([file.type, file.name]).toEqual(["image/jpeg", "screenshot.jpg"]);
+    expect(sent.subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
+    expect(sent.equals(png)).toBe(false);
+    expect(storedCopy("wamid.S6")!.bytes.equals(sent)).toBe(true);
+    expect(messageRow?.media).toMatchObject({ mimeType: "image/jpeg", sizeBytes: sent.length });
+  });
+
+  it("refuses a large progressive JPEG by its header, with a message that says why", async () => {
+    // 48 MP progressive: libjpeg would hold a 288 MB coefficient buffer.
+    const big = await sharp({ create: { width: 8000, height: 6000, channels: 3, background: "#7a8b9c" } })
+      .jpeg({ progressive: true })
+      .toBuffer();
+    expect((await sharp(big).metadata()).isProgressive).toBe(true);
+    // Solid colour compresses to a small file; a cap just under it puts the
+    // photo on the shrink path, as a detailed photo of this size would be.
+    override.imageCap = big.length - 1;
+    stageObject(OWN_PATH, big, "image/jpeg");
+    const res = await post("export.jpg");
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.code).toBe("media_too_large");
+    expect(json.error).toContain("progressive JPEG");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(held.decode.inFlight()).toBe(0);
   });
 
   it("keeps a 253-byte extensionless name within 255 bytes once it becomes .jpg", async () => {
