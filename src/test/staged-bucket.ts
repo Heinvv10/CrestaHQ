@@ -74,8 +74,9 @@ function file(path: string, opts: { generation?: number } = {}) {
       log.push(`delete ${path}`);
       bucketFake.objects.delete(path);
     },
-    save: async () => {
+    save: async (bytes: Buffer, o?: { metadata?: { contentType?: string } }) => {
       log.push(`save ${path}`);
+      bucketFake.objects.set(path, { bytes: Buffer.from(bytes), contentType: o?.metadata?.contentType ?? "", generation: 1 });
     },
   };
 }

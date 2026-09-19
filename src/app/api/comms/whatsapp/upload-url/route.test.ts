@@ -119,7 +119,8 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
 
   it.each([
     ["a document over Meta's 100 MB", { contentType: "application/pdf", sizeBytes: 100_000_001 }, "media_too_large"],
-    ["an image over Meta's 5 MB", { contentType: "image/png", sizeBytes: 5_000_001 }, "media_too_large"],
+    ["a photo over the 25 MB raw upload cap", { contentType: "image/jpeg", sizeBytes: 25_000_001 }, "media_too_large"],
+    ["an iPhone HEIC photo (sharp cannot decode it)", { contentType: "image/heic", sizeBytes: 3_000_000 }, "media_unsupported_type"],
     ["a type the rail does not send", { contentType: "image/svg+xml", sizeBytes: 10 }, "media_unsupported_type"],
     ["an empty file", { contentType: "application/pdf", sizeBytes: 0 }, "media_invalid"],
     ["a fractional size", { contentType: "application/pdf", sizeBytes: 1.5 }, "media_invalid"],
@@ -128,6 +129,19 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe(code);
     expect(signed).toHaveLength(0);
+  });
+
+  it.each([
+    ["cloud", "image/jpeg"],
+    ["cloud", "image/png"],
+    ["cloud", "image/webp"],
+    ["bridge", "image/jpeg"],
+  ])("signs a %s %s between the rail's image cap and the raw cap for the raw cap — the send route shrinks it", async (rail, contentType) => {
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: rail };
+    const res = await post({ contactId: "c1", contentType, sizeBytes: 20_000_000 });
+    expect(res.status).toBe(200);
+    expect((await res.json()).contentLengthRange).toBe("0,25000000");
+    expect(signed[0]!.opts.extensionHeaders).toEqual({ "x-goog-content-length-range": "0,25000000" });
   });
 
   it("holds the bridge rail to its 8 MiB", async () => {
@@ -165,7 +179,7 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
 
   it.each([
     ["a Cloud document", "cloud", "application/pdf", "0,100000000"],
-    ["a Cloud image", "cloud", "image/jpeg", "0,5000000"],
+    ["a Cloud image, at the raw photo upload cap — shrunk to 5 MB at send", "cloud", "image/jpeg", "0,25000000"],
     ["a Cloud video", "cloud", "video/mp4", `0,${16 << 20}`],
     ["a bridge document", "bridge", "application/pdf", `0,${8 << 20}`],
   ])("signs %s with the size range of its rail's cap, and returns that exact value", async (_l, rail, contentType, range) => {

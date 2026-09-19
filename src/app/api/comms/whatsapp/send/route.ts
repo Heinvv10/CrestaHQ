@@ -15,6 +15,8 @@ import {
   type StagedObject,
 } from "@/lib/comms/whatsapp/staged-upload";
 import { stagedMediaBudget } from "@/lib/comms/whatsapp/media-budget";
+import { decodeReserveBytes, jpegFilename, needsShrink, shrinkImage } from "@/lib/comms/whatsapp/image-shrink";
+import type { WhatsAppProviderCapabilities } from "@/lib/comms/whatsapp/provider";
 import type { Contact } from "@/types/contacts";
 
 type Body = {
@@ -139,11 +141,17 @@ export async function POST(request: Request) {
   try {
     let attachment: StagedAttachment | null = null;
     if (staged && stagedPath) {
-      const obj = await checkStaged(contact, stagedPath);
-      if (obj instanceof NextResponse) return obj;
+      const checked = await checkStaged(contact, stagedPath);
+      if (checked instanceof NextResponse) return checked;
+      const { obj, caps } = checked;
+      // A photo over the rail's image cap (or in a type it does not send) is
+      // re-encoded to fit — see image-shrink.ts. Null: sent as uploaded.
+      const shrinkTo = needsShrink(caps, obj.contentType, obj.sizeBytes) ? caps.maxMediaBytes.image : null;
       // Held from before the read until the rail has the file — the whole
-      // time its bytes are in this process.
-      releaseBudget = await stagedMediaBudget.acquire(obj.sizeBytes);
+      // time its bytes are in this process, and a photo's decode with them.
+      releaseBudget = await stagedMediaBudget.acquire(
+        obj.sizeBytes + (shrinkTo === null ? 0 : decodeReserveBytes(obj.sizeBytes)),
+      );
       if (!releaseBudget) {
         return NextResponse.json(
           {
@@ -153,7 +161,7 @@ export async function POST(request: Request) {
           { status: 503, headers: { "Retry-After": "30" } },
         );
       }
-      const loaded = await loadStaged(obj, staged.filename);
+      const loaded = await loadStaged(obj, staged.filename, shrinkTo);
       if (loaded instanceof NextResponse) return loaded;
       attachment = loaded;
     }
@@ -200,7 +208,10 @@ function videoCodecRefusal(contentType: string, bytes: Uint8Array): NextResponse
  * and size — the client's claim at upload time decided only whether it got a
  * URL. Nothing is read yet.
  */
-async function checkStaged(contact: Contact, path: string): Promise<StagedObject | NextResponse> {
+async function checkStaged(
+  contact: Contact,
+  path: string,
+): Promise<{ obj: StagedObject; caps: WhatsAppProviderCapabilities } | NextResponse> {
   const obj = await statStaged(path);
   if (!obj) {
     return NextResponse.json(
@@ -212,11 +223,18 @@ async function checkStaged(contact: Contact, path: string): Promise<StagedObject
   if (!rail.ok) return NextResponse.json({ error: rail.error }, { status: rail.status });
   const refusal = mediaRefusal(rail.capabilities, obj.contentType, obj.sizeBytes);
   if (refusal) return NextResponse.json(refusal, { status: 400 });
-  return obj;
+  return { obj, caps: rail.capabilities };
 }
 
-/** The checked object's bytes, with the video codec check run on them. */
-async function loadStaged(obj: StagedObject, filename: string): Promise<StagedAttachment | NextResponse> {
+/**
+ * The checked object's bytes, with the video codec check run on them — or,
+ * for a photo that must shrink, the JPEG made from them.
+ */
+async function loadStaged(
+  obj: StagedObject,
+  filename: string,
+  shrinkTo: number | null,
+): Promise<StagedAttachment | NextResponse> {
   let data: Blob;
   try {
     data = await readStaged(obj);
@@ -226,6 +244,19 @@ async function loadStaged(obj: StagedObject, filename: string): Promise<StagedAt
       { error: "The attachment couldn't be read. Attach the file again.", code: "media_invalid" },
       { status: 400 },
     );
+  }
+  if (shrinkTo !== null) {
+    const shrunk = await shrinkImage(new Uint8Array(await data.arrayBuffer()), shrinkTo);
+    if (!shrunk.ok) return NextResponse.json({ error: shrunk.error, code: shrunk.code }, { status: 400 });
+    return {
+      outbound: {
+        filename: jpegFilename(filename),
+        contentType: shrunk.contentType,
+        data: new Blob([new Uint8Array(shrunk.bytes)], { type: shrunk.contentType }),
+      },
+      staged: obj,
+      rewritten: true,
+    };
   }
   if (obj.contentType === "video/mp4") {
     const codecs = videoCodecRefusal(obj.contentType, new Uint8Array(await data.arrayBuffer()));

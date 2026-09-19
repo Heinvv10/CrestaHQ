@@ -4,7 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { capabilitiesFor, type WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import {
+  capabilitiesFor,
+  SHRINKABLE_IMAGE_TYPES,
+  uploadCapFor,
+  type WhatsAppProviderCapabilities,
+  type WhatsAppProviderId,
+} from "@/lib/comms/whatsapp/provider";
 import { checkWhatsappVideoCodecs } from "@/lib/comms/whatsapp/video-codec";
 import { mediaKindForMime } from "@/types/whatsapp-media";
 
@@ -22,6 +28,18 @@ export interface ComposerAttachment {
 
 /** A failure whose message is written for the operator. Anything else gets the generic line. */
 class UploadRefused extends Error {}
+
+/** Every type the picker offers: what the rail sends, plus photos the send route converts to JPEG. */
+function acceptedTypes(caps: WhatsAppProviderCapabilities): string[] {
+  return [...new Set([...caps.mediaMimeTypes, ...SHRINKABLE_IMAGE_TYPES])].filter(
+    (t) => uploadCapFor(caps, t) > 0,
+  );
+}
+
+/** By name as well as type: some browsers report a .heic file's type as "". */
+function isHeic(file: File): boolean {
+  return /^image\/hei[cf]/.test(file.type) || /\.hei[cf]$/i.test(file.name);
+}
 
 function humanSize(bytes: number): string {
   if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
@@ -86,12 +104,20 @@ export function useWhatsappAttachment(
   function pick(file: File) {
     if (!provider) return;
     const caps = capabilitiesFor(provider);
-    if (!caps.mediaMimeTypes.includes(file.type)) {
+    if (isHeic(file)) {
+      toast.error(
+        `${file.name}: iPhone HEIC photos aren't supported yet — set iPhone Camera to 'Most Compatible' or send as JPEG.`,
+      );
+      return;
+    }
+    // A photo over the rail's image cap is allowed up to the raw upload cap:
+    // the send route shrinks it to fit.
+    const cap = uploadCapFor(caps, file.type);
+    if (cap === 0) {
       toast.error(`${file.name}: this file type cannot be sent on WhatsApp here.`);
       return;
     }
     const kind = mediaKindForMime(file.type);
-    const cap = caps.maxMediaBytes[kind];
     if (file.size === 0) {
       toast.error(`${file.name} is empty.`);
       return;
@@ -205,7 +231,7 @@ export function WhatsappAttachmentPicker({
         type="file"
         hidden
         data-testid="whatsapp-attachment-input"
-        accept={caps.mediaMimeTypes.join(",")}
+        accept={acceptedTypes(caps).join(",")}
         onChange={(e) => {
           const file = e.target.files?.[0];
           // Reset so picking the same file again re-fires onChange.

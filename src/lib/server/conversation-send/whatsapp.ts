@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
-import { whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
+import { putWhatsappMedia, whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
 import { copyStagedTo, type StagedAttachment } from "@/lib/comms/whatsapp/staged-upload";
 import { mediaKindForMime, mediaPreviewLabel } from "@/types/whatsapp-media";
 import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
@@ -217,7 +217,14 @@ export async function sendConversationWhatsapp(
       contactId,
       messageDocId: sid,
     });
-    const stored = await copyStagedTo(staged.staged, storagePath);
+    // A shrunk photo is stored as sent; anything else is copied by Storage.
+    const stored = staged.rewritten
+      ? await putWhatsappMedia({
+          path: storagePath,
+          bytes: Buffer.from(await attachment.data.arrayBuffer()),
+          contentType: attachment.contentType,
+        })
+      : await copyStagedTo(staged.staged, storagePath);
     mediaFields = stored.ok
       ? {
           media: {

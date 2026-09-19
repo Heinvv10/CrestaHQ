@@ -1,4 +1,4 @@
-import type { WhatsappMediaKind } from "@/types/whatsapp-media";
+import { mediaKindForMime, type WhatsappMediaKind } from "@/types/whatsapp-media";
 
 /**
  * The WhatsApp rail contract. Three implementations are planned:
@@ -178,6 +178,39 @@ export function capabilitiesFor(
   provider: WhatsAppProviderId,
 ): WhatsAppProviderCapabilities {
   return WHATSAPP_PROVIDER_CAPABILITIES[provider];
+}
+
+/**
+ * Photo types the send route can re-encode to JPEG to fit the rail
+ * (image-shrink.ts). HEIC/HEIF is deliberately absent: the prebuilt sharp
+ * binary cannot decode it.
+ */
+export const SHRINKABLE_IMAGE_TYPES: readonly string[] = ["image/jpeg", "image/png", "image/webp"];
+
+/**
+ * The most a composer photo may be UPLOADED at; the rail's image cap still
+ * bounds what is SENT. Phone photos are typically 3–12 MB and occasionally
+ * ~20 MB (a 48/50 MP full-resolution shot), so 25 MB admits them all with
+ * headroom while keeping the file read into memory bounded.
+ */
+export const RAW_IMAGE_UPLOAD_BYTES = 25_000_000;
+
+/**
+ * The upload cap for a file of this type on this rail, or 0 when the rail
+ * takes no such file. Photos the rail can receive as JPEG get the raw upload
+ * cap; everything else gets the rail's own cap for its kind.
+ */
+export function uploadCapFor(caps: WhatsAppProviderCapabilities, contentType: string): number {
+  if (!caps.supportsMedia) return 0;
+  if (
+    SHRINKABLE_IMAGE_TYPES.includes(contentType) &&
+    caps.mediaMimeTypes.includes("image/jpeg") &&
+    caps.maxMediaBytes.image > 0
+  ) {
+    return RAW_IMAGE_UPLOAD_BYTES;
+  }
+  if (!caps.mediaMimeTypes.includes(contentType)) return 0;
+  return caps.maxMediaBytes[mediaKindForMime(contentType)];
 }
 
 /**
