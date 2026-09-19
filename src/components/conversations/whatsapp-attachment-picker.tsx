@@ -132,17 +132,22 @@ export function useWhatsappAttachment(
         const data = (await res.json().catch(() => ({}))) as {
           stagedId?: string;
           uploadUrl?: string;
+          contentLengthRange?: string;
           error?: string;
         };
         if (stale()) return settle(null);
-        if (!res.ok || !data.stagedId || !data.uploadUrl) {
+        if (!res.ok || !data.stagedId || !data.uploadUrl || !data.contentLengthRange) {
           throw new UploadRefused(data.error ?? `Couldn't upload ${file.name}.`);
         }
-        // The Content-Type is part of the URL's signature: it must be exactly
-        // the type the URL was issued for, or Storage refuses the PUT.
+        // Both headers are part of the URL's signature: the exact type the URL
+        // was issued for, and the size range Storage enforces on the body.
+        // Either one missing or changed, and Storage refuses the PUT.
         const put = await fetch(data.uploadUrl, {
           method: "PUT",
-          headers: { "content-type": file.type },
+          headers: {
+            "content-type": file.type,
+            "x-goog-content-length-range": data.contentLengthRange,
+          },
           body: file,
         });
         if (stale()) return settle(null);

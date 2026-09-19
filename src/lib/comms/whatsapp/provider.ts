@@ -106,11 +106,9 @@ const CLOUD_MAX_CAPTION_CHARS = 1024;
  * after the upload. Documents get Meta's full 100 MB, also decimal: the
  * composer PUTs the file straight to a Storage staging object
  * (staged-upload.ts), so it no longer rides through src/middleware.ts as
- * base64 and the body cap there does not bound it. The legacy base64 form of
- * the send route still does — Next truncates its body at
- * `middlewareClientMaxBodySize` — so over that path a large document fails
- * as a malformed request rather than reaching Graph. Stickers are never sent
- * from the composer (webp is not listed), so 0.
+ * base64 and the body cap there does not bound it; the upload URL is signed
+ * for at most this cap. Stickers are never sent from the composer (webp is
+ * not listed), so 0.
  */
 const CLOUD_MAX_MEDIA_BYTES: Readonly<Record<WhatsappMediaKind, number>> = {
   image: 5_000_000,

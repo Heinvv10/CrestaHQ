@@ -24,9 +24,9 @@ const nextConfig: NextConfig = {
     // effect on the next deploy. Reproduced on Next 15.5.12 (PR #148).
     //
     // The composer no longer needs this: it PUTs attachments straight to
-    // Storage and sends only an id (staged-upload.ts). The inline base64 form
-    // of /api/comms/whatsapp/send still exists and is bounded by it. The
-    // bridge webhook above is why it cannot come back down.
+    // Storage and sends only an id (staged-upload.ts), and the send route
+    // takes no inline file. The bridge webhook above is why it cannot come
+    // back down.
     //
     // Trade-off, accepted: Next has no per-route form of this, so EVERY
     // middleware-matched route may now buffer up to 24 MB (was 10 MB) for an

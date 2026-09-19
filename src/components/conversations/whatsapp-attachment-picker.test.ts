@@ -36,7 +36,11 @@ function installFetch() {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ stagedId: `staged${n}`, uploadUrl: `https://storage.test/put/${n}` }),
+        json: async () => ({
+          stagedId: `staged${n}`,
+          uploadUrl: `https://storage.test/put/${n}`,
+          contentLengthRange: "0,5000000",
+        }),
       };
     }
     return new Promise((resolve) =>
@@ -94,7 +98,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("asks for a URL with the declared type and size, then PUTs the raw file with that exact Content-Type", async () => {
+it("asks for a URL with the declared type and size, then PUTs the raw file with both signed headers", async () => {
   await render("c1:whatsapp");
   const file = png();
   await pick(file);
@@ -108,7 +112,11 @@ it("asks for a URL with the declared type and size, then PUTs the raw file with 
   expect(puts).toHaveLength(1);
   expect(puts[0]!.url).toBe("https://storage.test/put/1");
   expect(puts[0]!.init.method).toBe("PUT");
-  expect(puts[0]!.init.headers).toEqual({ "content-type": "image/png" });
+  // Both are in the URL's signature; Storage refuses a PUT missing either.
+  expect(puts[0]!.init.headers).toEqual({
+    "content-type": "image/png",
+    "x-goog-content-length-range": "0,5000000",
+  });
   // The File itself — no FileReader, no base64.
   expect(puts[0]!.init.body).toBe(file);
 
@@ -139,6 +147,19 @@ it("shows the route's own words when no URL is issued, and never PUTs", async ()
   expect(puts).toHaveLength(0);
   expect(latest!.attachment).toBeNull();
   expect(toastError).toHaveBeenCalledWith(expect.stringContaining("the limit for a image"));
+});
+
+it("never PUTs when the route issues no size range to send with it", async () => {
+  fetchMock.mockImplementationOnce(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ stagedId: "s", uploadUrl: "https://storage.test/put/x" }),
+  }));
+  await render("c1:whatsapp");
+  await pick(png());
+  expect(puts).toHaveLength(0);
+  expect(latest!.attachment).toBeNull();
+  expect(toastError).toHaveBeenCalledWith("Couldn't upload site.png.");
 });
 
 it("discards an upload that finishes after a switch to another contact, even on switching back", async () => {

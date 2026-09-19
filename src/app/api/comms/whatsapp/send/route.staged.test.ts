@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
+import { bucketFake, resetBucketFake, stageObject } from "@/test/staged-bucket";
 
 /**
  * The STAGED attachment form through the whole seam: route → staged-upload
@@ -28,17 +28,6 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 let subAccountDoc: Record<string, unknown> | undefined;
 let messageRow: Record<string, unknown> | undefined;
-
-interface StoredObject {
-  bytes: Buffer;
-  contentType: string;
-  generation: number;
-  /** Metadata size when it should differ from the bytes (a huge object never materialised). */
-  size?: number;
-}
-let objects: Map<string, StoredObject>;
-let log: string[];
-let copyThrows: Error | null;
 
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
@@ -67,49 +56,23 @@ vi.mock("@/lib/reviews/review-ask", () => ({
   askOutcomeOf: () => "not_a_review_ask",
   logInboxReviewAsk: async () => undefined,
 }));
-vi.mock("firebase-admin/storage", () => ({
-  getStorage: () => ({
-    bucket: () => {
-      const file = (path: string, opts: { generation?: number } = {}) => {
-        const live = () => {
-          const o = objects.get(path);
-          if (!o || (opts.generation !== undefined && o.generation !== opts.generation)) {
-            throw Object.assign(new Error("No such object"), { code: 404 });
-          }
-          return o;
-        };
-        return {
-          name: path,
-          getMetadata: async () => {
-            log.push(`stat ${path}`);
-            const o = live();
-            return [{ size: String(o.size ?? o.bytes.length), contentType: o.contentType, generation: String(o.generation) }];
-          },
-          createReadStream: () => {
-            log.push(`read ${path}@${opts.generation}`);
-            const o = live();
-            const chunks: Buffer[] = [];
-            for (let i = 0; i < o.bytes.length; i += 1 << 20) chunks.push(o.bytes.subarray(i, i + (1 << 20)));
-            return Readable.from(chunks);
-          },
-          copy: async (dest: { name: string }) => {
-            log.push(`copy ${path}@${opts.generation} -> ${dest.name}`);
-            if (copyThrows) throw copyThrows;
-            objects.set(dest.name, { ...live() });
-          },
-          delete: async () => {
-            log.push(`delete ${path}`);
-            objects.delete(path);
-          },
-          save: async () => {
-            log.push(`save ${path}`);
-          },
-        };
-      };
-      return { file };
-    },
-  }),
+vi.mock("firebase-admin/storage", async () => (await import("@/test/staged-bucket")).storageMock());
+// The route's shared budget, swappable per test: the real one by default, a
+// tiny one where a test needs two sends to collide.
+const held = vi.hoisted(() => ({
+  budget: null as unknown as import("@/lib/comms/whatsapp/media-budget").ByteBudget,
 }));
+vi.mock("@/lib/comms/whatsapp/media-budget", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/comms/whatsapp/media-budget")>();
+  held.budget = real.stagedMediaBudget;
+  return {
+    ...real,
+    stagedMediaBudget: {
+      acquire: (bytes: number) => held.budget.acquire(bytes),
+      inFlight: () => held.budget.inFlight(),
+    },
+  };
+});
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminApp: () => ({ name: "test-app" }),
   getAdminDb: () => ({
@@ -153,14 +116,13 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { POST } from "./route";
+import { createByteBudget } from "@/lib/comms/whatsapp/media-budget";
 
 const STAGED_ID = "AbCdEfGhIjKlMnOpQrStUv_-";
 const OWN_PATH = `whatsapp-staging/ag1/sa1/u1/${STAGED_ID}`;
 const creds = { phoneNumberId: "PN1", wabaId: "WA1", accessToken: "EAAG" };
 
-function stage(path: string, bytes: Buffer, contentType: string, extra: Partial<StoredObject> = {}) {
-  objects.set(path, { bytes, contentType, generation: 7, ...extra });
-}
+const stage = stageObject;
 
 function post(attachment: Record<string, unknown>, body = "here") {
   return POST(
@@ -193,9 +155,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "test-bucket");
   messageRow = undefined;
-  objects = new Map();
-  log = [];
-  copyThrows = null;
+  resetBucketFake();
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "cloud" };
   requireUid.mockReturnValue({ uid: "u1" });
   requireContactAccessible.mockResolvedValue({
@@ -240,8 +200,8 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
 
     const dest = whatsappMediaPath({ agencyId: "ag1", subAccountId: "sa1", contactId: "c1", messageDocId: "wamid.BIG" });
     // Copied by Storage from the checked generation — no re-upload of bytes.
-    expect(log).toContain(`copy ${OWN_PATH}@7 -> ${dest}`);
-    expect(log.some((l) => l.startsWith("save "))).toBe(false);
+    expect(bucketFake.log).toContain(`copy ${OWN_PATH}@7 -> ${dest}`);
+    expect(bucketFake.log.some((l) => l.startsWith("save "))).toBe(false);
     expect(messageRow?.media).toEqual({
       kind: "document",
       mimeType: "application/pdf",
@@ -249,8 +209,8 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
       sizeBytes: 100_000_000,
       storagePath: dest,
     });
-    expect(objects.has(OWN_PATH)).toBe(false);
-    expect(objects.has(dest)).toBe(true);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.objects.has(dest)).toBe(true);
   });
 
   it.each([
@@ -267,9 +227,9 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(sendWhatsappBridge).not.toHaveBeenCalled();
     expect(messageRow).toBeUndefined();
-    expect(objects.has(theirs)).toBe(true);
+    expect(bucketFake.objects.has(theirs)).toBe(true);
     // Only ever the caller's own path was looked at.
-    expect(log.every((l) => l.includes(OWN_PATH))).toBe(true);
+    expect(bucketFake.log.every((l) => l.includes(OWN_PATH))).toBe(true);
   });
 
   it("cannot name another user's object by its full path", async () => {
@@ -278,8 +238,8 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     const res = await post(staged({ stagedId: theirs }));
     expect(res.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(objects.has(theirs)).toBe(true);
-    expect(log).toEqual([]);
+    expect(bucketFake.objects.has(theirs)).toBe(true);
+    expect(bucketFake.log).toEqual([]);
   });
 
   it.each([
@@ -291,7 +251,7 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     const res = await post(staged({ stagedId }));
     expect(res.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(log).toEqual([]);
+    expect(bucketFake.log).toEqual([]);
   });
 
   it("takes the object's real size over the client's claim: 200 MB behind a '1 MB' upload is refused before any read", async () => {
@@ -301,8 +261,8 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_too_large");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(log.some((l) => l.startsWith("read "))).toBe(false);
-    expect(objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.log.some((l) => l.startsWith("read "))).toBe(false);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
   });
 
   it("takes the object's real type over the client's claim", async () => {
@@ -340,7 +300,7 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     expect(json.error).toContain("HEVC (H.265)");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(messageRow).toBeUndefined();
-    expect(objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
   });
 
   it("deletes the staged object when Graph refuses the upload, and stores no copy", async () => {
@@ -349,9 +309,9 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     const res = await post(staged());
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe("media_upload_failed");
-    expect(log.some((l) => l.startsWith("copy "))).toBe(false);
-    expect(objects.has(OWN_PATH)).toBe(false);
-    expect(log.at(-1)).toBe(`delete ${OWN_PATH}`);
+    expect(bucketFake.log.some((l) => l.startsWith("copy "))).toBe(false);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.log.at(-1)).toBe(`delete ${OWN_PATH}`);
   });
 
   it("deletes the staged object when the send itself throws", async () => {
@@ -361,19 +321,19 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
       .mockResolvedValueOnce(graphOk({ id: "MEDIA3" }))
       .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.T" }] }));
     await expect(post(staged())).rejects.toThrow("firestore down");
-    expect(objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
   });
 
   it("marks the row store_failed when the Storage copy fails, and still deletes the staged object", async () => {
     stage(OWN_PATH, Buffer.from("%PDF-1.4"), "application/pdf");
-    copyThrows = new Error("copy refused");
+    bucketFake.copyThrows = new Error("copy refused");
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA4" }))
       .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.C" }] }));
     const res = await post(staged());
     expect(res.status).toBe(200);
     expect(messageRow?.mediaDropped).toBe("store_failed");
-    expect(objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
   });
 
   it("answers 400 'attach it again' for an id with no object (expired, or already sent)", async () => {
@@ -383,11 +343,19 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a body carrying both stagedId and dataBase64", async () => {
+  it.each([
+    ["alongside a stagedId", { stagedId: STAGED_ID, filename: "quote.pdf", dataBase64: "AAEC" }],
+    ["on its own (the removed inline form)", { filename: "quote.pdf", contentType: "application/pdf", dataBase64: "AAEC" }],
+  ])("refuses dataBase64 %s with a clear 400, touching nothing", async (_l, attachment) => {
     stage(OWN_PATH, Buffer.from("%PDF-1.4"), "application/pdf");
-    const res = await post(staged({ dataBase64: "AAEC" }));
+    const res = await post(attachment);
     expect(res.status).toBe(400);
-    expect(log).toEqual([]);
+    const json = await res.json();
+    expect(json.code).toBe("media_invalid");
+    expect(json.error).toContain("upload-url");
+    expect(requireContactAccessible).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(bucketFake.log).toEqual([]);
   });
 
   it("refuses 9 MiB on the bridge by its real size before reading it; sends a small one as base64", async () => {
@@ -398,7 +366,7 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     const big = await post(staged());
     expect(big.status).toBe(400);
     expect((await big.json()).code).toBe("media_too_large");
-    expect(log.some((l) => l.startsWith("read "))).toBe(false);
+    expect(bucketFake.log.some((l) => l.startsWith("read "))).toBe(false);
     expect(sendWhatsappBridge).not.toHaveBeenCalled();
 
     sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
@@ -410,19 +378,19 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
         media: { filename: "quote.pdf", contentType: "application/pdf", dataBase64: "AAEC" },
       }),
     );
-    expect(objects.has(OWN_PATH)).toBe(false);
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
   });
 
   it("pins the read to the generation it checked: an object replaced after the check is not sent", async () => {
     stage(OWN_PATH, Buffer.from("%PDF-1.4"), "application/pdf");
-    const original = objects.get(OWN_PATH)!;
+    const original = bucketFake.objects.get(OWN_PATH)!;
     // Replace the object the moment its metadata has been read.
-    const realGet = objects.get.bind(objects);
+    const realGet = bucketFake.objects.get.bind(bucketFake.objects);
     let stats = 0;
-    objects.get = (k: string) => {
+    bucketFake.objects.get = (k: string) => {
       const o = realGet(k);
-      if (k === OWN_PATH && o && log.at(-1)?.startsWith("stat ") && stats++ === 0) {
-        objects.set(OWN_PATH, { ...original, bytes: Buffer.alloc(8), generation: 8 });
+      if (k === OWN_PATH && o && bucketFake.log.at(-1)?.startsWith("stat ") && stats++ === 0) {
+        bucketFake.objects.set(OWN_PATH, { ...original, bytes: Buffer.alloc(8), generation: 8 });
         return o;
       }
       return o;
@@ -430,6 +398,71 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     const res = await post(staged());
     expect(res.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(log).toContain(`read ${OWN_PATH}@7`);
+    expect(bucketFake.log).toContain(`read ${OWN_PATH}@7`);
+  });
+
+  describe("memory budget", () => {
+    const OTHER_ID = "ZyXwVuTsRqPoNmLkJiHgFe_-";
+    const OTHER_PATH = `whatsapp-staging/ag1/sa1/u1/${OTHER_ID}`;
+    /** Graph's upload for the first send, held open until the test lets it finish. */
+    let finishFirstUpload: () => void;
+
+    beforeEach(() => {
+      const realBudget = held.budget;
+      held.budget = createByteBudget(10, 50);
+      stage(OWN_PATH, Buffer.alloc(8, 1), "application/pdf");
+      stage(OTHER_PATH, Buffer.alloc(8, 2), "application/pdf");
+      let first = true;
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.endsWith("/media") && first) {
+          first = false;
+          await new Promise<void>((r) => (finishFirstUpload = r));
+          return graphOk({ id: "MEDIA_A" });
+        }
+        return url.endsWith("/media") ? graphOk({ id: "MEDIA_B" }) : graphOk({ messages: [{ id: `wamid.${Math.random()}` }] });
+      });
+      return () => {
+        held.budget = realBudget;
+      };
+    });
+
+    const inFlightReads = () => bucketFake.log.filter((l) => l.startsWith("read ")).map((l) => l.split(" ")[1]!.split("@")[0]);
+
+    it("refuses a second send with a retryable 503 while the first holds the budget — its file is never loaded", async () => {
+      const a = post(staged());
+      await vi.waitFor(() => expect(inFlightReads()).toEqual([OWN_PATH]));
+      const b = await post(staged({ stagedId: OTHER_ID }));
+      expect(b.status).toBe(503);
+      expect(b.headers.get("Retry-After")).toBe("30");
+      expect((await b.json()).code).toBe("media_busy");
+      // B's bytes never entered the process while A's were there.
+      expect(inFlightReads()).toEqual([OWN_PATH]);
+      expect(bucketFake.objects.has(OTHER_PATH)).toBe(false);
+      finishFirstUpload();
+      expect((await a).status).toBe(200);
+      expect(held.budget.inFlight()).toBe(0);
+    });
+
+    it("lets a waiting send through once the first finishes inside the wait, one after the other", async () => {
+      held.budget = createByteBudget(10, 5_000);
+      const a = post(staged());
+      await vi.waitFor(() => expect(inFlightReads()).toEqual([OWN_PATH]));
+      const b = post(staged({ stagedId: OTHER_ID }));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(inFlightReads()).toEqual([OWN_PATH]);
+      finishFirstUpload();
+      expect((await a).status).toBe(200);
+      expect((await b).status).toBe(200);
+      expect(inFlightReads()).toEqual([OWN_PATH, OTHER_PATH]);
+      expect(held.budget.inFlight()).toBe(0);
+    });
+
+    it("gives the budget back when a send is refused after the read", async () => {
+      stage(OWN_PATH, video("hevc-hvc1-aac.mp4"), "video/mp4");
+      held.budget = createByteBudget(10_000_000, 50);
+      const res = await post(staged({ filename: "clip.mp4" }));
+      expect(res.status).toBe(400);
+      expect(held.budget.inFlight()).toBe(0);
+    });
   });
 });

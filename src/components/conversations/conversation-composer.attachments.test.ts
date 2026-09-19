@@ -128,7 +128,11 @@ beforeEach(() => {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ stagedId: `staged${n}`, uploadUrl: `https://storage.test/put/${n}` }),
+        json: async () => ({
+          stagedId: `staged${n}`,
+          uploadUrl: `https://storage.test/put/${n}`,
+          contentLengthRange: "0,5000000",
+        }),
       };
     }
     if (url.startsWith("https://storage.test/")) {

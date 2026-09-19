@@ -6,7 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { mediaKindForMime } from "@/types/whatsapp-media";
 import type { SubAccountDoc } from "@/types";
 import { bucket } from "./media-storage";
-import type { WhatsAppProviderCapabilities } from "./provider";
+import type { OutboundAttachment, WhatsAppProviderCapabilities } from "./provider";
 import { resolveWhatsappSender } from "./resolve-sender";
 
 /**
@@ -114,23 +114,38 @@ export function mediaRefusal(
   return null;
 }
 
-/** Null when the bucket is unconfigured. */
+/** The byte cap a staged upload is signed with: the rail's cap for the file's kind. */
+export function stagedUploadCap(caps: WhatsAppProviderCapabilities, contentType: string): number {
+  return caps.maxMediaBytes[mediaKindForMime(contentType)];
+}
+
+/**
+ * Null when the bucket is unconfigured.
+ *
+ * Both `contentType` and `x-goog-content-length-range` are part of the
+ * signature, so the PUT must carry exactly these values or Storage refuses it.
+ * The range is what bounds the upload itself: without it a URL is good for
+ * any size Storage accepts (5 TiB) for as long as a PUT started before
+ * expiry keeps streaming, and the send route's check comes only afterwards.
+ * The browser must send the returned `contentLengthRange` verbatim.
+ */
 export async function signStagedUpload(
   path: string,
   contentType: string,
-): Promise<{ url: string; expiresAt: number } | null> {
+  maxBytes: number,
+): Promise<{ url: string; expiresAt: number; contentLengthRange: string } | null> {
   const b = bucket();
   if (!b) return null;
   const expiresAt = Date.now() + STAGED_UPLOAD_URL_TTL_MS;
-  // `contentType` is part of the signature: the PUT must carry exactly this
-  // Content-Type, and the object is stored with it.
+  const contentLengthRange = `0,${maxBytes}`;
   const [url] = await b.file(path).getSignedUrl({
     version: "v4",
     action: "write",
     expires: expiresAt,
     contentType,
+    extensionHeaders: { "x-goog-content-length-range": contentLengthRange },
   });
-  return { url, expiresAt };
+  return { url, expiresAt, contentLengthRange };
 }
 
 /** A staged object as Storage reports it — never as the client described it. */
@@ -146,11 +161,19 @@ export interface StagedObject {
   generation: string;
 }
 
+/** A staged file ready to send: its bytes, and the object they came from. */
+export interface StagedAttachment {
+  outbound: OutboundAttachment;
+  staged: StagedObject;
+}
+
 /** Null when the object is missing (never uploaded, expired, already sent). */
 export async function statStaged(path: string): Promise<StagedObject | null> {
-  const b = bucket();
-  if (!b) return null;
   try {
+    // Inside the try: resolving the bucket can throw synchronously (no admin
+    // app), and the send route would then answer an unhandled 500.
+    const b = bucket();
+    if (!b) return null;
     const [meta] = await b.file(path).getMetadata();
     return {
       path,
@@ -177,7 +200,7 @@ const PART_BYTES = 8 << 20;
  * so a 100 MB object costs ~100 MB plus one part — not the chunk list plus a
  * concatenated Buffer plus a copy for the multipart upload.
  *
- * Throws when the stream yields more than the checked size.
+ * Throws when the stream yields more or fewer bytes than the checked size.
  */
 export async function readStaged(obj: StagedObject): Promise<Blob> {
   const b = bucket();
@@ -198,6 +221,7 @@ export async function readStaged(obj: StagedObject): Promise<Blob> {
       pendingBytes = 0;
     }
   }
+  if (total !== obj.sizeBytes) throw new Error("staged object read short");
   parts.push(new Blob(pending));
   return new Blob(parts, { type: obj.contentType });
 }
@@ -239,25 +263,53 @@ export async function deleteStaged(path: string): Promise<void> {
 export const STALE_STAGED_AGE_MS = 60 * 60_000;
 
 /**
+ * Per-run bounds. A flood of abandoned uploads must not make one run so long
+ * that QStash times it out and retries it into a loop: the sweep lists a page
+ * at a time and stops after `maxDeletes`, and the next day's run (or the
+ * bucket lifecycle rule, if one is added) takes the rest.
+ */
+const SWEEP_PAGE_SIZE = 500;
+const SWEEP_MAX_DELETES = 5_000;
+const SWEEP_DELETE_CONCURRENCY = 25;
+
+/**
  * Delete every object under `whatsapp-staging/` created more than
  * `STALE_STAGED_AGE_MS` ago — uploads that were attached and never sent.
  * Listed by prefix, and each name is checked against it again before the
  * delete, so nothing outside the staging area can be touched.
  */
-export async function sweepStaleStaged(now = Date.now()): Promise<{ deleted: number; kept: number }> {
+export async function sweepStaleStaged(
+  now = Date.now(),
+  opts: { pageSize?: number; maxDeletes?: number } = {},
+): Promise<{ deleted: number; kept: number; truncated: boolean }> {
+  const pageSize = opts.pageSize ?? SWEEP_PAGE_SIZE;
+  const maxDeletes = opts.maxDeletes ?? SWEEP_MAX_DELETES;
   const b = bucket();
-  if (!b) return { deleted: 0, kept: 0 };
-  const [files] = await b.getFiles({ prefix: STAGING_PREFIX });
+  if (!b) return { deleted: 0, kept: 0, truncated: false };
   let deleted = 0;
   let kept = 0;
-  for (const f of files) {
-    const created = Date.parse(String(f.metadata?.timeCreated ?? ""));
-    if (!f.name.startsWith(STAGING_PREFIX) || !(now - created > STALE_STAGED_AGE_MS)) {
-      kept += 1;
-      continue;
+  let pageToken: string | undefined;
+  do {
+    const [files, next] = await b.getFiles({
+      prefix: STAGING_PREFIX,
+      maxResults: pageSize,
+      autoPaginate: false,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    const stale = [];
+    for (const f of files) {
+      const created = Date.parse(String(f.metadata?.timeCreated ?? ""));
+      if (f.name.startsWith(STAGING_PREFIX) && now - created > STALE_STAGED_AGE_MS) stale.push(f);
+      else kept += 1;
     }
-    await f.delete({ ignoreNotFound: true });
-    deleted += 1;
-  }
-  return { deleted, kept };
+    for (let i = 0; i < stale.length; i += SWEEP_DELETE_CONCURRENCY) {
+      if (deleted >= maxDeletes) return { deleted, kept, truncated: true };
+      const batch = stale.slice(i, Math.min(i + SWEEP_DELETE_CONCURRENCY, i + maxDeletes - deleted));
+      await Promise.all(batch.map((f) => f.delete({ ignoreNotFound: true })));
+      deleted += batch.length;
+    }
+    pageToken = (next as { pageToken?: string } | null | undefined)?.pageToken;
+    if (pageToken && deleted >= maxDeletes) return { deleted, kept, truncated: true };
+  } while (pageToken);
+  return { deleted, kept, truncated: false };
 }

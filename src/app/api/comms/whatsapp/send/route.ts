@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import type { OutboundAttachment } from "@/lib/comms/whatsapp/provider";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { sendConversationWhatsapp } from "@/lib/server/conversation-send/whatsapp";
 import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
@@ -12,8 +11,10 @@ import {
   stagingPath,
   stagingRail,
   statStaged,
+  type StagedAttachment,
   type StagedObject,
 } from "@/lib/comms/whatsapp/staged-upload";
+import { stagedMediaBudget } from "@/lib/comms/whatsapp/media-budget";
 import type { Contact } from "@/types/contacts";
 
 type Body = {
@@ -23,24 +24,18 @@ type Body = {
    * Optional file to send alongside the text. Bridge and Cloud rails — see
    * `dispatchWhatsappSend`, which refuses one on Twilio.
    *
-   * No size or type check here: each rail owns its limits (`capabilitiesFor`),
-   * and a second copy of either in this file would be a second number to keep
-   * in step. What this
-   * route does check is SHAPE — a half-filled attachment is a caller bug and
-   * would otherwise reach the bridge as an unnamed or empty file.
-   *
-   * Two forms. `stagedId` names a file the composer already PUT to Storage
-   * through `/api/comms/whatsapp/upload-url`; its type and size are read from
-   * Storage, never from this body, and are checked against the rail HERE —
-   * the exception to the rule above, because the bytes must not be fetched
-   * into memory before the cap says they may. `dataBase64` is the older
-   * inline form, kept for any caller still posting it.
+   * The file is one the composer already PUT to Storage through
+   * `/api/comms/whatsapp/upload-url`; `stagedId` names it. Its type and size
+   * are read from Storage, never from this body, and are checked against the
+   * rail here, before its bytes are fetched into memory. `contentType` is
+   * accepted and ignored. There is no inline form: a body carrying
+   * `dataBase64` is refused.
    */
   attachment?: {
     filename?: string;
     contentType?: string;
-    dataBase64?: string;
     stagedId?: string;
+    dataBase64?: unknown;
   } | null;
 };
 
@@ -85,45 +80,23 @@ export async function POST(request: Request) {
     );
   }
 
-  let attachment: OutboundAttachment | null = null;
   let staged: { stagedId: string; filename: string } | null = null;
-  if (payload.attachment?.stagedId !== undefined) {
-    const filename = payload.attachment.filename?.trim();
-    const stagedId = payload.attachment.stagedId;
-    if (!filename || typeof stagedId !== "string" || payload.attachment.dataBase64 !== undefined) {
-      return NextResponse.json(
-        { error: "A staged attachment requires filename and stagedId, and no dataBase64." },
-        { status: 400 },
-      );
-    }
-    if (Buffer.byteLength(filename, "utf8") > 255) {
-      return NextResponse.json(
-        { error: "attachment filename is longer than 255 bytes.", code: "media_invalid" },
-        { status: 400 },
-      );
-    }
-    staged = { stagedId, filename };
-  } else if (payload.attachment) {
-    const filename = payload.attachment.filename?.trim();
-    const contentType = payload.attachment.contentType?.trim();
-    const dataBase64 = payload.attachment.dataBase64?.trim();
-    if (!filename || !contentType || !dataBase64) {
+  if (payload.attachment) {
+    if (payload.attachment.dataBase64 !== undefined) {
       return NextResponse.json(
         {
           error:
-            "attachment requires filename, contentType and dataBase64.",
+            "Inline attachments are not accepted. Upload the file through /api/comms/whatsapp/upload-url and send its stagedId.",
+          code: "media_invalid",
         },
         { status: 400 },
       );
     }
-    // Standard base64 or nothing. `Buffer.from` decodes garbage leniently —
-    // "data:" becomes three bytes — so a malformed payload would otherwise
-    // reach a customer as a corrupt file. The client check is bypassable;
-    // this is the one that counts. (Non-empty valid base64 always decodes to
-    // at least one byte, and empty is refused above.)
-    if (dataBase64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(dataBase64)) {
+    const filename = payload.attachment.filename?.trim();
+    const stagedId = payload.attachment.stagedId;
+    if (!filename || typeof stagedId !== "string") {
       return NextResponse.json(
-        { error: "attachment dataBase64 is not valid base64.", code: "media_invalid" },
+        { error: "attachment requires filename and stagedId." },
         { status: 400 },
       );
     }
@@ -138,16 +111,12 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const bytes = Buffer.from(dataBase64, "base64");
-    const codecs = videoCodecRefusal(contentType, bytes);
-    if (codecs) return codecs;
-    attachment = { filename, contentType, data: new Blob([bytes]) };
+    staged = { stagedId, filename };
   }
 
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  let stagedObject: StagedObject | null = null;
   let stagedPath: string | null = null;
   if (staged) {
     // Rebuilt from the authorised contact and the caller's own uid — never
@@ -166,18 +135,33 @@ export async function POST(request: Request) {
     }
   }
 
+  let releaseBudget: (() => void) | null = null;
   try {
+    let attachment: StagedAttachment | null = null;
     if (staged && stagedPath) {
-      const loaded = await loadStaged(contact, stagedPath, staged.filename);
+      const obj = await checkStaged(contact, stagedPath);
+      if (obj instanceof NextResponse) return obj;
+      // Held from before the read until the rail has the file — the whole
+      // time its bytes are in this process.
+      releaseBudget = await stagedMediaBudget.acquire(obj.sizeBytes);
+      if (!releaseBudget) {
+        return NextResponse.json(
+          {
+            error: "Other large files are being sent right now. Try again in a minute.",
+            code: "media_busy",
+          },
+          { status: 503, headers: { "Retry-After": "30" } },
+        );
+      }
+      const loaded = await loadStaged(obj, staged.filename);
       if (loaded instanceof NextResponse) return loaded;
-      ({ attachment, stagedObject } = loaded);
+      attachment = loaded;
     }
     const outcome = await sendConversationWhatsapp({
       contactId,
       contact,
       body,
       attachment,
-      stagedObject,
     // This route is the ONLY human-typed send path: requireUid above means a
     // person with a session pressed send in a thread. Every automated sender
     // — AI auto-reply, review requests, workflow steps, scheduled sends —
@@ -185,9 +169,12 @@ export async function POST(request: Request) {
       humanReply: true,
       actor: auth,
     });
+    releaseBudget?.();
+    releaseBudget = null;
     await logInboxReviewAsk({ contact, channel: "whatsapp", parts: [body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
     return sendOutcomeResponse(outcome);
   } finally {
+    releaseBudget?.();
     // Sent, refused or failed, the staged object has served its purpose: the
     // thread's copy (if any) was made from it already. A resend attaches the
     // file again.
@@ -209,15 +196,11 @@ function videoCodecRefusal(contentType: string, bytes: Uint8Array): NextResponse
 }
 
 /**
- * The staged file, checked against the rail on Storage's word for its type
+ * The staged object, checked against the rail on Storage's word for its type
  * and size — the client's claim at upload time decided only whether it got a
- * URL — and read into memory only once it has passed.
+ * URL. Nothing is read yet.
  */
-async function loadStaged(
-  contact: Contact,
-  path: string,
-  filename: string,
-): Promise<{ attachment: OutboundAttachment; stagedObject: StagedObject } | NextResponse> {
+async function checkStaged(contact: Contact, path: string): Promise<StagedObject | NextResponse> {
   const obj = await statStaged(path);
   if (!obj) {
     return NextResponse.json(
@@ -229,7 +212,11 @@ async function loadStaged(
   if (!rail.ok) return NextResponse.json({ error: rail.error }, { status: rail.status });
   const refusal = mediaRefusal(rail.capabilities, obj.contentType, obj.sizeBytes);
   if (refusal) return NextResponse.json(refusal, { status: 400 });
+  return obj;
+}
 
+/** The checked object's bytes, with the video codec check run on them. */
+async function loadStaged(obj: StagedObject, filename: string): Promise<StagedAttachment | NextResponse> {
   let data: Blob;
   try {
     data = await readStaged(obj);
@@ -244,5 +231,5 @@ async function loadStaged(
     const codecs = videoCodecRefusal(obj.contentType, new Uint8Array(await data.arrayBuffer()));
     if (codecs) return codecs;
   }
-  return { attachment: { filename, contentType: obj.contentType, data }, stagedObject: obj };
+  return { outbound: { filename, contentType: obj.contentType, data }, staged: obj };
 }

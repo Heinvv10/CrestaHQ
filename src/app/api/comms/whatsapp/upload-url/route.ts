@@ -4,9 +4,11 @@ import {
   mediaRefusal,
   newStagedId,
   signStagedUpload,
+  stagedUploadCap,
   stagingPath,
   stagingRail,
 } from "@/lib/comms/whatsapp/staged-upload";
+import { checkUploadUrlRateLimit } from "@/lib/comms/whatsapp/upload-rate-limit";
 
 type Body = { contactId?: string; contentType?: string; sizeBytes?: number };
 
@@ -22,11 +24,21 @@ type Body = { contactId?: string; contentType?: string; sizeBytes?: number };
  * an upload that could never be sent.
  *
  * The request carries no path. The object's path is derived here from the
- * contact and the caller, and only its random last segment goes back.
+ * contact and the caller, and only its random last segment goes back, with
+ * the `x-goog-content-length-range` value the PUT must carry: the URL is
+ * signed for at most the rail's cap for this kind of file.
  */
 export async function POST(request: Request) {
   const auth = requireUid(request);
   if (auth instanceof NextResponse) return auth;
+
+  const limit = checkUploadUrlRateLimit(auth.uid);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: "Too many attachments in a short time. Try again shortly." },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+    );
+  }
 
   let payload: Body;
   try {
@@ -61,7 +73,7 @@ export async function POST(request: Request) {
   })!;
   let signed: Awaited<ReturnType<typeof signStagedUpload>>;
   try {
-    signed = await signStagedUpload(path, contentType);
+    signed = await signStagedUpload(path, contentType, stagedUploadCap(rail.capabilities, contentType));
   } catch (err) {
     console.error("[whatsapp/upload-url] signing failed", err instanceof Error ? err.message : typeof err);
     signed = null;
@@ -69,5 +81,10 @@ export async function POST(request: Request) {
   if (!signed) {
     return NextResponse.json({ error: "File uploads aren't available right now." }, { status: 503 });
   }
-  return NextResponse.json({ stagedId, uploadUrl: signed.url, expiresAt: signed.expiresAt });
+  return NextResponse.json({
+    stagedId,
+    uploadUrl: signed.url,
+    expiresAt: signed.expiresAt,
+    contentLengthRange: signed.contentLengthRange,
+  });
 }

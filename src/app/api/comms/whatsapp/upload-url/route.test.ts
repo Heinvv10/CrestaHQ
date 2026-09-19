@@ -49,13 +49,20 @@ function post(body: Record<string, unknown>) {
 }
 
 const pdf = { contactId: "c1", contentType: "application/pdf", sizeBytes: 50_000_000 };
+/**
+ * A fresh caller per test: the mint limit is per uid and lives for the
+ * module's lifetime, so a shared uid would let one test's mints starve the next.
+ */
+let uid = "";
+let uidSeq = 0;
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "test-bucket");
   signed = [];
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "cloud" };
-  requireUid.mockReturnValue({ uid: "u1", email: "" });
+  uid = `u${++uidSeq}`;
+  requireUid.mockReturnValue({ uid, email: "" });
   requireContactAccessible.mockResolvedValue({ id: "c1", agencyId: "ag1", subAccountId: "sa1" });
 });
 
@@ -68,12 +75,12 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
     expect(json.stagedId).toMatch(/^[A-Za-z0-9_-]{24}$/);
     expect(json.uploadUrl).toContain("X-Goog-Signature");
     expect(signed).toHaveLength(1);
-    expect(signed[0]!.path).toBe(`whatsapp-staging/ag1/sa1/u1/${json.stagedId}`);
+    expect(signed[0]!.path).toBe(`whatsapp-staging/ag1/sa1/${uid}/${json.stagedId}`);
     expect(signed[0]!.opts).toMatchObject({ version: "v4", action: "write", contentType: "application/pdf" });
     const expires = signed[0]!.opts.expires as number;
     expect(expires - before).toBeGreaterThanOrEqual(10 * 60_000);
     expect(expires - Date.now()).toBeLessThanOrEqual(10 * 60_000);
-    expect(requireContactAccessible).toHaveBeenCalledWith("u1", "c1");
+    expect(requireContactAccessible).toHaveBeenCalledWith(uid, "c1");
   });
 
   it("refuses a caller without access to the contact, and signs nothing", async () => {
@@ -101,7 +108,7 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.stagedId).not.toBe("../../evil");
-    expect(signed[0]!.path).toBe(`whatsapp-staging/ag1/sa1/u1/${json.stagedId}`);
+    expect(signed[0]!.path).toBe(`whatsapp-staging/ag1/sa1/${uid}/${json.stagedId}`);
   });
 
   it("issues a fresh id every time", async () => {
@@ -154,5 +161,29 @@ describe("POST /api/comms/whatsapp/upload-url", () => {
   it("503s when no bucket is configured", async () => {
     vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "");
     expect((await post(pdf)).status).toBe(503);
+  });
+
+  it.each([
+    ["a Cloud document", "cloud", "application/pdf", "0,100000000"],
+    ["a Cloud image", "cloud", "image/jpeg", "0,5000000"],
+    ["a Cloud video", "cloud", "video/mp4", `0,${16 << 20}`],
+    ["a bridge document", "bridge", "application/pdf", `0,${8 << 20}`],
+  ])("signs %s with the size range of its rail's cap, and returns that exact value", async (_l, rail, contentType, range) => {
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: rail };
+    const res = await post({ contactId: "c1", contentType, sizeBytes: 1000 });
+    expect(res.status).toBe(200);
+    expect(signed[0]!.opts.extensionHeaders).toEqual({ "x-goog-content-length-range": range });
+    expect((await res.json()).contentLengthRange).toBe(range);
+  });
+
+  it("refuses the 31st mint in ten minutes for one user with 429, and signs nothing for it", async () => {
+    for (let i = 0; i < 30; i++) expect((await post(pdf)).status).toBe(200);
+    const res = await post(pdf);
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect(signed).toHaveLength(30);
+    // Per user: someone else is unaffected.
+    requireUid.mockReturnValue({ uid: `${uid}-other`, email: "" });
+    expect((await post(pdf)).status).toBe(200);
   });
 });
