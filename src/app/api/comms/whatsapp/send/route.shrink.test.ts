@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { whatsappMediaPath } from "@/lib/comms/whatsapp/media-storage";
 import { bucketFake, resetBucketFake, stageObject } from "@/test/staged-bucket";
+import { buildExif, FIXTURE_MAKERNOTE, FIXTURE_SERIAL, ifd1Offset, withApp1 } from "@/test/exif-fixture";
 
 /**
  * Photo shrinking through the whole seam: route → staged-upload → sharp
@@ -264,6 +265,37 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     });
     expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
     expect(held.budget.inFlight()).toBe(0);
+  });
+
+  it("keeps only the whitelisted EXIF: GPS and capture time go; the IFD1 thumbnail, MakerNote and serial do not", async () => {
+    // The thumbnail is a DIFFERENT picture from the photo — what a crop would hide.
+    const thumbnail = await sharp({ create: { width: 48, height: 32, channels: 3, background: "#ff00ff" } })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    const base = await sharp(photoPixels(800, 600), { raw: { width: 800, height: 600, channels: 3 } })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    const camera = withApp1(base, buildExif({ orientation: 1, thumbnail }));
+    const inMeta = await sharp(camera).metadata();
+    expect(exifOf(inMeta.exif)).toEqual({ gps: true, taken: true });
+    expect(ifd1Offset(inMeta.exif!)).not.toBe(0);
+    expect(camera.includes(thumbnail)).toBe(true);
+    override.imageCap = camera.length - 1;
+    stageObject(OWN_PATH, camera, "image/jpeg");
+    fetchMock
+      .mockResolvedValueOnce(graphOk({ id: "M8" }))
+      .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.S8" }] }));
+    expect((await post("site.jpg")).status).toBe(200);
+
+    const sent = await sentToGraph();
+    const out = await sharp(sent).metadata();
+    expect(exifOf(out.exif)).toEqual({ gps: true, taken: true });
+    expect(ifd1Offset(out.exif!)).toBe(0);
+    expect(sent.includes(thumbnail)).toBe(false);
+    expect(sent.includes(thumbnail.subarray(-64))).toBe(false);
+    expect(sent.includes(FIXTURE_MAKERNOTE)).toBe(false);
+    expect(sent.includes(Buffer.from(FIXTURE_SERIAL))).toBe(false);
+    expect(storedCopy("wamid.S8")!.bytes.equals(sent)).toBe(true);
   });
 
   it("turns a rotated-EXIF photo's pixels upright and writes Orientation 1, so it is not turned twice", async () => {

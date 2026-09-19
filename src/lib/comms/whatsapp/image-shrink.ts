@@ -2,6 +2,7 @@ import "server-only";
 
 import sharp from "sharp";
 
+import { whitelistExif, type ExifFields } from "./exif-whitelist";
 import { IMAGE_DECODE_BUDGET_BYTES, imageDecodeBudget, imageDecodeSlots } from "./media-budget";
 import { SHRINKABLE_IMAGE_TYPES, type WhatsAppProviderCapabilities } from "./provider";
 
@@ -15,16 +16,18 @@ import { SHRINKABLE_IMAGE_TYPES, type WhatsAppProviderCapabilities } from "./pro
  * its EXIF orientation, flattened onto white (JPEG has no alpha, and a
  * transparent PNG left to the encoder turns black), shrunk to at most
  * MAX_EDGE on its longest side and encoded as JPEG, stepping quality and
- * then dimensions down until it fits. Each step decodes the original again:
- * at today's caps the first encode always fits, so that is one decode.
+ * then dimensions down until it fits. The original is decoded ONCE, to raw
+ * pixels; every step encodes from those, so a lowered cap cannot multiply
+ * the decode past its reservation.
  *
- * METADATA IS KEPT, deliberately, at the business's request: the shrunk
- * JPEG carries the original's EXIF — GPS position and capture time
- * included — and it reaches the customer's phone. (`keepExif()`; after
- * `.rotate()` sharp writes Orientation 1, so an upright photo is not turned
- * twice.) The ICC profile is NOT kept: sharp converts the pixels to sRGB,
- * which is what WhatsApp and every phone assume, so a Display-P3 iPhone
- * photo shows the right colours without a profile riding along.
+ * GPS AND CAPTURE TIME ARE KEPT, deliberately, at the business's request:
+ * the shrunk JPEG carries a WHITELIST of the original's EXIF
+ * (exif-whitelist.ts) — GPS, capture time, Orientation 1 — and it reaches
+ * the customer's phone. Not the rest: no IFD1 thumbnail of the uncropped
+ * original, no MakerNote or serials. The ICC profile is NOT kept: sharp
+ * converts the pixels to sRGB, which is what WhatsApp and every phone
+ * assume, so a Display-P3 iPhone photo shows the right colours without a
+ * profile riding along.
  *
  * FORMAT. The staged type is only what the uploader signed for, and sharp
  * decodes by sniffing the bytes — prebuilt sharp also renders SVG (librsvg:
@@ -126,7 +129,7 @@ function jpegShrinkFactor(width: number, height: number): number {
 export async function planDecode(
   input: Buffer,
   type: PhotoType,
-): Promise<{ ok: true; reserveBytes: number } | Refusal> {
+): Promise<{ ok: true; reserveBytes: number; exif: ExifFields | null } | Refusal> {
   let meta: sharp.Metadata;
   try {
     // Headers only, so no pixel limit here — sharp would throw on it before
@@ -159,7 +162,7 @@ export async function planDecode(
         : "This photo is too large to process. Send a smaller photo.",
     };
   }
-  return { ok: true, reserveBytes };
+  return { ok: true, reserveBytes, exif: whitelistExif(meta.exif) };
 }
 
 /**
@@ -210,30 +213,40 @@ export async function shrinkImage(input: Buffer, type: PhotoType, capBytes: numb
     if (!releaseBytes) {
       return { ok: false, code: "media_busy", error: "Other photos are being processed right now. Try again in a minute." };
     }
-    return await encodeToFit(input, type, capBytes);
+    return await encodeToFit(input, type, capBytes, plan.exif);
   } finally {
     releaseBytes?.();
     releaseSlot?.();
   }
 }
 
-async function encodeToFit(input: Buffer, type: PhotoType, capBytes: number): Promise<ShrinkResult> {
+async function encodeToFit(
+  input: Buffer,
+  type: PhotoType,
+  capBytes: number,
+  exif: ExifFields | null,
+): Promise<ShrinkResult> {
   const deadline = Date.now() + TIMEOUT_MS;
   const seconds = () => Math.floor((deadline - Date.now()) / 1000);
   try {
+    const { data, info } = await open(input, type)
+      .timeout({ seconds: seconds() })
+      .rotate()
+      .flatten({ background: "#ffffff" })
+      .resize({ width: MAX_EDGE, height: MAX_EDGE, fit: "inside", withoutEnlargement: true })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const raw = { width: info.width, height: info.height, channels: info.channels };
     for (const edge of EDGES) {
       for (const quality of QUALITIES) {
         // Read once: a second read could fall to 0, which sharp takes as "no limit".
         const left = seconds();
         if (left < 1) return tookTooLong();
-        const out = await open(input, type)
+        const encode = sharp(data, { raw })
           .timeout({ seconds: left })
-          .rotate()
-          .flatten({ background: "#ffffff" })
           .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
-          .jpeg({ quality })
-          .keepExif()
-          .toBuffer();
+          .jpeg({ quality });
+        const out = await (exif ? encode.withExif(exif) : encode).toBuffer();
         // The EXIF is inside `out`, so the cap counts it.
         if (out.length <= capBytes) return { ok: true, bytes: out, contentType: "image/jpeg" };
       }
