@@ -167,12 +167,15 @@ export async function planDecode(
  *   decode, so no shrink-on-load discount applies. At 12000×9000 that is
  *   ~650–900 MB. Reserved as that buffer plus 25%: at 25 MP CMYK the buffer
  *   alone left only a 5% margin over what was measured. So progressive RGB
- *   files over ~30 MP (CMYK ~23 MP) are refused. Phones write baseline
+ *   files over ~30 MP (CMYK ~23 MP — derived from this formula; review did
+ *   not independently re-measure it) are refused. Phones write baseline
  *   JPEGs; progressive ones come from web exports and editors.
  * - WebP: the pixels plus 25%. libwebp decodes the whole frame, and a
  *   rotated 49 MP RGBA WebP measured 273 MB against 275 MB reserved without
  *   it — no margin for a box under load.
- * - PNG: the pixels.
+ * - PNG: the pixels; plus 25% when interlaced (Adam7, which sharp reports as
+ *   `isProgressive`): it decodes the whole frame like WebP, and a rotated
+ *   29 MP 16-bit RGBA one used ~310 MB against 294 MB reserved without it.
  */
 function decodedBytes(
   type: PhotoType,
@@ -184,7 +187,7 @@ function decodedBytes(
 ): number {
   const full = width * height * channels * bytesPerSample;
   if (type === "image/webp") return Math.ceil(full * FULL_FRAME_MARGIN);
-  if (type !== "image/jpeg") return full;
+  if (type === "image/png") return meta.isProgressive ? Math.ceil(full * FULL_FRAME_MARGIN) : full;
   if (meta.isProgressive) return Math.ceil(width * height * channels * 2 * FULL_FRAME_MARGIN);
   return Math.ceil(full / jpegShrinkFactor(width, height) ** 2);
 }

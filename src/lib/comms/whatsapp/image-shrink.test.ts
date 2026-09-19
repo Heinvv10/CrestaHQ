@@ -58,6 +58,21 @@ describe("planDecode", () => {
     });
   });
 
+  it("reserves an interlaced (Adam7) PNG at its pixels +25%; a non-interlaced one at its pixels", async () => {
+    const png = (progressive: boolean) => solid(1000, 800, 4).toColourspace("rgb16").png({ progressive }).toBuffer();
+    const interlaced = await png(true);
+    expect((await sharp(interlaced).metadata()).isProgressive).toBe(true);
+    expect(await planDecode(interlaced, "image/png")).toEqual({
+      ok: true,
+      reserveBytes: Math.ceil(1000 * 800 * 4 * 2 * 1.25) + 60_000_000 + interlaced.length,
+    });
+    const plain = await png(false);
+    expect(await planDecode(plain, "image/png")).toEqual({
+      ok: true,
+      reserveBytes: 1000 * 800 * 4 * 2 + 60_000_000 + plain.length,
+    });
+  });
+
   it("reserves a 16-bit RGBA PNG at 8 bytes a pixel", async () => {
     const input = await solid(1000, 800, 4).toColourspace("rgb16").png().toBuffer();
     expect((await sharp(input).metadata()).depth).toBe("ushort");
