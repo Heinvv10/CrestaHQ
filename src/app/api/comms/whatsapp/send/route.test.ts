@@ -159,10 +159,12 @@ describe("POST /api/comms/whatsapp/send — rail refusals", () => {
 });
 
 describe("POST /api/comms/whatsapp/send — attachments", () => {
+  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const attachment = { stagedId: STAGED_ID, filename: "report.png", contentType: "image/png" };
 
   beforeEach(() => {
-    stageObject(STAGED_PATH, Buffer.from([0, 1, 2]), "image/png");
+    // A PNG signature: every staged photo is sniffed before it is sent.
+    stageObject(STAGED_PATH, PNG_MAGIC, "image/png");
   });
 
   it("forwards the staged file to the dispatcher as a Blob of its bytes", async () => {
@@ -176,7 +178,7 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
     expect(res.status).toBe(200);
     const sent = dispatchWhatsappSend.mock.calls[0]![0].attachment;
     expect(sent).toMatchObject({ filename: "report.png", contentType: "image/png" });
-    expect(Buffer.from(await (sent.data as Blob).arrayBuffer()).toString("base64")).toBe("AAEC");
+    expect(Buffer.from(await (sent.data as Blob).arrayBuffer()).toString("base64")).toBe(PNG_MAGIC.toString("base64"));
   });
 
   it("marks the row store_failed when the thread copy fails, and never carries the bytes", async () => {

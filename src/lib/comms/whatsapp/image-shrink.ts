@@ -2,6 +2,7 @@ import "server-only";
 
 import sharp from "sharp";
 
+import { IMAGE_DECODE_BUDGET_BYTES, imageDecodeBudget, imageDecodeSlots } from "./media-budget";
 import { SHRINKABLE_IMAGE_TYPES, type WhatsAppProviderCapabilities } from "./provider";
 
 /**
@@ -20,37 +21,69 @@ import { SHRINKABLE_IMAGE_TYPES, type WhatsAppProviderCapabilities } from "./pro
  * pixels, so a phone photo's EXIF — GPS position included — cannot survive
  * into it. That is a POPIA win for every photo this shrinks; a photo sent
  * unchanged keeps whatever metadata it had.
+ *
+ * FORMAT. The staged type is only what the uploader signed for, and sharp
+ * decodes by sniffing the bytes — prebuilt sharp also renders SVG (librsvg:
+ * a 4 KB filter chain costs gigabytes and minutes of CPU), TIFF, GIF and
+ * HEIF/AVIF. So every photo's magic bytes are checked (`sniffImageType`)
+ * before anything else touches it, including one sent unchanged.
  */
 
-/**
- * Decode limit, and the guard against a decompression bomb (a tiny file that
- * decodes to gigapixels). 50 MP admits a 48/50 MP phone's full-resolution
- * mode; anything larger is refused before its pixels are allocated.
- */
-export const MAX_INPUT_PIXELS = 50_000_000;
+export type PhotoType = "image/jpeg" | "image/png" | "image/webp";
 
-/**
- * Memory the send route reserves for a photo this module will decode, on top
- * of the staged Blob it already holds: one more copy of the file (sharp takes
- * a Buffer) plus the decode itself. Measured (PR body) as peak RSS over
- * baseline for the whole shrink: +61 MB for a 13.7 MB 12 MP JPEG, +60 MB for
- * an 18.5 MB 50 MP JPEG (libjpeg decodes it pre-shrunk), +79 MB for a 50 MP
- * RGBA PNG with an orientation tag and +92 MB for a 50 MP rotated WebP, the
- * worst case. Through the whole send route a 15.9 MB phone JPEG peaked at
- * +108 MB, against the 132 MB this reserves for it with the file itself.
- * A naive 50 MP × 4 bytes would be 200 MB, the whole budget.
- */
-export function decodeReserveBytes(sizeBytes: number): number {
-  return sizeBytes + 100_000_000;
+/** The photo type these bytes actually are, or null for anything else. */
+export function sniffImageType(head: Uint8Array): PhotoType | null {
+  const at = (i: number, bytes: number[]) => bytes.every((b, j) => head[i + j] === b);
+  if (at(0, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50])) return "image/webp";
+  return null;
 }
+
+/**
+ * Decode limits, and the guard against a decompression bomb. JPEG gets more
+ * room because phones shoot 50–108 MP and libjpeg decodes it pre-shrunk (see
+ * `jpegShrinkFactor`); PNG and WebP are decoded at full size.
+ */
+const MAX_PIXELS: Record<PhotoType, number> = {
+  "image/jpeg": 110_000_000,
+  "image/png": 50_000_000,
+  "image/webp": 50_000_000,
+};
 
 /** Longest edge of a shrunk photo: sharper than WhatsApp itself shows it. */
 const MAX_EDGE = 2560;
 const EDGES = [MAX_EDGE, 1920, 1280] as const;
 const QUALITIES = [85, 75, 65, 55] as const;
 
-/** Whole-job deadline. The decode is the slow part; each encode is ~50 ms. */
+/**
+ * The whole job stops within this: every sharp pipeline gets
+ * sharp's own timeout of the WHOLE seconds left (never rounded up), and no
+ * pipeline starts with under a second left.
+ */
 const TIMEOUT_MS = 20_000;
+
+/**
+ * libvips' per-thread buffers, the ≤2560² raw working copy (~20 MB) and the
+ * output. Measured on velo (32 cores), peak RSS over the decoded pixels:
+ * ~47 MB for a 108 MP JPEG decoded at 1/4 scale.
+ */
+const DECODE_OVERHEAD_BYTES = 60_000_000;
+
+const BYTES_PER_SAMPLE: Record<string, number> = {
+  uchar: 1, char: 1, ushort: 2, short: 2, uint: 4, int: 4, float: 4, complex: 8, double: 8, dpcomplex: 16,
+};
+
+/**
+ * `pages: 1` — only the first frame of an animated WebP is decoded; the
+ * rest would multiply the pixel count past what was reserved.
+ * `failOn: "error"` — phone JPEGs commonly carry benign libjpeg warnings
+ * (stray bytes before a marker); refusing those ("warning", the default)
+ * would refuse ordinary photos, while a real decode error still fails.
+ */
+function open(input: Uint8Array, type: PhotoType) {
+  return sharp(input, { limitInputPixels: MAX_PIXELS[type], pages: 1, failOn: "error" });
+}
 
 // libvips caches recent operations, decoded pixels included; in a long-lived
 // server that is memory held after the send is over.
@@ -66,16 +99,83 @@ export function needsShrink(
   return !caps.mediaMimeTypes.includes(contentType) || sizeBytes > caps.maxMediaBytes.image;
 }
 
-export type ShrinkResult =
-  | { ok: true; bytes: Buffer; contentType: "image/jpeg" }
-  | { ok: false; code: "media_too_large" | "media_invalid"; error: string };
+type Refusal = { ok: false; code: "media_too_large" | "media_invalid" | "media_busy"; error: string };
+export type ShrinkResult = { ok: true; bytes: Buffer; contentType: "image/jpeg" } | Refusal;
 
-/** Re-encode `input` as a JPEG of at most `capBytes`. Never throws. */
-export async function shrinkImage(input: Uint8Array, capBytes: number): Promise<ShrinkResult> {
-  const deadline = Date.now() + TIMEOUT_MS;
-  const seconds = () => Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+/**
+ * libjpeg decodes at 1/2, 1/4 or 1/8 scale when the target is that much
+ * smaller, and sharp uses the largest that still covers MAX_EDGE.
+ */
+function jpegShrinkFactor(width: number, height: number): number {
+  const ratio = Math.max(width, height) / MAX_EDGE;
+  return ratio >= 8 ? 8 : ratio >= 4 ? 4 : ratio >= 2 ? 2 : 1;
+}
+
+/**
+ * Memory a decode of `input` may use, from its header alone (sharp's
+ * `metadata()` renders nothing): the decoded pixels — at JPEG's shrink-on-load
+ * scale — plus working buffers and the input copy sharp holds.
+ */
+export async function planDecode(
+  input: Buffer,
+  type: PhotoType,
+): Promise<{ ok: true; reserveBytes: number } | Refusal> {
+  let meta: sharp.Metadata;
   try {
-    const { data, info } = await sharp(input, { limitInputPixels: MAX_INPUT_PIXELS })
+    // Headers only, so no pixel limit here — sharp would throw on it before
+    // saying why; the limit is checked below, and again by `open` itself.
+    meta = await sharp(input, { limitInputPixels: false, pages: 1, failOn: "error" }).metadata();
+  } catch (err) {
+    console.warn("[whatsapp/image-shrink] header unreadable", err instanceof Error ? err.message : "");
+    return unreadable();
+  }
+  const { width = 0, height = 0, channels = 0, depth = "" } = meta;
+  // sharp sniffs too; a disagreement means these are not the bytes checked.
+  if (`image/${meta.format}` !== type || !width || !height || !channels || !BYTES_PER_SAMPLE[depth]) {
+    return unreadable();
+  }
+  if (width * height > MAX_PIXELS[type]) {
+    return {
+      ok: false,
+      code: "media_too_large",
+      error: `This photo is over ${MAX_PIXELS[type] / 1_000_000} megapixels. Send a smaller photo.`,
+    };
+  }
+  const scale = type === "image/jpeg" ? jpegShrinkFactor(width, height) ** 2 : 1;
+  const pixels = Math.ceil((width * height * channels * BYTES_PER_SAMPLE[depth]!) / scale);
+  const reserveBytes = pixels + DECODE_OVERHEAD_BYTES + input.length;
+  if (reserveBytes > IMAGE_DECODE_BUDGET_BYTES) {
+    return { ok: false, code: "media_too_large", error: "This photo is too large to process. Send a smaller photo." };
+  }
+  return { ok: true, reserveBytes };
+}
+
+/**
+ * Re-encode `input` — already sniffed as `type` — as a JPEG of at most
+ * `capBytes`, holding its decode reservation in the decode budget (separate
+ * from the send budget, so a shrink never holds up a document). Never throws.
+ */
+export async function shrinkImage(input: Buffer, type: PhotoType, capBytes: number): Promise<ShrinkResult> {
+  const plan = await planDecode(input, type);
+  if (!plan.ok) return plan;
+  const releaseSlot = await imageDecodeSlots.acquire(1);
+  const releaseBytes = releaseSlot ? await imageDecodeBudget.acquire(plan.reserveBytes) : null;
+  try {
+    if (!releaseBytes) {
+      return { ok: false, code: "media_busy", error: "Other photos are being processed right now. Try again in a minute." };
+    }
+    return await encodeToFit(input, type, capBytes);
+  } finally {
+    releaseBytes?.();
+    releaseSlot?.();
+  }
+}
+
+async function encodeToFit(input: Buffer, type: PhotoType, capBytes: number): Promise<ShrinkResult> {
+  const deadline = Date.now() + TIMEOUT_MS;
+  const seconds = () => Math.floor((deadline - Date.now()) / 1000);
+  try {
+    const { data, info } = await open(input, type)
       .timeout({ seconds: seconds() })
       .rotate()
       .flatten({ background: "#ffffff" })
@@ -85,7 +185,7 @@ export async function shrinkImage(input: Uint8Array, capBytes: number): Promise<
     const raw = { width: info.width, height: info.height, channels: info.channels };
     for (const edge of EDGES) {
       for (const quality of QUALITIES) {
-        if (Date.now() > deadline) return tookTooLong();
+        if (seconds() < 1) return tookTooLong();
         const out = await sharp(data, { raw })
           .timeout({ seconds: seconds() })
           .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
@@ -101,24 +201,27 @@ export async function shrinkImage(input: Uint8Array, capBytes: number): Promise<
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
-    if (message.includes("pixel limit")) {
-      return {
-        ok: false,
-        code: "media_too_large",
-        error: `This photo is over ${MAX_INPUT_PIXELS / 1_000_000} megapixels. Send a smaller photo.`,
-      };
-    }
     if (message.includes("timeout")) return tookTooLong();
     console.warn("[whatsapp/image-shrink] decode failed", message);
-    return { ok: false, code: "media_invalid", error: "This photo couldn't be read. Attach it again, or send another." };
+    return unreadable();
   }
 }
 
-function tookTooLong(): ShrinkResult {
+function unreadable(): Refusal {
+  return { ok: false, code: "media_invalid", error: "This photo couldn't be read. Attach it again, or send another." };
+}
+
+function tookTooLong(): Refusal {
   return { ok: false, code: "media_invalid", error: "This photo took too long to process. Send a smaller photo." };
 }
 
-/** `IMG_1234.PNG` → `IMG_1234.jpg`: the name the customer sees must match the JPEG they get. */
+/**
+ * `IMG_1234.PNG` → `IMG_1234.jpg`: the name the customer sees must match the
+ * JPEG they get. Held to the same 255 bytes the send route checks the
+ * original against (the bridge refuses longer), cutting whole code points.
+ */
 export function jpegFilename(filename: string): string {
-  return `${filename.replace(/\.[^./\\]*$/, "")}.jpg`;
+  let base = [...filename.replace(/\.[^./\\]*$/, "")];
+  while (base.length > 0 && Buffer.byteLength(`${base.join("")}.jpg`, "utf8") > 255) base = base.slice(0, -1);
+  return `${base.join("")}.jpg`;
 }

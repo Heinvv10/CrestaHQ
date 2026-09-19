@@ -61,16 +61,40 @@ vi.mock("@/lib/comms/whatsapp/provider", async (importOriginal) => {
     },
   };
 });
+// The send and decode budgets, swappable per test; `decodePeak` is the most
+// decode memory ever reserved at once.
+type Budget = import("@/lib/comms/whatsapp/media-budget").ByteBudget;
 const held = vi.hoisted(() => ({
-  budget: null as unknown as import("@/lib/comms/whatsapp/media-budget").ByteBudget,
+  budget: null as unknown as Budget,
+  decode: null as unknown as Budget,
+  decodePeak: 0,
 }));
 vi.mock("@/lib/comms/whatsapp/media-budget", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/comms/whatsapp/media-budget")>();
   held.budget = real.stagedMediaBudget;
+  held.decode = real.imageDecodeBudget;
   return {
     ...real,
     stagedMediaBudget: { acquire: (b: number) => held.budget.acquire(b), inFlight: () => held.budget.inFlight() },
+    imageDecodeBudget: {
+      acquire: async (b: number) => {
+        const release = await held.decode.acquire(b);
+        held.decodePeak = Math.max(held.decodePeak, held.decode.inFlight());
+        return release;
+      },
+      inFlight: () => held.decode.inFlight(),
+    },
   };
+});
+// Real sharp, counted: a file refused by its magic bytes must never reach it.
+const sharpCalls = vi.hoisted(() => ({ n: 0 }));
+vi.mock("sharp", async (importOriginal) => {
+  const real = (await importOriginal<{ default: typeof import("sharp") }>()).default;
+  const counted = (...a: Parameters<typeof real>) => {
+    sharpCalls.n += 1;
+    return real(...a);
+  };
+  return { default: Object.assign(counted, real) };
 });
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminApp: () => ({ name: "test-app" }),
@@ -110,7 +134,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { POST } from "./route";
-import { createByteBudget } from "@/lib/comms/whatsapp/media-budget";
+import { createByteBudget, IMAGE_DECODE_BUDGET_BYTES } from "@/lib/comms/whatsapp/media-budget";
 
 const STAGED_ID = "AbCdEfGhIjKlMnOpQrStUv_-";
 const OWN_PATH = `whatsapp-staging/ag1/sa1/u1/${STAGED_ID}`;
@@ -165,6 +189,7 @@ beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "test-bucket");
   messageRow = undefined;
   override.imageCap = null;
+  held.decodePeak = 0;
   resetBucketFake();
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "cloud" };
   requireUid.mockReturnValue({ uid: "u1" });
@@ -345,17 +370,109 @@ describe("POST /api/comms/whatsapp/send — photo shrinking", () => {
     expect(storedCopy(rowId)!.bytes.equals(sent)).toBe(true);
   });
 
-  it("reserves decode memory for a photo it will shrink: a budget that fits the file alone answers busy", async () => {
-    const real = held.budget;
-    held.budget = createByteBudget(50_000_000, 20);
+  it("reserves decode memory from the photo's header in the decode budget, not the send budget", async () => {
+    // 4000×3000 RGB JPEG, decoded at full scale: 36 MB of pixels + 60 MB
+    // working memory + the input copy. With 250 MB of 300 already held, it
+    // cannot fit — while a flat "file size" estimate would.
+    const realDecode = held.decode;
+    held.decode = createByteBudget(IMAGE_DECODE_BUDGET_BYTES, 20);
+    const hold = await held.decode.acquire(250_000_000);
     try {
       stageObject(OWN_PATH, phoneJpeg, "image/jpeg");
       const res = await post("IMG_0004.jpg");
       expect(res.status).toBe(503);
+      expect(res.headers.get("Retry-After")).toBe("30");
       expect((await res.json()).code).toBe("media_busy");
-      expect(bucketFake.log.some((l) => l.startsWith("read "))).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(held.budget.inFlight()).toBe(0);
     } finally {
-      held.budget = real;
+      hold?.();
+      held.decode = realDecode;
     }
+  });
+
+  it("lets two shrinks and a 100 MB document run at once: the send budget holds only file bytes", async () => {
+    const OTHER = "ZyXwVuTsRqPoNmLkJiHgFe_-";
+    const DOC = "DoCuMeNtDoCuMeNtDoCuMe__";
+    const pathOf = (id: string) => `whatsapp-staging/ag1/sa1/u1/${id}`;
+    stageObject(OWN_PATH, phoneJpeg, "image/jpeg");
+    stageObject(pathOf(OTHER), phoneJpeg, "image/jpeg");
+    stageObject(pathOf(DOC), Buffer.alloc(100_000_000, 7), "application/pdf");
+    // Graph holds every upload open until all three have arrived.
+    const waiting: Array<() => void> = [];
+    let uploads = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/media")) {
+        uploads += 1;
+        await new Promise<void>((r) => waiting.push(r));
+        return graphOk({ id: `M${uploads}` });
+      }
+      return graphOk({ messages: [{ id: `wamid.C${Math.random()}` }] });
+    });
+    const send = (id: string, filename: string) =>
+      POST(
+        new Request("https://crm.test/api/comms/whatsapp/send", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contactId: "c1", body: "", attachment: { stagedId: id, filename } }),
+        }) as never,
+      );
+    const doc = send(DOC, "quote.pdf");
+    const a = send(STAGED_ID, "a.jpg");
+    const b = send(OTHER, "b.jpg");
+    await vi.waitFor(() => expect(uploads).toBe(3), { timeout: 8_000 });
+    // All three hold the send budget together: file bytes only.
+    expect(held.budget.inFlight()).toBe(100_000_000 + 2 * phoneJpeg.length);
+    // Both decodes were reserved at the same time, in their own budget.
+    expect(held.decodePeak).toBeGreaterThan(2 * 90_000_000);
+    expect(held.decode.inFlight()).toBe(0);
+    waiting.forEach((r) => r());
+    expect((await doc).status).toBe(200);
+    expect((await a).status).toBe(200);
+    expect((await b).status).toBe(200);
+  }, 15_000);
+
+  it.each([
+    ["an SVG filter bomb declared JPEG, under the cap (sent-unchanged path)", "svg", "image/jpeg"],
+    ["an SVG filter bomb declared WebP (shrink path)", "svg", "image/webp"],
+    ["a TIFF declared JPEG", "tiff", "image/jpeg"],
+    ["a GIF declared JPEG", "gif", "image/jpeg"],
+    ["an AVIF declared WebP", "avif", "image/webp"],
+    ["a PNG declared JPEG", "png", "image/jpeg"],
+  ])("refuses %s by its magic bytes — before sharp sees it, with zero Graph calls", async (_l, format, declared) => {
+    const bytes =
+      format === "svg"
+        ? Buffer.from(
+            `<svg xmlns="http://www.w3.org/2000/svg" width="7000" height="7000"><filter id="f">` +
+              `${'<feGaussianBlur stdDeviation="200"/><feMorphology radius="200"/>'.repeat(20)}` +
+              `</filter><rect width="100%" height="100%" filter="url(#f)"/></svg>`,
+          )
+        : await sharp(photoPixels(64, 48), { raw: { width: 64, height: 48, channels: 3 } })
+            .toFormat(format as "tiff" | "gif" | "avif" | "png")
+            .toBuffer();
+    stageObject(OWN_PATH, bytes, declared);
+    sharpCalls.n = 0;
+    const res = await post("photo.jpg");
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.code).toBe("media_unsupported_type");
+    expect(json.error).toContain("isn't the JPEG, PNG or WebP image it claims to be");
+    expect(sharpCalls.n).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(bucketFake.objects.has(OWN_PATH)).toBe(false);
+  });
+
+  it("keeps a 253-byte extensionless name within 255 bytes once it becomes .jpg", async () => {
+    subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
+    checkWhatsappReadiness.mockResolvedValue({ ready: true, provider: "bridge" });
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0N" });
+    stageObject(OWN_PATH, phoneJpeg, "image/jpeg");
+    const name = "é".repeat(126) + "x"; // 253 bytes, no extension
+    expect(Buffer.byteLength(name)).toBe(253);
+    expect((await post(name)).status).toBe(200);
+    const sent = (sendWhatsappBridge.mock.calls[0]![0].media as { filename: string }).filename;
+    expect(Buffer.byteLength(sent)).toBeLessThanOrEqual(255);
+    expect(sent).toBe(`${"é".repeat(125)}.jpg`);
   });
 });

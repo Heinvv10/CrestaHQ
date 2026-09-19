@@ -15,9 +15,16 @@ import {
   type StagedObject,
 } from "@/lib/comms/whatsapp/staged-upload";
 import { stagedMediaBudget } from "@/lib/comms/whatsapp/media-budget";
-import { decodeReserveBytes, jpegFilename, needsShrink, shrinkImage } from "@/lib/comms/whatsapp/image-shrink";
+import {
+  jpegFilename,
+  needsShrink,
+  shrinkImage,
+  sniffImageType,
+  type PhotoType,
+} from "@/lib/comms/whatsapp/image-shrink";
 import type { WhatsAppProviderCapabilities } from "@/lib/comms/whatsapp/provider";
 import type { Contact } from "@/types/contacts";
+import { mediaKindForMime } from "@/types/whatsapp-media";
 
 type Body = {
   contactId?: string;
@@ -148,10 +155,9 @@ export async function POST(request: Request) {
       // re-encoded to fit — see image-shrink.ts. Null: sent as uploaded.
       const shrinkTo = needsShrink(caps, obj.contentType, obj.sizeBytes) ? caps.maxMediaBytes.image : null;
       // Held from before the read until the rail has the file — the whole
-      // time its bytes are in this process, and a photo's decode with them.
-      releaseBudget = await stagedMediaBudget.acquire(
-        obj.sizeBytes + (shrinkTo === null ? 0 : decodeReserveBytes(obj.sizeBytes)),
-      );
+      // time its bytes are in this process. A shrink's decode is reserved
+      // separately, from the photo's header (image-shrink.ts).
+      releaseBudget = await stagedMediaBudget.acquire(obj.sizeBytes);
       if (!releaseBudget) {
         return NextResponse.json(
           {
@@ -245,9 +251,28 @@ async function loadStaged(
       { status: 400 },
     );
   }
-  if (shrinkTo !== null) {
-    const shrunk = await shrinkImage(new Uint8Array(await data.arrayBuffer()), shrinkTo);
-    if (!shrunk.ok) return NextResponse.json({ error: shrunk.error, code: shrunk.code }, { status: 400 });
+  // Every photo, sent unchanged or not: its bytes must be the type it was
+  // signed for, and one of the three sharp is let near. See image-shrink.ts.
+  let photoType: PhotoType | null = null;
+  if (mediaKindForMime(obj.contentType) === "image") {
+    photoType = sniffImageType(new Uint8Array(await data.slice(0, 12).arrayBuffer()));
+    if (photoType !== obj.contentType) {
+      return NextResponse.json(
+        {
+          error: "This photo isn't the JPEG, PNG or WebP image it claims to be. Save it as a JPEG and attach it again.",
+          code: "media_unsupported_type",
+        },
+        { status: 400 },
+      );
+    }
+  }
+  if (shrinkTo !== null && photoType) {
+    const shrunk = await shrinkImage(Buffer.from(await data.arrayBuffer()), photoType, shrinkTo);
+    if (!shrunk.ok) {
+      return shrunk.code === "media_busy"
+        ? NextResponse.json({ error: shrunk.error, code: shrunk.code }, { status: 503, headers: { "Retry-After": "30" } })
+        : NextResponse.json({ error: shrunk.error, code: shrunk.code }, { status: 400 });
+    }
     return {
       outbound: {
         filename: jpegFilename(filename),

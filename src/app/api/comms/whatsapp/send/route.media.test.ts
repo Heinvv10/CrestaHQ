@@ -340,8 +340,8 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
 
   it("refuses a 6 MB 'image' that is not one before any Graph call — it cannot be shrunk to Meta's 5 MB", async () => {
     // An over-cap photo is re-encoded to fit (route.shrink.test.ts, which
-    // also pins the decimal 5,000,000 ceiling); bytes that do not decode are
-    // refused rather than pushed at Graph over the cap.
+    // also pins the decimal 5,000,000 ceiling); bytes that are not the photo
+    // type they claim are refused by their magic bytes before anything else.
     const sixMb = Buffer.alloc(6 * 1024 * 1024, 1);
     const res = await post({
       contactId: "c1",
@@ -349,7 +349,7 @@ describe("POST /api/comms/whatsapp/send — media on the Cloud rail", () => {
       attachment: { ...attachment, bytes: sixMb },
     });
     expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe("media_invalid");
+    expect((await res.json()).code).toBe("media_unsupported_type");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(copies()).toHaveLength(0);
   });

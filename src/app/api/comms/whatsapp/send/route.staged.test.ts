@@ -274,7 +274,7 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
   });
 
   it("sends a real PNG under its REAL type even when the client claimed a PDF", async () => {
-    stage(OWN_PATH, Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png");
+    stage(OWN_PATH, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), "image/png");
     fetchMock
       .mockResolvedValueOnce(graphOk({ id: "MEDIA2" }))
       .mockResolvedValueOnce(graphOk({ messages: [{ id: "wamid.P" }] }));
