@@ -80,9 +80,14 @@ test("the booking widget embeds on a third-party site, books, redirects the TOP 
     frame.getByRole("heading", { name: /30 min booking/i }),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Pick the first offered time.
+  // Pick the first time on the NEXT day, never the first offered: that one
+  // can start the instant it is booked — offered at 06:29:59.9, booked at
+  // 06:30:00.1, refused 409 "That slot was just taken" (CI run 35059398689).
   const slotButtons = frame.getByRole("button", { name: /\d{1,2}:\d{2}/ });
   await expect(slotButtons.first()).toBeVisible({ timeout: 30_000 });
+  const firstDay = await frame.getByRole("heading", { level: 2 }).textContent();
+  await frame.getByRole("button", { name: "Next day" }).click();
+  await expect(frame.getByRole("heading", { level: 2 })).not.toHaveText(firstDay ?? "");
   await slotButtons.first().click();
 
   const stamp = Date.now();
@@ -143,7 +148,8 @@ test("the booking widget embeds on a third-party site, books, redirects the TOP 
   await page.getByRole("button", { name: /reschedule/i }).click();
   const newSlotButtons = page.getByRole("button", { name: /(am|pm)$/i });
   await expect(newSlotButtons.first()).toBeVisible({ timeout: 15_000 });
-  await newSlotButtons.first().click();
+  // Not the first offered time either — same boundary as the booking above.
+  await newSlotButtons.nth(2).click();
   await page.getByRole("button", { name: /confirm new time/i }).click();
   await expect(page.getByText(/rescheduled/i)).toBeVisible({ timeout: 15_000 });
 

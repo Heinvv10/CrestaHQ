@@ -7,6 +7,7 @@ import {
   readEnv,
 } from "./lib/env";
 import { assertFixtureSubAccount } from "./lib/guard";
+import { purgeFixtureData } from "./lib/purge";
 import { ensureSeed } from "./lib/seed";
 
 /**
@@ -89,6 +90,11 @@ export default async function globalSetup(): Promise<void> {
     FIXTURE_SECONDARY_NAME,
   );
 
+  // A cancelled job (cancel-in-progress on a new push) is killed before
+  // global teardown runs, so its rows are still here. Specs that select by
+  // filter rather than by id — bulk actions' "assigned to owner", for one —
+  // then pick up another run's contacts: "4 selected" where 2 were seeded.
+  await purgeFixtureData();
   await ensureSeed();
   await saveAuthenticatedState();
 }

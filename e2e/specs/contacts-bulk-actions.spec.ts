@@ -10,6 +10,11 @@ import { deleteScoped } from "../lib/guard";
  * contact is the control: it must be untouched by every action. A select-all
  * that ignores the filter, or a bulk route that writes past the selection,
  * fails on that third document.
+ *
+ * Every filter also narrows to this run's own tag. The fixture tenant is
+ * shared with every other spec — and with any run cancelled before its
+ * teardown — so "assigned to the owner" alone selected their contacts too
+ * ("4 selected" where 2 were seeded).
  */
 
 async function seedContact(
@@ -47,6 +52,7 @@ test("select-all on a filtered list, bulk tag, assign and delete", async ({
   const stamp = Date.now();
   const filterTag = `e2e-bulk-${stamp}`;
   const addedTag = `e2e-added-${stamp}`;
+  const runTag = `e2e-bulk-run-${stamp}`;
   const names = [1, 2, 3].map((n) => `E2E Bulk ${n} ${stamp}`);
 
   const agency = await adminDb().doc(`agencies/${env.E2E_AGENCY_ID}`).get();
@@ -59,9 +65,9 @@ test("select-all on a filtered list, bulk tag, assign and delete", async ({
   const ownerName = member.data()?.displayName as string;
 
   const [idA, idB, idC] = await Promise.all([
-    seedContact(env, ownerUid, names[0], [filterTag]),
-    seedContact(env, ownerUid, names[1], [filterTag]),
-    seedContact(env, ownerUid, names[2], []),
+    seedContact(env, ownerUid, names[0], [filterTag, runTag]),
+    seedContact(env, ownerUid, names[1], [filterTag, runTag]),
+    seedContact(env, ownerUid, names[2], [runTag]),
   ]);
   const doc = (id: string) => adminDb().doc(`contacts/${id}`);
 
@@ -78,6 +84,10 @@ test("select-all on a filtered list, bulk tag, assign and delete", async ({
     await panel.getByPlaceholder("field").fill("tags");
     await panel.locator("select").last().selectOption("has_tag");
     await panel.getByPlaceholder("value").fill(filterTag);
+    // A filter swaps the newest-page preview for the full list; wait for it,
+    // or the absence below is only the loading skeleton's.
+    await expect(row(names[0])).toBeVisible({ timeout: 30_000 });
+    await expect(row(names[1])).toBeVisible();
     await expect(row(names[2])).toHaveCount(0);
 
     await page.getByRole("checkbox", { name: "Select all" }).click();
@@ -128,8 +138,14 @@ test("select-all on a filtered list, bulk tag, assign and delete", async ({
     await panel.getByPlaceholder("field").fill("assignedToUid");
     await panel.locator("select").first().selectOption("equals");
     await panel.locator("#cond-assignee-0").selectOption(ownerUid);
+    // AND this run's tag, which the third contact carries too — so it is
+    // still only the assignee condition that can keep it out.
+    await panel.getByRole("button", { name: "Add condition" }).click();
+    await panel.getByPlaceholder("field").nth(1).fill("tags");
+    await panel.locator("select").last().selectOption("has_tag");
+    await panel.getByPlaceholder("value").fill(runTag);
+    await expect(row(names[0])).toBeVisible({ timeout: 30_000 });
     await expect(row(names[2])).toHaveCount(0);
-    await expect(row(names[0])).toBeVisible();
     await expect(row(names[1])).toBeVisible();
     await page.getByRole("checkbox", { name: "Select all" }).click();
     await expect(bar).toContainText("2 selected");
