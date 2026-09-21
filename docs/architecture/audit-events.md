@@ -71,7 +71,7 @@ await recordAuditEvent(getAdminDb(), {
 | `changes` | `{ field, before, after }[]` | Values go through redaction (below) |
 | `agencyId` | string | Always set |
 | `subAccountId` | string \| null | `null` marks an agency-level event, readable by the owner only |
-| `createdByUid` | string \| null | The actor's uid when the actor is a user, otherwise `null` |
+| `createdByUid` | string \| null | The actor's uid when the actor is a user. For a non-user actor it is the `onBehalfOfUid` passed in, which is the signed-in user who asked the Workspace Assistant, or `null` |
 | `createdAt` | server timestamp | |
 
 ## Redaction
@@ -121,11 +121,15 @@ for each of those two queries.
 - `route.audit.test.ts` beside each call site drives the real route with real
   tenancy over the in-memory Firestore. Each one proves the event is written with
   the tenant from the sub-account doc and the actor from the session, even when
-  the body carries forged `agencyId`, `subAccountId` and `actor` values and the
-  caller's claims name another agency. It also proves that nothing is recorded for
+  the body carries forged `agencyId`, `subAccountId` and `actor` values. The
+  member, workflow and invite tests also give the caller claims that name another
+  agency. The feature-gate route accepts only an agency owner whose claims match
+  the sub-account's agency, so it cannot be tested with mismatched claims. It also proves that nothing is recorded for
   a no-op or a refused caller, and that a failed audit write still returns 200.
   The member test proves that a change which fails to commit records nothing. The
   workflow test proves that an event which cannot be built is logged, not thrown.
+  The feature-gate test proves that the diff uses the effective value. The invite
+  test drives the invite route and the `invite_member` capability.
 - `src/lib/audit/audit-events.firestore-rules.test.ts` sends the repo's own
   `firestore.rules` through the Firebase Rules `projects:test` API. The rules are not
   deployed and no data is read. It checks cross-tenant reads (denied), client writes
@@ -197,12 +201,33 @@ Hein. Each one names the alternative that was rejected.
     for a change that succeeded. Each route's test asserts the stored row, and
     that is what catches a malformed event now. *Rejected:* letting validation
     errors propagate from routes.
-12. **The Workspace Assistant's `set_feature_gate` and Client Billing's plan
-    application also flip gates through `applyFeatureGates`, and they are not
-    audited yet.** The brief was exactly three call sites. Those actors would be
-    `ai_agent` and `cron`/`user` surfaces, and belong in a follow-up. *Rejected:*
-    auditing inside `applyFeatureGates`. The service has no actor, and threading
-    one through it is a wider change than this PR.
+12. **Every other gate writer is unaudited, and each one is a named follow-up.**
+    They all go through `applyFeatureGates`:
+    - **Workspace Assistant `set_feature_gate`**, in `src/lib/ai-suite/capabilities.ts`.
+      The actor would be `ai_agent` on behalf of the owner.
+    - **Client Billing plan edit push** (`updatePlanForAgency`,
+      `src/lib/server/billing-service.ts`), which re-applies an edited plan's
+      gates to every sub-account on it. The actor would be the owner.
+    - **Client Billing plan assign** (`assignPlanToSubAccount`,
+      `src/lib/server/billing-service.ts`). The actor would be the owner.
+    - **Activation after payment** (`activateSubAccountPlan`,
+      `src/lib/server/billing-lifecycle.ts`), called from the Stripe and Paystack
+      webhooks. The actor would be `system`.
+
+    *Rejected:* auditing inside `applyFeatureGates`. The service has no actor, and
+    threading one through it is a wider change than this PR.
+13. **The diff uses the effective gate value, not the stored one.** SMS, Web Chat
+    and Inbound Voice AI read a missing field as ON (`DEFAULT_ON_GATE_FIELDS` in
+    `src/lib/comms/ai/gates.ts`, the same table the runtime uses). Setting an unset
+    opt-out gate to `true` is therefore a no-op, and the event's `before` is the
+    effective value, never "unset".
+14. **Re-inviting an existing member is a role change.** The invite route and the
+    assistant's `invite_member` both reach `addExistingUserAsMember`, which
+    overwrites the role of an existing membership, whether active or removed. An
+    event is recorded when that role differs. The assistant path records actor
+    `{ type: "ai_agent", id: "workspace-assistant" }` with `onBehalfOfUid` set to
+    the user who asked. *Rejected:* recording it as the user. That would hide the
+    fact that a model chose the change.
 
 ## Call sites
 
@@ -211,6 +236,8 @@ Hein. Each one names the alternative that was rejected.
 | `PATCH /api/agency/sub-accounts/[id]/feature-gates` | `feature_gates.updated` | at least one `*EnabledByAgency` gate changed value, after `applyFeatureGates` commits |
 | `PATCH /api/sub-accounts/[id]/workflows/[workflowId]` | `workflow.status_changed` | `status` changed, after `updateWorkflowServerSide` commits. That function now returns the prior status. |
 | `PATCH /api/sub-accounts/[id]/members/[uid]` | `member.role_changed` | `role` changed, after the member and index batch commits |
+| `POST /api/sub-accounts/[id]/invite` and the assistant's `invite_member` (both via `addExistingUserAsMember`) | `member.role_changed` | an existing membership's `role` changed, after the batch commits |
 
-All three use `recordSubAccountAuditEvent`, with actor `{ type: "user", id: access.uid }`
-from `requireSubAccountMember` or `requireSubAccountAdmin`.
+All of them use `recordSubAccountAuditEvent`. Routes use the actor
+`{ type: "user", id: access.uid }` from `requireSubAccountMember` or
+`requireSubAccountAdmin`. The assistant uses `ai_agent` plus `onBehalfOfUid`.
