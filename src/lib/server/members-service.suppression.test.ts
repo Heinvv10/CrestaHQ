@@ -36,7 +36,13 @@ const { SA, mem, resetSeam, suppress } = await s();
 const { createInviteServerSide } = await import("./members-service");
 
 const invite = (email: string) =>
-  createInviteServerSide({ subAccountId: SA, invitedByUid: "admin1", email, role: "collaborator" });
+  createInviteServerSide({
+    subAccountId: SA,
+    invitedByUid: "admin1",
+    auditActor: { type: "user", id: "admin1" },
+    email,
+    role: "collaborator",
+  });
 const sentTo = () => m.send.mock.calls.map(([msg]) => (msg as { to: string }).to);
 
 beforeEach(() => {
