@@ -22,6 +22,7 @@ import {
 } from "@/components/reports/charts";
 import { AttributionReport } from "@/components/reports/attribution-report";
 import { PaymentsReport } from "@/components/reports/payments-report";
+import { StageHistoryReport } from "@/components/reports/stage-history-report";
 import { subscribeToOrders } from "@/lib/firestore/orders";
 import type { Order } from "@/types/orders";
 import { type Deal } from "@/types/deals";
@@ -31,11 +32,12 @@ import type { Contact } from "@/types/contacts";
 import { cn } from "@/lib/utils";
 
 type RangeKey = "7d" | "30d" | "90d" | "all";
-type TabKey = "overview" | "attribution" | "payments";
+type TabKey = "overview" | "attribution" | "stages" | "payments";
 
 const BASE_TABS: { id: TabKey; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "attribution", label: "Attribution" },
+  { id: "stages", label: "Stages" },
 ];
 
 const RANGES: { id: RangeKey; label: string; days: number | null }[] = [
@@ -248,7 +250,9 @@ export default function ReportsPage() {
           <p className="text-sm text-muted-foreground">
             {tab === "attribution"
               ? "Which sources and campaigns produce your revenue."
-              : tab === "payments"
+              : tab === "stages"
+                ? "How long deals spend in each stage, and how many move on."
+                : tab === "payments"
                 ? "Card payments taken through your own Stripe account."
                 : "Live analytics across your contacts and pipeline."}
           </p>
@@ -296,6 +300,12 @@ export default function ReportsPage() {
           orders={orders}
           rangeCutoff={rangeCutoff}
           currency={currency}
+        />
+      ) : tab === "stages" ? (
+        <StageHistoryReport
+          subAccountId={subAccountId}
+          pipelines={pipelines}
+          rangeDays={rangeDays}
         />
       ) : tab === "attribution" ? (
         <AttributionReport
