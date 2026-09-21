@@ -78,7 +78,8 @@ export async function reconcilePaystackCharge(input: {
   try {
     const db = getAdminDb();
     const ref = db.doc(`paymentLinks/${linkId}`);
-    const link = (await ref.get()).data() as PaymentLink | undefined;
+    const data = (await ref.get()).data() as Omit<PaymentLink, "id"> | undefined;
+    const link: PaymentLink | undefined = data && { ...data, id: linkId };
     if (!link) {
       console.warn(`${tag} no payment link ${linkId}`);
       return { handled: false, detail: "no matching link" };
@@ -99,33 +100,32 @@ export async function reconcilePaystackCharge(input: {
     }
 
     const amount = requestedAmount(tx);
-    const mismatch =
-      tx.status !== "success"
-        ? `status=${tx.status}`
-        : tx.reference !== reference
-          ? `reference=${tx.reference}`
-          : amount !== link.amountCents
-            ? `amount=${amount} expected=${link.amountCents}`
-            : tx.amount < amount
-              ? `partial amount=${tx.amount} requested=${amount}`
-              : (tx.currency ?? "").toUpperCase() !== link.currency
-                ? `currency=${tx.currency} expected=${link.currency}`
-                : null;
-    if (mismatch) {
-      console.error(`${tag} not marking paid: ${mismatch}`);
-      return { handled: false, detail: `mismatch ${mismatch}` };
+    // Not a success, or not this reference: Paystack received nothing for
+    // this link. Logged only.
+    if (tx.status !== "success" || tx.reference !== reference) {
+      console.error(`${tag} not marking paid: status=${tx.status} reference=${tx.reference}`);
+      return { handled: false, detail: "not a success for this reference" };
     }
-
-    // A test-mode transaction must never settle a live link, nor the reverse.
-    // Unlike the mismatches above this is a real, verified transaction on the
-    // tenant's own account, so the operator is told on the link.
-    if ((tx.domain === "live") !== (link.livemode === true)) {
-      const attention = `A ${tx.domain ?? "unknown"}-mode payment arrived for this ${link.livemode ? "live" : "test"}-mode link and was not recorded. Check Paystack.`;
-      console.error(`${tag} mode mismatch domain=${tx.domain} livemode=${link.livemode}`);
-      if (link.status !== "paid") {
-        await ref.update({ attention, updatedAt: FieldValue.serverTimestamp() });
-      }
-      return { handled: false, detail: "mode mismatch" };
+    // A verified success that doesn't match the link: money DID arrive on the
+    // tenant's account, so the operator is told on the link. Still no paid
+    // transition, still 200 — a redelivery would find the same mismatch.
+    const mismatch =
+      amount !== link.amountCents
+        ? `amount=${amount} expected=${link.amountCents}`
+        : tx.amount < amount
+          ? `partial amount=${tx.amount} requested=${amount}`
+          : (tx.currency ?? "").toUpperCase() !== link.currency
+            ? `currency=${tx.currency} expected=${link.currency}`
+            : (tx.domain === "live") !== (link.livemode === true)
+              ? `mode domain=${tx.domain} livemode=${link.livemode}`
+              : null;
+    if (mismatch) {
+      const attention = mismatch.startsWith("mode")
+        ? `A ${tx.domain ?? "unknown"}-mode payment arrived for this ${link.livemode ? "live" : "test"}-mode link and was not recorded. Check your Paystack dashboard.`
+        : "Paystack received a payment that does not match this link — check your Paystack dashboard.";
+      console.error(`${tag} not marking paid: ${mismatch}`);
+      await ref.update({ attention, updatedAt: FieldValue.serverTimestamp() });
+      return { handled: false, detail: `mismatch ${mismatch}` };
     }
 
     const { outcome, current } = await db.runTransaction(async (t) => {
@@ -137,6 +137,9 @@ export async function reconcilePaystackCharge(input: {
           paystackDomain: tx.domain ?? null,
           payerEmail: tx.customer?.email ?? null,
           paidAt: FieldValue.serverTimestamp(),
+          // A pre-payment problem (mode mismatch, a mismatched payment) is
+          // no longer the link's state once a matching payment lands.
+          attention: null,
           updatedAt: FieldValue.serverTimestamp(),
         });
         return { outcome: "paid" as const, current: fresh ?? link };
@@ -160,25 +163,24 @@ export async function reconcilePaystackCharge(input: {
     }
     if (outcome === "duplicate-replay") return { handled: true, detail: "duplicate already recorded" };
 
-    // The invoice step must run AT LEAST once: the process can die between
-    // the paid commit above and the settle below. So a replay of this link's
-    // own reference re-runs it until it reaches an end state. Exactly-once
-    // side effects come from markQuotePaidServerSide's compare-and-set.
-    const unsettled = !!link.invoiceId && !current.invoiceSettledAt && !current.attention;
-    if (outcome === "replay" && !unsettled) {
-      return { handled: true, detail: "already recorded (idempotent no-op)" };
+    // The invoice step runs AT LEAST once: the process can die, or a write
+    // fail, between the paid commit above and `invoiceSettledAt` below, and a
+    // replay of this link's own reference then re-runs it. Repeating it is
+    // safe because the quote records `paidVia` in its compare-and-set, so a
+    // re-run recognises its own earlier success. Only the compare-and-set
+    // winner fires the invoice's side effects.
+    if (!link.invoiceId || (outcome === "replay" && current.invoiceSettledAt)) {
+      return { handled: true, detail: outcome === "replay" ? "already recorded (idempotent no-op)" : `link ${linkId} paid` };
     }
-    if (link.invoiceId) {
-      // Throws on a transient failure: the route answers 503 and the
-      // redelivery lands in the `unsettled` branch above.
-      const attention = await settleInvoice(link, subAccountId);
-      if (attention) console.warn(`${tag} invoice ${link.invoiceId}: ${attention}`);
-      await ref.update({
-        invoiceSettledAt: FieldValue.serverTimestamp(),
-        ...(attention ? { attention } : {}),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-    }
+    // Throws only on a transient failure: the route answers 503 and the
+    // redelivery comes back through here.
+    const invoiceAttention = await settleInvoice(link, subAccountId, reference);
+    if (invoiceAttention) console.warn(`${tag} invoice ${link.invoiceId}: ${invoiceAttention}`);
+    await ref.update({
+      invoiceSettledAt: FieldValue.serverTimestamp(),
+      invoiceAttention,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
     return { handled: true, detail: `link ${linkId} paid` };
   } catch (err) {
     console.error(`${tag} reconcile failed`, err);
@@ -186,35 +188,51 @@ export async function reconcilePaystackCharge(input: {
   }
 }
 
+const PAID_ANOTHER_WAY =
+  "Paid, but the invoice was already paid another way — a refund may be owed.";
+
 /**
  * Mark the link's invoice paid through the shared paid path, if it still is
  * the invoice the customer paid. Returns why not, for the operator — the money
- * is already in their account either way. Throws only on a transient failure,
- * which the caller turns into a redelivery.
+ * is already in their account either way.
+ *
+ * Throws only on a transient (Firestore) failure, which the caller turns into
+ * a redelivery. A problem with the invoice itself is a terminal answer, so a
+ * malformed invoice does not become an endless retry.
  */
-async function settleInvoice(link: PaymentLink, subAccountId: string): Promise<string | null> {
+async function settleInvoice(
+  link: PaymentLink,
+  subAccountId: string,
+  reference: string,
+): Promise<string | null> {
   const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
-  if (!quote || quote.subAccountId !== subAccountId) {
-    return "Paid, but the invoice no longer exists. Record this payment by hand.";
+  const ours = (via: Quote["paidVia"]) => via?.rail === "paystack_link" && via.reference === reference;
+
+  let problem: string | null;
+  try {
+    problem = !quote || quote.subAccountId !== subAccountId
+      ? "Paid, but the invoice no longer exists. Record this payment by hand."
+      : quote.status === "paid"
+        ? ours(quote.paidVia) ? "" : PAID_ANOTHER_WAY
+        : (quote.currency || "").toUpperCase() !== link.currency ||
+            invoiceTotalCents(quote) !== link.amountCents
+          ? "Paid, but the invoice changed after this link was made, so it was not marked paid. Check the amount and mark it by hand."
+          : null;
+  } catch (err) {
+    console.error(`[paystack/payment-links] invoice ${link.invoiceId} unreadable`, err);
+    return "Paid, but the invoice could not be read, so it was not marked paid. Check it and mark it by hand.";
   }
-  if (quote.status === "paid") {
-    return "Paid, but the invoice was already paid another way — a refund may be owed.";
-  }
-  if (
-    (quote.currency || "").toUpperCase() !== link.currency ||
-    invoiceTotalCents(quote) !== link.amountCents
-  ) {
-    return "Paid, but the invoice changed after this link was made, so it was not marked paid. Check the amount and mark it by hand.";
-  }
+  // "" = our own earlier success (a retry after the invoice committed).
+  if (problem !== null) return problem || null;
+
   const res = await markQuotePaidServerSide({
     quoteId: link.invoiceId!,
     expectSubAccountId: subAccountId,
+    paidVia: { rail: "paystack_link", linkId: link.id, reference },
   });
-  // already_paid here means another caller won the race since the read
-  // above (a second link, the manual button) — same outcome as the read.
-  return res.ok
-    ? null
-    : res.code === "already_paid"
-      ? "Paid, but the invoice was already paid another way — a refund may be owed."
-      : `Paid, but the invoice could not be marked paid: ${res.message}.`;
+  if (res.ok) return null;
+  // already_paid: someone won the compare-and-set since the read above —
+  // possibly an overlapping delivery of this same payment.
+  if (res.code === "already_paid") return ours(res.paidVia) ? null : PAID_ANOTHER_WAY;
+  return `Paid, but the invoice could not be marked paid: ${res.message}.`;
 }

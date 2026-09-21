@@ -16,7 +16,9 @@ paid only after Paystack's verified webhook, never because the customer came bac
 `paymentLinks/{id}`: `{ agencyId, subAccountId, createdByUid, invoiceId | null, contactId | null,
 description, amountCents, currency: "ZAR", token, active, status: "open" | "paid",
 livemode, paystackReference, paystackDomain, payerEmail, paidAt, extraPayments?, attention?,
-invoiceSettledAt?, createdAt, updatedAt }`. Type:
+invoiceAttention?, invoiceSettledAt?, createdAt, updatedAt }`. Invoices gain `paidVia`
+(`{ rail: "paystack_link", linkId, reference }` or null), written by `markQuotePaidServerSide`
+together with `status: "paid"`. Type:
 [`src/types/payment-links.ts`](../../src/types/payment-links.ts). Rules: member/owner read,
 no client writes (like `orders`). No composite index — the list is one equality filter sorted in
 memory.
@@ -68,30 +70,43 @@ link's mode. There is no paid transition: it answers 200 and sets `attention` on
 - Reference not `pl-…` → ignored (the tenant's Paystack may run other integrations).
 - Link missing, or `link.subAccountId` ≠ the webhook's sub-account → never paid, checked before
   Paystack is asked.
-- `GET /transaction/verify/:reference` with the tenant key. It must return `status: success`, the
-  same reference, `requested_amount === link.amountCents`, `amount >= requested_amount` (no
-  partial payment) and currency `ZAR`. `requested_amount`
-  is used because `amount` includes the fees when the customer pays them (PaystackOSS/openapi
-  `VerifyResponse`). The webhook body's own amount is never used.
+- `GET /transaction/verify/:reference` with the tenant key. A result that is not a success, or
+  that names a different reference, means nothing was received: it is logged and answered 200.
+  A **verified success** must also match the link: `requested_amount === link.amountCents`,
+  `amount >= requested_amount` (no partial payment), currency `ZAR`, and Paystack's `domain`
+  equal to the link's mode. `requested_amount` is used because `amount` includes the fees when
+  the customer pays them (PaystackOSS/openapi `VerifyResponse`). The webhook body's own amount
+  is never used. If a verified success does not match, money did arrive on the tenant's
+  account, so the link gets `attention` ("does not match this link — check your Paystack
+  dashboard", or the test/live wording). There is still no paid transition, and it answers 200.
 - **Not gated** on `paymentsEnabledByAgency`: money already taken is always recorded.
-- Marked paid in a Firestore transaction. A replay finds it paid and writes nothing. A second
-  successful payment with a different reference is added to `extraPayments` in the same
-  transaction, once only, and the list shows "Paid twice — refund owed". It never overwrites
-  the first payment.
-- The invoice step runs **at least once**, and its side effects fire **exactly once**. The link
-  commits paid first. The invoice step then ends by writing `invoiceSettledAt` (with any
-  `attention`). If the process dies in between, or the step throws, the route answers 503.
-  The redelivery arrives as a replay of the link's own reference, finds the link unsettled
-  (no `invoiceSettledAt` and no `attention`), and runs the step again. It is safe to repeat
-  because `markQuotePaidServerSide` checks and writes in one Firestore transaction
-  (compare-and-set), and only the winner fires the activity, trigger, webhook and review ask.
-  That also covers two links for one invoice, or a link racing the manual Mark as paid. The
-  side effects after the commit never throw. The step first re-checks the invoice. If it
-  is missing, already paid, or its total or currency no longer match the link, the link stays
-  paid and gets an `attention` message, and the invoice is not marked paid. Otherwise it calls
-  `markQuotePaidServerSide`, the same path as the manual button and the Stripe reconciler. A
-  refusal (for example the invoice went back to draft) or an exception also becomes
-  `attention`. The list shows it in red.
+- Marked paid in a Firestore transaction, which also clears any `attention`. A replay finds the
+  link paid and writes nothing. A second successful payment with a different reference is
+  added to `extraPayments` in the same transaction, once only, and the list shows "Paid twice
+  — refund owed". It never overwrites the first payment.
+- **Two flags.** `attention` is for pre-payment problems (above). `invoiceAttention` is for the
+  invoice step and is written together with `invoiceSettledAt`.
+- **The invoice step runs at least once.** The link commits paid first, and the step ends by
+  writing `invoiceSettledAt`. If the process dies in between, or a transient Firestore error
+  answers 503, the redelivery arrives as a replay of the link's own reference. It sees
+  `invoiceId && !invoiceSettledAt` and runs the step again, whatever `attention` says.
+- **Recognising its own success.** `markQuotePaidServerSide` checks and writes in one
+  transaction (compare-and-set) and records `paidVia` in that same write. It returns
+  `already_paid` with the stored `paidVia`. So when the step finds the invoice paid, whether
+  by reading it or by losing the compare-and-set, it compares `paidVia.reference` with this
+  payment's reference:
+  - **Same reference:** its own earlier success (an overlapping delivery, or a crash after
+    the invoice committed). It is settled with no flag.
+  - **Different or absent:** the invoice was paid another way (the manual button, Stripe,
+    another link). `invoiceAttention` says a refund may be owed.
+- The step also flags an invoice that is missing, changed in total or currency, or refused by
+  the paid path (for example back to draft). A deterministic error reading it, such as a
+  malformed invoice, is terminal: `invoiceAttention` plus `invoiceSettledAt`, answered 200.
+  Only transient errors answer 503.
+- **Side effects fire at most once**, and only for the compare-and-set winner: activity,
+  `quote.paid` trigger, webhook and review ask. A crash between the invoice's commit and its
+  side effects skips them. That is pre-existing behaviour of the shared paid path, and out
+  of scope here.
 - Verify failures: only a genuine not-found (HTTP 404, or 400 "…not found") is final and
   answers 200. 429, 401/403 (rotated key), any other 4xx, 5xx and network errors answer 503, so
   Paystack redelivers. `BillingError.providerStatus` carries Paystack's HTTP status, and Client
@@ -101,7 +116,8 @@ link's mode. There is no paid transition: it answers 200 and sets `attention` on
 ## UI
 
 Quotes & invoices → **Payment links** (`/sa/[id]/quotes/payment-links`, `max-w-5xl`): ad-hoc form
-and every link with status, copy and deactivate, plus the refund-owed and attention notes. It
+and every link with status, copy and deactivate, plus the refund-owed note and both flags
+(`attention`, `invoiceAttention`). It
 shows a loading state first, and "Locked by your agency" when Payments is off. The **Payment
 links** button on the quotes page hides in that case. A sent invoice gets a **Paystack link**
 button next to Mark as paid. It hides unless Payments is on and Paystack is connected.

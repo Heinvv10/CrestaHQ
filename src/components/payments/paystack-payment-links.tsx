@@ -161,6 +161,7 @@ export function PaystackPaymentLinks() {
                 </p>
               )}
               {link.attention && <p className="text-sm text-destructive">{link.attention}</p>}
+              {link.invoiceAttention && <p className="text-sm text-destructive">{link.invoiceAttention}</p>}
               {link.status === "open" && link.active && <CopyablePayUrl token={link.token} />}
             </Card>
           ))}

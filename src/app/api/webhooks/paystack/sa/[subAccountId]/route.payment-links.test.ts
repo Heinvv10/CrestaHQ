@@ -20,7 +20,7 @@ import {
  * Seam test: the REAL webhook route → the REAL reconciler → the REAL
  * `markQuotePaidServerSide`, over an in-memory Firestore. Only Paystack's HTTP
  * API and the invoice's side-effect fan-out (activity, trigger, webhook,
- * review ask) are stubbed — the fan-out mocks are how "exactly once" is
+ * review ask) are stubbed — the fan-out mocks are how "fired once" is
  * counted.
  */
 
@@ -109,12 +109,15 @@ describe("charge.success → payment link paid", () => {
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
-  it("fires the invoice fan-out once when two deliveries overlap", async () => {
+  it("H1: overlapping deliveries of one payment fire once and raise no refund flag", async () => {
     seedInvoice();
     seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await Promise.all([deliver(), deliver(), deliver()]);
     expect(link().status).toBe("paid");
+    expect(link().invoiceAttention ?? null).toBeNull();
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid", paidVia: { rail: "paystack_link", linkId: "link1", reference: REF } });
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
     expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
   });
@@ -128,12 +131,55 @@ describe("charge.success → payment link paid", () => {
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
-  it("does not retry an invoice step that already ended in attention", async () => {
+  it("a pre-payment attention does not block the invoice retry (M)", async () => {
     seedInvoice();
-    seedLink("link1", { invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: REF, attention: "x" });
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: REF, attention: "stale" });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
-    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+  });
+
+  it("the paid transition clears a stale pre-payment attention (M)", async () => {
+    seedLink("link1", { livemode: true });
+    verifyAnswer = () => verified({ reference: REF, domain: "test" });
+    await deliver();
+    expect(link().attention).toBeTruthy();
+    verifyAnswer = () => verified({ reference: REF, domain: "live" });
+    await deliver();
+    expect(link()).toMatchObject({ status: "paid", attention: null });
+  });
+
+  it("H2: the settled write fails after the invoice committed; the redelivery raises no refund flag", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    const realDoc = mem.db.doc;
+    let linkUpdates = 0;
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      const r = realDoc(path);
+      return path === "paymentLinks/link1"
+        ? { ...r, update: (p: Record<string, unknown>) => (++linkUpdates === 1 ? Promise.reject(new Error("unavailable")) : r.update(p)) }
+        : r;
+    });
+    expect((await deliver()).status).toBe(503);
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(link().invoiceSettledAt ?? null).toBeNull();
+    spy.mockRestore();
+    expect((await deliver()).status).toBe(200);
+    expect(link().invoiceAttention ?? null).toBeNull();
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it("an invoice that cannot be read deterministically is settled with a flag, not retried forever", async () => {
+    seedInvoice("inv1", { lineItems: null }); // malformed: totals throw
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    expect((await deliver()).status).toBe(200);
+    expect(link()).toMatchObject({ status: "paid" });
+    expect(link().invoiceAttention).toBeTruthy();
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
   });
 
   it("stamps invoiceSettledAt once the invoice is marked paid", async () => {
@@ -178,8 +224,9 @@ describe("charge.success → payment link paid", () => {
 
   it("refuses a partial payment: amount below requested_amount", async () => {
     verifyAnswer = () => verified({ reference: REF, amount: 40_000, requested_amount: 45_000 });
-    await deliver();
+    expect((await deliver()).status).toBe(200);
     expect(link().status).toBe("open");
+    expect(link().attention).toMatch(/does not match/i);
   });
 
   it("still records the payment when the agency has since switched Payments off", async () => {
@@ -198,6 +245,7 @@ describe("charge.success → payment link paid", () => {
     verifyAnswer = () => verified({ reference: REF, amount: 45_000, requested_amount: 100 });
     await deliver();
     expect(link().status).toBe("open");
+    expect(link().attention).toMatch(/does not match/i);
   });
 });
 
@@ -250,7 +298,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
     expect(link().status).toBe("paid");
-    expect(link().attention).toMatch(/changed/i);
+    expect(link().invoiceAttention).toMatch(/changed/i);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
@@ -260,7 +308,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
-    expect(link().attention).toBeTruthy();
+    expect(link().invoiceAttention).toBeTruthy();
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
   });
 
@@ -270,18 +318,29 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
     expect(link().status).toBe("paid");
-    expect(link().attention).toBeTruthy();
+    expect(link().invoiceAttention).toBeTruthy();
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "draft" });
   });
 
-  it("flags an invoice that was already paid another way — a refund may be owed", async () => {
-    seedInvoice("inv1", { status: "paid" });
+  it("flags an invoice genuinely paid another way (manual mark first) — a refund may be owed", async () => {
+    seedInvoice("inv1", { status: "paid", paidVia: null });
     seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
     expect(link().status).toBe("paid");
-    expect(link().attention).toMatch(/already paid/i);
+    expect(link().invoiceAttention).toMatch(/already paid/i);
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
+  });
+
+  it("flags an invoice paid by a DIFFERENT Paystack link — same rail is not the same payment", async () => {
+    seedInvoice("inv1", {
+      status: "paid",
+      paidVia: { rail: "paystack_link", linkId: "link2", reference: "pl-link2-aaaaaaaaaaaaaaaa" },
+    });
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().invoiceAttention).toMatch(/already paid/i);
   });
 
   it("a failing side effect after the invoice's paid commit neither flags nor retries", async () => {
@@ -291,7 +350,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     effects.recordQuoteActivity.mockRejectedValueOnce(new Error("boom"));
     expect((await deliver()).status).toBe(200);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
-    expect(link().attention ?? null).toBeNull();
+    expect(link().invoiceAttention ?? null).toBeNull();
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
@@ -309,10 +368,10 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
         : r;
     });
     expect((await deliver()).status).toBe(503);
-    expect(link().attention ?? null).toBeNull();
+    expect(link().invoiceAttention ?? null).toBeNull();
     spy.mockRestore();
     await deliver();
-    expect(link().attention).toMatch(/changed/i);
+    expect(link().invoiceAttention).toMatch(/changed/i);
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
   });
@@ -322,7 +381,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
-    expect(link().attention ?? null).toBeNull();
+    expect(link().invoiceAttention ?? null).toBeNull();
   });
 });
 
@@ -338,6 +397,7 @@ describe("refusals — 200 so Paystack doesn't retry, and never paid", () => {
     verifyAnswer = () => verified({ reference: REF, amount: 100 });
     expect((await deliver()).status).toBe(200);
     expect(link().status).toBe("open");
+    expect(link().attention).toMatch(/does not match/i);
   });
 
   it("does not trust the webhook body's amount — only Paystack's verify answer", async () => {
@@ -351,12 +411,15 @@ describe("refusals — 200 so Paystack doesn't retry, and never paid", () => {
     verifyAnswer = () => verified({ reference: REF, currency: "NGN" });
     await deliver();
     expect(link().status).toBe("open");
+    expect(link().attention).toMatch(/does not match/i);
   });
 
   it("refuses a transaction Paystack says did not succeed", async () => {
     verifyAnswer = () => verified({ reference: REF, status: "abandoned" });
     await deliver();
     expect(link().status).toBe("open");
+    // Not a success, so nothing was received: no flag.
+    expect(link().attention ?? null).toBeNull();
   });
 
   it("refuses a verify answer for a different reference", async () => {

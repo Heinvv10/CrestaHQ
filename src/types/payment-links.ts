@@ -57,9 +57,9 @@ export interface PaymentLink {
   /** Paystack's `domain` ("test" | "live") on the verified transaction. */
   paystackDomain?: string | null;
   /**
-   * Set when the invoice step finished — invoice marked paid, already paid,
-   * or refused with `attention`. Unset on a paid invoice link means the step
-   * never finished, and a redelivery runs it again.
+   * Set when the invoice step reached an end state — marked paid (by this
+   * payment), or refused with `invoiceAttention`. Unset on a paid invoice link
+   * means the step never finished, and a redelivery runs it again.
    */
   invoiceSettledAt?: Timestamp | FieldValue | Date | null;
 
@@ -80,10 +80,16 @@ export interface PaymentLink {
    */
   extraPayments?: PaymentLinkExtraPayment[];
   /**
-   * Set when the money arrived but the invoice could not be marked paid
-   * (edited, voided, already paid another way). The operator must act.
+   * PRE-payment problem: Paystack verified a payment for this link that does
+   * not match it (amount, currency, test vs live) and it was NOT recorded.
+   * Cleared by the paid transition.
    */
   attention?: string | null;
+  /**
+   * Invoice-step problem after the link was paid: the invoice changed, was
+   * voided, or was already paid another way. Written with `invoiceSettledAt`.
+   */
+  invoiceAttention?: string | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;
