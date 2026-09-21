@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   KEY,
+  LIVE_KEY,
   OTHER_KEY,
   OTHER_SA,
   SA,
@@ -140,14 +141,45 @@ describe("charge.success → payment link paid", () => {
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
   });
 
-  it("the paid transition clears a stale pre-payment attention (M)", async () => {
-    seedLink("link1", { livemode: true });
-    verifyAnswer = () => verified({ reference: REF, domain: "test" });
+  it("the paid transition keeps the record of an earlier mismatched payment", async () => {
+    verifyAnswer = () => verified({ reference: REF, amount: 100 });
     await deliver();
-    expect(link().attention).toBeTruthy();
-    verifyAnswer = () => verified({ reference: REF, domain: "live" });
+    expect(link().attention).toMatch(/does not match/i);
+    verifyAnswer = () => verified({ reference: REF });
     await deliver();
-    expect(link()).toMatchObject({ status: "paid", attention: null });
+    expect(link().status).toBe("paid");
+    expect(link().attention).toMatch(/does not match/i);
+  });
+
+  it("a total edited between the check and the compare-and-set is flagged, not marked paid", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    // Ported from the round-4 breaker repro: raise the total right after the
+    // reconciler's own read of the invoice, before its compare-and-set.
+    const realDoc = mem.db.doc;
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      const r = realDoc(path);
+      return path === "quotes/inv1"
+        ? {
+            ...r,
+            get: async () => {
+              const snap = await r.get();
+              mem.seed("quotes/inv1", {
+                ...mem.read("quotes/inv1")!,
+                lineItems: [{ id: "li1", description: "Install", quantity: 2, unitPrice: 1000 }],
+              });
+              return snap;
+            },
+          }
+        : r;
+    });
+    expect((await deliver()).status).toBe(200);
+    spy.mockRestore();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    expect(link().invoiceAttention).toMatch(/changed/i);
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
   it("H2: the settled write fails after the invoice committed; the redelivery raises no refund flag", async () => {
@@ -249,21 +281,48 @@ describe("charge.success → payment link paid", () => {
   });
 });
 
-describe("test mode vs live mode", () => {
-  it("records a test-mode payment on a test-mode link, with Paystack's domain", async () => {
+describe("test mode vs live mode — judged by the CURRENT connection", () => {
+  it("records a test-mode payment on a test connection, with Paystack's domain", async () => {
     await deliver();
     expect(link()).toMatchObject({ status: "paid", paystackDomain: "test" });
   });
 
-  it("refuses a test-mode transaction on a live link — flagged, never paid, 200", async () => {
-    seedLink("link1", { livemode: true });
+  it("records a live payment once the connection has gone live, whatever it was at link creation", async () => {
+    seedSub(SA, LIVE_KEY);
+    verifyAnswer = () => verified({ reference: REF, domain: "live" });
+    const body = event();
+    const signature = createHmac("sha512", LIVE_KEY).update(body).digest("hex");
+    const res = await POST(
+      new Request(`http://app.local/api/webhooks/paystack/sa/${SA}`, {
+        method: "POST",
+        headers: { "x-paystack-signature": signature },
+        body,
+      }),
+      { params: Promise.resolve({ subAccountId: SA }) },
+    );
+    expect(res.status).toBe(200);
+    expect(link()).toMatchObject({ status: "paid", paystackDomain: "live" });
+  });
+
+  it("refuses a test-mode transaction on a live connection — flagged, never paid, 200", async () => {
+    seedSub(SA, LIVE_KEY);
     verifyAnswer = () => verified({ reference: REF, domain: "test" });
-    expect((await deliver()).status).toBe(200);
+    const body = event();
+    const signature = createHmac("sha512", LIVE_KEY).update(body).digest("hex");
+    const res = await POST(
+      new Request(`http://app.local/api/webhooks/paystack/sa/${SA}`, {
+        method: "POST",
+        headers: { "x-paystack-signature": signature },
+        body,
+      }),
+      { params: Promise.resolve({ subAccountId: SA }) },
+    );
+    expect(res.status).toBe(200);
     expect(link().status).toBe("open");
     expect(link().attention).toMatch(/test/i);
   });
 
-  it("refuses a live transaction on a test link", async () => {
+  it("refuses a live transaction on a test connection", async () => {
     verifyAnswer = () => verified({ reference: REF, domain: "live" });
     await deliver();
     expect(link().status).toBe("open");

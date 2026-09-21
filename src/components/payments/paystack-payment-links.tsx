@@ -28,6 +28,8 @@ export function PaystackPaymentLinks() {
 
   const gateOn = subAccount?.paymentsEnabledByAgency === true;
   const ready = gateOn && !!subAccount?.paystackConnectionMeta;
+  // The connection's current mode: open links are charged with today's key.
+  const testMode = subAccount?.paystackConnectionMeta?.livemode === false;
 
   useEffect(() => {
     if (authLoading || !user || !subAccountId || !gateOn) return;
@@ -133,7 +135,7 @@ export function PaystackPaymentLinks() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {!link.livemode && (
+                  {testMode && link.status === "open" && (
                     <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
                       TEST MODE — no real money
                     </Badge>

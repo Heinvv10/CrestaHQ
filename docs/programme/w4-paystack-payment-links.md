@@ -15,10 +15,12 @@ paid only after Paystack's verified webhook, never because the customer came bac
 
 `paymentLinks/{id}`: `{ agencyId, subAccountId, createdByUid, invoiceId | null, contactId | null,
 description, amountCents, currency: "ZAR", token, active, status: "open" | "paid",
-livemode, paystackReference, paystackDomain, payerEmail, paidAt, extraPayments?, attention?,
+paystackReference, paystackDomain, payerEmail, paidAt, extraPayments?, attention?,
 invoiceAttention?, invoiceSettledAt?, createdAt, updatedAt }`. Invoices gain `paidVia`
 (`{ rail: "paystack_link", linkId, reference }` or null), written by `markQuotePaidServerSide`
-together with `status: "paid"`. Type:
+together with `status: "paid"`. Clients may not set or change `paidVia`: the `quotes` create
+and update rules refuse it, so only the Admin SDK writes it. The repo has no Firestore
+rules-test harness (no emulator here), so this rule is not covered by an automated test. Type:
 [`src/types/payment-links.ts`](../../src/types/payment-links.ts). Rules: member/owner read,
 no client writes (like `orders`). No composite index — the list is one equality filter sorted in
 memory.
@@ -40,11 +42,19 @@ across territories.
 
 ## Test mode
 
-`livemode` is stamped from the connection (`sk_test_` → false) when the link is made. Test links
-are allowed — #1000 is proven in test mode by design — but they are labelled everywhere: the pay
-page shows "TEST MODE — no real money will be taken", and the list shows a TEST MODE badge. The
-reconciler stores Paystack's `domain` and refuses a transaction whose domain doesn't match the
-link's mode. There is no paid transition: it answers 200 and sets `attention` on the link.
+There is **no per-link mode**. Everything uses the sub-account's *current* connection:
+- the pay page banner reads `paystackConnectionMeta.livemode`;
+- checkout charges with the stored key;
+- the reconciler checks the key it verified with (`sk_live_…`).
+
+So a link made under a test key and paid after the live key is connected is shown, charged and
+recorded as live. An earlier design stamped the mode on the link, and that could take real money
+under a "no real money" banner and then refuse to record it. Test mode is allowed (#1000 is
+proven in test mode by design) and labelled. While the connection is in test mode, the pay page
+shows "TEST MODE — no real money will be taken" and open links in the list show a TEST MODE
+badge. The reconciler stores Paystack's `domain` and refuses a transaction whose domain doesn't
+match the connection's mode. There is no paid transition: it answers 200 and sets `attention`
+on the link.
 
 ## Flows
 
@@ -80,7 +90,8 @@ link's mode. There is no paid transition: it answers 200 and sets `attention` on
   account, so the link gets `attention` ("does not match this link — check your Paystack
   dashboard", or the test/live wording). There is still no paid transition, and it answers 200.
 - **Not gated** on `paymentsEnabledByAgency`: money already taken is always recorded.
-- Marked paid in a Firestore transaction, which also clears any `attention`. A replay finds the
+- Marked paid in a Firestore transaction. Any `attention` is kept, not cleared: it records a
+  real mismatched payment that may need a refund. A replay finds the
   link paid and writes nothing. A second successful payment with a different reference is
   added to `extraPayments` in the same transaction, once only, and the list shows "Paid twice
   — refund owed". It never overwrites the first payment.
@@ -99,8 +110,14 @@ link's mode. There is no paid transition: it answers 200 and sets `attention` on
     the invoice committed). It is settled with no flag.
   - **Different or absent:** the invoice was paid another way (the manual button, Stripe,
     another link). `invoiceAttention` says a refund may be owed.
+- **Manual Mark as paid inside the retry window.** If a paid link for the invoice has no
+  `invoiceSettledAt` yet, the manual route passes that link's `paidVia`. The redelivery then
+  recognises the invoice as paid by its own payment instead of flagging a refund.
 - The step also flags an invoice that is missing, changed in total or currency, or refused by
-  the paid path (for example back to draft). A deterministic error reading it, such as a
+  the paid path (for example back to draft). Total and currency are checked twice: on the
+  step's own read, and again inside the compare-and-set (`expectTotalCents` /
+  `expectCurrency` → `amount_changed`). An edit between the two therefore cannot mark a short
+  payment paid. A deterministic error reading it, such as a
   malformed invoice, is terminal: `invoiceAttention` plus `invoiceSettledAt`, answered 200.
   Only transient errors answer 503.
 - **Side effects fire at most once**, and only for the compare-and-set winner: activity,
@@ -125,3 +142,14 @@ button next to Mark as paid. It hides unless Payments is on and Paystack is conn
 ## Out of scope (PR2)
 
 Sending via the inbox, refunds, partial payments, reactivation, link expiry, non-ZAR.
+
+## Known gaps (accepted for PR1)
+
+- **Stripe after Paystack.** A Stripe card payment arriving after a Paystack-link payment for
+  the same invoice gets `already_paid` from the shared paid path. The Stripe order is
+  recorded, but nothing flags the invoice as paid twice.
+- **Concurrent creates.** Two concurrent creates for the same invoice can make two links: the
+  one-open-link check is a plain query, not a transaction. If both are paid, the second is
+  flagged "paid another way — refund may be owed".
+- **Side effects at most once.** A crash between the invoice's paid commit and its side
+  effects skips them (pre-existing, shared paid path).

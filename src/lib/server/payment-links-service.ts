@@ -118,7 +118,6 @@ export async function createPaymentLink(input: {
     description,
     amountCents,
     currency: PAYMENT_LINK_CURRENCY,
-    livemode: sub.paystackConnectionMeta?.livemode === true,
     token: issuePaymentLinkToken(ref.id),
     active: true,
     status: "open",
@@ -151,7 +150,7 @@ export async function deactivatePaymentLink(input: {
  */
 export async function loadPayableLink(
   token: string,
-): Promise<ServiceResult<{ link: PaymentLink }>> {
+): Promise<ServiceResult<{ link: PaymentLink; livemode: boolean }>> {
   const linkId = verifyPaymentLinkToken(token);
   if (!linkId) return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
   const snap = await getAdminDb().doc(`paymentLinks/${linkId}`).get();
@@ -182,7 +181,8 @@ export async function loadPayableLink(
       return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
     }
   }
-  return { ok: true, link };
+  // The connection's CURRENT mode — the key checkout will actually use.
+  return { ok: true, link, livemode: sub.paystackConnectionMeta?.livemode === true };
 }
 
 /**

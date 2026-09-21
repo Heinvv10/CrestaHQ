@@ -100,6 +100,10 @@ export async function reconcilePaystackCharge(input: {
     }
 
     const amount = requestedAmount(tx);
+    // The connection's CURRENT mode — the same key that verified this
+    // transaction and that checkout charges with. Not stamped per link: a key
+    // switched test → live after the link was made must still reconcile.
+    const liveConnection = secretKey.startsWith("sk_live_");
     // Not a success, or not this reference: Paystack received nothing for
     // this link. Logged only.
     if (tx.status !== "success" || tx.reference !== reference) {
@@ -116,12 +120,12 @@ export async function reconcilePaystackCharge(input: {
           ? `partial amount=${tx.amount} requested=${amount}`
           : (tx.currency ?? "").toUpperCase() !== link.currency
             ? `currency=${tx.currency} expected=${link.currency}`
-            : (tx.domain === "live") !== (link.livemode === true)
-              ? `mode domain=${tx.domain} livemode=${link.livemode}`
+            : (tx.domain === "live") !== liveConnection
+              ? `mode domain=${tx.domain} connection=${liveConnection ? "live" : "test"}`
               : null;
     if (mismatch) {
       const attention = mismatch.startsWith("mode")
-        ? `A ${tx.domain ?? "unknown"}-mode payment arrived for this ${link.livemode ? "live" : "test"}-mode link and was not recorded. Check your Paystack dashboard.`
+        ? `A ${tx.domain ?? "unknown"}-mode payment arrived while this workspace's Paystack is in ${liveConnection ? "live" : "test"} mode, and was not recorded. Check your Paystack dashboard.`
         : "Paystack received a payment that does not match this link — check your Paystack dashboard.";
       console.error(`${tag} not marking paid: ${mismatch}`);
       await ref.update({ attention, updatedAt: FieldValue.serverTimestamp() });
@@ -137,9 +141,8 @@ export async function reconcilePaystackCharge(input: {
           paystackDomain: tx.domain ?? null,
           payerEmail: tx.customer?.email ?? null,
           paidAt: FieldValue.serverTimestamp(),
-          // A pre-payment problem (mode mismatch, a mismatched payment) is
-          // no longer the link's state once a matching payment lands.
-          attention: null,
+          // `attention` is deliberately NOT cleared: it records a real
+          // mismatched payment the operator may still need to refund.
           updatedAt: FieldValue.serverTimestamp(),
         });
         return { outcome: "paid" as const, current: fresh ?? link };
@@ -188,6 +191,8 @@ export async function reconcilePaystackCharge(input: {
   }
 }
 
+const INVOICE_CHANGED =
+  "Paid, but the invoice changed after this link was made, so it was not marked paid. Check the amount and mark it by hand.";
 const PAID_ANOTHER_WAY =
   "Paid, but the invoice was already paid another way — a refund may be owed.";
 
@@ -216,7 +221,7 @@ async function settleInvoice(
         ? ours(quote.paidVia) ? "" : PAID_ANOTHER_WAY
         : (quote.currency || "").toUpperCase() !== link.currency ||
             invoiceTotalCents(quote) !== link.amountCents
-          ? "Paid, but the invoice changed after this link was made, so it was not marked paid. Check the amount and mark it by hand."
+          ? INVOICE_CHANGED
           : null;
   } catch (err) {
     console.error(`[paystack/payment-links] invoice ${link.invoiceId} unreadable`, err);
@@ -229,10 +234,15 @@ async function settleInvoice(
     quoteId: link.invoiceId!,
     expectSubAccountId: subAccountId,
     paidVia: { rail: "paystack_link", linkId: link.id, reference },
+    // Re-checked inside the compare-and-set: the invoice can be edited
+    // between the read above and the write.
+    expectTotalCents: link.amountCents,
+    expectCurrency: link.currency,
   });
   if (res.ok) return null;
   // already_paid: someone won the compare-and-set since the read above —
   // possibly an overlapping delivery of this same payment.
   if (res.code === "already_paid") return ours(res.paidVia) ? null : PAID_ANOTHER_WAY;
+  if (res.code === "amount_changed") return INVOICE_CHANGED;
   return `Paid, but the invoice could not be marked paid: ${res.message}.`;
 }

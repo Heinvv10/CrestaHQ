@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   KEY,
+  LIVE_KEY,
   mem,
   seedInvoice,
   seedLink,
@@ -155,10 +156,17 @@ describe("the payer returning from Paystack", () => {
     expect(calls).toEqual([]);
   });
 
-  it("labels a test-mode link on the pay page, and not a live one", async () => {
+  it("labels the page TEST MODE while the connection is in test mode", async () => {
     expect(await (await get()).text()).toContain("TEST MODE");
-    seedLink("link1", { token, livemode: true });
+  });
+
+  it("drops the banner and charges live once the connection goes live after the link was made", async () => {
+    // Ported from the round-4 breaker repro: link made under a test key, then
+    // the operator connected the live key.
+    seedSub("sa1", LIVE_KEY);
     expect(await (await get()).text()).not.toContain("TEST MODE");
+    expect((await post({ email: "payer@example.com" })).status).toBe(303);
+    expect(calls[0]).toMatchObject({ path: "/transaction/initialize", auth: `Bearer ${LIVE_KEY}` });
   });
 
   it("shows the amount from the doc on the pay page", async () => {

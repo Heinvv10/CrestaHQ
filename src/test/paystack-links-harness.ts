@@ -22,12 +22,13 @@ export const AGENCY = "ag1";
 // Tiny fixtures so gitleaks does not read test data as real keys.
 export const KEY = "sk_test_k1";
 export const OTHER_KEY = "sk_test_k2";
+export const LIVE_KEY = "sk_live_k3";
 
 export function seedSub(subAccountId = SA, secretKey = KEY) {
   mem.seed(`subAccounts/${subAccountId}`, {
     agencyId: AGENCY,
     paymentsEnabledByAgency: true,
-    paystackConnectionMeta: { webhookSeenAt: null, livemode: false },
+    paystackConnectionMeta: { webhookSeenAt: null, livemode: secretKey.startsWith("sk_live_") },
   });
   mem.seed(`subAccounts/${subAccountId}/private/paystackConnection`, { secretKey });
 }
@@ -62,7 +63,6 @@ export function seedLink(id = "link1", over: Record<string, unknown> = {}) {
     token: "unused",
     active: true,
     status: "open",
-    livemode: false,
     paystackReference: null,
     payerEmail: null,
     paidAt: null,

@@ -49,12 +49,11 @@ export interface PaymentLink {
   currency: typeof PAYMENT_LINK_CURRENCY;
 
   /**
-   * The Paystack key's mode when the link was made (`sk_live_` vs `sk_test_`).
-   * A test link takes no real money; the pay page and list say so, and the
-   * reconciler refuses a transaction from the other mode.
+   * Paystack's `domain` ("test" | "live") on the verified transaction. There
+   * is no per-link mode: the pay page, checkout and reconciler all use the
+   * connection's CURRENT mode, so a link made under a test key and paid after
+   * the live key is connected is labelled, charged and recorded as live.
    */
-  livemode: boolean;
-  /** Paystack's `domain` ("test" | "live") on the verified transaction. */
   paystackDomain?: string | null;
   /**
    * Set when the invoice step reached an end state — marked paid (by this

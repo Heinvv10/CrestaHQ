@@ -71,14 +71,9 @@ describe("POST — create", () => {
     expect(onlyLink()).toMatchObject({ invoiceId: "inv1", amountCents: 115000, description: "Invoice INV-2026-0001" });
   });
 
-  it("stamps the link's mode from the Paystack connection", async () => {
+  it("stores no per-link mode — the connection's current mode decides", async () => {
     await create({ amountCents: 45000, description: "x" });
-    expect(onlyLink()).toMatchObject({ livemode: false });
-    mem.clear();
-    seedSub();
-    mem.seed(`subAccounts/${SA}`, { agencyId: AGENCY, paymentsEnabledByAgency: true, paystackConnectionMeta: { livemode: true } });
-    await create({ amountCents: 45000, description: "x" });
-    expect(onlyLink()).toMatchObject({ livemode: true });
+    expect(onlyLink()).not.toHaveProperty("livemode");
   });
 
   it("returns the existing active link for an invoice instead of making a second", async () => {
