@@ -14,9 +14,10 @@ the order the remaining work should land in.
 > - **WP-A1 to A3 (bridge client, inbound receiver, send path and readiness) are built and live.**
 >   The CRM rail landed in #23. Follow-up fixes came in #35, #37, #39, #40 and #42. The `bridge`
 >   provider now sends and receives; it no longer just refuses.
-> - **WP-A4 (media) is built and live.** Inbound media came in #145, #148 and #151. Outbound media
->   came in #149, with video in #172 and #177. The bridge also carries location messages. It is
->   no longer text-only.
+> - **WP-A4 (media) is built and live on the bridge rail.** Outbound documents and images came in
+>   #61. Inbound media came in #145 (the bridge) and #148 (the CRM webhook that receives it).
+>   Outbound video came in #172, and inbound location in #176. The bridge is no longer text-only.
+>   The Cloud-rail equivalents (#149, #151) are separate work and are not counted here.
 > - **WP-A9 (settings UI):** the per-sub-account WhatsApp settings page came in #94. Self-serve
 >   pairing has been proven as far as showing the QR code; the handset scan is unproven.
 > - **WP-A5 to A8, A10 and A11** were not re-checked when this note was written. Check `main`
