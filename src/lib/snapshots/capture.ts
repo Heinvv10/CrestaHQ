@@ -9,7 +9,6 @@ import type {
   SnapshotPayload,
   SnapshotProduct,
   SnapshotWorkflow,
-  SnapshotWorkflowFolder,
 } from "@/types/snapshots";
 
 /**
@@ -45,8 +44,7 @@ export function stripDoc(
 
 /**
  * Capture a sub-account's reusable CONFIG (forms, message templates,
- * products, workflows and their folders, custom-field definitions and the AI
- * agent persona)
+ * products, workflows, custom-field definitions and the AI agent persona)
  * into a portable payload. Pure reads — touches no existing data. Customer
  * data (form submissions, workflow runs, contacts, deals) is deliberately
  * never read.
@@ -67,7 +65,6 @@ export async function captureSnapshot(
     templatesSnap,
     productsSnap,
     workflowsSnap,
-    workflowFoldersSnap,
     customFieldsSnap,
     aiProfileSnap,
   ] = await Promise.all([
@@ -84,7 +81,6 @@ export async function captureSnapshot(
         .collection("workflows")
         .where("subAccountId", "==", sourceSubAccountId)
         .get(),
-      db.collection(`subAccounts/${sourceSubAccountId}/workflowFolders`).get(),
       db.collection(`subAccounts/${sourceSubAccountId}/customFields`).get(),
       db.doc(`subAccounts/${sourceSubAccountId}/aiAgent/profile`).get(),
     ]);
@@ -98,12 +94,10 @@ export async function captureSnapshot(
   const products = productsSnap.docs.map(
     (d) => stripDoc(d.id, d.data()) as unknown as SnapshotProduct,
   );
+  // Workflow folders do not travel either (same reason as custom-field
+  // folders below): a copied `folderId` would dangle, so workflows land Unfiled.
   const workflows = workflowsSnap.docs.map(
-    (d) => stripDoc(d.id, d.data(), ["stats"]) as unknown as SnapshotWorkflow,
-  );
-  // Workflows keep their source `folderId`; apply remaps it via `sourceId`.
-  const workflowFolders = workflowFoldersSnap.docs.map(
-    (d) => stripDoc(d.id, d.data()) as unknown as SnapshotWorkflowFolder,
+    (d) => stripDoc(d.id, d.data(), ["stats", "folderId"]) as unknown as SnapshotWorkflow,
   );
 
   // `folderId` points at a source-only folder doc; folders do not travel
@@ -128,13 +122,5 @@ export async function captureSnapshot(
         }
       : null;
 
-  return {
-    forms,
-    messageTemplates,
-    products,
-    workflows,
-    workflowFolders,
-    customFields,
-    aiProfile,
-  };
+  return { forms, messageTemplates, products, workflows, customFields, aiProfile };
 }

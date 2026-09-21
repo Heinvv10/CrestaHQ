@@ -133,9 +133,8 @@ const NODE: Shape = {
 };
 const WORKFLOW: Shape = {
   sourceId: "string", name: "string", status: "string", trigger: "object", nodes: "object",
-  startNodeId: opt("string"), reentry: opt("string"), folderId: opt("string"),
+  startNodeId: opt("string"), reentry: opt("string"),
 };
-const WORKFLOW_FOLDER: Shape = { sourceId: "string", name: "string", order: "number" };
 const AI_PROFILE: Shape = {
   systemPrompt: "string", hoursStart: "number", hoursEnd: "number", timezone: "string",
   escalationKeywords: "stringArray",
@@ -211,13 +210,11 @@ export function parseSnapshotFile(raw: unknown): ParsedSnapshotFile {
   const workflows = mapped(p.workflows, workflow);
   const messageTemplates = list(TEMPLATE, p.messageTemplates);
   const products = list(PRODUCT, p.products);
-  const workflowFolders = list(WORKFLOW_FOLDER, p.workflowFolders);
   const customFields = list(CUSTOM_FIELD, p.customFields);
   const aiProfile = p.aiProfile == null ? null : pick(AI_PROFILE, p.aiProfile);
   if (
     !forms || forms.includes(null) || !workflows || workflows.includes(null) ||
-    !messageTemplates || !products || !workflowFolders || !customFields ||
-    (p.aiProfile != null && !aiProfile)
+    !messageTemplates || !products || !customFields || (p.aiProfile != null && !aiProfile)
   ) {
     return { ok: false, error: "That snapshot file is malformed." };
   }
@@ -225,7 +222,7 @@ export function parseSnapshotFile(raw: unknown): ParsedSnapshotFile {
   let payload: SnapshotPayload;
   try {
     payload = capStrings({
-      forms, messageTemplates, products, workflows, workflowFolders, customFields, aiProfile,
+      forms, messageTemplates, products, workflows, customFields, aiProfile,
     }) as unknown as SnapshotPayload;
   } catch (err) {
     if (err instanceof TooDeep) return { ok: false, error: "That snapshot file is malformed." };

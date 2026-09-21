@@ -195,22 +195,7 @@ export async function applySnapshot(
     writes.push([ref, { ...dropSourceId(product), id: ref.id, ...tenancy() }]);
   }
 
-  // 3) Workflow folders, fresh ids — then workflows remap `folderId` through
-  // the map. A folder the payload does not carry (a single-workflow template
-  // push, an older snapshot) would dangle on the target, so it is nulled.
-  const folderIdMap = new Map<string, string>();
-  for (const folder of payload.workflowFolders ?? []) {
-    const ref = db
-      .collection(`subAccounts/${targetSubAccountId}/workflowFolders`)
-      .doc();
-    folderIdMap.set(folder.sourceId, ref.id);
-    writes.push([
-      ref,
-      { name: folder.name, order: folder.order, id: ref.id, ...tenancy() },
-    ]);
-  }
-
-  // 4) Workflows — sanitize on apply.
+  // 3) Workflows — sanitize on apply.
   let workflowsLinked = 0;
   for (const workflow of payload.workflows) {
     const ref = db.collection("workflows").doc();
@@ -244,14 +229,13 @@ export async function applySnapshot(
         // Never enroll contacts until the operator reviews + activates.
         status: "draft",
         trigger,
-        folderId: (config.folderId && folderIdMap.get(config.folderId)) ?? null,
         nodes: sanitizeNodes(config.nodes),
         stats: { enrolled: 0, completed: 0 },
       },
     ]);
   }
 
-  // 5) Custom-field definitions — skip any key the target already defines.
+  // 4) Custom-field definitions — skip any key the target already defines.
   let customFieldsCreated = 0;
   let customFieldsSkipped = 0;
   for (const field of payload.customFields ?? []) {
@@ -268,7 +252,7 @@ export async function applySnapshot(
 
   await commitInChunks(db, writes);
 
-  // 6) AI persona — transactional, because it is the one write that targets a
+  // 5) AI persona — transactional, because it is the one write that targets a
   // FIXED path rather than a fresh id. Reading existence up front and writing
   // in a later batch leaves a window in which an operator saves a persona for
   // the target and this call silently overwrites it. Re-reading inside the

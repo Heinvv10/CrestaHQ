@@ -120,7 +120,7 @@ export async function captureEntity(
   }
 
   payload.workflows.push(
-    stripDoc(id, data, ["stats"]) as unknown as SnapshotWorkflow,
+    stripDoc(id, data, ["stats", "folderId"]) as unknown as SnapshotWorkflow,
   );
   const formId = data.trigger?.formId;
   let includesTriggerForm = false;

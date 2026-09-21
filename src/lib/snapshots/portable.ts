@@ -21,10 +21,9 @@ import type { SnapshotPayload, SnapshotWorkflow } from "@/types/snapshots";
  *     shares; the pipeline below calls the same functions so a downloaded
  *     file is already clean, without restating the rule.
  *   - source doc ids — `sourceId`, `trigger.formId`/`linkId`/`pipelineId`,
- *     `folderId`, WhatsApp `templateId`/`senderId`. Opaque, but they name
- *     documents in another tenant. Form and folder ids are re-minted and the
- *     workflow's reference remapped through the same map, so apply still
- *     links an imported form (or folder) to its workflow.
+ *     WhatsApp `templateId`/`senderId`. Opaque, but they name documents in
+ *     another tenant. Form ids are re-minted and the trigger remapped through
+ *     the same map, so apply still links an imported form to its workflow.
  *   - any nested tenancy stamp or string equal to a source tenant id.
  */
 
@@ -80,20 +79,12 @@ export function toPortablePayload(
     return sanitizeForm({ ...form, sourceId: fresh });
   });
 
-  const folderIds = new Map<string, string>();
-  const workflowFolders = (clean.workflowFolders ?? []).map((folder) => {
-    const fresh = randomUUID();
-    folderIds.set(folder.sourceId, fresh);
-    return { ...folder, sourceId: fresh };
-  });
-
   const workflows = (clean.workflows ?? []).map((w): SnapshotWorkflow => {
-    const folderId = (w.folderId && folderIds.get(w.folderId)) ?? null;
     const trigger = { ...w.trigger };
     if (trigger.formId) trigger.formId = formIds.get(trigger.formId) ?? null;
     if (trigger.linkId) trigger.linkId = null;
     if (trigger.pipelineId) trigger.pipelineId = null;
-    return { ...w, sourceId: randomUUID(), folderId, trigger, nodes: clearNodes(w.nodes) };
+    return { ...w, sourceId: randomUUID(), trigger, nodes: clearNodes(w.nodes) };
   });
 
   return {
@@ -102,7 +93,6 @@ export function toPortablePayload(
     messageTemplates: reminted(clean.messageTemplates),
     products: reminted(clean.products),
     workflows,
-    ...(clean.workflowFolders ? { workflowFolders } : {}),
     ...(clean.customFields ? { customFields: reminted(clean.customFields) } : {}),
   };
 }

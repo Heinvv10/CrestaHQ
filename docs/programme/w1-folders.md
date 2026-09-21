@@ -18,7 +18,8 @@ conservatively below, with the alternative that was rejected.
   groups by folder (collapsible, counts, Unfiled last), row menu to move,
   inline create/rename/delete. The page moves from `max-w-3xl` to `max-w-5xl`
   (a data surface, per CLAUDE.md).
-- Snapshots carry folders with fresh ids (last commit, see below).
+- Snapshots do **not** carry folders: capture strips `folderId`, so applied
+  workflows land Unfiled (last commit, see below).
 
 ## Decisions
 
@@ -32,9 +33,8 @@ conservatively below, with the alternative that was rejected.
 | 6 | Folder delete asks **no confirm()**. | `confirm()` like custom-field folders. | Nothing is lost — workflows move to Unfiled and only the folder name goes. `confirm()` also freezes the claude-in-chrome browser proof. |
 | 7 | Unfiled is always shown, last, even when no folders exist. A `folderId` pointing at a deleted folder renders Unfiled. | Hide Unfiled when there are no folders. | One layout, and a legacy doc is visibly "Unfiled" rather than special-cased. |
 | 8 | Folder rename only; no reorder UI. `order` is assigned on create (appended last). | Reorder route like custom-field folders. | Not in the 1a scope. `order` exists so reordering can be added without a migration. |
-| 9 | Cap of 50 folders per sub-account on POST. Snapshot apply does not enforce it. | No cap / enforce on apply. | Mirrors `MAX_FOLDERS_PER_ENTITY`; apply is create-only for every entity and does not enforce caps elsewhere either. |
-| 10 | Snapshot apply **always creates fresh folders**, even when the target has one with the same name. | Merge into a same-named target folder. | Apply is create-only for every entity (forms and templates duplicate on re-apply too), and the 1a test is "folder ids in the target are new ids". A merge would be the first entity that writes into existing target structure. |
-| 11 | A workflow whose folder is not in the payload (template-library push of one workflow, v1 snapshots, uploaded files) lands **Unfiled**. | Keep the source id. | A source folder id dangles in the target. |
+| 9 | Cap of 50 folders per sub-account on POST. | No cap. | Mirrors `MAX_FOLDERS_PER_ENTITY` for custom-field folders. |
+| 10 | Folders **do not travel** with snapshots or template-library pushes: both capture paths strip `folderId`, so applied workflows land Unfiled. | Capture folders and remap `folderId` to fresh target folders (built first, then withdrawn on the orchestrator's correction). | Same precedent as custom-field folders ("folders do not travel"); a copied id would dangle on the target, and remapping adds a payload entity, a file-format field and a portable remap for an organisational nicety. |
 
 ## Tests that fail when wrong
 
@@ -47,11 +47,8 @@ conservatively below, with the alternative that was rejected.
 - `workflows-list.test.ts` — renders the real list: legacy doc (no
   `folderId`) and orphaned doc under Unfiled; Unfiled last; folder order;
   failed folder load toasts and still shows every workflow.
-- `snapshots/workflow-folders.test.ts` — real capture → apply: target folders
-  are new ids (a target folder sharing a SOURCE id is untouched and gets
-  nothing), every workflow points at one of them or Unfiled; the same through
-  the portable path (share link / exported + re-parsed file) with re-minted
-  ids; a payload with no folders lands every workflow Unfiled.
+- `snapshots/workflow-folders.test.ts` — real snapshot capture and template
+  capture: no workflow in either payload carries a `folderId`.
 - `e2e/specs/workflow-folders.spec.ts` — create, move, rename, delete on the
   fixture tenant with Firestore checked at each step.
 

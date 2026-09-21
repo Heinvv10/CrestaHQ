@@ -10,8 +10,8 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   in [src/types/snapshots.ts](src/types/snapshots.ts)). Agency-owner read; all
   writes go through Admin-SDK routes. `SNAPSHOT_VERSION` on every doc so a schema
   change migrates on apply rather than breaking old snapshots.
-- **Payload**: forms, message templates, products, workflows and their
-  folders, custom-field definitions, and the AI agent persona. **Never** contacts, deals, submissions,
+- **Payload**: forms, message templates, products, workflows, custom-field
+  definitions, and the AI agent persona. **Never** contacts, deals, submissions,
   workflow runs, or credentials.
 - **Capture** ([src/lib/snapshots/capture.ts](src/lib/snapshots/capture.ts)) —
   pure reads. Strips tenancy stamps (`id`/`agencyId`/`subAccountId`/
@@ -21,10 +21,7 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
 - **Apply** ([src/lib/snapshots/apply.ts](src/lib/snapshots/apply.ts)) —
   **CREATE-ONLY**: fresh ids, never overwrites/updates/deletes, so it is safe
   against a live sub-account. Forms are written first to build an old→new id map;
-  workflow `trigger.formId` is remapped through it (or nulled). Workflow folders
-  are created fresh the same way and `workflow.folderId` remapped (a folder the
-  payload does not carry — a one-workflow template push, an older snapshot —
-  lands Unfiled); a same-named target folder is NOT merged into. Workflows always
+  workflow `trigger.formId` is remapped through it (or nulled). Workflows always
   arrive as **drafts** so nothing enrolls a contact before review.
   `whatsapp_template` nodes have `templateId` nulled — the target has its own
   Meta-approved templates, so the source id would dangle.
@@ -33,7 +30,8 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   subAccount+entity), so a key the target already defines is skipped rather than
   redefined — two definitions would fight over the same `contact.customFields`
   slot. Their `folderId` is stripped on capture: custom-field folders do not
-  travel in a snapshot yet, so every applied field lands in General; and the **AI persona** lives at the fixed path `aiAgent/profile`, written
+  travel in a snapshot yet, so every applied field lands in General (workflow
+  `folderId` is stripped the same way — applied workflows land Unfiled); and the **AI persona** lives at the fixed path `aiAgent/profile`, written
   only when the target has none, so apply can never replace a tuned live agent.
 - **What deliberately does NOT travel in the persona** ({@link SnapshotAiProfile}):
   `businessName` (source client's trading name — blanked so the prompt falls back
