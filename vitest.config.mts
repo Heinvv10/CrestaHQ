@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
@@ -18,6 +18,9 @@ export default defineConfig({
     // by `pnpm test` like any other module.
     // services/qcontact-import is plain TS run under node --experimental-strip-types.
     include: ["src/**/*.test.ts", "e2e/**/*.test.ts", "scripts/**/*.test.ts", "services/**/*.test.ts"],
+    // Firestore rules tests need an Admin credential; they run under
+    // `pnpm test:rules` (vitest.rules.config.mts) instead.
+    exclude: [...configDefaults.exclude, "src/**/*.firestore-rules.test.ts"],
   },
   resolve: {
     alias: {
