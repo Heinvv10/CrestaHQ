@@ -25,6 +25,15 @@ the configured From mailbox. Connect that mailbox below to receive replies in
 Conversations. A Reply-To pointing to another mailbox needs that mailbox connected
 instead; SMTP alone does not import incoming mail.
 
+## Suppression list
+
+Settings → Messaging → **Email suppression list** (admins only) holds addresses
+this sub-account never emails. `sendEmail` refuses them before any provider call
+on every send that names the sub-account, on both rails. Invites and agency
+billing mail name no sub-account and are not checked. PR1 fills the list by hand
+only; bounce and complaint ingestion is a later PR. Spec and decisions:
+[w4-email-tracking.md](../programme/w4-email-tracking.md).
+
 ## Email in Conversations
 
 Every sub-account has mailbox connection controls in Messaging settings. Connect
