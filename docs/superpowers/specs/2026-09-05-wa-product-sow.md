@@ -8,6 +8,23 @@ This document is the handover into the next session. It records what was
 decided, what is already built and verified, what parity actually requires, and
 the order the remaining work should land in.
 
+> **Status as of 2026-09-21. Read this before §1.** §1 ("What is built and verified today") describes
+> the code as it stood on 2026-09-05 and is now **out of date**. Since then:
+>
+> - **WP-A1 to A3 (bridge client, inbound receiver, send path and readiness) are built and live.**
+>   The CRM rail landed in #23. Follow-up fixes came in #35, #37, #39, #40 and #42. The `bridge`
+>   provider now sends and receives; it no longer just refuses.
+> - **WP-A4 (media) is built and live.** Inbound media came in #145, #148 and #151. Outbound media
+>   came in #149, with video in #172 and #177. The bridge also carries location messages. It is
+>   no longer text-only.
+> - **WP-A9 (settings UI):** the per-sub-account WhatsApp settings page came in #94. Self-serve
+>   pairing has been proven as far as showing the QR code; the handset scan is unproven.
+> - **WP-A5 to A8, A10 and A11** were not re-checked when this note was written. Check `main`
+>   before planning any of them.
+>
+> §0 (decisions) is still in force: the bridge is operated as a service, not sold as software.
+> The rest of the document is the 2026-09-05 plan, kept as a record.
+
 ---
 
 ## 0. Decisions taken
