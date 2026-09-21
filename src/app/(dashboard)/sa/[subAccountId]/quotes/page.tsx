@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { FileText, Receipt, Repeat } from "lucide-react";
+import { FileText, Link2, Receipt, Repeat } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { QuoteList } from "@/components/quotes/quote-list";
@@ -54,6 +54,13 @@ export default function QuotesPage() {
           >
             <Repeat className="h-4 w-4" />
             Recurring
+          </Button>
+          <Button
+            variant="ghost"
+            render={<Link href={saPath("/quotes/payment-links")} />}
+          >
+            <Link2 className="h-4 w-4" />
+            Payment links
           </Button>
           <Button
             variant="outline"

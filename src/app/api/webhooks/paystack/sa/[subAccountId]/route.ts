@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { reconcilePaystackCharge } from "@/lib/paystack/payment-link-reconciler";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { verifyPaystackSignature } from "@/lib/paystack/webhook-signature";
 
@@ -23,13 +24,11 @@ export const dynamic = "force-dynamic";
  * information: it only selects which stored key to verify against, and a
  * request that cannot produce a valid signature for that key gets nothing.
  *
- * WHAT IT DOES WITH THE EVENT: records that a verified webhook arrived, and
- * nothing else. There is deliberately no reconciler yet — no code path charges
- * a customer on a sub-account's Paystack, so there is no order to reconcile,
- * and a handler written against an imaginary one would be untested guesswork.
- * The arrival itself is the point: it is the ONLY honest evidence that the
- * operator completed the dashboard registration step, and it is what the
- * settings card reads (`paystackConnectionMeta.webhookSeenAt`).
+ * WHAT IT DOES WITH THE EVENT: records that a verified webhook arrived — the
+ * ONLY honest evidence that the operator completed the dashboard registration
+ * step, and what the settings card reads (`paystackConnectionMeta.webhookSeenAt`).
+ * Then `charge.success` goes to the payment-link reconciler, which re-verifies
+ * the transaction with Paystack before marking anything paid.
  */
 
 export async function POST(
@@ -80,5 +79,36 @@ export async function POST(
     .doc(`subAccounts/${subAccountId}`)
     .update({ "paystackConnectionMeta.webhookSeenAt": new Date() });
 
+  const reference = chargeSuccessReference(rawBody);
+  if (reference) {
+    const result = await reconcilePaystackCharge({
+      subAccountId,
+      secretKey: conn.secretKey,
+      reference,
+    });
+    // Only "couldn't ask Paystack" is worth a redelivery. A mismatch or a
+    // foreign reference answers 200 so Paystack does not retry it forever.
+    if (result.retry) {
+      return NextResponse.json({ error: "retry" }, { status: 503 });
+    }
+  }
+
   return NextResponse.json({ received: true });
+}
+
+/** The reference of a `charge.success` body, else null. */
+function chargeSuccessReference(rawBody: string): string | null {
+  try {
+    const event = JSON.parse(rawBody) as {
+      event?: unknown;
+      data?: { reference?: unknown };
+    };
+    return event.event === "charge.success" &&
+      typeof event.data?.reference === "string"
+      ? event.data.reference
+      : null;
+  } catch {
+    console.warn("[webhooks/paystack/sa] signed body is not JSON — ignoring");
+    return null;
+  }
 }

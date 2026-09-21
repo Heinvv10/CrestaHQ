@@ -1143,6 +1143,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- paymentLinks (Paystack payment links) ----------
+    // Member-read so the operator can list links and copy their URLs; ALL
+    // writes are server-only (lib/server/payment-links-service.ts and the
+    // Paystack reconciler). `status: "paid"` is a statement about money
+    // Paystack confirmed, so no browser may write it. Mirrors orders.
+    match /paymentLinks/{linkId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
+
     // ---------- quotes ----------
     // GHL-style "Estimates" — operator-built quote → public accept page.
     // Reads + edits by any active sub-account member (matches the

@@ -229,12 +229,20 @@ export async function initializePaystackTransaction(input: {
    * payer a bare amount and nothing saying what it is for.
    */
   displayName?: string;
+  /** Our own reference. Omitted → Paystack generates one. */
+  reference?: string;
+  /**
+   * A sub-account's OWN secret key (payment links). Omitted → the agency's
+   * `PAYSTACK_SECRET_KEY`, as Client Billing wants. See `paystackRequest`.
+   */
+  secretKey?: string;
 }): Promise<{ url: string; reference: string }> {
   const data = await paystackRequest<{
     authorization_url: string;
     reference: string;
   }>("POST", "/transaction/initialize", {
     email: input.email,
+    ...(input.reference ? { reference: input.reference } : {}),
     ...(input.amountCents !== undefined ? { amount: input.amountCents } : {}),
     ...(input.currency
       ? { currency: assertSupportedCurrency(input.currency) }
@@ -258,11 +266,38 @@ export async function initializePaystackTransaction(input: {
           }
         : {}),
     },
-  });
+  }, input.secretKey);
   if (!data.authorization_url) {
     throw new BillingError("Paystack didn't return a checkout URL.", 502);
   }
   return { url: data.authorization_url, reference: data.reference };
+}
+
+/** The fields of `GET /transaction/verify/:reference` a reconciler checks. */
+export interface PaystackVerifiedTransaction {
+  status: string;
+  reference: string;
+  /** Currency subunit (cents). */
+  amount: number;
+  currency: string;
+  customer?: { email?: string | null } | null;
+}
+
+/**
+ * Ask Paystack what actually happened to a transaction, with the key of the
+ * account it was made on. A webhook body is only a claim; this is the answer
+ * the payment-link reconciler acts on.
+ */
+export function verifyPaystackTransaction(
+  reference: string,
+  secretKey: string,
+): Promise<PaystackVerifiedTransaction> {
+  return paystackRequest<PaystackVerifiedTransaction>(
+    "GET",
+    `/transaction/verify/${encodeURIComponent(reference)}`,
+    undefined,
+    secretKey,
+  );
 }
 
 /**
