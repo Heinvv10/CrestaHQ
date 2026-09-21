@@ -1,10 +1,12 @@
 import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
+import type { AgencyGateField } from "@/lib/server/feature-gates-service";
 import {
   AUDIT_ACTIONS,
   AUDIT_ACTOR_TYPES,
   AUDIT_TARGET_TYPES,
+  type AuditAction,
   type AuditEventDoc,
   type AuditEventInput,
   type AuditInputValue,
@@ -15,17 +17,58 @@ export const AUDIT_EVENTS_COLLECTION = "auditEvents";
 export const REDACTED = "[redacted]";
 
 /**
- * Lowercase identifier-shaped strings — "admin", "paused", "sms_enabled".
- * Emails (@), phone numbers (leading digit or +), names (capitals, spaces)
- * and message bodies (spaces) all fail it and are stored as REDACTED.
+ * The only values ever stored, per action and field. A value not listed here —
+ * a name, an email, a domain, a number, an unlisted field — is stored as
+ * REDACTED. `null`/`undefined` are stored as null: "had no value" is not PII.
+ * A field that needs its value audited is added here, deliberately.
  */
-const ENUM_LIKE = /^[a-z][a-z0-9_.-]{0,63}$/;
+const GATE_VALUES = [true, false] as const;
+const GATE_FIELDS: Record<AgencyGateField, true> = {
+  emailDomainEnabledByAgency: true,
+  apiAccessEnabledByAgency: true,
+  broadcastsEnabledByAgency: true,
+  outboundVoiceEnabledByAgency: true,
+  whatsappEnabledByAgency: true,
+  smsAgentEnabledByAgency: true,
+  webChatEnabledByAgency: true,
+  inboundVoiceEnabledByAgency: true,
+  metaInboxEnabledByAgency: true,
+  metaAgentEnabledByAgency: true,
+  websiteEnabledByAgency: true,
+  socialPlannerEnabledByAgency: true,
+  communityEnabledByAgency: true,
+  missedCallTextBackEnabledByAgency: true,
+  aiSuiteEnabledByAgency: true,
+  labsEnabledByAgency: true,
+  reviewsAiEnabledByAgency: true,
+  getLeadsEnabledByAgency: true,
+  paymentsEnabledByAgency: true,
+  webinar1EnabledByAgency: true,
+  googleEnabledByAgency: true,
+  googleCalendarEnabledByAgency: true,
+};
 
-export function auditValue(value: AuditInputValue): AuditStoredValue {
+export const AUDIT_ALLOWED_VALUES: Record<
+  AuditAction,
+  Readonly<Record<string, readonly AuditStoredValue[]>>
+> = {
+  "feature_gates.updated": Object.fromEntries(
+    Object.keys(GATE_FIELDS).map((field) => [field, GATE_VALUES])
+  ),
+  "workflow.status_changed": { status: ["draft", "active", "paused"] },
+  "member.role_changed": { role: ["admin", "collaborator"] },
+};
+
+export function auditValue(
+  action: AuditAction,
+  field: string,
+  value: AuditInputValue
+): AuditStoredValue {
   if (value === undefined || value === null) return null;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : REDACTED;
-  return ENUM_LIKE.test(value) ? value : REDACTED;
+  const allowed = Object.hasOwn(AUDIT_ALLOWED_VALUES[action], field)
+    ? AUDIT_ALLOWED_VALUES[action][field]
+    : [];
+  return allowed.includes(value) ? value : REDACTED;
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -71,8 +114,8 @@ export function buildAuditEvent(input: AuditEventInput): AuditEventDoc {
     createdByUid: actor.type === "user" ? actor.id : null,
     changes: input.changes.map((c) => ({
       field: c.field,
-      before: auditValue(c.before),
-      after: auditValue(c.after),
+      before: auditValue(input.action, c.field, c.before),
+      after: auditValue(input.action, c.field, c.after),
     })),
   };
 }
@@ -97,6 +140,34 @@ export async function recordAuditEvent(
   } catch (err) {
     console.error(
       `[audit] failed to record ${doc.action} on ${doc.target.type}/${doc.target.id}`,
+      err
+    );
+  }
+}
+
+/**
+ * The call-site entry point for a change to one sub-account. The tenant is
+ * read from the sub-account doc as stored — never from the request body or
+ * URL — and the actor is whoever the caller authenticated. Nothing here can
+ * fail the request: the change has already committed, so even a malformed
+ * event is logged rather than thrown (the call site's route test is what
+ * catches that).
+ */
+export async function recordSubAccountAuditEvent(
+  db: FirebaseFirestore.Firestore,
+  subAccountId: string,
+  event: Omit<AuditEventInput, "agencyId" | "subAccountId">
+): Promise<void> {
+  try {
+    const sub = await db.doc(`subAccounts/${subAccountId}`).get();
+    await recordAuditEvent(db, {
+      ...event,
+      agencyId: sub.data()?.agencyId,
+      subAccountId: sub.id,
+    });
+  } catch (err) {
+    console.error(
+      `[audit] could not record ${event.action} on ${event.target.type}/${event.target.id}`,
       err
     );
   }

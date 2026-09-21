@@ -40,9 +40,9 @@ export interface AuditTarget {
 }
 
 /**
- * What a caller may pass as a before/after value. Strings are kept only when
- * they look like an enum value (see `auditValue`); anything else is stored
- * as REDACTED.
+ * What a caller may pass as a before/after value. A value is kept only when
+ * its action + field allow-list names it (see `AUDIT_ALLOWED_VALUES`);
+ * anything else is stored as REDACTED.
  */
 export type AuditInputValue = string | number | boolean | null | undefined;
 export type AuditStoredValue = string | number | boolean | null;

@@ -108,17 +108,19 @@ describe("recordAuditEvent", () => {
     );
   });
 
-  it("redacts free-text values before they are stored", async () => {
+  it("stores a value only when its action + field allow-list names it", async () => {
     await recordAuditEvent(
       db,
       event({
         changes: [
+          { field: "role", before: "collaborator", after: "admin" },
           { field: "email", before: "jane@example.com", after: "john@example.com" },
           { field: "body", before: null, after: "hi there, your install is booked" },
         ],
       })
     );
     expect(written[0].data.changes).toEqual([
+      { field: "role", before: "collaborator", after: "admin" },
       { field: "email", before: REDACTED, after: REDACTED },
       { field: "body", before: null, after: REDACTED },
     ]);
@@ -127,20 +129,37 @@ describe("recordAuditEvent", () => {
 
 describe("auditValue", () => {
   it.each([
-    ["admin", "admin"],
-    ["sms_enabled", "sms_enabled"],
-    [true, true],
-    [3, 3],
-    [null, null],
-    [undefined, null],
-    ["jane@example.com", REDACTED],
-    ["+27821234567", REDACTED],
-    ["27821234567", REDACTED],
-    ["Jane Smith", REDACTED],
-    ["hello world", REDACTED],
-    ["a".repeat(65), REDACTED],
-    [Number.NaN, REDACTED],
-  ])("%j -> %j", (input, expected) => {
-    expect(auditValue(input)).toBe(expected);
+    // allowed: listed values for a listed field
+    ["member.role_changed", "role", "admin", "admin"],
+    ["member.role_changed", "role", "collaborator", "collaborator"],
+    ["workflow.status_changed", "status", "paused", "paused"],
+    ["feature_gates.updated", "googleEnabledByAgency", false, false],
+    ["feature_gates.updated", "whatsappEnabledByAgency", true, true],
+    // absence is not PII
+    ["member.role_changed", "role", null, null],
+    ["member.role_changed", "role", undefined, null],
+    // a listed field, an unlisted value
+    ["member.role_changed", "role", "owner", REDACTED],
+    ["workflow.status_changed", "status", "archived", REDACTED],
+    ["feature_gates.updated", "googleEnabledByAgency", "true", REDACTED],
+    ["feature_gates.updated", "googleEnabledByAgency", 1, REDACTED],
+    // names, domains, emails, phones and numbers — even enum-shaped ones
+    ["member.role_changed", "role", "jane", REDACTED],
+    ["member.role_changed", "name", "jane", REDACTED],
+    ["member.role_changed", "name", "Jane Smith", REDACTED],
+    ["feature_gates.updated", "domain", "velocityfibre.co.za", REDACTED],
+    ["feature_gates.updated", "domain", "mail.example.com", REDACTED],
+    ["member.role_changed", "email", "jane@example.com", REDACTED],
+    ["member.role_changed", "phone", "+27821234567", REDACTED],
+    ["member.role_changed", "count", 3, REDACTED],
+    ["workflow.status_changed", "amount", 0, REDACTED],
+    ["feature_gates.updated", "usageQuotas", 500, REDACTED],
+    // a field allowed for one action is not allowed for another
+    ["workflow.status_changed", "role", "admin", REDACTED],
+    ["member.role_changed", "status", "active", REDACTED],
+    // prototype keys are not fields
+    ["member.role_changed", "constructor", "admin", REDACTED],
+  ] as const)("%s %s %j -> %j", (action, field, input, expected) => {
+    expect(auditValue(action, field, input)).toBe(expected);
   });
 });

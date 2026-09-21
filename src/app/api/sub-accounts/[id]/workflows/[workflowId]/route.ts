@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import {
   deleteWorkflowServerSide,
   getWorkflow,
@@ -121,8 +122,16 @@ export async function PATCH(
     patch.folderId = folder.id;
   }
 
-  const ok = await updateWorkflowServerSide({ subAccountId, workflowId, patch });
-  if (!ok) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const updated = await updateWorkflowServerSide({ subAccountId, workflowId, patch });
+  if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (patch.status !== undefined && patch.status !== updated.previousStatus) {
+    await recordSubAccountAuditEvent(getAdminDb(), subAccountId, {
+      action: "workflow.status_changed",
+      actor: { type: "user", id: access.uid },
+      target: { type: "workflow", id: workflowId },
+      changes: [{ field: "status", before: updated.previousStatus, after: patch.status }],
+    });
+  }
   return NextResponse.json({ ok: true });
 }
 
