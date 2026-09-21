@@ -3,34 +3,25 @@
 *Part of the [CRM gap programme](README.md) (Service desk table; decision 4: tickets layer on Conversations threads).*
 
 **Goal:** a Blitz support agent turns a WhatsApp thread into a ticket, sets status, priority, owner and
-category, works a queue that shows each ticket's SLA age, and closes it. At close, and only when the
+category, works a queue that shows each ticket's age, and closes it. At close, and only when the
 operator ticks it for that close, the contact gets the tag that starts the Post-Resolution review flow.
 
 **Status:** phase 1 (this doc). No code. Phase 2 starts when Lane C's audit PR1 is on `main` (it is:
 `src/lib/audit/record.ts`) **and** the WA-media PRs that own `conversation-thread.tsx` and the composer
 have merged.
 
-## Needs Hein
+## Settled by Hein (2026-09-21)
 
-These three are policy for Hein to set, not design. Everything else below was decided conservatively,
-and each decision names the alternative it rejected.
+1. **Blitz support staff pilot as collaborators.** There is no support-agent role first. The role below
+   stays a Later spec.
+2. **Import the 86 GHL Service Issues.** The 7 Resolved become closed tickets, with no tag and no
+   messages. The other 79 become open tickets in an *Imported, needs triage* view, exempt from SLA. A dry
+   run comes first. The production write happens only on Hein's go. The export is dated **2026-08-09**,
+   so issues raised in GHL after that date are not in it.
+3. **Age-only SLA for the pilot.** Nothing escalates until Hein sets Blitz's business hours and targets.
 
-1. **Do Blitz's support staff get to see deals, invoices and billing?** Today a sub-account member is
-   an admin or a collaborator, and both see deals and quotes. If the answer is no, the *support agent*
-   role (see [the permissions section](#support-agent-role-future)) becomes a pilot prerequisite. The
-   programme lists this as a Later item whose trigger is exactly this case. **Recommendation:** pilot
-   with collaborators who are already Blitz staff, and fire the trigger only if a non-staff
-   contractor joins the desk.
-2. **What happens to the 86 GHL Service Issues?** Counts from the export (read-only, 2026-09-21): all
-   86 are `open` in GHL, one per contact (86 distinct contacts), created July–August 2026, none
-   assigned, no custom fields. By stage: New Issue 76, Resolved 7, Awaiting ISP / Network 2,
-   Diagnosing 1. **Recommendation:** Resolved → closed tickets (never tagged). The other 79 →
-   open tickets in an *Imported, needs triage* view, excluded from SLA until an operator triages each
-   one. The alternative is to import nothing and start clean, which is reasonable if Blitz says the
-   July–August issues are long settled. The PR ships only a dry run in either case.
-3. **Blitz's SLA policy:** its business hours, its public holidays, and first-response and resolution
-   targets per priority. Until these are set, the queue shows business-hours age and no breach
-   badges, and nothing escalates.
+Every other decision below was made conservatively, without an interactive grill, and names the
+alternative it rejected.
 
 ## Data model
 
@@ -39,332 +30,381 @@ and each decision names the alternative it rejected.
 | Field | Meaning |
 |---|---|
 | `agencyId`, `subAccountId`, `createdByUid` | Tenancy keys. `createdByUid` is the operator's uid, or `null` for an import |
-| `territoryId` | Copied from the conversation on every ticket write, so the read rule can use the conversation's own scoping |
-| `conversationId`, `contactId` | The thread (`conversations/{contactId}`) and its contact. A ticket needs a contact: an anonymous web-chat thread can be ticketed only after it captures identity |
-| `subject` | Optional free text, ≤120 chars. Never copied into audit (it is redacted anyway) |
+| `territoryId` | The contact's territory. It is set at create and re-stamped in the same transaction as every contact territory move (see [Territory](#territory)) |
+| `conversationId`, `contactId` | Always equal. Tickets exist only on contact-keyed threads (see decision 3) |
+| `subject` | Optional free text, ≤120 chars. Redacted in audit |
 | `status` | `open` · `waiting_customer` · `waiting_third_party` · `closed` |
 | `priority` | `urgent` · `high` · `normal` (default) · `low` |
 | `categoryId` | One of the sub-account's category ids (enum-shaped, e.g. `no_connectivity`), default `general` |
 | `ownerUid` | An active member, or `null`. Defaults at creation to the contact owner (`assignedToUid`) |
 | `source` | `app` · `import` |
-| `openedAt`, `firstResponseAt`, `closedAt`, `reopenedAt` | Server timestamps |
-| `sla` | `{ exempt, activeBusinessMs, runningSince, firstResponseDueAt, resolutionDueAt, escalated: { firstResponse, resolution } }` (see [SLA](#sla-clock)) |
-| `resolvedTagApplied` | `true` only when the operator ticked the box on the close that wrote the tag |
+| `openedAt`, `firstResponseAt`, `closedAt`, `reopenedAt` | Timestamps from the injected clock (see [SLA](#sla-clock)) |
+| `closedBy` | `user` · `merge` (see [Contact link, merge and delete](#contact-link-merge-and-delete)) |
+| `resolvedTag` | `not_requested` · `pending` · `applied` · `already_tagged` · `refused` · `failed` (see [Close](#close--issue-resolved)) |
+| `sla` | `{ exempt, activeMs, runningSince, firstResponseDueAt, resolutionDueAt, escalated: { firstResponse, resolution } }` |
 | `ghlOpportunityId` | Import only. The import's doc id is `ghl_<id>`, which makes a rerun idempotent |
 
-### On the conversation: `openTicketId: string | null`
+### On the conversation: `openTicketId: string | null`, a cache
 
-This is a server-maintained pointer that is set on create and cleared on close. The inbox row and
-thread header read it to show a ticket badge without a query. It is not in the conversation rule's
-client-writable keys, so a browser cannot set or clear it.
+`openTicketId` exists so the inbox row and thread header can show a ticket badge without a query. It is
+**not** the source of truth, and it is not in the conversation rule's client-writable keys.
 
 ### Decisions
 
 1. **A separate ticket doc, not fields on the conversation.** A thread outlives its issues: a Blitz
-   customer reports a second fault after the first is fixed, and the second needs its own clock, owner
-   and close. *Rejected:* `ticketStatus` etc. on `conversations/{id}`. That loses every closed issue,
-   and every message path already writes the conversation doc, so the ticket state would race the
-   hottest write in the app.
-2. **Top-level, not `conversations/{id}/tickets`.** The queue asks for all open tickets in a sub-account,
-   and the escalation job asks for all overdue tickets across tenants. A top-level collection answers
-   both with plain composite indexes, which is the same reasoning as `auditEvents` and
-   `dealStageHistory`. *Rejected:* a subcollection, which needs collection-group queries, indexes and
-   rules, and is orphaned when a conversation is deleted.
-3. **At most one open ticket per thread.** Create and reopen run in a transaction that reads
-   `conversation.openTicketId` and refuses with 409 when it is set. The Blitz export fits this model:
-   86 issues on 86 distinct contacts. *Rejected:* several concurrent tickets per thread, which is the
-   merge/split/link problem the programme defers (trigger: >5% duplicate tickets on Blitz after 30 days).
-4. **Every write goes through a server route. Clients have no write access to `tickets`.** Each state
-   change must emit an audit event, and a client write cannot guarantee that. *Rejected:* the
-   conversation model, where `status` and `starred` are client-writable. That is fine for a star and
-   not for a record of accountability.
-5. **The ticket owner is separate from the contact owner.** It defaults to the contact owner at
-   creation. *Rejected:* reusing `contact.assignedToUid` (the SP2 owner mirror). Handing a fault to a
-   support agent would silently change who owns the customer for sales.
-6. **No per-sub-account ticket numbers.** The doc id's first 6 characters are shown as a reference.
-   *Rejected:* a counter doc, which adds a hot contended write per create for a label that nothing
-   customer-facing uses yet. Add it when a ticket reference is sent to a customer.
-7. **Categories are a fixed list per sub-account, with enum-shaped ids.** The labels are free text.
-   Because the ids are enum-shaped, audit stores them unredacted. *Rejected:* free-text categories,
-   which fragment reporting and redact to `[redacted]` in audit.
+   customer reports a second fault after the first is fixed, and that fault needs its own clock, owner
+   and close. *Rejected:* ticket fields on `conversations/{id}`. That loses every closed issue, and every
+   message path writes the conversation doc.
+2. **Top-level, not `conversations/{id}/tickets`.** The queue and the escalation job both need
+   cross-thread queries. The collection follows `auditEvents` and `dealStageHistory`. *Rejected:* a
+   subcollection. It needs collection-group queries and indexes, and it is orphaned when a conversation
+   is deleted.
+3. **Tickets exist only on contact-keyed threads.** The close writes a tag on the contact, and web-chat
+   conversation ids are session keys (`web_{sessionId}`), not contact ids. *Rejected:* web-chat tickets
+   in W2. That is Later, with the trigger "a tenant answers support over web chat".
+4. **At most one open ticket per thread, enforced by a query inside the transaction.** Create, reopen
+   and the merge repoint all run `tx.get(tickets where conversationId == X and status in [open,
+   waiting_customer, waiting_third_party])` and refuse with 409 when it returns a row. The transaction
+   writes `openTicketId` as a cache. A close clears the cache **only if it still equals this ticket's
+   id**. The Blitz export fits this model: 86 issues on 86 distinct contacts. *Rejected:* the pointer as
+   the source of truth, because any path that forgets to clear it wedges the thread. *Rejected:* several
+   open tickets per thread, which is merge/split, a Later item.
+5. **Clients never write `tickets`.** Every change goes through a route that emits an audit event.
+   *Rejected:* client-writable status, as conversations have for `status` and `starred`.
+6. **The ticket owner is separate from the contact owner.** *Rejected:* reusing `contact.assignedToUid`.
+   Handing a fault to a support agent would silently change who owns the customer for sales.
+7. **No per-sub-account ticket numbers.** The UI shows the first 6 characters of the doc id.
+   *Rejected:* a counter doc, which is a contended write for a label nothing customer-facing uses.
+8. **Categories are a fixed list per sub-account, with enum-shaped ids.** Audit stores them unredacted.
+   *Rejected:* free-text categories.
 
 ## Statuses
 
 ```
-            create                 operator
+            create                 operator / macro
   (none) ─────────▶ open ◀────────────────────▶ waiting_customer
                      ▲  │ ◀── inbound message ──┘
                      │  │
-          operator   │  └──────────────────────▶ waiting_third_party   (operator both ways)
+          operator   │  └──────────────────────▶ waiting_third_party   (operator / macro, both ways)
                      │                                   │
-          reopen     │         close (any open state)    ▼
+          reopen     │   close: operator only            ▼
                      └──────────────────────────────  closed
 ```
 
-- **An inbound message on a `waiting_customer` ticket moves it back to `open`.** Otherwise a paused
-  clock stays paused after the customer has answered, and the ticket drops out of the working view.
-- **An inbound message on a `closed` ticket does nothing** apart from the usual unread count. A "thanks!"
-  must not reopen a ticket. The operator reopens it, or opens a new one.
-- **Reopening** is allowed when the thread has no other open ticket. The resolution clock resumes
-  from its accumulated time and is not reset.
-- *Rejected:* a separate `resolved` status before `closed`, which gives two states with no behaviour
-  between them. *Rejected:* a `new` status. "Not yet picked up" is `ownerUid == null`, and "not yet
-  answered" is `firstResponseAt == null`. Both are already on the ticket.
+- An inbound message on a `waiting_customer` ticket moves it to `open`.
+- An inbound message on a `closed` ticket does nothing apart from the usual unread count. A "thanks!"
+  must not reopen a ticket.
+- Reopen passes the same one-open-ticket check as create.
+- *Rejected:* a `resolved` status before `closed`, and a `new` status. "Not picked up" is
+  `ownerUid == null`, and "not answered" is `firstResponseAt == null`.
+
+## Territory
+
+A ticket is visible exactly where its contact is.
+
+- **Route guard.** Every ticket route (create, read, update, status, close, reopen) runs
+  `requireTicketAccess`. It checks, in order: the sub-account membership (as `requireContactAccessible`
+  does), the agency gate, then `territoryGate(access, ticket.territoryId)` from
+  `src/lib/auth/territory-filter.ts`. Create uses `territoryGateForContact`. A territory denial returns
+  **404**, not 403, so the response does not reveal that the ticket exists. `requireContactAccessible`
+  on its own checks no territory, which is why it is not enough.
+- **Moves re-stamp in the same transaction.** Both contact territory-move paths gain a tickets query in
+  the transaction they already run for conversations: `updateContactServerSide` in
+  `contacts-service.ts`, and `sub-accounts/[id]/contacts/[contactId]/territory/route.ts`. *Rejected:*
+  refreshing on the next ticket write, which leaves a moved contact's ticket readable in the old
+  territory.
+- **Rules:** `tickets` read = `canSeeScopedDoc(subAccountId, agencyId, territoryId)`, write = `false`.
+- **Queue queries** for a territory-scoped collaborator add the `territoryId in` constraint from
+  `territoryQueryPlan()` (`src/lib/firestore/territory-query.ts`), and the `empty` plan returns no rows.
+  Firestore rules are not filters, so an unfiltered query from a scoped user is refused outright.
+
+## Contact link, merge and delete
+
+- **Link/merge** (`api/contacts/[id]/link`, `mergeConversation`): in one transaction, repoint the stub's
+  tickets to the target (`conversationId`, `contactId`, `territoryId` from the target). If both sides
+  have an open ticket, the stub's ticket is closed with `closedBy: merge`, with no tag, and the target's
+  stays open. The target's `openTicketId` is then recomputed from the query and never copied from the
+  stub, because `...sc` in the adopt branch would otherwise carry the stub's pointer across.
+- **Delete** (`contact-delete.ts`): an open ticket is a **blocker**, in the same way the other blockers
+  there work. Closed tickets cascade with the contact, and each deletion writes a `ticket.deleted` audit
+  event. *Rejected:* cascading open tickets, which silently discards live support work.
 
 ## SLA clock
 
-**Business hours** come from the sub-account's existing `timezone` field, plus a weekly schedule and a
-holiday list in its service-desk settings (below). The default schedule is Mon–Fri 08:00–17:00 with no
-holidays. No holiday calendar ships in the product: this repo is a white-label template sold outside
-South Africa too, so each tenant enters its own dates.
+**Pilot (settled 3):** there are no hours and no targets. The queue shows **calendar age**, labelled as
+such, and nothing escalates. What follows applies once a tenant saves hours and targets.
 
-One pure module, `src/lib/service-desk/business-hours.ts`, provides `businessMsBetween(a, b, cal)` and
-`addBusinessMs(a, ms, cal)`. It uses `Intl`, as `schedule-time.ts` already does, so DST-zone buyers
-work.
+**Business hours:** the sub-account's existing `timezone`, a weekly schedule, and a holiday list,
+entered per tenant. No holiday calendar ships, because this is a white-label template. One pure module,
+`src/lib/service-desk/business-hours.ts`, provides `businessMsBetween(a, b, cal)` and
+`addBusinessMs(a, ms, cal)` on `Intl`. **The settings route rejects a schedule with zero open minutes a
+week**, and `addBusinessMs` throws after a bounded 400-day scan rather than looping.
+
+**Every ticket service takes an injected `now()`.** Timestamps and ages are computed from it. A test
+never sleeps, and a test never reads the wall clock.
 
 | Clock | Starts | Pauses | Stops |
 |---|---|---|---|
-| **First response** | `openedAt` | never | the first **human** outbound message on the thread after `openedAt` (see [Message hooks](#message-hooks)) |
-| **Resolution** | `openedAt` | while `waiting_customer` or `waiting_third_party` | `closed`. Reopen resumes it |
+| First response | `openedAt` | never | the first human reply **after `openedAt`** (see [Message hooks](#message-hooks)). A reply sent before the ticket existed does not count: the ticket measures from when it was raised |
+| Resolution | `openedAt` | in `waiting_customer` and `waiting_third_party` | `closed`. Reopen resumes the accumulated time |
 
-Resolution time is stored as accumulated business milliseconds (`activeBusinessMs`) plus
-`runningSince` while the clock runs. Age is `activeBusinessMs + businessMsBetween(runningSince, now)`.
-On each status transition the server settles the accumulator and recomputes both due times, or sets
-them to `null` while paused, so the escalation job can run an indexed query instead of calculating.
+**One rule for due times:** a due time is set only while that clock is running and a target exists.
+Otherwise it is `null`. Concretely:
 
-**Targets** are optional and set per priority in business minutes. With no targets set, the queue shows
-age only. `sla.exempt` (imports) shows age and never breaches or escalates.
+- `firstResponseDueAt` = `addBusinessMs(openedAt, target)`, set to `null` once `firstResponseAt` is
+  stamped, when the ticket closes, when it is `exempt`, and when no target exists. Pausing does not touch
+  it.
+- `resolutionDueAt` = `addBusinessMs(runningSince, target − activeMs)`, set to `null` while paused,
+  closed or exempt, and when no target exists.
+- **Recomputed** on every status transition, every priority change, reopen, and a settings save. A
+  settings save recomputes every non-closed ticket in the sub-account in batches.
+- **Reopen** resets `escalated.resolution` to `false`. `escalated.firstResponse` is kept, because the
+  first response already happened or already breached.
 
-**Breach → escalation task.** A QStash schedule runs every 15 minutes and queries
-`status in [open] and sla.resolutionDueAt <= now` (and the first-response equivalent). For each result it
-creates one internal task for the owner, or for the sub-account's admins when there is no owner, and
-sets `sla.escalated.<kind>` in the same transaction. That gives one task per ticket per breach kind.
-It is an internal write with no customer message, and its actor is `cron`.
+**Escalation** is PR5, built only when Hein sets targets for a tenant. A QStash schedule runs every 15
+minutes and queries `sla.resolutionDueAt <= now and sla.escalated.resolution == false`, and the
+first-response equivalent. No status filter is needed, because every non-running state has a `null` due
+time, which an inequality never matches. For each result it creates one task through
+`createTaskServerSide` and sets the escalated flag in the same transaction. The task goes to the owner,
+or to the sub-account's admins when there is no owner. **That task emits `task.created` to the tenant's
+webhook subscribers**, as every other task does. That is a tenant-configured integration, not a customer
+message, and the PR body states it. The actor is `cron`.
 
-### Decisions
-
-8. **Due times are stored, not computed at read time.** *Rejected:* scanning every open ticket on every
-   run to compute breach. That cost grows with tenants × tickets, and the QStash quota was already hit
-   once (memory: `project_qstash_quota_workflow_visibility`).
-9. **The first-response clock never pauses.** An operator who sets `waiting_customer` has usually just
-   asked the customer something, and that message stops the clock anyway. *Rejected:* pausing both
-   clocks, because a status change alone would then count as a "response".
-10. **Bot replies do not count as a first response.** The customer has not reached a person yet.
-    *Rejected:* counting the AI agent's reply, which would make every Velocity-style auto-answered
-    ticket meet its SLA at once.
+- **Due times are stored, not computed per run.** *Rejected:* scanning every open ticket per run. The
+  QStash cap was hit once already.
+- **Bot replies are not a first response.** *Rejected:* counting the AI agent's reply, which would meet
+  every SLA at once.
 
 ## Message hooks
 
-After `upsertConversationForMessage` commits, it calls a best-effort `onTicketThreadMessage` when
-`conversation.openTicketId` is set. It never runs inside the message transaction, so it can never break
-a send or a receive.
+After the conversation write commits, a best-effort `onTicketThreadMessage` runs when the thread has an
+open ticket. It is never inside the message transaction, so it cannot break a send or a receive.
 
-- `direction: "inbound"` and ticket `waiting_customer` → `open`. Clock resumes. Audit actor `system`.
-- `direction: "outbound"` and `pauseBot: true` (the flag that already marks a human reply) and
-  `firstResponseAt == null` → stamp `firstResponseAt`.
+- **Inbound** on `waiting_customer` → `open`, and the resolution clock resumes. Audit actor `system`.
+- **Human outbound** (`pauseBot: true` on the non-email rails) with `firstResponseAt == null` → stamp
+  it and null `firstResponseDueAt`.
 
-A failed hook is logged (`[tickets] thread hook failed …`), not retried. The failure shows up as a
-ticket left in `waiting_customer`, or as a first-response breach that did not happen. Both are visible
-to the operator, and neither sends anything.
+**Call sites:** `upsertConversationForMessage` (SMS, WhatsApp, Meta, web chat) **and
+`email-conversations.ts`**, which writes the conversation itself (~line 248) and bypasses the upsert.
+PR2 adds the hook there for inbound (IMAP sync) and outbound (the SMTP composer send, and outbound mail
+synced from the mailbox, both human). *Rejected:* declaring email out of scope. Blitz and Velocity
+customers email in, and a ticket on an email thread would silently never record a response.
 
-11. **The hook runs after the message transaction, not inside it.** *Rejected:* reading the ticket
-    inside the conversation upsert transaction. That transaction runs on every message in the app, and
-    making it longer for a feature most tenants do not use is the wrong trade.
+A failed hook is logged (`[tickets] thread hook failed …`), not retried. The ticket stays in
+`waiting_customer`, or keeps an unstamped first response. Both are visible and neither sends anything.
 
 ## Queue views
 
-A **Tickets** tab joins the Conversations tab strip (`ConversationsTabs`, beside Snippets) at
-`/sa/[id]/conversations/tickets`. It is a full-width data surface, as Snippets is. Clicking a row opens
-the thread in the normal split pane, with the ticket panel in the thread header. Conversations stays
-the work surface: the queue is a list of threads to go and work.
+A **Tickets** tab joins the Conversations tab strip, at `/sa/[id]/conversations/tickets`. It is a
+full-width data surface, as Snippets is. A row opens the thread with the ticket panel in its header.
 
-| View | Filter |
+| View | Filter (client-side over the loaded set) |
 |---|---|
-| Unassigned (default) | not closed, `ownerUid == null` |
-| Mine | not closed, `ownerUid == me` |
+| Unassigned (default) | not closed, no owner |
+| Mine | not closed, owner is me |
 | All open | `open` |
 | Waiting | `waiting_customer` · `waiting_third_party` |
-| Breaching | not closed, a due time within 1 business hour or already past |
-| Imported, needs triage | `source == import`, not closed, `sla.exempt` |
-| Closed | `closedAt` in the last 30 days, paged |
+| Breaching | a due time within 1 business hour or past. Empty in the pilot |
+| Imported, needs triage | `source == import`, not closed |
+| Closed | last 30 days, paged by `closedAt` |
 
-Columns: contact, subject, status, priority, category, owner, SLA age with a breach badge, and last
-message. The default sort is by earliest due time, then by oldest `openedAt`. Filters for priority and
-category run client-side over the loaded open set, the same way the SP2 inbox filters work.
+There is one live query for non-closed tickets, plus a paged closed query. Each exists in two shapes:
+an unscoped one, and one for scoped users with `territoryId in`. **Indexes:** `(subAccountId, status)`,
+`(subAccountId, territoryId, status)`, `(subAccountId, closedAt desc)`,
+`(subAccountId, territoryId, closedAt desc)`, `(conversationId, status)` for the one-open check, and
+PR5's `(sla.escalated.resolution, sla.resolutionDueAt)` and its first-response twin.
 
-12. **One query for every non-closed ticket in a sub-account, filtered client-side. Closed is paged.**
-    Blitz raised 86 issues in two months, so the open set stays small. *Rejected:* one indexed query
-    per view, which needs more composite indexes, and indexes are a manual deploy step that has
-    already gone wrong once.
-13. **Tickets is a tab under Conversations, not a new sidebar item.** This is programme decision 4.
-    *Rejected:* a separate Service Desk area, which would compete with the inbox for the same staff.
+*Rejected:* one indexed query per view, which means more indexes and more manual deploys. *Rejected:* a
+separate Service Desk nav area, which would compete with the inbox for the same staff (programme decision
+4).
 
 ## Permissions
 
-Behind a new agency gate, **`serviceDeskEnabledByAgency`** (default `false`, with all five steps of
-[feature-gates.md](../architecture/feature-gates.md)). With the gate off, the routes return 403, the tab
-and panel are hidden, and existing tickets are preserved.
+Everything sits behind a new agency gate, **`serviceDeskEnabledByAgency`** (default `false`, with all five
+steps of [feature-gates.md](../architecture/feature-gates.md)).
 
-| Actor | Read tickets | Create / change / close | Close with the resolved tag | Settings (hours, targets, categories, tag) |
+| Actor | Read | Create / change status / edit | Close (with or without the tag) | Settings |
 |---|---|---|---|---|
-| Agency owner | yes | yes | yes | yes |
-| Sub-account admin | yes | yes | yes | yes |
-| Collaborator | tickets on threads they can see (territory scoping, same as the conversation) | yes | yes | no |
-| API key | — | — (no public API in W2) | — | — |
-| AI agent (PR7, behind `serviceDeskAiTriageEnabledByAgency`) | its own sub-account | **priority and category only** | **never** | no |
-| Import script | — | creates `source: import` tickets | **never** | — |
+| Agency owner, sub-account admin | yes | yes | yes | yes |
+| Collaborator (the Blitz pilot) | within territory | within territory | within territory | no |
+| API key | — | — | — | — |
+| Macro (snippet) | — | status to `open` / `waiting_*` only | **never** | — |
+| Import script | — | creates `source: import` | closes the 7 Resolved only, **never tags** | — |
+| AI agent | — | — (AI triage is Later, below) | **never** | — |
 
-Rules: `tickets` read = `canSeeScopedDoc(subAccountId, agencyId, territoryId)`, write = `false`.
-Settings live on the sub-account doc as a `serviceDesk` map, written only by an admin route. The rule
-on the sub-account doc must not let a client write that key, and PR1 includes a rules test for it.
+Settings live on the sub-account doc in a `serviceDesk` map, written by an admin route. PR1 adds a rules
+test showing that a client cannot write that key.
 
-14. **AI may not change status, owner or close a ticket.** A close can start an outbound review flow,
-    and a status change moves the SLA. Both are human calls under programme decision 6. *Rejected:*
-    AI closing stale tickets. *Rejected:* AI opening tickets from inbound messages, which would flood
-    the queue. That is Later, with the trigger "operators open more than 50% of tickets from threads
-    the AI had already labelled as issues".
+### Support agent role (Later, spec only)
 
-### Support agent role (future)
-
-This is not built in W2. It is written down so the "custom roles" trigger has a spec to fire into
-(Needs Hein 1).
+The trigger is a support-desk member who must not see billing or deals. Hein settled that Blitz pilots
+without it.
 
 | Area | Support agent |
 |---|---|
-| Conversations, contacts (read, notes, tags), tickets, tasks, snippets | full, within their territories |
+| Conversations, contacts (read, notes, tags), tickets, tasks, snippets | full, within territory |
 | Contact delete, export, bulk actions | no |
 | Deals, pipelines, quotes, invoices, products, payments, Client Billing | no, not even read |
-| Workflows, AI agent config, settings, members, integrations | no |
-| Reports | ticket reports only |
+| Workflows, AI config, settings, members, integrations | no |
+
+### AI triage (Later)
+
+This covers AI setting priority and category behind a `serviceDeskAiTriageEnabledByAgency` gate, with
+an `ai_agent` audit row, and never status, owner or close. **Trigger:** the Blitz pilot has run 30 days
+and operators name manual categorising as a bottleneck. Opening tickets from inbound messages is a
+separate Later item, triggered when operators open more than half of their tickets from threads the AI
+had already flagged.
 
 ## Audit events
 
-These go through `recordAuditEvent` after the write commits, per
-[audit-events.md](../architecture/audit-events.md). There is one event per state change.
+Events go through `recordAuditEvent` after the write commits ([audit-events.md](../architecture/audit-events.md)),
+one per state change.
 
 | Action | When | `changes` |
 |---|---|---|
-| `ticket.created` | create, including import | `status`, `priority`, `categoryId`, `ownerUid`, `source` |
-| `ticket.updated` | priority, category, owner or subject edit | only the fields that changed. `subject` is always `[redacted]` |
-| `ticket.status_changed` | every status transition, including close and reopen | `status`. On close it also includes `resolvedTagApplied: true/false` |
-| `ticket.escalated` | SLA breach task created | `kind` (`first_response` / `resolution`) |
-| `service_desk.settings_updated` | settings saved | enum-shaped fields and targets. The tag name is kept when it is enum-shaped (`issue-resolved` is) |
+| `ticket.created` | create, import | `status`, `priority`, `categoryId`, `ownerUid`, `source` |
+| `ticket.updated` | priority, category, owner or subject | changed fields only. `subject` is always `[redacted]` |
+| `ticket.status_changed` | every transition, including close, reopen and merge-close | `status`. On close it also records `resolvedTag` (enum) and `closedBy` |
+| `ticket.deleted` | cascade with a contact delete | `status` |
+| `ticket.escalated` | PR5 | `kind` |
+| `service_desk.settings_updated` | settings save | enum-shaped fields and targets |
 
-Target type `ticket` (new) or `subAccount` (settings). Actors: `user` (the route), `ai_agent` (PR7),
-`cron` (escalation), and **`system`** for the inbound-message hook and the import.
+**Contract additions this needs from Lane C** (in `src/lib/audit/types.ts`, raised with Lane C rather
+than edited here):
 
-**Contract additions this needs from Lane C** (owned by `src/lib/audit/types.ts`, raised with Lane C
-rather than edited here):
-
-- a `system` actor type. Its `id` names the trigger, e.g. `inbound_message` or `import.ghl`. An inbound
-  message is not a cron job, a workflow or a user, and filing it under one of those would falsify the
-  record.
-- **staff uids kept unredacted.** Firebase uids are mixed-case, so the current rule redacts `ownerUid`,
-  and "who was this assigned to" becomes unanswerable. The proposal: a value in a field whose name ends
-  in `Uid` is stored when it matches the uid shape `[A-Za-z0-9]{20,128}`. Staff uids identify staff,
-  not customers.
-
-If Lane C declines the second one, owner changes still record `field: "ownerUid"` with redacted values,
-and the W3 audit centre cannot say who a ticket moved to.
+- a `system` actor type, for the inbound hook and the import.
+- **staff uids stored unredacted** in fields ending `Uid` that match `[A-Za-z0-9]{20,128}`. Without it,
+  `ownerUid` changes store `[redacted]` and the audit cannot say who a ticket moved to.
 
 ## Close → `issue-resolved`
 
-Nothing writes Blitz's or Velocity's `issue-resolved` tag today. The GHL "Service Issue Resolved - tag"
-flow is gone. The Post-Resolution drafts (trigger `contact.tag.added`, `trigger.tag: issue-resolved`,
-`reentry: once_ever`) need a writer. The ticket close is that writer, and it is opt-in on every close.
+**The state of the drafts, as read from production by the orchestrating session on 2026-09-21 (not
+re-read by this lane):** the four Post-Resolution-family drafts (Blitz PE, Blitz PTA, Blitz
+Post-Resolution, Velocity Post-Resolution) were patched to `trigger.tag` = their filter tag and
+`reentry: once_ever`. All four are **still drafts**, so a tag written today starts nothing. Nothing
+writes `issue-resolved` since GHL's "Service Issue Resolved - tag" flow stopped. The ticket close is
+the intended writer, and it is opt-in on every close.
 
-- **Settings:** `serviceDesk.resolvedTag` holds a tag name, or `null`. When it is `null` the checkbox
-  does not render.
-- **Close dialog:** the checkbox is *"Tag contact `issue-resolved`"* and is **unchecked on every open of
-  the dialog**. Under it, the dialog lists the **active** workflows whose `trigger.tag` equals that tag,
-  e.g. *"Starts: Blitz — Review Ask Post Resolution (sends WhatsApp)"*. When none is active it says
-  *"No active workflow uses this tag."* When the contact already carries the tag it says *"Already
-  tagged — no workflow will start"*, because the tag diff (`fireTagsAdded`) fires only on a newly added
-  tag.
-- **Server:** `POST /api/tickets/[id]/close { applyResolvedTag: boolean }`. The field is required, so a
-  missing value is a 400 and never a default. The tag is written through `updateContactServerSide`, so
-  the same tag diff fires `contact.tag.added` in live mode exactly as a manual tag does.
-- **Writes the tag only on the transition into `closed`.** A retried request, an edit to a closed
-  ticket, or a reopen followed by a close without the box ticked writes nothing.
-- **Never from:** the AI agent, the import, the escalation job, a reopen, or any bulk action (none ships).
+**Two engine facts the close has to account for** (`src/lib/workflows/engine.ts`, checked on `main`):
 
-15. **The tag write, not a direct enrolment.** Closing a ticket reuses the tag trigger the drafts already
-    listen on, so a tenant's workflow decides what "resolved" does. *Rejected:* the close calling the
-    workflow engine directly, which would hard-wire a review ask into the desk and bypass `reentry`.
-16. **Opt-in on every close, default off.** This is a settled fact from the programme. *Rejected:* a
-    per-tenant "always tag on close" setting, which is exactly the silent auto-send the programme
-    forbids.
-17. **The tag's `trigger.tag` hazard stays W1's gate.** The W1 spec already requires `trigger.tag` to
-    be set before any Post-Resolution flow is activated. Without it, *any* tag re-enrols a tagged
-    contact. The close dialog's workflow list shows the flows that match `trigger.tag` and lets the
-    operator see what will start. It does not replace W1's fix.
+- A `contact.tag.added` workflow **without `trigger.tag` starts on any newly added tag** (~line 1255), so
+  `issue-resolved` would enrol a contact in every such active workflow whose filters it passes.
+- `reentryAllows` **fails open** (~line 1321). If its `workflowRuns` read throws, it allows enrolment, so
+  `once_ever` is not a hard guarantee against asking a customer twice. The fix belongs to the engine, not
+  W2 (see [Open items](#open-items)).
 
-## Migration of Blitz's 86 GHL Service Issues (dry run only)
+**Dialog.** When `serviceDesk.resolvedTag` is `null`, the checkbox is not rendered. When it is set:
 
-`scripts/import-ghl-service-issues.ts`, modelled on the V1 WhatsApp backfill (`ghl-wa-backfill*`):
+- The checkbox *"Tag contact `issue-resolved`"* is **unchecked every time the dialog opens**.
+- Under it, the dialog lists every **active** workflow that `issue-resolved` would start: those with
+  `trigger.tag == resolvedTag` and those with **no `trigger.tag`**. Each is marked with whether it sends
+  to the customer.
+- **When any active `contact.tag.added` workflow on the sub-account has no `trigger.tag`, the checkbox
+  is disabled** and names those workflows: *"Set a trigger tag on these workflows before tagging from a
+  close."* *Rejected:* listing them and allowing the tag anyway. An untargeted workflow's reach depends on
+  its filters, which the operator cannot judge from a close dialog.
+- When the contact already carries the tag, the dialog says *"Already tagged — no workflow will start"*,
+  because `fireTagsAdded` fires only on a newly added tag.
 
-- **Reads** `~/Workspace/ApexSignal/ghl-export-data/blitz-fibre/opportunities.ndjson` and
-  `config/pipelines.json`, and keeps rows on the *Service Issues* pipeline.
-- **Resolves** each GHL `contactId` to a LeadStack contact through the GHL import's contact mapping (with
-  phone as a fallback), and checks that `conversations/{contactId}` exists.
-- **Maps stages** (subject to Needs Hein 2): Resolved → `closed`. New Issue, Diagnosing, Awaiting ISP /
-  Network and Site Visit Scheduled → `open`, with `categoryId: imported`, `sla.exempt: true` and the
-  original stage name kept as `subject`. `openedAt` = GHL `createdAt`.
-- **Reports** counts only: rows per stage and target status, contacts matched by mapping, contacts
-  matched by phone, contacts not found, threads with no conversation, and threads that already have an
-  open ticket. No names, numbers or bodies.
-- **Writes nothing.** The PR ships no write path. A later write needs Hein's approval of the dry-run
-  count, and then follows V1: `--write --confirm <n>`, deterministic doc ids (`ghl_<oppId>`), one
-  `ticket.created` audit event per row (actor `system:import.ghl`), and **no tag and no workflow
-  trigger**.
-- Contacts with no LeadStack match, or with no conversation, are reported and skipped. The script never
-  creates a contact or a conversation.
+**Server: `POST /api/tickets/[id]/close { applyResolvedTag: boolean }`.** The field is required, so a
+missing value is a 400. The steps run in this order:
+
+1. **Transaction:** re-read the ticket. When it is not open, return 409 and write nothing: a retried
+   request or a double click can never tag. Set it `closed` and null both due times. Clear the
+   conversation's `openTicketId` only if it equals this id. Set `resolvedTag` to `not_requested`, or to
+   `pending` when the tag was requested.
+2. **Audit** `ticket.status_changed`.
+3. **Only when requested:** re-check the untargeted-workflow refusal on the server, and set `refused`
+   when it trips. Otherwise write the tag through `updateContactServerSide`, so `fireTagsAdded` fires
+   `contact.tag.added` in live mode exactly as a manual tag does. Record `applied` or `already_tagged`.
+4. **When step 3 throws**, the ticket stays closed, `resolvedTag` becomes `failed`, the route returns 200
+   with `tagError`, and the panel says *"Ticket closed — tag not applied"*. The operator can add the tag
+   from the contact page. There is no automatic retry.
+
+- **Close before tag, not tag before close.** *Rejected:* tag first. If the close then failed, a review
+  ask would go out for a ticket still open. A closed ticket with a visible `failed` is recoverable by
+  hand.
+- **Write the tag, don't enrol directly.** The tenant's workflow decides what "resolved" does, and
+  `reentry` applies. *Rejected:* calling the engine from the close.
+- **Opt-in per close, default off.** *Rejected:* a per-tenant "always tag" setting.
+- **Never tags from:** a macro, the import, a merge-close, the escalation job, a reopen, or AI.
+
+## Migration of Blitz's 86 GHL Service Issues
+
+`scripts/import-ghl-service-issues.ts`, modelled on the V1 WhatsApp backfill (`ghl-wa-backfill*`).
+
+The source is `~/Workspace/ApexSignal/ghl-export-data/blitz-fibre/opportunities.ndjson` plus
+`config/pipelines.json`, dated 2026-08-09, keeping the *Service Issues* pipeline rows. Counts, read
+2026-09-21: New Issue 76, Resolved 7, Awaiting ISP / Network 2, Diagnosing 1, Site Visit Scheduled 0.
+All 86 are open in GHL, one per contact, and none is assigned.
+
+- **Mapping (settled 2):** Resolved → `closed` (`closedBy: user`, `resolvedTag: not_requested`,
+  `closedAt` = GHL `lastStageChangeAt`). The rest → `open`, with `sla.exempt: true` and
+  `categoryId: imported`, and the GHL stage name kept as `subject`. `openedAt` = GHL `createdAt`.
+- **Contacts** resolve through the GHL import's contact mapping, with phone as a fallback. The script
+  never creates a contact or a conversation. A row with no match or no conversation is reported and
+  skipped.
+- **Dry run (the default) reports counts only:** per stage and target status, matched by mapping or by
+  phone, unmatched, no conversation, and already has an open ticket. No names, numbers or bodies.
+- **Write** (after Hein approves the dry-run count): `--write --confirm <n>`, as V1 did.
+  Deterministic `ghl_<oppId>` ids, and the same one-open check per thread. One `ticket.created` event
+  per row (and a `status_changed` for the 7), actor `system:import.ghl`. **No tag, no workflow trigger
+  and no message**: tickets are written through the ticket service's import entry, which has no tag
+  path.
 
 ## Rollback
 
 | Lever | Effect |
 |---|---|
-| `serviceDeskEnabledByAgency` off | Routes return 403 and the tab, panel and hooks go quiet at once. Tickets are kept, so turning it back on resumes |
-| Revert a PR | Everything is additive: new collection, new nullable `openTicketId`, new settings map. Old code ignores all three |
-| Escalation (PR5) | Delete the QStash schedule **before** reverting, or it calls a 404 every 15 minutes |
-| Tags a close wrote | Stay on the contact. A review ask that already went out cannot be unsent, which is why the tag is opt-in on every close |
-| Import (future write) | Delete by `source == import` plus the `ghl_` doc-id prefix, and clear `openTicketId` on those conversations |
+| `serviceDeskEnabledByAgency` off | Routes return 403 and the tab, panel and hooks go quiet. Tickets are kept |
+| Revert a PR | Everything is additive: a new collection, a nullable cache field, a settings map |
+| PR5 | Delete the QStash schedule **before** reverting |
+| Tags a close wrote | They stay. A sent review ask cannot be unsent, which is why the tag is opt-in, disabled next to untargeted workflows, and applied only after the close commits |
+| Import write | Delete `source == import` tickets with the `ghl_` prefix, then recompute `openTicketId` on those threads |
 
 ## PR slices
 
-Each guarantee has a test that must fail when the guarded code is broken. Each PR body shows the test
-failing under that deliberate break (memory: `feedback_mutation_test_every_guard`). Tests go through the
-real route or the service seam, not only a helper beside it (memory: `feedback_test_the_seam_not_the_helper`).
+Each guarantee has a test that goes red when the guarded code is deliberately broken, and the PR body
+shows the red run (memory: `feedback_mutation_test_every_guard`). Tests drive the real route or service
+seam (`feedback_test_the_seam_not_the_helper`).
+
+**Concurrency tests run on real Firestore, not the in-memory fake,** because the fake does not serialise
+transactions. The Firestore emulator needs Java, which neither velo-server nor the CI runner has
+([audit-events.md](../architecture/audit-events.md) decision 8). These tests therefore run against the
+E2E fixture sub-account on the real project, as the E2E suite already does. Installing Java and the
+emulator on the runner is the alternative, and it is a CI change for Hein to approve.
 
 | PR | Scope | Guarantee → the test that must go red |
 |---|---|---|
-| **1** | Gate (5 steps), `tickets` model + service + routes (create, update, status, close, reopen), settings route, business-hours module, rules, audit actions. No UI | • **One open ticket per thread:** two concurrent creates on a thread give one 201 and one 409 (red if the `openTicketId` read moves out of the transaction) · • **Tenancy:** a create against another sub-account's conversation gives 404. Rules test: another sub-account's member, a collaborator outside the territory, and another agency's owner are all denied (red if the read rule drops `territoryId`) · • **Server-only:** rules test shows a client create, update and delete on `tickets` and a client write of `conversation.openTicketId` all denied · • **Audit:** each route writes exactly one event with enum values (red if any call is removed) · • **Gate:** gate off gives 403 on every route · • **Close is opt-in:** close with `applyResolvedTag: false` leaves `contact.tags` unchanged and fires no trigger (red if the default flips). A missing field gives 400. `true` adds the tag and fires `contact.tag.added` once. An already-tagged contact fires nothing. A second close gives 409 with no second write · • **Business hours:** overnight, weekend, holiday and a DST day in `America/New_York`, with `businessMsBetween` and `addBusinessMs` as exact inverses |
-| **2** | Message hooks in `upsertConversationForMessage` | Driven through the real upsert: a human reply stamps `firstResponseAt`, while a bot reply and an internal note do not (red if the `pauseBot` check is dropped). Inbound on `waiting_customer` moves the ticket to `open` and resumes the clock. Inbound on `closed` changes nothing. A hook that throws still leaves the message and conversation written |
-| **3** | Thread panel and close dialog (after the WA-media PRs merge) | E2E on the fixture: create a ticket from a thread, change priority, owner and category, and close with the box unticked. The contact's tags are unchanged. Close and reopen, tick the box, and the tag is present. The dialog lists an active workflow on that tag. The box is unticked each time the dialog opens (red if its state persists) |
-| **4** | Tickets tab with views and live SLA age, plus indexes | E2E: a new ticket appears in Unassigned, and after assigning it, in Mine. Age advances. `waiting_third_party` freezes age. A collaborator outside the territory does not see the ticket |
-| **5** | Escalation schedule | Two runs over one overdue ticket make one task (red if `sla.escalated` is not written in the same transaction). Paused, exempt and closed tickets are never escalated. Actor `cron` |
-| **6** | GHL Service Issues dry-run script | On a fixture export: the stage and target-status counts, the matched, unmatched and no-conversation counts, and **zero Firestore writes**, checked with a DB double that throws on any write (red if a write path is added). The script has no `--write` flag |
-| **7** | AI triage (priority and category) behind `serviceDeskAiTriageEnabledByAgency` | The AI actor is refused for status, owner and close (red if the refusal is removed). Gate off gives no writes. Each AI change has an `ai_agent` audit row |
-| **8** | Macros: a snippet may set a ticket status after it is sent (README: "snippets + status change") | Sending the snippet changes the status once and writes an audit event. It does nothing on a thread with no open ticket |
+| **1** | Gate, ticket service and routes (create, update, status, close, reopen), settings route, business-hours module, rules, territory guard and both move paths, link/merge and delete handling, audit actions. No UI | • **One open per thread** (real Firestore): two concurrent creates give one 201 and one 409. Red if the query moves out of the transaction. A stale `openTicketId` pointing at a closed ticket does not block a create. Red if the pointer is trusted · • **Territory**: an out-of-territory collaborator gets **404 on create, read, update, status, close and reopen**. Red if `territoryGate` is removed from `requireTicketAccess` · • **Territory move**: through each of the two move paths, the ticket's `territoryId` changes in the same commit. Red if either path's tickets query is removed · • **Merge**: a stub's open ticket moves to the target, and with two open tickets the stub's closes as `merge` with no tag · • **Delete**: an open ticket blocks a contact delete · • **Close**: `applyResolvedTag: false` leaves `contact.tags` unchanged and fires nothing. Red if the default flips. A missing field gives 400. `true` tags and fires once. An active untargeted `contact.tag.added` workflow gives `refused` and no tag. Red if the check is removed. A second close gives 409 with no tag. A throwing tag write leaves the ticket closed with `failed`. Close clears the pointer only when it matches · • **Audit**: one event per route call. Red if any is removed · • **SLA** (injected clock): the due-time rule for each state, recompute on priority change, settings save and reopen, a reopen that resets `escalated.resolution`, the zero-hours schedule refused, and `businessMsBetween` across overnight, weekend, holiday and a DST day in `America/New_York` |
+| **2** | Message hooks in `upsertConversationForMessage` and `email-conversations.ts` | Through each real writer: a human reply after `openedAt` stamps the response. A bot reply, an internal note, and a reply before `openedAt` do not. Red if the `pauseBot` check or the `openedAt` comparison is dropped. Inbound on `waiting_customer` gives `open`. Inbound on `closed` does nothing. A throwing hook still leaves the message written |
+| **3** | Thread panel and close dialog (after the WA-media PRs merge) | E2E: create a ticket, edit it, and close with the box unticked, leaving the tags unchanged. With an active untargeted workflow seeded, the checkbox is disabled and names it |
+| **4** | Tickets tab, views, calendar age, and indexes | E2E: Unassigned → assign → Mine. A scoped collaborator sees only in-territory tickets, and the query does not fail with permission-denied. Red if the `territoryId in` constraint is dropped |
+| **5** | Escalation (only when Hein sets targets) | Two runs over one overdue ticket make one task. Red if the flag is not in the same transaction. A null due time is never escalated. `task.created` is emitted once |
+| **6** | Import script, dry run | On a fixture export: the counts per bucket, and zero writes without `--write`, checked with a DB double that throws on write. Red if the dry-run path writes. With `--write --confirm` of the wrong number, it refuses |
+| **7** | Macros: a snippet may set status (`open` / `waiting_*`) after send | A macro status of `closed` is refused. Red if the enum allows it. A thread with no open ticket gets no change |
 
-PR3 and PR4 are UI and wait for the WA-media PRs (#144–#149), which own `conversation-thread.tsx` and
-the composer. PR1, PR2, PR5 and PR6 touch neither. PR7 and PR8 come after the Blitz pilot has run for a
-week, so there is real ticket data to triage.
+Dropped from the first draft as vacuous: "the script has no `--write` flag", which asserts an absence
+and cannot go red under a code break, and "`businessMsBetween` and `addBusinessMs` are exact inverses",
+which is false across closed hours. The rules test on `conversation.openTicketId` is kept only as a
+regression guard. Mutation proof for it is to add the key to the rule's allowed list.
 
-**Firestore deploy:** PR1 changes rules, and PR1 and PR4 change indexes. These are manual deploys: a
-union of every open branch, never chained with the check, and only on Hein's go (see the
-[programme gates](README.md#gates-that-stay-human)).
+PR3 and PR4 wait for the WA-media PRs. PR1 changes rules, and PR1 and PR4 change indexes: these are
+manual deploys, a union of every open branch, never chained with the check, and only on Hein's go.
 
 ## Proof of done (phase 2)
 
-On #1000: a thread becomes a ticket, sits in the Tickets queue with a live SLA age, and closes, with
-the tag box shown and left unticked. The audit stream has one row per change. The Blitz pilot follows
-once Blitz has a sendable channel (programme gate G1) and Needs Hein 1–3 are answered.
+On #1000: a thread becomes a ticket, sits in the queue with a live age, and closes with the tag box
+shown and left unticked. There is one audit row per change. The Blitz pilot follows once Blitz has a
+sendable channel (programme gate G1).
 
 ## Open items
 
-- A failed message hook is not retried (see [Message hooks](#message-hooks)). If the pilot shows missed
-  `firstResponseAt` stamps, the close path can backfill the stamp from the thread's messages.
-- `deleteSubAccountForAgency` must add `tickets` to its clean-up in PR1.
-- The ticket's `territoryId` is refreshed on ticket writes only. A contact moved to another territory
-  keeps its old ticket territory until the next ticket write.
+- **`reentryAllows` fails open.** An engine PR should make `once_ever` fail closed. That is outside W2,
+  and it is flagged for the W1 activation of the Post-Resolution flows.
+- `deleteSubAccountForAgency` must add `tickets` to its clean-up (PR1).
+- `mergeConversation` is not transactional today (a get, then a set). PR1's ticket repoint is
+  transactional on its own, but a merge racing a create can still leave the stub with a new ticket.
+  The next merge or a reopen finds it through the query.
+- Failed message hooks are not retried. If the pilot shows missed first-response stamps, the close can
+  backfill from the thread.
