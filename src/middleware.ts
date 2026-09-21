@@ -238,7 +238,8 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // for Paystack IS the signing key, so there is no separate webhook secret.
   /^\/api\/webhooks\/paystack\/sa\/[^/]+$/,
   // Paystack payment link: /pay/link/{token} (GET shows it, POST starts the
-  // checkout). Already under the `/pay` prefix; listed so it is findable.
+  // checkout). Already covered by the "/pay" entry in PUBLIC_PATHS (Client
+  // Billing's checkout prefix); listed here too so it is findable.
   // The signed token is the credential, and neither handler marks anything
   // paid — only the verified webhook above does.
   /^\/pay\/link\/[^/]+$/,

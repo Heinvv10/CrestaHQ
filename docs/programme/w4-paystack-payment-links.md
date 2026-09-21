@@ -15,13 +15,21 @@ paid only after Paystack's verified webhook, never because the customer came bac
 
 `paymentLinks/{id}`: `{ agencyId, subAccountId, createdByUid, invoiceId | null, contactId | null,
 description, amountCents, currency: "ZAR", token, active, status: "open" | "paid",
-paystackReference, payerEmail, paidAt, createdAt, updatedAt }`. Type:
+paystackReference, payerEmail, paidAt, extraPayments?, attention?, createdAt, updatedAt }`. Type:
 [`src/types/payment-links.ts`](../../src/types/payment-links.ts). Rules: member/owner read,
 no client writes (like `orders`). No composite index — the list is one equality filter sorted in
 memory.
 
+**Read rule has no territory clause — deliberate.** It mirrors `orders`, the other record of
+money taken. A territory clause would need every link to carry a `contactId`, and ad-hoc links
+have none. So a territory-scoped collaborator can *see* every link in the sub-account, which
+shows amounts and descriptions and nothing from contact records. They cannot create or
+deactivate a link for a contact outside their territory: both API routes run
+`territoryGateForContact`. Revisit if a tenant's territories hold data that must not be seen
+across territories.
+
 - **Invoice link** (`invoiceId` set): amount = the invoice total at creation, in cents. Only a
-  sent/viewed ZAR invoice qualifies. Description `Invoice INV-…`.
+  sent/viewed, unexpired ZAR invoice qualifies. Description `Invoice INV-…`.
 - **Ad-hoc link**: amount and description typed by the operator. Integer cents, R0.01–R1,000,000.
 - No expiry. The operator can deactivate (no reactivate in PR1).
 
@@ -29,12 +37,15 @@ memory.
 
 1. **Create** — `POST /api/sub-accounts/[id]/payment-links` (any member; territory gate on the
    invoice's contact). Needs `paymentsEnabledByAgency` and a stored Paystack key.
+   Deactivate: `PATCH …/[linkId]` `{active:false}`, with the same territory gate on the link's contact.
 2. **Pay** — `/pay/link/{token}`. The token is `{linkId}.{nonce}.{HMAC("paylink."…)}` and must
    equal the doc's `token`. GET shows description + amount and asks for an email (Paystack
    requires one). POST initializes a transaction with the **tenant's** secret key, the **doc's**
    amount, currency ZAR, and a fresh reference `pl-{linkId}-{16 hex}` per checkout (Paystack
-   refuses a repeated reference, and a customer may open the link twice). An invoice link is
-   refused if the invoice has since been paid or its total no longer equals the link's amount.
+   refuses a repeated reference, and a customer may open the link twice). Refused when the
+   agency has switched Payments off since (like the Stripe invoice pay route), and, for an
+   invoice link, when the invoice has been paid, has expired, or its total no longer equals the
+   link's amount.
 3. **Return** — Paystack redirects to `/pay/link/{token}?reference=…`. The page says
    "confirming" and writes nothing.
 4. **Reconcile** — `/api/webhooks/paystack/sa/[subAccountId]`, after its existing signature
@@ -46,23 +57,35 @@ memory.
 - Reference not `pl-…` → ignored (the tenant's Paystack may run other integrations).
 - Link missing, or `link.subAccountId` ≠ the webhook's sub-account → never paid, checked before
   Paystack is asked.
-- `GET /transaction/verify/:reference` with the tenant key; must return `status: success`, the
-  same reference, `amount === link.amountCents`, currency `ZAR`. The webhook body's own amount is
-  never used.
-- Marked paid in a Firestore transaction; a replay finds it paid and writes nothing. A second
-  successful payment with a different reference is logged for a refund and does not overwrite
-  the first.
-- Invoice links then call `markQuotePaidServerSide` — the same path as the manual button and the
-  Stripe reconciler. It runs on replays too (it is idempotent), so a redelivery finishes an
-  invoice whose first attempt failed after the link was marked.
-- Mismatch/foreign → log + 200. Only "could not reach Paystack" (network/5xx) answers 503 so
-  Paystack redelivers.
+- `GET /transaction/verify/:reference` with the tenant key. It must return `status: success`, the
+  same reference, `requested_amount === link.amountCents` and currency `ZAR`. `requested_amount`
+  is used because `amount` includes the fees when the customer pays them (PaystackOSS/openapi
+  `VerifyResponse`). The webhook body's own amount is never used.
+- **Not gated** on `paymentsEnabledByAgency`: money already taken is always recorded.
+- Marked paid in a Firestore transaction. A replay finds it paid and writes nothing. A second
+  successful payment with a different reference is added to `extraPayments` in the same
+  transaction, once only, and the list shows "Paid twice — refund owed". It never overwrites
+  the first payment.
+- The invoice step runs **only on the first paid transition**, so overlapping deliveries fire
+  the invoice's workflow and review triggers once. The step first re-checks the invoice. If it
+  is missing, already paid, or its total or currency no longer match the link, the link stays
+  paid and gets an `attention` message, and the invoice is not marked paid. Otherwise it calls
+  `markQuotePaidServerSide`, the same path as the manual button and the Stripe reconciler. A
+  refusal (for example the invoice went back to draft) or an exception also becomes
+  `attention`. The list shows it in red.
+- Verify failures: only a genuine not-found (HTTP 404, or 400 "…not found") is final and
+  answers 200. 429, 401/403 (rotated key), any other 4xx, 5xx and network errors answer 503, so
+  Paystack redelivers. `BillingError.providerStatus` carries Paystack's HTTP status, and Client
+  Billing's 400/502 mapping is unchanged. A mismatch or a foreign reference is logged and
+  answered 200.
 
 ## UI
 
 Quotes & invoices → **Payment links** (`/sa/[id]/quotes/payment-links`, `max-w-5xl`): ad-hoc form
-and every link with status, copy and deactivate. A sent invoice gets a **Paystack link** button
-next to Mark as paid. Both hide unless Paystack is connected.
+and every link with status, copy and deactivate, plus the refund-owed and attention notes. It
+shows a loading state first, and "Locked by your agency" when Payments is off. The **Payment
+links** button on the quotes page hides in that case. A sent invoice gets a **Paystack link**
+button next to Mark as paid. It hides unless Payments is on and Paystack is connected.
 
 ## Out of scope (PR2)
 
