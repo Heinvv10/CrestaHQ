@@ -18,7 +18,8 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ci:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm build",
+    "test:rules": "vitest run --config vitest.rules.config.mts",
+    "ci:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test && pnpm test:rules && pnpm build",
     "e2e": "playwright test",
     "e2e:server": "node scripts/assemble-standalone.mjs && node .next/standalone/server.js",
     "e2e:ui": "playwright test --ui"

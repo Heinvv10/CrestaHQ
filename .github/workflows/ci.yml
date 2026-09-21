@@ -77,6 +77,18 @@ jobs:
       - name: Tests
         run: pnpm test
 
+      # Evaluates the repo's firestore.rules through the Firebase Rules test
+      # API — nothing is deployed, no data is read. The Admin credential is
+      # scoped to this step only, so no unit test above can reach production
+      # Firestore with it. The spec fails, rather than skips, when CI is set
+      # and the credential is missing.
+      - name: Firestore rules tests
+        run: pnpm test:rules
+        env:
+          FIREBASE_ADMIN_PROJECT_ID: ${{ secrets.FIREBASE_ADMIN_PROJECT_ID }}
+          FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
+          FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
+
       # A real build. Typecheck alone misses build-time-only failures —
       # route-type validation, server/client boundary violations, bad imports
       # in a page that tsc is happy with.

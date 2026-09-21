@@ -894,6 +894,21 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---------- auditEvents (who changed what, on which tenant) ----------
+    // Append-only. Written only by recordAuditEvent() (src/lib/audit) via
+    // the Admin SDK, so every client write is refused — including an update
+    // or delete by the agency owner, or the trail could be edited by the
+    // people it records. Readable by the agency owner, and by an admin of
+    // the event's sub-account. Agency-level events carry
+    // `subAccountId: null` and are owner-only. Contract:
+    // docs/architecture/audit-events.md.
+    match /auditEvents/{eventId} {
+      allow read: if isAgencyOwner(resource.data.agencyId)
+        || (resource.data.subAccountId is string
+          && isSubAdmin(resource.data.subAccountId));
+      allow write: if false;
+    }
+
     // ---------- disputes (chargeback records) ----------
     // One doc per Stripe charge.dispute.created, written by the webhook
     // dispute handler via the Admin SDK; read server-side only by the agency
