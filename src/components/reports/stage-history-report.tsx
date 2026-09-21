@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { History } from "lucide-react";
 import type { PipelineDoc } from "@/types/deals";
-import type { StageHistoryReport as Report } from "@/lib/reports/stage-history";
+import { reportView, type StageHistoryReport as Report } from "@/lib/reports/stage-history";
 
 type Body = Report & { rowsRead: number; truncated: boolean };
 type Load = { state: "loading" } | { state: "error" } | { state: "ready"; body: Body };
@@ -79,7 +79,9 @@ export function StageHistoryReport({
         <div className="h-72 animate-pulse rounded-2xl bg-muted/30" />
       ) : load.state === "error" ? (
         <Empty text="Couldn't load stage history. Try again in a moment." />
-      ) : load.body.rowsRead === 0 ? (
+      ) : reportView(load.body) === "partial-empty" ? (
+        <Empty text="This range has more stage moves than one report reads, and none of those read are in your territories. Pick a shorter range." />
+      ) : reportView(load.body) === "empty" ? (
         <Empty text="No stage moves recorded in this range yet. Moves are tracked from when stage history went live; there is no backfill of older deals." />
       ) : (
         <Ready body={load.body} />
@@ -122,6 +124,7 @@ function Ready({ body }: { body: Body }) {
           </p>
           <HBars
             rows={stages.map((s) => ({
+              key: s.stageId,
               label: s.label,
               value: s.medianMs ?? 0,
               text: `${duration(s.medianMs)} · ${s.completedStays} stay${s.completedStays === 1 ? "" : "s"} · ${s.stillIn} still in`,
@@ -138,6 +141,7 @@ function Ready({ body }: { body: Body }) {
             rows={funnel
               .filter((s) => s.advanced !== null)
               .map((s) => ({
+                key: s.stageId,
                 label: s.label,
                 value: s.entered ? (s.advanced as number) / s.entered : 0,
                 text: s.entered
@@ -153,12 +157,12 @@ function Ready({ body }: { body: Body }) {
 }
 
 /** Horizontal bars: HTML labels (readable at phone width), each bar an inline SVG. */
-function HBars({ rows, max }: { rows: { label: string; value: number; text: string }[]; max?: number }) {
+function HBars({ rows, max }: { rows: { key: string; label: string; value: number; text: string }[]; max?: number }) {
   const top = Math.max(max ?? 0, ...rows.map((r) => r.value), 1e-9);
   return (
     <div className="space-y-2">
       {rows.map((r) => (
-        <div key={r.label}>
+        <div key={r.key}>
           <div className="mb-1 flex items-center justify-between gap-2 text-xs">
             <span className="truncate font-medium">{r.label}</span>
             <span className="shrink-0 tabular-nums text-muted-foreground">{r.text}</span>

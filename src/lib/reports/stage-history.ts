@@ -29,7 +29,11 @@ export interface StageStat {
   completedStays: number;
   /** Median length of those stays; null when there are none. */
   medianMs: number | null;
-  /** Deals that entered inside the range and had not left by its end. */
+  /**
+   * Deals whose latest row in range put them in this stage, import rows
+   * included — so a deal imported into the stage that never moved counts,
+   * and `stillIn` can exceed `entered` (which leaves import rows out).
+   */
   stillIn: number;
   /** Of `entered`, how many later entered a stage further along (lost excluded). */
   advanced: number | null;
@@ -49,6 +53,12 @@ export interface StageHistoryReport {
 
 /** Rows whose timing is not when the stage changed; they only close an open stay. */
 const TIMING_UNRELIABLE = new Set(["import"]);
+
+/** What the Stages tab shows: a partial scan is flagged even when nothing visible came back. */
+export function reportView(body: { rowsRead: number; truncated: boolean }): "ready" | "empty" | "partial-empty" {
+  if (body.rowsRead > 0) return "ready";
+  return body.truncated ? "partial-empty" : "empty";
+}
 
 export function median(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -103,8 +113,7 @@ export function computeStageHistoryReport(
     }
 
     let stillIn = 0;
-    for (const dealId of firstEntry.keys()) {
-      const l = latest.get(dealId)!;
+    for (const l of latest.values()) {
       if (l.pipelineId === pipelineId && l.stageId === stage.id) stillIn++;
     }
 

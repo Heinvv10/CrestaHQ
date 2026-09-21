@@ -120,6 +120,9 @@ beforeEach(() => {
   row("d18", null, null, "new", 7);
   row("d18", "new", 7, "qualified", 8);
   row("d18", "qualified", 8, "new", 9);
+  // d20 was imported straight into qualified (day 4) and never moved: no entry
+  // (import timing), but it IS still in qualified at range end.
+  row("d20", null, null, "qualified", 4, { source: "import" });
 
   // Rows that must NOT count for the collaborator on the default pipeline:
   row("x_other_sa", "new", -20, "qualified", 10, { subAccountId: OTHER_SA }); // 30d
@@ -150,7 +153,7 @@ describe("reconciliation (territory-scoped collaborator, default pipeline)", () 
     const { body } = await read();
     expect(body.stages.map((s: Body) => [s.stageId, s.entered, s.stillIn])).toEqual([
       ["new", 8, 4], // d1 d2 d3 d11 d15 d16 d18 x_import; d11 d15 d16 d18 still there (an import moved x_import on)
-      ["qualified", 5, 1], // d1 d2 d3 d4 d18 (not the import row); d2 still there
+      ["qualified", 5, 3], // d1 d2 d3 d4 d18 (no import rows); still there: d2, and x_import + d20 via import
       ["proposal", 3, 2], // d3 d15 d17 (not d14's import creation); d3 + d17 still there
       ["won", 4, 4], // d1 d12 d13 d14
       ["lost", 1, 1], // d4
@@ -199,6 +202,13 @@ describe("scope", () => {
     expect(body.stages.every((s: Body) => s.entered === 0 && s.medianMs === null)).toBe(true);
   });
 
+  it("a scoped collaborator whose capped scan held none of their rows still learns it was partial", async () => {
+    // The earliest SCAN_CAP + 1 rows of the range are all another territory's.
+    for (let i = 0; i <= SCAN_CAP; i++) row(`south${i}`, null, null, "new", 0.2, { territoryId: "t_south" });
+    const { body } = await read(`?from=${T0 + 0.1 * DAY}&to=${T0 + 10 * DAY}`);
+    expect(body).toMatchObject({ rowsRead: 0, truncated: true });
+  });
+
   it("flags a partial report past the scan cap", async () => {
     for (let i = 0; i <= SCAN_CAP; i++) row(`bulk${i}`, null, null, "new", 1);
     const { body } = await read();
@@ -219,6 +229,7 @@ describe("authorization and validation", () => {
     ["no to", `?from=${T0}`],
     ["to before from", `?from=${T0}&to=${T0 - 1}`],
     ["a bad pipeline id", `?pipelineId=../x&${RANGE}`],
+    ["a to past the Date range", `?from=${T0}&to=9000000000000000`],
   ])("refuses %s", async (_l, q) => {
     expect((await read(q)).status).toBe(400);
   });

@@ -106,7 +106,9 @@ The Reports page's **Stages** tab shows the result for the page's range and a ch
 
 **Rows read:** this sub-account, `mode == "live"`, `enteredAt` in `[from, to]`, every pipeline
 and every source, at most 5,000 (past that the report says it is partial and covers the
-earliest rows). A territory-scoped collaborator keeps only rows whose `territoryId` is one of
+earliest rows). The cap applies to rows *scanned*, before the territory filter, so a scoped
+collaborator can get zero visible rows from a truncated scan; the page then says the scan was
+partial rather than showing the empty state. A territory-scoped collaborator keeps only rows whose `territoryId` is one of
 theirs or `global`, the same test as the deal read rule. **Import rows** are read but only ever
 end a stay: they never time a stay, count as an entry, or count as a win (decision 7).
 
@@ -114,8 +116,10 @@ end a stay: they never time a stay, count as an entry, or count as a win (decisi
   non-null `fromStageEnteredAt`, not import: `enteredAt − fromStageEnteredAt`. So a stay
   counts when it *ends* in range, even if it began before the range. A deal that enters S
   twice has two stays. Even counts average the two middle values.
-- **Still in S** — deals whose latest row in range (import included) entered S of P. These are
-  not in the median; a censored stay would pull it down.
+- **Still in S** — deals whose latest row in range entered S of P, **import rows included**:
+  a deal imported straight into S that never moved counts. It is therefore not a subset of
+  *Entered S* (which leaves imports out) and can exceed it. These deals are not in the
+  median; a censored stay would pull it down.
 - **Entered S** — distinct deals with a non-import row entering S of P in range.
 - **Conversion from S** — of the deals that entered S, how many have a later non-import row
   entering a stage of P further along than S (after their first entry to S). Stage order is
@@ -140,6 +144,13 @@ Composite indexes added in PR2 (`firestore.indexes.json`, deploy is Hein-gated):
 |---|---|
 | `subAccountId` ASC, `mode` ASC, `enteredAt` ASC | rows in range (decision 1's composite). `source` and `pipelineId` are filtered in memory, because import rows must be read to end stays and a pipeline's stays can be ended by rows landing in another pipeline |
 | `subAccountId` ASC, `dealId` ASC | creation rows of the won deals (`dealId in [≤30]`) |
+
+The second index may be unnecessary. Firestore's index docs say `in` queries and compound `==`
+queries are served by the automatic single-field indexes (index merging). That covers
+`subAccountId ==` + `dealId in` with no `orderBy`, but the docs do not show the two combined, and
+it was not tried against a real project. It is kept because a missing index fails the whole
+report with `FAILED_PRECONDITION`, while an extra one costs one index entry per history row.
+Drop it once the query has been run without it.
 
 ## Decisions (PR2)
 
@@ -166,6 +177,12 @@ Composite indexes added in PR2 (`firestore.indexes.json`, deploy is Hein-gated):
   data is ever used to demo reports.
 - Row retention: rows are never deleted (see decision 6 and the sub-account clean-up above).
   Decide a retention policy if the collection grows large.
+- **Creation-row lookup cost.** Velocity reads each won deal's rows by `dealId` (chunks of
+  30, in parallel): one query per 30 wins, reading every row of those deals, not just the
+  creation row. Fine at current volumes; a `fromStageId == null` filter plus an index would
+  cut the reads if it grows.
+- **No rate limit** on the report route. Each call reads up to 5,000 rows plus the velocity
+  lookups, and it is member-gated only.
 - `createdByUid` on rows is not always a uid: it can be `apikey:<prefix>` or the workflow
   owner, and for imports it is the operator who ran the import. Reports that resolve names must handle every one of these.
 - The v1 PATCH now opens a transaction for field-only edits as well. That costs one extra

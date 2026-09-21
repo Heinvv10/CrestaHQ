@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeStageHistoryReport, median, type HistoryRow } from "./stage-history";
+import { computeStageHistoryReport, median, reportView, type HistoryRow } from "./stage-history";
 
 /** The route test reconciles the full fixture; these pin the two edge rules. */
 
@@ -13,6 +13,12 @@ const r = (p: Partial<HistoryRow>): HistoryRow => ({
 });
 
 describe("stage history maths", () => {
+  it("view: a truncated scan with no visible rows is partial, not empty", () => {
+    expect(reportView({ rowsRead: 0, truncated: true })).toBe("partial-empty");
+    expect(reportView({ rowsRead: 0, truncated: false })).toBe("empty");
+    expect(reportView({ rowsRead: 3, truncated: true })).toBe("ready");
+  });
+
   it("median: empty is null, odd takes the middle, even averages the two middles", () => {
     expect(median([])).toBeNull();
     expect(median([5, 1, 3])).toBe(3);

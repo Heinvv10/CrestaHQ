@@ -24,6 +24,8 @@ import { computeStageHistoryReport, type HistoryRow } from "@/lib/reports/stage-
 /** Rows read per request; past this the report says it is partial. */
 export const SCAN_CAP = 5000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** The largest epoch ms a Date can hold; past it `new Date()` is invalid. */
+const MAX_MS = 8.64e15;
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +51,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const from = Number(params.get("from"));
   const to = Number(params.get("to"));
   if (!params.get("from") || !Number.isFinite(from) || from < 0) return invalid("from");
-  if (!params.get("to") || !Number.isFinite(to) || to < from) return invalid("to");
+  if (!params.get("to") || !Number.isFinite(to) || to < from || to > MAX_MS) return invalid("to");
 
   const pipeline = await loadPipeline(id, pipelineId);
   if (!pipeline) return NextResponse.json({ error: "Pipeline not found" }, { status: 404 });
