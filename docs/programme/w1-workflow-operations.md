@@ -120,4 +120,4 @@ dead. Worth one read of the sync before assuming it runs.
 
 | Item | Date | Proof |
 |---|---|---|
-| | | |
+| Review drafts' trigger hazard fixed: the 4 drafts (Blitz PE, Blitz PTA, Blitz Post-Resolution, Velocity Post-Resolution) patched to `trigger.tag` = their filter tag, `reentry: once_ever`, still **draft** | 2026-09-21 | Orchestrator's production read, verified by re-reading the docs after the patch |

@@ -62,9 +62,13 @@ alternative it rejected.
 3. **Tickets exist only on contact-keyed threads.** The close writes a tag on the contact, and web-chat
    conversation ids are session keys (`web_{sessionId}`), not contact ids. *Rejected:* web-chat tickets
    in W2. That is Later, with the trigger "a tenant answers support over web chat".
-4. **At most one open ticket per thread, enforced by a query inside the transaction.** Create, reopen
-   and the merge repoint all run `tx.get(tickets where conversationId == X and status in [open,
-   waiting_customer, waiting_third_party])` and refuse with 409 when it returns a row. The transaction
+4. **At most one open ticket per thread, enforced by a query inside the transaction.** Create and
+   reopen run `tx.get(tickets where conversationId == X and status in [open, waiting_customer,
+   waiting_third_party])` and refuse with 409 when it returns a row. The merge repoint never refuses:
+   it closes the stub's ticket instead (see [Contact link, merge and delete](#contact-link-merge-and-delete)).
+   Create also runs `tx.get(conversationRef)` and `tx.get(contactRef)`. That puts a concurrent create on
+   a known document, so the conflict is deterministic. It also means a concurrent territory move
+   conflicts, so the ticket is never stamped with a stale territory. The transaction
    writes `openTicketId` as a cache. A close clears the cache **only if it still equals this ticket's
    id**. The Blitz export fits this model: 86 issues on 86 distinct contacts. *Rejected:* the pointer as
    the source of truth, because any path that forgets to clear it wedges the thread. *Rejected:* several
@@ -105,8 +109,9 @@ A ticket is visible exactly where its contact is.
 - **Route guard.** Every ticket route (create, read, update, status, close, reopen) runs
   `requireTicketAccess`. It checks, in order: the sub-account membership (as `requireContactAccessible`
   does), the agency gate, then `territoryGate(access, ticket.territoryId)` from
-  `src/lib/auth/territory-filter.ts`. Create uses `territoryGateForContact`. A territory denial returns
-  **404**, not 403, so the response does not reveal that the ticket exists. `requireContactAccessible`
+  `src/lib/auth/territory-filter.ts`. Create uses `territoryGateForContact`. Those helpers return 403
+  (`DENIAL_STATUS`), and `requireTicketAccess` **remaps a territory denial to 404**, so the response does
+  not reveal that the ticket exists. `requireContactAccessible`
   on its own checks no territory, which is why it is not enough.
 - **Moves re-stamp in the same transaction.** Both contact territory-move paths gain a tickets query in
   the transaction they already run for conversations: `updateContactServerSide` in
@@ -125,9 +130,18 @@ A ticket is visible exactly where its contact is.
   have an open ticket, the stub's ticket is closed with `closedBy: merge`, with no tag, and the target's
   stays open. The target's `openTicketId` is then recomputed from the query and never copied from the
   stub, because `...sc` in the adopt branch would otherwise carry the stub's pointer across.
-- **Delete** (`contact-delete.ts`): an open ticket is a **blocker**, in the same way the other blockers
-  there work. Closed tickets cascade with the contact, and each deletion writes a `ticket.deleted` audit
-  event. *Rejected:* cascading open tickets, which silently discards live support work.
+- **Contact delete** has two paths, and PR1 covers both:
+  - the dashboard path (`contact-delete.ts`, `findContactBlockers`): an open ticket is a **blocker**, as
+    the other blockers there are. Closed tickets are deleted with the contact, and each deletion writes a
+    `ticket.deleted` audit event.
+  - **`DELETE /api/v1/contacts/[id]`**, which does not use `findContactBlockers`. It unlinks and
+    cascades on its own, then calls `recursiveDelete`. PR1 adds the same open-ticket refusal (409) there,
+    and the same closed-ticket delete with `ticket.deleted` (actor `api_key`). Without that change, a v1
+    delete would leave the contact's tickets orphaned.
+  - *Rejected:* cascading open tickets, which silently discards live support work.
+- **Sub-account delete** (`deleteSubAccountForAgency`) is an emptiness guard: it refuses while any
+  `USAGE_COLLECTIONS` query finds a doc. PR1 adds `tickets` to `USAGE_COLLECTIONS` as a **blocker**, so a
+  sub-account with tickets cannot be deleted. It does not add tickets to a clean-up.
 
 ## SLA clock
 
@@ -157,7 +171,8 @@ Otherwise it is `null`. Concretely:
 - `resolutionDueAt` = `addBusinessMs(runningSince, target − activeMs)`, set to `null` while paused,
   closed or exempt, and when no target exists.
 - **Recomputed** on every status transition, every priority change, reopen, and a settings save. A
-  settings save recomputes every non-closed ticket in the sub-account in batches.
+  settings save recomputes each non-closed ticket **in its own transaction**, which re-reads the ticket,
+  so it cannot overwrite a status change that races it. *Rejected:* a blind batch.
 - **Reopen** resets `escalated.resolution` to `false`. `escalated.firstResponse` is kept, because the
   first response already happened or already breached.
 
@@ -181,13 +196,19 @@ After the conversation write commits, a best-effort `onTicketThreadMessage` runs
 open ticket. It is never inside the message transaction, so it cannot break a send or a receive.
 
 - **Inbound** on `waiting_customer` → `open`, and the resolution clock resumes. Audit actor `system`.
-- **Human outbound** (`pauseBot: true` on the non-email rails) with `firstResponseAt == null` → stamp
-  it and null `firstResponseDueAt`.
+- **Human outbound** with `firstResponseAt == null` → stamp it and null `firstResponseDueAt`. "Human"
+  means:
+  - on the non-email rails, `pauseBot: true`, the flag the operator send routes already set.
+  - on email, **`sentByUid` is set**, which only the composer's SMTP send path provides.
+    `email-conversations.ts` stores mailbox-synced mail as `createdByUid: "system:mailbox"` with
+    `sentByUid: null`. Sent-folder mail synced from the mailbox (out-of-office replies, mail-client rules,
+    anything sent outside LeadStack) therefore **does not stamp `firstResponseAt`**. *Rejected:* counting
+    synced Sent mail, because an auto-reply would then meet the SLA.
 
 **Call sites:** `upsertConversationForMessage` (SMS, WhatsApp, Meta, web chat) **and
 `email-conversations.ts`**, which writes the conversation itself (~line 248) and bypasses the upsert.
-PR2 adds the hook there for inbound (IMAP sync) and outbound (the SMTP composer send, and outbound mail
-synced from the mailbox, both human). *Rejected:* declaring email out of scope. Blitz and Velocity
+PR2 adds the hook there for inbound (IMAP sync) and outbound (only the composer's SMTP send counts as
+human; see above). *Rejected:* declaring email out of scope. Blitz and Velocity
 customers email in, and a ticket on an email thread would silently never record a response.
 
 A failed hook is logged (`[tickets] thread hook failed …`), not retried. The ticket stays in
@@ -232,8 +253,9 @@ steps of [feature-gates.md](../architecture/feature-gates.md)).
 | Import script | — | creates `source: import` | closes the 7 Resolved only, **never tags** | — |
 | AI agent | — | — (AI triage is Later, below) | **never** | — |
 
-Settings live on the sub-account doc in a `serviceDesk` map, written by an admin route. PR1 adds a rules
-test showing that a client cannot write that key.
+Settings live on the sub-account doc in a `serviceDesk` map, written by an admin route. A rules test that
+a client cannot write that key is **regression-only**: the existing sub-account rule already refuses it,
+so no PR1 code change can turn it red.
 
 ### Support agent role (Later, spec only)
 
@@ -374,13 +396,29 @@ transactions. The Firestore emulator needs Java, which neither velo-server nor t
 E2E fixture sub-account on the real project, as the E2E suite already does. Installing Java and the
 emulator on the runner is the alternative, and it is a CI change for Hein to approve.
 
+A race on real Firestore passes by luck unless the test forces the interleaving, so it does:
+
+- **A test-only barrier.** The ticket service takes an optional `afterRead` hook, which is `undefined` in
+  production. The test passes a barrier that holds both creates until both transactions have read. Both
+  then write, and one must retry and get 409. Moving the query out of the transaction makes both writes
+  succeed, so the mutation is reliably red.
+- **A known conflict document.** The create transaction reads the conversation doc (decision 4), so the
+  two creates always contend on that document.
+- **Fixture-only.** The test hard-refuses any `subAccountId` other than the E2E fixture's, and it checks
+  this before any write.
+- **A guarded teardown.** Teardown deletes only tickets carrying the test's own run marker, and it
+  re-checks the fixture id itself. A teardown runs even when setup threw (memory:
+  `feedback_playwright_teardown_runs_after_setup_throws`), so the teardown cannot rely on setup's checks.
+
+PR5's "two runs make one task" test needs the same barrier when it is built.
+
 | PR | Scope | Guarantee → the test that must go red |
 |---|---|---|
-| **1** | Gate, ticket service and routes (create, update, status, close, reopen), settings route, business-hours module, rules, territory guard and both move paths, link/merge and delete handling, audit actions. No UI | • **One open per thread** (real Firestore): two concurrent creates give one 201 and one 409. Red if the query moves out of the transaction. A stale `openTicketId` pointing at a closed ticket does not block a create. Red if the pointer is trusted · • **Territory**: an out-of-territory collaborator gets **404 on create, read, update, status, close and reopen**. Red if `territoryGate` is removed from `requireTicketAccess` · • **Territory move**: through each of the two move paths, the ticket's `territoryId` changes in the same commit. Red if either path's tickets query is removed · • **Merge**: a stub's open ticket moves to the target, and with two open tickets the stub's closes as `merge` with no tag · • **Delete**: an open ticket blocks a contact delete · • **Close**: `applyResolvedTag: false` leaves `contact.tags` unchanged and fires nothing. Red if the default flips. A missing field gives 400. `true` tags and fires once. An active untargeted `contact.tag.added` workflow gives `refused` and no tag. Red if the check is removed. A second close gives 409 with no tag. A throwing tag write leaves the ticket closed with `failed`. Close clears the pointer only when it matches · • **Audit**: one event per route call. Red if any is removed · • **SLA** (injected clock): the due-time rule for each state, recompute on priority change, settings save and reopen, a reopen that resets `escalated.resolution`, the zero-hours schedule refused, and `businessMsBetween` across overnight, weekend, holiday and a DST day in `America/New_York` |
-| **2** | Message hooks in `upsertConversationForMessage` and `email-conversations.ts` | Through each real writer: a human reply after `openedAt` stamps the response. A bot reply, an internal note, and a reply before `openedAt` do not. Red if the `pauseBot` check or the `openedAt` comparison is dropped. Inbound on `waiting_customer` gives `open`. Inbound on `closed` does nothing. A throwing hook still leaves the message written |
+| **1** | Gate, ticket service and routes (create, update, status, close, reopen), settings route, business-hours module, rules, territory guard and both move paths, link/merge and delete handling, audit actions. No UI | • **One open per thread** (real Firestore, barrier-forced, fixture-only): two concurrent creates give one 201 and one 409. Red if the query moves out of the transaction. A stale `openTicketId` pointing at a closed ticket does not block a create. Red if the pointer is trusted · • **Territory**: an out-of-territory collaborator gets **404 on create, read, update, status, close and reopen**. Red if `territoryGate` is removed from `requireTicketAccess` · • **Territory move**: through each of the two move paths, the ticket's `territoryId` changes in the same commit. Red if either path's tickets query is removed · • **Merge**: a stub's open ticket moves to the target, and with two open tickets the stub's closes as `merge` with no tag · • **Delete**: an open ticket blocks a contact delete through **both** the dashboard path and v1 `DELETE`, and a closed ticket is deleted with a `ticket.deleted` event. Red if the v1 check is removed. `tickets` blocks a sub-account delete · • **Close**: `applyResolvedTag: false` leaves `contact.tags` unchanged and fires nothing. Red if the default flips. A missing field gives 400. `true` tags and fires once. An active untargeted `contact.tag.added` workflow gives `refused` and no tag. Red if the check is removed. A second close gives 409 with no tag. A throwing tag write leaves the ticket closed with `failed`. Close clears the pointer only when it matches · • **Audit**: one event per route call. Red if any is removed · • **SLA** (injected clock): the due-time rule for each state, recompute on priority change, settings save and reopen, a reopen that resets `escalated.resolution`, the zero-hours schedule refused, and `businessMsBetween` across overnight, weekend, holiday and a DST day in `America/New_York` |
+| **2** | Message hooks in `upsertConversationForMessage` and `email-conversations.ts` | Through each real writer: a human reply after `openedAt` stamps the response. A bot reply, a reply before `openedAt`, and a mailbox-synced Sent email with no `sentByUid` do not. Red if the `pauseBot` check, the `sentByUid` check or the `openedAt` comparison is dropped. (An internal note never reaches either writer, so it has no test here.) Inbound on `waiting_customer` gives `open`. Inbound on `closed` does nothing. A throwing hook still leaves the message written |
 | **3** | Thread panel and close dialog (after the WA-media PRs merge) | E2E: create a ticket, edit it, and close with the box unticked, leaving the tags unchanged. With an active untargeted workflow seeded, the checkbox is disabled and names it |
 | **4** | Tickets tab, views, calendar age, and indexes | E2E: Unassigned → assign → Mine. A scoped collaborator sees only in-territory tickets, and the query does not fail with permission-denied. Red if the `territoryId in` constraint is dropped |
-| **5** | Escalation (only when Hein sets targets) | Two runs over one overdue ticket make one task. Red if the flag is not in the same transaction. A null due time is never escalated. `task.created` is emitted once |
+| **5** | Escalation (only when Hein sets targets) | Two barrier-forced concurrent runs over one overdue ticket make one task. Red if the flag is not in the same transaction. A null due time is never escalated. `task.created` is emitted once |
 | **6** | Import script, dry run | On a fixture export: the counts per bucket, and zero writes without `--write`, checked with a DB double that throws on write. Red if the dry-run path writes. With `--write --confirm` of the wrong number, it refuses |
 | **7** | Macros: a snippet may set status (`open` / `waiting_*`) after send | A macro status of `closed` is refused. Red if the enum allows it. A thread with no open ticket gets no change |
 
@@ -402,7 +440,6 @@ sendable channel (programme gate G1).
 
 - **`reentryAllows` fails open.** An engine PR should make `once_ever` fail closed. That is outside W2,
   and it is flagged for the W1 activation of the Post-Resolution flows.
-- `deleteSubAccountForAgency` must add `tickets` to its clean-up (PR1).
 - `mergeConversation` is not transactional today (a get, then a set). PR1's ticket repoint is
   transactional on its own, but a merge racing a create can still leave the stub with a new ticket.
   The next merge or a reopen finds it through the query.
