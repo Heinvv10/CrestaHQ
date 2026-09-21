@@ -51,7 +51,8 @@ vi.mock("@/lib/firebase/admin", () => ({
         data: () => templateDoc,
       }),
     }),
-    collection: () => ({ doc: () => ({ id: "x" }) }),
+    collection: () => ({ doc: () => ({ id: "x", set: async () => {} }) }),
+    runTransaction: async () => undefined,
   }),
 }));
 
@@ -116,6 +117,8 @@ const ctx = (
     subAccountId: "sa_1",
     agencyId: "ag_1",
     createdByUid: "u_1",
+    workflowId: "wf1",
+    runId: "run1",
     triggerContext: {},
   }) as Parameters<typeof execWhatsappTemplate>[0];
 

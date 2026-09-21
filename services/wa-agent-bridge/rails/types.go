@@ -54,7 +54,8 @@ type Media struct {
 	// titled with. Required whenever Media is set.
 	Filename string
 	// MimeType decides the message shape: image/* is sent as an ImageMessage
-	// so it renders inline, everything else as a DocumentMessage.
+	// and video/* as a VideoMessage so they render inline, everything else as
+	// a DocumentMessage.
 	MimeType string
 	Data     []byte
 }

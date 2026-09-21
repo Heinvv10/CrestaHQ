@@ -1,6 +1,5 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
@@ -23,6 +22,7 @@ import {
 } from "@/lib/webhooks/event-categories";
 import { WEBHOOK_EVENT_TYPES, type WebhookEventType } from "@/types/webhooks";
 import { createSubAccountForAgency } from "@/lib/server/sub-accounts-service";
+import { applyFeatureGates, type AgencyGateField } from "@/lib/server/feature-gates-service";
 import {
   assignPlanToSubAccount,
   BillingError,
@@ -51,6 +51,7 @@ import {
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import {
   createDealServerSide,
+  DealStageError,
   updateDealServerSide,
 } from "@/lib/server/deals-service";
 import {
@@ -224,6 +225,12 @@ function textToBodyHtml(text: string): string {
 
 const STAGE_IDS = PIPELINE_STAGES.map((s) => s.id);
 
+/** A stage the deal's pipeline lacks is the user's mistake, not a crash. */
+function rethrowStageError(err: unknown): never {
+  if (err instanceof DealStageError) throw new CapabilityUserError(err.message);
+  throw err;
+}
+
 function fmtMoney(value: number, currency: string): string {
   return `${currency} ${value.toLocaleString("en-US")}`;
 }
@@ -386,6 +393,14 @@ const FEATURE_GATES: Record<
   google: {
     field: "googleEnabledByAgency",
     label: "Google Business Profile connection",
+  },
+  "google-calendar": {
+    field: "googleCalendarEnabledByAgency",
+    label: "Google Calendar sync (per team member)",
+  },
+  "reviews-ai": {
+    field: "reviewsAiEnabledByAgency",
+    label: "Reviews AI (sentiment and reply drafts)",
   },
   // Get Leads is PARKED — while the flag is on the assistant can't flip (or
   // report) its gate, matching the hidden Manage-dialog toggle. When
@@ -614,9 +629,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That sub-account wasn't found in this agency."
         );
       }
-      await ref.update({
-        [g.field]: args.enabled,
-        updatedAt: FieldValue.serverTimestamp(),
+      // The same chokepoint the Manage dialog's route uses, so a gate's side
+      // effects (e.g. Google off → the synced review cache is deleted) hold
+      // on this path too.
+      await applyFeatureGates(snap.id, {
+        [g.field as AgencyGateField]: args.enabled as boolean,
       });
       const name =
         (snap.data()?.name as string) || (args.subAccountName as string);
@@ -1514,21 +1531,14 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         },
         stage: {
           type: "string",
-          enum: STAGE_IDS,
-          description: "Optional pipeline stage to filter by.",
+          description: `Optional pipeline stage id to filter by (default pipeline: ${STAGE_IDS.join(", ")}; other pipelines define their own).`,
         },
       },
       additionalProperties: false,
     },
     validate: (raw) => {
       const query = str(raw, "query").slice(0, 120);
-      const stage = str(raw, "stage");
-      if (stage && !STAGE_IDS.includes(stage as PipelineStageId)) {
-        return {
-          ok: false,
-          error: `stage must be one of: ${STAGE_IDS.join(", ")}`,
-        };
-      }
+      const stage = str(raw, "stage").slice(0, 40);
       if (!query && !stage) {
         return { ok: false, error: "a title fragment or a stage is required" };
       }
@@ -1605,8 +1615,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         },
         stage: {
           type: "string",
-          enum: STAGE_IDS,
-          description: "Optional starting stage. Defaults to 'new'.",
+          description: `Optional starting stage id on the default pipeline (${STAGE_IDS.join(", ")}, or a stage the admin added). Defaults to 'new'.`,
         },
       },
       required: ["title", "value", "contactId", "contactName"],
@@ -1643,13 +1652,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           error: "the currency must be a 3-letter code like USD",
         };
       }
-      const stage = str(raw, "stage") || "new";
-      if (!STAGE_IDS.includes(stage as PipelineStageId)) {
-        return {
-          ok: false,
-          error: `stage must be one of: ${STAGE_IDS.join(", ")}`,
-        };
-      }
+      const stage = (str(raw, "stage") || "new").slice(0, 40);
       return {
         ok: true,
         args: {
@@ -1677,6 +1680,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That contact wasn't found in this workspace."
         );
       }
+      // The service validates the stage against the default pipeline.
       const res = await createDealServerSide({
         subAccountId: ctx.subAccountId!,
         agencyId: ctx.agencyId,
@@ -1688,13 +1692,13 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         contactId: args.contactId as string,
         stageId: args.stage as PipelineStageId,
         priority: "medium" as DealPriority,
-      });
+      }).catch(rethrowStageError);
       return {
         resultText: `Created the deal “${args.title}” (${fmtMoney(
           args.value as number,
           args.currency as string
         )}) for ${args.contactName} in ${
-          getStage(args.stage as PipelineStageId).label
+          res.stage.label
         }. You'll see it on the Pipeline board.`,
         ref: { kind: "deal", id: res.id },
       };
@@ -1720,12 +1724,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         },
         stage: {
           type: "string",
-          enum: STAGE_IDS,
-          description: "The stage to move the deal to.",
+          description: `A stage id of the deal's own pipeline (the default pipeline's are ${STAGE_IDS.join(", ")}; other pipelines define their own). Its Won / Lost stages close the deal.`,
         },
         lostReason: {
           type: "string",
-          description: "Short reason, only when moving to 'lost'.",
+          description: "Short reason, only when moving to the pipeline's Lost stage.",
         },
       },
       required: ["dealId", "dealTitle", "stage"],
@@ -1740,13 +1743,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
             "the deal id is required — I need to find it first (find_deals)",
         };
       }
-      const stage = str(raw, "stage");
-      if (!STAGE_IDS.includes(stage as PipelineStageId)) {
-        return {
-          ok: false,
-          error: `stage must be one of: ${STAGE_IDS.join(", ")}`,
-        };
-      }
+      const stage = str(raw, "stage").slice(0, 40);
+      if (!stage) return { ok: false, error: "a stage id is required" };
       return {
         ok: true,
         args: {
@@ -1757,10 +1755,12 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         },
       };
     },
+    // The stage label lives on the deal's pipeline, which this pure
+    // summary cannot read — show the id; the result text shows the label.
     summarize: (args) =>
-      `Move the deal “${args.dealTitle || args.dealId}” to ${
-        getStage(args.stage as PipelineStageId).label
-      }${args.lostReason ? ` (reason: ${args.lostReason})` : ""}.`,
+      `Move the deal “${args.dealTitle || args.dealId}” to stage "${args.stage}"${
+        args.lostReason ? ` (reason: ${args.lostReason})` : ""
+      }.`,
     execute: async (ctx, args) => {
       // The deal id came from the model — verify it's in THIS workspace.
       const snap = await getAdminDb()
@@ -1771,22 +1771,26 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That deal wasn't found in this workspace."
         );
       }
-      const stage = args.stage as PipelineStageId;
-      await updateDealServerSide({
+      // The service validates the stage against the deal's OWN pipeline
+      // and only keeps lostReason when landing on its Lost stage.
+      const moved = await updateDealServerSide({
         dealId: snap.id,
         userId: ctx.uid,
         expectedSubAccountId: ctx.subAccountId!,
         patch: {
-          stageId: stage,
-          ...(stage === "lost"
-            ? { lostReason: (args.lostReason as string) || null }
-            : {}),
+          stageId: args.stage as string,
+          lostReason: (args.lostReason as string) || null,
         },
-      });
+      }).catch(rethrowStageError);
+      if (!moved) {
+        throw new CapabilityUserError(
+          "That deal wasn't found in this workspace."
+        );
+      }
       const title =
         (snap.data()?.title as string) || (args.dealTitle as string);
       return {
-        resultText: `Moved “${title}” to ${getStage(stage).label}.`,
+        resultText: `Moved “${title}” to ${moved.stage.label}.`,
         ref: { kind: "deal", id: snap.id },
       };
     },

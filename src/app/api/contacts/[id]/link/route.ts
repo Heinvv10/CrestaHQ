@@ -5,6 +5,7 @@ import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { emitContactDeleted } from "@/lib/server/contacts-service";
+import { contactMirror } from "@/lib/server/conversation-mirror";
 import type { Contact } from "@/types/contacts";
 
 /**
@@ -85,7 +86,10 @@ async function mergeConversation(
   db: FirebaseFirestore.Firestore,
   stubId: string,
   targetId: string,
-  target: Pick<Contact, "name" | "phone">,
+  target: Pick<
+    Contact,
+    "name" | "phone" | "email" | "assignedToUid" | "territoryId"
+  >,
 ): Promise<void> {
   const stubConvRef = db.doc(`conversations/${stubId}`);
   const targetConvRef = db.doc(`conversations/${targetId}`);
@@ -95,11 +99,17 @@ async function mergeConversation(
 
   if (!t.exists) {
     // Survivor had no conversation — adopt the stub's, re-keyed to the survivor.
+    // Everything copied off the CONTACT is re-stamped from the survivor: its
+    // owner + email (SP2 T1/I9 mirror) and its territory. `...sc` alone would
+    // leave the stub's — a thread filed under the wrong owner, and readable
+    // by whoever could see the stub's territory rather than the survivor's.
     await targetConvRef.set({
       ...sc,
       contactId: targetId,
       contactName: target.name ?? (sc.contactName as string) ?? "",
       contactPhone: target.phone || (sc.contactPhone as string) || null,
+      ...contactMirror(target),
+      territoryId: target.territoryId ?? null,
       updatedAt: FieldValue.serverTimestamp(),
     });
   } else {
@@ -116,6 +126,8 @@ async function mergeConversation(
         ((tc.unreadCount as number) ?? 0) + ((sc.unreadCount as number) ?? 0),
       updatedAt: FieldValue.serverTimestamp(),
     };
+    // A star on either side survives the merge (SP2 I6).
+    if (tc.starred === true || sc.starred === true) patch.starred = true;
     // Adopt the stub's "last message" fields only when they're newer.
     if (tsMillis(sc.lastMessageAt) > tsMillis(tc.lastMessageAt)) {
       patch.lastChannel = sc.lastChannel;
@@ -231,6 +243,9 @@ export async function POST(
   await mergeConversation(db, stubId, targetId, {
     name: target.name,
     phone: target.phone,
+    email: target.email,
+    assignedToUid: target.assignedToUid,
+    territoryId: target.territoryId,
   });
 
   // 4. Survivor gains the Meta identity (idempotent if already equal).

@@ -88,6 +88,8 @@ it.each([
   { contactId: 3 },
   { contactId: "c", subject: "bad\r\nBcc: hacked", body: "Hi" },
   { contactId: "c", subject: "Hello", body: "Hi", references: ["x\r\ny"] },
+  // Legal for mailparser, refused here — why email-reply.ts leaves such IDs off.
+  { contactId: "c", subject: "Hello", body: "Hi", inReplyTo: "<1234567>" },
 ])("rejects malformed payload safely", async (body) => {
   expect((await post(body)).status).toBe(400);
   expect(m.send).not.toHaveBeenCalled();

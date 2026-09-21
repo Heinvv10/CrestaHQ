@@ -17,6 +17,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToForms, createForm } from "@/lib/firestore/forms";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
+import { SaveToLibraryButton } from "@/components/templates/save-to-library-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -156,6 +157,7 @@ export default function FormsPage() {
             <FormCard
               key={form.id}
               form={form}
+              subAccountId={subAccountId}
               editHref={saPath(`/forms/${form.id}`)}
               onCopy={() => copyLink(form)}
               onDelete={() => handleDelete(form)}
@@ -207,11 +209,13 @@ export default function FormsPage() {
 
 function FormCard({
   form,
+  subAccountId,
   editHref,
   onCopy,
   onDelete,
 }: {
   form: LeadForm;
+  subAccountId: string;
   editHref: string;
   onCopy: () => void;
   onDelete: () => void;
@@ -265,6 +269,13 @@ function FormCard({
           <ExternalLink className="mr-1 h-3.5 w-3.5" />
           Preview
         </Button>
+        <SaveToLibraryButton
+          subAccountId={subAccountId}
+          kind="form"
+          entityId={form.id}
+          entityName={form.name}
+          iconOnly
+        />
         <Button
           size="sm"
           variant="ghost"

@@ -1,6 +1,7 @@
 import {
   CUSTOM_FIELD_OPTION_TYPES,
   CUSTOM_FIELD_TYPE_LABELS,
+  MAX_CUSTOM_FIELDS_PER_ENTITY,
   type CustomFieldDef,
   type CustomFieldDefInput,
   type CustomFieldEntity,
@@ -18,6 +19,19 @@ export type Validated<T> = { ok: true; value: T } | { ok: false; error: string }
 
 const FIELD_TYPES = Object.keys(CUSTOM_FIELD_TYPE_LABELS) as CustomFieldType[];
 const FIELD_TYPE_SET = new Set<string>(FIELD_TYPES);
+
+export function validateCustomFieldCapacity(
+  existingCount: number,
+  entity: CustomFieldEntity,
+): { ok: true } | { ok: false; error: string } {
+  if (existingCount >= MAX_CUSTOM_FIELDS_PER_ENTITY) {
+    return {
+      ok: false,
+      error: `At most ${MAX_CUSTOM_FIELDS_PER_ENTITY} custom fields per ${entity}.`,
+    };
+  }
+  return { ok: true };
+}
 
 /**
  * Derive a stable snake_case key from a label. Uniqueness within

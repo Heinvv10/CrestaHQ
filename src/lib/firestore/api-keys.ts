@@ -44,6 +44,10 @@ function snapToDoc(
     scopes: data.scopes ?? [],
     defaultVersion:
       typeof data.defaultVersion === "string" ? data.defaultVersion : undefined,
+    enrolmentCapPerHour:
+      typeof data.enrolmentCapPerHour === "number"
+        ? data.enrolmentCapPerHour
+        : undefined,
     createdByUid: data.createdByUid,
     createdAt: tsToDate(data.createdAt) ?? new Date(0),
     lastUsedAt: tsToDate(data.lastUsedAt),

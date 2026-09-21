@@ -5,6 +5,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { segmentInfo } from "@/lib/comms/sms-segments";
 import { checkQuota, recordUsage } from "@/lib/server/usage-meter";
+import { sendSmsVia } from "@/lib/comms/sms/select";
+import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
 import type { SubAccountDoc, TwilioConfig } from "@/types";
 
 /**
@@ -264,11 +266,17 @@ export async function sendSmsForSubAccount({
   if (!quota.allowed && quota.error) throw quota.error;
   const resolved = await getTwilioForSubAccount(subAccountId, subAccount);
   try {
-    const msg = await resolved.client.messages.create({
-      from: resolved.fromNumber,
-      to,
-      body,
-    });
+    // The only seam between here and an actual carrier — see
+    // src/lib/comms/sms/select.ts. Everything above/below this call is
+    // unchanged; in real mode it's exactly the previous
+    // `resolved.client.messages.create(...)`.
+    const msg = await sendSmsVia(subAccountId, { to, body }, () =>
+      resolved.client.messages.create({
+        from: resolved.fromNumber,
+        to,
+        body,
+      }),
+    );
     void recordUsage({
       subAccountId,
       unit: "smsSegments",
@@ -278,7 +286,7 @@ export async function sendSmsForSubAccount({
     return { sid: msg.sid, mode: resolved.mode, from: resolved.fromNumber };
   } catch (err) {
     if ((err as { code?: number })?.code === 21610) {
-      throw new SmsRecipientUnsubscribedError(to);
+      throw markProviderAttempted(new SmsRecipientUnsubscribedError(to));
     }
     throw err;
   }
@@ -329,7 +337,7 @@ export async function sendWhatsappForSubAccount({
     from,
     to: toWhatsappAddress(to),
     body,
-  });
+  }).catch(rethrowAttempted);
   void recordUsage({
     subAccountId,
     unit: "whatsappMessages",
@@ -391,7 +399,7 @@ export async function sendWhatsappTemplateForSubAccount({
     to: toWhatsappAddress(to),
     contentSid,
     contentVariables: JSON.stringify(varMap),
-  });
+  }).catch(rethrowAttempted);
   void recordUsage({
     subAccountId,
     unit: "whatsappMessages",

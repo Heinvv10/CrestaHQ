@@ -2,22 +2,42 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import type { DocumentSnapshot } from "firebase-admin/firestore";
+import type { DocumentSnapshot, Firestore } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { resolveAgent } from "@/lib/comms/ai/agent";
 import { maybeRespondWithAi } from "@/lib/comms/ai/respond";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { verifyMetaSignature, metaWebhookVerifyToken } from "@/lib/comms/meta";
+import { fetchCloudMedia } from "@/lib/comms/whatsapp/cloud-media";
 import {
   parseCloudInbound,
   parseCloudPhoneNumberId,
   parseCloudStatuses,
+  type CloudMediaRef,
 } from "@/lib/comms/whatsapp/cloud-payload";
+import {
+  putWhatsappMedia,
+  whatsappMediaPath,
+} from "@/lib/comms/whatsapp/media-storage";
 import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import {
+  isAllowedWhatsappMediaMime,
+  mediaPreviewLabel,
+  parseWhatsappMedia,
+  type WhatsappMedia,
+  type WhatsappMediaDropped,
+} from "@/types/whatsapp-media";
+import { locationPreviewLabel } from "@/types/whatsapp-location";
+import {
+  firstKeyword,
+  WHATSAPP_START_WORDS,
+  WHATSAPP_STOP_WORDS,
+} from "@/lib/comms/whatsapp/opt-keywords";
 
 export const dynamic = "force-dynamic";
 
@@ -41,16 +61,6 @@ export const dynamic = "force-dynamic";
  * Always acks 200 except on a failed signature: a non-2xx makes Meta retry and
  * eventually disable the subscription outright.
  */
-
-const STOP_WORDS = new Set([
-  "STOP",
-  "STOPALL",
-  "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
-]);
-const START_WORDS = new Set(["START", "UNSTOP", "YES"]);
 
 const ok = (body: Record<string, unknown> = { ok: true }) =>
   NextResponse.json(body, { status: 200 });
@@ -120,10 +130,132 @@ async function resolveRoute(
   return { subAccountId: id, agencyId: sa.agencyId, subAccount: sa };
 }
 
+/** A hung `file.save` must not hold the handler open indefinitely. */
+const STORE_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Fetch, store and attach an inbound file to message rows that are ALREADY
+ * written.
+ *
+ * Never throws: any failure becomes `mediaDropped` on the row, and the text
+ * the customer sent is never lost to a file we could not keep.
+ */
+async function attachInboundMedia(opts: {
+  db: Firestore;
+  route: ResolvedRoute;
+  messageId: string;
+  ref: CloudMediaRef;
+  contactDocs: DocumentSnapshot[];
+  seen: DocumentSnapshot[];
+  rowWritten: ReadonlySet<string>;
+}): Promise<void> {
+  const rowRef = (d: DocumentSnapshot) =>
+    d.ref.collection("whatsappMessages").doc(opts.messageId);
+
+  // Only rows that exist: merged onto a row whose write failed, `media` or
+  // `mediaDropped` would create a ghost doc — no body, no direction, no
+  // createdAt — that every later delivery then reads as "seen". A row an
+  // EARLIER delivery wrote counts as existing, so a retry whose own row merge
+  // failed transiently still re-attempts the attachment.
+  //
+  // And never downgrade: a row that already holds media is left alone — no
+  // re-fetch, and no `mediaDropped` from a retry whose download failed.
+  const pending = opts.contactDocs.filter(
+    (d, i) =>
+      (opts.rowWritten.has(d.id) || opts.seen[i]?.exists === true) &&
+      !parseWhatsappMedia(opts.seen[i]?.data()?.media),
+  );
+  if (pending.length === 0) return;
+
+  // In a transaction, because `seen` predates the download: a concurrent
+  // retry may have landed the file since, and a drop decided from the stale
+  // snapshot would overwrite it.
+  const drop = (reason: WhatsappMediaDropped) =>
+    Promise.all(
+      pending.map((d) =>
+        opts.db.runTransaction(async (tx) => {
+          const current = await tx.get(rowRef(d));
+          if (parseWhatsappMedia(current.data()?.media)) return;
+          tx.set(rowRef(d), { mediaDropped: reason }, { merge: true });
+        }),
+      ),
+    );
+
+  try {
+    if (!isAllowedWhatsappMediaMime(opts.ref.mimeType)) {
+      await drop("unsupported_type");
+      return;
+    }
+    const fetched = await fetchCloudMedia({
+      subAccountId: opts.route.subAccountId,
+      mediaId: opts.ref.id,
+    });
+    if (!fetched.ok) {
+      await drop(fetched.reason);
+      return;
+    }
+    for (const d of pending) {
+      const storagePath = whatsappMediaPath({
+        agencyId: opts.route.agencyId,
+        subAccountId: opts.route.subAccountId,
+        contactId: d.id,
+        messageDocId: opts.messageId,
+      });
+      // Stored BEFORE the row references it, so a row never points at an
+      // object that is not there.
+      const put = await withTimeout(
+        putWhatsappMedia({
+          path: storagePath,
+          bytes: fetched.bytes,
+          contentType: opts.ref.mimeType,
+        }),
+        STORE_TIMEOUT_MS,
+        "media store",
+      );
+      if (!put.ok) throw new Error(`media store failed: ${put.reason}`);
+      const media: WhatsappMedia = {
+        kind: opts.ref.kind,
+        mimeType: opts.ref.mimeType,
+        filename: opts.ref.filename,
+        sizeBytes: fetched.bytes.length,
+        storagePath,
+      };
+      await rowRef(d).set(
+        { media, mediaDropped: FieldValue.delete() },
+        { merge: true },
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[whatsapp-cloud] media attach failed (sa=${opts.route.subAccountId}) — keeping the text`,
+      err,
+    );
+    // Rows this attempt already gave media keep it: `drop` re-reads each one.
+    await drop("fetch_failed").catch((dropErr: unknown) =>
+      console.warn("[whatsapp-cloud] could not record mediaDropped", dropErr),
+    );
+  }
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
 
-  if (!verifyMetaSignature(rawBody, request.headers.get("x-hub-signature-256"))) {
+  // Meta signs with the secret of the app the WABA is subscribed to, which
+  // may be a WhatsApp-only app in the portfolio that owns the WABA rather
+  // than the Messenger/IG app.
+  const signature = request.headers.get("x-hub-signature-256");
+  const signedByOurApp = [process.env.WHATSAPP_APP_SECRET, process.env.META_APP_SECRET].some(
+    (secret) => verifyMetaSignature(rawBody, signature, secret ?? ""),
+  );
+  if (!signedByOurApp) {
     console.warn("[whatsapp-cloud] invalid X-Hub-Signature-256");
     return new NextResponse("Invalid signature", { status: 403 });
   }
@@ -154,11 +286,25 @@ export async function POST(request: Request) {
   const from = toE164(inbound.fromPhone);
   if (!from) return ok({ ok: true, ignored: "no_sender" });
 
+  // Coordinates are the customer's personal data: the log names the sub-account
+  // and never the values.
+  if (inbound.locationRejected) {
+    console.warn(
+      `[whatsapp-cloud] location message with unusable coordinates (sa=${route.subAccountId}) — stored without them`,
+    );
+  }
+  // A shared location carries no text. The row gets a readable body so no
+  // reader sees an empty message; `inbound.text` stays empty, which is what
+  // keeps the AI from replying to it (see the AI gate below).
+  const locationLabel = inbound.location
+    ? locationPreviewLabel(inbound.location)
+    : "";
+
   const db = getAdminDb();
-  const word = inbound.text.trim().toUpperCase().split(/\s+/)[0] ?? "";
+  const word = firstKeyword(inbound.text);
   let nextOptedOut: boolean | null = null;
-  if (STOP_WORDS.has(word)) nextOptedOut = true;
-  else if (START_WORDS.has(word)) nextOptedOut = false;
+  if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
+  else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
 
   const matches = await db
     .collection("contacts")
@@ -197,11 +343,50 @@ export async function POST(request: Request) {
     }
   }
 
+  // A redelivery must stop HERE, not merely write the same row twice.
+  //
+  // Meta retries a webhook it considers failed. The row below is idempotent on
+  // its own doc id, but nothing after it is: the conversation upsert bumps the
+  // thread again, and the AI auto-reply sends another real WhatsApp message to
+  // a real person and spends another LLM call. This is the same defect the
+  // bridge route was already burned by, and this is its guard, ported.
+  //
+  // A redelivery suppresses the two effects that are NOT idempotent, and
+  // nothing else. It deliberately does not return early.
+  //
+  // Returning early was wrong in a way that only shows up on the unhappy path:
+  // if a first delivery wrote the message row and then failed before the
+  // opt-out flip, Meta would retry, the retry would be swallowed as a
+  // duplicate, and the customer's STOP would be dropped permanently. Honouring
+  // an opt-out is a POPIA obligation, not a best effort, so the only safe
+  // design is one where every delivery re-runs everything idempotent and skips
+  // only what is not.
+  //
+  // Asked of EVERY matched contact, not just the first. One phone number can
+  // match several contacts and the row is written to all of them; consulting
+  // only `contactDocs[0]` would make the answer depend on Firestore's
+  // `__name__` ordering, so a contact created between two deliveries with a
+  // smaller id becomes the new `[0]`, has no row, and the message reads as
+  // fresh. `some` is the right quantifier because the question is "have we
+  // handled this message before", and one stored row answers yes; the row
+  // write below still fans out to all of them and merges.
+  let seen: DocumentSnapshot[] = [];
+  let isRedelivery = false;
+  if (contactDocs.length > 0) {
+    seen = await Promise.all(
+      contactDocs.map((d) =>
+        d.ref.collection("whatsappMessages").doc(inbound.providerMessageId).get(),
+      ),
+    );
+    isRedelivery = seen.some((s) => s.exists);
+  }
+
   // Message row first, so it captures what the customer actually sent even
   // when that word is STOP. Doc id is Meta's wamid, which makes a webhook
   // retry idempotent the same way the Twilio MessageSid does.
-  const writes = contactDocs.map((d) =>
-    d.ref
+  const rowWritten = new Set<string>();
+  const writes = contactDocs.map(async (d) => {
+    await d.ref
       .collection("whatsappMessages")
       .doc(inbound.providerMessageId)
       .set(
@@ -211,11 +396,13 @@ export async function POST(request: Request) {
           contactId: d.id,
           direction: "inbound",
           status: "received",
-          body: inbound.text,
+          body: inbound.text || locationLabel,
           from,
           to: phoneNumberId,
           provider: "cloud",
           providerMessageId: inbound.providerMessageId,
+          ...(inbound.buttonPayload ? { buttonPayload: inbound.buttonPayload } : {}),
+          ...(inbound.location ? { location: inbound.location } : {}),
           twilioMessageSid: null,
           sentByUid: null,
           error: null,
@@ -223,30 +410,76 @@ export async function POST(request: Request) {
           createdAt: FieldValue.serverTimestamp(),
         },
         { merge: true },
-      ),
-  );
+      );
+    rowWritten.add(d.id);
+  });
   try {
     await Promise.all(writes);
   } catch (err) {
     console.warn("[whatsapp-cloud] message-row write failed", err);
   }
 
+  // What the inbox list and the timeline show for a caption-less file. Built
+  // from Meta's declaration, not from the download, so it neither waits on the
+  // file nor depends on whether storing it worked for this particular contact.
+  const preview =
+    inbound.text ||
+    locationLabel ||
+    (inbound.media
+      ? mediaPreviewLabel({
+          kind: inbound.media.kind,
+          mimeType: inbound.media.mimeType,
+          filename: inbound.media.filename,
+          sizeBytes: 0,
+          storagePath: "",
+        })
+      : "");
+
+  // Skipped on a redelivery, and the ONLY thing here that is: the upsert
+  // increments `unreadCount`, emits a webhook event and resumes waiting
+  // workflow runs, none of which converge on a second call.
+  if (!isRedelivery) {
+    await Promise.all(
+      contactDocs.map((d) => {
+        const cdata = d.data() as { name?: string; phone?: string } | undefined;
+        return upsertConversationForMessage({
+          contactId: d.id,
+          subAccountId: route.subAccountId,
+          agencyId: route.agencyId,
+          contactName: cdata?.name ?? "",
+          contactPhone: cdata?.phone ?? from,
+          channel: "whatsapp",
+          direction: "inbound",
+          body: preview,
+          buttonTap: inbound.buttonPayload !== null,
+        });
+      }),
+    );
+  }
+
+  // Runs on EVERY delivery, redelivery included. This is idempotent — it keys
+  // the row `inbound_{channel}_{messageId}` and merges — so re-running it is a
+  // no-op overwrite, and gating it would buy nothing while risking the row
+  // outright: a first delivery that wrote the message row and then died before
+  // this call leaves `isRedelivery` true forever after, and a gated write
+  // would never be attempted again. Re-run everything idempotent; skip only
+  // what is not.
   await Promise.all(
-    contactDocs.map((d) => {
-      const cdata = d.data() as { name?: string; phone?: string } | undefined;
-      return upsertConversationForMessage({
+    contactDocs.map((d) =>
+      writeInboundMessageActivity(db, {
         contactId: d.id,
-        subAccountId: route.subAccountId,
-        agencyId: route.agencyId,
-        contactName: cdata?.name ?? "",
-        contactPhone: cdata?.phone ?? from,
         channel: "whatsapp",
-        direction: "inbound",
-        body: inbound.text,
-      });
-    }),
+        preview,
+        messageId: inbound.providerMessageId,
+        agencyId: route.agencyId,
+        subAccountId: route.subAccountId,
+      }),
+    ),
   );
 
+  // Runs on EVERY delivery, redelivery included. An opt-out is a POPIA
+  // obligation, so the one thing this handler must never do is drop a STOP
+  // because it thinks it has seen the message before.
   if (nextOptedOut !== null) {
     const batch = db.batch();
     for (const docSnap of contactDocs) {
@@ -254,21 +487,78 @@ export async function POST(request: Request) {
         whatsappOptedOut: nextOptedOut,
         updatedAt: FieldValue.serverTimestamp(),
       });
-      batch.set(docSnap.ref.collection("activities").doc(), {
-        type: "automation_step_skipped",
-        content: nextOptedOut
-          ? `WhatsApp opt-out (${word}) received from ${from}.`
-          : `WhatsApp opt-in (${word}) received from ${from}.`,
-        createdBy: "whatsapp_cloud_inbound",
-        meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
-        createdAt: FieldValue.serverTimestamp(),
-      });
+      // Deterministic id, keyed on the message this opt-out came from, so a
+      // redelivery overwrites its own activity row instead of appending a
+      // second one. A generated id made this write non-idempotent, which is
+      // what would stop the whole branch from being safe to re-run — and
+      // re-running it on every delivery is exactly what the guard above
+      // commits us to. No fallback for a missing id: `parseCloudInbound`
+      // refuses a payload without a wamid, so there is no such state here.
+      batch.set(
+        docSnap.ref
+          .collection("activities")
+          .doc(`whatsapp-optout-${inbound.providerMessageId}`),
+        {
+          type: "automation_step_skipped",
+          content: nextOptedOut
+            ? `WhatsApp opt-out (${word}) received from ${from}.`
+            : `WhatsApp opt-in (${word}) received from ${from}.`,
+          createdBy: "whatsapp_cloud_inbound",
+          meta: { kind: "whatsapp_opt_out", word, optedOut: nextOptedOut },
+          createdAt: FieldValue.serverTimestamp(),
+        },
+      );
     }
-    await batch.commit();
-    return ok({ ok: true, persisted: true, optedOut: nextOptedOut });
+    try {
+      await batch.commit();
+    } catch (err) {
+      // The ONE place this handler deliberately answers non-2xx, and it is
+      // stated rather than accidental.
+      //
+      // Everything else here acks 200 and degrades to a logged warning,
+      // because Meta retries anything >= 300 and eventually disables the
+      // subscription outright — which would stop ALL inbound WhatsApp for
+      // this WABA, not just the message that failed. Here the opposite
+      // holds: the customer asked to stop being messaged and we did not
+      // record it, so we want the retry — and the retry now honours it,
+      // because nothing above returns early on a redelivery and the
+      // activity row above is keyed deterministically.
+      //
+      // 503 rather than letting the throw become a 500: same retry from
+      // Meta's side, but it names the condition instead of surfacing as an
+      // unhandled exception that reads like a bug in the parser.
+      console.error(
+        `[whatsapp-cloud] opt-out commit failed (sa=${route.subAccountId}) — asking Meta to retry`,
+        err,
+      );
+      return NextResponse.json(
+        { ok: false, error: "optout_not_recorded" },
+        { status: 503 },
+      );
+    }
+    // No early return. Everything below must still run for an opt-out — the
+    // file a customer sent with their STOP is part of what they sent — and an
+    // early return is how that ordering silently regresses.
   }
 
-  if (contactDocs.length > 0 && aiIsConfigured()) {
+  // Gated on redelivery: this sends a real WhatsApp message to a real person
+  // and spends an LLM call, so it is the effect a replayed request must never
+  // repeat. Never for an opt-out, and never for an empty message: a
+  // caption-less photo would otherwise have the AI send a real reply about
+  // nothing. The inbox entry and the file still land. Same rule as the bridge
+  // route. Runs before the media step so it never waits on a download.
+  //
+  // A shared location is skipped by the same test — its row body is a label,
+  // but `inbound.text` is empty. Deliberate: the location is for the team (a
+  // technician finding the house), there is nothing in it for the AI to
+  // answer, and replying would send the customer's coordinates to the LLM.
+  if (
+    nextOptedOut === null &&
+    !isRedelivery &&
+    inbound.text.trim() !== "" &&
+    contactDocs.length > 0 &&
+    aiIsConfigured()
+  ) {
     try {
       const agent = await resolveAgent(route.subAccountId, "whatsapp");
       if (agent?.effective.enabled) {
@@ -295,5 +585,29 @@ export async function POST(request: Request) {
     }
   }
 
-  return ok({ ok: true, persisted: true });
+  // LAST, after every effect that does not need the file.
+  //
+  // Writing the row first is not enough on its own. A handler that dies in
+  // the download — a deploy restart, an OOM — would leave the row written and
+  // the inbox entry and AI reply not yet run; Meta's retry is then a
+  // redelivery that skips both, and they are lost for good. With them already
+  // done, a death here strands only the attachment, which that same retry
+  // re-attempts: this step is not gated on redelivery.
+  if (inbound.media) {
+    await attachInboundMedia({
+      db,
+      route,
+      messageId: inbound.providerMessageId,
+      ref: inbound.media,
+      contactDocs,
+      seen,
+      rowWritten,
+    });
+  }
+
+  return ok(
+    nextOptedOut === null
+      ? { ok: true, persisted: true }
+      : { ok: true, persisted: true, optedOut: nextOptedOut },
+  );
 }

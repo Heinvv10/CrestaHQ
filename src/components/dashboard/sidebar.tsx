@@ -19,6 +19,7 @@ import {
   Building2,
   Workflow,
   Globe,
+  Images,
   Compass,
   Lock,
   Send,
@@ -34,6 +35,9 @@ import {
   CreditCard,
   FlaskConical,
   MonitorPlay,
+  Star,
+  Rocket,
+  Library,
 } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
@@ -67,6 +71,7 @@ interface NavItem {
 // render time; `matchPrefix` is the stem used to highlight the active link.
 const SUB_ACCOUNT_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: Home, enabled: true },
+  { href: "/launchpad", label: "Launchpad", icon: Rocket, enabled: true },
   {
     href: "/ai-suite",
     label: "Workspace Assistant",
@@ -81,6 +86,7 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
     badgeKey: "unreadConversations",
   },
   { href: "/contacts", label: "Contacts", icon: Users, enabled: true },
+  { href: "/companies", label: "Companies", icon: Building2, enabled: true },
   // Get Leads is PARKED — entry hidden while the flag is on.
   ...(GET_LEADS_PARKED
     ? []
@@ -106,6 +112,7 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
   { href: "/quotes", label: "Quotes", icon: FileSignature, enabled: true },
   { href: "/checkout", label: "Checkout", icon: CreditCard, enabled: true },
   { href: "/website", label: "Website", icon: Globe, enabled: true },
+  { href: "/media", label: "Media", icon: Images, enabled: true },
   { href: "/workflows", label: "Workflows", icon: Workflow, enabled: true },
   { href: "/ai-agents", label: "AI Agents", icon: Bot, enabled: true },
   { href: "/broadcasts", label: "Broadcasts", icon: Send, enabled: true },
@@ -118,6 +125,7 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
     icon: GraduationCap,
     enabled: true,
   },
+  { href: "/reputation", label: "Reputation", icon: Star, enabled: true },
   { href: "/reports", label: "Reports", icon: BarChart3, enabled: true },
   // Labs — the gated container for PRE-RELEASE features (agency opt-in per
   // sub-account via labsEnabledByAgency; hidden-by-default when off).
@@ -334,6 +342,20 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
               >
                 <Users className="h-4 w-4" />
                 Sub-accounts
+              </Link>
+            )}
+            {agencyRole === "owner" && (
+              <Link
+                href="/agency/templates"
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  pathname.startsWith("/agency/templates")
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <Library className="h-4 w-4" />
+                Template library
               </Link>
             )}
             {agencyRole === "owner" && !trimmed && (

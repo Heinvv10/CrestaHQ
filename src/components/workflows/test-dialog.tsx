@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { getFirebaseDb } from "@/lib/firebase/client";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface Person {
   id: string;
@@ -49,7 +50,7 @@ export function TestDialog({
         setContacts(
           snap.docs.map((d) => ({
             id: d.id,
-            name: (d.data().name as string) || "Unnamed",
+            name: contactDisplayName(d.data()),
             email: (d.data().email as string) || "",
           })),
         );

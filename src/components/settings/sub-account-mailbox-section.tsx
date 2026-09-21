@@ -185,7 +185,7 @@ function MailboxForm({ subAccountId }: { subAccountId: string }) {
             )}
             <p className="text-muted-foreground text-xs">
               Read-only import, initially up to 30 days. Connected mailboxes are
-              checked every five minutes when the sync schedule is running.
+              checked every fifteen minutes when the sync schedule is running.
             </p>
           </div>
           <form

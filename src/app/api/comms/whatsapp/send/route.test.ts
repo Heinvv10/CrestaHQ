@@ -44,7 +44,9 @@ vi.mock("@/lib/comms/twilio", () => ({
 vi.mock("@/lib/server/conversations-service", () => ({
   upsertConversationForMessage: vi.fn(),
 }));
+vi.mock("firebase-admin/storage", async () => (await import("@/test/staged-bucket")).storageMock());
 vi.mock("@/lib/firebase/admin", () => ({
+  getAdminApp: () => ({ name: "test-app" }),
   getAdminDb: () => ({
     doc: () => ({
       get: async () => ({
@@ -70,6 +72,10 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { POST } from "./route";
+import { bucketFake, resetBucketFake, stageObject } from "@/test/staged-bucket";
+
+const STAGED_ID = "AbCdEfGhIjKlMnOpQrStUv_-";
+const STAGED_PATH = `whatsapp-staging/ag1/sa1/u1/${STAGED_ID}`;
 
 function post(body: unknown) {
   return POST(
@@ -85,10 +91,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   messageRow = undefined;
   activityRow = undefined;
+  resetBucketFake();
+  vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "test-bucket");
   subAccountDoc = { whatsappEnabledByAgency: true, whatsappProvider: "bridge" };
   requireUid.mockReturnValue({ uid: "u1" });
   requireContactAccessible.mockResolvedValue({
     id: "c1",
+    agencyId: "ag1",
     subAccountId: "sa1",
     phone: "+27821234567",
     whatsappOptedOut: false,
@@ -150,13 +159,15 @@ describe("POST /api/comms/whatsapp/send — rail refusals", () => {
 });
 
 describe("POST /api/comms/whatsapp/send — attachments", () => {
-  const attachment = {
-    filename: "report.png",
-    contentType: "image/png",
-    dataBase64: "AAEC",
-  };
+  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const attachment = { stagedId: STAGED_ID, filename: "report.png", contentType: "image/png" };
 
-  it("forwards a well-formed attachment to the dispatcher", async () => {
+  beforeEach(() => {
+    // A PNG signature: every staged photo is sniffed before it is sent.
+    stageObject(STAGED_PATH, PNG_MAGIC, "image/png");
+  });
+
+  it("forwards the staged file to the dispatcher as a Blob of its bytes", async () => {
     dispatchWhatsappSend.mockResolvedValue({
       ok: true,
       provider: "bridge",
@@ -165,16 +176,19 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
 
     const res = await post({ contactId: "c1", body: "here it is", attachment });
     expect(res.status).toBe(200);
-    expect(dispatchWhatsappSend).toHaveBeenCalledWith(
-      expect.objectContaining({ attachment }),
-    );
+    const sent = dispatchWhatsappSend.mock.calls[0]![0].attachment;
+    expect(sent).toMatchObject({ filename: "report.png", contentType: "image/png" });
+    expect(Buffer.from(await (sent.data as Blob).arrayBuffer()).toString("base64")).toBe(PNG_MAGIC.toString("base64"));
   });
 
-  it("records the filename on the thread row, and never the bytes", async () => {
+  it("marks the row store_failed when the thread copy fails, and never carries the bytes", async () => {
     // A thread showing only the caption cannot answer "did the report
     // actually go?" — the first question asked when a prospect says it never
-    // arrived. The bytes must not be there: the row is read by the UI and is
-    // not a place to park half a megabyte.
+    // arrived. The bytes must not be on the row: it is read by the UI and is
+    // not a place to park half a megabyte. (The Storage copy and its path are
+    // covered end to end in route.media.test.ts; the copy fails here, so the
+    // row records the drop instead.)
+    bucketFake.copyThrows = new Error("copy refused");
     dispatchWhatsappSend.mockResolvedValue({
       ok: true,
       provider: "bridge",
@@ -182,15 +196,13 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
     });
 
     await post({ contactId: "c1", body: "here it is", attachment });
-    expect(messageRow?.attachment).toEqual({
-      filename: "report.png",
-      contentType: "image/png",
-    });
+    expect(messageRow?.mediaDropped).toBe("store_failed");
+    expect(messageRow).not.toHaveProperty("attachment");
     expect(JSON.stringify(messageRow)).not.toContain("AAEC");
     expect(activityRow?.content).toContain("report.png");
   });
 
-  it("leaves the attachment marker null for a plain text send", async () => {
+  it("writes no media field for a plain text send", async () => {
     dispatchWhatsappSend.mockResolvedValue({
       ok: true,
       provider: "bridge",
@@ -198,7 +210,9 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
     });
 
     await post({ contactId: "c1", body: "hi" });
-    expect(messageRow?.attachment).toBeNull();
+    expect(messageRow).not.toHaveProperty("media");
+    expect(messageRow).not.toHaveProperty("mediaDropped");
+    expect(messageRow).not.toHaveProperty("attachment");
   });
 
   it("answers 4xx when the bridge rejects the file, not 502", async () => {
@@ -238,10 +252,9 @@ describe("POST /api/comms/whatsapp/send — attachments", () => {
 
   it("rejects a half-filled attachment instead of sending an unnamed blob", async () => {
     for (const partial of [
-      { contentType: "image/png", dataBase64: "AAEC" },
-      { filename: "report.png", dataBase64: "AAEC" },
+      { contentType: "image/png", stagedId: STAGED_ID },
       { filename: "report.png", contentType: "image/png" },
-      { filename: " ", contentType: "image/png", dataBase64: "AAEC" },
+      { filename: " ", contentType: "image/png", stagedId: STAGED_ID },
     ]) {
       const res = await post({
         contactId: "c1",

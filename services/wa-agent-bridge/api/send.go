@@ -12,6 +12,7 @@ import (
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/videocodec"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/store"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/wa"
@@ -95,6 +96,14 @@ func decodeMedia(m *mediaBody) (*rails.Media, *mediaError) {
 		return nil, &mediaError{http.StatusRequestEntityTooLarge, "media_too_large",
 			fmt.Sprintf("attachment is %d bytes; the limit is %d", len(data), maxMediaBytes)}
 	}
+	// An MP4 WhatsApp cannot play is sent without complaint and then fails on
+	// the recipient's phone, so its codecs are read before it is admitted.
+	// After the size cap, so an oversize file is never parsed at all.
+	if mime == "video/mp4" {
+		if refusal := videocodec.Check(data); refusal != nil {
+			return nil, &mediaError{http.StatusBadRequest, refusal.Code, refusal.Message}
+		}
+	}
 	return &rails.Media{Filename: filename, MimeType: mime, Data: data}, nil
 }
 
@@ -110,7 +119,8 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if body.To == "" || body.Text == "" {
+	// A file may go without a caption; only a send with neither is empty.
+	if body.To == "" || (body.Text == "" && body.Media == nil) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "to and text are required"})
 		return
 	}

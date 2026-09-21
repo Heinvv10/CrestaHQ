@@ -8,7 +8,7 @@ Supersedes the *sequencing* in [PARITY_PLAN.md](PARITY_PLAN.md) (its findings an
 **Verdict:** Proceed with constraints.
 
 **Decided**
-1. **Scope = the full GoHighLevel sub-account + agency feature set, minus the WhatsApp channel** (separate bridge programme). Everything GHL has that LeadStack does not already have is in.
+1. **Scope = the full GoHighLevel sub-account + agency feature set.** ~~minus the WhatsApp channel (separate bridge programme)~~ — struck 2026-09-11: the numbers are moving onto LeadStack's Cloud rail, so GHL's WhatsApp settings surface is in scope as SP15. Everything GHL has that LeadStack does not already have is in.
 2. **Every feature must be a step up, never worse than GHL** — UI, UX and end-to-end behaviour including OAuth.
 3. **Done means shown working in a browser, end to end, by the orchestrator's own tabs**, backed by a Playwright spec that fails when the feature breaks. A claim is not done.
 4. **Proving tenant = CrestaHQ's own sub-account (#1000).** Contacts for all four sub-accounts were already imported 2026-09-03; CrestaHQ's workflows and channels get rebuilt on it first. **Blitz, Velocity, Vortex stay on GHL** until the final cutover subproject.
@@ -78,11 +78,11 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 **Known gaps:** saved smart lists, bulk tag/assign/delete, multiple pipelines, stage automation hooks, company objects, contact activity timeline parity, GHL-style custom-field folders.
 **Depends on:** SP0.
 
-### SP2 — Conversations / unified inbox (email, SMS, FB/IG)
+### SP2 — Conversations / unified inbox (email, SMS, WhatsApp, FB/IG)
 **GHL surface:** Conversations tab, unread/starred/all filters, assignment, internal notes, templates/snippets, scheduled messages, email threading, missed-call text-back.
 **CrestaHQ today:** email + SMS from contact profile, FB/IG DM beta behind gate, missed-call route exists.
 **Known gaps:** a true inbox surface with filters and assignment, snippets, scheduling, email threading, Meta App Review for FB/IG publish scopes.
-**Excluded:** WhatsApp channel (bridge programme owns it; the seam is built).
+**WhatsApp is in scope** (Cloud + bridge rails) — the earlier exclusion ~~WhatsApp channel (bridge programme owns it; the seam is built)~~ is struck (2026-09-13). The WhatsApp *settings* surface is SP15. Ledger: [docs/parity/sp2.md](parity/sp2.md).
 **Depends on:** SP0.
 
 ### SP3 — Calendars & booking
@@ -90,6 +90,16 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 **CrestaHQ today:** manual month grid, public booking pages with slot reservation, ICS, reminders via QStash, voice booking (unverified).
 **Known gaps:** Google Calendar OAuth sync, round-robin/team calendars, appointment status lifecycle, embeddable widget parity.
 **Depends on:** SP0.
+**Status (2026-09-14):** **merged:**
+- calendar types (#109)
+- availability rules (#110)
+- status lifecycle + booking triggers (#107)
+- Google Calendar two-way sync (#115)
+- embeddable widget (#116)
+- test guard (#120)
+- appointments list + filters (#119)
+
+The QStash reminder is proven on #1000. Voice booking can't run in production (empty OpenRouter/Vapi keys); its code path was proven. **Deployed 2026-09-14 (`d0c3893`).** Ledger: [docs/parity/sp3.md](parity/sp3.md).
 
 ### SP4 — Sites: funnels, websites, forms, surveys
 **GHL surface:** drag-drop funnel/page builder, templates, domains, forms and surveys with conditional logic, chat widget, QR codes.
@@ -100,8 +110,10 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 ### SP5 — Reputation & Google Business Profile
 **GHL surface:** Reputation overview, reviews inbox, AI review replies + drip response, sentiment, trend charts, response coverage, review widgets, GBP optimisation, listings (Yext — resold, out).
 **CrestaHQ today:** review-request sender only; `/r/[token]` compliant feedback page; **no GBP code at all**.
-**Plan:** `ReviewProvider` seam with a recorded-fixture adapter now; live v4 adapter on Google approval. GBP OAuth + location picker + business-info/performance insights use APIs already enabled and can go live immediately. Port `ApexGEO/src/lib/business-profile/` (OAuth, token refresh, listReviews, updateReply, 5 test files).
+**Plan:** `ReviewProvider` seam with a recorded-fixture adapter now; live v4 adapter on Google approval. ~~GBP OAuth + location picker + business-info/performance insights use APIs already enabled and can go live immediately.~~ Wrong (probed 2026-09-14): every GBP API on the project, Performance included, is quota 0 until the case is approved. Port `ApexGEO/src/lib/business-profile/` (OAuth, token refresh, listReviews, updateReply, 5 test files).
 **Depends on:** SP0. Live half also depends on case 4-6894000042302.
+
+**Status (2026-09-14):** remainder built and merged — #121 #122 #124 #126 #128 #129 #132 #135; ledger [docs/parity/sp5.md](parity/sp5.md). Deployed 2026-09-14 17:48 SAST (cde3b17); live Google half blocked on the case.
 
 ### SP6 — Workflows / automations engine + rebuild of the 25 published workflows
 **GHL surface:** ~50 triggers, ~100 actions, wait/if-else/goal/webhook/AI steps, enrolment history, execution logs, test mode, folders.
@@ -151,6 +163,13 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 **Known gaps:** media library, snapshot share links / marketplace, template library, launchpad/onboarding checklist, reselling table.
 **Depends on:** SP0.
 
+### SP15 — WhatsApp settings (profile, quality rating, message links)
+**Added 2026-09-11** (was excluded; the numbers are moving off GHL onto the Cloud rail).
+**GHL surface:** Settings → WhatsApp → Numbers: per sender a header (flag, number, display name, Connected, quality badge), Profile tab (photo, display name read-only, about, description, category, address, email, websites, phone preview), Message Links tab (create with prefilled text, list, copy, QR, delete), Templates tab.
+**CrestaHQ today:** Settings → Messaging has a Cloud connection card (connect/disconnect, number, verified name) and a sender registry; templates at `/sa/[id]/ai-agents/whatsapp/templates`. No profile, no quality rating, no message links — none of `whatsapp_business_profile`, phone `quality_rating` or `message_qrdls` is called anywhere.
+**Plan:** Graph client behind a provider seam (real + fake, fenced like GBP's) reading the token from `subAccounts/<id>/private/whatsappCloudConnection`; routes under `/api/sub-accounts/[id]/whatsapp/*`; page at `/sa/[id]/dashboard/settings/whatsapp`; hourly QStash poll of `quality_rating` that alerts the owner on a drop from GREEN. Ledger: [docs/parity/sp15.md](parity/sp15.md).
+**Depends on:** SP0. Read-only probes against Velocity only; no outbound message.
+
 ### SP14 — Client cutover (Blitz, Velocity, Vortex)
 **Gated on Hein. Never auto-merges.**
 **Scope:** contact delta since 2026-09-03 import; activate rebuilt workflows; connect GBP for each listing (needs SP5 live adapter); WhatsApp number strategy from the bridge programme; conversation-history import if feasible; GHL downgrade/cancel timing.
@@ -163,7 +182,7 @@ Dependencies are noted; anything not listed as a dependency can run in parallel.
 | Wave | Run together |
 |---|---|
 | 0 | SP0 |
-| 1 | SP1, SP2, SP3, SP5 (fixture half), SP13 |
+| 1 | SP1, SP2, SP3, SP5 (fixture half), SP13, SP15 |
 | 2 | SP4, SP6, SP7, SP9, SP12 |
 | 3 | SP8, SP10, SP11 |
 | 4 | SP14 |

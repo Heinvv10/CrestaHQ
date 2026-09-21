@@ -64,6 +64,7 @@ export async function callAi({
   maxTokens = 400,
   temperature = 0.5,
   timeoutMs = 30_000,
+  signal,
 }: {
   model?: string;
   messages: AiChatMessage[];
@@ -80,6 +81,10 @@ export async function callAi({
    *  Aborting here converts a stall into a normal throw the caller can
    *  catch + degrade on. Kept comfortably under the routes' maxDuration. */
   timeoutMs?: number;
+  /** Optional caller deadline. Unlike `timeoutMs` (headers only) it stays
+   *  armed through the body read, so aborting it really ends the call.
+   *  Omitted → behaviour unchanged. An aborted call may still be billed. */
+  signal?: AbortSignal;
 }): Promise<AiCompletionResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -89,6 +94,7 @@ export async function callAi({
   }
 
   const chosenModel = model?.trim() || defaultAiModel();
+  if (signal?.aborted) throw new Error("OpenRouter request aborted by the caller");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -110,9 +116,13 @@ export async function callAi({
         max_tokens: maxTokens,
         temperature,
       }),
-      signal: controller.signal,
+      // With a caller signal, fetch (and so the body read) also listens to it.
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError" && signal?.aborted) {
+      throw new Error("OpenRouter request aborted by the caller");
+    }
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error(
         `OpenRouter request timed out after ${timeoutMs}ms (model ${chosenModel})`,

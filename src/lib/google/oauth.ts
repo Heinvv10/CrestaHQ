@@ -1,16 +1,18 @@
 import "server-only";
 
 import crypto from "node:crypto";
+import { fakeProviderAllowed } from "@/lib/gbp/provider/mode";
 
 /**
- * Google OAuth wrapper for the Business Profile connection. Everything here is
- * INERT unless the deployment has a Google OAuth client configured
- * (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) AND the sub-account's agency
- * gate (`googleEnabledByAgency`) is on.
+ * Pure helpers for the Business Profile OAuth connection: the scope, the
+ * redirect URI, the consent URL and the signed `state`. Everything is INERT
+ * unless the deployment has a Google OAuth client configured
+ * (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`, or the fenced fake provider)
+ * AND the sub-account's agency gate (`googleEnabledByAgency`) is on.
  *
- * Mirrors the shape of `lib/comms/meta.ts`: pure helpers + token-endpoint
- * calls, no Firestore writes. The connect route and the shared callback are
- * the only callers.
+ * Calls to Google's token endpoint live behind the GBP provider
+ * (`lib/gbp/provider/google-token.ts`) so they get typed errors like every
+ * other Google call. No Firestore writes here.
  */
 
 /**
@@ -21,8 +23,6 @@ import crypto from "node:crypto";
 export const GOOGLE_SCOPE = "https://www.googleapis.com/auth/business.manage";
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 
 /**
  * The ONE OAuth redirect URI for the whole deployment. Google validates
@@ -41,8 +41,14 @@ export function googleRedirectUri(): string | null {
   return `${base}/api/google/callback`;
 }
 
-/** True when the deployment has Google OAuth client credentials. */
+/**
+ * True when Google is usable on this deployment: OAuth client credentials in
+ * real-Google mode, or an ALLOWED fake provider (which needs none). A fake
+ * that is requested but refused is "not configured" — never a silent fall
+ * back to Google, and never a 500 the admin cannot act on.
+ */
 export function googleAppConfigured(): boolean {
+  if (process.env.GBP_PROVIDER === "fake") return fakeProviderAllowed();
   return !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 }
 
@@ -57,12 +63,14 @@ export function googleAppConfigured(): boolean {
 export function buildGoogleOAuthUrl(opts: {
   redirectUri: string;
   state: string;
+  /** Space-separated scopes. Absent ⇒ the Business Profile scope. */
+  scope?: string;
 }): string {
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID ?? "",
     redirect_uri: opts.redirectUri,
     response_type: "code",
-    scope: GOOGLE_SCOPE,
+    scope: opts.scope ?? GOOGLE_SCOPE,
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "false",
@@ -74,128 +82,137 @@ export function buildGoogleOAuthUrl(opts: {
 // ---------------------------------------------------------------------------
 // CSRF state — HMAC-signed with the existing AUTOMATIONS_TOKEN_SECRET so the
 // callback can trust `state` came from our connect route (and names the right
-// sub-account) without persisting anything. Same construction as Meta's.
+// sub-account) without persisting anything.
+//
+//   state = base64url(JSON {s, u, t, n, r?, p?}) + "." + hex HMAC-SHA256("googlestate:" + payload)
+//
+// s = sub-account, u = the uid that started the flow, t = issued-at (ms),
+// n = nonce, r = return page (allow-listed), p = purpose: absent for the
+// Business Profile flow (so every GBP state keeps its exact shape), "calendar"
+// for a member's Google Calendar connection (lib/google-calendar). `t` bounds how long a leaked state
+// stays usable; `u` means a state leaked to another admin of the same
+// sub-account is useless to them. Without both, a state was replayable forever
+// by anyone who could pass the admin check.
 // ---------------------------------------------------------------------------
 
-function stateSecret(): string {
-  return process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
+/** Where the callback sends the admin back to. An allow-list, never a URL. */
+export type GoogleReturnTo = "settings" | "gbp";
+
+export interface GoogleStateClaims {
+  subAccountId: string;
+  uid: string;
+  returnTo: GoogleReturnTo;
+  /** Present only on a Google Calendar state; absent ⇒ Business Profile. */
+  purpose?: "calendar";
 }
 
-export function signGoogleState(subAccountId: string, nonce: string): string {
-  const payload = `${subAccountId}.${nonce}`;
-  const sig = crypto
-    .createHmac("sha256", stateSecret())
+const STATE_MAX_AGE_MS = 10 * 60_000;
+const STATE_MAX_SKEW_MS = 60_000;
+
+/** Thrown by signGoogleState when there is no key to sign with. */
+export class GoogleStateSecretMissingError extends Error {
+  constructor() {
+    super("AUTOMATIONS_TOKEN_SECRET is not set; cannot sign OAuth state");
+    this.name = "GoogleStateSecretMissingError";
+  }
+}
+
+function stateHmac(secret: string, payload: string): string {
+  return crypto
+    .createHmac("sha256", secret)
     .update(`googlestate:${payload}`)
     .digest("hex");
-  return `${payload}.${sig}`;
+}
+
+export function signGoogleState(
+  claims: {
+    subAccountId: string;
+    uid: string;
+    returnTo?: GoogleReturnTo;
+    purpose?: "calendar";
+  },
+  now: number = Date.now(),
+): string {
+  // An empty key makes the HMAC forgeable by anyone who reads this file.
+  const secret = process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
+  if (!secret) throw new GoogleStateSecretMissingError();
+  const body: Record<string, unknown> = {
+    s: claims.subAccountId,
+    u: claims.uid,
+    t: now,
+    n: crypto.randomBytes(16).toString("hex"),
+  };
+  if (claims.returnTo === "gbp") body.r = "gbp";
+  if (claims.purpose === "calendar") body.p = "calendar";
+  const payload = Buffer.from(JSON.stringify(body)).toString("base64url");
+  return `${payload}.${stateHmac(secret, payload)}`;
 }
 
 export function verifyGoogleState(
   state: string,
-): { subAccountId: string } | null {
+  now: number = Date.now(),
+): GoogleStateClaims | null {
+  const secret = process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
+  if (!secret) return null;
   const parts = state.split(".");
-  if (parts.length !== 3) return null;
-  const [subAccountId, nonce, sig] = parts;
-  const expected = crypto
-    .createHmac("sha256", stateSecret())
-    .update(`googlestate:${subAccountId}.${nonce}`)
-    .digest("hex");
-  if (sig.length !== expected.length) return null;
-  try {
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-      return null;
-    }
-  } catch {
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  // Shape-check first: timingSafeEqual throws on unequal BYTE lengths, and a
+  // non-hex character can make equal string lengths differ in bytes.
+  if (!/^[0-9a-f]{64}$/.test(sig)) return null;
+  const expected = stateHmac(secret, payload);
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return null;
   }
-  return { subAccountId };
+
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    // Correctly signed but not JSON — only a key holder could produce it, and
+    // it still names no sub-account. Refuse like any other bad state.
+    return null;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const { s, u, t, n, r, p } = body as Record<string, unknown>;
+  if (typeof s !== "string" || !s) return null;
+  if (typeof u !== "string" || !u) return null;
+  if (typeof t !== "number" || !Number.isFinite(t)) return null;
+  if (typeof n !== "string" || !n) return null;
+  if (r !== undefined && r !== "gbp") return null;
+  // A calendar connection always returns to Settings; any other purpose is
+  // not one this deployment issues.
+  if (p !== undefined && (p !== "calendar" || r !== undefined)) return null;
+  if (now - t > STATE_MAX_AGE_MS) return null;
+  if (t - now > STATE_MAX_SKEW_MS) return null;
+  const claims: GoogleStateClaims = {
+    subAccountId: s,
+    uid: u,
+    returnTo: r === "gbp" ? "gbp" : "settings",
+  };
+  if (p === "calendar") claims.purpose = "calendar";
+  return claims;
+}
+
+/** The in-app page a Google flow returns to. Allow-listed by construction. */
+export function googleReturnPath(
+  subAccountId: string,
+  returnTo: GoogleReturnTo,
+): string {
+  return returnTo === "gbp"
+    ? `/sa/${subAccountId}/ai-agents/google-business`
+    : `/sa/${subAccountId}/dashboard/settings`;
 }
 
 // ---------------------------------------------------------------------------
-// Token endpoint
+// Token shape — returned by the provider's exchange / refresh.
 // ---------------------------------------------------------------------------
 
 export interface GoogleTokens {
   accessToken: string;
-  /** Absent on a refresh — Google only returns it at authorisation time. */
+  /** Null on a refresh unless Google rotated it (then it must be stored). */
   refreshToken: string | null;
   /** Epoch ms. */
   expiresAt: number;
   scopes: string[];
-}
-
-function credentials(): { clientId: string; clientSecret: string } {
-  return {
-    clientId: process.env.GOOGLE_CLIENT_ID ?? "",
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
-  };
-}
-
-async function postToken(body: URLSearchParams): Promise<GoogleTokens> {
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  const data = (await res.json().catch(() => null)) as {
-    access_token?: unknown;
-    refresh_token?: unknown;
-    expires_in?: unknown;
-    scope?: unknown;
-    error_description?: unknown;
-    error?: unknown;
-  } | null;
-  if (!res.ok || !data) {
-    const detail =
-      typeof data?.error_description === "string"
-        ? data.error_description
-        : typeof data?.error === "string"
-          ? data.error
-          : `HTTP ${res.status}`;
-    throw new Error(`Google token request failed: ${detail}`);
-  }
-  if (typeof data.access_token !== "string" || typeof data.expires_in !== "number") {
-    throw new Error("Google token response was malformed");
-  }
-  return {
-    accessToken: data.access_token,
-    refreshToken:
-      typeof data.refresh_token === "string" ? data.refresh_token : null,
-    expiresAt: Date.now() + data.expires_in * 1000,
-    scopes: typeof data.scope === "string" ? data.scope.split(" ") : [],
-  };
-}
-
-/** Exchange the one-time `code` from the callback for tokens. */
-export function exchangeCodeForTokens(
-  code: string,
-  redirectUri: string,
-): Promise<GoogleTokens> {
-  const { clientId, clientSecret } = credentials();
-  return postToken(
-    new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    }),
-  );
-}
-
-
-/**
- * Best-effort revoke at Google's end. Callers swallow failures — a revoke that
- * doesn't land must never block the local disconnect, or the operator is stuck
- * with a connection they can't remove.
- */
-export async function revokeGoogleToken(token: string): Promise<void> {
-  const res = await fetch(REVOKE_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ token }),
-  });
-  if (!res.ok) {
-    throw new Error(`Google revoke failed: HTTP ${res.status}`);
-  }
 }

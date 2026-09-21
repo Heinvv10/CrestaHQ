@@ -5,6 +5,10 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
+  contactMirror,
+  type ConversationMirror,
+} from "@/lib/server/conversation-mirror";
+import {
   fireWorkflowTrigger,
   resumeWaitingRunsOnReply,
 } from "@/lib/workflows/engine";
@@ -66,13 +70,31 @@ export interface UpsertConversationInput {
    * clears any pending AI draft. The bot's own replies pass this false.
    */
   pauseBot?: boolean;
+  /** The inbound message was a WhatsApp button tap (it carried a payload). */
+  buttonTap?: boolean;
 }
 
-async function contactTerritory(
+function toMillis(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  const ts = v as { toMillis?: () => number } | null | undefined;
+  return typeof ts?.toMillis === "function" ? ts.toMillis() : null;
+}
+
+/**
+ * The authoritative contact fields this conversation copies: its territory
+ * (access control) and the SP2 mirror (owner + email — see
+ * lib/server/conversation-mirror.ts). Read together in the transaction, so one
+ * contact read serves all three and the mirror is re-stamped on every message
+ * — which is what makes it self-healing.
+ *
+ * An anonymous web-chat row has no contact: global territory, empty mirror.
+ */
+async function contactDenorm(
   tx: FirebaseFirestore.Transaction,
   input: { contactId: string | null; subAccountId: string; agencyId: string }
-): Promise<string | null> {
-  if (!input.contactId) return GLOBAL_TERRITORY_ID;
+): Promise<{ territoryId: string | null; mirror: ConversationMirror | null }> {
+  if (!input.contactId)
+    return { territoryId: GLOBAL_TERRITORY_ID, mirror: null };
   const contact = (
     await tx.get(getAdminDb().doc(`contacts/${input.contactId}`))
   ).data();
@@ -82,12 +104,18 @@ async function contactTerritory(
     contact.agencyId !== input.agencyId
   )
     throw new Error("Conversation contact tenant mismatch.");
-  return contact.territoryId ?? null;
+  return {
+    territoryId: contact.territoryId ?? null,
+    mirror: contactMirror(contact),
+  };
 }
 
 export async function upsertConversationForMessage(
   input: UpsertConversationInput
 ): Promise<void> {
+  // When this message arrived — a late-tap flag must not land over a human
+  // reply made after it (see below).
+  const receivedAt = Date.now();
   try {
     const db = getAdminDb();
     // Doc id: an explicit conversationKey (web chat's session key) wins;
@@ -105,10 +133,14 @@ export async function upsertConversationForMessage(
 
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      const territoryId = await contactTerritory(tx, input);
+      const { territoryId, mirror } = await contactDenorm(tx, input);
 
       const patch: Record<string, unknown> = {
         territoryId,
+        // Owner + email mirrored off the contact on every message (SP2 T1/I9).
+        // Only when there IS a contact — an anonymous web-chat row has nobody
+        // to mirror, and stamping null would fight nothing.
+        ...(mirror ?? {}),
         contactId: input.contactId,
         subAccountId: input.subAccountId,
         agencyId: input.agencyId,
@@ -140,13 +172,20 @@ export async function upsertConversationForMessage(
         patch.botPausedUntil = new Date(Date.now() + PAUSE_WINDOW_MS);
         patch.unreadCount = 0;
         patch.pendingDraft = null;
+        patch.lateButtonTap = null;
+        patch.lastHumanReplyAt = FieldValue.serverTimestamp();
       }
 
       if (!snap.exists) {
         // Stamp immutable defaults once.
         patch.createdAt = FieldValue.serverTimestamp();
         patch.status = "open";
-        patch.assigneeUid = null;
+        // assigneeUid / contactEmail come from the mirror above; an anonymous
+        // web-chat row has no contact, so it starts empty.
+        if (!mirror) {
+          patch.assigneeUid = null;
+          patch.contactEmail = null;
+        }
         patch.botMode = "auto"; // reserved for Phase 2
         patch.botPausedUntil = null;
         // First-ever message is outbound → no unread yet.
@@ -188,7 +227,7 @@ export async function upsertConversationForMessage(
       });
       // A reply resolves any workflow run parked on a wait_for_reply node.
       // Self-guarded fire-and-forget — same contract as the webhook emit.
-      void resumeWaitingRunsOnReply({
+      const resumed = resumeWaitingRunsOnReply({
         subAccountId: input.subAccountId,
         contactId,
         channel: input.channel,
@@ -197,6 +236,31 @@ export async function upsertConversationForMessage(
         // to what the contact actually said.
         text: input.body,
       });
+      // A tap always answers an earlier button message. If no run was waiting
+      // for it (the wait had timed out), no automation will act on it — flag
+      // the thread so a human does. A finished run is never resumed. If ANY
+      // other run of this contact was waiting, the reply went to it and no
+      // flag is raised.
+      //
+      // The flag lands after the fire-and-forget resume settles, so a human
+      // may already have replied (and cleared it). The write is skipped when a
+      // HUMAN replied after this message arrived — `lastHumanReplyAt`, set only
+      // on the operator-reply path. An AI or workflow send in that window does
+      // not suppress it: an automated reply is not a human handling the tap.
+      void Promise.resolve(resumed)
+        .then(async (n) => {
+          if (!input.buttonTap || n !== 0) return;
+          await db.runTransaction(async (tx) => {
+            const current = (await tx.get(ref)).data();
+            if (!current) return;
+            const humanAt = toMillis(current.lastHumanReplyAt);
+            if (humanAt !== null && humanAt >= receivedAt) return;
+            tx.update(ref, {
+              lateButtonTap: { text: preview, at: FieldValue.serverTimestamp() },
+            });
+          });
+        })
+        .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err));
       // And enrolls the contact in message.received workflows (the trigger's
       // optional channel filter narrows inside fireWorkflowTrigger).
       void fireWorkflowTrigger({
@@ -269,11 +333,12 @@ export async function setConversationDraft(input: {
     if (!docId) return;
     const db = getAdminDb();
     await db.runTransaction(async (tx) => {
-      const territoryId = await contactTerritory(tx, input);
+      const { territoryId, mirror } = await contactDenorm(tx, input);
       tx.set(
         db.doc(`conversations/${docId}`),
         {
           territoryId,
+          ...(mirror ?? {}),
           contactId: input.contactId,
           subAccountId: input.subAccountId,
           agencyId: input.agencyId,

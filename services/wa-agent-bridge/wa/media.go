@@ -72,7 +72,7 @@ func mediaUploadBudget(ctx context.Context) time.Duration {
 	return budget
 }
 
-// isImageMime decides which of the two message shapes an attachment takes.
+// isImageMime decides whether an attachment takes the image message shape.
 //
 // image/* renders inline in the chat; everything else arrives as a file the
 // recipient taps to open. A PNG audit report sent as a DocumentMessage is not
@@ -85,11 +85,22 @@ func mediaUploadBudget(ctx context.Context) time.Duration {
 // "IMAGE/PNG; charset=binary" — but it is written not to depend on that, since
 // a mis-shaped type here would silently downgrade an image to a document.
 func isImageMime(mime string) bool {
+	return strings.HasPrefix(bareMime(mime), "image/")
+}
+
+// isVideoMime is isImageMime's counterpart for the third shape: video/* plays
+// inline as a VideoMessage. The API layer admits only a codec-checked
+// video/mp4, so nothing unplayable reaches here as a video.
+func isVideoMime(mime string) bool {
+	return strings.HasPrefix(bareMime(mime), "video/")
+}
+
+func bareMime(mime string) string {
 	m := strings.ToLower(strings.TrimSpace(mime))
 	if i := strings.IndexByte(m, ';'); i >= 0 {
 		m = strings.TrimSpace(m[:i])
 	}
-	return strings.HasPrefix(m, "image/")
+	return m
 }
 
 // uploadKindFor is the whatsmeow media class an attachment is encrypted under.
@@ -100,6 +111,9 @@ func uploadKindFor(mime string) whatsmeow.MediaType {
 	if isImageMime(mime) {
 		return whatsmeow.MediaImage
 	}
+	if isVideoMime(mime) {
+		return whatsmeow.MediaVideo
+	}
 	return whatsmeow.MediaDocument
 }
 
@@ -107,13 +121,31 @@ func uploadKindFor(mime string) whatsmeow.MediaType {
 // Send so the shape decision is testable without a WhatsApp socket — the
 // upload is the only part that genuinely needs one.
 //
-// caption carries the request's Text. The API requires a non-empty text on
-// every send, media or not, so an attachment always arrives with a line of
-// explanation rather than as a bare file from an unknown number.
+// caption carries the request's Text, which may be empty on a media send: the
+// Caption field is then left unset, as a phone sends a file with no caption.
 func mediaMessage(up whatsmeow.UploadResponse, caption string, media *rails.Media) *waE2E.Message {
+	var captionField *string
+	if caption != "" {
+		captionField = proto.String(caption)
+	}
 	if isImageMime(media.MimeType) {
 		return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
-			Caption:       proto.String(caption),
+			Caption:       captionField,
+			Mimetype:      proto.String(media.MimeType),
+			URL:           proto.String(up.URL),
+			DirectPath:    proto.String(up.DirectPath),
+			MediaKey:      up.MediaKey,
+			FileEncSHA256: up.FileEncSHA256,
+			FileSHA256:    up.FileSHA256,
+			FileLength:    proto.Uint64(up.FileLength),
+		}}
+	}
+	if isVideoMime(media.MimeType) {
+		// Seconds, Width and Height are left unset: filling them means parsing
+		// far more of the file than the codec check does, and WhatsApp plays
+		// the video without them.
+		return &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+			Caption:       captionField,
 			Mimetype:      proto.String(media.MimeType),
 			URL:           proto.String(up.URL),
 			DirectPath:    proto.String(up.DirectPath),
@@ -124,7 +156,7 @@ func mediaMessage(up whatsmeow.UploadResponse, caption string, media *rails.Medi
 		}}
 	}
 	return &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
-		Caption:  proto.String(caption),
+		Caption:  captionField,
 		Mimetype: proto.String(media.MimeType),
 		// FileName is what the recipient sees on the file card; Title is what
 		// some clients show above it. Both come from the caller's filename so

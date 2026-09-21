@@ -144,6 +144,7 @@ describe("captureSnapshot — AI persona", () => {
               key: "install_date",
               label: "Install date",
               type: "date",
+              folderId: "folder_src",
               subAccountId: "sa_src",
               agencyId: "ag_1",
               createdByUid: "u_1",
@@ -159,6 +160,8 @@ describe("captureSnapshot — AI persona", () => {
     expect(field.sourceId).toBe("cf1");
     expect(field).not.toHaveProperty("subAccountId");
     expect(field).not.toHaveProperty("agencyId");
+    // Folders do not travel; a copied folderId would dangle on the target.
+    expect(field).not.toHaveProperty("folderId");
   });
 });
 
@@ -276,5 +279,190 @@ describe("applySnapshot — create-only guarantees", () => {
     expect(field.subAccountId).toBe("sa_dst");
     expect(field.agencyId).toBe("ag_1");
     expect(field).not.toHaveProperty("sourceId");
+  });
+});
+
+describe("applySnapshot — pipeline ids do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+
+  it("nulls trigger.pipelineId and move_stage.config.pipelineId, keeps the stage", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [
+          {
+            sourceId: "wf_src",
+            name: "Pinned",
+            status: "active",
+            trigger: {
+              type: "pipeline.stage.changed",
+              filters: { all: [] },
+              pipelineId: "src_pipeline",
+              toStage: "qualified",
+            },
+            startNodeId: "n1",
+            nodes: {
+              n1: {
+                id: "n1",
+                type: "move_stage",
+                config: { stage: "proposal", pipelineId: "src_pipeline" },
+                next: null,
+              },
+            },
+          },
+        ] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const wf = written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      trigger: { pipelineId: string | null; toStage: string };
+      nodes: Record<string, { config: Record<string, unknown> }>;
+    };
+    expect(wf.trigger.pipelineId).toBeNull();
+    expect(wf.trigger.toStage).toBe("qualified");
+    expect(wf.nodes.n1.config).toEqual({ stage: "proposal", pipelineId: null });
+  });
+});
+
+describe("applySnapshot — task assignees do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+
+  it("nulls create_task.config.assignedToUid, keeps the rest of the step", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [
+          {
+            sourceId: "wf_src",
+            name: "Assigned",
+            status: "active",
+            trigger: { type: "contact.tag.added", filters: { all: [] } },
+            startNodeId: "n1",
+            nodes: {
+              n1: {
+                id: "n1",
+                type: "create_task",
+                config: { title: "Call back", dueInDays: 2, assignedToUid: "u_src_member" },
+                next: null,
+              },
+            },
+          },
+        ] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const wf = written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      nodes: Record<string, { config: Record<string, unknown> }>;
+    };
+    expect(wf.nodes.n1.config).toEqual({
+      title: "Call back",
+      dueInDays: 2,
+      assignedToUid: null,
+    });
+  });
+});
+
+describe("applySnapshot — outbound destinations do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const applyNodes = async (nodes: Record<string, unknown>) => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [{
+          sourceId: "wf_src", name: "Notify", status: "active", startNodeId: "n1",
+          trigger: { type: "contact.created", filters: { all: [] } }, nodes,
+        }] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    return (written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      nodes: Record<string, { config: Record<string, unknown> }>;
+    }).nodes;
+  };
+
+  it("resets a custom notify recipient to the owner and drops the typed address", async () => {
+    const nodes = await applyNodes({
+      n1: { id: "n1", type: "notify", config: { recipient: "custom", to: "ops@client-a.example", subject: "Lead", body: "b" }, next: "n2" },
+      n2: { id: "n2", type: "notify", config: { to: "legacy@client-a.example", subject: "L", body: "b" }, next: null },
+      n3: { id: "n3", type: "notify", config: { recipient: "account_contact", to: "", subject: "A", body: "b" }, next: null },
+    });
+    expect(nodes.n1.config).toEqual({ recipient: "owner", to: "", subject: "Lead", body: "b" });
+    // Legacy (no recipient) means custom — reset as well.
+    expect(nodes.n2.config).toEqual({ recipient: "owner", to: "", subject: "L", body: "b" });
+    // account_contact resolves on the TARGET at run time; nothing to strip.
+    expect(nodes.n3.config.recipient).toBe("account_contact");
+  });
+
+  it("blanks a form's post-submit redirectUrl and keeps its other settings", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        forms: [{
+          sourceId: "f_src", name: "Lead", slug: "lead", enabled: true, fields: [],
+          settings: { redirectUrl: "https://client-a.example/thanks", autoTags: ["lead"], thankYouMessage: "Thanks" },
+        }] as unknown as SnapshotPayload["forms"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const form = written.find((w) => w.path.startsWith("forms/"))!.data as {
+      settings: Record<string, unknown>;
+    };
+    expect(form.settings).toEqual({ redirectUrl: "", autoTags: ["lead"], thankYouMessage: "Thanks" });
+  });
+
+  it("blanks a webhook URL so the step is skipped until reconfigured", async () => {
+    const nodes = await applyNodes({
+      n1: { id: "n1", type: "webhook", config: { url: "https://client-a.example/hook" }, next: null },
+    });
+    expect(nodes.n1.config).toEqual({ url: "" });
+  });
+});
+
+describe("applySnapshot — booking page slugs do not cross sub-accounts", () => {
+  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+
+  it("nulls trigger.bookingPageSlug on a booking.* trigger", async () => {
+    const { db, written } = fakeDb({ collections: {}, docs: {} });
+    await applySnapshot(
+      db,
+      {
+        ...emptyPayload(),
+        workflows: [
+          {
+            sourceId: "wf_src",
+            name: "Page-pinned",
+            status: "active",
+            trigger: {
+              type: "booking.no_show",
+              filters: { all: [] },
+              bookingPageSlug: "src_page",
+            },
+            startNodeId: "n1",
+            nodes: {
+              n1: { id: "n1", type: "add_tag", config: { tag: "x" }, next: null },
+            },
+          },
+        ] as unknown as SnapshotPayload["workflows"],
+      },
+      "sa_dst",
+      scope,
+    );
+    const wf = written.find((w) => w.path.startsWith("workflows/"))!.data as {
+      trigger: { type: string; bookingPageSlug: string | null };
+    };
+    expect(wf.trigger.bookingPageSlug).toBeNull();
+    expect(wf.trigger.type).toBe("booking.no_show");
   });
 });

@@ -7,6 +7,7 @@ import {
   readEnv,
 } from "./lib/env";
 import { assertFixtureSubAccount } from "./lib/guard";
+import { purgeFixtureData } from "./lib/purge";
 import { ensureSeed } from "./lib/seed";
 
 /**
@@ -54,8 +55,34 @@ async function saveAuthenticatedState(): Promise<void> {
   }
 }
 
+/**
+ * NEXT_PUBLIC_APP_URL is baked into the build at build time; baseURL() (and
+ * every helper that signs a URL for the running server, e.g. QStash/Twilio
+ * signatures) is resolved at test-run time from E2E_PORT. Against the PR's
+ * own webServer the two MUST agree, or the server verifies signatures against
+ * one URL while the suite signs another — every signed-webhook spec would
+ * fail with an opaque 401/403 instead of the one clear message below. Skipped
+ * against an external deployment (PLAYWRIGHT_BASE_URL set): that build's
+ * NEXT_PUBLIC_APP_URL was baked by someone else and has nothing to do with
+ * this machine's E2E_PORT.
+ */
+function assertAppUrlMatchesBaseUrl(): void {
+  if (process.env.PLAYWRIGHT_BASE_URL) return;
+  const configured = process.env.NEXT_PUBLIC_APP_URL;
+  const expected = baseURL();
+  if (configured !== expected) {
+    throw new Error(
+      `NEXT_PUBLIC_APP_URL (${configured ?? "unset"}) does not match the ` +
+        `E2E base URL (${expected}). The app was built with a different ` +
+        `URL baked in than the suite is signing requests for — rebuild with ` +
+        `NEXT_PUBLIC_APP_URL=${expected} before running E2E on this port.`,
+    );
+  }
+}
+
 export default async function globalSetup(): Promise<void> {
   const env = readEnv();
+  assertAppUrlMatchesBaseUrl();
 
   await assertFixtureSubAccount(env.E2E_SUBACCOUNT_ID, FIXTURE_PRIMARY_NAME);
   await assertFixtureSubAccount(
@@ -63,6 +90,11 @@ export default async function globalSetup(): Promise<void> {
     FIXTURE_SECONDARY_NAME,
   );
 
+  // A cancelled job (cancel-in-progress on a new push) is killed before
+  // global teardown runs, so its rows are still here. Specs that select by
+  // filter rather than by id — bulk actions' "assigned to owner", for one —
+  // then pick up another run's contacts: "4 selected" where 2 were seeded.
+  await purgeFixtureData();
   await ensureSeed();
   await saveAuthenticatedState();
 }

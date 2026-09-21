@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { CalendarCheck, Copy, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
+import { GoogleCalendarCard } from "@/components/settings/google-calendar-card";
 
 /**
  * Calendar subscription panel — the .ics feed URL operators paste into
@@ -84,6 +85,8 @@ export function SubAccountCalendarSyncSection() {
           </p>
         </div>
       </header>
+
+      <GoogleCalendarCard />
 
       {loading ? (
         <div className="flex items-center justify-center rounded-lg border bg-background p-6 text-sm text-muted-foreground">

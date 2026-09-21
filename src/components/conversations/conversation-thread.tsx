@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 import { CheckCheck } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
+import { subscribeToNotes } from "@/lib/firestore/contacts";
+import { mergeThreadItems, type ThreadItem } from "@/lib/conversations/thread-items";
 import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { EmailMessageDoc } from "@/types/email";
@@ -11,6 +13,16 @@ import { Button } from "@/components/ui/button";
 import type { MessageDoc } from "@/types/messages";
 import type { ConversationChannel } from "@/types/conversations";
 import type { ConversationTheme } from "@/hooks/use-conversation-theme";
+import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
+import {
+  isLocationLabelBody,
+  WhatsappLocationAttachment,
+} from "@/components/conversations/whatsapp-location-attachment";
+import type { Note } from "@/types/contacts";
+import { ThreadNote } from "./thread-note";
+import { ThreadScheduled } from "./thread-scheduled";
+import { useScheduledMessages } from "@/hooks/use-scheduled-messages";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 
 type ChannelMessage =
   | (MessageDoc & { channel: ConversationChannel })
@@ -47,6 +59,16 @@ type MetaMessageDoc = MessageDoc & { channel?: ConversationChannel };
  * When `sessionId` is passed (a web-chat conversation), it instead reads that
  * session's transcript at `subAccounts/{subAccountId}/webChatSessions/{id}/
  * messages` — web-chat messages live under the session, not a contact.
+ *
+ * Internal notes (SP2 T2) — the contact's `notes` rows, the same ones its
+ * timeline shows — are interleaved by time whenever there is a contact,
+ * including a web-chat session that has captured one. They are rendered as
+ * notes, never as bubbles.
+ *
+ * Scheduled messages (SP2 T5) — pending, sending, failed or unconfirmed — are
+ * interleaved at their send time for contact threads, as dashed items with
+ * Cancel (pending) or Dismiss (failed / unconfirmed). Sent ones are left out
+ * (the real message row shows instead), as are cancelled and dismissed ones.
  */
 export function ConversationThread({
   contactId,
@@ -54,14 +76,18 @@ export function ConversationThread({
   subAccountId,
   theme = "standard",
   onEmailReply,
+  scheduleTimeZone = "UTC",
 }: {
   contactId: string;
   onEmailReply?: (message: EmailMessageDoc) => void;
   /** Web-chat only: read the session transcript instead of contact threads. */
   sessionId?: string | null;
-  /** Required alongside sessionId to locate the session doc. */
+  /** Required alongside sessionId to locate the session doc; for a contact
+   *  thread it scopes the scheduled-messages read. */
   subAccountId?: string;
   theme?: ConversationTheme;
+  /** Zone scheduled times are shown in (see lib/conversations/schedule-time). */
+  scheduleTimeZone?: string;
 }) {
   const [email, setEmail] = useState<EmailMessageDoc[]>([]);
   const [emailReady, setEmailReady] = useState(false);
@@ -74,6 +100,9 @@ export function ConversationThread({
   const [waReady, setWaReady] = useState(false);
   const [metaReady, setMetaReady] = useState(false);
   const [webReady, setWebReady] = useState(false);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [notesReady, setNotesReady] = useState(false);
+  const [notesError, setNotesError] = useState(false);
   const isWebChat = !!sessionId && !!subAccountId;
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
@@ -163,11 +192,44 @@ export function ConversationThread({
     };
   }, [contactId, isWebChat, sessionId, subAccountId]);
 
-  const merged = useMemo<ChannelMessage[]>(() => {
+  // Notes live on the contact, so they follow `contactId` for both modes.
+  useEffect(() => {
+    if (!contactId) return;
+    return subscribeToNotes(
+      contactId,
+      (list) => {
+        setNotes(list);
+        setNotesReady(true);
+        setNotesError(false);
+      },
+      () => {
+        setNotesReady(true);
+        setNotesError(true);
+      }
+    );
+  }, [contactId]);
+
+  const { members } = useSubAccountMembers(
+    isWebChat ? null : subAccountId
+  );
+  const memberNames = useMemo(
+    () => new Map(members.map((m) => [m.uid, m.displayName])),
+    [members]
+  );
+
+  const scheduledRead = useScheduledMessages(
+    isWebChat ? null : subAccountId,
+    isWebChat ? null : contactId,
+    email.length + sms.length + wa.length + meta.length
+  );
+
+  const merged = useMemo<ThreadItem<ChannelMessage>[]>(() => {
+    const threadNotes = contactId ? notes : [];
     if (isWebChat) {
-      return web
-        .map((m) => ({ ...m, channel: "web-chat" as const }))
-        .sort((a, b) => toMillis(a.createdAt) - toMillis(b.createdAt));
+      return mergeThreadItems(
+        web.map((m) => ({ ...m, channel: "web-chat" as const })),
+        threadNotes
+      );
     }
     const all: ChannelMessage[] = [
       ...email.map((m) => ({ ...m, channel: "email" as const })),
@@ -178,13 +240,15 @@ export function ConversationThread({
         channel: (m.channel ?? "messenger") as ConversationChannel,
       })),
     ];
-    all.sort((a, b) => toMillis(a.createdAt) - toMillis(b.createdAt));
-    return all;
-  }, [sms, wa, meta, web, email, isWebChat]);
+    const scheduled = scheduledRead.messages.filter(
+      (m) => m.status !== "sent" && m.status !== "cancelled"
+    );
+    return mergeThreadItems(all, threadNotes, scheduled);
+  }, [sms, wa, meta, web, email, isWebChat, notes, contactId, scheduledRead.messages]);
 
-  const hydrated = isWebChat
-    ? webReady
-    : smsReady && waReady && metaReady && emailReady;
+  const hydrated =
+    (!contactId || notesReady) &&
+    (isWebChat ? webReady : smsReady && waReady && metaReady && emailReady);
 
   useEffect(() => {
     if (scrollerRef.current) {
@@ -193,10 +257,24 @@ export function ConversationThread({
   }, [merged.length]);
 
   return (
-    <div ref={scrollerRef} className="flex-1 space-y-2 overflow-y-auto p-4">
+    <div
+      ref={scrollerRef}
+      data-testid="conversation-thread"
+      className="flex-1 space-y-2 overflow-y-auto p-4"
+    >
       {emailError && (
         <p role="alert" className="text-destructive text-xs">
           Email messages could not be loaded. Refresh to try again.
+        </p>
+      )}
+      {notesError && (
+        <p role="alert" className="text-destructive text-xs">
+          Internal notes could not be loaded. Refresh to try again.
+        </p>
+      )}
+      {scheduledRead.error && (
+        <p role="alert" className="text-destructive text-xs">
+          Scheduled messages could not be loaded. Refresh to try again.
         </p>
       )}
       {!hydrated ? (
@@ -211,14 +289,32 @@ export function ConversationThread({
           </p>
         </div>
       ) : (
-        merged.map((m) => (
-          <ChannelBubble
-            key={`${m.channel}:${m.id}`}
-            message={m}
-            theme={theme}
-            onEmailReply={onEmailReply}
-          />
-        ))
+        merged.map((item) =>
+          item.kind === "note" ? (
+            <ThreadNote
+              key={item.key}
+              note={item.note}
+              mentionNames={(item.note.mentionedUids ?? []).flatMap((uid) =>
+                memberNames.get(uid) ?? []
+              )}
+            />
+          ) : item.kind === "scheduled" ? (
+            <ThreadScheduled
+              key={item.key}
+              message={item.scheduled}
+              timeZone={scheduleTimeZone}
+              onRemove={scheduledRead.remove}
+            />
+          ) : (
+            <ChannelBubble
+              key={item.key}
+              message={item.message}
+              contactId={contactId}
+              theme={theme}
+              onEmailReply={onEmailReply}
+            />
+          )
+        )
       )}
     </div>
   );
@@ -267,10 +363,13 @@ function bubbleClasses(
 
 function ChannelBubble({
   message,
+  contactId,
   theme,
   onEmailReply,
 }: {
   message: ChannelMessage;
+  /** Needed to build the media URL; empty in web-chat mode, which has no media. */
+  contactId: string;
   onEmailReply?: (message: EmailMessageDoc) => void;
   theme: ConversationTheme;
 }) {
@@ -307,7 +406,35 @@ function ChannelBubble({
             </p>
           </div>
         )}
-        <p className="break-words whitespace-pre-wrap">{message.body}</p>
+        {message.channel === "whatsapp" && (
+          <WhatsappMediaAttachment
+            contactId={contactId}
+            messageId={message.id}
+            media={"media" in message ? message.media : null}
+            dropped={"mediaDropped" in message ? message.mediaDropped : null}
+          />
+        )}
+        {message.channel === "whatsapp" && "location" in message && (
+          <WhatsappLocationAttachment location={message.location} />
+        )}
+        {!(
+          message.channel === "whatsapp" &&
+          "location" in message &&
+          isLocationLabelBody(message.body, message.location)
+        ) && <p className="break-words whitespace-pre-wrap">{message.body}</p>}
+        {"buttons" in message && message.buttons && message.buttons.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-current/10 pt-2">
+            {message.buttons.map((btn, i) => (
+              <span
+                key={i}
+                className="rounded-full bg-background/60 px-2 py-0.5 text-[11px] font-medium text-current opacity-80"
+                title={btn.type === "url" ? btn.url : undefined}
+              >
+                {btn.type === "url" ? `🔗 ${btn.text} (${btn.url})` : btn.text}
+              </span>
+            ))}
+          </div>
+        )}
         {"attachments" in message && message.attachments.length > 0 && (
           <div className="mt-2 border-t pt-2 text-xs">
             <p>Attachments (metadata only; open originals in your mailbox)</p>
@@ -362,13 +489,4 @@ function ChannelBubble({
       </div>
     </div>
   );
-}
-
-function toMillis(v: unknown): number {
-  if (!v) return 0;
-  if (v instanceof Date) return v.getTime();
-  const maybe = v as { toDate?: () => Date; seconds?: number };
-  if (typeof maybe.toDate === "function") return maybe.toDate().getTime();
-  if (typeof maybe.seconds === "number") return maybe.seconds * 1000;
-  return 0;
 }

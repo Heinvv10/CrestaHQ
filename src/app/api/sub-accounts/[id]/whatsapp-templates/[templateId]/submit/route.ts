@@ -12,6 +12,7 @@ import {
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
 import { toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
+import { twilioButtonProblem } from "@/lib/comms/whatsapp/twilio-buttons";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { buildRegistrationUpdate } from "@/lib/comms/whatsapp/template-registrations";
 import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
@@ -97,6 +98,14 @@ export async function POST(
       { status: 400 },
     );
   }
+  // Twilio's button rules are narrower than Meta's (one action type per
+  // template, 20-character titles). Refuse here, before anything is created,
+  // with a message the operator can act on.
+  const twilioProblem =
+    provider === "twilio" ? twilioButtonProblem(tpl.buttons ?? []) : null;
+  if (twilioProblem) {
+    return NextResponse.json({ error: twilioProblem }, { status: 400 });
+  }
   if (!SUBMITTABLE.includes(tpl.status)) {
     return NextResponse.json(
       { error: `A ${tpl.status} template can't be submitted again.` },
@@ -128,6 +137,7 @@ export async function POST(
         category: tpl.category,
         body: tpl.body,
         variables: tpl.variables,
+        buttons: tpl.buttons ?? [],
       });
       externalId = created.id;
     } else {
@@ -138,6 +148,7 @@ export async function POST(
         language: tpl.language,
         body: tpl.body,
         variables: variablesSample,
+        buttons: tpl.buttons ?? [],
       });
       externalId = created.contentSid;
       await submitForWhatsappApproval({

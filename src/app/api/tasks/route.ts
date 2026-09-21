@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 
 /**
  * Dashboard-facing task creation. Replaces the browser's direct Firestore
@@ -45,6 +46,17 @@ export async function POST(request: Request) {
   const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const agencyId = (subSnap.data()?.agencyId as string) ?? access.agencyId ?? "";
 
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    !(await isAssignableMember(subAccountId, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
+
   const { id, task } = await createTaskServerSide({
     subAccountId,
     agencyId,
@@ -56,6 +68,7 @@ export async function POST(request: Request) {
     contactId: typeof body.contactId === "string" ? body.contactId : null,
     dealId: typeof body.dealId === "string" ? body.dealId : null,
     eventId: typeof body.eventId === "string" ? body.eventId : null,
+    assignedToUid: assignedToUid ?? null,
   });
 
   return NextResponse.json({ id, task }, { status: 201 });

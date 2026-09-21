@@ -2,6 +2,8 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { FieldPath, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
+import { contactMirror } from "@/lib/server/conversation-mirror";
 import { validEmail } from "@/lib/comms/smtp";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { EmailMessageDoc } from "@/types/email";
@@ -106,9 +108,11 @@ export async function recordEmailMessage(
     input.contactId && correspondents.length === 1
       ? null
       : await legacyContactIndex(input.subAccountId);
-  return db.runTransaction(async (tx) => {
+  let tenantAgencyId = "";
+  const result = await db.runTransaction(async (tx) => {
     const sub = await tx.get(db.doc(`subAccounts/${input.subAccountId}`));
     const agencyId = sub.data()?.agencyId as string | undefined;
+    tenantAgencyId = agencyId ?? "";
     if (!sub.exists || !agencyId)
       throw new Error("Email tenant does not exist.");
     if (input.mailboxFence) {
@@ -154,6 +158,26 @@ export async function recordEmailMessage(
     const contactByEmail: Record<string, string> = {
       ...(index?.contactByEmail ?? {}),
     };
+    // A reply names the message it answers. When that message is on file, its
+    // index says which contact holds this correspondent's thread — the tie-break
+    // when several contacts share one address. Grouping stays by address: a
+    // parent's contact is only used for the SAME address, never to pull mail from
+    // another sender into someone else's conversation.
+    const parentId = input.inReplyTo || input.references?.at(-1);
+    const parent =
+      parentId && parentId !== messageId
+        ? (
+            await tx.get(
+              db.doc(
+                `subAccounts/${input.subAccountId}/emailMessageIndex/${hash(parentId)}`
+              )
+            )
+          ).data()
+        : undefined;
+    const threadContactByEmail: Record<string, string> =
+      parent?.subAccountId === input.subAccountId && parent.agencyId === agencyId
+        ? (parent.contactByEmail ?? {})
+        : {};
     const pending: {
       ref: FirebaseFirestore.DocumentReference;
       data: Record<string, unknown>;
@@ -167,6 +191,20 @@ export async function recordEmailMessage(
       if (indexedId && explicitId && indexedId !== explicitId)
         throw new Error("Message already belongs to another contact.");
       let matchId: string | undefined = indexedId;
+      const threadId = threadContactByEmail[email];
+      if (!explicitId && !matchId && threadId) {
+        const threadContact = (
+          await tx.get(db.doc(`contacts/${threadId}`))
+        ).data();
+        if (
+          threadContact?.subAccountId === input.subAccountId &&
+          threadContact.agencyId === agencyId &&
+          String(threadContact.email ?? "")
+            .trim()
+            .toLowerCase() === email
+        )
+          matchId = threadId;
+      }
       if (!explicitId && !matchId) {
         const matches = await tx.get(
           db
@@ -281,6 +319,14 @@ export async function recordEmailMessage(
           : GLOBAL_TERRITORY_ID,
         contactName: contact?.name || email,
         contactPhone: contact?.phone || null,
+        // Owner + email mirrored off the contact (SP2 T1/I9), exactly as the
+        // SMS/WhatsApp upsert does. A contact created by THIS transaction has
+        // no owner yet and its address is the one we matched on.
+        ...contactMirror(
+          contactSnap.exists
+            ? (contact as Record<string, unknown>)
+            : { email }
+        ),
         channelsSeen: FieldValue.arrayUnion("email"),
         updatedAt: FieldValue.serverTimestamp(),
       };
@@ -288,7 +334,8 @@ export async function recordEmailMessage(
         Object.assign(patch, {
           createdAt: occurredAt,
           status: "open",
-          assigneeUid: null,
+          // assigneeUid + contactEmail are set by the mirror above on every
+          // message — re-stamping null here would undo them on create.
           botMode: "off",
           botPausedUntil: null,
           pendingDraft: null,
@@ -316,4 +363,18 @@ export async function recordEmailMessage(
       tx.set(write.ref, write.data, { merge: write.merge ?? false });
     return { contactId: firstContactId, inserted };
   });
+  // Timeline row for a NEW live inbound mail — written after the
+  // transaction commits, never inside it (a derived row must not be able to
+  // abort the message write). Historical backfill stays off the timeline.
+  if (result.inserted && input.direction === "inbound" && !input.historical) {
+    await writeInboundMessageActivity(db, {
+      contactId: result.contactId,
+      channel: "email",
+      preview: input.subject ? `${input.subject} — ${input.body}` : input.body,
+      messageId,
+      agencyId: tenantAgencyId,
+      subAccountId: input.subAccountId,
+    });
+  }
+  return result;
 }

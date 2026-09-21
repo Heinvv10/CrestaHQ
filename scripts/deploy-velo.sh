@@ -14,6 +14,13 @@
 #     is cleared automatically.
 #   - Runs as a systemd USER service (velo has Linger=yes, no passwordless
 #     sudo). $SYSTEMCTL is overridable if that ever changes.
+#   - Refuses any GBP fake-provider setting: any mention of GBP_PROVIDER /
+#     GBP_FAKE_ in an env file before building, and a loopback app URL inlined
+#     into the built fake-provider check after building. The same guard
+#     refuses the WhatsApp settings fake (WHATSAPP_SETTINGS_PROVIDER /
+#     WHATSAPP_FAKE_), the SMS fake (SMS_PROVIDER / SMS_FAKE_), the Google
+#     Calendar fake (GCAL_PROVIDER / GCAL_FAKE_) and the Reviews AI fake
+#     (REVIEWS_AI_PROVIDER / REVIEWS_AI_FAKE_).
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.
@@ -97,6 +104,17 @@ after=$(git rev-parse --short HEAD)
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
 
+# ── Refuse the dev/CI-only fake providers (GBP, WhatsApp settings, SMS, GCal, Reviews AI)
+# Pre-build half of scripts/gbp-deploy-check.mjs: no env parsing — any .env*
+# file that even MENTIONS GBP_PROVIDER / GBP_FAKE_ / WHATSAPP_SETTINGS_PROVIDER
+# / WHATSAPP_FAKE_ / SMS_PROVIDER / SMS_FAKE_ / GCAL_PROVIDER / GCAL_FAKE_ /
+# REVIEWS_AI_PROVIDER / REVIEWS_AI_FAKE_, or
+# a shell variable named so, refuses the deploy before anything is built. The post-build half runs in
+# the NEXT_PUBLIC_APP_URL verification below. See docs/features/gbp-reviews.md.
+say "Checking for GBP fake-provider settings"
+node scripts/gbp-deploy-check.mjs pre "$DEPLOY_DIR" \
+  || die "GBP deploy check refused (see above): remove any fake-provider settings, and set TRUST_CF_CONNECTING_IP=1 in $DEPLOY_DIR/.env.production."
+
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
 
@@ -136,16 +154,20 @@ APP_URL="$(sed -n 's/^NEXT_PUBLIC_APP_URL=//p' .env.production 2>/dev/null | hea
 [ -n "$APP_URL" ] || die "NEXT_PUBLIC_APP_URL is not set in $DEPLOY_DIR/.env.production — the build inlines it, so login redirects would point at the server's bind address"
 grep -rqF "$APP_URL" .next/server/edge/chunks/ \
   || die "NEXT_PUBLIC_APP_URL ($APP_URL) is not present in the built middleware — the build did not pick it up; login redirects would point at the server's bind address"
+# The GBP fake provider is allowed only when the URL INLINED into the build is
+# loopback. Assert on the artifact: the URL parses, is not loopback, and is the
+# literal inlined next to the fake-provider check in the server chunks.
+node scripts/gbp-deploy-check.mjs post "$DEPLOY_DIR" "$APP_URL" \
+  || die "the built app could run the GBP fake provider (see above) — refusing to restart $SERVICE"
 
 # Next's standalone output ships server.js + a minimal node_modules, but NOT
-# the static assets or /public — those must be copied in beside it.
+# the static assets, /public, or instrumentation.js — see the script.
 say "Assembling standalone bundle"
-cp -r .next/static .next/standalone/.next/static
-[ -d public ] && cp -r public .next/standalone/public
-[ -f .next/standalone/server.js ] || die "standalone server.js missing — is output:'standalone' still set in next.config.ts?"
+node scripts/assemble-standalone.mjs || die "standalone bundle is incomplete (see above)"
 
 # ── Only now touch the running service ──────────────────────────────────────
 say "Restarting $SERVICE"
+restarted_at="$(date +%s)"
 $SYSTEMCTL restart "$SERVICE" || die "restart $SERVICE"
 
 say "Health check"
@@ -160,5 +182,16 @@ if [ "$ok" -ne 1 ]; then
   journalctl --user -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
   die "health check never returned 200 on $HEALTH_URL"
 fi
+
+# instrumentation.ts register() fails by never running: the server answers
+# 200 either way. Its one log line is the only proof it ran.
+say "Verifying instrumentation ran"
+ran=0
+for i in $(seq 1 10); do
+  if journalctl --user -u "$SERVICE" --since "@$restarted_at" -o cat --no-pager 2>/dev/null \
+      | grep -qF "[instrumentation] register() ran"; then ran=1; break; fi
+  sleep 1
+done
+[ "$ran" -eq 1 ] || die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
 
 say "Deployed $after to $SERVICE on port $PORT"

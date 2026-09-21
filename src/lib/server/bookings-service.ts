@@ -15,11 +15,13 @@ import {
   scheduleEventReminders,
 } from "@/lib/booking/lifecycle";
 import { renderBookingConfirmationEmail } from "@/lib/booking/email";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Bookings service — the single server-side path that confirms a booking held
@@ -109,6 +111,7 @@ export async function markBookingPaidServerSide(input: {
     publicTokenHash: newHash,
   };
   await runMarkPaidSideEffects({ event: updatedEvent, rawToken: newToken });
+  await pushBookingToGoogle(input.eventId);
 
   return {
     ok: true,
@@ -182,9 +185,11 @@ async function runMarkPaidSideEffects(args: {
   );
   await fireBookingTrigger(
     {
+      id: event.id,
       agencyId: event.agencyId,
       subAccountId: event.subAccountId,
       contactId: event.contactId,
+      bookingPageSlug: event.bookingPageSlug ?? null,
     },
     "event_paid",
   );
@@ -198,10 +203,7 @@ async function runMarkPaidSideEffects(args: {
     businessName: sub.name ?? "Booking",
     businessLogoUrl: sub.logoUrl,
     page: {
-      name: page?.name ?? event.title ?? "Meeting",
-      durationMinutes:
-        page?.durationMinutes ??
-        Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
+      ...bookedEventLabel(page, event, startAt, endAt),
       timezone: page?.timezone ?? "UTC",
       payment: page?.payment ?? null,
       confirmationMessage: page?.confirmationMessage ?? "",

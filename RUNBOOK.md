@@ -194,6 +194,51 @@ Run through this with the client's real details before calling it done:
 | Customer texted STOP but can still be messaged / replies missing | Inbound webhook not set on the Twilio number | Re-save Settings → SMS or paste the webhook URL manually |
 | AI silent on a channel that's "enabled" | Empty persona, agency gate off, or channel prerequisite missing (e.g. Voice without Twilio in BYOC mode) | Work Phase 4 top to bottom for that channel |
 | Emails send but replies vanish | Workspace Reply-To never set | Settings → Sending preferences |
+| Google reviews stale / "Reconnect needed" / "Sync failing" on AI Agents → Google Business | The 6-hourly GBP sync is failing, or the Google grant was revoked | See "Google Business Profile review sync" below |
+| A reply to a Google review shows an error under the review | Google refused or timed out (the attempt is `failed` in `subAccounts/{id}/gbpReplyAttempts`), or the grant needs a reconnect | Click **Post reply to Google** again — the same text reuses the idempotency key, so it can never post twice. `Reconnect` → reconnect on that page first |
+
+### Google Business Profile review sync
+
+- **Health:** the Google Business page shows the badge, "Last synced …" and a
+  banner for stale / partial / reconnect / error. Health is re-derived on every
+  page load (stale after 12h without a successful sync).
+- **Manual sync:** a sub-account admin clicks **Sync now** on that page; the
+  result (counts, or why it skipped/failed) shows inline.
+- **Run history:** Firestore `subAccounts/{id}/gbpSyncRuns` — one doc per run
+  (`trigger`, `status`, counts, `reconciliation`, `errorKind`, `skipReason`),
+  newest by `finishedAt`. `reconnect_required` → the client must reconnect
+  Google on that page; `rate_limited`/`transient` → wait for the next run;
+  `skipped already_running` → another run holds the 5-minute lease.
+- **Retention (always on):** `leadstack-gbp-retention` runs daily at 04:30
+  UTC for every sub-account holding a cache — Firestore only, no Google
+  calls — deleting content past Google's 30-day limit. It is registered with
+  the other schedules on every deployment; check it in the QStash schedules
+  list if review content ever looks older than 30 days.
+- **Schedule:** the `leadstack-gbp-sync` QStash schedule (every 6h) is
+  registered at cold start only when the deployment sets
+  `GBP_SYNC_SCHEDULE_ENABLED=1` (the page then says "Syncs automatically
+  every 6 hours"; without it, "Automatic sync is not scheduled"). Manual
+  alternative in [docs/features/gbp-reviews.md](docs/features/gbp-reviews.md).
+  Capacity: 25 tenants per sweep; a `rate_limited` tenant stops the sweep
+  starting more until the next run.
+- **Sync now** answers `too_soon` within a minute of the last one.
+- `skipped listing_changed` → the listing/connection/gate changed as the run
+  started; nothing was written, the next run picks up the new state.
+- Switching the agency's Google gate off (Manage dialog or Workspace
+  Assistant) deletes that sub-account's synced reviews at once; the
+  connection is kept.
+- A review removed at Google disappears after two complete passes (~12h
+  scheduled). Listings over 1000 reviews never count misses: such a review
+  disappears only after 30 days unseen.
+- **Replies** are posted only by an admin's **Post reply to Google** click
+  (nothing automatic, no AI). `in_progress` → an identical submit is still
+  running (at most 2 minutes); `idempotency_key_reused` → the text changed
+  after a submit — close and reopen the composer.
+- **Review-request link:** the selected listing's Google review link is only
+  *proposed* (Google Business page and Settings → Google reviews); the link
+  review requests send changes only on **Use it** / **Replace with listing
+  link**. "The review link changed since you looked" → someone saved a
+  different link meanwhile; reload and decide again.
 
 ---
 

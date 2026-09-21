@@ -5,16 +5,21 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
+import { reverifyListingAfterReconnect } from "@/lib/gbp/listing-events";
+import { completeCalendarConnect } from "@/lib/google-calendar/callback";
+import { getGbpProviderFor } from "@/lib/gbp/provider/select";
 import {
-  exchangeCodeForTokens,
+  GOOGLE_SCOPE,
   googleAppConfigured,
   googleRedirectUri,
+  googleReturnPath,
   verifyGoogleState,
 } from "@/lib/google/oauth";
 import {
   googleConnectionSecretPath,
   type GoogleConnectionMeta,
   type GoogleConnectionSecret,
+  type GoogleListing,
 } from "@/types/google";
 
 /**
@@ -32,8 +37,8 @@ import {
  * session cookie — admin-gated, not public). Verifies `state`, re-checks the
  * agency gate, exchanges the code, and stores the tokens in the LOCKED
  * `private` subcollection with only display metadata on the sub-account doc.
- * Always redirects back to Settings with a `?google=…` status; never throws to
- * the user.
+ * Always redirects back to Settings (or the Google Business page, per the
+ * signed `r` claim) with a `?google=…` status; never throws to the user.
  */
 
 function appBase(request: Request): string {
@@ -50,11 +55,17 @@ export async function GET(request: Request) {
 
   // The sub-account identity lives in `state`. Without a valid one we can't
   // even tell whose settings page to return to, so bail to a safe landing.
-  const verified = state ? verifyGoogleState(state) : null;
-  if (!verified) {
-    return NextResponse.redirect(
+  const badState = () =>
+    NextResponse.redirect(
       new URL("/agency/sub-accounts?google=bad_state", appBase(request)),
     );
+  const verified = state ? verifyGoogleState(state) : null;
+  if (!verified) return badState();
+  // A member's Google Calendar connection shares this one registered redirect
+  // URI. Its own handler owns every step after the signature check; a state
+  // without the purpose claim (every GBP state) never reaches it.
+  if (verified.purpose === "calendar") {
+    return completeCalendarConnect(request, verified);
   }
   const id = verified.subAccountId;
 
@@ -63,7 +74,14 @@ export async function GET(request: Request) {
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
 
-  const settingsUrl = new URL(`/sa/${id}/dashboard/settings`, appBase(request));
+  // The state is bound to the uid that started the flow. Another admin of the
+  // same sub-account holding a leaked state must not be able to complete it.
+  if (access.uid !== verified.uid) return badState();
+
+  const settingsUrl = new URL(
+    googleReturnPath(id, verified.returnTo),
+    appBase(request),
+  );
   const finish = (status: string) => {
     settingsUrl.searchParams.set("google", status);
     return NextResponse.redirect(settingsUrl);
@@ -90,11 +108,19 @@ export async function GET(request: Request) {
   }
 
   try {
-    const tokens = await exchangeCodeForTokens(code, redirectUri);
+    // Inside the try: in fake mode a sub-account outside the fixture agency
+    // throws here, BEFORE any exchange or write.
+    const provider = await getGbpProviderFor(id);
+    const tokens = await provider.exchangeCode(code, redirectUri);
     // No refresh token means the connection dies within the hour. Refuse it
     // rather than storing a link that looks connected and silently stops.
     if (!tokens.refreshToken) {
       return finish("no_refresh_token");
+    }
+    // Google's consent screen lets the user untick the scope. A grant without
+    // business.manage can do nothing we need — store nothing.
+    if (!tokens.scopes.includes(GOOGLE_SCOPE)) {
+      return finish("insufficient_scope");
     }
 
     const secret: GoogleConnectionSecret = {
@@ -115,20 +141,32 @@ export async function GET(request: Request) {
       scopes: tokens.scopes,
       connectedAt: new Date(),
       connectedByUid: access.uid,
+      // Explicit, not omitted: the doc write below is a deep merge, so an
+      // omitted field would leave a stale `reconnectRequired: true` behind.
+      reconnectRequired: false,
+      reconnectReason: null,
     };
 
     const db = getAdminDb();
+    const subRef = db.doc(`subAccounts/${id}`);
+    const listing = (await subRef.get()).data()?.googleListing as GoogleListing | null | undefined;
     await db.doc(googleConnectionSecretPath(id)).set(secret);
-    await db
-      .doc(`subAccounts/${id}`)
-      .set(
-        { googleConnectionMeta: meta, updatedAt: FieldValue.serverTimestamp() },
-        { merge: true },
-      );
+    await subRef.set(
+      { googleConnectionMeta: meta, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+    // A reconnect may be a DIFFERENT Google identity: the old listing must
+    // still be visible to this grant, or it is cleared (and audited).
+    if (listing?.locationName) {
+      await reverifyListingAfterReconnect(id, access.uid, provider, tokens.accessToken, listing);
+    }
 
     return finish("connected");
   } catch (err) {
-    console.error(`[google/callback] connect failed sa=${id}`, err);
+    // Name + message only: a raw error object can carry request detail.
+    // GbpProviderError messages are fixed per kind and never hold a token.
+    const reason = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+    console.error(`[google/callback] connect failed sa=${id}`, reason);
     return finish("error");
   }
 }

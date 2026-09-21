@@ -6,11 +6,13 @@ import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { getWabaCreds } from "./cloud-credentials";
 import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
-import { sendWhatsappBridge, type BridgeAttachment } from "./bridge-client";
+import type { InteractiveResult } from "./interactive";
+import { sendWhatsappBridge } from "./bridge-client";
 import { resolveWhatsappSender } from "./resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
 import {
   resolveWhatsAppProviderId,
+  type OutboundAttachment,
   type WhatsAppProviderId,
   type WhatsAppSendResult,
 } from "./provider";
@@ -68,6 +70,15 @@ export interface WhatsappDispatchInput {
   windowHours?: number;
   /** Approved template to fall back on when the window is shut. */
   template?: CloudTemplateRef | null;
+  /**
+   * The template's buttons as an in-window interactive message (Cloud only),
+   * or why they cannot be one. Consulted ONLY when the send is in-window:
+   * outside it the approved `template` goes as always, buttons and all.
+   */
+  inWindowButtons?: InteractiveResult | null;
+  /** How the Twilio rail sends those buttons in-session (by ContentSid).
+   *  Absent → a Twilio in-window button send refuses. */
+  sendButtonsViaTwilio?: () => Promise<WhatsAppSendResult>;
   /** Injected by tests and by callers that already read the window. */
   lastInboundAt?: Date | null;
   /**
@@ -87,13 +98,13 @@ export interface WhatsappDispatchInput {
    */
   humanReply?: boolean;
   /**
-   * Optional attachment. ONLY the bridge rail carries one — Twilio and Cloud
-   * send media by public URL through their own APIs, which this seam does not
-   * implement. An attachment on either of those is refused below rather than
-   * dropped: a caller that asked for a report to be sent and got back a bare
-   * "ok" with no file is the worst of the three outcomes.
+   * Optional attachment. Carried by the rails whose capabilities declare
+   * `supportsMedia` (bridge, cloud). Twilio takes media only by public URL,
+   * which this seam does not implement, so an attachment there is refused
+   * below rather than dropped: a caller that asked for a report to be sent
+   * and got back a bare "ok" with no file is the worst of the three outcomes.
    */
-  attachment?: BridgeAttachment | null;
+  attachment?: OutboundAttachment | null;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
 }
@@ -103,7 +114,7 @@ export async function dispatchWhatsappSend(
 ): Promise<
   WhatsAppSendResult & {
     provider: WhatsAppProviderId;
-    sentAs?: "text" | "template";
+    sentAs?: "text" | "template" | "interactive";
   }
 > {
   // Through the sender registry, so this dispatcher and the readiness gate in
@@ -119,6 +130,7 @@ export async function dispatchWhatsappSend(
   }
   const { provider, capabilities } = resolved;
 
+
   // Refused before the window is read and before anything is sent. Placed here
   // rather than in each rail's branch so a fourth rail cannot be added without
   // deciding what it does with an attachment — the default is "cannot", which
@@ -127,8 +139,11 @@ export async function dispatchWhatsappSend(
     return {
       provider,
       ok: false,
-      error: `The ${provider} rail cannot send attachments; only the WhatsApp bridge rail can.`,
+      error: `The ${provider} rail cannot send attachments.`,
       providerOutcome: "DEFINITELY_REJECTED",
+      // A request error the caller can act on (drop the file, or move the
+      // workspace to a rail that carries one) — not a gateway failure.
+      providerErrorCode: "media_unsupported_rail",
     };
   }
 
@@ -158,6 +173,31 @@ export async function dispatchWhatsappSend(
     };
   }
 
+  // In-window with buttons: they go as an interactive message or not at all.
+  // Cloud and Twilio render them; the bridge does not yet (buttons PRs 6–7),
+  // and a template outside the in-window rules cannot be one. Sending the text
+  // bare would deliver a Yes/No nobody can tap, or a review ask with no link.
+  const buttons = decision.mode === "text" ? input.inWindowButtons ?? null : null;
+  if (buttons && !buttons.ok) {
+    return { provider, ok: false, error: buttons.error, providerOutcome: "DEFINITELY_REJECTED" };
+  }
+  // Twilio's unapproved in-session limits are the same as Cloud's in-window
+  // ones (3 quick replies or one link, 20-character titles), so a template
+  // that built for Cloud is valid here; it goes by ContentSid.
+  if (buttons && provider === "twilio" && input.sendButtonsViaTwilio) {
+    const r = await input.sendButtonsViaTwilio();
+    return { ...r, provider, sentAs: "interactive", attempted: true };
+  }
+  if (buttons && provider !== "cloud") {
+    return {
+      provider,
+      ok: false,
+      error: "WA_BUTTONS_UNSUPPORTED_ON_RAIL",
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
+  const interactive = buttons?.ok ? buttons.interactive : null;
+
   if (provider === "cloud") {
     let creds;
     try {
@@ -179,11 +219,13 @@ export async function dispatchWhatsappSend(
       message: input.body,
       lastInboundAt,
       template: input.template ?? null,
+      interactive,
+      media: input.attachment ?? null,
       windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
       provider,
       now,
     });
-    return { ...r, provider, sentAs: decision.mode };
+    return { ...r, provider, sentAs: interactive ? "interactive" : decision.mode, attempted: true };
   }
 
   if (provider === "bridge") {
@@ -201,19 +243,28 @@ export async function dispatchWhatsappSend(
         providerOutcome: "DEFINITELY_REJECTED",
       };
     }
+    // The bridge's /v1/send takes the file as base64 JSON; encoded here, at
+    // the wire, so nothing upstream carries a second copy of the bytes.
+    const a = input.attachment;
     const r = await sendWhatsappBridge({
       creds,
       to: input.to,
       message: input.body,
       idempotencyKey: input.idempotencyKey,
       humanReply: input.humanReply === true,
-      media: input.attachment ?? null,
+      media: a
+        ? {
+            filename: a.filename,
+            contentType: a.contentType,
+            dataBase64: Buffer.from(await a.data.arrayBuffer()).toString("base64"),
+          }
+        : null,
     });
-    return { ...r, provider };
+    return { ...r, provider, attempted: true };
   }
 
   const r = await input.sendViaTwilio();
-  return { ...r, provider };
+  return { ...r, provider, attempted: true };
 }
 
 /**

@@ -34,7 +34,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import {
   ADDABLE_TYPES,
   NODE_LABELS,
@@ -72,9 +72,15 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "contact.created",
   "contact.tag.added",
   "pipeline.stage.changed",
+  "deal.created",
+  "deal.won",
+  "deal.lost",
   "booking.created",
   "booking.cancelled",
   "booking.rescheduled",
+  "booking.confirmed",
+  "booking.showed",
+  "booking.no_show",
   "quote.accepted",
   "quote.paid",
   "message.received",
@@ -176,6 +182,7 @@ export function WorkflowBuilder({
   initial,
   forms,
   trackedLinks,
+  bookingPages,
   readiness,
   whatsappTemplates,
   whatsappSenders,
@@ -184,12 +191,12 @@ export function WorkflowBuilder({
   initial: BuilderInitial;
   forms: { id: string; name: string }[];
   trackedLinks: { id: string; name: string }[];
+  bookingPages: { slug: string; name: string }[];
   readiness: BuilderReadiness;
   whatsappTemplates: WhatsappTemplateOption[];
   whatsappSenders: WhatsappSenderOption[];
 }) {
   const router = useRouter();
-  const stages = usePipelineStages();
   const [name, setName] = useState(initial.name);
   const [status, setStatus] = useState<WorkflowStatus>(initial.status);
   const [trigger, setTrigger] = useState<WorkflowTrigger>(initial.trigger);
@@ -360,18 +367,60 @@ export function WorkflowBuilder({
             </select>
           )}
 
-          {trigger.type === "pipeline.stage.changed" && (
+          {trigger.type === "contact.tag.added" && (
+            <>
+              <Input
+                value={trigger.tag ?? ""}
+                onChange={(e) =>
+                  setTrigger({ ...trigger, tag: e.target.value || null })
+                }
+                onBlur={(e) =>
+                  setTrigger({ ...trigger, tag: e.target.value.trim() || null })
+                }
+                placeholder="Any tag"
+                className="mt-2 h-9"
+              />
+              <p className="text-muted-foreground mt-1.5 text-xs">
+                Start only when this exact tag is added. Leave blank to start
+                on any new tag.
+              </p>
+            </>
+          )}
+
+          {(trigger.type === "pipeline.stage.changed" ||
+            trigger.type === "deal.created" ||
+            trigger.type === "deal.won" ||
+            trigger.type === "deal.lost") && (
+            <PipelineTriggerConfig
+              pipelineId={trigger.pipelineId}
+              stageId={trigger.toStage}
+              withStage={trigger.type === "pipeline.stage.changed"}
+              onChange={(n) =>
+                setTrigger({ ...trigger, pipelineId: n.pipelineId, toStage: n.stageId })
+              }
+            />
+          )}
+
+          {(trigger.type === "booking.created" ||
+            trigger.type === "booking.cancelled" ||
+            trigger.type === "booking.rescheduled" ||
+            trigger.type === "booking.confirmed" ||
+            trigger.type === "booking.showed" ||
+            trigger.type === "booking.no_show") && (
             <select
-              value={trigger.toStage ?? ""}
+              value={trigger.bookingPageSlug ?? ""}
               onChange={(e) =>
-                setTrigger({ ...trigger, toStage: e.target.value || null })
+                setTrigger({
+                  ...trigger,
+                  bookingPageSlug: e.target.value || null,
+                })
               }
               className="border-input bg-background mt-2 h-9 w-full rounded-md border px-2 text-sm"
             >
-              <option value="">Any stage</option>
-              {stages.map((s) => (
-                <option key={s.id} value={s.id}>
-                  Moved to {s.label}
+              <option value="">Any booking page</option>
+              {bookingPages.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.name}
                 </option>
               ))}
             </select>

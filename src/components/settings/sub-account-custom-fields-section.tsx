@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Loader2, Plus, SlidersHorizontal } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
+import { CustomFieldFoldersManager } from "@/components/settings/custom-field-folders-manager";
+import { CustomFieldsList } from "@/components/settings/custom-fields-list";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,9 +22,9 @@ import {
 
 /**
  * Custom-fields manager — define operator-specific fields on contacts and
- * deals. Admin-only. Definitions are read live; create/delete go through the
- * Admin-SDK routes. This is the definition surface; the values render on the
- * contact/deal forms (Phase 1b).
+ * deals, grouped into folders. Admin-only. Definitions and folders are read
+ * live; every write goes through the Admin-SDK routes. This is the
+ * definition surface; the values render on the contact/deal forms.
  */
 
 const TYPE_OPTIONS = Object.keys(CUSTOM_FIELD_TYPE_LABELS) as CustomFieldType[];
@@ -30,6 +33,7 @@ export function SubAccountCustomFieldsSection() {
   const { subAccountId, isAdmin } = useSubAccount();
   const [entity, setEntity] = useState<CustomFieldEntity>("contact");
   const [fields, setFields] = useState<CustomFieldDef[]>([]);
+  const folders = useCustomFieldFolders(subAccountId, entity);
 
   const [label, setLabel] = useState("");
   const [type, setType] = useState<CustomFieldType>("text");
@@ -132,6 +136,28 @@ export function SubAccountCustomFieldsSection() {
     }
   }
 
+  async function moveField(id: string, folderId: string | null) {
+    try {
+      const res = await fetch(
+        `/api/sub-accounts/${subAccountId}/custom-fields/${id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folderId }),
+        },
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        toast.error(data.error ?? "Couldn't move the field.");
+      }
+    } catch {
+      toast.error("Couldn't move the field. Please try again.");
+    }
+  }
+
   return (
     <section className="rounded-2xl border bg-card p-5">
       <div className="mb-4 flex items-start gap-3">
@@ -167,52 +193,25 @@ export function SubAccountCustomFieldsSection() {
         ))}
       </div>
 
-      {/* Existing fields */}
-      {fields.length === 0 ? (
+      <CustomFieldFoldersManager
+        subAccountId={subAccountId}
+        entity={entity}
+        folders={folders}
+      />
+
+      {/* Existing fields, grouped by folder */}
+      {fields.length === 0 && folders.length === 0 ? (
         <p className="rounded-lg border border-dashed bg-background p-4 text-xs text-muted-foreground">
           No custom {entity} fields yet. Add one below.
         </p>
       ) : (
-        <ul className="space-y-2">
-          {fields.map((f) => (
-            <li
-              key={f.id}
-              className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2.5"
-            >
-              <span className="text-sm font-medium">{f.label}</span>
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                {CUSTOM_FIELD_TYPE_LABELS[f.type]}
-              </span>
-              {f.required && (
-                <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                  Required
-                </span>
-              )}
-              {f.options.length > 0 && (
-                <span className="truncate text-[11px] text-muted-foreground">
-                  {f.options.join(" · ")}
-                </span>
-              )}
-              <code className="ml-auto text-[10px] text-muted-foreground/70">
-                {f.key}
-              </code>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={deletingId !== null}
-                onClick={() => deleteField(f.id)}
-                title="Delete field"
-              >
-                {deletingId === f.id ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
-                )}
-              </Button>
-            </li>
-          ))}
-        </ul>
+        <CustomFieldsList
+          fields={fields}
+          folders={folders}
+          deletingId={deletingId}
+          onMove={moveField}
+          onDelete={deleteField}
+        />
       )}
 
       {/* Add field */}

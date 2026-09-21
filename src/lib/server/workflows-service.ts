@@ -94,11 +94,14 @@ function speedToLeadSeed(): Pick<
   };
 }
 
-/** Appointment confirmation (booking.created): instant SMS + email confirmation
- *  to the contact, notify the team, and drop a prep task. NOTE: timed reminders
- *  BEFORE the appointment are handled by the Booking page's own reminder offsets
- *  — the workflow `wait` is a fixed delay from enrollment, so it can't anchor to
- *  the appointment time. */
+/** Appointment confirmation (booking.confirmed): instant SMS + email confirmation
+ *  to the contact, notify the team, and drop a prep task. Fires on `booking.confirmed`
+ *  rather than `booking.created` so a paid-hold booking (`awaiting_payment`) doesn't
+ *  get a "your booking is confirmed" text before it actually is — `booking.confirmed`
+ *  fires at book time for a free slot, or on mark-paid for a paid one. NOTE: timed
+ *  reminders BEFORE the appointment are handled by the Booking page's own reminder
+ *  offsets — the workflow `wait` is a fixed delay from enrollment, so it can't anchor
+ *  to the appointment time. */
 function appointmentConfirmationSeed(): Seed {
   const nodes: Record<string, WorkflowNode> = {
     n1: {
@@ -140,7 +143,7 @@ function appointmentConfirmationSeed(): Seed {
     },
   };
   return {
-    trigger: { type: "booking.created", filters: { all: [] } },
+    trigger: { type: "booking.confirmed", filters: { all: [] } },
     nodes,
     startNodeId: "n1",
   };
@@ -388,6 +391,8 @@ export interface WorkflowPatch {
   reentry?: WorkflowReentry;
   nodes?: Record<string, WorkflowNode>;
   startNodeId?: string | null;
+  /** Caller has already checked the folder belongs to this sub-account. */
+  folderId?: string | null;
 }
 
 export async function updateWorkflowServerSide(opts: {
@@ -410,6 +415,7 @@ export async function updateWorkflowServerSide(opts: {
   if (patch.reentry !== undefined) write.reentry = patch.reentry;
   if (patch.nodes !== undefined) write.nodes = patch.nodes;
   if (patch.startNodeId !== undefined) write.startNodeId = patch.startNodeId;
+  if (patch.folderId !== undefined) write.folderId = patch.folderId;
   await ref.update(write);
   return true;
 }

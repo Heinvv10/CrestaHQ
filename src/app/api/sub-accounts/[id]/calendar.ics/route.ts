@@ -10,6 +10,7 @@ import {
   generateIcsFeed,
   type FeedEventInput,
 } from "@/lib/booking/ics-feed";
+import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
@@ -51,6 +52,9 @@ function tsToDate(v: unknown): Date | null {
   if (typeof m.toDate === "function") return m.toDate();
   return null;
 }
+
+const startMs = (d: FirebaseFirestore.QueryDocumentSnapshot) =>
+  tsToDate((d.data() as CalendarEvent).startAt)?.getTime() ?? 0;
 
 export async function GET(
   request: Request,
@@ -106,21 +110,26 @@ export async function GET(
   }
 
   const lookback = new Date(Date.now() - FEED_LOOKBACK_DAYS * 24 * 60 * 60_000);
-  let q = db
-    .collection("events")
-    .where("subAccountId", "==", subAccountId);
-  if (hostMode && host) {
-    // Per-host feed: only this member's assigned bookings. Uses the
-    // events(subAccountId, assignedToUid, startAt) composite index.
-    q = q.where("assignedToUid", "==", host);
-  }
-  q = q
-    .where("startAt", ">=", Timestamp.fromDate(lookback))
-    .orderBy("startAt", "asc")
-    .limit(FEED_EVENT_CAP);
-  let eventsSnap;
+  const window = (q: FirebaseFirestore.Query) =>
+    q
+      .where("startAt", ">=", Timestamp.fromDate(lookback))
+      .orderBy("startAt", "asc")
+      .limit(FEED_EVENT_CAP);
+  let eventDocs: FirebaseFirestore.QueryDocumentSnapshot[];
   try {
-    eventsSnap = await q.get();
+    if (hostMode && host) {
+      // Per-host feed: every booking this member attends — owned, or a
+      // collective one listing them — earliest first, same cap.
+      eventDocs = (await queryHostEvents(subAccountId, host, window))
+        .sort((a, b) => startMs(a) - startMs(b))
+        .slice(0, FEED_EVENT_CAP);
+    } else {
+      eventDocs = (
+        await window(
+          db.collection("events").where("subAccountId", "==", subAccountId),
+        ).get()
+      ).docs;
+    }
   } catch (err) {
     // Most likely a missing composite index in production — surface a
     // greppable log and a soft 503 so the poller just retries later.
@@ -132,7 +141,7 @@ export async function GET(
   }
 
   const feedEvents: FeedEventInput[] = [];
-  for (const d of eventsSnap.docs) {
+  for (const d of eventDocs) {
     const e = d.data() as CalendarEvent;
     const startAt = tsToDate(e.startAt);
     const endAt = tsToDate(e.endAt);

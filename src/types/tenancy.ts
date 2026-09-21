@@ -1,5 +1,5 @@
 import type { StripeConnectionMeta } from "@/types/payments";
-import type { GoogleConnectionMeta } from "@/types/google";
+import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
@@ -455,6 +455,32 @@ export interface SubAccountDoc {
    */
   googleEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for per-member Google Calendar sync (Settings →
+   * Calendar sync → Google Calendar; see lib/google-calendar). Opt-in: `false`
+   * at creation, read `=== true`. Standalone (not plan-managed) like the
+   * Business Profile gate — linking staff Google accounts is an explicit
+   * per-client decision. While off the card is hidden, connect refuses, and
+   * booking pages neither read Google busy time nor push bookings. No
+   * tear-down: members' connections are preserved; disconnect stays ungated.
+   */
+  googleCalendarEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for Reviews AI (SP5): AI sentiment on synced Google
+   * reviews and AI reply drafts (SP5 c — they only fill the reply box). Spends the agency's OpenRouter
+   * credits. Opt-in: `false` at creation, read `=== true`. Plan-managed
+   * (`PLAN_GATE_KEYS`, not pre-ticked). No tear-down: cached sentiment labels
+   * stay until the review's own lifecycle (edit, tombstone, retention)
+   * clears them. See docs/features/reputation.md.
+   */
+  reviewsAiEnabledByAgency?: boolean;
+  /**
+   * Reviews AI settings (SP5 c), written only by PUT
+   * /api/sub-accounts/[id]/reputation/ai-settings (admin, Reviews AI gate).
+   * `replyGuidelines` (≤ 1000 chars, "" = none) steer the reply DRAFT only —
+   * nothing posts to Google without the admin's click.
+   */
+  reviewsAiConfig?: { replyGuidelines: string; updatedAt: Date; updatedByUid: string } | null;
+  /**
    * Non-secret display metadata for the connected Google account (see
    * {@link GoogleConnectionMeta}). Null/absent until connected.
    *
@@ -464,6 +490,16 @@ export interface SubAccountDoc {
    * (`allow read, write: if false`). Never add a credential to this object.
    */
   googleConnectionMeta?: GoogleConnectionMeta | null;
+  /**
+   * The Business Profile listing picked on the Google Business page (see
+   * {@link GoogleListing}). Null/absent until selected; cleared on disconnect.
+   */
+  googleListing?: GoogleListing | null;
+  /**
+   * The public reviews widget for the selected listing (see
+   * {@link GbpWidgetMeta}); null/absent when none. Written only by the server.
+   */
+  gbpWidgetMeta?: GbpWidgetMeta | null;
   /**
    * Agency-controlled gate for the Workspace Assistant (the in-app AI
    * assistant at Sidebar → Workspace Assistant). Only the agency owner can
@@ -613,12 +649,11 @@ export interface SubAccountDoc {
   territoryScopingEnabledAt?: Date | null;
   territoryScopingEnabledByUid?: string | null;
   /**
-   * Optional per-sub-account overrides for the deal pipeline's stage labels +
-   * order. ONLY label/order are editable; ids + won/lost terminals always come
-   * from the canonical {@link PipelineStage} set, so this is a pure display
-   * layer. Absent/undefined (the default for every existing sub-account) →
-   * the canonical stages render unchanged. Set via PATCH
-   * /api/sub-accounts/[id]/pipeline-stages (admin). See "Phase 2 (2A)".
+   * LEGACY. Pre-multi-pipeline label/order overrides for the six canonical
+   * stages. No longer written (the `pipeline-stages` route is gone); read
+   * once to seed `subAccounts/{id}/pipelines/default` on its first load and
+   * for the client's synthetic default until that read lands. After the
+   * default pipeline doc exists this field is ignored.
    */
   pipelineStages?: import("./deals").PipelineStageOverride[];
   /**
@@ -836,6 +871,12 @@ export interface GoogleReviewConfig {
    * (WhatsApp Manual can't auto-send). Undefined on legacy docs → off.
    */
   triggerOnDealCompleted?: boolean;
+  /**
+   * Reminders (SP5 d2): re-send the same request every `everyDays` until the
+   * customer clicks, opts out, or `maxRetries` reminders have gone. Absent or
+   * `everyDays: null` = off (the default) — nothing about sending changes.
+   */
+  reminder?: { everyDays: number | null; maxRetries: number } | null;
   updatedAt: Date;
 }
 
@@ -875,6 +916,19 @@ export interface AgencyMemberDoc {
   displayName: string;
   addedAt: Date;
   addedByUid: string;
+}
+
+/**
+ * The display slice of a member row that GET /api/sub-accounts/[id]/members
+ * returns to every active member for the "Assigned to" pickers.
+ */
+export interface AssignableMember {
+  uid: string;
+  /** Display name, or the email when none is set, or the uid. */
+  displayName: string;
+  /** Empty unless the member has no display name (then it IS the label). */
+  email: string;
+  role: string;
 }
 
 export interface SubAccountMemberDoc {

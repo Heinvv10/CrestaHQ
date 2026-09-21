@@ -5,6 +5,7 @@ import {
   hashEventToken,
   verifyEventToken,
 } from "@/lib/booking/event-token";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { PublicEventView } from "@/components/booking/public-event-view";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -64,6 +65,8 @@ export default async function PublicEventPage({ params }: PageProps) {
     event.endAt as { toDate?: () => Date } | null
   )?.toDate?.();
   if (!startAt || !endAt) notFound();
+  // A service booking shows its service and its own length.
+  const booked = bookedEventLabel(page, event, startAt, endAt);
 
   const branding = {
     name: sub.name ?? "Booking",
@@ -78,11 +81,11 @@ export default async function PublicEventPage({ params }: PageProps) {
       eventId={event.id}
       status={eventStatus(event)}
       title={event.title ?? "Meeting"}
-      pageName={page?.name ?? event.title ?? "Meeting"}
+      pageName={booked.name}
       pageSlug={event.bookingPageSlug}
       bookingPageStatus={page?.status ?? "published"}
       timezone={page?.timezone ?? "UTC"}
-      durationMinutes={page?.durationMinutes ?? 30}
+      durationMinutes={booked.durationMinutes}
       startAt={startAt.toISOString()}
       endAt={endAt.toISOString()}
       paymentLinkUrl={event.paymentLinkUrl ?? null}

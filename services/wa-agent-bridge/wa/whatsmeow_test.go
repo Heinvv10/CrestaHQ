@@ -141,7 +141,7 @@ func TestInboundDispatchFilters(t *testing.T) {
 		at        time.Time
 	}
 	var seen []got
-	c := &Client{onInbound: func(jid, text, _ string, at time.Time) {
+	c := &Client{onInbound: func(jid, text, _ string, at time.Time, _ *InboundAttachment, _ *InboundLocation) {
 		seen = append(seen, got{jid, text, at})
 	}}
 
@@ -170,7 +170,7 @@ func TestExtendedTextMessageIsDispatched(t *testing.T) {
 	// ExtendedTextMessage with an empty Conversation field. Missing this
 	// makes the bridge deaf to every quoted reply.
 	var seen string
-	c := &Client{onInbound: func(_, text, _ string, _ time.Time) { seen = text }}
+	c := &Client{onInbound: func(_, text, _ string, _ time.Time, _ *InboundAttachment, _ *InboundLocation) { seen = text }}
 
 	e := msgEvent("27831234567", "", false, false)
 	e.Message = &waE2E.Message{
@@ -194,7 +194,7 @@ func TestExtendedTextMessageIsDispatched(t *testing.T) {
 // contactPhone "+155228775178345".
 func TestLIDSenderIsForwardedAsThePhoneJID(t *testing.T) {
 	var seen string
-	c := &Client{onInbound: func(jid, _, _ string, _ time.Time) { seen = jid }}
+	c := &Client{onInbound: func(jid, _, _ string, _ time.Time, _ *InboundAttachment, _ *InboundLocation) { seen = jid }}
 
 	e := msgEvent("27831234567", "hello from a lid-addressed sender", false, false)
 	e.Info.Sender = types.JID{User: "155228775178345", Server: types.HiddenUserServer}
@@ -212,7 +212,7 @@ func TestLIDSenderIsForwardedAsThePhoneJID(t *testing.T) {
 // silently lose a real customer.
 func TestSenderIsForwardedUnchangedWithoutAnAlternative(t *testing.T) {
 	var seen string
-	c := &Client{onInbound: func(jid, _, _ string, _ time.Time) { seen = jid }}
+	c := &Client{onInbound: func(jid, _, _ string, _ time.Time, _ *InboundAttachment, _ *InboundLocation) { seen = jid }}
 
 	e := msgEvent("27831234567", "ordinary phone-addressed sender", false, false)
 	c.handleEvent(e)

@@ -413,7 +413,7 @@ export function SubAccountSmsSection() {
                 placeholder={
                   isExistingConfig ? "•••••••••••••• (leave blank to keep)" : ""
                 }
-                autoComplete="off"
+                autoComplete="new-password"
                 spellCheck={false}
               />
               <p className="text-muted-foreground text-[11px]">

@@ -10,6 +10,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Task } from "@/types/tasks";
 import type { Contact } from "@/types/contacts";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 export interface TaskItemProps {
   task: Task;
@@ -150,7 +151,7 @@ export function TaskItem({ task, contact, onClick }: TaskItemProps) {
               className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary hover:underline"
             >
               <User className="h-3 w-3" />
-              {contact.name || contact.email}
+              {contactDisplayName(contact)}
             </Link>
           )}
         </div>

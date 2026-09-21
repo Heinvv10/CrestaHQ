@@ -2,13 +2,22 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { pageCalendarType } from "@/lib/booking/calendar-types";
 import {
-  computeAvailability,
-  computeUnionAvailability,
-  type BusyEventWithHost,
-  type SlotCandidate,
-} from "@/lib/booking/availability";
-import { eventStatus, eventOccupiesSlot } from "@/types/events";
+  hostSelectionEnabled,
+  pageService,
+  selectableHostUid,
+  type PageSlot,
+} from "@/lib/booking/page-slots";
+import {
+  BusyQueryError,
+  departedHostMessage,
+  movingEventOf,
+  resolvePageAvailability,
+  type ResolveAvailabilityOptions,
+} from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
+import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 
@@ -23,16 +32,20 @@ import type { CalendarEvent } from "@/types/events";
  * - 200 with { slots: [{ startAt, endAt }] } on success.
  *
  * Server-side reads via Admin SDK so Firestore rules can stay
- * member-scoped on the booking-page doc + events. Computation is the
- * pure function in `lib/booking/availability.ts`.
+ * member-scoped on the booking-page doc + events. Slots come from
+ * `resolvePageAvailability` — the same resolver booking re-verifies with.
+ *
+ * Service pages need `?serviceId=`; class pages add `seatsLeft` per slot.
  */
 
 // ── Soft rate limit: per-IP, in-memory LRU. Mirrors web-chat rate-limit ──
+// Skipped entirely when bookingRateLimitsDisabled() is true (E2E only).
 const HOURLY_CAP = 120; // ~2/min ought to be plenty for legit visitors
 const WINDOW_MS = 60 * 60_000;
 const ipHits = new Map<string, number[]>();
 
 function isRateLimited(ip: string): boolean {
+  if (bookingRateLimitsDisabled()) return false;
   const now = Date.now();
   const cutoff = now - WINDOW_MS;
   const arr = (ipHits.get(ip) ?? []).filter((t) => t >= cutoff);
@@ -109,104 +122,85 @@ export async function GET(
     );
   }
 
-  // Load busy events for the window. Query by subAccountId + startAt
-  // range — uses the new `events(subAccountId, startAt)` composite
-  // index from Slice 1. We pull a generous window (the page's
-  // visibleDays + a small buffer) so the conflict check sees events
-  // that started before `fromInstant` and bleed in.
-  const horizonEnd =
-    toInstant ?? new Date(now.getTime() + page.visibleDays * 24 * 60 * 60_000);
-  // Look back by the longest possible single event (cap at 8 hours —
-  // longer than any normal booking) so we catch events that started
-  // before `now` but haven't ended yet.
-  const lookbackMs = 8 * 60 * 60_000;
-  const queryFrom = new Date(
-    (fromInstant ?? now).getTime() - lookbackMs,
-  );
-
-  // Busy events tagged with their assigned host — the host tag is only used
-  // in team mode; single mode ignores it.
-  const busy: BusyEventWithHost[] = [];
-  try {
-    const eventsSnap = await db
-      .collection("events")
-      .where("subAccountId", "==", saId)
-      .where("startAt", ">=", queryFrom)
-      .where("startAt", "<=", horizonEnd)
-      .get();
-
-    for (const d of eventsSnap.docs) {
-      // Skip the rescheduling event's own slot — without this the
-      // attendee can't see their current time as available again, and
-      // could be told there are no openings if their slot is one of the
-      // last in the page's window.
-      if (excludeEventId && d.id === excludeEventId) continue;
-      const e = d.data() as CalendarEvent;
-      if (!eventOccupiesSlot(eventStatus(e))) continue;
-      // Firestore timestamps → Date. Defensive: skip docs with malformed
-      // timestamps so a single bad event can't kill the response.
-      const startAt = (e.startAt as { toDate?: () => Date } | null)?.toDate?.();
-      const endAt = (e.endAt as { toDate?: () => Date } | null)?.toDate?.();
-      if (!(startAt instanceof Date) || !(endAt instanceof Date)) continue;
-      busy.push({ startAt, endAt, assignedToUid: e.assignedToUid ?? null });
+  // Reschedule view: the attendee's own event is not busy, and the slots are
+  // the ones the reschedule route will accept — that event's own host(s),
+  // service and length. Only an event booked on THIS page is excluded or
+  // narrows anything: naming someone else's booking must not free its time.
+  let movingEvent: ResolveAvailabilityOptions["movingEvent"] = null;
+  let eventServiceId: string | null = null;
+  if (excludeEventId && !excludeEventId.includes("/")) {
+    const evSnap = await db.collection("events").doc(excludeEventId).get();
+    const ev = evSnap.exists ? (evSnap.data() as CalendarEvent) : null;
+    if (ev && ev.subAccountId === saId && ev.bookingPageSlug === slug) {
+      const departed = await departedHostMessage(page, ev);
+      if (departed) return NextResponse.json({ error: departed }, { status: 409 });
+      movingEvent = movingEventOf(evSnap.id, ev);
+      eventServiceId = ev.serviceId ?? null;
     }
-  } catch (err) {
-    // Most common cause: missing Firestore composite index in production.
-    // Firebase returns FAILED_PRECONDITION with a link in the error message
-    // to auto-create the index. Surfacing this with the saId + slug context
-    // makes the Vercel log line greppable.
-    const message = err instanceof Error ? err.message : "unknown";
-    console.error(
-      `[booking/availability] events query failed sa=${saId} slug=${slug}: ${message}`,
-      err,
-    );
+  }
+
+  const type = pageCalendarType(page);
+  const serviceId = movingEvent ? eventServiceId : url.searchParams.get("serviceId");
+  if (type === "service" && !movingEvent && !pageService(page, serviceId)) {
     return NextResponse.json(
-      {
-        error: "availability_query_failed",
-        message:
-          "Couldn't load availability. The deployment may be missing a Firestore index; ask the agency operator to deploy indexes (`firebase deploy --only firestore:indexes`).",
-      },
-      { status: 500 },
+      { error: "Pick a service first." },
+      { status: 400 },
     );
   }
 
   const hosts = page.hosts ?? [];
-  const teamMode = hosts.length > 0;
   // Host names + narrowing are ONLY available when the operator opted the
   // page into named selection. An opted-out page never leaks staff names and
   // never narrows, even if a `host` param is forged onto the request.
-  const allowHostSelection = teamMode && page.allowHostSelection === true;
-  const hostParam = url.searchParams.get("host");
-  const selectedHostUid =
-    allowHostSelection && hostParam && hosts.some((h) => h.uid === hostParam)
-      ? hostParam
-      : null;
+  const allowHostSelection = hostSelectionEnabled(page);
+  const selectedHostUid = selectableHostUid(page, url.searchParams.get("host"));
 
-  let slots: SlotCandidate[];
+  // Hosts' Google busy time (SP3 G2) — fail open, never in a transaction.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId: saId,
+    page,
+    now,
+    fromInstant,
+    toInstant,
+    extraHostUids: movingEvent?.hostUids,
+  });
+
+  let slots: PageSlot[];
   try {
-    slots = teamMode
-      ? computeUnionAvailability({
-          page,
-          now,
-          fromInstant,
-          toInstant,
-          busy,
-          hostUids: hosts.map((h) => h.uid),
-          onlyHostUid: selectedHostUid,
-        })
-      : computeAvailability({
-          page,
-          now,
-          fromInstant,
-          toInstant,
-          // Single mode treats every occupying event as a shared conflict.
-          busy: busy.map((b) => ({ startAt: b.startAt, endAt: b.endAt })),
-        });
+    slots = await resolvePageAvailability({
+      subAccountId: saId,
+      page,
+      now,
+      fromInstant,
+      toInstant,
+      onlyHostUid: selectedHostUid,
+      movingEvent,
+      serviceId,
+      externalBusy,
+    });
   } catch (err) {
-    // Defensive: computeAvailability can throw on malformed page config
+    const message = err instanceof Error ? err.message : "unknown";
+    if (err instanceof BusyQueryError) {
+      // Most common cause: missing Firestore composite index in production.
+      // Firebase returns FAILED_PRECONDITION with a link in the error message
+      // to auto-create the index. Surfacing this with the saId + slug context
+      // makes the Vercel log line greppable.
+      console.error(
+        `[booking/availability] events query failed sa=${saId} slug=${slug}: ${message}`,
+        err.original,
+      );
+      return NextResponse.json(
+        {
+          error: "availability_query_failed",
+          message:
+            "Couldn't load availability. The deployment may be missing a Firestore index; ask the agency operator to deploy indexes (`firebase deploy --only firestore:indexes`).",
+        },
+        { status: 500 },
+      );
+    }
+    // Defensive: slot computation can throw on malformed page config
     // (missing workingHours, invalid timezone, etc.). Log with context so
     // the operator can identify the broken booking page.
-    const message = err instanceof Error ? err.message : "unknown";
     console.error(
       `[booking/availability] compute failed sa=${saId} slug=${slug}: ${message}`,
       err,
@@ -226,9 +220,15 @@ export async function GET(
     slots: slots.map((s) => ({
       startAt: s.startAt.toISOString(),
       endAt: s.endAt.toISOString(),
+      // Class pages only — the public page shows "N seats left".
+      ...(s.seatsLeft !== undefined ? { seatsLeft: s.seatsLeft } : {}),
     })),
     timezone: page.timezone,
-    durationMinutes: page.durationMinutes,
+    durationMinutes:
+      pageService(page, serviceId)?.durationMinutes ??
+      (type === "service" && movingEvent
+        ? movingEvent.durationMinutes
+        : page.durationMinutes),
     // Only expose the roster + applied selection on opted-in pages. Absent on
     // every other page so a pooled page can't be probed for staff names.
     ...(allowHostSelection

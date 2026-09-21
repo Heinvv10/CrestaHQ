@@ -55,7 +55,14 @@ type Client struct {
 	// socket — see mediaUploader.
 	uploader mediaUploader
 
-	onInbound   func(jid, text, msgID string, at time.Time)
+	// downloader overrides where inbound attachments are fetched from. Nil in
+	// production, where it falls back to wac. Tests set it to reach the
+	// download-FAILURE path, to bound what a hostile sender can stream into
+	// this process, and to prove a refused message downloads nothing at all —
+	// see MediaDownloader.
+	downloader MediaDownloader
+
+	onInbound   func(jid, text, msgID string, at time.Time, media *InboundAttachment, loc *InboundLocation)
 	onLoggedOut func()
 
 	// pairCode is the live QR payload while a pairing is in flight. It is a
@@ -75,7 +82,7 @@ var _ Transport = (*Client)(nil)
 // against.
 func NewClient(
 	sessionDir string,
-	onInbound func(jid, text, msgID string, at time.Time),
+	onInbound func(jid, text, msgID string, at time.Time, media *InboundAttachment, loc *InboundLocation),
 	onLoggedOut func(),
 ) (*Client, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -218,25 +225,37 @@ func (c *Client) handleEvent(evt any) {
 }
 
 func (c *Client) handleMessage(v *events.Message) {
-	if v.Info.IsFromMe || v.Info.IsGroup {
+	// ParseInbound does the whole decision, and downloads NOTHING: the
+	// attachment arrives as a thunk the fanout calls only after its rails have
+	// admitted the message. Keeping the download off this goroutine is not an
+	// optimisation — see fetchInboundMedia and the POPIA note below.
+	in := ParseInbound(v, c.mediaDownloader())
+	if in == nil || c.onInbound == nil {
 		return
 	}
-	text := v.Message.GetConversation()
-	if text == "" {
-		if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-			text = ext.GetText()
-		}
+	// v.Info.ID is WhatsApp's own message id, carried on Inbound. Forwarding
+	// it lets a consumer dedupe a redelivery on the id rather than on the
+	// body. quotedMessageId (which of OUR messages this is a reply to) is a
+	// different lookup into ContextInfo and stays phase-2 work.
+	c.onInbound(in.JID, in.Text, in.MsgID, in.At, in.Media, in.Location)
+}
+
+// mediaDownloader is where inbound attachments come from: the test override if
+// one is set, otherwise the live whatsmeow client.
+//
+// Returning a nil interface when there is no client is deliberate — callers
+// degrade to a dropped file rather than panicking on a message that is
+// otherwise perfectly deliverable.
+func (c *Client) mediaDownloader() MediaDownloader {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.downloader != nil {
+		return c.downloader
 	}
-	if text == "" {
-		return // non-text events are out of scope
+	if c.wac != nil {
+		return c.wac
 	}
-	if c.onInbound != nil {
-		// v.Info.ID is WhatsApp's own message id. Forwarding it lets a
-		// consumer dedupe a redelivery on the id rather than on the body.
-		// quotedMessageId (which of OUR messages this is a reply to) is a
-		// different lookup into ContextInfo and stays phase-2 work.
-		c.onInbound(senderAddress(v.Info.MessageSource), text, v.Info.ID, v.Info.Timestamp)
-	}
+	return nil
 }
 
 // senderAddress picks the address a consumer can actually reply to.

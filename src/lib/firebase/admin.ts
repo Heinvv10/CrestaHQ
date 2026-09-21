@@ -3,10 +3,17 @@ import "server-only";
 import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
 import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import { getStorage, type Storage } from "firebase-admin/storage";
 
 let _app: App | null = null;
 
-function getAdminApp(): App {
+/**
+ * Exported because `getStorage()` with no argument resolves the DEFAULT app,
+ * which only exists once something else has initialised it. Callers that reach
+ * Storage without having touched Firestore or Auth first must pass this
+ * explicitly rather than rely on call ordering elsewhere in the request.
+ */
+export function getAdminApp(): App {
   if (!_app) {
     if (getApps().length > 0) {
       _app = getApps()[0];
@@ -20,6 +27,7 @@ function getAdminApp(): App {
             "\n"
           ),
         }),
+        storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
       });
     }
   }
@@ -44,4 +52,9 @@ export function getAdminDb(): Firestore {
     // Already configured on a prior import; nothing to do.
   }
   return db;
+}
+
+/** Storage on the default bucket (`NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`). */
+export function getAdminStorage(): Storage {
+  return getStorage(getAdminApp());
 }

@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, Copy, Loader2, MapPin } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, Loader2, MapPin } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
+import { useGoogleStatusToast } from "@/components/gbp/use-google-status-toast";
 
 /**
  * Google Business Profile connection card — links this sub-account to the
@@ -20,25 +21,6 @@ import { Button } from "@/components/ui/button";
  * connect/callback routes redirect back with.
  */
 
-const STATUS_MESSAGES: Record<string, { ok: boolean; text: string }> = {
-  connected: { ok: true, text: "Google Business Profile connected." },
-  cancelled: { ok: false, text: "Connection cancelled." },
-  bad_state: {
-    ok: false,
-    text: "Connection failed a security check. Try again.",
-  },
-  not_configured: {
-    ok: false,
-    text: "Google isn't configured on this deployment yet (missing OAuth client credentials).",
-  },
-  gate_off: { ok: false, text: "This feature is locked by your agency." },
-  no_refresh_token: {
-    ok: false,
-    text: "Google didn't return a long-lived token. Remove this app at myaccount.google.com → Security → Third-party access, then connect again.",
-  },
-  error: { ok: false, text: "Couldn't connect to Google. Please try again." },
-};
-
 export function SubAccountGoogleSection() {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const meta = subAccount?.googleConnectionMeta ?? null;
@@ -46,25 +28,8 @@ export function SubAccountGoogleSection() {
   const [disconnecting, setDisconnecting] = useState(false);
 
   // Surface the ?google=… status the connect/callback routes redirect back
-  // with, then strip it from the URL so a refresh doesn't re-toast.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const status = params.get("google");
-    if (!status) return;
-    const msg = STATUS_MESSAGES[status];
-    if (msg) {
-      if (msg.ok) toast.success(msg.text);
-      else toast.error(msg.text);
-    }
-    params.delete("google");
-    const qs = params.toString();
-    window.history.replaceState(
-      {},
-      "",
-      `${window.location.pathname}${qs ? `?${qs}` : ""}`,
-    );
-  }, []);
+  // with (shared with the Google Business page).
+  useGoogleStatusToast();
 
   if (!isAdmin) return null;
   if (subAccount?.googleEnabledByAgency !== true) return null;
@@ -134,15 +99,30 @@ export function SubAccountGoogleSection() {
       {connected ? (
         <div className="rounded-lg border bg-background p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-1">
-              <p className="flex items-center gap-2 text-sm font-medium">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                {meta?.email || "Google account connected"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Business Profile management access granted.
-              </p>
-            </div>
+            {meta?.reconnectRequired ? (
+              // Google refused the stored grant: never show it as healthy.
+              <div className="space-y-1" data-testid="google-settings-reconnect">
+                <p className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-4 w-4" />
+                  Google no longer accepts this connection
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {meta.reconnectReason === "insufficient_scope"
+                    ? "The Business Profile permission was not granted. Reconnect and leave it ticked."
+                    : "Access was revoked or expired at Google. Reconnect to restore it."}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  {meta?.email || "Google account connected"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Business Profile management access granted.
+                </p>
+              </div>
+            )}
             <div className="flex items-center gap-1.5">
               <Button
                 type="button"

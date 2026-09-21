@@ -4,8 +4,14 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
+import { resolveCompanyLink } from "@/lib/server/companies-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 
 /**
  * Dashboard-facing contact creation. The "Add contact" modal used to write
@@ -48,11 +54,9 @@ export async function POST(request: Request) {
 
   const name = str(body.name, 200);
   const email = str(body.email);
-  if (!name && !email) {
-    return NextResponse.json(
-      { error: "Provide at least a name or an email." },
-      { status: 400 },
-    );
+  const phone = str(body.phone);
+  if (!hasContactIdentity({ name, email, phone })) {
+    return NextResponse.json({ error: CONTACT_IDENTITY_ERROR }, { status: 400 });
   }
 
   // The sub-account doc is the source of truth for which agency to stamp.
@@ -67,6 +71,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: cf.error }, { status: 400 });
   }
 
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    !(await isAssignableMember(subAccountId, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
+  // A linked company must belong to this sub-account; its name overrides
+  // the free-text `company` so the two never disagree.
+  let company = str(body.company);
+  let companyId: string | null = null;
+  if (typeof body.companyId === "string" && body.companyId) {
+    const link = await resolveCompanyLink(getAdminDb(), subAccountId, body.companyId);
+    if (!link.ok) {
+      return NextResponse.json({ error: link.error }, { status: 400 });
+    }
+    company = link.company;
+    companyId = link.companyId;
+  }
+
   const { id, contact } = await createContactServerSide({
     subAccountId,
     agencyId,
@@ -76,13 +103,15 @@ export async function POST(request: Request) {
     mode: "live",
     name,
     email,
-    phone: str(body.phone),
+    phone,
     phoneCountry: (subSnap.data()?.defaultPhoneCountry as string) ?? null,
-    company: str(body.company),
+    company,
+    companyId,
     address: str(body.address),
     source: str(body.source),
     tags: strArray(body.tags),
     territoryId: typeof body.territoryId === "string" ? body.territoryId : null,
+    assignedToUid: assignedToUid ?? null,
     customFields: cf.value,
   });
 

@@ -25,13 +25,13 @@ const DAYS: { value: WorkingHour["dayOfWeek"]; label: string }[] = [
   { value: 0, label: "Sun" },
 ];
 
-function minutesToHHMM(m: number): string {
+export function minutesToHHMM(m: number): string {
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
-function hhmmToMinutes(s: string): number | null {
+export function hhmmToMinutes(s: string): number | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(s);
   if (!match) return null;
   const h = Number(match[1]);

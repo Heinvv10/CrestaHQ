@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import { writeTaskCreatedActivity } from "@/lib/server/contact-activities";
 import {
   parseTaskCreate,
   serializeTaskForApi,
@@ -133,5 +134,16 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     type: "task.created",
     payload: { task: wire },
   });
+  if (input.contactId) {
+    await writeTaskCreatedActivity(db, {
+      contactId: input.contactId,
+      taskId: ref.id,
+      title: input.title,
+      dueAt: input.dueAt,
+      createdByUid: `apikey:${ctx.keyPrefix}`,
+      agencyId: ctx.agencyId,
+      subAccountId: ctx.subAccountId,
+    });
+  }
   return apiOk(ctx, { task: wire }, { status: 201 });
 });

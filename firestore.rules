@@ -58,6 +58,29 @@ service cloud.firestore {
         && request.resource.data.agencyId == resource.data.agencyId;
     }
 
+    // `assignedToUid` (contacts / tasks "owner") may be cleared, or point at
+    // an ACTIVE row in the sub-account's member subcollection — the same
+    // test the server's isAssignableMember() makes. A uid outside the
+    // roster, or a removed member, is refused: an assignee the picker
+    // cannot show is an assignee nobody can ever filter for.
+    function assigneeIsMemberOrNull(saId) {
+      return request.resource.data.get("assignedToUid", null) == null
+        || (request.resource.data.assignedToUid is string
+          && get(/databases/$(database)/documents/subAccounts/$(saId)/subAccountMembers/$(request.resource.data.assignedToUid)).data.status == "active");
+    }
+
+    // A contact's `companyId` must be absent/null or point at a company in
+    // the SAME sub-account. Without this a member of tenant B could link
+    // their contact to tenant A's company, and tenant A's server-side
+    // company delete would then write to tenant B's contact.
+    function companyLinkInTenant() {
+      return request.resource.data.get("companyId", null) == null
+        || (request.resource.data.companyId is string
+          && exists(/databases/$(database)/documents/companies/$(request.resource.data.companyId))
+          && get(/databases/$(database)/documents/companies/$(request.resource.data.companyId)).data.subAccountId
+            == request.resource.data.subAccountId);
+    }
+
     // ---------- territory scoping (opt-in per sub-account) ----------
     // When the sub-account's `territoryScopingEnabled` field is true,
     // collaborators only see deals/contacts whose `territoryId` is in
@@ -183,6 +206,21 @@ service cloud.firestore {
       // /api/agency/sub-accounts/[id]/apply-snapshot for apply) which own
       // the strip-on-capture + sanitize-on-apply logic.
       match /snapshots/{snapshotId} {
+        allow read: if isAgencyOwner(agencyId);
+        allow write: if false;
+
+        // Share links (SP13). Server-only: a share carries its token hash,
+        // and the owner UI lists them via GET /api/agency/snapshots/shares.
+        match /shares/{shareId} {
+          allow read, write: if false;
+        }
+      }
+
+      // Template library — one workflow / email template / form per doc,
+      // pushed into sub-accounts through applySnapshot. Same posture as
+      // snapshots: owner-readable, every write via the owner-only
+      // /api/agency/templates routes.
+      match /templates/{templateId} {
         allow read: if isAgencyOwner(agencyId);
         allow write: if false;
       }
@@ -371,6 +409,17 @@ service cloud.firestore {
         }
       }
 
+      // WhatsApp Cloud quality alerts (SP15). Written by the hourly quality
+      // sweep via the Admin SDK on a drop from GREEN; members can READ so the
+      // settings page can show the open alert. Client writes blocked.
+      match /whatsappQualityAlerts/{alertId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
       // Voice agent end-of-call summary docs. Created by the Vapi
       // /api/webhooks/vapi/* routes via the Admin SDK (Bearer-token
       // gated). Sub-account members can READ so a future operator
@@ -473,6 +522,83 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Media Library files + folders. Member-readable (the page and the
+      // picker subscribe live); every write goes through the Admin-SDK
+      // routes at /api/sub-accounts/[id]/media — same model as customFields.
+      // The bytes live in Storage under media/{subAccountId}/… (storage.rules).
+      match /media/{mediaId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+      match /mediaFolders/{folderId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
+      // Deal pipelines (stages embedded). Server-only: the dashboard reads
+      // them through GET /api/sub-accounts/[id]/pipelines (which also seeds
+      // the default), and every write goes through those Admin-SDK routes.
+      // Same shape as importMappings below — nothing here for the client.
+      match /pipelines/{pipelineId} {
+        allow read, write: if false;
+      }
+
+      // Folders that group custom fields (GHL-style). Same model as
+      // customFields: member-read, all writes through
+      // /api/sub-accounts/[id]/custom-field-folders.
+      match /customFieldFolders/{folderId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        allow write: if false;
+      }
+
+      // Workflow folders: server-only like the workflows they organise —
+      // the list reads and writes them through the member-gated
+      // /api/sub-accounts/[id]/workflow-folders routes.
+      match /workflowFolders/{folderId} {
+        allow read, write: if false;
+      }
+
+      // Saved smart lists (contacts-list filters). Member-writable like
+      // contact notes — a list is a view, not customer data — with the
+      // tenant keys pinned on create and locked on update.
+      match /smartLists/{listId} {
+        allow read: if canAccessSub(
+          subAccountId,
+          get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+        );
+        // Shape is validated here because the page reads `filters.all` on
+        // every render for every member — one malformed doc would break the
+        // contacts list for the whole workspace.
+        allow create: if request.resource.data.subAccountId == subAccountId
+          && request.resource.data.agencyId
+            == get(/databases/$(database)/documents/subAccounts/$(subAccountId)).data.agencyId
+          && request.resource.data.name is string
+          && request.resource.data.filters.all is list
+          && canAccessSub(
+            request.resource.data.subAccountId,
+            request.resource.data.agencyId
+          );
+        allow update: if canAccessSub(
+          resource.data.subAccountId,
+          resource.data.agencyId
+        ) && tenantFieldsLockedOnUpdate()
+          && request.resource.data.name is string
+          && request.resource.data.filters.all is list;
+        allow delete: if canAccessSub(
+          resource.data.subAccountId,
+          resource.data.agencyId
+        );
+      }
+
       // Import id-mappings (source-system id ↔ LeadStack id). Internal only —
       // written + read by the admin-SDK import routes; no client access.
       match /importMappings/{refId} {
@@ -508,6 +634,12 @@ service cloud.firestore {
       // The fuse that stops a looping integration from messaging a whole
       // list. Admin-SDK reads + writes only; nothing client-side reads it.
       match /apiEnrolments/{bucketId} {
+        allow read, write: if false;
+      }
+
+      // Lock path for the v1 contact upsert (lib/server/contact-upsert):
+      // read and delete-written inside its transaction, never persisted.
+      match /contactPhoneIndex/{claimId} {
         allow read, write: if false;
       }
 
@@ -703,8 +835,25 @@ service cloud.firestore {
     // One doc per contact (doc id == contactId). Written server-side by
     // lib/server/conversations-service.ts on every message. Members read;
     // creates + content updates are server-only. Clients may flip only the
-    // operator-facing fields (mark-read, status, assignment, bot controls) —
-    // never tenancy or denormalized content.
+    // operator-facing fields (mark-read / mark-unread, status, bot controls,
+    // star) — never tenancy or denormalized content.
+    //
+    // `assigneeUid` is deliberately NOT in that list (SP2 T1): the
+    // conversation's owner is a server-maintained MIRROR of the contact's
+    // `assignedToUid`, which is the source of truth. The owner picker writes
+    // the CONTACT (PATCH /api/contacts/{id}) and lib/server/conversation-mirror
+    // pushes the value onto the conversation. A client able to write it here
+    // is exactly how the two would diverge — a thread filed under one owner
+    // and the contact profile showing another, with no way to tell which is
+    // right. `contactEmail` (I9, inbox search) is denormalized like
+    // contactName / contactPhone and stays server-only for the same reason.
+    //
+    // `starred` (SP2 I6) is a shared per-conversation flag toggled from the
+    // inbox row and thread header. It is display-only (nothing server-side
+    // reads it to send or route), so any member who can see the conversation
+    // may flip it; the type check keeps a non-bool out of the list filter.
+    // Absent on older docs, hence the get() default. Mark-unread
+    // (I7) writes unreadCount=1 through the existing key.
     match /conversations/{conversationId} {
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
@@ -718,8 +867,9 @@ service cloud.firestore {
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
-          ['unreadCount', 'status', 'assigneeUid', 'botMode', 'botPausedUntil', 'pendingDraft', 'updatedAt']
-        );
+          ['unreadCount', 'status', 'botMode', 'botPausedUntil', 'pendingDraft', 'starred', 'updatedAt']
+        )
+        && request.resource.data.get("starred", false) is bool;
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId
@@ -736,6 +886,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Snapshot share-link index: sha256(token) → {agencyId, snapshotId,
+    // shareId}, so import resolves a token without a collection-group query.
+    // Server-only — written by the share routes, read by import.
+    match /snapshotShareIndex/{tokenHash} {
+      allow read, write: if false;
+    }
+
     // ---------- billingEvents (Client Billing v1 audit trail) ----------
     // Append-only log of plan assignments, comps, activations, and dunning
     // transitions. Written server-side by the billing service via the Admin
@@ -744,11 +901,63 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---------- auditEvents (who changed what, on which tenant) ----------
+    // Append-only. Written only by recordAuditEvent() (src/lib/audit) via
+    // the Admin SDK, so every client write is refused — including an update
+    // or delete by the agency owner, or the trail could be edited by the
+    // people it records. Readable by the agency owner, and by an admin of
+    // the event's sub-account. Agency-level events carry
+    // `subAccountId: null` and are owner-only. Contract:
+    // docs/architecture/audit-events.md.
+    match /auditEvents/{eventId} {
+      allow read: if isAgencyOwner(resource.data.agencyId)
+        || (resource.data.subAccountId is string
+          && isSubAdmin(resource.data.subAccountId));
+      allow write: if false;
+    }
+
     // ---------- disputes (chargeback records) ----------
     // One doc per Stripe charge.dispute.created, written by the webhook
     // dispute handler via the Admin SDK; read server-side only by the agency
     // affiliate Disputes tab. Fully server-only, same pattern as `purchases`.
     match /disputes/{disputeId} {
+      allow read, write: if false;
+    }
+
+    // ---------- companies (GHL "Businesses") ----------
+    // Sub-account scoped organisations that contacts link to via
+    // `contacts.companyId`. Members read/create/update (same as contacts);
+    // companies carry no territory, so reads are not territory-scoped.
+    // Delete is server-only: DELETE /api/companies/[id] unlinks the
+    // contacts in the same batch; a client deleteDoc would leave dangling
+    // companyIds behind.
+    match /companies/{companyId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow create: if canAccessSub(
+        request.resource.data.subAccountId,
+        request.resource.data.agencyId
+      );
+      allow update: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      ) && tenantFieldsLockedOnUpdate();
+      allow delete: if false;
+    }
+
+    // ---------- snippets (GHL "Snippets", SP2 T3) ----------
+    // Saved replies, sub-account scoped (agencyId / subAccountId /
+    // createdByUid on every doc). Server-only, like customFields and
+    // pipelines: the management page and the composer read and write
+    // through /api/sub-accounts/[id]/snippets, which checks membership,
+    // stamps the tenant keys from the route (never the body) and validates
+    // name/body/subject/folder. Closing the client path means that
+    // validation cannot be bypassed with a direct SDK write, and a malformed
+    // snippet can never reach another member's composer. Explicit here so
+    // the collection's stance is on record; default-deny would do the same.
+    match /snippets/{snippetId} {
       allow read, write: if false;
     }
 
@@ -765,7 +974,8 @@ service cloud.firestore {
       allow create: if canAccessSub(
         request.resource.data.subAccountId,
         request.resource.data.agencyId
-      );
+      ) && companyLinkInTenant()
+        && assigneeIsMemberOrNull(request.resource.data.subAccountId);
       // Updates require territory visibility; territory reassignment uses
       // the server route so linked conversation previews move atomically.
       allow update: if canSeeScopedDoc(
@@ -773,8 +983,10 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
+        && assigneeIsMemberOrNull(resource.data.subAccountId)
         // Territory changes must use the server route, which atomically scopes inbox previews.
-        && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null);
+        && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null)
+        && companyLinkInTenant();
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId
@@ -833,6 +1045,16 @@ service cloud.firestore {
         ) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']);
         allow create, delete: if false;
       }
+      // Scheduled messages ("Send later", SP2 T5). Server-only in BOTH
+      // directions: the scheduling API books them, the QStash worker fires
+      // them, and the thread reads them through
+      // GET /api/sub-accounts/[id]/scheduled-messages (Admin SDK, authorised
+      // like the send routes). A browser must never be able to book, edit or
+      // un-cancel a message that a worker will later send to a real person,
+      // and nothing reads them client-side, so reads stay closed too.
+      match /scheduledMessages/{scheduledId} {
+        allow read, write: if false;
+      }
       // BETA Facebook Messenger + Instagram DM chat thread — same model as the
       // SMS / WhatsApp threads above. Populated server-side by the Meta inbound
       // webhook + the /api/comms/meta/send route. Reads are member-scoped;
@@ -851,29 +1073,19 @@ service cloud.firestore {
     }
 
     match /deals/{dealId} {
-      // Same territory-scoping pattern as contacts above.
+      // Same territory-scoping pattern as contacts above for reads. Every
+      // write goes through the Admin-SDK routes (/api/deals, /api/v1/deals,
+      // the form submit, quotes lifecycle, AI Suite) so the service can
+      // validate stageId against the deal's pipeline and fire the matching
+      // webhooks + workflow triggers — a client write would bypass all of
+      // that. The old client writers in src/lib/firestore/deals.ts have no
+      // callers.
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
-      allow create: if canAccessSub(
-        request.resource.data.subAccountId,
-        request.resource.data.agencyId
-      );
-      allow update: if canSeeScopedDoc(
-        resource.data.subAccountId,
-        resource.data.agencyId,
-        resource.data.get("territoryId", null)
-      ) && tenantFieldsLockedOnUpdate()
-        && territoryIdUnchangedOrAdmin(
-          resource.data.subAccountId,
-          resource.data.agencyId
-        );
-      allow delete: if canAdminSub(
-        resource.data.subAccountId,
-        resource.data.agencyId
-      );
+      allow create, update, delete: if false;
     }
 
     match /tasks/{taskId} {
@@ -888,12 +1100,13 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      ) && assigneeIsMemberOrNull(request.resource.data.subAccountId);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
+        && assigneeIsMemberOrNull(resource.data.subAccountId)
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
@@ -1049,11 +1262,23 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
+      // hostUids / serviceId / serviceName are written by the booking
+      // routes only (Admin SDK): hostUids is busy time for every listed
+      // host, so a client must not be able to set or change it.
+      // googleEventIds / googleSyncError are written by the Google Calendar
+      // push only: a forged id would make the next push patch or delete an
+      // arbitrary event in a host's Google calendar. assignedToUid /
+      // assignedToName / source / bookingPageSlug are set by the booking
+      // routes and the assign route only — they decide whose Google calendar
+      // a push writes to. (The dashboard's client writes never set them.)
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      )
+        // Server-set only — the dashboard creates through /api/events. `mode`
+        // decides v1 exposure and whether status changes fire side effects.
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1062,12 +1287,18 @@ service cloud.firestore {
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
-        );
+        )
+        // Server-set only. `mode` also decides v1 exposure and whether a
+        // status change fires real triggers/email.
+        && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
+      // An event still mirrored in a Google calendar can't be deleted from
+      // the client — its Google copy would be orphaned. Cancel it instead.
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      );
+      ) && resource.data.get("googleEventIds", {}).size() == 0;
     }
 
     match /forms/{formId} {

@@ -10,6 +10,7 @@
 
 const REQUIRED = [
   "NEXT_PUBLIC_FIREBASE_API_KEY",
+  "NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET",
   "FIREBASE_ADMIN_PROJECT_ID",
   "FIREBASE_ADMIN_CLIENT_EMAIL",
   "FIREBASE_ADMIN_PRIVATE_KEY",
@@ -65,14 +66,36 @@ export function readEnv(): E2eEnv {
 }
 
 /**
- * The target the suite drives. Unset = the PR's own build, started by
- * Playwright's `webServer`; set = an already-running deployment (the
- * non-blocking smoke job points it at crm.crestahq.com).
+ * Port the local webServer binds to and the base URL every helper signs
+ * against. CI never sets this, so it defaults to 3100 there — byte-identical
+ * to before this var existed. A local run in progress alongside CI (or
+ * another local run) sets E2E_PORT to something else so the two don't fight
+ * over the same port. See "Local E2E on another port" below for the full
+ * recipe, including why NEXT_PUBLIC_APP_URL must be rebuilt to match.
  */
-export const DEFAULT_BASE_URL = "http://127.0.0.1:3100";
+export const E2E_PORT = process.env.E2E_PORT || "3100";
+
+/**
+ * The target the suite drives. Unset PLAYWRIGHT_BASE_URL = the PR's own
+ * build, started by Playwright's `webServer` on E2E_PORT; set = an
+ * already-running deployment (the non-blocking smoke job points it at
+ * crm.crestahq.com).
+ */
+export const DEFAULT_BASE_URL = `http://127.0.0.1:${E2E_PORT}`;
 
 export function baseURL(): string {
   return process.env.PLAYWRIGHT_BASE_URL || DEFAULT_BASE_URL;
+}
+
+/**
+ * An absolute URL against the local app, honouring E2E_PORT. Use this
+ * instead of hand-building `http://127.0.0.1:3100...` anywhere a helper
+ * needs a fully-qualified URL (QStash/Twilio signature bases, x-forwarded
+ * headers) — those signatures must equal what the server itself sees via
+ * NEXT_PUBLIC_APP_URL, baked in at build time (see the recipe below).
+ */
+export function appUrl(path: string): string {
+  return `${DEFAULT_BASE_URL}${path}`;
 }
 
 /**
@@ -94,3 +117,20 @@ export function requireQStashSigningKey(): string {
 
 /** Where global setup parks the agency-owner session for the specs. */
 export const STORAGE_STATE = "e2e/.auth/owner.json";
+
+/**
+ * Local E2E on another port
+ * -------------------------
+ * CI's E2E job always runs on 127.0.0.1:3100. A local run started while CI's
+ * job is mid-run (or another local run is) collides on that port and fails
+ * instantly with "http://127.0.0.1:3100 is already used". Run yours on a
+ * different port instead:
+ *
+ *   E2E_PORT=3101 NEXT_PUBLIC_APP_URL=http://127.0.0.1:3101 pnpm build
+ *   E2E_PORT=3101 pnpm e2e
+ *
+ * NEXT_PUBLIC_APP_URL must be set at BUILD time (it's inlined into the
+ * client bundle) and must equal E2E_PORT's URL — it's what the server's own
+ * QStash/Twilio signature checks compare against, and the suite signs
+ * requests against E2E_PORT. global-setup refuses to run with a mismatch.
+ */

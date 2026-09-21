@@ -74,6 +74,61 @@ its reconciliation lands. Reservation failures fail open, matching
 `checkQuota` — but only on the infrastructure-error path; an over-budget
 reservation always refuses.
 
+## Upsert by phone
+
+`POST /v1/contacts/upsert` creates or updates a contact using the phone as
+its identity: two calls with the same phone, even concurrently and in
+different formats (`082 123 4567`, `+27821234567`), leave one contact. Built
+for integrations that push the same person repeatedly — FibreFlow's daily
+Velocity export is the first caller.
+
+- `phone` is required and normalised to E.164 with the workspace's default
+  country; an unparseable phone is a 400 `invalid_phone`.
+- `name`, `email`, `company`, `address`, `source`: only keys sent are written.
+  `name` is required when the call creates the contact.
+- `custom_fields` **merges** per key; `null` or `""` clears a key, and an
+  unknown key is refused rather than dropped. Required custom fields are
+  enforced only on create.
+- `tags_add` / `tags_remove` apply to the contact's CURRENT tags inside the
+  write transaction, so a tag an operator added a moment ago survives.
+  `tags` (whole-array replace) is refused on this route, as are
+  `pipeline_stage` and `territory_id` (set those with PATCH) — refused
+  rather than silently dropped.
+- 201 created · 200 updated · **409 `ambiguous_phone`** when more than one
+  contact already holds the phone — nothing is written and the ids are named.
+- `Idempotency-Key` is honoured as on every v1 POST.
+
+Race safety: the phone query runs inside the write transaction on every
+call, and the transaction also reads and then writes a delete to a lock doc
+per phone (`subAccounts/{id}/contactPhoneIndex/{mode}_{e164}`, never
+persisted), so two concurrent calls contend and one re-runs onto the other's
+contact. Because the query runs every time, a duplicate created later by
+another path is still refused with 409.
+
+**Matching is on the stored E.164 phone and `mode`.** Paths that store the
+phone as typed — v1 form submissions, v1 PATCH, the bulk importer — and the
+voice-booking path, which writes no `mode`, produce contacts the upsert will
+not find; its first call for that person creates a second contact.
+
+**The response answers "did the tag enrol?" itself.** When `tags_add` is sent
+the route awaits the `contact.tag.added` trigger before responding — runs
+written, first step handed to QStash — and returns an `enrolment` block:
+`{ status: "enrolled" | "not_enrolled", reason, runs: [{ workflow_id,
+run_id, status }], skipped: [{ workflow_id, reason }] }`. `reason` is null
+when enrolled, else one of `test_mode`, `tag_already_present`,
+`automations_paused`, `no_matching_workflow`, `filters_not_met`,
+`reentry_blocked`, `run_failed`, `error`. Null when no tags were added. There
+is no acknowledgement tag and nothing to poll — the GHL two-tag handshake
+existed only because GHL cannot enrol synchronously. A `contact.created`
+workflow still runs on a create but is not part of this answer. `status`
+is `enrolled` when ANY `contact.tag.added` workflow started — a caller
+waiting on one particular workflow should look for its id in `runs[]`. An
+`Idempotency-Key` replay returns the original run ids.
+
+A create fires `contact.created` and, when it adds tags, `contact.tag.added`
+through the same tag diff as a PATCH. So the request reserves one enrolment
+slot per trigger it can fire, before any write, and releases the unused ones.
+
 ## Merge tags in automations
 
 `{{contact.customFields.<key>}}` resolves any operator-defined contact custom
@@ -96,6 +151,58 @@ deliberately do not. `safeTags: ["unsubscribeLink"]` exempts the one value we
 supply as real markup ourselves, which is legally required to render as a
 link. This closes a hole that predates custom fields —
 `{{contact.firstName}}` reached the HTML body raw as well.
+
+## Events: status
+
+**Booking-page events are not exposed on v1.** The events routes match an
+event's `mode` against the key's, and booking-page (and voice) bookings
+carry no `mode`, so `GET`/`PATCH`/`DELETE /v1/events/:id` 404 them. Every
+event v1 can reach is a manual event (created via `POST /v1/events` or the
+dashboard). Booking reschedules, `awaiting_payment` and mark-paid are
+dashboard-only.
+
+`PATCH /v1/events/:id` writes `title`/`contact_id`/`location`/`notes`/
+`start_at`/`end_at` as plain field patches. `status` goes through
+[lib/server/event-status-service.ts](../../src/lib/server/event-status-service.ts),
+the same chokepoint as the dashboard's mark-status action — a raw write here
+used to let an API key un-cancel an event or skip the activity row, trigger
+and cancel email.
+
+- **Transitions:** `scheduled` → `completed`/`no_show`/`cancelled`;
+  `completed` ↔ `no_show` as a correction either direction; `cancelled` is
+  always final. Anything else is refused with **`409`**
+  `invalid_status_transition` before any field in the PATCH is written.
+  A failed status write is a `500` `internal_error`.
+- **Not-yet-started gate:** `completed`/`no_show` also require
+  `start_at` to already be in the past — "This appointment hasn't happened
+  yet." (**`409`** `invalid_status_transition`), so a raw API call can't flip
+  a future booking (which would fire its workflow trigger and free the slot).
+  `cancelled` never needs this. Checked against the PATCH's own `start_at`
+  when the PATCH also moves it, so `{status: "completed", start_at: <past>}`
+  on a currently-future event is allowed, and `{status: "completed",
+  start_at: <future>}` on a currently-past event is refused.
+- **Side effects** (activity row, the `booking.*` workflow trigger, and the
+  visitor email on a cancel) run against the event *after* the rest of the
+  PATCH is applied, so changing `contact_id` and `status` together notifies
+  and enrols the new contact.
+- **Test mode:** a `mode: "test"` event gets the validated status write
+  only — no activity row, no trigger, no email.
+- **Atomic refusal, not atomic success.** Both status checks above (the
+  transition table and the not-yet-started gate) run as a pre-check against
+  the POST-patch event *before any field is written*, so a refused status
+  change never leaves the other fields written either. Once past that
+  pre-check, the other fields are written, then the status change re-applies
+  the same checks against the freshly stored event as its own chokepoint. If
+  another writer changes the status in that window, the PATCH can still
+  return `409` after its other fields were already written — re-`GET` the
+  event and retry.
+
+## Deals: assignee
+
+`POST /v1/deals` accepts an optional `assigned_to_uid`: it must be an
+ACTIVE member of the key's sub-account, else **`400`** `invalid_request`.
+Absent or `null` creates the deal unassigned. It is read-only on
+`PATCH /v1/deals/:id` (silently ignored there, like any unknown key).
 
 ## Webhooks
 

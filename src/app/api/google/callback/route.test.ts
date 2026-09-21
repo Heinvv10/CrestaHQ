@@ -46,7 +46,7 @@ function callbackUrl(params: Record<string, string>) {
   return url.toString();
 }
 
-const validState = () => signGoogleState(SUB, "nonce123");
+const validState = () => signGoogleState({ subAccountId: SUB, uid: "uid_admin" });
 
 async function call(
   params: Record<string, string>,
@@ -74,10 +74,10 @@ describe("state verification", () => {
   });
 
   it("bounces a forged state and writes nothing", async () => {
-    const [id, nonce] = validState().split(".");
+    const [payload] = validState().split(".");
     const res = await call({
       code: "abc",
-      state: `${id}.${nonce}.${"0".repeat(64)}`,
+      state: `${payload}.${"0".repeat(64)}`,
     });
     expect(res.headers.get("location")).toBe(
       "http://app.local/agency/sub-accounts?google=bad_state",
@@ -176,6 +176,19 @@ describe("successful exchange", () => {
     const res = await call({ code: "abc", state: validState() });
     expect(res.headers.get("location")).toContain("google=no_refresh_token");
     expect(state.writes).toEqual([]);
+  });
+
+  it("logs only the error's name and message, never the raw object", async () => {
+    stubTokenEndpoint({ error: "invalid_grant", error_description: "LEAKY-DETAIL" }, 400);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await call({ code: "abc", state: validState() });
+    expect(spy).toHaveBeenCalledTimes(1);
+    const args = spy.mock.calls[0];
+    expect(args.every((a) => typeof a === "string")).toBe(true);
+    expect(args.join(" ")).toContain(
+      "GbpProviderError: Google Business Profile provider error: revoked (HTTP 400)",
+    );
+    expect(args.join(" ")).not.toContain("LEAKY-DETAIL");
   });
 
   it("redirects with `error` and stores nothing when Google rejects the code", async () => {

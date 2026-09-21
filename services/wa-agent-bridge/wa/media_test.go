@@ -106,6 +106,54 @@ func TestUploadKindMatchesMessageShape(t *testing.T) {
 	}
 }
 
+// An empty text sends the file with the Caption field UNSET, not an empty
+// string — the shape a phone produces for a photo sent with no caption.
+func TestMediaMessageWithoutTextHasNoCaption(t *testing.T) {
+	up := whatsmeow.UploadResponse{URL: "https://mmg.whatsapp.net/x", DirectPath: "/x", FileLength: 10}
+	img := mediaMessage(up, "", &rails.Media{Filename: "a.png", MimeType: "image/png", Data: []byte("x")})
+	if img.ImageMessage == nil || img.ImageMessage.Caption != nil {
+		t.Fatalf("image caption must be unset: %+v", img.ImageMessage)
+	}
+	doc := mediaMessage(up, "", &rails.Media{Filename: "a.pdf", MimeType: "application/pdf", Data: []byte("x")})
+	if doc.DocumentMessage == nil || doc.DocumentMessage.Caption != nil {
+		t.Fatalf("document caption must be unset: %+v", doc.DocumentMessage)
+	}
+	if doc.DocumentMessage.GetFileName() != "a.pdf" {
+		t.Fatalf("filename lost: %q", doc.DocumentMessage.GetFileName())
+	}
+}
+
+// A video is uploaded under the video media class and sent as a VideoMessage.
+// Uploaded as a document it would be undecryptable on the recipient's phone;
+// sent as a DocumentMessage it would arrive as a file to download, not a clip.
+func TestVideoUploadKindMatchesMessageShape(t *testing.T) {
+	up := whatsmeow.UploadResponse{
+		URL: "https://mmg.whatsapp.net/v", DirectPath: "/v", FileLength: 42,
+		MediaKey: []byte("k"), FileEncSHA256: []byte("e"), FileSHA256: []byte("p"),
+	}
+	vid := &rails.Media{Filename: "clip.mp4", MimeType: "video/mp4", Data: []byte("x")}
+	if got := uploadKindFor(vid.MimeType); got != whatsmeow.MediaVideo {
+		t.Fatalf("uploadKindFor(video/mp4) = %v, want MediaVideo", got)
+	}
+	m := mediaMessage(up, "the install", vid)
+	if m.VideoMessage == nil || m.DocumentMessage != nil || m.ImageMessage != nil {
+		t.Fatalf("a video must be exactly a VideoMessage: %+v", m)
+	}
+	v := m.VideoMessage
+	if v.GetCaption() != "the install" || v.GetMimetype() != "video/mp4" {
+		t.Fatalf("caption or mimetype lost: %+v", v)
+	}
+	if v.GetURL() != up.URL || v.GetDirectPath() != up.DirectPath || v.GetFileLength() != up.FileLength ||
+		string(v.GetMediaKey()) != "k" || string(v.GetFileEncSHA256()) != "e" || string(v.GetFileSHA256()) != "p" {
+		t.Fatalf("upload response not copied onto the video message: %+v", v)
+	}
+
+	bare := mediaMessage(up, "", vid)
+	if bare.VideoMessage == nil || bare.VideoMessage.Caption != nil {
+		t.Fatalf("video caption must be unset when there is no text: %+v", bare.VideoMessage)
+	}
+}
+
 // The queue sits between the API and the socket. An attachment that does not
 // survive the hop would send as bare text, which is exactly the failure this
 // feature exists to remove.

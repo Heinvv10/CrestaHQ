@@ -8,7 +8,10 @@ import {
 } from "@/lib/comms/twilio";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
 import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
+import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
+import { logInboxReviewAsk, type AskOutcome } from "@/lib/reviews/review-ask";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -163,6 +166,10 @@ export async function POST(request: Request) {
     );
   }
 
+  // Logged once the send settles: sent, refused by the rail, or failed.
+  const logAsk = (outcome: AskOutcome | null) =>
+    logInboxReviewAsk({ contact, channel: "whatsapp", parts: [], template: tpl, templateValues: values, actorUid: auth.uid, outcome });
+
   let sid: string;
   let fromNumber: string;
   try {
@@ -186,6 +193,8 @@ export async function POST(request: Request) {
       },
     });
     if (!result.ok) {
+      // Only a provider's rejection is a failed ask; "not approved on this rail" never left.
+      await logAsk(result.attempted && !result.refusedBy ? { ok: false, failureKind: result.error ?? "send_failed" } : null);
       return NextResponse.json(
         { error: result.error ?? "Only an approved template can be sent." },
         { status: 409 },
@@ -194,6 +203,7 @@ export async function POST(request: Request) {
     sid = result.messageId ?? "";
     fromNumber = templateFrom;
   } catch (err) {
+    await logAsk(providerAttempted(err) ? { ok: false, failureKind: "send_failed" } : null);
     if (err instanceof UsageQuotaExceededError) {
       return NextResponse.json({ error: err.message }, { status: 429 });
     }
@@ -245,6 +255,23 @@ export async function POST(request: Request) {
   } catch (err) {
     console.warn("[whatsapp/send-template] message-row write failed", err);
   }
+
+  // Unified-inbox index, exactly as the free-form route does it: the thread
+  // is now answered (leaves awaiting-reply), the preview is what was sent,
+  // and the bot pauses so AI does not auto-reply over the operator. Runs only
+  // after a successful send; upsertConversationForMessage never throws.
+  await upsertConversationForMessage({
+    contactId,
+    subAccountId: contact.subAccountId,
+    agencyId: contact.agencyId,
+    contactName: contact.name ?? "",
+    contactPhone: contact.phone,
+    channel: "whatsapp",
+    direction: "outbound",
+    body: rendered || `[Template: ${tpl.displayName}]`,
+    pauseBot: true,
+  });
+  await logAsk({ ok: true, messageSid: sid });
 
   return NextResponse.json({ ok: true, sid });
 }

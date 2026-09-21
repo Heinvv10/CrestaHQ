@@ -12,7 +12,7 @@ import { FIXTURE_TAG, ensureSeed } from "../lib/seed";
  * then asserts the EFFECT — the tag on the contact and the run's history.
  */
 
-test("a form submission enrols the contact and the step worker runs the action", async ({
+test("a form submission enrols the contact and the step worker runs the action @enrols-workflows", async ({
   request,
 }) => {
   const env = readEnv();

@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button";
 import { TaskDialog } from "@/components/tasks/task-dialog";
 import { TaskItem } from "@/components/tasks/task-item";
 import { cn } from "@/lib/utils";
+import { SELECT_CLASS } from "@/components/assignee-select";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import type { Contact } from "@/types/contacts";
 import type { Task, TaskFilter } from "@/types/tasks";
 
@@ -59,6 +61,17 @@ export default function TasksPage() {
     return m;
   }, [contacts]);
 
+  // Assignee filter: "anyone" | "me" | "unassigned" | a member uid. Applied
+  // before bucketing so every tab count reflects it.
+  const [assignee, setAssignee] = useState("anyone");
+  const { members } = useSubAccountMembers(subAccountId);
+  const scoped = useMemo(() => {
+    if (assignee === "anyone") return tasks;
+    if (assignee === "unassigned") return tasks.filter((t) => !t.assignedToUid);
+    const uid = assignee === "me" ? user?.uid : assignee;
+    return tasks.filter((t) => t.assignedToUid === uid);
+  }, [tasks, assignee, user?.uid]);
+
   const buckets = useMemo(() => {
     const now = Date.now();
     const today = new Date();
@@ -71,7 +84,7 @@ export default function TasksPage() {
     const upcoming: Task[] = [];
     const done: Task[] = [];
 
-    for (const t of tasks) {
+    for (const t of scoped) {
       if (t.completed) {
         done.push(t);
         continue;
@@ -92,14 +105,14 @@ export default function TasksPage() {
       }
     }
     return { overdue, today: todayList, upcoming, done };
-  }, [tasks]);
+  }, [scoped]);
 
   const counts = {
     today: buckets.today.length + buckets.overdue.length,
     overdue: buckets.overdue.length,
     upcoming: buckets.upcoming.length,
     done: buckets.done.length,
-    all: tasks.length,
+    all: scoped.length,
   };
 
   const shown =
@@ -111,7 +124,7 @@ export default function TasksPage() {
           ? buckets.upcoming
           : filter === "done"
             ? buckets.done.slice(0, 100)
-            : tasks;
+            : scoped;
 
   function openNew() {
     setEditTask(null);
@@ -171,6 +184,21 @@ export default function TasksPage() {
             </button>
           );
         })}
+        <select
+          aria-label="Assignee"
+          value={assignee}
+          onChange={(e) => setAssignee(e.target.value)}
+          className={cn(SELECT_CLASS, "ml-auto w-auto self-center")}
+        >
+          <option value="anyone">Anyone</option>
+          <option value="me">Me</option>
+          <option value="unassigned">Unassigned</option>
+          {members.map((m) => (
+            <option key={m.uid} value={m.uid}>
+              {m.displayName}
+            </option>
+          ))}
+        </select>
       </div>
 
       {loading ? (

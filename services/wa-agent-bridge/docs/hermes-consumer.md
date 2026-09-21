@@ -68,9 +68,90 @@ The bridge POSTs, with `Authorization: Bearer <token>`:
   "messageId": "3EB0...", "at": "2026-09-04T12:00:00Z" }
 ```
 
-That is the complete payload shape today — **`from`, `text`, `messageId`,
-`at`, nothing else.** In particular there is no `quotedMessageId` (see "Not
-yet built" below).
+Those four keys — **`from`, `text`, `messageId`, `at`** — are on every POST,
+and are the whole payload for a text message. There is no `quotedMessageId`
+(see "Not yet built" below).
+
+A message that carried a **file** adds exactly one further key, never both:
+
+```json
+{ "from": "…", "text": "the caption, or \"\"", "messageId": "3EB0…", "at": "…",
+  "media": { "filename": "photo.jpg", "mimeType": "image/jpeg",
+             "dataBase64": "/9j/4AAQ…" } }
+```
+
+```json
+{ "from": "…", "text": "…", "messageId": "…", "at": "…",
+  "mediaDropped": "too_large" }
+```
+
+- `media` carries the bytes **inline**, base64-encoded. The bridge downloads
+  them before posting, so a consumer never talks to WhatsApp itself.
+- `mediaDropped` is `"too_large"` (over 16MiB), `"fetch_failed"` (the bridge
+  could not download it), `"delivery_failed"` (the bridge downloaded it but
+  the POST carrying it to YOU failed, and this is the text-only retry),
+  `"shutdown"` (the bridge was restarting — a deploy — and abandoned the file
+  so the message could still reach you in time), `"duplicate"` (this exact
+  file already arrived FROM THIS SENDER and was delivered to you on an earlier
+  message — look it up by its earlier `messageId` rather than asking for it
+  again; a different sender sending the same file still gets its own copy) or
+  `"sender_media_budget"` (this sender has used their hourly media allowance;
+  see `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` in the bridge README) or
+  `"media_backlog"` (too many attachments were already queued for download, so
+  the bridge delivered the message now rather than hold it behind a queue it
+  would not reach the front of in useful time). Each
+  means a file was sent and could not be delivered — which is NOT the same as a
+  message with no file, and is worth showing an operator rather than rendering
+  a bare caption.
+- **Size your body limit for ~21.5MiB.** A 16MiB file is 21.3MiB as base64,
+  plus the envelope. A consumer whose framework caps request bodies lower —
+  Next.js App Router routes reject large bodies by default, for one — will
+  refuse the media POST; the bridge then retries text-only with
+  `mediaDropped: "delivery_failed"`, so the message survives but every file is
+  lost until the limit is raised. The media POST has a 120s deadline on the
+  bridge's side.
+- A `"delivery_failed"` retry can follow a media POST that actually succeeded
+  but timed out on the bridge's side. **Dedupe on `messageId`** — the retry
+  carries the same one — and keep the copy with `media`.
+- **The message is forwarded either way.** Losing a file is a degradation;
+  losing a customer's message is not.
+- `filename` is the sender's own for a document and synthesised otherwise. It
+  is customer-supplied data: never put it in a filesystem path or an HTTP
+  header without sanitising it first.
+- `text` is the attachment's caption, and is `""` for a voice note or a sticker,
+  which carry none.
+- A text message posts the four keys and nothing else — no `"media": null`.
+- **View-once media arrives like any other media.** The bridge deliberately
+  forwards a "view once" photo or video with its bytes and does not mark it as
+  such (decided 2026-09-15). Whatever you store, you are storing something the
+  sender intended to disappear — that is a POPIA obligation you inherit with
+  the payload, not one the bridge discharges for you.
+
+A message where the customer **shared a location** adds a `location` key:
+
+```json
+{ "from": "…", "text": "", "messageId": "…", "at": "…",
+  "location": { "latitude": -26.3812, "longitude": 27.8123,
+                "name": "…", "address": "…", "url": "…" } }
+```
+
+- `latitude` and `longitude` are always present, finite and in range; a
+  message whose coordinates are not is forwarded without the key (or not at
+  all, when it carried nothing else).
+- `name`, `address` and `url` are omitted when empty. They are the sender's
+  own text: render them as text, and never use `url` as a link.
+- `text` is whatever the customer typed with the location: a static pin's
+  comment, or a live location's caption. It is `""` when they typed nothing.
+- A **live** location arrives once, at its position when sharing started. The
+  bridge does not follow the updates.
+- **Every consumer receives the coordinates**, and they are usually the
+  customer's home (POPIA). A consumer **must not** put `latitude` /
+  `longitude` into an LLM prompt or a log line. LeadStack's own AI never
+  receives them: it does not auto-reply to a bare location, and the row it
+  stores keeps the coordinates in a separate `location` field. The one part
+  that can reach the CRM AI is the place `name`: the row body reads
+  `📍 {name}`, and that body can appear in the AI's conversation history on a
+  later turn.
 
 `messageId` is WhatsApp's own id for the INBOUND message. Use it to dedupe a
 redelivery on the id rather than on the body. It can be an empty string when

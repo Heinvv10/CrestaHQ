@@ -58,7 +58,7 @@ func TestFanoutAcceptsTheGatePredicate(t *testing.T) {
 		}
 	}()
 	g := &clientHolder{}
-	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow, g.connectedAt); f == nil {
+	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow, g.connectedAt, 0); f == nil {
 		t.Fatal("nil fanout")
 	}
 }

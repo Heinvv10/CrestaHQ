@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   AlertTriangle,
   Bot,
+  CalendarSync,
   FlaskConical,
   Globe,
   CreditCard,
@@ -24,6 +25,7 @@ import {
   Share2,
   GraduationCap,
   Sparkles,
+  Star,
   Trash2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -72,57 +74,81 @@ export function SubAccountManageDialog({
   open,
   onOpenChange,
 }: Props) {
-  const initialEmail = subAccount?.emailDomainEnabledByAgency === true;
-  const initialApi = subAccount?.apiAccessEnabledByAgency === true;
-  const initialBroadcasts = subAccount?.broadcastsEnabledByAgency === true;
-  const initialOutbound = subAccount?.outboundVoiceEnabledByAgency === true;
-  const initialWhatsapp = subAccount?.whatsappEnabledByAgency === true;
+  // Mount the body only while open, keyed by the sub-account, so every gate's
+  // useState initialiser reads the live doc. This replaced a hand-maintained
+  // "re-sync on open" effect that listed each gate's setter by hand — the
+  // three newest gates had been left out, rendered unchecked whatever
+  // Firestore held, and were switched off by the next Save.
+  if (!open || !subAccount) return null;
+  return (
+    <ManageDialogBody
+      key={subAccount.id}
+      subAccount={subAccount}
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+}
+
+function ManageDialogBody({
+  subAccount,
+  open,
+  onOpenChange,
+}: Props & { subAccount: SubAccountDoc }) {
+  const initialEmail = subAccount.emailDomainEnabledByAgency === true;
+  const initialApi = subAccount.apiAccessEnabledByAgency === true;
+  const initialBroadcasts = subAccount.broadcastsEnabledByAgency === true;
+  const initialOutbound = subAccount.outboundVoiceEnabledByAgency === true;
+  const initialWhatsapp = subAccount.whatsappEnabledByAgency === true;
   // Default ON (opt-out) — legacy/undefined docs read as enabled so the
   // checkbox reflects the historical always-on behavior. Only an explicit
   // `false` shows unchecked. See gates.ts / SubAccountDoc docs.
-  const initialSmsAgent = subAccount?.smsAgentEnabledByAgency !== false;
-  const initialWebChat = subAccount?.webChatEnabledByAgency !== false;
-  const initialInboundVoice = subAccount?.inboundVoiceEnabledByAgency !== false;
-  const initialMetaInbox = subAccount?.metaInboxEnabledByAgency === true;
-  const initialMetaAgent = subAccount?.metaAgentEnabledByAgency === true;
-  const initialWebsite = subAccount?.websiteEnabledByAgency === true;
-  const initialSocial = subAccount?.socialPlannerEnabledByAgency === true;
-  const initialCommunity = subAccount?.communityEnabledByAgency === true;
+  const initialSmsAgent = subAccount.smsAgentEnabledByAgency !== false;
+  const initialWebChat = subAccount.webChatEnabledByAgency !== false;
+  const initialInboundVoice = subAccount.inboundVoiceEnabledByAgency !== false;
+  const initialMetaInbox = subAccount.metaInboxEnabledByAgency === true;
+  const initialMetaAgent = subAccount.metaAgentEnabledByAgency === true;
+  const initialWebsite = subAccount.websiteEnabledByAgency === true;
+  const initialSocial = subAccount.socialPlannerEnabledByAgency === true;
+  const initialCommunity = subAccount.communityEnabledByAgency === true;
   const initialMissedCall =
-    subAccount?.missedCallTextBackEnabledByAgency === true;
-  const initialPayments = subAccount?.paymentsEnabledByAgency === true;
+    subAccount.missedCallTextBackEnabledByAgency === true;
+  const initialPayments = subAccount.paymentsEnabledByAgency === true;
   // Unset → hidden (the default for every hide-override).
   const initialPaymentsHidden =
-    subAccount?.paymentsHiddenWhenDisabled !== false;
-  const initialWebinar1 = subAccount?.webinar1EnabledByAgency === true;
+    subAccount.paymentsHiddenWhenDisabled !== false;
+  const initialWebinar1 = subAccount.webinar1EnabledByAgency === true;
   const initialWebinar1Hidden =
-    subAccount?.webinar1HiddenWhenDisabled !== false;
-  const initialGoogle = subAccount?.googleEnabledByAgency === true;
+    subAccount.webinar1HiddenWhenDisabled !== false;
+  const initialGoogle = subAccount.googleEnabledByAgency === true;
+  const initialGoogleCalendar =
+    subAccount.googleCalendarEnabledByAgency === true;
+  const initialReviewsAi = subAccount.reviewsAiEnabledByAgency === true;
   // Workspace Assistant is opt-in like every other gate — off unless
   // explicitly enabled (legacy/unset reads as off).
-  const initialAiSuite = subAccount?.aiSuiteEnabledByAgency === true;
+  const initialAiSuite = subAccount.aiSuiteEnabledByAgency === true;
   // Model tier for the Workspace Assistant — unset/legacy reads as Opus
   // (matches pre-picker behavior; Sonnet is the opt-down for cost).
   const initialAiSuiteModel: "opus" | "sonnet" =
-    subAccount?.aiSuiteModel === "sonnet" ? "sonnet" : "opus";
-  const initialLabs = subAccount?.labsEnabledByAgency === true;
-  const initialGetLeads = subAccount?.getLeadsEnabledByAgency === true;
+    subAccount.aiSuiteModel === "sonnet" ? "sonnet" : "opus";
+  const initialLabs = subAccount.labsEnabledByAgency === true;
+  const initialGetLeads = subAccount.getLeadsEnabledByAgency === true;
   // "Hide vs. show as Locked" flag for the sidebar-gated features. HIDDEN is the
   // default — a disabled feature is omitted from the tenant's sidebar unless the
   // owner explicitly opts it into the greyed "Locked" row (field set to `false`).
   // Read `!== false` so unset docs default to hidden.
   const initialBroadcastsHidden =
-    subAccount?.broadcastsHiddenWhenDisabled !== false;
-  const initialWebsiteHidden = subAccount?.websiteHiddenWhenDisabled !== false;
+    subAccount.broadcastsHiddenWhenDisabled !== false;
+  const initialWebsiteHidden = subAccount.websiteHiddenWhenDisabled !== false;
   const initialSocialHidden =
-    subAccount?.socialPlannerHiddenWhenDisabled !== false;
+    subAccount.socialPlannerHiddenWhenDisabled !== false;
   const initialCommunityHidden =
-    subAccount?.communityHiddenWhenDisabled !== false;
+    subAccount.communityHiddenWhenDisabled !== false;
   const initialGetLeadsHidden =
-    subAccount?.getLeadsHiddenWhenDisabled !== false;
-  const initialAiSuiteHidden = subAccount?.aiSuiteHiddenWhenDisabled !== false;
-  const initialLabsHidden = subAccount?.labsHiddenWhenDisabled !== false;
-  const hasLiveDomain = !!subAccount?.resendConfig;
+    subAccount.getLeadsHiddenWhenDisabled !== false;
+  const initialAiSuiteHidden = subAccount.aiSuiteHiddenWhenDisabled !== false;
+  const initialLabsHidden = subAccount.labsHiddenWhenDisabled !== false;
+  const hasLiveDomain = !!subAccount.resendConfig;
   const [emailDomainEnabled, setEmailDomainEnabled] = useState(initialEmail);
   const [apiAccessEnabled, setApiAccessEnabled] = useState(initialApi);
   const [broadcastsEnabled, setBroadcastsEnabled] = useState(initialBroadcasts);
@@ -144,6 +170,10 @@ export function SubAccountManageDialog({
   const [webinar1Enabled, setWebinar1Enabled] = useState(initialWebinar1);
   const [webinar1Hidden, setWebinar1Hidden] = useState(initialWebinar1Hidden);
   const [googleEnabled, setGoogleEnabled] = useState(initialGoogle);
+  const [reviewsAiEnabled, setReviewsAiEnabled] = useState(initialReviewsAi);
+  const [googleCalendarEnabled, setGoogleCalendarEnabled] = useState(
+    initialGoogleCalendar
+  );
   const [missedCallEnabled, setMissedCallEnabled] = useState(initialMissedCall);
   const [aiSuiteEnabled, setAiSuiteEnabled] = useState(initialAiSuite);
   const [aiSuiteModel, setAiSuiteModel] = useState<"opus" | "sonnet">(
@@ -169,7 +199,7 @@ export function SubAccountManageDialog({
   const [deleting, setDeleting] = useState(false);
   // Whether the deployment has Meta app creds (META_APP_ID/SECRET). null while
   // loading. The FB/IG inbox + Social Planner gates depend on it, so they're
-  // grayed out when it's false. Fetched once when the dialog first opens.
+  // grayed out when it's false. Fetched once per open (the body remounts).
   const [metaConfigured, setMetaConfigured] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -188,77 +218,6 @@ export function SubAccountManageDialog({
       cancelled = true;
     };
   }, [open, metaConfigured]);
-
-  // Re-sync local state every time the dialog opens or the target sub-account
-  // changes, so consecutive opens don't show stale toggle state.
-  useEffect(() => {
-    if (open) {
-      setEmailDomainEnabled(initialEmail);
-      setApiAccessEnabled(initialApi);
-      setBroadcastsEnabled(initialBroadcasts);
-      setOutboundVoiceEnabled(initialOutbound);
-      setWhatsappEnabled(initialWhatsapp);
-      setSmsAgentEnabled(initialSmsAgent);
-      setWebChatEnabled(initialWebChat);
-      setInboundVoiceEnabled(initialInboundVoice);
-      setMetaInboxEnabled(initialMetaInbox);
-      setMetaAgentEnabled(initialMetaAgent);
-      setWebsiteEnabled(initialWebsite);
-      setSocialPlannerEnabled(initialSocial);
-      setCommunityEnabled(initialCommunity);
-      setPaymentsEnabled(initialPayments);
-      setPaymentsHidden(initialPaymentsHidden);
-      setWebinar1Enabled(initialWebinar1);
-      setWebinar1Hidden(initialWebinar1Hidden);
-      setMissedCallEnabled(initialMissedCall);
-      setAiSuiteEnabled(initialAiSuite);
-      setAiSuiteModel(initialAiSuiteModel);
-      setLabsEnabled(initialLabs);
-      setGetLeadsEnabled(initialGetLeads);
-      setBroadcastsHidden(initialBroadcastsHidden);
-      setWebsiteHidden(initialWebsiteHidden);
-      setSocialHidden(initialSocialHidden);
-      setCommunityHidden(initialCommunityHidden);
-      setGetLeadsHidden(initialGetLeadsHidden);
-      setAiSuiteHidden(initialAiSuiteHidden);
-      setLabsHidden(initialLabsHidden);
-      setDeleteConfirm("");
-    }
-  }, [
-    open,
-    initialEmail,
-    initialApi,
-    initialBroadcasts,
-    initialOutbound,
-    initialWhatsapp,
-    initialSmsAgent,
-    initialWebChat,
-    initialInboundVoice,
-    initialMetaInbox,
-    initialMetaAgent,
-    initialWebsite,
-    initialSocial,
-    initialCommunity,
-    initialPayments,
-    initialPaymentsHidden,
-    initialWebinar1,
-    initialWebinar1Hidden,
-    initialMissedCall,
-    initialAiSuite,
-    initialAiSuiteModel,
-    initialLabs,
-    initialGetLeads,
-    initialBroadcastsHidden,
-    initialWebsiteHidden,
-    initialSocialHidden,
-    initialCommunityHidden,
-    initialGetLeadsHidden,
-    initialAiSuiteHidden,
-    initialLabsHidden,
-    subAccount?.id,
-  ]);
-
-  if (!subAccount) return null;
 
   const willTearDown = initialEmail && !emailDomainEnabled && hasLiveDomain;
   const emailDirty = emailDomainEnabled !== initialEmail;
@@ -279,6 +238,8 @@ export function SubAccountManageDialog({
   const webinar1Dirty = webinar1Enabled !== initialWebinar1;
   const webinar1HiddenDirty = webinar1Hidden !== initialWebinar1Hidden;
   const googleDirty = googleEnabled !== initialGoogle;
+  const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
+  const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
   const missedCallDirty = missedCallEnabled !== initialMissedCall;
   const aiSuiteDirty = aiSuiteEnabled !== initialAiSuite;
   const aiSuiteModelDirty = aiSuiteModel !== initialAiSuiteModel;
@@ -310,6 +271,8 @@ export function SubAccountManageDialog({
     webinar1Dirty ||
     webinar1HiddenDirty ||
     googleDirty ||
+    googleCalendarDirty ||
+    reviewsAiDirty ||
     missedCallDirty ||
     aiSuiteDirty ||
     aiSuiteModelDirty ||
@@ -329,7 +292,6 @@ export function SubAccountManageDialog({
   const metaUnconfigured = metaConfigured === false;
 
   async function handleSave() {
-    if (!subAccount) return;
     setSaving(true);
     try {
       // Only send the fields the agency owner actually changed. Keeps the
@@ -354,6 +316,8 @@ export function SubAccountManageDialog({
         webinar1Enabled?: boolean;
         webinar1HiddenWhenDisabled?: boolean;
         googleEnabled?: boolean;
+        googleCalendarEnabled?: boolean;
+        reviewsAiEnabled?: boolean;
         missedCallTextBackEnabled?: boolean;
         aiSuiteEnabled?: boolean;
         aiSuiteModel?: "opus" | "sonnet";
@@ -389,6 +353,10 @@ export function SubAccountManageDialog({
         payload.webinar1HiddenWhenDisabled = webinar1Hidden;
       }
       if (googleDirty) payload.googleEnabled = googleEnabled;
+      if (googleCalendarDirty) {
+        payload.googleCalendarEnabled = googleCalendarEnabled;
+      }
+      if (reviewsAiDirty) payload.reviewsAiEnabled = reviewsAiEnabled;
       if (missedCallDirty)
         payload.missedCallTextBackEnabled = missedCallEnabled;
       if (aiSuiteDirty) payload.aiSuiteEnabled = aiSuiteEnabled;
@@ -540,6 +508,20 @@ export function SubAccountManageDialog({
             : "Google Business Profile disabled. The connection is preserved; re-enabling resumes instantly."
         );
       }
+      if (googleCalendarDirty) {
+        parts.push(
+          googleCalendarEnabled
+            ? "Google Calendar sync enabled."
+            : "Google Calendar sync disabled. Members' connections are preserved; re-enabling resumes instantly."
+        );
+      }
+      if (reviewsAiDirty) {
+        parts.push(
+          reviewsAiEnabled
+            ? "Reviews AI enabled."
+            : "Reviews AI disabled. Existing sentiment labels stay; no new reviews are analysed."
+        );
+      }
       if (missedCallDirty) {
         parts.push(
           missedCallEnabled
@@ -618,7 +600,6 @@ export function SubAccountManageDialog({
   }
 
   async function handleDelete() {
-    if (!subAccount) return;
     setDeleting(true);
     try {
       const res = await fetch(`/api/agency/sub-accounts/${subAccount.id}`, {
@@ -999,6 +980,45 @@ export function SubAccountManageDialog({
             Disabling hides the card and refuses new connects; the stored
             connection is preserved, so re-enabling resumes instantly.
             Disconnecting stays available either way.
+          </GateToggle>
+
+          <GateToggle
+            checked={googleCalendarEnabled}
+            onChange={setGoogleCalendarEnabled}
+            disabled={saving}
+            icon={
+              <CalendarSync className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
+            }
+            title="Google Calendar sync"
+          >
+            When enabled, each member of this sub-account can connect their own
+            Google Calendar (Settings → Calendar sync). Bookings assigned to
+            them are added to their primary Google calendar, and their Google
+            busy time blocks those slots on booking pages. Disabling hides the
+            card, refuses new connects and stops the sync; connections are
+            preserved, so re-enabling resumes instantly. Disconnecting stays
+            available either way.
+          </GateToggle>
+
+          <GateToggle
+            checked={reviewsAiEnabled}
+            onChange={setReviewsAiEnabled}
+            disabled={saving}
+            icon={
+              <Star className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            }
+            title="Reviews AI"
+          >
+            When enabled, synced Google reviews with text are labelled
+            positive / neutral / negative by AI (star-only reviews are labelled
+            from their stars, with no AI call). A review is sent to the AI once
+            — again only if it is edited, or if its cached copy was deleted and
+            re-synced (listing changed, Google disconnected or switched off, or
+            Google&apos;s 30-day storage limit). A bad AI answer is tried at most
+            3 times; a failed call is retried after an hour. At most 300 AI
+            calls a day per sub-account. Spends
+            your OpenRouter credits. Disabling stops new analysis; existing
+            labels stay.
           </GateToggle>
 
           <GateToggle

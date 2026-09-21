@@ -42,6 +42,18 @@ const PUBLIC_PATHS = [
   // QStash signature is the authentication.
   "/api/cron/recurring-invoices",
   "/api/cron/email-sync",
+  // 6-hourly Google Business Profile review sync. Public like the other cron
+  // routes — the QStash signature, verified inside the route, is the auth.
+  "/api/cron/gbp-sync",
+  // Daily GBP review-cache retention (always on). Same auth: the signature.
+  "/api/cron/gbp-retention",
+  // Hourly WhatsApp Cloud quality-rating poll (SP15). Same auth: the signature.
+  "/api/cron/whatsapp-quality",
+  // Daily sweep of abandoned WhatsApp composer uploads. Same auth: the signature.
+  "/api/cron/whatsapp-staging-cleanup",
+  // Review-request reminders (SP5 d2) — one QStash message per scheduled
+  // reminder. Same auth: the signature, bound to this route's URL.
+  "/api/cron/review-reminder",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",
@@ -93,6 +105,8 @@ const PUBLIC_PATHS = [
   "/embed",
   // Widget loader JS — public static file served from /public.
   "/widget.js",
+  // Booking widget loader JS — public static file served from /public.
+  "/booking-embed.js",
   // PWA — the manifest is fetched by the browser without credentials on
   // every page (including /login), and the service worker script must be
   // publicly fetchable for registration. Both are harmless to expose:
@@ -205,6 +219,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   /^\/api\/social\/publish\/step$/,
   // GHL migration drain — QStash callback, signature-verified in the route.
   /^\/api\/import\/ghl\/step$/,
+  // Scheduled conversation message worker (SP2 T5) — QStash callback,
+  // signature-verified inside the route (same model as /api/workflows/step).
+  /^\/api\/scheduled-messages\/fire$/,
   // WhatsApp template approval poll: /api/sub-accounts/{id}/whatsapp-templates/poll
   // QStash callback, signature-verified inside the route.
   /^\/api\/sub-accounts\/[^/]+\/whatsapp-templates\/poll$/,
@@ -240,6 +257,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // is the HMAC event token, re-hashed and compared against the stored
   // `publicTokenHash` inside the route.
   /^\/api\/events\/[^/]+\/pay$/,
+  // Public reschedule + cancel, the /e/[token] page's own POSTs. Same
+  // token-hash security as /pay above. Without this an anonymous visitor's
+  // click 307s to /login instead of rescheduling/cancelling — the page
+  // itself is public (`/e` above) but its actions were not.
+  /^\/api\/events\/[^/]+\/reschedule$/,
+  /^\/api\/events\/[^/]+\/cancel$/,
   // Calendar subscription feed: /api/sub-accounts/{id}/calendar.ics
   // Token-gated inside the route via verifyCalendarFeedToken — Google /
   // Apple / Outlook pollers are unauthenticated, so session-cookie auth
@@ -251,6 +274,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // resolves to nothing and 404s, and the destination is re-validated as
   // http(s) before the 302 so this can't become an open redirect.
   /^\/l\/[^/]+$/,
+  // Tracked review-request link: /rr/{token} (SP5 d2), in review requests
+  // sent while reminders are on. Public — the customer has no session. The
+  // signed token is the credential; the route reads no identity header, 302s
+  // only to the sub-account's configured https review link, else 404s.
+  // Exactly one segment.
+  /^\/rr\/[^/]+$/,
   // Public competitor comparison pages (SEO landing pages, e.g.
   // /leadstack-vs-gohighlevel). Slug is path-suffixed with a hyphen
   // rather than a slash so the PUBLIC_PATHS prefix-match logic can't
@@ -258,9 +287,22 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // no auth required. Each competitor has its own static route under
   // src/app/leadstack-vs-{slug}/page.tsx; this regex catches them all.
   /^\/leadstack-vs-[a-z0-9-]+$/,
+  // Public Google reviews feed: /api/public/gbp/feed/{publicId}, fetched
+  // cross-origin by a customer's website. The opaque publicId is the only
+  // credential; the route never reads an identity header (a caller can send
+  // its own on a public path), and applies the widget's origin allow-list,
+  // a per-IP limit and a non-enumerating 404 itself. Exactly one segment.
+  /^\/api\/public\/gbp\/feed\/[^/]+$/,
+  // Snapshot share link (SP13): the /s/snapshot/{token} page and its file
+  // download /api/public/snapshots/{token}. The recipient usually has no
+  // account on this deployment. The share token is the credential — hashed
+  // and checked against the stored share inside, with the same "invalid"
+  // answer for unknown, revoked, expired and used-up links. Exactly one segment.
+  /^\/s\/snapshot\/[^/]+$/,
+  /^\/api\/public\/snapshots\/[^/]+$/,
 ];
 
-function isPublicPath(pathname: string): boolean {
+export function isPublicPath(pathname: string): boolean {
   if (
     PUBLIC_PATHS.some(
       (path) => pathname === path || pathname.startsWith(`${path}/`)
@@ -289,6 +331,10 @@ function isPublicPath(pathname: string): boolean {
  * the configured origin fixes this by making them agree, rather than by
  * literally shipping the public origin in the header.
  *
+ * `?redirect` carries the path AND query, so a deep link whose query is the
+ * point (a snapshot share link's `?token=`) survives sign-in. The login form
+ * runs it through `safeRedirect`, which refuses anything not same-origin.
+ *
  * The path and query are still taken from `nextUrl` (preserving any existing
  * query string, as before); only protocol + host are pinned to
  * NEXT_PUBLIC_APP_URL. If that var is unset or malformed we fall back to the
@@ -297,7 +343,10 @@ function isPublicPath(pathname: string): boolean {
 export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
   const url = request.nextUrl.clone();
   url.pathname = "/login";
-  url.searchParams.set("redirect", pathname);
+  url.searchParams.set("redirect", `${pathname}${request.nextUrl.search}`);
+  // A share link's bearer token belongs only inside `redirect` — not as a
+  // top-level /login param where analytics and referrers would see it twice.
+  url.searchParams.delete("token");
 
   const configured = process.env.NEXT_PUBLIC_APP_URL;
   if (configured) {
@@ -312,6 +361,32 @@ export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
     }
   }
   return url;
+}
+
+/**
+ * Forward a public-path request WITHOUT `x-user-uid` / `x-user-email` — the
+ * headers `handleValidToken` stamps from the verified Firebase token, which
+ * every route/helper under src/lib/auth/*, src/lib/comms/route-auth.ts etc.
+ * reads back as "the caller's identity" with no further check. On an
+ * invalid/missing session those two branches used to call `NextResponse
+ * .next()` with no `request` override, which forwards the ORIGINAL request
+ * object — including any `x-user-uid` a caller sent itself.
+ *
+ * This was exploitable, not just theoretical: `/api/forms` is a PUBLIC_PATH
+ * (needed for the unauthenticated submit endpoint), and
+ * `DELETE /api/forms/[id]` trusts `x-user-uid` via `requireSubAccountMember`
+ * to authorize the delete. Before this fix, anyone who knew (or guessed) an
+ * active member's Firebase uid could set that header on an otherwise
+ * session-less request and delete that member's forms + submissions —
+ * no password, no session cookie, nothing else verified. See
+ * src/app/api/forms/[id]/route.test.ts for the regression test through the
+ * real route.
+ */
+export function withoutIdentityHeaders(request: NextRequest): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.delete("x-user-uid");
+  headers.delete("x-user-email");
+  return NextResponse.next({ request: { headers } });
 }
 
 /**
@@ -406,7 +481,7 @@ export default function middleware(request: NextRequest) {
 
       // Allow public paths without authentication
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       // Redirect unauthenticated users to login for protected paths
@@ -417,7 +492,7 @@ export default function middleware(request: NextRequest) {
 
       // On error, allow public paths and redirect protected paths
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       return NextResponse.redirect(loginRedirectUrl(request, pathname));

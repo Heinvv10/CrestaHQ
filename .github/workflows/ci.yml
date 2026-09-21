@@ -77,6 +77,18 @@ jobs:
       - name: Tests
         run: pnpm test
 
+      # Evaluates the repo's firestore.rules through the Firebase Rules test
+      # API — nothing is deployed, no data is read. The Admin credential is
+      # scoped to this step only, so no unit test above can reach production
+      # Firestore with it. The spec fails, rather than skips, when CI is set
+      # and the credential is missing.
+      - name: Firestore rules tests
+        run: pnpm test:rules
+        env:
+          FIREBASE_ADMIN_PROJECT_ID: ${{ secrets.FIREBASE_ADMIN_PROJECT_ID }}
+          FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
+          FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
+
       # A real build. Typecheck alone misses build-time-only failures —
       # route-type validation, server/client boundary violations, bad imports
       # in a page that tsc is happy with.
@@ -187,9 +199,15 @@ jobs:
   #
   # Blocking, like every other step in this file. NOT continue-on-error. If it
   # ever becomes too flaky to block, delete it rather than soften it.
+  #
+  # Pinned to the one runner labelled crestahq-e2e. Every run binds
+  # 127.0.0.1:3100 and seeds + purges the same fixture sub-accounts, so two
+  # E2E jobs on two runners would collide on both. The other jobs share no
+  # port or tenant; they do share the runner user's pnpm store and Go caches,
+  # which both tools lock for concurrent use.
   e2e:
     name: E2E (Playwright)
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     timeout-minutes: 30
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
@@ -220,6 +238,51 @@ jobs:
       E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       E2E_SUBACCOUNT_ID: ${{ secrets.E2E_SUBACCOUNT_ID }}
       E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
+      # Google Business Profile runs against the deterministic FAKE provider.
+      # src/lib/gbp/provider/select.ts refuses it unless the app URL is
+      # loopback, the production build opts in with exactly "1", and the
+      # sub-account belongs to GBP_FAKE_AGENCY_ID — this Firestore is the
+      # production one, so the fake is fenced to the fixture agency.
+      GBP_PROVIDER: fake
+      GBP_FAKE_ALLOW_PROD_BUILD: "1"
+      GBP_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The WhatsApp settings fake (SP15) is fenced exactly the same way and
+      # serves only the fixture agency; the deploy guard refuses these too.
+      WHATSAPP_SETTINGS_PROVIDER: fake
+      WHATSAPP_FAKE_ALLOW_PROD_BUILD: "1"
+      WHATSAPP_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The SMS fake (SP2 missed-call E2E) swaps Twilio at the ONE seam
+      # sendSmsForSubAccount uses to place a send — fenced exactly the same
+      # way (src/lib/comms/sms/mode.ts); the deploy guard refuses these too.
+      SMS_PROVIDER: fake
+      SMS_FAKE_ALLOW_PROD_BUILD: "1"
+      SMS_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The Google Calendar fake (SP3 PR d) — each member's "Google calendar"
+      # is a Firestore doc the specs seed and read — fenced exactly the same
+      # way (src/lib/google-calendar/provider/mode.ts); the deploy guard
+      # refuses these too.
+      GCAL_PROVIDER: fake
+      GCAL_FAKE_ALLOW_PROD_BUILD: "1"
+      GCAL_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The Reviews AI fake (SP5 PR b) — deterministic sentiment labels, every
+      # call logged (ids + count) at private/reviewsAiFakeLog so a spec can
+      # count billing — fenced exactly the same way
+      # (src/lib/reputation/ai/mode.ts); the deploy guard refuses these too.
+      REVIEWS_AI_PROVIDER: fake
+      REVIEWS_AI_FAKE_ALLOW_PROD_BUILD: "1"
+      REVIEWS_AI_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      # The whole suite runs from one loopback client, so the public booking
+      # routes' per-IP rate limiters (src/lib/booking/rate-limit-e2e.ts) would
+      # otherwise 429 partway through. Fenced the same way (loopback app URL
+      # required); the deploy guard refuses this name too.
+      E2E_DISABLE_BOOKING_RATE_LIMITS: "1"
+      # The GBP sync cron does nothing unless the schedule is enabled; the E2E
+      # specs drive it with a signed POST. (Registering the schedule itself
+      # fails harmlessly: the E2E QStash values are not Upstash credentials.)
+      GBP_SYNC_SCHEDULE_ENABLED: "1"
+      # Signs the OAuth `state`. Per-run, not a stored secret: nothing outlives
+      # the job that signs and verifies it.
+      AUTOMATIONS_TOKEN_SECRET: e2e-state-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

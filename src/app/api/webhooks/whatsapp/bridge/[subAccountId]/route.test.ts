@@ -40,6 +40,9 @@ let contactUpdates: Array<Record<string, unknown>> = [];
 let activityWrites: Array<{ docId: string; data: Record<string, unknown> }> = [];
 /** Set to make the opt-out batch commit fail, as contention would. */
 let commitThrows = false;
+/** `*_received` timeline rows, keyed `${contactId}/${docId}` — a retry that
+ *  lands on the same key is what idempotent means here. */
+let inboundActivities = new Map<string, Record<string, unknown>>();
 
 function makeSnap(row: { id: string; data: Record<string, unknown> }) {
   const ref = {
@@ -53,6 +56,7 @@ function makeSnap(row: { id: string; data: Record<string, unknown> }) {
             exists:
               existingMessageIds.has(`${row.id}/${docId ?? ""}`) ||
               existingMessageIds.has(docId ?? ""),
+            data: () => undefined,
           };
         },
         set: async (data: Record<string, unknown>, opts: unknown) => {
@@ -95,6 +99,14 @@ const fakeDb = {
       doc: (id?: string) => ({
         id: id ?? "generated-contact-id",
         get: async () => makeSnap(contactRows[contactRows.length - 1]),
+        collection: (sub: string) => ({
+          doc: (docId?: string) => ({
+            set: async (data: Record<string, unknown>) => {
+              if (sub !== "activities") throw new Error(`unexpected ${sub}`);
+              inboundActivities.set(`${id}/${docId ?? "auto"}`, data);
+            },
+          }),
+        }),
       }),
     };
   },
@@ -205,6 +217,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     messageReads = [];
     contactUpdates = [];
     activityWrites = [];
+    inboundActivities = new Map();
     commitThrows = false;
     aiOn = false;
     maybeRespondWithAi.mockReset();
@@ -247,6 +260,27 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
       channel: "whatsapp",
       direction: "inbound",
     });
+  });
+
+  it("writes one whatsapp_received timeline row per matched contact, keyed by the bridge id", async () => {
+    await post(inbound());
+    expect([...inboundActivities.keys()]).toEqual(["c1/inbound_whatsapp_3EB0ABC"]);
+    expect(inboundActivities.get("c1/inbound_whatsapp_3EB0ABC")).toMatchObject({
+      type: "whatsapp_received",
+      createdBy: "whatsapp_inbound",
+      agencyId: "ag_1",
+      subAccountId: "sa_1",
+      content: "WhatsApp received: hi there",
+      meta: { channel: "whatsapp", messageId: "3EB0ABC" },
+    });
+  });
+
+  it("a redelivery lands on the same timeline row, not a second one", async () => {
+    await post(inbound());
+    existingMessageIds.add("3EB0ABC");
+    await post(inbound());
+    expect(messageWrites).toHaveLength(2);
+    expect(inboundActivities.size).toBe(1);
   });
 
   it("stamps createdAt from the payload's `at`, not the write time", async () => {
@@ -645,5 +679,86 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, persisted: false });
     expect(messageWrites).toHaveLength(0);
+  });
+
+  describe("shared location", () => {
+    const pin = {
+      latitude: -26.3812,
+      longitude: 27.8123,
+      name: "Thabo's house",
+      address: "12 Main Rd, Lawley",
+      url: "https://maps.example/p",
+    };
+
+    it("stores the location with a readable body and inbox preview", async () => {
+      const res = await post(inbound({ text: "", messageId: "3EB0LOC", location: pin }));
+      expect(res.status).toBe(200);
+      expect(messageWrites).toHaveLength(1);
+      expect(messageWrites[0].data).toMatchObject({
+        body: "📍 Thabo's house",
+        location: pin,
+      });
+      expect(conversationUpserts[0]).toMatchObject({ body: "📍 Thabo's house" });
+      expect(inboundActivities.get("c1/inbound_whatsapp_3EB0LOC")).toMatchObject({
+        content: expect.stringContaining("📍 Thabo's house"),
+      });
+    });
+
+    it("never auto-replies to a bare location", async () => {
+      aiOn = true;
+      await post(inbound({ text: "", messageId: "3EB0LOCAI", location: pin }));
+      expect(messageWrites[0].data.body).toBe("📍 Thabo's house");
+      expect(maybeRespondWithAi).not.toHaveBeenCalled();
+    });
+
+    it("keeps a live-location caption as the body and still stores the point", async () => {
+      await post(
+        inbound({ text: "on my way", location: { latitude: -33.9, longitude: 18.4 } }),
+      );
+      expect(messageWrites[0].data).toMatchObject({
+        body: "on my way",
+        location: { latitude: -33.9, longitude: 18.4 },
+      });
+    });
+
+    it.each([
+      ["latitude out of range", { latitude: 90.5, longitude: 10 }],
+      ["longitude out of range", { latitude: 10, longitude: -181 }],
+      ["string coordinates", { latitude: "-26.3", longitude: "27.8" }],
+      ["missing longitude", { latitude: 10 }],
+      ["not an object", "somewhere"],
+    ])("drops an unusable location (%s) without throwing or logging it", async (_, location) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await post(inbound({ text: "", location }));
+      expect(res.status).toBe(200);
+      expect(messageWrites).toHaveLength(1);
+      expect("location" in messageWrites[0].data).toBe(false);
+      const logged = warn.mock.calls.flat().map(String).join(" ");
+      expect(logged).toContain("unusable coordinates");
+      expect(logged).not.toMatch(/90\.5|181|26\.3|27\.8|somewhere/);
+      warn.mockRestore();
+    });
+
+    it("labels a location whose name is all invisible characters as a plain location", async () => {
+      await post(
+        inbound({ text: "", location: { latitude: -26.3, longitude: 27.8, name: "\u200b\u202e\ufeff" } }),
+      );
+      expect(messageWrites[0].data.body).toBe("📍 Location");
+      expect(conversationUpserts[0]).toMatchObject({ body: "📍 Location" });
+    });
+
+    it("caps and cleans the customer's strings", async () => {
+      await post(
+        inbound({
+          text: "",
+          location: { ...pin, name: `Home\u0000\u001b[31m${"x".repeat(400)}`, address: 42 },
+        }),
+      );
+      const stored = messageWrites[0].data.location as Record<string, unknown>;
+      expect(stored.name).toMatch(/^Home /);
+      expect(String(stored.name)).not.toMatch(/[\u0000-\u001f]/);
+      expect(Array.from(String(stored.name))).toHaveLength(256);
+      expect("address" in stored).toBe(false);
+    });
   });
 });

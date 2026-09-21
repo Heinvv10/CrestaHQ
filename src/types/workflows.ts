@@ -23,9 +23,20 @@ export type WorkflowTriggerType =
   | "contact.tag.added"
   | "form.submitted"
   | "pipeline.stage.changed"
+  // Deal lifecycle (lib/server/deals-service.ts); won/lost = stage `terminal`.
+  | "deal.created"
+  | "deal.won"
+  | "deal.lost"
   | "booking.created"
   | "booking.cancelled"
   | "booking.rescheduled"
+  // A booking-page slot became confirmed — a free booking at book time, or
+  // a paid hold once the operator marks it paid.
+  | "booking.confirmed"
+  // Operator marked a past booking attended / a no-show. Corrections
+  // (flipping one to the other) fire the matching trigger again.
+  | "booking.showed"
+  | "booking.no_show"
   | "quote.accepted"
   | "quote.paid"
   | "message.received"
@@ -81,8 +92,20 @@ export interface WorkflowTrigger {
   formId?: string | null;
   /** Restrict `link.clicked` to one tracked link. Null/absent = any link. */
   linkId?: string | null;
+  /**
+   * Restrict any `booking.*` trigger to one booking page (its slug).
+   * Null/absent = any page.
+   */
+  bookingPageSlug?: string | null;
+  /** Restrict the deal triggers to one pipeline. Null/absent = any. */
+  pipelineId?: string | null;
   /** Restrict `pipeline.stage.changed` to one target stage. */
   toStage?: string | null;
+  /**
+   * Restrict `contact.tag.added` to one tag: the workflow starts only when
+   * THIS tag is among the tags the write added. Null/absent = any new tag.
+   */
+  tag?: string | null;
   /**
    * Restrict `message.received` to one inbox channel
    * (sms | whatsapp | messenger | instagram). Null/absent = any channel.
@@ -138,6 +161,24 @@ export interface WorkflowDoc {
   startNodeId: string | null;
   nodes: Record<string, WorkflowNode>;
   stats: { enrolled: number; completed: number };
+  /** `subAccounts/{subAccountId}/workflowFolders/{folderId}`. Absent or null
+   *  = Unfiled. Organisation only — the engine never reads it. */
+  folderId?: string | null;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
+}
+
+/** A folder on the workflows list. Written only through
+ *  /api/sub-accounts/[id]/workflow-folders; deleting one unfiles its
+ *  workflows, never deletes them. */
+export interface WorkflowFolder {
+  id: string;
+  name: string;
+  /** Display order among folders (ascending); Unfiled always comes last. */
+  order: number;
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
@@ -260,6 +301,9 @@ export interface TagConfig {
 }
 export interface MoveStageConfig {
   stage: string;
+  /** The step always writes contact.pipelineStage; with a pipeline set it
+   *  also moves the contact's most recently updated open deal in it. */
+  pipelineId?: string;
 }
 export interface UpdateFieldConfig {
   field: string;
@@ -268,6 +312,9 @@ export interface UpdateFieldConfig {
 export interface CreateTaskConfig {
   title: string;
   dueInDays?: number;
+  /** Honoured only while the uid is an ACTIVE member of the sub-account;
+   *  otherwise the task is created unassigned. */
+  assignedToUid?: string | null;
 }
 /** Who an Internal notification step emails. Legacy configs predate this
  *  field — the engine treats a missing value like "custom" (use `to`, else

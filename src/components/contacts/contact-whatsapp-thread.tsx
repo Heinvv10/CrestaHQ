@@ -21,11 +21,18 @@ import { toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/contacts";
 import type { MessageDoc } from "@/types/messages";
-import { whatsappSenderNumber } from "@/lib/comms/whatsapp/sender-configured";
+import { WhatsappMediaAttachment } from "@/components/conversations/whatsapp-media-attachment";
 import {
-  capabilitiesFor,
-  resolveWhatsAppProviderId,
-} from "@/lib/comms/whatsapp/provider";
+  isLocationLabelBody,
+  WhatsappLocationAttachment,
+} from "@/components/conversations/whatsapp-location-attachment";
+import {
+  WhatsappAttachmentPicker,
+  attachmentSendBlock,
+  useWhatsappAttachment,
+} from "@/components/conversations/whatsapp-attachment-picker";
+import { whatsappSenderNumber } from "@/lib/comms/whatsapp/sender-configured";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 
 const WINDOW_HOURS = 24;
 
@@ -118,26 +125,42 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   // would disable the composer and tell the operator to use a template that
   // rail has no way to send. The send route makes the real decision per rail;
   // this only decides what to grey out.
-  const railCaps = capabilitiesFor(
-    resolveWhatsAppProviderId(subAccount?.whatsappProvider),
-  );
-  const railEnforcesWindow = railCaps.enforcesWindow;
-  const railSupportsTemplates = railCaps.supportsTemplates;
+  //
+  // The rail comes from the sender registry — the SAME resolution the send
+  // route makes — not from `whatsappProvider` alone. A workspace whose
+  // registry default differs from that field would otherwise be offered a
+  // picker (and a window rule) for a rail its sends do not go out on.
+  const resolved = resolveWhatsappSender(subAccount);
+  const railProvider = resolved.ok ? resolved.provider : null;
+  const railEnforcesWindow = resolved.ok ? resolved.capabilities.enforcesWindow : false;
+  const railSupportsTemplates = resolved.ok ? resolved.capabilities.supportsTemplates : false;
   const windowBlocks = railEnforcesWindow && !windowOpen;
+  // Template mode is in the key: entering it DISCARDS a picked file rather than
+  // hiding it until "Back to message", where the next free-form reply would
+  // otherwise carry it.
+  const wa = useWhatsappAttachment(railProvider, contact.id, `${contact.id}:${templateMode ? "template" : "message"}`);
+  const attachmentBlock = attachmentSendBlock(railProvider, wa, body);
 
-  const canSend = !optedOut && !windowBlocks && !!contact.phone;
+  // An unresolvable sender is refused by the route; say so here instead.
+  const canSend = resolved.ok && !optedOut && !windowBlocks && !!contact.phone;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = body.trim();
-    if (!trimmed) return;
-    if (!canSend) return;
+    const attachment = wa.attachment;
+    // A finished file may go on its own, without text.
+    if (!trimmed && !attachment) return;
+    if (!canSend || attachmentBlock) return;
     setSending(true);
     try {
       const res = await fetch("/api/comms/whatsapp/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ contactId: contact.id, body: trimmed }),
+        body: JSON.stringify({
+          contactId: contact.id,
+          body: trimmed,
+          ...(attachment ? { attachment } : {}),
+        }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -147,14 +170,22 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
         throw new Error(data.error ?? "Couldn't send.");
       }
       setBody("");
+      wa.clear();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't send.");
+      const message = err instanceof Error ? err.message : "Couldn't send.";
+      // The send route deletes the uploaded file whatever the outcome, so a
+      // retry needs a fresh upload; keeping the chip would promise a file
+      // that is no longer there.
+      if (attachment) wa.clear();
+      toast.error(attachment ? `${message} Attach the file again to retry.` : message);
     } finally {
       setSending(false);
     }
   }
 
-  const placeholder = optedOut
+  const placeholder = !resolved.ok
+    ? resolved.error
+    : optedOut
     ? "Contact opted out of WhatsApp"
     : windowBlocks
       ? "24-hour window closed — a template is required to message again"
@@ -199,7 +230,9 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
             </p>
           </div>
         ) : (
-          messages.map((m) => <MessageBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <MessageBubble key={m.id} message={m} contactId={contact.id} />
+          ))
         )}
       </div>
 
@@ -238,7 +271,17 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
             disabled={!canSend || sending}
             className="resize-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
           />
+          {wa.attachment && attachmentBlock && (
+            <p className="mt-1 text-xs text-destructive">{attachmentBlock}</p>
+          )}
           <div className="mt-2 flex items-center justify-between gap-2">
+            {railProvider && (
+              <WhatsappAttachmentPicker
+                provider={railProvider}
+                state={wa}
+                disabled={!canSend || sending}
+              />
+            )}
             {/* Templates are a Meta-rail feature. Offering the button on a
                 rail that cannot send one (capabilities: supportsTemplates
                 false) is a control whose every use fails. */}
@@ -257,7 +300,7 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
               type="submit"
               size="sm"
               className="ml-auto"
-              disabled={!body.trim() || !canSend || sending}
+              disabled={(!body.trim() && !wa.attachment) || !canSend || sending || !!attachmentBlock}
             >
               {sending ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -273,7 +316,13 @@ export function ContactWhatsappThread({ contact }: { contact: Contact }) {
   );
 }
 
-function MessageBubble({ message }: { message: MessageDoc }) {
+function MessageBubble({
+  message,
+  contactId,
+}: {
+  message: MessageDoc;
+  contactId: string;
+}) {
   const isOutbound = message.direction === "outbound";
   const ts = toDate(message.createdAt);
   return (
@@ -287,7 +336,29 @@ function MessageBubble({ message }: { message: MessageDoc }) {
           message.status === "failed" && "ring-2 ring-destructive",
         )}
       >
-        <p className="whitespace-pre-wrap break-words">{message.body}</p>
+        <WhatsappMediaAttachment
+          contactId={contactId}
+          messageId={message.id}
+          media={message.media}
+          dropped={message.mediaDropped}
+        />
+        <WhatsappLocationAttachment location={message.location} />
+        {!isLocationLabelBody(message.body, message.location) && (
+          <p className="whitespace-pre-wrap break-words">{message.body}</p>
+        )}
+        {message.buttons && message.buttons.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-current/10 pt-2">
+            {message.buttons.map((btn, i) => (
+              <span
+                key={i}
+                className="rounded-full bg-background/60 px-2 py-0.5 text-[11px] font-medium text-current opacity-80"
+                title={btn.type === "url" ? btn.url : undefined}
+              >
+                {btn.type === "url" ? `🔗 ${btn.text} (${btn.url})` : btn.text}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
       <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
         <span>

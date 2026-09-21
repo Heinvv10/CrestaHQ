@@ -31,6 +31,7 @@ import {
   checkAndCount as checkRateLimit,
   snapshotRemaining,
 } from "@/lib/api/rate-limit";
+import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { captureRequestLog } from "@/lib/api/logs";
 import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
 
@@ -70,6 +71,12 @@ export interface ApiAuthContext extends ResponseMeta {
   mode: ApiKeyMode;
   /** Scopes granted to this key. Check before resource access. */
   scopes: ApiKeyScope[];
+  /**
+   * Resolved hourly workflow-enrolment cap for this key (see
+   * `lib/api/enrolment-cap.ts`) — already validated/clamped, ready to pass
+   * straight to `openEnrolmentGate`.
+   */
+  enrolmentCapPerHour: number;
 }
 
 export interface WithApiAuthOptions {
@@ -235,6 +242,7 @@ export async function authenticateApiRequest(
     keyPrefix: candidate.prefix,
     mode: candidate.mode,
     scopes: candidate.scopes,
+    enrolmentCapPerHour: resolveEnrolmentCapPerHour(candidate.enrolmentCapPerHour),
     requestId,
     apiVersion: resolved.version,
   };

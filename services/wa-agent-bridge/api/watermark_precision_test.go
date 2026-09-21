@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,16 +29,18 @@ func realStoreFanout(t *testing.T, connectedAt time.Time) (*Fanout, *store.SQLit
 	}
 	t.Cleanup(func() { st.Close() })
 
-	n := 0
+	// Atomic: the handler runs on one goroutine per connection, and the
+	// fanout posts deliveries concurrently.
+	var n atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
-		n++
+		n.Add(1)
 	}))
 	t.Cleanup(srv.Close)
 
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
-		"", st, func() bool { return true }, func() time.Time { return connectedAt })
-	return f, st, func() int { return n }
+		"", st, func() bool { return true }, func() time.Time { return connectedAt }, 0)
+	return f, st, func() int { return int(n.Load()) }
 }
 
 // Inbound timestamps come from WhatsApp; outbound ones come from this host's
@@ -50,7 +53,7 @@ func TestWatermarkIgnoresOutboundHostClock(t *testing.T) {
 	if err := st.RecordOutbound("27820000000@s.whatsapp.net", "app", "m1", base.Add(30*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver("27821234567@s.whatsapp.net", "arrived while we were down", "wamid.A", base.Add(10*time.Second))
+	f.Deliver("27821234567@s.whatsapp.net", "arrived while we were down", "wamid.A", base.Add(10*time.Second), nil, nil)
 	f.Wait()
 
 	if got := count(); got != 1 {
@@ -69,7 +72,7 @@ func TestWatermarkAdmitsTheSameSecond(t *testing.T) {
 	if err := st.RecordInbound("27820000000@s.whatsapp.net", at); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver("27821234567@s.whatsapp.net", "same second", "wamid.S", at)
+	f.Deliver("27821234567@s.whatsapp.net", "same second", "wamid.S", at, nil, nil)
 	f.Wait()
 
 	if got := count(); got != 1 {
@@ -85,7 +88,7 @@ func TestWatermarkStillSuppressesAnOlderSecond(t *testing.T) {
 	if err := st.RecordInbound("27820000000@s.whatsapp.net", at); err != nil {
 		t.Fatal(err)
 	}
-	f.Deliver("27821234567@s.whatsapp.net", "a second earlier", "wamid.O", at.Add(-time.Second))
+	f.Deliver("27821234567@s.whatsapp.net", "a second earlier", "wamid.O", at.Add(-time.Second), nil, nil)
 	f.Wait()
 
 	if got := count(); got != 0 {
@@ -120,11 +123,11 @@ func TestUnreadableWatermarkAdmitsRatherThanMutes(t *testing.T) {
 	st := failingWatermarkStore{store.NewMemory()}
 	connectedAt := time.Now()
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
-		"", st, func() bool { return true }, func() time.Time { return connectedAt })
+		"", st, func() bool { return true }, func() time.Time { return connectedAt }, 0)
 
 	// Deliberately OLD: with no readable watermark there is nothing to judge it
 	// against, and silence is the one outcome that cannot be undone.
-	f.Deliver("27821234567@s.whatsapp.net", "cannot be judged", "wamid.E", time.Now().Add(-48*time.Hour))
+	f.Deliver("27821234567@s.whatsapp.net", "cannot be judged", "wamid.E", time.Now().Add(-48*time.Hour), nil, nil)
 	f.Wait()
 
 	if n != 1 {
@@ -162,14 +165,14 @@ func TestNonOwnerTrafficDoesNotSpendTheCatchUpBudget(t *testing.T) {
 
 	connectedAt := time.Now()
 	f := NewFanout([]config.Consumer{{Name: "app", Token: "t", WebhookURL: srv.URL}},
-		owner, st, func() bool { return true }, func() time.Time { return connectedAt })
+		owner, st, func() bool { return true }, func() time.Time { return connectedAt }, 0)
 
 	// A burst from strangers, more than the whole budget.
 	for i := 0; i < maxCatchUpForward+50; i++ {
-		f.Deliver("27829999999@s.whatsapp.net", "not the owner", "wamid.N", at)
+		f.Deliver("27829999999@s.whatsapp.net", "not the owner", "wamid.N", at, nil, nil)
 	}
 	// Then the one message that must get through.
-	f.Deliver(owner, "the owner's real message", "wamid.OWNER", at)
+	f.Deliver(owner, "the owner's real message", "wamid.OWNER", at, nil, nil)
 	f.Wait()
 
 	mu.Lock()
@@ -193,7 +196,7 @@ func TestInboundDropAgeReflectsARealDrop(t *testing.T) {
 
 	at := time.Now()
 	for i := 0; i < maxCatchUpForward+1; i++ {
-		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", at)
+		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", at, nil, nil)
 	}
 	f.Wait()
 

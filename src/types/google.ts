@@ -36,7 +36,62 @@ export interface GoogleConnectionMeta {
   scopes: string[];
   connectedAt: Date;
   connectedByUid: string;
+  /**
+   * Set when Google refused the stored grant (revoked / expired refresh
+   * token) or it lacks the business.manage scope. The secret doc is KEPT so a
+   * disconnect can still best-effort revoke. A successful reconnect clears it.
+   */
+  reconnectRequired?: boolean;
+  reconnectReason?: GoogleReconnectReason | null;
 }
+
+export type GoogleReconnectReason = "revoked" | "insufficient_scope";
+
+/**
+ * The GBP listing this sub-account manages — `SubAccountDoc.googleListing`.
+ * Member-readable display data, written ONLY by the server after it re-fetched
+ * the location through the provider (never from client-supplied fields).
+ *
+ * `locationName` (`locations/{l}`) + `accountName` (`accounts/{a}`) are the
+ * resource keys. `placeId`/`mapsUri`/`newReviewUri` are display/link data
+ * only — a Place ID is not a GBP resource name.
+ */
+export interface GoogleListing {
+  accountName: string;
+  accountDisplayName: string;
+  locationName: string;
+  title: string;
+  address: string;
+  websiteUri: string | null;
+  placeId: string | null;
+  mapsUri: string | null;
+  newReviewUri: string | null;
+  selectedAt: Date;
+  selectedByUid: string;
+}
+
+/**
+ * The public reviews widget — `SubAccountDoc.gbpWidgetMeta`. Member-readable:
+ * `publicId` is public by nature (it is in the embed snippet). The
+ * authoritative, server-only config is `gbpWidgets/{publicId}`.
+ */
+export interface GbpWidgetMeta {
+  publicId: string;
+  enabled: boolean;
+  /** Normalised `scheme://host[:port]`; https only, except loopback http for dev. */
+  allowedOrigins: string[];
+  /** 1–50. There is deliberately NO rating filter. */
+  maxReviews: number;
+  /** Absent on a widget saved before layouts existed: reads as "carousel". */
+  layout?: GbpWidgetLayout;
+  /** Absent on a widget saved before themes existed: reads as "light". */
+  theme?: GbpWidgetTheme;
+  updatedAt: Date;
+}
+
+/** How the embed draws the reviews. Served to it as the feed's `display`. */
+export type GbpWidgetLayout = "carousel" | "grid" | "list" | "badge";
+export type GbpWidgetTheme = "light" | "dark";
 
 /** Path of the locked secret doc. One place so no caller can typo it open. */
 export function googleConnectionSecretPath(subAccountId: string): string {

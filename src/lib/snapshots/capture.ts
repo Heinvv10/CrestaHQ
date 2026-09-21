@@ -29,7 +29,7 @@ const TENANCY_STAMPS = [
  * from a stored doc, keeping the original doc id as `sourceId`. The `sourceId`
  * lets apply build an old→new form-id map and remap workflow triggers.
  */
-function stripDoc(
+export function stripDoc(
   id: string,
   data: FirebaseFirestore.DocumentData,
   extraOmit: readonly string[] = [],
@@ -94,12 +94,16 @@ export async function captureSnapshot(
   const products = productsSnap.docs.map(
     (d) => stripDoc(d.id, d.data()) as unknown as SnapshotProduct,
   );
+  // Workflow folders do not travel either (same reason as custom-field
+  // folders below): a copied `folderId` would dangle, so workflows land Unfiled.
   const workflows = workflowsSnap.docs.map(
-    (d) => stripDoc(d.id, d.data(), ["stats"]) as unknown as SnapshotWorkflow,
+    (d) => stripDoc(d.id, d.data(), ["stats", "folderId"]) as unknown as SnapshotWorkflow,
   );
 
+  // `folderId` points at a source-only folder doc; folders do not travel
+  // (yet), so a copied id would dangle on the target. Fields land in General.
   const customFields = customFieldsSnap.docs.map(
-    (d) => stripDoc(d.id, d.data()) as unknown as SnapshotCustomField,
+    (d) => stripDoc(d.id, d.data(), ["folderId"]) as unknown as SnapshotCustomField,
   );
 
   // Only the reusable half of the persona travels. An empty prompt means the

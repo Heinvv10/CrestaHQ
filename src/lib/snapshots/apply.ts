@@ -39,17 +39,45 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
 }
 
 /**
+ * The post-submit redirect points at the SOURCE client's site; a lead
+ * submitting the target's form must not land there. Exported so the portable
+ * scrub applies the same rule before a payload leaves the agency.
+ */
+export function sanitizeForm<T extends { settings?: unknown }>(form: T): T {
+  if (!form.settings || typeof form.settings !== "object") return form;
+  return { ...form, settings: { ...form.settings, redirectUrl: "" } };
+}
+
+/**
  * whatsapp_template nodes reference a `subAccounts/{id}/whatsappTemplates` doc
  * that a snapshot does NOT carry — so the id would dangle in the target. Null
  * it; draft status means the workflow never runs until the operator fixes it.
  */
-function sanitizeNodes(
+export function sanitizeNodes(
   nodes: Record<string, WorkflowNode> | undefined,
 ): Record<string, WorkflowNode> {
   const out: Record<string, WorkflowNode> = {};
   for (const [id, node] of Object.entries(nodes ?? {})) {
     if (node.type === "whatsapp_template") {
       out[id] = { ...node, config: { ...node.config, templateId: null } };
+    } else if (node.type === "move_stage" && node.config.pipelineId) {
+      // Pipeline ids are per sub-account; the target has its own set. Leave
+      // the stage (default-pipeline ids are shared) and drop the scoping.
+      out[id] = { ...node, config: { ...node.config, pipelineId: null } };
+    } else if (node.type === "create_task" && node.config.assignedToUid) {
+      // A member uid is the source's; one who also sits on the target (say
+      // the agency owner) would silently start receiving its tasks.
+      out[id] = { ...node, config: { ...node.config, assignedToUid: null } };
+    } else if (node.type === "notify" && node.config.recipient !== "account_contact") {
+      // A typed address is the SOURCE client's inbox — like the persona's
+      // escalationNotifyEmail, carrying it routes one client's leads to
+      // another's team. Fall back to the agency owner. (Legacy configs with
+      // no `recipient` mean "custom", so they are reset too.)
+      out[id] = { ...node, config: { ...node.config, recipient: "owner", to: "" } };
+    } else if (node.type === "webhook") {
+      // The URL is an endpoint the source client chose; the target's contact
+      // data must not be POSTed there. Blank = the engine skips the step.
+      out[id] = { ...node, config: { ...node.config, url: "" } };
     } else {
       out[id] = node;
     }
@@ -153,7 +181,7 @@ export async function applySnapshot(
     formIdMap.set(form.sourceId, ref.id);
     writes.push([
       ref,
-      { ...dropSourceId(form), id: ref.id, ...tenancy(), submissionCount: 0 },
+      { ...dropSourceId(sanitizeForm(form)), id: ref.id, ...tenancy(), submissionCount: 0 },
     ]);
   }
 
@@ -174,7 +202,14 @@ export async function applySnapshot(
     const config = dropSourceId(workflow);
 
     // Remap the trigger's source form id to the imported form, else null it.
+    // A pipeline id names a doc under the SOURCE sub-account — null it like
+    // an unmapped form (absent = any pipeline; the operator re-pins it).
     const trigger = { ...config.trigger };
+    if (trigger.pipelineId) trigger.pipelineId = null;
+    // A booking page slug is scoped to the SOURCE sub-account too — null it
+    // like an unmapped pipeline; the operator re-pins it to a page under
+    // the target sub-account.
+    if (trigger.bookingPageSlug) trigger.bookingPageSlug = null;
     if (trigger.formId) {
       const mapped = formIdMap.get(trigger.formId);
       if (mapped) {
