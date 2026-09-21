@@ -66,7 +66,7 @@ await recordAuditEvent(getAdminDb(), {
 | Field | Type | Notes |
 |---|---|---|
 | `action` | `AuditAction` | e.g. `feature_gates.updated`, `workflow.status_changed`, `member.role_changed` |
-| `actor` | `{ type, id }` | `type` ∈ `user` · `api_key` · `workflow` · `ai_agent` · `cron`. `id` holds the uid, the key id (never the secret), the workflow id, the agent id or the cron job name |
+| `actor` | `{ type, id }` | `type` ∈ `user` · `api_key` · `workflow` · `ai_agent` · `cron` · `system`. `id` holds the uid, the key id (never the secret), the workflow id, the agent id, the cron job name, or the system process name (an inbound-message hook or an import) |
 | `target` | `{ type, id }` | The thing that changed |
 | `changes` | `{ field, before, after }[]` | Values go through redaction (below) |
 | `agencyId` | string | Always set |
@@ -85,6 +85,14 @@ field:
 | `feature_gates.updated` | each `*EnabledByAgency` gate | `true`, `false` |
 | `workflow.status_changed` | `status` | `draft`, `active`, `paused` |
 | `member.role_changed` | `role` | `admin`, `collaborator` |
+
+An action can also declare a field as `"staffUid"`, for a field that holds a staff
+member's uid (for example a ticket's `assignedToUid` from and to). Such a value is
+stored only when it is uid-shaped (`[A-Za-z0-9_-]`, 1–128 characters), so an email,
+a name with a space, a domain or a phone number is still redacted. No current
+action uses it. It exists so that the service desk can audit reassignment
+without a second mechanism. Never declare a field `"staffUid"` if it can hold a
+customer's uid or a contact id.
 
 `null` and `undefined` are stored as `null`. Everything else is stored as
 `[redacted]`: any value of an unlisted field, an unlisted value of a listed field,
@@ -144,7 +152,8 @@ Hein. Each one names the alternative that was rejected.
    sub-account.** Collaborators get nothing, and agency-level events are for the
    owner only. *Rejected:* every sub-account member. Role and gate changes are
    admin business.
-4. **The actor is required and typed as `{ type, id }` with five surfaces.** A
+4. **The actor is required and typed as `{ type, id }` with six surfaces.** PR2
+   added `system` for the service desk's inbound-message hooks and imports. A
    uniform shape lets one query cover "everything this uid or key did".
    *Rejected:* a per-type discriminated shape such as `workflowId` plus `runId`,
    which buys detail no current call site needs. Also rejected: storing the actor's
