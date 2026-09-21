@@ -88,7 +88,9 @@ export type BroadcastSkipReason =
   /** Send window outside the sub-account's configured hours (will defer + retry). */
   | "send_window_deferred"
   /** Contact was deleted between fan-out and send. */
-  | "contact_missing";
+  | "contact_missing"
+  /** Address is on the sub-account's email suppression list at send time. */
+  | "suppressed";
 
 export type BroadcastSendStatus =
   | "queued"

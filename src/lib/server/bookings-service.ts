@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
 import {
   buildEventPublicUrl,
   issueEventToken,
@@ -253,6 +254,17 @@ async function runMarkPaidSideEffects(args: {
       ],
     });
   } catch (err) {
+    // Retrying without the ICS cannot help a suppressed address.
+    if (
+      await recordSuppressedEmail(err, {
+        contactId: event.contactId,
+        eventId: event.id,
+        what: "Booking confirmation",
+        createdBy: "booking",
+      })
+    ) {
+      return;
+    }
     // Fall back to the standard wrapper without ICS so the visitor at
     // least gets the text confirmation.
     console.warn("[events/mark-paid] resend-with-ics failed, retrying without", err);

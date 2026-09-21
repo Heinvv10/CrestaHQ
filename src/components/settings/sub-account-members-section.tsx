@@ -164,6 +164,8 @@ export function SubAccountMembersSection() {
       const payload = (await res.json().catch(() => ({}))) as {
         error?: string;
         mailed?: boolean;
+        mailSuppressed?: boolean;
+        mailError?: string | null;
         inviteUrl?: string;
         added?: boolean;
         alreadyMember?: boolean;
@@ -173,7 +175,12 @@ export function SubAccountMembersSection() {
 
       const roleLabel = payload.role === "admin" ? "admin" : "collaborator";
 
-      if (payload.added) {
+      if (payload.mailSuppressed) {
+        // Access is granted either way; only the email is withheld.
+        toast.warning(
+          `${payload.added ? `Added ${email} as ${roleLabel}` : "Invite created"}, but not emailed. ${payload.mailError ?? ""}`,
+        );
+      } else if (payload.added) {
         // Email already had an account — added to this workspace directly,
         // no pending invite / signup step.
         if (payload.alreadyMember) {

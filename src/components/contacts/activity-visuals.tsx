@@ -65,6 +65,11 @@ export function activityVisuals(type: ActivityType): {
         icon: <Mail className="h-3 w-3 text-blue-500" />,
         label: "Email sent",
       };
+    case "email_suppressed":
+      return {
+        icon: <Mail className="h-3 w-3 text-rose-500" />,
+        label: "Email not sent (suppressed)",
+      };
     case "sms_sent":
       return {
         icon: <MessageSquare className="h-3 w-3 text-violet-500" />,

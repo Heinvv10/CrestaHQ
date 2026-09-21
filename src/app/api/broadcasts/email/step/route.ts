@@ -5,6 +5,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { qstashIsConfigured, verifyQStashSignature } from "@/lib/automations/qstash";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
+import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { checkQuota } from "@/lib/server/usage-meter";
 import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { resolveMergeTags } from "@/lib/automations/merge-tags";
@@ -238,6 +239,11 @@ export async function POST(request: Request) {
     });
     resendMessageId = result.id;
   } catch (err) {
+    if (isEmailSuppressedError(err)) {
+      await markSkipped(sendRef, broadcastRef, "suppressed");
+      await maybeMarkBroadcastCompleted(broadcastRef);
+      return NextResponse.json({ ok: true, status: "skipped" });
+    }
     error = err instanceof Error ? err.message : "Send failed";
     attempted = providerAttempted(err);
   }
@@ -310,7 +316,7 @@ export async function POST(request: Request) {
 async function markSkipped(
   sendRef: FirebaseFirestore.DocumentReference,
   broadcastRef: FirebaseFirestore.DocumentReference,
-  reason: "opt_out" | "no_email" | "contact_missing",
+  reason: "opt_out" | "no_email" | "contact_missing" | "suppressed",
 ): Promise<void> {
   await sendRef.update({
     status: "skipped",

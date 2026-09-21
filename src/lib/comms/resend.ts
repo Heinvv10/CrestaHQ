@@ -6,8 +6,9 @@ import { Resend } from "resend";
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { recordUsage } from "@/lib/server/usage-meter";
 import type { SmtpMeta } from "@/types/email";
-import { getSmtpConnection, sendSmtpEmail } from "./smtp";
+import { getSmtpConnection, sendSmtpEmail, SmtpError, validEmail } from "./smtp";
 import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
+import { assertNotSuppressed } from "@/lib/comms/email-suppression";
 import type { ResendConfig } from "@/types/tenancy";
 
 let _client: Resend | null = null;
@@ -102,6 +103,7 @@ export async function sendEmail({
   subAccount,
   attachments,
   meter,
+  suppressionSubAccountId,
   archive = true,
   contactId,
   sentByUid,
@@ -144,14 +146,30 @@ export async function sendEmail({
    * (blocking) happens at the caller for the few paths that should block;
    * transactional mail (booking confirmations, quotes) is metered here
    * but never refused.
+   *
+   * The same sub-account's email suppression list is enforced here: a
+   * suppressed `to` throws `EmailSuppressedError` before any provider call.
    */
   meter?: { subAccountId: string } | null;
+  /**
+   * Suppression list to check for an UNMETERED send that is still addressed
+   * on a sub-account's behalf (member invites). Metered sends are checked
+   * against `meter.subAccountId` without it.
+   */
+  suppressionSubAccountId?: string;
   /**
    * File attachments (e.g. booking ICS). Content is base64 unless it's
    * plain text — matches Resend's `attachments` contract.
    */
   attachments?: { filename: string; content: string; contentType?: string }[];
 }): Promise<{ id: string; saved?: boolean; warning?: string }> {
+  // A bare address only: "Name <x@y>" would hash differently from x@y and
+  // slip past the suppression lookup.
+  if (!validEmail(to)) throw new SmtpError("Invalid recipient email address.");
+  // Agency billing, gitpage and usage mail name no sub-account and have no
+  // suppression list to check.
+  const suppressionScope = suppressionSubAccountId ?? meter?.subAccountId;
+  if (suppressionScope) await assertNotSuppressed(suppressionScope, to);
   const preferredReplyTo = replyTo?.trim() || subAccount?.replyToEmail?.trim();
   if (subAccount?.emailProvider === "smtp") {
     if (!meter?.subAccountId) {

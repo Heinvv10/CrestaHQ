@@ -80,6 +80,7 @@ export async function POST(
       role: res.role,
       reused: res.reused,
       mailed: res.mailed,
+      mailSuppressed: res.mailSuppressed,
       mailError: res.mailError,
       inviteUrl: res.inviteUrl,
       added: res.added,

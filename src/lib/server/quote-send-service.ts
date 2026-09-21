@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { renderQuoteEmail } from "@/lib/quotes/email";
 import {
   emitQuoteWebhook,
@@ -252,6 +253,7 @@ export async function sendQuoteServerSide(input: {
       meter: { subAccountId },
     });
   } catch (err) {
+    if (isEmailSuppressedError(err)) return fail(err.code, 422, err.message);
     console.error("[quotes/send] Resend send failed", err);
     const message =
       err instanceof Error ? err.message : "Email provider rejected the send";

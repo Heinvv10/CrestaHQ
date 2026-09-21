@@ -5,7 +5,8 @@ const m = vi.hoisted(() => ({
   connection: vi.fn(),
   usage: vi.fn(),
 }));
-vi.mock("./smtp", () => ({
+vi.mock("./smtp", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./smtp")>()),
   getSmtpConnection: m.connection,
   sendSmtpEmail: m.send,
 }));
@@ -13,6 +14,8 @@ vi.mock("@/lib/server/email-conversations", () => ({
   recordEmailMessage: m.record,
 }));
 vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: m.usage }));
+// Suppression has its own suite (email-suppression.test.ts); this one is about the provider call.
+vi.mock("./email-suppression", () => ({ assertNotSuppressed: async () => undefined }));
 vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: vi.fn() }));
 import { sendEmail } from "./resend";
 const input = {
