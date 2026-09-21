@@ -68,6 +68,7 @@ export async function POST(
     const res = await createInviteServerSide({
       subAccountId,
       invitedByUid: access.uid,
+      auditActor: { type: "user", id: access.uid },
       email,
       role,
       assignedTerritoryIds: body.assignedTerritoryIds,

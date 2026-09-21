@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { deleteConnectionForRemovedMember } from "@/lib/google-calendar/connection";
 import { removeMemberGoogleCopies } from "@/lib/google-calendar/push";
 
@@ -108,6 +109,16 @@ export async function PATCH(
     batch.update(indexRef, indexPatch);
   }
   await batch.commit();
+
+  const previousRole = memberSnap.data()?.role as string | undefined;
+  if (memberPatch.role !== undefined && memberPatch.role !== previousRole) {
+    await recordSubAccountAuditEvent(db, subAccountId, {
+      action: "member.role_changed",
+      actor: { type: "user", id: access.uid },
+      target: { type: "member", id: targetUid },
+      changes: [{ field: "role", before: previousRole, after: body.role }],
+    });
+  }
 
   return NextResponse.json({
     ok: true,

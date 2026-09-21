@@ -19,12 +19,15 @@ export const AUDIT_ACTOR_TYPES = [
   "workflow",
   "ai_agent",
   "cron",
+  // Server-side processes with no user behind them: inbound-message hooks,
+  // imports. `id` names the process, e.g. "inbound-whatsapp" or "qcontact-import".
+  "system",
 ] as const;
 export type AuditActorType = (typeof AUDIT_ACTOR_TYPES)[number];
 
 /**
  * `id` is the uid for a user, the key id (never the secret) for an API key,
- * the workflow id, the AI agent id, or the cron job name.
+ * the workflow id, the AI agent id, the cron job name, or the system process name.
  */
 export interface AuditActor {
   type: AuditActorType;
@@ -40,9 +43,9 @@ export interface AuditTarget {
 }
 
 /**
- * What a caller may pass as a before/after value. Strings are kept only when
- * they look like an enum value (see `auditValue`); anything else is stored
- * as REDACTED.
+ * What a caller may pass as a before/after value. A value is kept only when
+ * its action + field allow-list names it (see `AUDIT_ALLOWED_VALUES`);
+ * anything else is stored as REDACTED.
  */
 export type AuditInputValue = string | number | boolean | null | undefined;
 export type AuditStoredValue = string | number | boolean | null;
@@ -61,6 +64,11 @@ export interface AuditEventInput {
   /** null for an agency-level event (readable by the agency owner only). */
   subAccountId: string | null;
   changes: AuditChangeInput[];
+  /**
+   * The signed-in user a non-user actor acted for — e.g. whoever asked the
+   * Workspace Assistant. Stored as `createdByUid`. Ignored for a user actor.
+   */
+  onBehalfOfUid?: string;
 }
 
 /** The stored doc, minus `createdAt` (a server timestamp). */

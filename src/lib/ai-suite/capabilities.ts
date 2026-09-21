@@ -3227,6 +3227,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         res = await createInviteServerSide({
           subAccountId: ctx.subAccountId!,
           invitedByUid: ctx.uid,
+          // The assistant made the change; createdByUid records who asked it.
+          auditActor: { type: "ai_agent", id: "workspace-assistant" },
           email: args.email as string,
           role: args.role as "admin" | "collaborator",
         });

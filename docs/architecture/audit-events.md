@@ -14,6 +14,27 @@ configuration or data, and it is readable only by admins.
 
 ## Writing an event
 
+A route that changed one sub-account calls the call-site entry point:
+
+```ts
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
+
+// after the change has committed
+await recordSubAccountAuditEvent(db, subAccountId, {
+  action: "member.role_changed",
+  actor: { type: "user", id: access.uid }, // from the authenticated session
+  target: { type: "member", id: targetUid },
+  changes: [{ field: "role", before: previousRole, after: body.role }],
+});
+```
+
+It reads `agencyId` from the sub-account doc as stored, so neither the body, the
+URL nor the caller's claims can name the tenant. It never throws: a missing
+sub-account doc, a doc without `agencyId`, a malformed event and a failed write
+are all logged (`[audit] could not record …` / `[audit] failed to record …`).
+
+The lower-level `recordAuditEvent` takes the tenant explicitly:
+
 ```ts
 import { recordAuditEvent } from "@/lib/audit/record";
 
@@ -45,21 +66,39 @@ await recordAuditEvent(getAdminDb(), {
 | Field | Type | Notes |
 |---|---|---|
 | `action` | `AuditAction` | e.g. `feature_gates.updated`, `workflow.status_changed`, `member.role_changed` |
-| `actor` | `{ type, id }` | `type` ∈ `user` · `api_key` · `workflow` · `ai_agent` · `cron`. `id` holds the uid, the key id (never the secret), the workflow id, the agent id or the cron job name |
+| `actor` | `{ type, id }` | `type` ∈ `user` · `api_key` · `workflow` · `ai_agent` · `cron` · `system`. `id` holds the uid, the key id (never the secret), the workflow id, the agent id, the cron job name, or the system process name (an inbound-message hook or an import) |
 | `target` | `{ type, id }` | The thing that changed |
 | `changes` | `{ field, before, after }[]` | Values go through redaction (below) |
 | `agencyId` | string | Always set |
 | `subAccountId` | string \| null | `null` marks an agency-level event, readable by the owner only |
-| `createdByUid` | string \| null | The actor's uid when the actor is a user, otherwise `null` |
+| `createdByUid` | string \| null | The actor's uid when the actor is a user. For a non-user actor it is the `onBehalfOfUid` passed in, which is the signed-in user who asked the Workspace Assistant, or `null` |
 | `createdAt` | server timestamp | |
 
 ## Redaction
 
-Field names are always stored. A value is stored as-is only when it is a boolean, a
-finite number, `null`, or a string shaped like an enum value: lowercase, starting
-with a letter, `[a-z0-9_.-]`, at most 64 characters, such as `admin`, `paused` or
-`sms_enabled`. Every other string is stored as `[redacted]`. That covers emails,
-phone numbers, names, and any message body or free text.
+Field names are always stored. A value is stored only when
+`AUDIT_ALLOWED_VALUES` in `src/lib/audit/record.ts` lists it for that action and
+field:
+
+| Action | Field | Stored values |
+|---|---|---|
+| `feature_gates.updated` | each `*EnabledByAgency` gate | `true`, `false` |
+| `workflow.status_changed` | `status` | `draft`, `active`, `paused` |
+| `member.role_changed` | `role` | `admin`, `collaborator` |
+
+An action can also declare a field as `"staffUid"`, for a field that holds a staff
+member's uid (for example a ticket's `assignedToUid` from and to). Such a value is
+stored only when it is uid-shaped (`[A-Za-z0-9_-]`, 1–128 characters), so an email,
+a name with a space, a domain or a phone number is still redacted. No current
+action uses it. It exists so that the service desk can audit reassignment
+without a second mechanism. Never declare a field `"staffUid"` if it can hold a
+customer's uid or a contact id.
+
+`null` and `undefined` are stored as `null`. Everything else is stored as
+`[redacted]`: any value of an unlisted field, an unlisted value of a listed field,
+and every number, name, domain, email, phone number or free text. The gate list is
+typed `Record<AgencyGateField, true>`, so adding a gate without listing it fails
+typecheck. Auditing a new field's value means adding it to the list on purpose.
 
 ## Who can read it
 
@@ -77,7 +116,20 @@ for each of those two queries.
 ## Tests
 
 - `src/lib/audit/record.test.ts` covers the actor requirement, validation, the
-  stored shape, redaction, and the swallowed write failure.
+  stored shape, the redaction allow-list (names, domains, emails, phones and
+  numbers are redacted even when enum-shaped), and the swallowed write failure.
+- `route.audit.test.ts` beside each call site drives the real route with real
+  tenancy over the in-memory Firestore. Each one proves the event is written with
+  the tenant from the sub-account doc and the actor from the session, even when
+  the body carries forged `agencyId`, `subAccountId` and `actor` values. The
+  member, workflow and invite tests also give the caller claims that name another
+  agency. The feature-gate route accepts only an agency owner whose claims match
+  the sub-account's agency, so it cannot be tested with mismatched claims. It also proves that nothing is recorded for
+  a no-op or a refused caller, and that a failed audit write still returns 200.
+  The member test proves that a change which fails to commit records nothing. The
+  workflow test proves that an event which cannot be built is logged, not thrown.
+  The feature-gate test proves that the diff uses the effective value. The invite
+  test drives the invite route and the `invite_member` capability.
 - `src/lib/audit/audit-events.firestore-rules.test.ts` sends the repo's own
   `firestore.rules` through the Firebase Rules `projects:test` API. The rules are not
   deployed and no data is read. It checks cross-tenant reads (denied), client writes
@@ -104,14 +156,17 @@ Hein. Each one names the alternative that was rejected.
    sub-account.** Collaborators get nothing, and agency-level events are for the
    owner only. *Rejected:* every sub-account member. Role and gate changes are
    admin business.
-4. **The actor is required and typed as `{ type, id }` with five surfaces.** A
+4. **The actor is required and typed as `{ type, id }` with six surfaces.** PR2
+   added `system` for the service desk's inbound-message hooks and imports. A
    uniform shape lets one query cover "everything this uid or key did".
    *Rejected:* a per-type discriminated shape such as `workflowId` plus `runId`,
    which buys detail no current call site needs. Also rejected: storing the actor's
    email or name. Staff identity resolves from the uid at read time and is not
    copied into every row.
-5. **No customer PII or message bodies.** Values are redacted unless they are
-   enum-shaped (see Redaction). *Rejected:* storing raw before/after values, which
+5. **No customer PII or message bodies.** Values are redacted unless the
+   per-action allow-list names them (see Redaction). PR1 kept any enum-shaped
+   string and any number. That let a lowercase name or domain through, so PR2
+   replaced it with the allow-list. *Rejected:* storing raw before/after values, which
    would copy customer PII into a second store that has its own retention. Also
    rejected: never storing values. "collaborator → admin" is the point of a role
    audit.
@@ -131,8 +186,58 @@ Hein. Each one names the alternative that was rejected.
    against the deployed rules. Before deploy, the default-deny rule would make every
    "denied" test pass vacuously.
 
+9. **Only real changes are recorded.** A PATCH that sets a gate, status or role
+   to the value it already had writes no event. `before` comes from the doc the
+   route loaded before its write. *Rejected:* one event per request, which would
+   bury the three changes that matter under every re-save of the Manage dialog.
+10. **The feature-gate event covers the `*EnabledByAgency` gates only.** The
+    `*HiddenWhenDisabled` presentation flags, `aiSuiteModel` and the usage quota
+    and rate overrides are not audited. *Rejected:* auditing every field the
+    route writes. The quota objects are numbers, which the allow-list redacts
+    anyway, and the brief named the gates.
+11. **The call-site helper never throws, including on a malformed event.** PR1
+    made `recordAuditEvent` throw on a malformed event so tests would catch it.
+    At a call site the change has already committed, so a throw would return 500
+    for a change that succeeded. Each route's test asserts the stored row, and
+    that is what catches a malformed event now. *Rejected:* letting validation
+    errors propagate from routes.
+12. **Every other gate writer is unaudited, and each one is a named follow-up.**
+    They all go through `applyFeatureGates`:
+    - **Workspace Assistant `set_feature_gate`**, in `src/lib/ai-suite/capabilities.ts`.
+      The actor would be `ai_agent` on behalf of the owner.
+    - **Client Billing plan edit push** (`updatePlanForAgency`,
+      `src/lib/server/billing-service.ts`), which re-applies an edited plan's
+      gates to every sub-account on it. The actor would be the owner.
+    - **Client Billing plan assign** (`assignPlanToSubAccount`,
+      `src/lib/server/billing-service.ts`). The actor would be the owner.
+    - **Activation after payment** (`activateSubAccountPlan`,
+      `src/lib/server/billing-lifecycle.ts`), called from the Stripe and Paystack
+      webhooks. The actor would be `system`.
+
+    *Rejected:* auditing inside `applyFeatureGates`. The service has no actor, and
+    threading one through it is a wider change than this PR.
+13. **The diff uses the effective gate value, not the stored one.** SMS, Web Chat
+    and Inbound Voice AI read a missing field as ON (`DEFAULT_ON_GATE_FIELDS` in
+    `src/lib/comms/ai/gates.ts`, the same table the runtime uses). Setting an unset
+    opt-out gate to `true` is therefore a no-op, and the event's `before` is the
+    effective value, never "unset".
+14. **Re-inviting an existing member is a role change.** The invite route and the
+    assistant's `invite_member` both reach `addExistingUserAsMember`, which
+    overwrites the role of an existing membership, whether active or removed. An
+    event is recorded when that role differs. The assistant path records actor
+    `{ type: "ai_agent", id: "workspace-assistant" }` with `onBehalfOfUid` set to
+    the user who asked. *Rejected:* recording it as the user. That would hide the
+    fact that a model chose the change.
+
 ## Call sites
 
-PR1 ships no call sites. PR2 adopts exactly three: the agency feature-gate PATCH,
-the workflow status change, and the sub-account member role change. Each gets a test
-proving that the real route writes the event.
+| Route | Action | Recorded when |
+|---|---|---|
+| `PATCH /api/agency/sub-accounts/[id]/feature-gates` | `feature_gates.updated` | at least one `*EnabledByAgency` gate changed value, after `applyFeatureGates` commits |
+| `PATCH /api/sub-accounts/[id]/workflows/[workflowId]` | `workflow.status_changed` | `status` changed, after `updateWorkflowServerSide` commits. That function now returns the prior status. |
+| `PATCH /api/sub-accounts/[id]/members/[uid]` | `member.role_changed` | `role` changed, after the member and index batch commits |
+| `POST /api/sub-accounts/[id]/invite` and the assistant's `invite_member` (both via `addExistingUserAsMember`) | `member.role_changed` | an existing membership's `role` changed, after the batch commits |
+
+All of them use `recordSubAccountAuditEvent`. Routes use the actor
+`{ type: "user", id: access.uid }` from `requireSubAccountMember` or
+`requireSubAccountAdmin`. The assistant uses `ai_agent` plus `onBehalfOfUid`.

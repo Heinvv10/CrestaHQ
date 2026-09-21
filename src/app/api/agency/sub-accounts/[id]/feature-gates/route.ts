@@ -4,7 +4,9 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { metaAppConfigured } from "@/lib/comms/meta";
+import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import {
   sanitizeUsageQuotas,
   sanitizeUsageRates,
@@ -308,6 +310,24 @@ export async function PATCH(
   let clearedDomain = false;
   if (Object.keys(gates).length > 0) {
     ({ clearedDomain } = await applyFeatureGates(subAccountId, gates));
+    // Diff against the value the runtime acts on: a missing opt-OUT gate
+    // (SMS / Web Chat / Inbound Voice AI) is already on.
+    const stored = subSnap.data() ?? {};
+    const effective = (field: AgencyGateField): boolean =>
+      typeof stored[field] === "boolean"
+        ? stored[field]
+        : DEFAULT_ON_GATE_FIELDS.has(field);
+    const changes = (Object.entries(gates) as [AgencyGateField, boolean][])
+      .filter(([field, after]) => effective(field) !== after)
+      .map(([field, after]) => ({ field, before: effective(field), after }));
+    if (changes.length > 0) {
+      await recordSubAccountAuditEvent(db, subAccountId, {
+        action: "feature_gates.updated",
+        actor: { type: "user", id: access.uid },
+        target: { type: "subAccount", id: subAccountId },
+        changes,
+      });
+    }
   }
 
   // "Hide instead of lock" overrides. Pure presentation flags — they don't

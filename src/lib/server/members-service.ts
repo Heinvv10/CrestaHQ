@@ -6,6 +6,8 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
 import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
+import type { AuditActor } from "@/lib/audit/types";
 import { resolveBrandName } from "@/lib/landing/resolve-brand";
 
 /**
@@ -45,6 +47,11 @@ export interface CreateInviteInput {
   subAccountId: string;
   /** The admin/owner performing the invite. */
   invitedByUid: string;
+  /**
+   * Who the audit trail names for a role change: the user themselves, or the
+   * Workspace Assistant acting for `invitedByUid`.
+   */
+  auditActor: AuditActor;
   /** Already validated + lowercased by the caller. */
   email: string;
   role: "admin" | "collaborator";
@@ -83,7 +90,7 @@ export interface CreateInviteResult {
 export async function createInviteServerSide(
   input: CreateInviteInput,
 ): Promise<CreateInviteResult> {
-  const { subAccountId, invitedByUid, email, role } = input;
+  const { subAccountId, invitedByUid, auditActor, email, role } = input;
 
   const auth = getAdminAuth();
   const db = getAdminDb();
@@ -128,6 +135,7 @@ export async function createInviteServerSide(
       role,
       assignedTerritoryIds,
       invitedByUid,
+      auditActor,
     });
   }
 
@@ -278,6 +286,7 @@ async function addExistingUserAsMember(params: {
   role: "admin" | "collaborator";
   assignedTerritoryIds: string[];
   invitedByUid: string;
+  auditActor: AuditActor;
 }): Promise<CreateInviteResult> {
   const {
     db,
@@ -288,6 +297,7 @@ async function addExistingUserAsMember(params: {
     role,
     assignedTerritoryIds,
     invitedByUid,
+    auditActor,
   } = params;
   const uid = existingUser.uid;
   const claims = (existingUser.customClaims ?? {}) as {
@@ -379,6 +389,18 @@ async function addExistingUserAsMember(params: {
     addedAt: FieldValue.serverTimestamp(),
   });
   await batch.commit();
+
+  // Re-adding an existing member (active or removed) overwrites their role.
+  const previousRole = memberSnap.data()?.role as string | undefined;
+  if (memberSnap.exists && previousRole !== role) {
+    await recordSubAccountAuditEvent(db, subAccountId, {
+      action: "member.role_changed",
+      actor: auditActor,
+      ...(auditActor.type === "user" ? {} : { onBehalfOfUid: invitedByUid }),
+      target: { type: "member", id: uid },
+      changes: [{ field: "role", before: previousRole, after: role }],
+    });
+  }
 
   // Public-API webhook event — the direct-add counterpart to `member.invited`
   // (which only covers brand-new invitees). `already_member` lets subscribers

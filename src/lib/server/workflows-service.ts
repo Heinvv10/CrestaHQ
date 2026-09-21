@@ -395,15 +395,16 @@ export interface WorkflowPatch {
   folderId?: string | null;
 }
 
+/** Null when the workflow is not this sub-account's; else its status before the patch. */
 export async function updateWorkflowServerSide(opts: {
   subAccountId: string;
   workflowId: string;
   patch: WorkflowPatch;
-}): Promise<boolean> {
+}): Promise<{ previousStatus: WorkflowStatus } | null> {
   const ref = getAdminDb().doc(`workflows/${opts.workflowId}`);
   const snap = await ref.get();
   if (!snap.exists || snap.data()!.subAccountId !== opts.subAccountId) {
-    return false;
+    return null;
   }
   const { patch } = opts;
   const write: Record<string, unknown> = {
@@ -417,7 +418,7 @@ export async function updateWorkflowServerSide(opts: {
   if (patch.startNodeId !== undefined) write.startNodeId = patch.startNodeId;
   if (patch.folderId !== undefined) write.folderId = patch.folderId;
   await ref.update(write);
-  return true;
+  return { previousStatus: snap.data()!.status as WorkflowStatus };
 }
 
 export interface RunView {
