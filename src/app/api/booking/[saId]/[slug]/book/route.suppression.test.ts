@@ -13,7 +13,7 @@ const s = () => import("@/test/email-suppression-seam");
 vi.mock("@/lib/firebase/admin", async () => (await h()).bookingMocks.admin());
 vi.mock("@/lib/booking/lifecycle", async () => (await h()).bookingMocks.lifecycle());
 vi.mock("@/lib/booking/contact-reconcile", async () => (await h()).bookingMocks.reconcile());
-vi.mock("@/lib/comms/smtp", async () => (await s()).seamMocks.smtp());
+vi.mock("@/lib/comms/smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 
@@ -38,12 +38,23 @@ describe("booking confirmation email", () => {
   it("is sent to an address that is not suppressed", async () => {
     expect((await book()).status).toBe(200);
     expect(wireRecipients()).toEqual(["v@example.com"]);
+    expect(mem.list("contacts/c1/activities")).toEqual([]);
   });
 
   it("is refused for a suppressed visitor while the booking still succeeds", async () => {
     mem.seed(...suppressionSeed("v@example.com", SA));
     expect((await book()).status).toBe(200);
-    expect(mem.list("events")).toHaveLength(1);
+    const [event] = mem.list("events");
+    expect(event).toBeDefined();
     expect(wireRecipients()).toEqual([]);
+    // The host sees why on the contact's timeline (reconcile mock → c1).
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({
+        type: "email_suppressed",
+        createdBy: "booking",
+        content: expect.stringContaining("Booking confirmation not sent"),
+        meta: expect.objectContaining({ email: "v@example.com", reason: "hard_bounce", eventId: event.id }),
+      }),
+    ]);
   });
 });

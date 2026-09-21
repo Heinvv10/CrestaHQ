@@ -82,9 +82,9 @@ export async function DELETE(request: Request, ctx: Context) {
   const { id } = await ctx.params;
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
-  const email = new URL(request.url).searchParams.get("email") ?? "";
-  if (!email.trim()) {
-    return NextResponse.json({ error: "email is required" }, { status: 400 });
+  const email = normalizeEmail(new URL(request.url).searchParams.get("email") ?? "");
+  if (!isValidEmail(email) || email.length > 320) {
+    return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
   }
   await getAdminDb().doc(suppressionDocPath(id, email)).delete();
   return NextResponse.json({ ok: true });

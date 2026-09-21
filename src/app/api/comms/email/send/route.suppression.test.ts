@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const s = () => import("@/test/email-suppression-seam");
 vi.mock("@/lib/firebase/admin", async () => (await s()).seamMocks.admin());
-vi.mock("@/lib/comms/smtp", async () => (await s()).seamMocks.smtp());
+vi.mock("@/lib/comms/smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 vi.mock("@/lib/comms/usage", () => ({ recordSend: async () => undefined }));

@@ -5,7 +5,8 @@ const m = vi.hoisted(() => ({
   connection: vi.fn(),
   usage: vi.fn(),
 }));
-vi.mock("./smtp", () => ({
+vi.mock("./smtp", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./smtp")>()),
   getSmtpConnection: m.connection,
   sendSmtpEmail: m.send,
 }));

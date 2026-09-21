@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import type { UserRecord } from "firebase-admin/auth";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
+import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { resolveBrandName } from "@/lib/landing/resolve-brand";
 
@@ -60,6 +61,8 @@ export interface CreateInviteResult {
   /** True when a pending invite already existed and was reused/updated. */
   reused: boolean;
   mailed: boolean;
+  /** Not emailed because the address is on the sub-account's suppression list. */
+  mailSuppressed: boolean;
   mailError: string | null;
   inviteUrl: string;
   /**
@@ -171,6 +174,7 @@ export async function createInviteServerSide(
   // Send the delivery email. Failures here don't roll back the invite — the
   // admin can still copy the link from the UI and share it manually.
   let mailed = false;
+  let mailSuppressed = false;
   let mailError: string | null = null;
   if (emailIsConfigured()) {
     try {
@@ -184,6 +188,7 @@ export async function createInviteServerSide(
       const brandName = await resolveBrandName();
 
       await sendEmail({
+        suppressionSubAccountId: subAccountId,
         to: email,
         // "Who is this?" replies go to the person who sent the invite.
         replyTo: (inviterData.email as string) || undefined,
@@ -205,6 +210,7 @@ export async function createInviteServerSide(
       });
       mailed = true;
     } catch (err) {
+      mailSuppressed = isEmailSuppressedError(err);
       mailError = err instanceof Error ? err.message : String(err);
       console.warn(
         "[invite] sendEmail failed — invite still created",
@@ -245,6 +251,7 @@ export async function createInviteServerSide(
     role,
     reused,
     mailed,
+    mailSuppressed,
     mailError,
     inviteUrl,
     added: false,
@@ -399,6 +406,7 @@ async function addExistingUserAsMember(params: {
   // Notify the user they now have access. No accept link — they already have
   // an account and access is live. Skipped when they were already a member.
   let mailed = false;
+  let mailSuppressed = false;
   let mailError: string | null = null;
   const recipient = existingUser.email ?? "";
   if (!alreadyMember && recipient && emailIsConfigured()) {
@@ -412,6 +420,7 @@ async function addExistingUserAsMember(params: {
       const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
       const brandName = await resolveBrandName();
       await sendEmail({
+        suppressionSubAccountId: subAccountId,
         to: recipient,
         // "Who added me?" replies go to the admin who did.
         replyTo: inviterEmail,
@@ -433,6 +442,7 @@ async function addExistingUserAsMember(params: {
       });
       mailed = true;
     } catch (err) {
+      mailSuppressed = isEmailSuppressedError(err);
       mailError = err instanceof Error ? err.message : String(err);
       console.warn(
         "[invite] added-member email failed — membership still written",
@@ -449,6 +459,7 @@ async function addExistingUserAsMember(params: {
     role,
     reused: false,
     mailed,
+    mailSuppressed,
     mailError,
     inviteUrl: "",
     added: true,

@@ -13,7 +13,7 @@ vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountAdmin: async () => auth.result,
 }));
 vi.mock("@/lib/firebase/admin", async () => (await s()).seamMocks.admin());
-vi.mock("@/lib/comms/smtp", async () => (await s()).seamMocks.smtp());
+vi.mock("@/lib/comms/smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 
@@ -64,9 +64,26 @@ describe("email suppressions API", () => {
     expect(list.items).toEqual([expect.objectContaining({ email: "gone@example.com", reason: "manual" })]);
   });
 
+  it.each(["", "not-an-email", "Gone <gone@example.com>"])(
+    "refuses to remove an invalid address (%j), leaving the list intact",
+    async (email) => {
+      await add({ email: "gone@example.com" });
+      const res = await DELETE(
+        new Request(`${url}?email=${encodeURIComponent(email)}`, { method: "DELETE" }),
+        ctx
+      );
+      expect(res.status).toBe(400);
+      expect(mem.list(`subAccounts/${SA}/emailSuppressions`)).toHaveLength(1);
+    }
+  );
+
   it("removing an address lets the next send through", async () => {
     await add({ email: "gone@example.com", reason: "hard_bounce" });
-    await DELETE(new Request(`${url}?email=${encodeURIComponent("GONE@example.com")}`, { method: "DELETE" }), ctx);
+    const res = await DELETE(
+      new Request(`${url}?email=${encodeURIComponent(" GONE@example.com ")}`, { method: "DELETE" }),
+      ctx
+    );
+    expect(res.status).toBe(200);
     expect(mem.list(`subAccounts/${SA}/emailSuppressions`)).toEqual([]);
     await send("gone@example.com");
     expect(wireRecipients()).toEqual(["gone@example.com"]);

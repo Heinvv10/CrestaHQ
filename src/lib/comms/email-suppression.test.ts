@@ -14,7 +14,7 @@ vi.mock("resend", () => ({
   },
 }));
 vi.mock("@/lib/firebase/admin", async () => (await s()).seamMocks.admin());
-vi.mock("./smtp", async () => (await s()).seamMocks.smtp());
+vi.mock("./smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({}) }));
@@ -50,11 +50,24 @@ describe("sendEmail suppression", () => {
     expect(wireRecipients()).toEqual([]);
   });
 
-  it("matches regardless of case and surrounding whitespace", async () => {
+  it("matches regardless of case", async () => {
     suppress("Gone@Example.com");
-    await expect(smtp("  GONE@example.COM ")).rejects.toBeInstanceOf(EmailSuppressedError);
+    await expect(smtp("GONE@example.COM")).rejects.toBeInstanceOf(EmailSuppressedError);
     expect(wireRecipients()).toEqual([]);
   });
+
+  it.each(["Gone <gone@example.com>", " gone@example.com", "gone@example.com, x@example.com"])(
+    "refuses a recipient that is not a bare address (%s) on both rails",
+    async (to) => {
+      suppress("gone@example.com");
+      await expect(smtp(to)).rejects.toThrow("Invalid recipient email address.");
+      await expect(
+        sendEmail({ to, subject: "Hi", text: "Hello", meter: { subAccountId: SA } })
+      ).rejects.toThrow("Invalid recipient email address.");
+      expect(wireRecipients()).toEqual([]);
+      expect(resend.send).not.toHaveBeenCalled();
+    }
+  );
 
   it("still sends to an address that is not suppressed", async () => {
     suppress("gone@example.com");

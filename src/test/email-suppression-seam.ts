@@ -43,7 +43,9 @@ export const SMTP_SUB = {
 
 export const seamMocks = {
   admin: () => ({ getAdminDb: () => mem.db }),
-  smtp: () => ({
+  // The real address validation stays; only the connection and the wire are faked.
+  smtp: async (original: () => Promise<Record<string, unknown>>) => ({
+    ...(await original()),
     getSmtpConnection: async () => ({ fromEmail: "sender@tenant.test" }),
     sendSmtpEmail: (c: unknown, m: { to: string }) => smtpSend(c, m),
   }),

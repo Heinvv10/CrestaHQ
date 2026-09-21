@@ -10,6 +10,7 @@ import {
   sendEmail,
   tenantFrom,
 } from "@/lib/comms/resend";
+import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
 import { buildPaypalAmountUrl } from "@/lib/paypal/payment-link";
 import { isSlotAvailable, type SlotCandidate } from "@/lib/booking/availability";
 import {
@@ -560,7 +561,13 @@ export async function POST(
         meterSubAccountId: saId,
       });
     } catch (err) {
-      console.warn("[booking/book] confirmation send failed", err);
+      const suppressed = await recordSuppressedEmail(err, {
+        contactId: created.contactId,
+        eventId: created.eventDocRef.id,
+        what: "Booking confirmation",
+        createdBy: "booking",
+      });
+      if (!suppressed) console.warn("[booking/book] confirmation send failed", err);
     }
   }
 

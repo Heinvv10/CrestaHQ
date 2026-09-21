@@ -27,7 +27,7 @@ vi.mock("@/lib/auth/territory-filter", async () => (await h()).territoryMock());
 vi.mock("@/lib/quotes/token", async () => (await h()).tokenMock());
 vi.mock("@/lib/quotes/email", async () => (await h()).emailMock());
 vi.mock("@/lib/quotes/lifecycle", async () => (await h()).lifecycleMock());
-vi.mock("@/lib/comms/smtp", async () => (await s()).seamMocks.smtp());
+vi.mock("@/lib/comms/smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 

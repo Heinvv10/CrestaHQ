@@ -10,7 +10,8 @@ vi.mock("resend", () => ({
     emails = { send: mocks.resend };
   },
 }));
-vi.mock("./smtp", () => ({
+vi.mock("./smtp", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./smtp")>()),
   sendSmtpEmail: mocks.smtp,
   getSmtpConnection: mocks.credentials,
 }));

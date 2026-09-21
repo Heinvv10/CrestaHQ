@@ -8,6 +8,7 @@ import {
   sendEmail,
   tenantFrom,
 } from "@/lib/comms/resend";
+import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import {
   buildEventPublicUrl,
@@ -175,7 +176,13 @@ export async function POST(request: Request) {
       meter: { subAccountId: event.subAccountId },
     });
   } catch (err) {
-    console.warn("[events/reminder] send failed", err);
+    const suppressed = await recordSuppressedEmail(err, {
+      contactId: event.contactId,
+      eventId,
+      what: "Booking reminder",
+      createdBy: "booking",
+    });
+    if (!suppressed) console.warn("[events/reminder] send failed", err);
   }
 
   return NextResponse.json({ ok: true });

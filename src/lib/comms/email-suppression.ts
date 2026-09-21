@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
+import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { EmailSuppressionDoc, EmailSuppressionReason } from "@/types/email";
@@ -64,4 +65,33 @@ export function isEmailSuppressedError(err: unknown): err is EmailSuppressedErro
 export async function assertNotSuppressed(subAccountId: string, to: string): Promise<void> {
   const hit = await findEmailSuppression(subAccountId, to);
   if (hit) throw new EmailSuppressedError(normalizeEmail(to), hit.reason);
+}
+
+/**
+ * When `err` is a suppression refusal, records it on the contact's activity
+ * timeline so the host can see the email never went out, and returns true.
+ * For sends with no human sender to show an error to (booking mail).
+ */
+export async function recordSuppressedEmail(
+  err: unknown,
+  a: { contactId: string | null | undefined; what: string; createdBy: string; eventId?: string }
+): Promise<boolean> {
+  if (!isEmailSuppressedError(err)) return false;
+  if (!a.contactId) return true;
+  try {
+    await getAdminDb()
+      .collection("contacts")
+      .doc(a.contactId)
+      .collection("activities")
+      .add({
+        type: "email_suppressed",
+        content: `${a.what} not sent: ${err.message}`,
+        createdBy: a.createdBy,
+        meta: { email: err.email, reason: err.reason, ...(a.eventId ? { eventId: a.eventId } : {}) },
+        createdAt: FieldValue.serverTimestamp(),
+      });
+  } catch (writeErr) {
+    console.warn("[email-suppression] activity write failed", writeErr);
+  }
+  return true;
 }

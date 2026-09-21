@@ -235,6 +235,9 @@ export type ActivityType =
   // An AI voice call (inbound or outbound) finished — written by the Vapi
   // end-of-call handler when the call resolved to a known contact.
   | "voice_call_completed"
+  // An email to this contact was refused because the address is on the
+  // sub-account's suppression list (lib/comms/email-suppression.ts).
+  | "email_suppressed"
   // An inbound call was forwarded but went unanswered, so Missed Call Text
   // Back auto-texted the caller. Written by /api/webhooks/twilio/voice/status.
   | "missed_call"

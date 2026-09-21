@@ -22,6 +22,7 @@ const ALL_TYPES = [
   "sms_received",
   "whatsapp_received",
   "email_received",
+  "email_suppressed",
   "messenger_received",
   "instagram_received",
   "webchat_received",
