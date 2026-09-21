@@ -128,7 +128,7 @@ Inbound cannot currently tell two numbers apart. The payload is
 `{from, text, messageId, at}` — no `to`, no instance id
 (`webhooks/whatsapp/bridge/[subAccountId]/route.ts:60-65`) — and the route fills
 `to` from `subAccount.whatsappBridgeMeta.displayPhoneNumber`, a single field
-(`route.ts:338`). With two numbers on one client, **every inbound message is
+(`route.ts:534` on main as of 2026-09-21; was `:338` when written). With two numbers on one client, **every inbound message is
 attributed to whichever number happens to be stored.** Neither `conversations`
 nor `whatsappMessages` carries a `senderId` at all.
 
@@ -156,9 +156,10 @@ Each phase ships behind green CI and a blind review, and each is useful alone.
    need a migration** — the fallback is the migration.
 5. `resolveWhatsappSender` stops refusing `credentialsId`.
 6. Thread the resolved sender through `dispatchWhatsappSend` and
-   `checkWhatsappReadiness` to the credential read. Today
-   `WhatsappDispatchInput` has no `senderId` and the resolver always picks the
-   default (`resolve-sender.ts:96-98`).
+   `checkWhatsappReadiness` to the credential read. As of 2026-09-21,
+   `checkWhatsappReadiness` already accepts a `senderId` (the `whatsapp_template`
+   node passes one), but `WhatsappDispatchInput` still has no `senderId`, so the
+   free-form send path always resolves the default sender.
 
 ### Phase 3 — choosing a sender
 
