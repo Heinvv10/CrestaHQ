@@ -155,6 +155,12 @@ describe("the payer returning from Paystack", () => {
     expect(calls).toEqual([]);
   });
 
+  it("labels a test-mode link on the pay page, and not a live one", async () => {
+    expect(await (await get()).text()).toContain("TEST MODE");
+    seedLink("link1", { token, livemode: true });
+    expect(await (await get()).text()).not.toContain("TEST MODE");
+  });
+
   it("shows the amount from the doc on the pay page", async () => {
     const html = await (await get()).text();
     expect(html).toContain("Call-out fee");

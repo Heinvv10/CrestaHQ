@@ -71,6 +71,33 @@ describe("POST — create", () => {
     expect(onlyLink()).toMatchObject({ invoiceId: "inv1", amountCents: 115000, description: "Invoice INV-2026-0001" });
   });
 
+  it("stamps the link's mode from the Paystack connection", async () => {
+    await create({ amountCents: 45000, description: "x" });
+    expect(onlyLink()).toMatchObject({ livemode: false });
+    mem.clear();
+    seedSub();
+    mem.seed(`subAccounts/${SA}`, { agencyId: AGENCY, paymentsEnabledByAgency: true, paystackConnectionMeta: { livemode: true } });
+    await create({ amountCents: 45000, description: "x" });
+    expect(onlyLink()).toMatchObject({ livemode: true });
+  });
+
+  it("returns the existing active link for an invoice instead of making a second", async () => {
+    seedInvoice();
+    const a = await (await create({ invoiceId: "inv1" })).json();
+    const b = await (await create({ invoiceId: "inv1" })).json();
+    expect(b).toEqual(a);
+    expect(mem.list("paymentLinks")).toHaveLength(1);
+  });
+
+  it("makes a new invoice link once the old one is deactivated", async () => {
+    seedInvoice();
+    const a = await (await create({ invoiceId: "inv1" })).json();
+    mem.seed(`paymentLinks/${a.id}`, { ...mem.read(`paymentLinks/${a.id}`), active: false });
+    const b = await (await create({ invoiceId: "inv1" })).json();
+    expect(b.id).not.toBe(a.id);
+    expect(mem.list("paymentLinks")).toHaveLength(2);
+  });
+
   it.each([
     ["a fractional amount", { amountCents: 10.5, description: "x" }],
     ["a zero amount", { amountCents: 0, description: "x" }],

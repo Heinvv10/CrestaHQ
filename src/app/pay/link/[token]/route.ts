@@ -64,9 +64,12 @@ export async function GET(
     );
   }
 
+  const testBanner = link.livemode
+    ? ""
+    : `<p style="background:#fef3c7;color:#92400e;font-size:13px;font-weight:600;padding:8px 12px;border-radius:8px;margin:0 0 16px;">TEST MODE — no real money will be taken</p>`;
   return page(
     link.description,
-    `<p style="color:#52525b;font-size:14px;margin:0 0 4px;">${esc(link.description)}</p>
+    `${testBanner}<p style="color:#52525b;font-size:14px;margin:0 0 4px;">${esc(link.description)}</p>
 <h1 style="font-size:28px;margin:0 0 24px;">${esc(amount)}</h1>
 <form method="post" style="display:flex;flex-direction:column;gap:12px;text-align:left;">
 <label for="email" style="font-size:14px;">Your email (for the receipt)</label>

@@ -79,6 +79,19 @@ export async function createPaymentLink(input: {
     }
     amountCents = invoiceTotalCents(quote);
     if (amountCents <= 0) return fail(409, "This invoice has nothing to pay.");
+    // One live link per invoice: a second click hands back the open one, so
+    // the customer can't be sent two links and pay both. A deactivated or
+    // paid link doesn't count.
+    const existing = await db
+      .collection("paymentLinks")
+      .where("subAccountId", "==", input.subAccountId)
+      .where("invoiceId", "==", input.invoiceId)
+      .get();
+    const open = existing.docs.find((d) => {
+      const l = d.data() as PaymentLink;
+      return l.active && l.status === "open";
+    });
+    if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
     invoiceId = input.invoiceId;
     contactId = quote.contactId ?? null;
     description = `Invoice ${quote.quoteNumber}`;
@@ -105,6 +118,7 @@ export async function createPaymentLink(input: {
     description,
     amountCents,
     currency: PAYMENT_LINK_CURRENCY,
+    livemode: sub.paystackConnectionMeta?.livemode === true,
     token: issuePaymentLinkToken(ref.id),
     active: true,
     status: "open",

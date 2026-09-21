@@ -277,6 +277,8 @@ export async function initializePaystackTransaction(input: {
 export interface PaystackVerifiedTransaction {
   status: string;
   reference: string;
+  /** "test" or "live" — which mode of the account took the payment. */
+  domain?: string;
   /** Currency subunit (cents). Includes fees when the customer bears them. */
   amount: number;
   /** What was asked for, before customer-borne fees. See the reconciler. */

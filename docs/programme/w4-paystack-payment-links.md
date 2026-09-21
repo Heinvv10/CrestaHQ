@@ -15,7 +15,8 @@ paid only after Paystack's verified webhook, never because the customer came bac
 
 `paymentLinks/{id}`: `{ agencyId, subAccountId, createdByUid, invoiceId | null, contactId | null,
 description, amountCents, currency: "ZAR", token, active, status: "open" | "paid",
-paystackReference, payerEmail, paidAt, extraPayments?, attention?, createdAt, updatedAt }`. Type:
+livemode, paystackReference, paystackDomain, payerEmail, paidAt, extraPayments?, attention?,
+invoiceSettledAt?, createdAt, updatedAt }`. Type:
 [`src/types/payment-links.ts`](../../src/types/payment-links.ts). Rules: member/owner read,
 no client writes (like `orders`). No composite index — the list is one equality filter sorted in
 memory.
@@ -31,7 +32,17 @@ across territories.
 - **Invoice link** (`invoiceId` set): amount = the invoice total at creation, in cents. Only a
   sent/viewed, unexpired ZAR invoice qualifies. Description `Invoice INV-…`.
 - **Ad-hoc link**: amount and description typed by the operator. Integer cents, R0.01–R1,000,000.
+- One open link per invoice: creating again returns the existing active, unpaid link. A
+  deactivated or paid one doesn't count, so a new link can be made after deactivating.
 - No expiry. The operator can deactivate (no reactivate in PR1).
+
+## Test mode
+
+`livemode` is stamped from the connection (`sk_test_` → false) when the link is made. Test links
+are allowed — #1000 is proven in test mode by design — but they are labelled everywhere: the pay
+page shows "TEST MODE — no real money will be taken", and the list shows a TEST MODE badge. The
+reconciler stores Paystack's `domain` and refuses a transaction whose domain doesn't match the
+link's mode. There is no paid transition: it answers 200 and sets `attention` on the link.
 
 ## Flows
 
@@ -58,7 +69,8 @@ across territories.
 - Link missing, or `link.subAccountId` ≠ the webhook's sub-account → never paid, checked before
   Paystack is asked.
 - `GET /transaction/verify/:reference` with the tenant key. It must return `status: success`, the
-  same reference, `requested_amount === link.amountCents` and currency `ZAR`. `requested_amount`
+  same reference, `requested_amount === link.amountCents`, `amount >= requested_amount` (no
+  partial payment) and currency `ZAR`. `requested_amount`
   is used because `amount` includes the fees when the customer pays them (PaystackOSS/openapi
   `VerifyResponse`). The webhook body's own amount is never used.
 - **Not gated** on `paymentsEnabledByAgency`: money already taken is always recorded.
@@ -66,8 +78,15 @@ across territories.
   successful payment with a different reference is added to `extraPayments` in the same
   transaction, once only, and the list shows "Paid twice — refund owed". It never overwrites
   the first payment.
-- The invoice step runs **only on the first paid transition**, so overlapping deliveries fire
-  the invoice's workflow and review triggers once. The step first re-checks the invoice. If it
+- The invoice step runs **at least once**, and its side effects fire **exactly once**. The link
+  commits paid first. The invoice step then ends by writing `invoiceSettledAt` (with any
+  `attention`). If the process dies in between, or the step throws, the route answers 503.
+  The redelivery arrives as a replay of the link's own reference, finds the link unsettled
+  (no `invoiceSettledAt` and no `attention`), and runs the step again. It is safe to repeat
+  because `markQuotePaidServerSide` checks and writes in one Firestore transaction
+  (compare-and-set), and only the winner fires the activity, trigger, webhook and review ask.
+  That also covers two links for one invoice, or a link racing the manual Mark as paid. The
+  side effects after the commit never throw. The step first re-checks the invoice. If it
   is missing, already paid, or its total or currency no longer match the link, the link stays
   paid and gets an `attention` message, and the invoice is not marked paid. Otherwise it calls
   `markQuotePaidServerSide`, the same path as the manual button and the Stripe reconciler. A

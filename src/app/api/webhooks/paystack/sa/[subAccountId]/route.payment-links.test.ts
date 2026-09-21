@@ -119,13 +119,67 @@ describe("charge.success → payment link paid", () => {
     expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
   });
 
-  it("does not touch the invoice on a replay — only the first paid transition does", async () => {
+  it("does not touch an invoice already settled for this link on a replay", async () => {
     seedInvoice();
-    seedLink("link1", { invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: REF });
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: REF, invoiceSettledAt: new Date() });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an invoice step that already ended in attention", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: REF, attention: "x" });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+  });
+
+  it("stamps invoiceSettledAt once the invoice is marked paid", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+  });
+
+  it("finishes the invoice on redelivery after dying between the link commit and the invoice step", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    // First delivery: the invoice read and the attention write both fail —
+    // a correlated Firestore outage right after the link committed paid.
+    const realDoc = mem.db.doc;
+    let quoteReads = 0;
+    let linkUpdates = 0;
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      const r = realDoc(path);
+      if (path === "quotes/inv1") {
+        return { ...r, get: () => (++quoteReads === 1 ? Promise.reject(new Error("unavailable")) : r.get()) };
+      }
+      if (path === "paymentLinks/link1") {
+        return { ...r, update: (p: Record<string, unknown>) => (++linkUpdates === 1 ? Promise.reject(new Error("unavailable")) : r.update(p)) };
+      }
+      return r;
+    });
+    expect((await deliver()).status).toBe(503);
+    expect(link()).toMatchObject({ status: "paid" });
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    spy.mockRestore();
+
+    await deliver();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
+    await deliver();
+    expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a partial payment: amount below requested_amount", async () => {
+    verifyAnswer = () => verified({ reference: REF, amount: 40_000, requested_amount: 45_000 });
+    await deliver();
+    expect(link().status).toBe("open");
   });
 
   it("still records the payment when the agency has since switched Payments off", async () => {
@@ -144,6 +198,28 @@ describe("charge.success → payment link paid", () => {
     verifyAnswer = () => verified({ reference: REF, amount: 45_000, requested_amount: 100 });
     await deliver();
     expect(link().status).toBe("open");
+  });
+});
+
+describe("test mode vs live mode", () => {
+  it("records a test-mode payment on a test-mode link, with Paystack's domain", async () => {
+    await deliver();
+    expect(link()).toMatchObject({ status: "paid", paystackDomain: "test" });
+  });
+
+  it("refuses a test-mode transaction on a live link — flagged, never paid, 200", async () => {
+    seedLink("link1", { livemode: true });
+    verifyAnswer = () => verified({ reference: REF, domain: "test" });
+    expect((await deliver()).status).toBe(200);
+    expect(link().status).toBe("open");
+    expect(link().attention).toMatch(/test/i);
+  });
+
+  it("refuses a live transaction on a test link", async () => {
+    verifyAnswer = () => verified({ reference: REF, domain: "live" });
+    await deliver();
+    expect(link().status).toBe("open");
+    expect(link().attention).toBeTruthy();
   });
 });
 
@@ -208,14 +284,37 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
-  it("flags the link when marking the invoice throws, and still answers 200", async () => {
+  it("a failing side effect after the invoice's paid commit neither flags nor retries", async () => {
     seedInvoice();
     seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     effects.recordQuoteActivity.mockRejectedValueOnce(new Error("boom"));
     expect((await deliver()).status).toBe(200);
-    expect(link().status).toBe("paid");
-    expect(link().attention).toBeTruthy();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(link().attention ?? null).toBeNull();
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes the attention on redelivery when the first attention write failed", async () => {
+    seedInvoice("inv1", { globalTaxPercent: null }); // changed since the link
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    const realDoc = mem.db.doc;
+    let linkUpdates = 0;
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      const r = realDoc(path);
+      return path === "paymentLinks/link1"
+        ? { ...r, update: (p: Record<string, unknown>) => (++linkUpdates === 1 ? Promise.reject(new Error("unavailable")) : r.update(p)) }
+        : r;
+    });
+    expect((await deliver()).status).toBe(503);
+    expect(link().attention ?? null).toBeNull();
+    spy.mockRestore();
+    await deliver();
+    expect(link().attention).toMatch(/changed/i);
+    expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
   });
 
   it("leaves a clean invoice payment unflagged", async () => {

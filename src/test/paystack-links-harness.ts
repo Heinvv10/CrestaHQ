@@ -27,7 +27,7 @@ export function seedSub(subAccountId = SA, secretKey = KEY) {
   mem.seed(`subAccounts/${subAccountId}`, {
     agencyId: AGENCY,
     paymentsEnabledByAgency: true,
-    paystackConnectionMeta: { webhookSeenAt: null },
+    paystackConnectionMeta: { webhookSeenAt: null, livemode: false },
   });
   mem.seed(`subAccounts/${subAccountId}/private/paystackConnection`, { secretKey });
 }
@@ -62,6 +62,7 @@ export function seedLink(id = "link1", over: Record<string, unknown> = {}) {
     token: "unused",
     active: true,
     status: "open",
+    livemode: false,
     paystackReference: null,
     payerEmail: null,
     paidAt: null,
@@ -113,6 +114,7 @@ export function verified(over: Record<string, unknown> & { reference: string }) 
       status: true,
       data: {
         status: "success",
+        domain: "test",
         amount,
         requested_amount: amount,
         currency: "ZAR",

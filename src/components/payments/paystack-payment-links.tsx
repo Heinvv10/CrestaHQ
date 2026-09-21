@@ -133,6 +133,11 @@ export function PaystackPaymentLinks() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  {!link.livemode && (
+                    <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
+                      TEST MODE — no real money
+                    </Badge>
+                  )}
                   {link.status === "paid" ? (
                     <Badge>Paid</Badge>
                   ) : link.active ? (

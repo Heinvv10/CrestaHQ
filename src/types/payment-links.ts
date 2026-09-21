@@ -48,6 +48,21 @@ export interface PaymentLink {
   amountCents: number;
   currency: typeof PAYMENT_LINK_CURRENCY;
 
+  /**
+   * The Paystack key's mode when the link was made (`sk_live_` vs `sk_test_`).
+   * A test link takes no real money; the pay page and list say so, and the
+   * reconciler refuses a transaction from the other mode.
+   */
+  livemode: boolean;
+  /** Paystack's `domain` ("test" | "live") on the verified transaction. */
+  paystackDomain?: string | null;
+  /**
+   * Set when the invoice step finished — invoice marked paid, already paid,
+   * or refused with `attention`. Unset on a paid invoice link means the step
+   * never finished, and a redelivery runs it again.
+   */
+  invoiceSettledAt?: Timestamp | FieldValue | Date | null;
+
   /** Signed path segment of the public URL, `/pay/link/{token}`. */
   token: string;
   /** False once the operator deactivates it. A deactivated link opens no

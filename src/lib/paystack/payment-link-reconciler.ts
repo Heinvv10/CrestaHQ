@@ -106,51 +106,78 @@ export async function reconcilePaystackCharge(input: {
           ? `reference=${tx.reference}`
           : amount !== link.amountCents
             ? `amount=${amount} expected=${link.amountCents}`
-            : (tx.currency ?? "").toUpperCase() !== link.currency
-              ? `currency=${tx.currency} expected=${link.currency}`
-              : null;
+            : tx.amount < amount
+              ? `partial amount=${tx.amount} requested=${amount}`
+              : (tx.currency ?? "").toUpperCase() !== link.currency
+                ? `currency=${tx.currency} expected=${link.currency}`
+                : null;
     if (mismatch) {
       console.error(`${tag} not marking paid: ${mismatch}`);
       return { handled: false, detail: `mismatch ${mismatch}` };
     }
 
-    const outcome = await db.runTransaction(async (t) => {
+    // A test-mode transaction must never settle a live link, nor the reverse.
+    // Unlike the mismatches above this is a real, verified transaction on the
+    // tenant's own account, so the operator is told on the link.
+    if ((tx.domain === "live") !== (link.livemode === true)) {
+      const attention = `A ${tx.domain ?? "unknown"}-mode payment arrived for this ${link.livemode ? "live" : "test"}-mode link and was not recorded. Check Paystack.`;
+      console.error(`${tag} mode mismatch domain=${tx.domain} livemode=${link.livemode}`);
+      if (link.status !== "paid") {
+        await ref.update({ attention, updatedAt: FieldValue.serverTimestamp() });
+      }
+      return { handled: false, detail: "mode mismatch" };
+    }
+
+    const { outcome, current } = await db.runTransaction(async (t) => {
       const fresh = (await t.get(ref)).data() as PaymentLink | undefined;
       if (fresh?.status !== "paid") {
         t.update(ref, {
           status: "paid",
           paystackReference: reference,
+          paystackDomain: tx.domain ?? null,
           payerEmail: tx.customer?.email ?? null,
           paidAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
-        return "paid";
+        return { outcome: "paid" as const, current: fresh ?? link };
       }
-      if (fresh.paystackReference === reference) return "replay";
+      if (fresh.paystackReference === reference) return { outcome: "replay" as const, current: fresh };
       // The customer paid twice (two tabs). Recorded so the operator sees a
       // refund is owed; a redelivery of the same second payment adds nothing.
-      if ((fresh.extraPayments ?? []).some((p) => p.reference === reference)) return "replay";
+      if ((fresh.extraPayments ?? []).some((p) => p.reference === reference)) {
+        return { outcome: "duplicate-replay" as const, current: fresh };
+      }
       t.update(ref, {
         extraPayments: FieldValue.arrayUnion({ reference, amountCents: amount, paidAt: new Date() }),
         updatedAt: FieldValue.serverTimestamp(),
       });
-      return "duplicate";
+      return { outcome: "duplicate" as const, current: fresh };
     });
 
     if (outcome === "duplicate") {
-      console.error(`${tag} link ${linkId} already paid by ${link.paystackReference}; second payment needs a refund`);
+      console.error(`${tag} link ${linkId} already paid by ${current.paystackReference}; second payment needs a refund`);
       return { handled: true, detail: "duplicate payment recorded" };
     }
-    if (outcome === "replay") return { handled: true, detail: "already recorded (idempotent no-op)" };
+    if (outcome === "duplicate-replay") return { handled: true, detail: "duplicate already recorded" };
 
-    // First paid transition only. A replay never reaches here, so overlapping
-    // deliveries cannot fire the invoice's workflow / review triggers twice.
+    // The invoice step must run AT LEAST once: the process can die between
+    // the paid commit above and the settle below. So a replay of this link's
+    // own reference re-runs it until it reaches an end state. Exactly-once
+    // side effects come from markQuotePaidServerSide's compare-and-set.
+    const unsettled = !!link.invoiceId && !current.invoiceSettledAt && !current.attention;
+    if (outcome === "replay" && !unsettled) {
+      return { handled: true, detail: "already recorded (idempotent no-op)" };
+    }
     if (link.invoiceId) {
+      // Throws on a transient failure: the route answers 503 and the
+      // redelivery lands in the `unsettled` branch above.
       const attention = await settleInvoice(link, subAccountId);
-      if (attention) {
-        console.warn(`${tag} invoice ${link.invoiceId}: ${attention}`);
-        await ref.update({ attention, updatedAt: FieldValue.serverTimestamp() });
-      }
+      if (attention) console.warn(`${tag} invoice ${link.invoiceId}: ${attention}`);
+      await ref.update({
+        invoiceSettledAt: FieldValue.serverTimestamp(),
+        ...(attention ? { attention } : {}),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
     }
     return { handled: true, detail: `link ${linkId} paid` };
   } catch (err) {
@@ -162,30 +189,32 @@ export async function reconcilePaystackCharge(input: {
 /**
  * Mark the link's invoice paid through the shared paid path, if it still is
  * the invoice the customer paid. Returns why not, for the operator — the money
- * is already in their account either way.
+ * is already in their account either way. Throws only on a transient failure,
+ * which the caller turns into a redelivery.
  */
 async function settleInvoice(link: PaymentLink, subAccountId: string): Promise<string | null> {
-  try {
-    const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
-    if (!quote || quote.subAccountId !== subAccountId) {
-      return "Paid, but the invoice no longer exists. Record this payment by hand.";
-    }
-    if (quote.status === "paid") {
-      return "Paid, but the invoice was already paid another way — a refund may be owed.";
-    }
-    if (
-      (quote.currency || "").toUpperCase() !== link.currency ||
-      invoiceTotalCents(quote) !== link.amountCents
-    ) {
-      return "Paid, but the invoice changed after this link was made, so it was not marked paid. Check the amount and mark it by hand.";
-    }
-    const res = await markQuotePaidServerSide({
-      quoteId: link.invoiceId!,
-      expectSubAccountId: subAccountId,
-    });
-    return res.ok ? null : `Paid, but the invoice could not be marked paid: ${res.message}.`;
-  } catch (err) {
-    console.error(`[paystack/payment-links] invoice ${link.invoiceId} settle failed`, err);
-    return "Paid, but updating the invoice failed part-way. Check the invoice and mark it paid if it isn't.";
+  const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
+  if (!quote || quote.subAccountId !== subAccountId) {
+    return "Paid, but the invoice no longer exists. Record this payment by hand.";
   }
+  if (quote.status === "paid") {
+    return "Paid, but the invoice was already paid another way — a refund may be owed.";
+  }
+  if (
+    (quote.currency || "").toUpperCase() !== link.currency ||
+    invoiceTotalCents(quote) !== link.amountCents
+  ) {
+    return "Paid, but the invoice changed after this link was made, so it was not marked paid. Check the amount and mark it by hand.";
+  }
+  const res = await markQuotePaidServerSide({
+    quoteId: link.invoiceId!,
+    expectSubAccountId: subAccountId,
+  });
+  // already_paid here means another caller won the race since the read
+  // above (a second link, the manual button) — same outcome as the read.
+  return res.ok
+    ? null
+    : res.code === "already_paid"
+      ? "Paid, but the invoice was already paid another way — a refund may be owed."
+      : `Paid, but the invoice could not be marked paid: ${res.message}.`;
 }
