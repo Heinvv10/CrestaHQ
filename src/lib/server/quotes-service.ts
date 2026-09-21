@@ -15,8 +15,10 @@ import type { Quote } from "@/types/quotes";
  * Quotes service — the single server-side path that flips a quote/invoice to
  * `paid` and runs its side-effects.
  *
- * Extracted so the Stripe order reconciler and the operator's manual
- * "Mark as paid" button drive the SAME transition. Payments v1's rule was that
+ * Extracted so the Stripe order reconciler, the Paystack payment-link
+ * reconciler and the operator's manual "Mark as paid" button drive the SAME
+ * transition — a compare-and-set, so when they race exactly one fires the
+ * side effects. Payments v1's rule was that
  * a card payment must not invent a second paid-path — otherwise the activity
  * row, the `quote.paid` workflow trigger, the outbound webhook, and the
  * auto Google-review request all drift between the two.
@@ -36,51 +38,69 @@ export async function markQuotePaidServerSide(input: {
 }): Promise<MarkQuotePaidOutcome> {
   const db = getAdminDb();
   const ref = db.collection("quotes").doc(input.quoteId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    return { ok: false, code: "not_found", message: "Quote not found" };
-  }
-  const quote = snap.data() as Quote;
-  if (quote.subAccountId !== input.expectSubAccountId) {
-    return {
-      ok: false,
-      code: "wrong_tenant",
-      message: "Quote belongs to a different sub-account",
-    };
-  }
-  // Idempotent: a replayed Stripe event, or a double-click on Mark as paid,
-  // must not re-fire the workflow trigger or send a second review request.
-  if (quote.status === "paid") {
-    return { ok: false, code: "already_paid", message: "Already marked paid" };
-  }
 
-  const allowed =
-    quote.kind === "invoice"
-      ? quote.status === "sent" || quote.status === "viewed"
-      : quote.status === "accepted";
-  if (!allowed) {
-    return {
-      ok: false,
-      code: "bad_status",
-      message:
-        quote.kind === "invoice"
-          ? `Only sent invoices can be marked paid. Current status: ${quote.status}`
-          : `Only accepted quotes can be marked paid. Current status: ${quote.status}`,
-    };
-  }
+  // Check and write in ONE transaction (compare-and-set). Four callers can
+  // race — the button, the Stripe reconciler, Paystack links (two links for
+  // one invoice, or a redelivered webhook) — and only the caller whose write
+  // commits may fire the side effects below. A check outside the transaction
+  // let two callers both see "sent" and both fire the trigger.
+  const outcome = await db.runTransaction(async (tx): Promise<MarkQuotePaidOutcome | Quote> => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      return { ok: false, code: "not_found", message: "Quote not found" };
+    }
+    const quote = snap.data() as Quote;
+    if (quote.subAccountId !== input.expectSubAccountId) {
+      return {
+        ok: false,
+        code: "wrong_tenant",
+        message: "Quote belongs to a different sub-account",
+      };
+    }
+    // Idempotent: a replayed payment event, or a double-click on Mark as
+    // paid, must not re-fire the workflow trigger or send a second review
+    // request.
+    if (quote.status === "paid") {
+      return { ok: false, code: "already_paid", message: "Already marked paid" };
+    }
 
-  await ref.update({
-    status: "paid",
-    paidAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
+    const allowed =
+      quote.kind === "invoice"
+        ? quote.status === "sent" || quote.status === "viewed"
+        : quote.status === "accepted";
+    if (!allowed) {
+      return {
+        ok: false,
+        code: "bad_status",
+        message:
+          quote.kind === "invoice"
+            ? `Only sent invoices can be marked paid. Current status: ${quote.status}`
+            : `Only accepted quotes can be marked paid. Current status: ${quote.status}`,
+      };
+    }
+
+    tx.update(ref, {
+      status: "paid",
+      paidAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return quote;
   });
+  if ("ok" in outcome) return outcome;
+  const quote = outcome;
 
   const withId = { ...quote, id: input.quoteId, status: "paid" as const };
 
-  // Side-effects swallow their own errors — a stale activity write must not
-  // fail a payment that already succeeded.
-  await recordQuoteActivity(withId, "quote_marked_paid");
-  await fireQuoteTrigger(withId, "quote_marked_paid");
+  // The paid write has committed; nothing below may turn that into a thrown
+  // error. A caller that saw a throw would retry, find "already_paid", and
+  // could never tell it was the one that won. Each effect is caught on its
+  // own so one failing does not skip the next.
+  await recordQuoteActivity(withId, "quote_marked_paid").catch((err: unknown) =>
+    console.error(`[quotes-service] activity failed quote=${input.quoteId}`, err),
+  );
+  await fireQuoteTrigger(withId, "quote_marked_paid").catch((err: unknown) =>
+    console.error(`[quotes-service] trigger failed quote=${input.quoteId}`, err),
+  );
   void emitQuoteWebhook(withId, "quote_marked_paid");
   void maybeSendReviewRequest({
     subAccountId: quote.subAccountId,

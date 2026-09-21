@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createMemoryFirestore } from "@/test/memory-firestore";
+
 /**
  * The quote-paid → review-request seam (E2E 7's quote-paid half, which a
  * browser spec cannot drive without a real send). `markQuotePaidServerSide`
@@ -10,18 +12,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * WhatsApp rails) are proven in src/lib/reviews/*.test.ts.
  */
 
-const docs = new Map<string, Record<string, unknown>>();
-vi.mock("@/lib/firebase/admin", () => ({
-  getAdminDb: () => ({
-    collection: (c: string) => ({
-      doc: (id: string) => ({
-        get: async () => ({ exists: docs.has(`${c}/${id}`), data: () => docs.get(`${c}/${id}`) }),
-        update: async (patch: Record<string, unknown>) => void docs.set(`${c}/${id}`, { ...docs.get(`${c}/${id}`), ...patch }),
-      }),
-    }),
-  }),
-}));
-vi.mock("firebase-admin/firestore", () => ({ FieldValue: { serverTimestamp: () => "SERVER_TS" } }));
+// In-memory Firestore: markQuotePaidServerSide checks and writes in one
+// transaction, which the earlier hand-rolled fake had no support for.
+const mem = createMemoryFirestore();
+vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/quotes/lifecycle", () => ({
   recordQuoteActivity: async () => {},
   fireQuoteTrigger: async () => {},
@@ -30,27 +24,27 @@ vi.mock("@/lib/quotes/lifecycle", () => ({
 const dispatcher = vi.hoisted(() => ({ send: vi.fn(async () => ({ sent: false, reason: "not_configured" })) }));
 vi.mock("@/lib/reviews/request", () => ({ maybeSendReviewRequest: dispatcher.send }));
 
-import { markQuotePaidServerSide } from "./quotes-service";
+const { markQuotePaidServerSide } = await import("./quotes-service");
 
 const QUOTE = { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", kind: "quote", status: "accepted" };
 
 beforeEach(() => {
-  docs.clear();
+  mem.clear();
   dispatcher.send.mockClear();
 });
 
 describe("quote paid → review request", () => {
   it("marking a quote paid asks for a review with trigger quote_paid", async () => {
-    docs.set("quotes/q1", { ...QUOTE });
+    mem.seed("quotes/q1", { ...QUOTE });
     expect(await markQuotePaidServerSide({ quoteId: "q1", expectSubAccountId: "sa1" })).toMatchObject({ ok: true });
     expect(dispatcher.send).toHaveBeenCalledTimes(1);
     expect(dispatcher.send).toHaveBeenCalledWith({ subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "quote_paid" });
   });
 
   it("a refused mark-paid asks for nothing", async () => {
-    docs.set("quotes/paid", { ...QUOTE, status: "paid" });
-    docs.set("quotes/draft", { ...QUOTE, status: "draft" });
-    docs.set("quotes/other", { ...QUOTE, subAccountId: "sa_other" });
+    mem.seed("quotes/paid", { ...QUOTE, status: "paid" });
+    mem.seed("quotes/draft", { ...QUOTE, status: "draft" });
+    mem.seed("quotes/other", { ...QUOTE, subAccountId: "sa_other" });
     for (const quoteId of ["paid", "draft", "other", "missing"]) {
       expect(await markQuotePaidServerSide({ quoteId, expectSubAccountId: "sa1" })).toMatchObject({ ok: false });
     }
