@@ -321,6 +321,12 @@ any message reaching a real person" always keeps a human gate), satisfied here
 structurally rather than by discipline. Autonomous customer sends are out of
 scope for this design.
 
+> **SUPERSEDED 2026-09-08** — see
+> [`2026-09-08-multi-sender-whatsapp-design.md`](2026-09-08-multi-sender-whatsapp-design.md)
+> ruling 1. Autonomous sends are now in scope, gated per sender: replies to a
+> customer-initiated conversation are unrestricted, openers are budgeted, and
+> the bridge default stays reply-only.
+
 ### LeadStack changes
 
 | File | Change |
@@ -344,6 +350,15 @@ matching the existing Twilio WhatsApp webhook behaviour.
 **Selecting `bridge` is agency-owner-only.** `twilio` ↔ `cloud` is a commercial
 choice a sub-account admin may make. Moving to an unofficial rail carries ban
 risk and legal exposure and must be a deliberate agency decision.
+
+> **SUPERSEDED 2026-09-08** by
+> [`2026-09-08-multi-sender-whatsapp-design.md`](2026-09-08-multi-sender-whatsapp-design.md).
+> Workflow sends ARE carried on this rail, bounded by a per-sender opener
+> budget rather than refused outright: the +063 evidence below is about cold
+> OPENERS at volume, not about automation as such. Everything downstream of a
+> customer's own reply satisfies reply-only and was never the danger. Templates
+> and broadcasts remain refused. The paragraph is kept because its reasoning is
+> still the reason the budget exists.
 
 **No templates, no broadcasts, no workflow sends on this rail — ever.** The seam
 already refuses templates. Extend this: workflow `send_whatsapp` steps and
