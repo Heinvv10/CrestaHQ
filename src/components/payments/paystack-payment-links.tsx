@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Lock, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyablePayUrl } from "@/components/payments/copyable-pay-url";
@@ -20,21 +20,21 @@ import type { PaymentLink } from "@/types/payment-links";
 export function PaystackPaymentLinks() {
   const { user, loading: authLoading } = useAuth();
   const { subAccountId, subAccount } = useSubAccount();
-  const [links, setLinks] = useState<PaymentLink[]>([]);
+  const [links, setLinks] = useState<PaymentLink[] | null>(null);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const ready =
-    subAccount?.paymentsEnabledByAgency === true && !!subAccount?.paystackConnectionMeta;
+  const gateOn = subAccount?.paymentsEnabledByAgency === true;
+  const ready = gateOn && !!subAccount?.paystackConnectionMeta;
 
   useEffect(() => {
-    if (authLoading || !user || !subAccountId) return;
+    if (authLoading || !user || !subAccountId || !gateOn) return;
     return subscribeToPaymentLinks(subAccountId, setLinks, (err) =>
       setError(`Couldn't load payment links: ${err.message}`),
     );
-  }, [user, authLoading, subAccountId]);
+  }, [user, authLoading, subAccountId, gateOn]);
 
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -75,6 +75,18 @@ export function PaystackPaymentLinks() {
     }
   };
 
+  if (!gateOn) {
+    return (
+      <section className="rounded-2xl border border-dashed bg-card/50 p-8 text-center">
+        <Lock className="mx-auto h-5 w-5 text-muted-foreground" />
+        <p className="mx-auto mt-3 max-w-md text-sm text-muted-foreground">
+          Locked by your agency. Once Payments is enabled you can connect your
+          own Paystack account and send payment links.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {ready ? (
@@ -101,7 +113,11 @@ export function PaystackPaymentLinks() {
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {links.length === 0 ? (
+      {links === null ? (
+        <Card className="p-8 text-center text-sm text-muted-foreground">
+          <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+        </Card>
+      ) : links.length === 0 ? (
         <Card className="p-8 text-center text-sm text-muted-foreground">No payment links yet.</Card>
       ) : (
         <div className="space-y-3">
@@ -131,6 +147,15 @@ export function PaystackPaymentLinks() {
                   )}
                 </div>
               </div>
+              {(link.extraPayments?.length ?? 0) > 0 && (
+                <p className="text-sm text-destructive">
+                  Paid twice — refund owed:{" "}
+                  {link.extraPayments!
+                    .map((p) => formatCurrency(p.amountCents / 100, link.currency) + " (" + p.reference + ")")
+                    .join(", ")}
+                </p>
+              )}
+              {link.attention && <p className="text-sm text-destructive">{link.attention}</p>}
               {link.status === "open" && link.active && <CopyablePayUrl token={link.token} />}
             </Card>
           ))}

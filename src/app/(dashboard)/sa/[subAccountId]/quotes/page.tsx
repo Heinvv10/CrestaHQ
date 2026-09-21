@@ -18,7 +18,7 @@ import type { Contact } from "@/types/contacts";
  */
 export default function QuotesPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, saPath } = useSubAccount();
+  const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
   const [contacts, setContacts] = useState<Contact[]>([]);
 
   useEffect(() => {
@@ -55,13 +55,15 @@ export default function QuotesPage() {
             <Repeat className="h-4 w-4" />
             Recurring
           </Button>
-          <Button
-            variant="ghost"
-            render={<Link href={saPath("/quotes/payment-links")} />}
-          >
-            <Link2 className="h-4 w-4" />
-            Payment links
-          </Button>
+          {subAccount?.paymentsEnabledByAgency === true && (
+            <Button
+              variant="ghost"
+              render={<Link href={saPath("/quotes/payment-links")} />}
+            >
+              <Link2 className="h-4 w-4" />
+              Payment links
+            </Button>
+          )}
           <Button
             variant="outline"
             render={<Link href={saPath("/quotes/new")} />}
