@@ -2,7 +2,7 @@ import type { Timestamp, FieldValue } from "firebase/firestore";
 import type { LeadForm } from "./forms";
 import type { Product } from "./products";
 import type { MessageTemplateDoc } from "./automations";
-import type { WorkflowDoc } from "./workflows";
+import type { WorkflowDoc, WorkflowFolder } from "./workflows";
 import type { AiAgentProfile } from "./ai";
 import type { CustomFieldDef } from "./custom-fields";
 
@@ -72,6 +72,13 @@ export type SnapshotWorkflow = Captured<
 >;
 
 /**
+ * A workflow-list folder minus tenancy. A captured workflow's `folderId`
+ * holds the SOURCE folder id; apply mints fresh folders and remaps it through
+ * `sourceId` (a folder id the payload does not carry lands Unfiled).
+ */
+export type SnapshotWorkflowFolder = Captured<Pick<WorkflowFolder, "name" | "order">>;
+
+/**
  * A custom-field definition minus tenancy. `key` is unique per (subAccount,
  * entity) and is what `contact.customFields` / `deal.customFields` are keyed
  * by, so apply skips any key the target already defines rather than minting a
@@ -109,6 +116,8 @@ export interface SnapshotPayload {
   messageTemplates: SnapshotMessageTemplate[];
   products: SnapshotProduct[];
   workflows: SnapshotWorkflow[];
+  /** Absent on snapshots captured before workflow folders existed. */
+  workflowFolders?: SnapshotWorkflowFolder[];
   /** Absent on v1 snapshots captured before these were added. */
   customFields?: SnapshotCustomField[];
   /** Absent on v1 snapshots, and on sub-accounts with no persona set. */

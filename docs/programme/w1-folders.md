@@ -47,7 +47,11 @@ conservatively below, with the alternative that was rejected.
 - `workflows-list.test.ts` — renders the real list: legacy doc (no
   `folderId`) and orphaned doc under Unfiled; Unfiled last; folder order;
   failed folder load toasts and still shows every workflow.
-- `snapshots/workflow-folders.test.ts` — see the snapshot commit.
+- `snapshots/workflow-folders.test.ts` — real capture → apply: target folders
+  are new ids (a target folder sharing a SOURCE id is untouched and gets
+  nothing), every workflow points at one of them or Unfiled; the same through
+  the portable path (share link / exported + re-parsed file) with re-minted
+  ids; a payload with no folders lands every workflow Unfiled.
 - `e2e/specs/workflow-folders.spec.ts` — create, move, rename, delete on the
   fixture tenant with Firestore checked at each step.
 
