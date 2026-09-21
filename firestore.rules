@@ -560,6 +560,13 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // Workflow folders: server-only like the workflows they organise —
+      // the list reads and writes them through the member-gated
+      // /api/sub-accounts/[id]/workflow-folders routes.
+      match /workflowFolders/{folderId} {
+        allow read, write: if false;
+      }
+
       // Saved smart lists (contacts-list filters). Member-writable like
       // contact notes — a list is a view, not customer data — with the
       // tenant keys pinned on create and locked on update.

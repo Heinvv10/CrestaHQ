@@ -6,7 +6,9 @@ import {
   updateWorkflowServerSide,
   type WorkflowPatch,
 } from "@/lib/server/workflows-service";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { ADDABLE_TYPES } from "@/lib/workflows/catalog";
+import { isFolderId } from "@/lib/workflows/folders";
 import type { WorkflowNode, WorkflowNodeType } from "@/types/workflows";
 
 export const dynamic = "force-dynamic";
@@ -101,6 +103,22 @@ export async function PATCH(
       return NextResponse.json({ error: "Invalid nodes" }, { status: 400 });
     }
     patch.nodes = nodes;
+  }
+  // Move between folders. The folder is looked up under THIS sub-account's
+  // path, so another sub-account's folder id is simply not found — 404, with
+  // nothing written and nothing said about whether it exists elsewhere.
+  if (body.folderId === null) {
+    patch.folderId = null;
+  } else if (body.folderId !== undefined) {
+    const folder = isFolderId(body.folderId)
+      ? await getAdminDb()
+          .doc(`subAccounts/${subAccountId}/workflowFolders/${body.folderId}`)
+          .get()
+      : null;
+    if (!folder?.exists) {
+      return NextResponse.json({ error: "Folder not found" }, { status: 404 });
+    }
+    patch.folderId = folder.id;
   }
 
   const ok = await updateWorkflowServerSide({ subAccountId, workflowId, patch });

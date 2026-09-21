@@ -30,7 +30,8 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   subAccount+entity), so a key the target already defines is skipped rather than
   redefined — two definitions would fight over the same `contact.customFields`
   slot. Their `folderId` is stripped on capture: custom-field folders do not
-  travel in a snapshot yet, so every applied field lands in General; and the **AI persona** lives at the fixed path `aiAgent/profile`, written
+  travel in a snapshot yet, so every applied field lands in General (workflow
+  `folderId` is stripped the same way — applied workflows land Unfiled); and the **AI persona** lives at the fixed path `aiAgent/profile`, written
   only when the target has none, so apply can never replace a tuned live agent.
 - **What deliberately does NOT travel in the persona** ({@link SnapshotAiProfile}):
   `businessName` (source client's trading name — blanked so the prompt falls back

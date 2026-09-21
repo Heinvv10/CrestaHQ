@@ -94,8 +94,10 @@ export async function captureSnapshot(
   const products = productsSnap.docs.map(
     (d) => stripDoc(d.id, d.data()) as unknown as SnapshotProduct,
   );
+  // Workflow folders do not travel either (same reason as custom-field
+  // folders below): a copied `folderId` would dangle, so workflows land Unfiled.
   const workflows = workflowsSnap.docs.map(
-    (d) => stripDoc(d.id, d.data(), ["stats"]) as unknown as SnapshotWorkflow,
+    (d) => stripDoc(d.id, d.data(), ["stats", "folderId"]) as unknown as SnapshotWorkflow,
   );
 
   // `folderId` points at a source-only folder doc; folders do not travel

@@ -391,6 +391,8 @@ export interface WorkflowPatch {
   reentry?: WorkflowReentry;
   nodes?: Record<string, WorkflowNode>;
   startNodeId?: string | null;
+  /** Caller has already checked the folder belongs to this sub-account. */
+  folderId?: string | null;
 }
 
 export async function updateWorkflowServerSide(opts: {
@@ -413,6 +415,7 @@ export async function updateWorkflowServerSide(opts: {
   if (patch.reentry !== undefined) write.reentry = patch.reentry;
   if (patch.nodes !== undefined) write.nodes = patch.nodes;
   if (patch.startNodeId !== undefined) write.startNodeId = patch.startNodeId;
+  if (patch.folderId !== undefined) write.folderId = patch.folderId;
   await ref.update(write);
   return true;
 }
