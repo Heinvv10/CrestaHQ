@@ -20,3 +20,26 @@ describe("startAfter", () => {
     await expect(mem.db.collection("log").where("kind", "==", "y").startAfter(cursor).get()).rejects.toThrow(/cursor/);
   });
 });
+
+describe("batch", () => {
+  it("applies nothing until commit, then everything", async () => {
+    const mem = createMemoryFirestore();
+    const b = mem.db.batch();
+    b.set(mem.db.doc("a/1"), { n: 1 });
+    b.create(mem.db.doc("a/2"), { n: 2 });
+    expect(mem.read("a/1")).toBeUndefined();
+    await b.commit();
+    expect([mem.read("a/1"), mem.read("a/2")]).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it("is all-or-nothing: a failing create leaves the other writes unapplied", async () => {
+    const mem = createMemoryFirestore();
+    mem.seed("a/2", { n: 0 });
+    const b = mem.db.batch();
+    b.set(mem.db.doc("a/1"), { n: 1 });
+    b.create(mem.db.doc("a/2"), { n: 2 });
+    await expect(b.commit()).rejects.toThrow(/ALREADY_EXISTS/);
+    expect(mem.read("a/1")).toBeUndefined();
+    expect(mem.read("a/2")).toEqual({ n: 0 });
+  });
+});

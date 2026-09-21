@@ -19,6 +19,7 @@ import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import type { WebhookEventType } from "@/types/webhooks";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { GLOBAL_TERRITORY_ID } from "@/types";
+import { appendStageEntry, type StageMoveSource } from "./deal-stage-history";
 
 /**
  * Server-side Deal write service — the single chokepoint where a deal is
@@ -193,6 +194,8 @@ export interface CreateDealInput {
   agencyId: string;
   createdByUid: string;
   mode: Mode;
+  /** Entry point, stamped on the stage-history row. */
+  source: StageMoveSource;
   title: string;
   value: number;
   currency: string;
@@ -246,7 +249,16 @@ export async function createDealServerSide(
     updatedAt: FieldValue.serverTimestamp(),
     stageChangedAt: FieldValue.serverTimestamp(),
   };
-  await ref.set(doc);
+  const batch = db.batch();
+  batch.set(ref, doc);
+  appendStageEntry(db, batch, {
+    dealId: ref.id,
+    deal: doc,
+    previous: null,
+    byUid: input.createdByUid,
+    source: input.source,
+  });
+  await batch.commit();
 
   await writePipelineActivity(input.contactId, {
     content: `Deal "${input.title}" created in ${getStage(input.stageId, stages).label}`,
@@ -360,78 +372,119 @@ export async function updateDealServerSide(opts: {
    * move_stage can refuse to extend a cycle (see the engine's execMoveStage).
    */
   workflowDepth?: number;
+  /** Entry point, stamped on the stage-history row. */
+  source: StageMoveSource;
 }): Promise<DealWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`deals/${opts.dealId}`);
-  const snap = await ref.get();
-  if (!snap.exists) return null;
-  if (
-    opts.expectedSubAccountId !== undefined &&
-    snap.data()?.subAccountId !== opts.expectedSubAccountId
-  ) {
-    return null;
-  }
+  // Read + write in one transaction so the history row's fromStageId is the
+  // stage the deal actually left, even under concurrent moves.
+  const planned = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    if (
+      opts.expectedSubAccountId !== undefined &&
+      snap.data()?.subAccountId !== opts.expectedSubAccountId
+    ) {
+      return null;
+    }
+    const existing = snap.data()!;
+    const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
+    const previousStage = existing.stageId as PipelineStageId | undefined;
+    const { patch } = opts;
+    const previousPipelineId = dealPipelineId(existing);
+    const pipelineId = patch.pipelineId ?? previousPipelineId;
+    const pipeline = await loadPipeline(existing.subAccountId, pipelineId);
+    if (!pipeline) {
+      throw new DealStageError("invalid_pipeline", `Pipeline "${pipelineId}" not found.`);
+    }
+    const stages = pipeline.stages;
+    const terminalOf = (stageId: string | undefined) =>
+      stageId ? findStage(pipeline, stageId)?.terminal : undefined;
+    if (patch.pipelineId !== undefined && patch.stageId === undefined && !patch.terminal) {
+      throw new DealStageError("invalid_stage", "A pipeline move needs a stageId.");
+    }
+    const nextStageId =
+      patch.stageId !== undefined || patch.terminal
+        ? resolveStage(pipeline, pipelineId, patch).id
+        : undefined;
 
-  const existing = snap.data()!;
-  const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
-  const previousStage = existing.stageId as PipelineStageId | undefined;
-  const { patch } = opts;
-  const previousPipelineId = dealPipelineId(existing);
-  const pipelineId = patch.pipelineId ?? previousPipelineId;
-  const pipeline = await loadPipeline(existing.subAccountId, pipelineId);
-  if (!pipeline) {
-    throw new DealStageError("invalid_pipeline", `Pipeline "${pipelineId}" not found.`);
-  }
-  const stages = pipeline.stages;
-  const terminalOf = (stageId: string | undefined) =>
-    stageId ? findStage(pipeline, stageId)?.terminal : undefined;
-  if (patch.pipelineId !== undefined && patch.stageId === undefined && !patch.terminal) {
-    throw new DealStageError("invalid_stage", "A pipeline move needs a stageId.");
-  }
-  const nextStageId =
-    patch.stageId !== undefined || patch.terminal
-      ? resolveStage(pipeline, pipelineId, patch).id
+    const write: Record<string, unknown> = {
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (patch.title !== undefined) write.title = patch.title;
+    if (patch.value !== undefined) write.value = patch.value;
+    if (patch.currency !== undefined) write.currency = patch.currency;
+    if (patch.priority !== undefined) write.priority = patch.priority;
+    if (patch.contactId !== undefined) write.contactId = patch.contactId;
+    if (patch.territoryId !== undefined) write.territoryId = patch.territoryId;
+    if (patch.assignedToUid !== undefined) write.assignedToUid = patch.assignedToUid;
+    if (patch.customFields !== undefined) write.customFields = patch.customFields;
+    if (patch.completed !== undefined) {
+      write.completed = patch.completed;
+      write.completedAt = patch.completed ? FieldValue.serverTimestamp() : null;
+    }
+
+    const stageChanged =
+      (nextStageId !== undefined && nextStageId !== previousStage) ||
+      pipelineId !== previousPipelineId;
+    const nextTerminal = stageChanged
+      ? terminalOf(nextStageId ?? previousStage)
       : undefined;
-
-  const write: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (patch.title !== undefined) write.title = patch.title;
-  if (patch.value !== undefined) write.value = patch.value;
-  if (patch.currency !== undefined) write.currency = patch.currency;
-  if (patch.priority !== undefined) write.priority = patch.priority;
-  if (patch.contactId !== undefined) write.contactId = patch.contactId;
-  if (patch.territoryId !== undefined) write.territoryId = patch.territoryId;
-  if (patch.assignedToUid !== undefined) write.assignedToUid = patch.assignedToUid;
-  if (patch.customFields !== undefined) write.customFields = patch.customFields;
-  if (patch.completed !== undefined) {
-    write.completed = patch.completed;
-    write.completedAt = patch.completed ? FieldValue.serverTimestamp() : null;
-  }
-
-  const stageChanged =
-    (nextStageId !== undefined && nextStageId !== previousStage) ||
-    pipelineId !== previousPipelineId;
-  const nextTerminal = stageChanged
-    ? terminalOf(nextStageId ?? previousStage)
-    : undefined;
-  // Always stamp the pipeline so a pre-pipeline deal gains it on first edit.
-  write.pipelineId = pipelineId;
-  if (nextStageId !== undefined) {
-    write.stageId = nextStageId;
-    if (stageChanged) {
-      write.stageChangedAt = FieldValue.serverTimestamp();
-      // Mirror the old client `moveDeal`: set the reason moving INTO lost,
-      // clear it moving back OUT of lost.
-      if (nextTerminal === "lost") {
-        write.lostReason = patch.lostReason?.trim() || null;
-      } else if (existing.lostReason) {
-        write.lostReason = null;
+    // Always stamp the pipeline so a pre-pipeline deal gains it on first edit.
+    write.pipelineId = pipelineId;
+    if (nextStageId !== undefined) {
+      write.stageId = nextStageId;
+      if (stageChanged) {
+        write.stageChangedAt = FieldValue.serverTimestamp();
+        // Mirror the old client `moveDeal`: set the reason moving INTO lost,
+        // clear it moving back OUT of lost.
+        if (nextTerminal === "lost") {
+          write.lostReason = patch.lostReason?.trim() || null;
+        } else if (existing.lostReason) {
+          write.lostReason = null;
+        }
       }
     }
-  }
 
-  await ref.set(write, { merge: true });
+    tx.set(ref, write, { merge: true });
+    if (stageChanged) {
+      appendStageEntry(db, tx, {
+        dealId: ref.id,
+        deal: { ...existing, ...write },
+        previous: existing,
+        byUid: opts.userId,
+        source: opts.source,
+      });
+    }
+    return {
+      existing,
+      mode,
+      previousStage,
+      pipelineId,
+      pipeline,
+      stages,
+      terminalOf,
+      stageChanged,
+      nextStageId,
+      nextTerminal,
+      write,
+    };
+  });
+  if (!planned) return null;
+  const {
+    existing,
+    mode,
+    previousStage,
+    pipelineId,
+    pipeline,
+    stages,
+    terminalOf,
+    stageChanged,
+    nextStageId,
+    nextTerminal,
+    write,
+  } = planned;
 
   const fresh = await ref.get();
   const data = fresh.data()!;

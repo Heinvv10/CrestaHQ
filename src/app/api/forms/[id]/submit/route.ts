@@ -7,6 +7,7 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { serializeContactForApi } from "@/lib/api/serializers/contacts";
 import { emitContactCreatedById } from "@/lib/server/contacts-service";
 import { emitDealCreatedById } from "@/lib/server/deals-service";
+import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import {
   EMPTY_LOCATION,
   ipFromRequest,
@@ -437,7 +438,8 @@ async function handleSubmit(
     const title =
       interpolate(form.settings.dealTitleTemplate || "New lead", bag) ||
       "New lead";
-    const dealRef = await db.collection("deals").add({
+    const dealRef = db.collection("deals").doc();
+    const deal = {
       title,
       value: form.settings.dealValue || 0,
       currency: form.settings.dealCurrency || "USD",
@@ -454,7 +456,17 @@ async function handleSubmit(
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       stageChangedAt: FieldValue.serverTimestamp(),
+    };
+    const batch = db.batch();
+    batch.set(dealRef, deal);
+    appendStageEntry(db, batch, {
+      dealId: dealRef.id,
+      deal,
+      previous: null,
+      byUid: submissionCreatedBy,
+      source: "form",
     });
+    await batch.commit();
     dealId = dealRef.id;
   }
 

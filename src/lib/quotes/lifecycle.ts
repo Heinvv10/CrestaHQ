@@ -15,6 +15,7 @@ import { formatCurrency } from "@/lib/format";
 import type { ActivityType } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
 import { GLOBAL_TERRITORY_ID, type AutomationTriggerType } from "@/types";
+import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import type { Quote } from "@/types/quotes";
 
 /**
@@ -196,6 +197,7 @@ export async function applyDealOutcomeForAcceptedQuote(
         // The id was validated at link time, but the deal could have been
         // re-homed since — never progress a deal outside this tenant.
         expectedSubAccountId: quote.subAccountId,
+        source: "quote",
       });
       if (moved) return;
       console.warn(
@@ -255,8 +257,9 @@ export async function autoCreateDealForAcceptedQuote(
       territoryId = GLOBAL_TERRITORY_ID;
     }
 
-    const ref = getAdminDb().collection("deals").doc();
-    await ref.set({
+    const db = getAdminDb();
+    const ref = db.collection("deals").doc();
+    const deal = {
       title: `Quote ${quote.quoteNumber} accepted`,
       value: totals.total,
       currency: quote.currency,
@@ -274,7 +277,17 @@ export async function autoCreateDealForAcceptedQuote(
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       stageChangedAt: FieldValue.serverTimestamp(),
+    };
+    const batch = db.batch();
+    batch.set(ref, deal);
+    appendStageEntry(db, batch, {
+      dealId: ref.id,
+      deal,
+      previous: null,
+      byUid: quote.createdByUid,
+      source: "quote",
     });
+    await batch.commit();
 
     // Mirror the pipeline_moved activity the operator's manual flow
     // would write, so the contact timeline reads naturally.
