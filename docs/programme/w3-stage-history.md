@@ -8,8 +8,8 @@ held only `stageChangedAt`, the time it entered its current stage. Each move ove
 
 | PR | Scope | State |
 |---|---|---|
-| PR1 | History row written in the same commit as every stage-changing write, tested through each entry point | this PR |
-| PR2 | Reports: median time-in-stage, conversion, velocity on the Reports page (inline SVG). One number reconciled against a raw Firestore count | after PR1 merges |
+| PR1 | History row written in the same commit as every stage-changing write, tested through each entry point | merged (#180) |
+| PR2 | Reports: median time-in-stage, conversion, velocity on the Reports page's Stages tab (inline SVG), reconciled against a hand-counted fixture | this PR |
 | — | Backfill from `stageChangedAt`: dry-run script only, labelled as an estimate. A production write needs Hein | after PR2 |
 
 ## The row
@@ -98,21 +98,77 @@ Each decision was made without an interactive grill. The rejected alternative is
     another sub-account or moved to another pipeline before the commit is judged by where
     it is at commit.
 
+## Report definitions (PR2)
+
+`GET /api/sub-accounts/[id]/reports/stage-history?pipelineId=&from=&to=` (epoch ms) reads,
+and [`src/lib/reports/stage-history.ts`](../../src/lib/reports/stage-history.ts) computes.
+The Reports page's **Stages** tab shows the result for the page's range and a chosen pipeline.
+
+**Rows read:** this sub-account, `mode == "live"`, `enteredAt` in `[from, to]`, every pipeline
+and every source, at most 5,000 (past that the report says it is partial and covers the
+earliest rows). The cap applies to rows *scanned*, before the territory filter, so a scoped
+collaborator can get zero visible rows from a truncated scan; the page then says the scan was
+partial rather than showing the empty state. A territory-scoped collaborator keeps only rows whose `territoryId` is one of
+theirs or `global`, the same test as the deal read rule. **Import rows** are read but only ever
+end a stay: they never time a stay, count as an entry, or count as a win (decision 7).
+
+- **Median time in stage S** — over rows with `fromPipelineId = P`, `fromStageId = S`, a
+  non-null `fromStageEnteredAt`, not import: `enteredAt − fromStageEnteredAt`. So a stay
+  counts when it *ends* in range, even if it began before the range. A deal that enters S
+  twice has two stays. Even counts average the two middle values.
+- **Still in S** — deals whose latest row in range entered S of P, **import rows included**:
+  a deal imported straight into S that never moved counts. It is therefore not a subset of
+  *Entered S* (which leaves imports out) and can exceed it. These deals are not in the
+  median; a censored stay would pull it down.
+- **Entered S** — distinct deals with a non-import row entering S of P in range.
+- **Conversion from S** — of the deals that entered S, how many have a later non-import row
+  entering a stage of P further along than S (after their first entry to S). Stage order is
+  the pipeline's own order with lost stages left out; the last stage has no conversion.
+  Moving to another pipeline is not an advance.
+- **Velocity** — distinct deals whose first non-import win (a `terminal: "won"` stage of P)
+  is in range, and the median from each one's creation row (`fromStageId: null`, not import)
+  to that win. The creation row may predate the range, so it is fetched by `dealId`. Deals
+  created before history began, or created by an import, have no creation time and are shown
+  as "N of M deals have a recorded creation".
+
 ## Rules, indexes and reads
 
-None in PR1. Rows are written only by the Admin SDK, and the default-deny catch-all in
-`firestore.rules` already blocks client reads and writes. PR2 adds the read path and its
-composite index (see decision 1). Reads must respect deal territory scoping. Each row carries
-the deal's `territoryId`, so either a client rule can mirror the deal rule
-(`canSeeScopedDoc(subAccountId, agencyId, territoryId)`) or a server route can apply the
-same filter. PR2 chooses one. **Nothing to deploy for PR1.**
+Rows stay deny-all to clients (the default-deny catch-all). PR2 reads them only through the
+authenticated route above (`requireSubAccountMember` + `loadEffectiveTerritoryScope`).
+*Rejected:* a client rule mirroring `canSeeScopedDoc`: the report needs every row in range
+anyway, so a client listener would move the same reads to the browser and add a rule surface.
+
+Composite indexes added in PR2 (`firestore.indexes.json`, deploy is Hein-gated):
+
+| Fields | Query |
+|---|---|
+| `subAccountId` ASC, `mode` ASC, `enteredAt` ASC | rows in range (decision 1's composite). `source` and `pipelineId` are filtered in memory, because import rows must be read to end stays and a pipeline's stays can be ended by rows landing in another pipeline |
+| `subAccountId` ASC, `dealId` ASC | creation rows of the won deals (`dealId in [≤30]`) |
+
+The second index may be unnecessary. Firestore's index docs say `in` queries and compound `==`
+queries are served by the automatic single-field indexes (index merging). That covers
+`subAccountId ==` + `dealId in` with no `orderBy`, but the docs do not show the two combined, and
+it was not tried against a real project. It is kept because a missing index fails the whole
+report with `FAILED_PRECONDITION`, while an extra one costs one index entry per history row.
+Drop it once the query has been run without it.
+
+## Decisions (PR2)
+
+12. **Scope by the row's territory, not the deal's current one.** A row carries the deal's
+    territory at the move. A deal later re-homed keeps its old rows under the old territory.
+    This needs no deal read, and deleted deals still count.
+13. **Moves of deleted deals count.** Rows outlive deals (decision 6), and the moves happened.
+14. **Velocity is time, not money.** Rows carry no value (decision 6), so the classic
+    `deals × win rate × value ÷ cycle` is not computable from history alone. The report shows
+    wins and median days created → won instead.
+15. **A median, not a mean.** One stale deal would dominate a mean.
 
 ## Open items for PR2 / backfill
 
 - Deals that existed before this ships have no rows. The backfill estimates one entry row per
   deal from `stageChangedAt` and marks it (`source: "backfill"`, estimate).
-- `deleteSubAccountForAgency` does not yet clear `dealStageHistory`. The rows hold no PII,
-  but PR2 should add the collection to the clean-up.
+- `deleteSubAccountForAgency` does not yet clear `dealStageHistory`. The rows hold no PII.
+  Left out of PR2 (a reports PR should not change a delete path); still open.
 - `updateDealServerSide` and the v1 PATCH call `loadPipeline` inside the transaction
   callback. It runs again on every retry, and for a sub-account that has not yet seeded its
   default pipeline it may nest `ensureDefaultPipeline`'s own transaction. That is correct
@@ -121,6 +177,12 @@ same filter. PR2 chooses one. **Nothing to deploy for PR1.**
   data is ever used to demo reports.
 - Row retention: rows are never deleted (see decision 6 and the sub-account clean-up above).
   Decide a retention policy if the collection grows large.
+- **Creation-row lookup cost.** Velocity reads each won deal's rows by `dealId` (chunks of
+  30, in parallel): one query per 30 wins, reading every row of those deals, not just the
+  creation row. Fine at current volumes; a `fromStageId == null` filter plus an index would
+  cut the reads if it grows.
+- **No rate limit** on the report route. Each call reads up to 5,000 rows plus the velocity
+  lookups, and it is member-gated only.
 - `createdByUid` on rows is not always a uid: it can be `apikey:<prefix>` or the workflow
   owner, and for imports it is the operator who ran the import. Reports that resolve names must handle every one of these.
 - The v1 PATCH now opens a transaction for field-only edits as well. That costs one extra
