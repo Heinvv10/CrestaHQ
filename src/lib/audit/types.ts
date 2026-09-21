@@ -19,12 +19,15 @@ export const AUDIT_ACTOR_TYPES = [
   "workflow",
   "ai_agent",
   "cron",
+  // Server-side processes with no user behind them: inbound-message hooks,
+  // imports. `id` names the process, e.g. "inbound-whatsapp" or "qcontact-import".
+  "system",
 ] as const;
 export type AuditActorType = (typeof AUDIT_ACTOR_TYPES)[number];
 
 /**
  * `id` is the uid for a user, the key id (never the secret) for an API key,
- * the workflow id, the AI agent id, or the cron job name.
+ * the workflow id, the AI agent id, the cron job name, or the system process name.
  */
 export interface AuditActor {
   type: AuditActorType;

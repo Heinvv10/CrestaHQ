@@ -48,9 +48,29 @@ const GATE_FIELDS: Record<AgencyGateField, true> = {
   googleCalendarEnabledByAgency: true,
 };
 
+/**
+ * How one field's values may be stored: an explicit list of values, or
+ * "staffUid" for a field that holds a staff member's uid (e.g. an
+ * `assignedToUid` from/to), stored as-is when it is shaped like a uid.
+ * Staff identity is resolved from the uid at read time, so the uid itself is
+ * what the trail needs; a customer's uid or contact id never goes in such a field.
+ */
+export type AuditFieldRule = readonly AuditStoredValue[] | "staffUid";
+
+/** Firebase Auth uids: letters, digits, `_`/`-`. No `@`, spaces or dots. */
+const UID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function storedValue(rule: AuditFieldRule | undefined, value: AuditInputValue): AuditStoredValue {
+  if (value === undefined || value === null) return null;
+  if (rule === "staffUid") {
+    return typeof value === "string" && UID_SHAPE.test(value) ? value : REDACTED;
+  }
+  return rule?.includes(value) ? value : REDACTED;
+}
+
 export const AUDIT_ALLOWED_VALUES: Record<
   AuditAction,
-  Readonly<Record<string, readonly AuditStoredValue[]>>
+  Readonly<Record<string, AuditFieldRule>>
 > = {
   "feature_gates.updated": Object.fromEntries(
     Object.keys(GATE_FIELDS).map((field) => [field, GATE_VALUES])
@@ -64,11 +84,8 @@ export function auditValue(
   field: string,
   value: AuditInputValue
 ): AuditStoredValue {
-  if (value === undefined || value === null) return null;
-  const allowed = Object.hasOwn(AUDIT_ALLOWED_VALUES[action], field)
-    ? AUDIT_ALLOWED_VALUES[action][field]
-    : [];
-  return allowed.includes(value) ? value : REDACTED;
+  const rules = AUDIT_ALLOWED_VALUES[action];
+  return storedValue(Object.hasOwn(rules, field) ? rules[field] : undefined, value);
 }
 
 function isNonEmptyString(v: unknown): v is string {

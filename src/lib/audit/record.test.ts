@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { REDACTED, auditValue, recordAuditEvent } from "./record";
+import { REDACTED, auditValue, recordAuditEvent, storedValue } from "./record";
 import type { AuditEventInput } from "./types";
 
 vi.mock("firebase-admin/firestore", () => ({
@@ -161,5 +161,37 @@ describe("auditValue", () => {
     ["member.role_changed", "constructor", "admin", REDACTED],
   ] as const)("%s %s %j -> %j", (action, field, input, expected) => {
     expect(auditValue(action, field, input)).toBe(expected);
+  });
+});
+
+describe("storedValue: a staffUid field", () => {
+  it.each([
+    ["uid_owner", "uid_owner"],
+    ["Xk3fP9qLm2RtYv7WbN4cD8eHj1A2", "Xk3fP9qLm2RtYv7WbN4cD8eHj1A2"],
+    [null, null],
+    [undefined, null],
+    ["jane@example.com", REDACTED],
+    ["Jane Smith", REDACTED],
+    ["velocityfibre.co.za", REDACTED],
+    ["+27821234567", REDACTED],
+    ["", REDACTED],
+    ["a".repeat(129), REDACTED],
+    [42, REDACTED],
+    [true, REDACTED],
+  ] as const)("%j -> %j", (input, expected) => {
+    expect(storedValue("staffUid", input)).toBe(expected);
+  });
+
+  it("a value list stays a value list: a uid in a listed field is redacted", () => {
+    expect(storedValue(["admin"], "uid_owner")).toBe(REDACTED);
+    expect(storedValue(undefined, "uid_owner")).toBe(REDACTED);
+  });
+});
+
+describe("the system actor", () => {
+  it("is accepted, with createdByUid null", async () => {
+    await recordAuditEvent(db, event({ actor: { type: "system", id: "inbound-whatsapp" } }));
+    expect(written[0].data.actor).toEqual({ type: "system", id: "inbound-whatsapp" });
+    expect(written[0].data.createdByUid).toBeNull();
   });
 });
