@@ -61,3 +61,27 @@ describe("overlapping mark-paid calls", () => {
     expect(mem.read("quotes/inv1")!.paidVia).toBeNull();
   });
 });
+
+describe("expected total and currency, checked inside the compare-and-set", () => {
+  const INV = {
+    subAccountId: "sa1", agencyId: "ag1", contactId: "c1", kind: "invoice", status: "sent", currency: "ZAR",
+    lineItems: [{ id: "li1", description: "Install", quantity: 1, unitPrice: 1000 }], globalDiscount: null, globalTaxPercent: 15,
+  };
+
+  it("marks paid when the invoice still totals what the caller expects", async () => {
+    mem.seed("quotes/inv1", INV);
+    const res = await markQuotePaidServerSide({ quoteId: "inv1", expectSubAccountId: "sa1", expectTotalCents: 115000, expectCurrency: "ZAR" });
+    expect(res.ok).toBe(true);
+  });
+
+  it.each([
+    ["total", { expectTotalCents: 100000, expectCurrency: "ZAR" }],
+    ["currency", { expectTotalCents: 115000, expectCurrency: "USD" }],
+  ])("refuses with amount_changed when the %s differs, and fires nothing", async (_l, expect_) => {
+    mem.seed("quotes/inv1", INV);
+    const res = await markQuotePaidServerSide({ quoteId: "inv1", expectSubAccountId: "sa1", ...expect_ });
+    expect(res).toMatchObject({ ok: false, code: "amount_changed" });
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
+  });
+});

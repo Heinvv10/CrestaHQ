@@ -1171,11 +1171,14 @@ service cloud.firestore {
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       );
+      // `paidVia` (which payment rail marked it paid) is Admin-SDK-only: the
+      // Paystack reconciler trusts it to tell its own payment from one made
+      // another way, so a member forging it could hide a refund owed.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      );
+      ) && !("paidVia" in request.resource.data);
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1184,7 +1187,8 @@ service cloud.firestore {
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
-        );
+        )
+        && request.resource.data.get("paidVia", null) == resource.data.get("paidVia", null);
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,

@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { computeQuoteTotals } from "@/lib/quotes/calc";
 import {
   emitQuoteWebhook,
   fireQuoteTrigger,
@@ -31,7 +32,7 @@ export type MarkQuotePaidOutcome =
   | { ok: true; quote: Quote & { id: string } }
   | {
       ok: false;
-      code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status";
+      code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status" | "amount_changed";
       message: string;
       /** On `already_paid`: who paid it, so a retrying caller can tell its
        *  own earlier success from someone else's. */
@@ -44,6 +45,14 @@ export async function markQuotePaidServerSide(input: {
   expectSubAccountId: string;
   /** Recorded on the quote with the paid write. Omitted = none (manual). */
   paidVia?: QuotePaidVia;
+  /**
+   * What the caller was paid for, in cents and ISO currency. Checked inside
+   * the transaction, so an invoice edited after the caller's own read is
+   * refused (`amount_changed`) rather than marked paid on a short payment.
+   * Omitted = not checked (the manual button, Stripe).
+   */
+  expectTotalCents?: number;
+  expectCurrency?: string;
 }): Promise<MarkQuotePaidOutcome> {
   const db = getAdminDb();
   const ref = db.collection("quotes").doc(input.quoteId);
@@ -90,6 +99,19 @@ export async function markQuotePaidServerSide(input: {
           quote.kind === "invoice"
             ? `Only sent invoices can be marked paid. Current status: ${quote.status}`
             : `Only accepted quotes can be marked paid. Current status: ${quote.status}`,
+      };
+    }
+
+    if (
+      (input.expectTotalCents !== undefined &&
+        Math.round(computeQuoteTotals(quote).total * 100) !== input.expectTotalCents) ||
+      (input.expectCurrency !== undefined &&
+        (quote.currency || "").toUpperCase() !== input.expectCurrency.toUpperCase())
+    ) {
+      return {
+        ok: false,
+        code: "amount_changed",
+        message: "The invoice total or currency changed since it was paid for",
       };
     }
 

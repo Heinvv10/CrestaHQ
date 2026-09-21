@@ -160,8 +160,9 @@ async function applySourceEffects(order: Order): Promise<void> {
     if (order.source === "quote" && order.quoteId) {
       // Routes through the SAME service the operator's "Mark as paid" button
       // uses, so the activity row, `quote.paid` workflow trigger, outbound
-      // webhook, and auto review-request all fire exactly once and identically.
-      // Its own idempotency guard makes a replayed Stripe event a no-op.
+      // webhook, and auto review-request fire identically — at most once, and
+      // only for the caller that wins its compare-and-set (a crash after the
+      // commit skips them). A replayed Stripe event gets already_paid.
       const res = await markQuotePaidServerSide({
         quoteId: order.quoteId,
         expectSubAccountId: order.subAccountId,
