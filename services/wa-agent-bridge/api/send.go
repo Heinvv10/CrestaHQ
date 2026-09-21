@@ -1,13 +1,18 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/videocodec"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/store"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/wa"
@@ -17,6 +22,89 @@ type sendBody struct {
 	To             string `json:"to"`
 	Text           string `json:"text"`
 	IdempotencyKey string `json:"idempotencyKey"`
+	// HumanReply marks a message an operator typed in a thread. It relaxes
+	// quiet hours, and only while the contact is still inside an open session
+	// — see rails.checkQuietHours. Absent means false, which is the safe
+	// default: a consumer that forgets the field gets the full guard.
+	HumanReply bool `json:"humanReply"`
+	// Media is an optional attachment. Absent means a plain text message, which
+	// is byte-for-byte the request every existing consumer already sends.
+	Media *mediaBody `json:"media"`
+}
+
+// mediaBody is the wire form of an attachment: base64 because the send body is
+// JSON and always has been, and a multipart variant of this endpoint would be a
+// second send path with its own copy of the rails wiring.
+type mediaBody struct {
+	Filename   string `json:"filename"`
+	MimeType   string `json:"mimeType"`
+	DataBase64 string `json:"dataBase64"`
+}
+
+// mediaError is a rejected attachment: an HTTP status and a stable machine
+// code, so a consumer can tell "this file is too big" from "we do not send
+// this type" from "your base64 is broken" without matching on prose.
+type mediaError struct {
+	status int
+	code   string
+	msg    string
+}
+
+// decodeMedia validates and decodes an attachment, or explains why it will not.
+//
+// It runs BEFORE the rails are consulted, deliberately. An unsupported file is
+// a caller bug, and evaluating it first would spend an idempotency reservation
+// and a cap slot on a message that was never going to be sent — the contact's
+// daily allowance would shrink every time somebody attached the wrong thing.
+func decodeMedia(m *mediaBody) (*rails.Media, *mediaError) {
+	if m == nil {
+		return nil, nil
+	}
+	filename := strings.TrimSpace(m.Filename)
+	if filename == "" {
+		return nil, &mediaError{http.StatusBadRequest, "media_invalid",
+			"media.filename is required; a document with no name arrives as an unnamed blob"}
+	}
+	// The name is not the payload and is not covered by the size cap, but it
+	// is copied onto the outgoing message twice, so it needs its own bound.
+	if len(filename) > maxMediaFilenameBytes {
+		return nil, &mediaError{http.StatusBadRequest, "media_invalid",
+			fmt.Sprintf("media.filename is %d bytes; the limit is %d", len(filename), maxMediaFilenameBytes)}
+	}
+	// Lowercased and stripped of any "; charset=" parameter before the
+	// allow-list is consulted, so "IMAGE/PNG" is admitted and — more to the
+	// point — "image/png; x=y" cannot slip past a map lookup that only ever
+	// saw the bare type.
+	mime := strings.ToLower(strings.TrimSpace(m.MimeType))
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	if !allowedMediaMimeTypes[mime] {
+		return nil, &mediaError{http.StatusUnsupportedMediaType, "media_unsupported_type",
+			"media.mimeType is not one this bridge sends"}
+	}
+	data, err := base64.StdEncoding.DecodeString(m.DataBase64)
+	if err != nil {
+		return nil, &mediaError{http.StatusBadRequest, "media_invalid",
+			"media.dataBase64 is not valid base64"}
+	}
+	if len(data) == 0 {
+		return nil, &mediaError{http.StatusBadRequest, "media_invalid",
+			"media.dataBase64 decoded to nothing"}
+	}
+	if len(data) > maxMediaBytes {
+		return nil, &mediaError{http.StatusRequestEntityTooLarge, "media_too_large",
+			fmt.Sprintf("attachment is %d bytes; the limit is %d", len(data), maxMediaBytes)}
+	}
+	// An MP4 WhatsApp cannot play is sent without complaint and then fails on
+	// the recipient's phone, so its codecs are read before it is admitted.
+	// After the size cap, so an oversize file is never parsed at all.
+	if mime == "video/mp4" {
+		if refusal := videocodec.Check(data); refusal != nil {
+			return nil, &mediaError{http.StatusBadRequest, refusal.Code, refusal.Message}
+		}
+	}
+	return &rails.Media{Filename: filename, MimeType: mime, Data: data}, nil
 }
 
 func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer config.Consumer) {
@@ -31,8 +119,19 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if body.To == "" || body.Text == "" {
+	// A file may go without a caption; only a send with neither is empty.
+	if body.To == "" || (body.Text == "" && body.Media == nil) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "to and text are required"})
+		return
+	}
+	// Bounded here rather than left to the body cap. The body cap is sized for
+	// base64 attachments and says nothing about how long the queue will hold
+	// the socket mutex pacing this message out — see maxTextRunes.
+	if n := utf8.RuneCountInString(body.Text); n > maxTextRunes {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":    false,
+			"code":  "text_too_long",
+			"error": fmt.Sprintf("text is %d characters; the limit is %d", n, maxTextRunes)})
 		return
 	}
 	if body.IdempotencyKey == "" {
@@ -45,12 +144,35 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		return
 	}
 
+	media, mediaErr := decodeMedia(body.Media)
+	if mediaErr != nil {
+		// Neither the bytes NOR the filename: a filename on this rail is
+		// customer data ("audit-for-<company>.pdf"), which is why wa.upload
+		// keeps it out of its error too. Logging it raw here would also have
+		// defeated maxMediaFilenameBytes — the one rejection that exists
+		// BECAUSE a filename can be megabytes long was the one writing it to
+		// the log in full. redact.Body gives the length, which is what the
+		// code alone does not tell an operator.
+		log.Printf("send rejected consumer=%s to=%s filename=%s code=%s",
+			consumer.Name, redact.JID(body.To), redact.Body(body.Media.Filename), mediaErr.code)
+		writeJSON(w, mediaErr.status, map[string]any{
+			"ok": false, "error": mediaErr.msg, "code": mediaErr.code})
+		return
+	}
+
 	req := rails.SendRequest{
 		To:             body.To,
 		Text:           body.Text,
 		IdempotencyKey: body.IdempotencyKey,
 		Consumer:       consumer.Name,
 		Now:            s.deps.Now(),
+		HumanReply:     body.HumanReply,
+		// Carried on the evaluated request, so what the rails permitted and
+		// what reaches the socket are the same value. Every rail — reply-only,
+		// the allowlist, the per-contact and consecutive and daily caps, quiet
+		// hours, the kill switch — runs on this request exactly as it does for
+		// text, because none of them reads Media.
+		Media: media,
 	}
 	// Composed ONCE and reused for the reserve, the save and the release. Two
 	// call sites composing it independently is how the raw key sneaks back in
@@ -91,7 +213,9 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request, consumer con
 		return
 	}
 
-	msgID, sendErr := s.deps.Sender.Send(r.Context(), body.To, body.Text)
+	// req.Media, not the raw body: the value that passed the rails is the value
+	// that goes on the wire.
+	msgID, sendErr := s.deps.Sender.Send(r.Context(), body.To, body.Text, req.Media)
 	if sendErr != nil {
 		s.handleSendError(w, consumer, body, storageKey, sendErr)
 		return

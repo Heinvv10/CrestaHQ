@@ -9,30 +9,41 @@ import {
   type BuilderInitial,
   type BuilderReadiness,
 } from "./workflow-builder";
-import type { WhatsappTemplateOption } from "./node-config-dialog";
+import type {
+  WhatsappSenderOption,
+  WhatsappTemplateOption,
+} from "./node-config-dialog";
 import type { WhatsappTemplateVariable } from "@/types/whatsapp-templates";
 
 /**
  * Client loader for the builder. Fetches the workflow via the member-gated API
- * route, and the sub-account's forms (for the form-trigger picker) via the
- * client SDK. Keeps the page component a thin server shell.
+ * route, and the sub-account's forms (for the form-trigger picker) and tracked
+ * links (for the link-trigger picker) via the client SDK. Keeps the page
+ * component a thin server shell.
  *
- * `readiness` (which send-integrations can actually run) is computed on the
- * SERVER and passed in — env vars, the sub-account's twilioConfig, and the
- * approved-template inventory are all readable there, so doomed steps are
- * flagged deterministically rather than guessed from a defaults-open probe.
+ * Integration configuration and the WhatsApp sender list are computed on the
+ * server. The builder uses each node's requirements to flag missing configuration;
+ * runtime sender and recipient checks still apply when a workflow executes.
  */
 export function WorkflowBuilderLoader({
   saId,
   workflowId,
   readiness,
+  whatsappSenders,
 }: {
   saId: string;
   workflowId: string;
   readiness: BuilderReadiness;
+  whatsappSenders: WhatsappSenderOption[];
 }) {
   const [initial, setInitial] = useState<BuilderInitial | null>(null);
   const [forms, setForms] = useState<{ id: string; name: string }[]>([]);
+  const [trackedLinks, setTrackedLinks] = useState<
+    { id: string; name: string }[]
+  >([]);
+  const [bookingPages, setBookingPages] = useState<
+    { slug: string; name: string }[]
+  >([]);
   const [whatsappTemplates, setWhatsappTemplates] = useState<
     WhatsappTemplateOption[]
   >([]);
@@ -72,13 +83,45 @@ export function WorkflowBuilderLoader({
       try {
         const snap = await getDocs(
           query(
+            collection(getFirebaseDb(), "trackedLinks"),
+            where("subAccountId", "==", saId)
+          )
+        );
+        if (alive) {
+          setTrackedLinks(
+            snap.docs.map((doc) => ({
+              id: doc.id,
+              name: (doc.data().name as string) || "Untitled link",
+            }))
+          );
+        }
+      } catch {
+        /* links are optional — picker just shows "Any tracked link" */
+      }
+      try {
+        const snap = await getDocs(
+          collection(getFirebaseDb(), "subAccounts", saId, "bookingPages")
+        );
+        if (alive) {
+          setBookingPages(
+            snap.docs.map((doc) => ({
+              slug: doc.id,
+              name: (doc.data().name as string) || doc.id,
+            }))
+          );
+        }
+      } catch {
+        /* booking pages are optional — picker just shows "Any booking page" */
+      }
+      try {
+        const snap = await getDocs(
+          query(
             collection(
               getFirebaseDb(),
               "subAccounts",
               saId,
               "whatsappTemplates"
-            ),
-            where("status", "==", "approved")
+            )
           )
         );
         if (alive) {
@@ -90,6 +133,8 @@ export function WorkflowBuilderLoader({
                 displayName: (data.displayName as string) || "Template",
                 body: (data.body as string) || "",
                 variables: (data.variables as WhatsappTemplateVariable[]) ?? [],
+                approved: data.status === "approved",
+                hasButtons: Array.isArray(data.buttons) && data.buttons.length > 0,
               };
             })
           );
@@ -118,8 +163,11 @@ export function WorkflowBuilderLoader({
       saId={saId}
       initial={initial}
       forms={forms}
+      trackedLinks={trackedLinks}
+      bookingPages={bookingPages}
       readiness={readiness}
       whatsappTemplates={whatsappTemplates}
+      whatsappSenders={whatsappSenders}
     />
   );
 }

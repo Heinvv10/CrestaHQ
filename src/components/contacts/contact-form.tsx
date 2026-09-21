@@ -6,12 +6,22 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useSubAccount } from "@/context/sub-account-context";
 import { TerritorySelectField } from "@/components/settings/territory-select-field";
+import {
+  CompanyCombobox,
+  type CompanyValue,
+} from "@/components/contacts/company-combobox";
 import { CustomFieldInputs } from "@/components/custom-fields/custom-field-inputs";
 import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import { useCustomFieldFolders } from "@/hooks/use-custom-field-folders";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import {
+  CONTACT_IDENTITY_ERROR,
+  hasContactIdentity,
+} from "@/lib/contacts/display-name";
 import type { CustomFieldDef, CustomFieldValue } from "@/types/custom-fields";
 import type { Contact, ContactFormData, ContactSource } from "@/types/contacts";
 
@@ -50,17 +60,24 @@ export function ContactForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [email, setEmail] = useState(initial?.email ?? "");
   const [phone, setPhone] = useState(initial?.phone ?? "");
-  const [company, setCompany] = useState(initial?.company ?? "");
+  const [company, setCompany] = useState<CompanyValue>({
+    companyId: initial?.companyId ?? null,
+    company: initial?.company ?? "",
+  });
   const [address, setAddress] = useState(initial?.address ?? "");
   const [source, setSource] = useState<ContactSource>(initial?.source ?? "");
   const [tagsInput, setTagsInput] = useState((initial?.tags ?? []).join(", "));
   const [territoryId, setTerritoryId] = useState<string | null>(
-    initial?.territoryId ?? null,
+    initial?.territoryId ?? null
+  );
+  const [assignedToUid, setAssignedToUid] = useState<string | null>(
+    initial?.assignedToUid ?? null
   );
 
   const [cfDefs, setCfDefs] = useState<CustomFieldDef[]>([]);
+  const cfFolders = useCustomFieldFolders(subAccountId, "contact");
   const [cfValues, setCfValues] = useState<Record<string, CustomFieldValue>>(
-    (initial?.customFields ?? {}) as Record<string, CustomFieldValue>,
+    (initial?.customFields ?? {}) as Record<string, CustomFieldValue>
   );
 
   // Live custom-field definitions for contacts in this sub-account.
@@ -70,7 +87,7 @@ export function ContactForm({
       subAccountId,
       "contact",
       setCfDefs,
-      () => {},
+      () => {}
     );
     return () => unsub();
   }, [subAccountId]);
@@ -81,16 +98,23 @@ export function ContactForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const next: Record<string, string> = {};
-    if (!name.trim()) next.name = "Name is required";
-    if (!email.trim()) next.email = "Email is required";
-    else if (!EMAIL_RE.test(email.trim())) next.email = "Enter a valid email";
+    // WhatsApp-inbound contacts arrive nameless; a phone or email is enough
+    // to identify one, so the name is only required when both are empty.
+    if (!hasContactIdentity({ name, phone, email }))
+      next.name = CONTACT_IDENTITY_ERROR;
+    if (email.trim() && !EMAIL_RE.test(email.trim()))
+      next.email = "Enter a valid email";
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
-    const tags = tagsInput
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
+    const tags = [
+      ...new Set(
+        tagsInput
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean)
+      ),
+    ];
 
     // Validate + coerce custom-field values against the live definitions.
     const cf = validateCustomFieldValues(cfValues, cfDefs);
@@ -105,10 +129,12 @@ export function ContactForm({
         name: name.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        company: company.trim(),
+        company: company.company.trim(),
+        companyId: company.companyId,
         address: address.trim(),
         source,
         tags,
+        assignedToUid,
         customFields: cf.value,
       };
       // Only include territoryId when scoping is on AND (creating OR
@@ -128,9 +154,7 @@ export function ContactForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="c-name">
-          Full name <span className="text-destructive">*</span>
-        </Label>
+        <Label htmlFor="c-name">Full name</Label>
         <Input
           id="c-name"
           value={name}
@@ -139,14 +163,12 @@ export function ContactForm({
           aria-invalid={!!errors.name}
         />
         {errors.name && (
-          <p className="text-xs text-destructive">{errors.name}</p>
+          <p className="text-destructive text-xs">{errors.name}</p>
         )}
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="c-email">
-          Email <span className="text-destructive">*</span>
-        </Label>
+        <Label htmlFor="c-email">Email</Label>
         <Input
           id="c-email"
           type="email"
@@ -156,7 +178,7 @@ export function ContactForm({
           aria-invalid={!!errors.email}
         />
         {errors.email && (
-          <p className="text-xs text-destructive">{errors.email}</p>
+          <p className="text-destructive text-xs">{errors.email}</p>
         )}
       </div>
 
@@ -173,11 +195,10 @@ export function ContactForm({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="c-company">Company</Label>
-          <Input
+          <CompanyCombobox
             id="c-company"
             value={company}
-            onChange={(e) => setCompany(e.target.value)}
-            placeholder="Acme Inc."
+            onChange={setCompany}
           />
         </div>
       </div>
@@ -191,7 +212,7 @@ export function ContactForm({
           placeholder="Street, City, State, Postal, Country"
           rows={3}
         />
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           Auto-populates on quotes and invoices billed to this contact.
         </p>
       </div>
@@ -202,7 +223,7 @@ export function ContactForm({
           id="c-source"
           value={source}
           onChange={(e) => setSource(e.target.value as ContactSource)}
-          className="flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
+          className="border-input text-foreground focus-visible:border-ring focus-visible:ring-ring/50 dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground flex h-8 w-full rounded-lg border bg-transparent px-2.5 text-sm transition-colors outline-none focus-visible:ring-3"
         >
           {SOURCES.map((s) => (
             <option key={s.value} value={s.value}>
@@ -220,9 +241,18 @@ export function ContactForm({
           onChange={(e) => setTagsInput(e.target.value)}
           placeholder="lead, warm, 2026-q2"
         />
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           Separate tags with commas
         </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="c-assignee">Assigned to</Label>
+        <AssigneeSelect
+          id="c-assignee"
+          value={assignedToUid}
+          onChange={setAssignedToUid}
+        />
       </div>
 
       {/* Renders nothing when territory scoping is off. */}
@@ -237,12 +267,13 @@ export function ContactForm({
       {/* Operator-defined custom fields (renders nothing when none defined). */}
       {cfDefs.length > 0 && (
         <div className="space-y-4 border-t pt-4">
-          <p className="text-xs font-medium text-muted-foreground">
+          <p className="text-muted-foreground text-xs font-medium">
             Custom fields
           </p>
           <CustomFieldInputs
             idPrefix="c-cf"
             defs={cfDefs}
+            folders={cfFolders}
             values={cfValues}
             onChange={setCfValues}
           />

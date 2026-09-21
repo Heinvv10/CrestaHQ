@@ -42,12 +42,6 @@ const DELAY_BETWEEN_SENDS_MS = 1000 / SEND_RATE_PER_SECOND;
 const MAX_AUDIENCE_SIZE = 25_000;
 
 export async function POST(request: Request) {
-  if (!emailIsConfigured()) {
-    return NextResponse.json(
-      { error: "Email is not configured on this deployment." },
-      { status: 503 },
-    );
-  }
   if (!qstashIsConfigured()) {
     return NextResponse.json(
       { error: "QStash is not configured — bulk send needs the queue." },
@@ -109,6 +103,12 @@ export async function POST(request: Request) {
     );
   }
 
+  if (!emailIsConfigured(subSnap.data())) {
+    return NextResponse.json(
+      { error: "Email is not configured for this sub-account." },
+      { status: 503 },
+    );
+  }
   // Validate template — must exist, must be email, must contain unsubscribeLink.
   const templateSnap = await db
     .collection("message_templates")

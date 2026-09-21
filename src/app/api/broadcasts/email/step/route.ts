@@ -6,8 +6,10 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { qstashIsConfigured, verifyQStashSignature } from "@/lib/automations/qstash";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { checkQuota } from "@/lib/server/usage-meter";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { resolveMergeTags } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
+import { logIfReviewAsk } from "@/lib/reviews/review-ask";
 import type {
   AgencyDoc,
   BroadcastDoc,
@@ -50,16 +52,6 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-  if (!emailIsConfigured()) {
-    // Resend creds disappeared after the fan-out was scheduled. Returning
-    // 503 lets QStash retry; ops can re-enable the keys without losing the
-    // batch. Different from a per-recipient failure (which we record + 200).
-    return NextResponse.json(
-      { error: "Email is not configured." },
-      { status: 503 },
-    );
-  }
-
   const signature = request.headers.get("upstash-signature");
   if (!signature) {
     return NextResponse.json(
@@ -159,6 +151,9 @@ export async function POST(request: Request) {
   const subAccount = subAccountSnap.exists
     ? (subAccountSnap.data() as SubAccountDoc)
     : null;
+  if (!emailIsConfigured(subAccount)) {
+    return NextResponse.json({ error: "Email is not configured for this sub-account." }, { status: 503 });
+  }
   const agency = agencySnap.exists ? (agencySnap.data() as AgencyDoc) : null;
 
   // Owner snapshot for merge tags (matches the automation executor pattern).
@@ -181,6 +176,7 @@ export async function POST(request: Request) {
       name: contact.name,
       email: contact.email,
       phone: contact.phone,
+      customFields: contact.customFields ?? null,
     },
     owner: { displayName: ownerDisplayName, email: ownerEmail },
     workspace: { name: subAccount?.name ?? "" },
@@ -198,15 +194,18 @@ export async function POST(request: Request) {
 
   // HTML body: identical render as the automation executor — anchor-tag the
   // unsubscribe link, convert newlines to <br>, wrap in a minimal styled
-  // shell. v1 doesn't escape author content because templates are
-  // admin-authored, not user input.
+  // shell. The template BODY is admin-authored and rendered as written; the
+  // merge-tag VALUES substituted into it are not, and are escaped below.
   const htmlAnchor = unsubscribeLink
     ? `<a href="${unsubscribeLink}">Unsubscribe</a>`
     : "";
-  const htmlInner = resolveMergeTags(template.body, {
-    ...baseSubject,
-    unsubscribeLink: htmlAnchor,
-  }).replace(/\r?\n/g, "<br>");
+  // Substituted values are escaped for the HTML render (contact fields are
+  // untrusted free text); the unsubscribe anchor we build ourselves is not.
+  const htmlInner = resolveMergeTags(
+    template.body,
+    { ...baseSubject, unsubscribeLink: htmlAnchor },
+    { escape: "html", safeTags: ["unsubscribeLink"] },
+  ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
 
   // Monthly email quota (Usage Metering v1) — record the row as failed
@@ -224,21 +223,24 @@ export async function POST(request: Request) {
 
   let resendMessageId: string | null = null;
   let error: string | null = null;
+  let attempted = false;
   try {
     const result = await sendEmail({
+      contactId,
       to: contact.email,
       subject: subject || "(no subject)",
       text,
       html,
       replyTo: subAccount?.replyToEmail ?? undefined,
       from: tenantFrom(subAccount),
+      subAccount: subAccount,
       meter: { subAccountId: broadcast.subAccountId },
     });
     resendMessageId = result.id;
   } catch (err) {
     error = err instanceof Error ? err.message : "Send failed";
+    attempted = providerAttempted(err);
   }
-
   if (resendMessageId) {
     await sendRef.update({
       status: "sent",
@@ -283,6 +285,22 @@ export async function POST(request: Request) {
       ...(broadcast.status === "queued" ? { status: "sending", startedAt: FieldValue.serverTimestamp() } : {}),
     });
   }
+
+  // A review link in it makes this recipient's email a review ask (SP5 d1) —
+  // logged after the send row is settled (the idempotency marker).
+  await logIfReviewAsk({
+    sub: subAccount,
+    agencyId: broadcast.agencyId,
+    subAccountId: broadcast.subAccountId,
+    contactId,
+    channel: "email",
+    source: "broadcast",
+    parts: [subject, text],
+    createdByUid: "broadcast",
+    outcome: resendMessageId
+      ? { ok: true, messageSid: resendMessageId }
+      : attempted ? { ok: false, failureKind: "send_failed" } : null,
+  });
 
   await maybeMarkBroadcastCompleted(broadcastRef);
 

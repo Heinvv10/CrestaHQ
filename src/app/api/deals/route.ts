@@ -4,10 +4,13 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createDealServerSide } from "@/lib/server/deals-service";
+import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
-import { PIPELINE_STAGES, DEAL_PRIORITIES } from "@/types/deals";
-import type { DealPriority, PipelineStageId } from "@/types/deals";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { findStage } from "@/lib/pipelines/stages";
+import { DEAL_PRIORITIES } from "@/types/deals";
+import type { DealPriority } from "@/types/deals";
 
 /**
  * Dashboard-facing deal creation. Replaces the browser's direct Firestore
@@ -15,7 +18,6 @@ import type { DealPriority, PipelineStageId } from "@/types/deals";
  * the shared service.
  */
 
-const VALID_STAGES = new Set(PIPELINE_STAGES.map((s) => s.id));
 const VALID_PRIORITIES = new Set(DEAL_PRIORITIES.map((p) => p.id));
 
 export async function POST(request: Request) {
@@ -44,8 +46,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "contactId is required" }, { status: 400 });
   }
 
-  const stageId = body.stageId as PipelineStageId;
-  if (!VALID_STAGES.has(stageId)) {
+  // The stage must exist on the target pipeline (absent = default).
+  const pipelineId =
+    typeof body.pipelineId === "string" && body.pipelineId
+      ? body.pipelineId
+      : undefined;
+  const pipeline = await loadPipeline(subAccountId, pipelineId);
+  if (!pipeline) {
+    return NextResponse.json({ error: "Invalid pipelineId" }, { status: 400 });
+  }
+  const stageId = typeof body.stageId === "string" ? body.stageId : "";
+  if (!findStage(pipeline, stageId)) {
     return NextResponse.json({ error: "Invalid stageId" }, { status: 400 });
   }
   const priority = (
@@ -71,6 +82,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: cf.error }, { status: 400 });
   }
 
+  const assignedToUid = parseAssignedToUid(body);
+  if (
+    typeof assignedToUid === "string" &&
+    !(await isAssignableMember(subAccountId, assignedToUid))
+  ) {
+    return NextResponse.json(
+      { error: "assignedToUid is not a member of this sub-account" },
+      { status: 400 },
+    );
+  }
+
   const { id, deal } = await createDealServerSide({
     subAccountId,
     agencyId,
@@ -81,8 +103,10 @@ export async function POST(request: Request) {
     currency,
     contactId,
     stageId,
+    pipelineId: pipeline.id,
     priority,
     territoryId: typeof body.territoryId === "string" ? body.territoryId : null,
+    assignedToUid: assignedToUid ?? null,
     customFields: cf.value,
   });
 

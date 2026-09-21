@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AssigneeSelect } from "@/components/assignee-select";
 import { Textarea } from "@/components/ui/textarea";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -57,6 +58,7 @@ export function TaskDialog({
   const [dueDate, setDueDate] = useState("");
   const [dueTime, setDueTime] = useState("");
   const [contactId, setContactId] = useState<string | null>(null);
+  const [assignedToUid, setAssignedToUid] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -70,12 +72,14 @@ export function TaskDialog({
       setDueDate(d ? toDateInput(d) : "");
       setDueTime(d ? toTimeInput(d) : "");
       setContactId(task.contactId);
+      setAssignedToUid(task.assignedToUid ?? null);
     } else {
       setTitle("");
       setNotes("");
       setDueDate("");
       setDueTime("");
       setContactId(defaultContactId ?? null);
+      setAssignedToUid(null);
     }
     setErrors({});
   }, [open, task, defaultContactId]);
@@ -100,6 +104,7 @@ export function TaskDialog({
       contactId,
       dealId: task?.dealId ?? null,
       eventId: task?.eventId ?? null,
+      assignedToUid,
     };
 
     setSaving(true);
@@ -121,6 +126,7 @@ export function TaskDialog({
             contactId: payload.contactId,
             dealId: payload.dealId,
             eventId: payload.eventId,
+            assignedToUid: payload.assignedToUid,
           }),
         });
         if (!res.ok) {
@@ -230,6 +236,15 @@ export function TaskDialog({
                 </Button>
               )}
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="task-assignee">Assigned to</Label>
+            <AssigneeSelect
+              id="task-assignee"
+              value={assignedToUid}
+              onChange={setAssignedToUid}
+            />
           </div>
 
           <div className="space-y-1.5">

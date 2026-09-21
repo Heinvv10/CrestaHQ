@@ -1,6 +1,7 @@
 package rails
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -62,13 +63,13 @@ func TestQuietHoursRefusesOvernight(t *testing.T) {
 		return SendRequest{Now: time.Date(2026, 9, 4, h, 30, 0, 0, time.UTC)}
 	}
 
-	if d := checkQuietHours(at(22), cfg); d.Allow {
+	if d := checkQuietHours(at(22), store.NewMemory(), cfg); d.Allow {
 		t.Fatal("22:30 is inside quiet hours and must be refused")
 	}
-	if d := checkQuietHours(at(3), cfg); d.Allow {
+	if d := checkQuietHours(at(3), store.NewMemory(), cfg); d.Allow {
 		t.Fatal("03:30 is inside quiet hours and must be refused")
 	}
-	if d := checkQuietHours(at(10), cfg); !d.Allow {
+	if d := checkQuietHours(at(10), store.NewMemory(), cfg); !d.Allow {
 		t.Fatal("10:30 is outside quiet hours and must be allowed")
 	}
 }
@@ -78,7 +79,7 @@ func TestQuietHoursDisabledWhenEqual(t *testing.T) {
 	cfg.QuietStartHour = 0
 	cfg.QuietEndHour = 0
 	req := SendRequest{Now: time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)}
-	if d := checkQuietHours(req, cfg); !d.Allow {
+	if d := checkQuietHours(req, store.NewMemory(), cfg); !d.Allow {
 		t.Fatal("start == end must disable the rail, not refuse all day")
 	}
 }
@@ -97,10 +98,10 @@ func TestQuietHoursArePerConsumer(t *testing.T) {
 	}
 	threeAM := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
 
-	if d := checkQuietHours(SendRequest{Consumer: "ops", Now: threeAM}, cfg); !d.Allow {
+	if d := checkQuietHours(SendRequest{Consumer: "ops", Now: threeAM}, store.NewMemory(), cfg); !d.Allow {
 		t.Fatalf("ops declared no quiet hours and must be allowed to page at 03:00, got %+v", d)
 	}
-	d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: threeAM}, cfg)
+	d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: threeAM}, store.NewMemory(), cfg)
 	if d.Allow || d.RefusedBy != RefusedQuietHours {
 		t.Fatalf("a consumer with no window of its own must inherit the deployment's, got %+v", d)
 	}
@@ -119,11 +120,11 @@ func TestConsumerQuietWindowIsUsedNotJustPresent(t *testing.T) {
 	at := func(h int) time.Time { return time.Date(2026, 9, 4, h, 0, 0, 0, time.UTC) }
 
 	// 13:00 is quiet for leadstack and wide awake under the deployment window.
-	if d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: at(13)}, cfg); d.Allow {
+	if d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: at(13)}, store.NewMemory(), cfg); d.Allow {
 		t.Fatal("13:00 is inside leadstack's own 12-14 window and must refuse")
 	}
 	// 03:00 is quiet under the deployment window and awake under leadstack's.
-	if d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: at(3)}, cfg); !d.Allow {
+	if d := checkQuietHours(SendRequest{Consumer: "leadstack", Now: at(3)}, store.NewMemory(), cfg); !d.Allow {
 		t.Fatalf("03:00 is outside leadstack's own 12-14 window and must allow, got %+v", d)
 	}
 }
@@ -134,8 +135,143 @@ func TestConsumerQuietWindowIsUsedNotJustPresent(t *testing.T) {
 func TestUnknownConsumerInheritsTheDeploymentWindow(t *testing.T) {
 	cfg := Config{QuietStartHour: 21, QuietEndHour: 7, Location: time.UTC}
 	d := checkQuietHours(
-		SendRequest{Consumer: "never-configured", Now: time.Date(2026, 9, 4, 23, 0, 0, 0, time.UTC)}, cfg)
+		SendRequest{Consumer: "never-configured", Now: time.Date(2026, 9, 4, 23, 0, 0, 0, time.UTC)}, store.NewMemory(), cfg)
 	if d.Allow {
 		t.Fatal("an unconfigured consumer must inherit the deployment quiet window, not skip it")
+	}
+}
+
+// A human answering a customer who messaged an hour ago is not the 03:00 bot
+// signal quiet hours exist to catch. Blocking it is what drives an operator to
+// turn the guard off wholesale for the whole number, which is strictly worse:
+// the automated sends lose their protection too.
+func TestQuietHoursAdmitsAHumanReplyInsideAnOpenSession(t *testing.T) {
+	st := store.NewMemory()
+	jid := "27821234567@s.whatsapp.net"
+	now := time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC) // inside 21:00-07:00
+	if err := st.RecordInbound(jid, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = 24 * time.Hour
+
+	req := SendRequest{To: jid, Consumer: "app", Now: now, HumanReply: true}
+	if d := checkQuietHours(req, st, cfg); !d.Allow {
+		t.Fatalf("a human reply inside an open session must be allowed: %s", d.Reason)
+	}
+}
+
+// The guard's whole purpose. An automated send at 06:00 is exactly what it is
+// there to stop, and marking nothing changes that.
+func TestQuietHoursStillRefusesAnAutomatedSendInTheSameSession(t *testing.T) {
+	st := store.NewMemory()
+	jid := "27821234567@s.whatsapp.net"
+	now := time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC)
+	if err := st.RecordInbound(jid, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = 24 * time.Hour
+
+	req := SendRequest{To: jid, Consumer: "app", Now: now} // HumanReply false
+	d := checkQuietHours(req, st, cfg)
+	if d.Allow {
+		t.Fatal("an automated send inside quiet hours must still be refused")
+	}
+	if d.RefusedBy != RefusedQuietHours {
+		t.Fatalf("refusal code = %q, want %q", d.RefusedBy, RefusedQuietHours)
+	}
+}
+
+// "Human" is not a blanket pass. Reaching for someone who last wrote days ago
+// is an outreach at 06:00 however it was typed, and the session window is what
+// separates the two.
+func TestQuietHoursRefusesAHumanReplyOutsideTheSession(t *testing.T) {
+	st := store.NewMemory()
+	jid := "27821234567@s.whatsapp.net"
+	now := time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC)
+	if err := st.RecordInbound(jid, now.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = 24 * time.Hour
+
+	req := SendRequest{To: jid, Consumer: "app", Now: now, HumanReply: true}
+	if d := checkQuietHours(req, st, cfg); d.Allow {
+		t.Fatal("a human reply to a contact who last wrote three days ago is outreach, not a reply")
+	}
+}
+
+// A contact who has never messaged has no session to be inside. Reply-only
+// would refuse this later anyway, but quiet hours must not be the rail that
+// waves it through first.
+func TestQuietHoursRefusesAHumanReplyToAStranger(t *testing.T) {
+	st := store.NewMemory()
+	now := time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC)
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = 24 * time.Hour
+
+	req := SendRequest{To: "27829999999@s.whatsapp.net", Consumer: "app", Now: now, HumanReply: true}
+	if d := checkQuietHours(req, st, cfg); d.Allow {
+		t.Fatal("a contact with no inbound has no open session")
+	}
+}
+
+// Outside quiet hours the flag is irrelevant — the rail allows everything.
+func TestQuietHoursIgnoresTheFlagOutsideTheWindow(t *testing.T) {
+	st := store.NewMemory()
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) // midday
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = 24 * time.Hour
+
+	req := SendRequest{To: "27829999999@s.whatsapp.net", Consumer: "app", Now: now}
+	if d := checkQuietHours(req, st, cfg); !d.Allow {
+		t.Fatalf("midday is not quiet hours: %s", d.Reason)
+	}
+}
+
+// A stranger is refused even at the widest window the type can express.
+//
+// Blind review noted the plain stranger test passes for the wrong reason: with
+// no inbound, `last` is the zero time and req.Now.Sub(last) is ~2026 years, so
+// the window comparison refuses on its own and the explicit not-found branch
+// is never the deciding factor.
+//
+// That branch CANNOT be isolated by a window test: time.Duration saturates at
+// math.MaxInt64 (~292 years), so no configurable window can be wide enough to
+// let the zero-time fallthrough allow. It is kept as defence in depth — it
+// states the intent, and it survives a future change to the comparison — and
+// the contract it depends on is pinned directly instead, at
+// store.TestLastInboundFromReportsNotFoundForAStranger.
+//
+// What this test does prove: even at the maximum representable window, a
+// contact who never messaged is refused.
+func TestQuietHoursRefusesAStrangerAtTheWidestPossibleWindow(t *testing.T) {
+	st := store.NewMemory()
+	now := time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC)
+
+	cfg := testConfig()
+	cfg.QuietStartHour, cfg.QuietEndHour = 21, 7
+	cfg.Location = time.UTC
+	cfg.HumanReplySessionWindow = time.Duration(math.MaxInt64)
+
+	req := SendRequest{To: "27829999999@s.whatsapp.net", Consumer: "app", Now: now, HumanReply: true}
+	if d := checkQuietHours(req, st, cfg); d.Allow {
+		t.Fatal("a contact who has never messaged has no open session, whatever the window")
 	}
 }

@@ -39,6 +39,13 @@ type Consumer struct {
 	QuietSet       bool
 	QuietStartHour int
 	QuietEndHour   int
+	// WebhookSecret, when set, signs every webhook POST to this consumer with
+	// an HMAC (see api.Fanout.post) so the receiver can verify the request
+	// really came from the bridge and reject a replay. Empty is the default
+	// and the safe one: a bridge deployed from an old config keeps delivering,
+	// it just doesn't sign — nothing about signing is required for the
+	// fanout to work.
+	WebhookSecret string
 }
 
 type Config struct {
@@ -48,6 +55,14 @@ type Config struct {
 	OwnerJID   string
 	Consumers  []Consumer
 	Rails      rails.Config
+	// InboundMediaPerSenderPerHour caps how many DISTINCT attachments one
+	// sender can make the bridge download in a rolling hour
+	// (CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR). It sits here rather than in
+	// rails.Config because rails.Config is the OUTBOUND engine's — this bounds
+	// what arrives, and nothing in rails ever consults it. Zero or unset takes
+	// the api package's default; see api.mediaGate for why there is no
+	// unlimited setting.
+	InboundMediaPerSenderPerHour int
 }
 
 func envInt(key string, def int) int {
@@ -62,10 +77,10 @@ func envInt(key string, def int) int {
 // Load reads configuration from the environment.
 //
 // CONSUMERS format:
-// "name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour",
+// "name|token|webhookURL|perHour|perDay|admin|quietStartHour|quietEndHour|webhookSecret",
 // comma-separated. Every field after `token` is optional and the list is only
-// ever appended to, so the 5- and 6-field forms that predate quiet hours parse
-// exactly as they did.
+// ever appended to, so the 5-, 6- and 8-field forms that predate the webhook
+// secret parse exactly as they did.
 // Pipe-separated rather than colon-separated because a webhook URL carries a
 // scheme and a port, and splitting a URL on ":" mangles it into fragments.
 //
@@ -85,15 +100,24 @@ func Load() (Config, error) {
 		DBPath:     os.Getenv("DB_PATH"),
 		SessionDir: os.Getenv("SESSION_DIR"),
 		OwnerJID:   os.Getenv("OWNER_JID"),
+		// 0 means "unset", which api resolves to its own default. Not
+		// defaulted here, so the number lives in one place next to the gate
+		// that enforces it rather than in two that can drift.
+		InboundMediaPerSenderPerHour: envInt("CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR", 0),
 		Rails: rails.Config{
 			PerContactPerDay: envInt("CAP_PER_CONTACT_PER_DAY", 10),
 			ConsecutiveMax:   envInt("CAP_CONSECUTIVE", 3),
 			GlobalDailyCap:   envInt("CAP_GLOBAL_DAILY", 150),
-			QuietStartHour:   envInt("QUIET_START_HOUR", 21),
-			QuietEndHour:     envInt("QUIET_END_HOUR", 7),
-			Location:         loc,
-			Budgets:          map[string]rails.ConsumerBudget{},
-			QuietHours:       map[string]rails.QuietWindow{},
+			// A human reply only escapes quiet hours while the contact is
+			// still waiting on one. 24h matches the session window every
+			// WhatsApp rail already reasons in, so an operator does not have
+			// to hold two different definitions of "recent" in their head.
+			HumanReplySessionWindow: time.Duration(envInt("HUMAN_REPLY_SESSION_HOURS", 24)) * time.Hour,
+			QuietStartHour:          envInt("QUIET_START_HOUR", 21),
+			QuietEndHour:            envInt("QUIET_END_HOUR", 7),
+			Location:                loc,
+			Budgets:                 map[string]rails.ConsumerBudget{},
+			QuietHours:              map[string]rails.QuietWindow{},
 		},
 	}
 	if cfg.ListenAddr == "" {
@@ -146,7 +170,8 @@ func Load() (Config, error) {
 }
 
 // parseConsumer reads one
-// "name|token|webhook|perHour|perDay|admin|quietStart|quietEnd" entry.
+// "name|token|webhook|perHour|perDay|admin|quietStart|quietEnd|webhookSecret"
+// entry.
 //
 // Every field error is returned rather than defaulted. A typo'd budget parses
 // to zero, which fails closed and then silently mutes a consumer nobody will
@@ -156,7 +181,7 @@ func parseConsumer(entry string) (Consumer, error) {
 	parts := strings.Split(strings.TrimSpace(entry), "|")
 	if len(parts) < 2 {
 		return Consumer{}, fmt.Errorf(
-			"bad CONSUMERS entry %q (want name|token|webhook|perHour|perDay|admin)", entry)
+			"bad CONSUMERS entry %q (want name|token|webhook|perHour|perDay|admin|quietStart|quietEnd|webhookSecret)", entry)
 	}
 	c := Consumer{Name: parts[0], Token: parts[1], PerHour: 100, PerDay: 500}
 	if c.Name == "" {
@@ -204,6 +229,7 @@ func parseConsumer(entry string) (Consumer, error) {
 		}
 		c.QuietSet = true
 	}
+	c.WebhookSecret = strings.TrimSpace(fieldAt(parts, 8))
 	return c, nil
 }
 

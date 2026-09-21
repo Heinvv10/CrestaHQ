@@ -1,0 +1,70 @@
+name: E2E smoke (production)
+
+# The same specs, aimed at the deployed app instead of a PR build. This one
+# does NOT gate anything: crm.crestahq.com serves whatever was last deployed,
+# so a red run here means "production is unhappy", not "this change is bad".
+# The blocking Playwright job lives in ci.yml and tests the PR's own build.
+#
+# Specs tagged @enrols-workflows (form-submit, workflow-enrol,
+# appointment-status, pipelines) are excluded below: against a PR's own
+# build they enrol a FIXTURE workflow that publishes to a CI-only QStash
+# project, but against production the app runs with production's own
+# QStash token, so the same enrolment publishes a REAL scheduled step —
+# on 14-16 Sep 2026 that put ~307 real QStash steps through this account's
+# 1,000/day limit and silently dropped real scheduled work once it ran out.
+# workflow-enrol was previously expected to fail here (a signed step call
+# 401s against a deployment); it is now excluded instead of run-and-ignored.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Playwright vs crm.crestahq.com
+    # Same fixture sub-accounts as the ci.yml E2E job, so the same runner.
+    runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
+    timeout-minutes: 30
+    env:
+      # No build step: the target is already running. Only the values the
+      # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK
+      # (+ its Storage bucket),
+      # the fixture ids, and the QStash key the enrol spec signs with.
+      PLAYWRIGHT_BASE_URL: https://crm.crestahq.com
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      FIREBASE_ADMIN_PROJECT_ID: ${{ secrets.FIREBASE_ADMIN_PROJECT_ID }}
+      FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
+      FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
+      QSTASH_CURRENT_SIGNING_KEY: ${{ secrets.E2E_QSTASH_CURRENT_SIGNING_KEY }}
+      E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+      E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
+      E2E_SUBACCOUNT_ID: ${{ secrets.E2E_SUBACCOUNT_ID }}
+      E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Playwright
+        run: pnpm exec playwright test --grep-invert "@enrols-workflows"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report-smoke
+          path: playwright-report/
+          retention-days: 7

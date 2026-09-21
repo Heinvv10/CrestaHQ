@@ -8,6 +8,9 @@ import {
   type BookingHost,
   type BookingPageFormData,
   type BookingPayment,
+  type BookingService,
+  type CalendarType,
+  type DateOverride,
   type IntakeField,
   type WorkingHour,
 } from "@/types/booking";
@@ -181,6 +184,62 @@ export function validateWorkingHours(
     }
   }
   return { ok: true, value: cleaned };
+}
+
+export const MAX_DATE_OVERRIDES = 366;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Date-specific hours: unique real calendar dates, each with sane
+ * non-overlapping ranges (validated like one weekday of working hours).
+ * Empty ranges = closed that date. Past dates are kept; the list is capped.
+ */
+export function validateDateOverrides(input: unknown): Validated<DateOverride[]> {
+  if (input === undefined || input === null) return { ok: true, value: [] };
+  if (!Array.isArray(input)) {
+    return { ok: false, error: "Date-specific hours must be a list." };
+  }
+  if (input.length > MAX_DATE_OVERRIDES) {
+    return { ok: false, error: `At most ${MAX_DATE_OVERRIDES} date-specific entries.` };
+  }
+  const out: DateOverride[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    const date = typeof r.date === "string" ? r.date : "";
+    const m = DATE_RE.exec(date);
+    const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+    if (!d || d.toISOString().slice(0, 10) !== date) {
+      return { ok: false, error: "Each date-specific entry needs a real date (YYYY-MM-DD)." };
+    }
+    if (seen.has(date)) {
+      return { ok: false, error: `${date} is listed twice in date-specific hours.` };
+    }
+    seen.add(date);
+    if (!Array.isArray(r.ranges)) {
+      return { ok: false, error: `${date}: ranges must be a list (empty = closed).` };
+    }
+    const hours = validateWorkingHours(
+      r.ranges.map((x) => ({ ...(x as object), dayOfWeek: 0 })),
+    );
+    if (!hours.ok) return { ok: false, error: `${date}: ${hours.error}` };
+    out.push({
+      date,
+      ranges: hours.value.map(({ startMinute, endMinute }) => ({ startMinute, endMinute })),
+    });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return { ok: true, value: out };
+}
+
+/** Null/absent ⇒ legacy step (duration + buffer). */
+export function validateSlotInterval(input: unknown): Validated<number | null> {
+  if (input === undefined || input === null || input === "") return { ok: true, value: null };
+  const n = typeof input === "number" ? input : Number(input);
+  if (!Number.isInteger(n) || n < 5 || n > 240 || n % 5 !== 0) {
+    return { ok: false, error: "Slot interval must be 5–240 minutes, in steps of 5." };
+  }
+  return { ok: true, value: n };
 }
 
 /**
@@ -368,6 +427,15 @@ export function validateHosts(input: unknown): Validated<BookingHost[]> {
     if (seen.has(uid)) continue; // silently dedupe
     seen.add(uid);
     const host: BookingHost = { uid, name: name.slice(0, 120) };
+    if (r.priority !== undefined && r.priority !== null) {
+      if (r.priority !== 1 && r.priority !== 2 && r.priority !== 3) {
+        return {
+          ok: false,
+          error: `Host "${name || uid}": priority must be high, medium or low.`,
+        };
+      }
+      host.priority = r.priority;
+    }
     // Optional per-host working-hours override. Absent/empty ⇒ the host
     // inherits the page-level schedule (field omitted from the doc).
     if (r.workingHours !== undefined && r.workingHours !== null) {
@@ -377,6 +445,11 @@ export function validateHosts(input: unknown): Validated<BookingHost[]> {
       }
       if (wh.value.length > 0) host.workingHours = wh.value;
     }
+    const overrides = validateDateOverrides(r.dateOverrides);
+    if (!overrides.ok) {
+      return { ok: false, error: `Host "${name || uid}": ${overrides.error}` };
+    }
+    if (overrides.value.length > 0) host.dateOverrides = overrides.value;
     cleaned.push(host);
   }
   return { ok: true, value: cleaned };
@@ -393,6 +466,148 @@ export function validateAllowHostSelection(
   if (input === undefined || input === null) return { ok: true, value: false };
   if (typeof input === "boolean") return { ok: true, value: input };
   return { ok: false, error: "Host-selection toggle must be true or false." };
+}
+
+const CALENDAR_TYPES = new Set<CalendarType>([
+  "personal",
+  "round_robin",
+  "collective",
+  "class",
+  "service",
+]);
+export const MAX_SEATS_PER_SLOT = 500;
+export const MAX_BOOKING_SERVICES = 20;
+const SERVICE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Absent ⇒ undefined: the page keeps the derived legacy type. */
+export function validateCalendarType(
+  input: unknown,
+): Validated<CalendarType | undefined> {
+  if (input === undefined || input === null) return { ok: true, value: undefined };
+  if (typeof input === "string" && CALENDAR_TYPES.has(input as CalendarType)) {
+    return { ok: true, value: input as CalendarType };
+  }
+  return { ok: false, error: "Unknown calendar type." };
+}
+
+export function validateServices(input: unknown): Validated<BookingService[]> {
+  if (!Array.isArray(input) || input.length === 0) {
+    return { ok: false, error: "A service page needs at least one service." };
+  }
+  if (input.length > MAX_BOOKING_SERVICES) {
+    return {
+      ok: false,
+      error: `At most ${MAX_BOOKING_SERVICES} services per booking page.`,
+    };
+  }
+  const out: BookingService[] = [];
+  const ids = new Set<string>();
+  for (const raw of input) {
+    const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<
+      string,
+      unknown
+    >;
+    const id = typeof r.id === "string" ? r.id : "";
+    const name = typeof r.name === "string" ? r.name.trim() : "";
+    if (!SERVICE_ID_RE.test(id) || ids.has(id)) {
+      return { ok: false, error: "Each service needs a unique id." };
+    }
+    ids.add(id);
+    if (!name || name.length > 80) {
+      return { ok: false, error: "Each service needs a name (max 80 chars)." };
+    }
+    const duration = validateDuration(r.durationMinutes);
+    if (!duration.ok) return { ok: false, error: `Service "${name}": ${duration.error}` };
+    const description =
+      typeof r.description === "string" && r.description.trim()
+        ? r.description.trim()
+        : null;
+    if (description && description.length > 500) {
+      return { ok: false, error: `Service "${name}": description max 500 chars.` };
+    }
+    out.push({ id, name, durationMinutes: duration.value, description });
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * Host count per type. Re-run by the routes AFTER `resolveBookingHosts`,
+ * since dropping an inactive member can take a collective page below two.
+ */
+export function validateCalendarTypeHosts(
+  type: CalendarType | undefined,
+  hostCount: number,
+): Validated<true> {
+  if ((type === "personal" || type === "class") && hostCount > 1) {
+    return { ok: false, error: "A personal or class page has at most one host." };
+  }
+  if (type === "collective" && hostCount < 2) {
+    return { ok: false, error: "A collective page needs at least two hosts." };
+  }
+  if (type === "round_robin" && hostCount < 1) {
+    return { ok: false, error: "A round-robin page needs at least one host." };
+  }
+  return { ok: true, value: true };
+}
+
+/**
+ * The type-specific fields. Each is null on a type it doesn't belong to, so
+ * a full-replace PATCH that changes the type clears the old type's fields.
+ * Undefined values are skipped on write (`ignoreUndefinedProperties`).
+ *
+ * No type in the body (a legacy caller, or a pre-SP3 page): the fields that
+ * ARE sent are validated against the stored type — or, on a page that has
+ * none, the type derived from the body's hosts — and the rest are left as
+ * stored.
+ */
+function validateCalendarTypeFields(
+  sent: CalendarType | undefined,
+  stored: CalendarType | undefined,
+  b: Record<string, unknown>,
+  hostCount: number,
+): Validated<
+  Pick<BookingPageFormData, "distribution" | "seatsPerSlot" | "services">
+> {
+  const type = sent ?? stored ?? (hostCount > 0 ? "round_robin" : "personal");
+  const given = (k: "distribution" | "seatsPerSlot" | "services") =>
+    sent !== undefined || b[k] !== undefined;
+  const hostsOk = validateCalendarTypeHosts(type, hostCount);
+  if (!hostsOk.ok) return hostsOk;
+
+  let distribution: BookingPageFormData["distribution"] = null;
+  if ((type === "round_robin" || type === "service") && b.distribution != null) {
+    if (b.distribution !== "availability" && b.distribution !== "equal") {
+      return { ok: false, error: "Distribution must be availability or equal." };
+    }
+    distribution = b.distribution;
+  }
+
+  let seatsPerSlot: number | null = null;
+  if (type === "class" && given("seatsPerSlot")) {
+    const n = b.seatsPerSlot;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 2 || n > MAX_SEATS_PER_SLOT) {
+      return {
+        ok: false,
+        error: `Seats per slot must be a whole number from 2 to ${MAX_SEATS_PER_SLOT}.`,
+      };
+    }
+    seatsPerSlot = n;
+  }
+
+  let services: BookingService[] | null = null;
+  if (type === "service" && given("services")) {
+    const v = validateServices(b.services);
+    if (!v.ok) return v;
+    services = v.value;
+  }
+  return {
+    ok: true,
+    value: {
+      distribution: given("distribution") ? distribution : undefined,
+      seatsPerSlot: given("seatsPerSlot") ? seatsPerSlot : undefined,
+      services: given("services") ? services : undefined,
+    },
+  };
 }
 
 export function validatePayment(
@@ -624,6 +839,8 @@ export function validateConfirmationMessage(
  */
 export function validateBookingPageFormData(
   body: unknown,
+  /** PATCH: the page's stored `calendarType`, for a body that sends none. */
+  storedCalendarType?: CalendarType,
 ): Validated<BookingPageFormData> {
   if (typeof body !== "object" || body === null) {
     return { ok: false, error: "Invalid request body." };
@@ -643,6 +860,10 @@ export function validateBookingPageFormData(
   if (!durationMinutes.ok) return durationMinutes;
   const bufferMinutes = validateBuffer(b.bufferMinutes);
   if (!bufferMinutes.ok) return bufferMinutes;
+  const bufferBeforeMinutes = validateBuffer(b.bufferBeforeMinutes ?? 0);
+  if (!bufferBeforeMinutes.ok) return bufferBeforeMinutes;
+  const slotIntervalMinutes = validateSlotInterval(b.slotIntervalMinutes);
+  if (!slotIntervalMinutes.ok) return slotIntervalMinutes;
   const workingHours = validateWorkingHours(b.workingHours);
   if (!workingHours.ok) return workingHours;
   if (workingHours.value.length === 0) {
@@ -651,6 +872,8 @@ export function validateBookingPageFormData(
       error: "Set at least one working-hour range before publishing.",
     };
   }
+  const dateOverrides = validateDateOverrides(b.dateOverrides);
+  if (!dateOverrides.ok) return dateOverrides;
   const timezone = validateTimezone(b.timezone);
   if (!timezone.ok) return timezone;
   const visibleDays = validateVisibleDays(b.visibleDays);
@@ -667,6 +890,15 @@ export function validateBookingPageFormData(
   if (!hosts.ok) return hosts;
   const allowHostSelection = validateAllowHostSelection(b.allowHostSelection);
   if (!allowHostSelection.ok) return allowHostSelection;
+  const calendarType = validateCalendarType(b.calendarType);
+  if (!calendarType.ok) return calendarType;
+  const typeFields = validateCalendarTypeFields(
+    calendarType.value,
+    storedCalendarType,
+    b,
+    hosts.value.length,
+  );
+  if (!typeFields.ok) return typeFields;
 
   const logoUrl = validateLogoUrl(b.logoUrl);
   if (!logoUrl.ok) return logoUrl;
@@ -706,7 +938,10 @@ export function validateBookingPageFormData(
       status: status.value,
       durationMinutes: durationMinutes.value,
       bufferMinutes: bufferMinutes.value,
+      bufferBeforeMinutes: bufferBeforeMinutes.value,
+      slotIntervalMinutes: slotIntervalMinutes.value,
       workingHours: workingHours.value,
+      dateOverrides: dateOverrides.value,
       timezone: timezone.value,
       visibleDays: visibleDays.value,
       minNoticeHours: minNoticeHours.value,
@@ -714,6 +949,8 @@ export function validateBookingPageFormData(
       intakeFields: intakeFields.value,
       hosts: hosts.value,
       allowHostSelection: allowHostSelection.value,
+      calendarType: calendarType.value,
+      ...typeFields.value,
       logoUrl: logoUrl.value,
       accentColor: accentColor.value,
       meetingUrl: meetingUrl.value,

@@ -35,3 +35,36 @@ export function normalizeReviewChannel(
 export function isWhatsappReviewChannel(ch: ReviewChannel): boolean {
   return ch === "whatsapp_template" || ch === "whatsapp_manual";
 }
+
+/**
+ * Review-request reminders (SP5 d2) — GHL's "Until clicked, repeat this every
+ * N days / Maximum retries". `everyDays: null` is "Don't repeat": off, the
+ * default, and what every config without the field means.
+ */
+export interface ReviewReminderSettings {
+  everyDays: number | null;
+  maxRetries: number;
+}
+
+/** 7, not GHL's 30: a reminder is one delayed QStash message, and the plan's
+ *  maximum delay is unconfirmed (the same cap scheduled messages use). */
+export const REMINDER_MAX_EVERY_DAYS = 7;
+export const REMINDER_MAX_RETRIES = 5;
+
+const isIntIn = (v: unknown, lo: number, hi: number): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
+
+/** Validate a submitted reminder setting; null on anything out of range. */
+export function parseReminderSettings(v: unknown): ReviewReminderSettings | null {
+  if (!v || typeof v !== "object") return null;
+  const { everyDays, maxRetries } = v as Record<string, unknown>;
+  if (everyDays !== null && !isIntIn(everyDays, 1, REMINDER_MAX_EVERY_DAYS)) return null;
+  if (!isIntIn(maxRetries, 1, REMINDER_MAX_RETRIES)) return null;
+  return { everyDays, maxRetries };
+}
+
+/** The stored setting when reminders are ON, else null (absent, off, or malformed). */
+export function activeReminder(v: unknown): { everyDays: number; maxRetries: number } | null {
+  const r = parseReminderSettings(v);
+  return r && r.everyDays !== null ? { everyDays: r.everyDays, maxRetries: r.maxRetries } : null;
+}

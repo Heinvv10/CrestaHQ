@@ -82,7 +82,7 @@ describe("pre-flight guards", () => {
     const { status, body } = await call();
     expect(status).toBe(503);
     expect(body.error).toBe(
-      "Email isn't configured on this deployment — set RESEND_API_KEY + EMAIL_FROM to send quotes.",
+      "Email isn't configured for this sub-account — connect an email provider in Settings → Messaging.",
     );
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.quoteUpdates).toHaveLength(0);

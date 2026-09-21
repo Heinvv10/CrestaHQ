@@ -154,7 +154,14 @@ func (m *Memory) LastInboundAt() (time.Time, error) {
 			}
 		}
 	}
-	return last, nil
+	if last.IsZero() {
+		return last, nil
+	}
+	// Floored to whole seconds because SQLite writes at.Unix() and reads it
+	// back floored. A fake with FINER resolution than the real store hides
+	// every boundary bug at the second mark: the equal-second comparison in
+	// the fanout looked covered by tests using this store and was not.
+	return time.Unix(last.Unix(), 0), nil
 }
 
 func (m *Memory) HasInboundFrom(jid string) (bool, error) {
@@ -166,6 +173,26 @@ func (m *Memory) HasInboundFrom(jid string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// LastInboundFrom mirrors the SQLite lookup: the contact's most recent inbound,
+// and false when they have never messaged.
+func (m *Memory) LastInboundFrom(jid string) (time.Time, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var newest time.Time
+	found := false
+	for _, e := range m.events[jid] {
+		if !e.outbound && e.at.After(newest) {
+			newest, found = e.at, true
+		}
+	}
+	if !found {
+		return time.Time{}, false, nil
+	}
+	// Floored like LastInboundAt and for the same reason: SQLite stores
+	// at.Unix(), so a fake with finer resolution hides second-boundary bugs.
+	return time.Unix(newest.Unix(), 0), true, nil
 }
 
 func (m *Memory) IsAllowlisted(jid string) (bool, error) {

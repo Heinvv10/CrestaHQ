@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { AssigneeSelect } from "@/components/assignee-select";
+import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import { NODE_LABELS } from "@/lib/workflows/catalog";
 import { ConditionsEditor } from "./conditions-editor";
 import type { BuilderStep } from "@/lib/workflows/builder-tree";
@@ -27,6 +28,17 @@ export interface WhatsappTemplateOption {
   displayName: string;
   body: string;
   variables: WhatsappTemplateVariable[];
+  approved: boolean;
+  /** A template with buttons can go out in-window without approval. */
+  hasButtons: boolean;
+}
+
+/** One of the sub-account's WhatsApp senders, for the send-from picker. */
+export interface WhatsappSenderOption {
+  id: string;
+  label: string;
+  phoneNumber: string;
+  isDefault: boolean;
 }
 
 function deriveWait(seconds: number): { value: number; unit: number } {
@@ -40,23 +52,30 @@ function deriveWait(seconds: number): { value: number; unit: number } {
 export function NodeConfigDialog({
   step,
   whatsappTemplates,
+  whatsappSenders,
   onClose,
   onSave,
 }: {
   step: BuilderStep | null;
   whatsappTemplates: WhatsappTemplateOption[];
+  whatsappSenders: WhatsappSenderOption[];
   onClose: () => void;
   onSave: (config: Cfg) => void;
 }) {
   const [cfg, setCfg] = useState<Cfg>({});
-  const stages = usePipelineStages();
   useEffect(() => {
     if (step) setCfg({ ...step.config });
   }, [step]);
 
   if (!step) return null;
   const set = (patch: Cfg) => setCfg((c) => ({ ...c, ...patch }));
+  const defaultSender =
+    whatsappSenders.find((s) => s.isDefault) ?? whatsappSenders[0] ?? null;
   const str = (k: string) => (cfg[k] as string) ?? "";
+  // The template step always sends a template, so only approved ones. The
+  // free-form step can also carry a button template in-window, unapproved.
+  const approvedTemplates = whatsappTemplates.filter((t) => t.approved);
+  const sendTemplates = whatsappTemplates.filter((t) => t.approved || t.hasButtons);
 
   const wait = deriveWait(Number(cfg.seconds ?? 86_400));
   // Legacy notify configs have no `recipient` — derive a sensible default so
@@ -107,10 +126,131 @@ export function NodeConfigDialog({
             </Field>
           )}
 
+          {step.type === "send_whatsapp" && (
+            <>
+              <Field
+                label="Message"
+                hint="Sent as free-form text whenever that is allowed — which is free. Supports merge tags like {{contact.firstName}}."
+              >
+                <Textarea
+                  rows={4}
+                  value={str("body")}
+                  onChange={(e) => set({ body: e.target.value })}
+                />
+              </Field>
+              <Field
+                label="Template — its buttons, or the fallback when the window has closed"
+                hint={
+                  sendTemplates.length === 0
+                    ? "No approved templates yet. Without one this step is skipped when the window is shut — which is correct for a step that only ever replies to a contact who just messaged."
+                    : "Meta only allows free-form text within 24 hours of the contact's last message. Pick an approved template to re-open a closed window, or leave this empty to skip the step instead of paying template rates. A template with buttons is sent WITH them inside the window (its own text, free, no approval needed); outside it, it needs approval or the step is skipped."
+                }
+              >
+                <select
+                  value={str("templateId")}
+                  onChange={(e) =>
+                    set({ templateId: e.target.value, manualValues: {} })
+                  }
+                  className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
+                >
+                  <option value="">
+                    Skip the step (no template fallback)
+                  </option>
+                  {sendTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.displayName}
+                      {t.approved ? "" : " — buttons, in-window only (Cloud)"}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {(() => {
+                // A fallback template's variables still have to be filled in.
+                // Without these inputs `manualValues` is unreachable from the
+                // UI, and Meta receives a template with empty parameters.
+                const tpl =
+                  sendTemplates.find((t) => t.id === str("templateId")) ??
+                  null;
+                if (!tpl) return null;
+                const manualValues =
+                  (cfg.manualValues as Record<string, string> | undefined) ?? {};
+                const mergeVars = tpl.variables.filter(
+                  (v) => v.source === "merge_tag",
+                );
+                const manualVars = tpl.variables.filter(
+                  (v) => v.source === "manual",
+                );
+                return (
+                  <>
+                    <div className="bg-muted/30 text-muted-foreground rounded-md border p-2 text-xs whitespace-pre-wrap">
+                      {tpl.body}
+                    </div>
+                    {mergeVars.length > 0 && (
+                      <p className="text-muted-foreground text-xs">
+                        Auto-filled from the contact:{" "}
+                        {mergeVars
+                          .map((v) => `{{${v.position}}} ${v.label}`)
+                          .join(", ")}
+                        .
+                      </p>
+                    )}
+                    {manualVars.map((v) => (
+                      <Field
+                        key={v.position}
+                        label={`Variable {{${v.position}}} — ${v.label}`}
+                        hint="Static text, or merge tags like {{contact.firstName}}."
+                      >
+                        <Input
+                          value={manualValues[String(v.position)] ?? ""}
+                          placeholder={v.sampleValue}
+                          onChange={(e) =>
+                            set({
+                              manualValues: {
+                                ...manualValues,
+                                [v.position]: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </Field>
+                    ))}
+                  </>
+                );
+              })()}
+            </>
+          )}
+
+          {step.type === "whatsapp_template" && (
+            <Field
+              label="Send from"
+              hint="Leave on the account default unless this step has to go out on a particular number."
+            >
+              <select
+                value={str("senderId")}
+                onChange={(e) => set({ senderId: e.target.value })}
+                className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
+              >
+                {/* Empty value, not the default sender's id: a step that says
+                    "the account default" must follow the default when it
+                    changes, rather than pinning the number it had today. */}
+                <option value="">
+                  Account default
+                  {defaultSender ? ` — ${defaultSender.label}` : ""}
+                </option>
+                {whatsappSenders.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                    {s.phoneNumber ? ` — ${s.phoneNumber}` : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
           {step.type === "whatsapp_template" &&
             (() => {
               const tplId = str("templateId");
-              const tpl = whatsappTemplates.find((t) => t.id === tplId) ?? null;
+              const tpl = approvedTemplates.find((t) => t.id === tplId) ?? null;
               const manualValues =
                 (cfg.manualValues as Record<string, string> | undefined) ?? {};
               const mergeVars =
@@ -122,7 +262,7 @@ export function NodeConfigDialog({
                   <Field
                     label="Template"
                     hint={
-                      whatsappTemplates.length === 0
+                      approvedTemplates.length === 0
                         ? "No approved WhatsApp templates yet. Create one in AI Agents → WhatsApp → Templates."
                         : "Only Meta-approved templates can be sent on WhatsApp."
                     }
@@ -135,7 +275,7 @@ export function NodeConfigDialog({
                       className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
                     >
                       <option value="">Choose a template…</option>
-                      {whatsappTemplates.map((t) => (
+                      {approvedTemplates.map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.displayName}
                         </option>
@@ -252,6 +392,7 @@ export function NodeConfigDialog({
           {step.type === "if_else" && (
             <Field label="Continue down “yes” when:">
               <ConditionsEditor
+                allowReplyField
                 value={(cfg.conditions as ConditionGroup) ?? { all: [] }}
                 onChange={(g) => set({ conditions: g })}
               />
@@ -268,18 +409,21 @@ export function NodeConfigDialog({
           )}
 
           {step.type === "move_stage" && (
-            <Field label="Move contact to stage">
-              <select
-                value={str("stage") || "new"}
-                onChange={(e) => set({ stage: e.target.value })}
-                className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
-              >
-                {stages.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
+            <Field
+              label="Move contact to stage"
+              hint="With a pipeline chosen, the contact's most recently updated open deal in it moves too."
+            >
+              <PipelineTriggerConfig
+                pipelineId={str("pipelineId") || null}
+                stageId={str("stage") || null}
+                withStage
+                stagePlaceholder="Pick a stage"
+                stageLabel={(l) => l}
+                noPipelineLabel="Contact only (no deal)"
+                onChange={(n) =>
+                  set({ pipelineId: n.pipelineId ?? "", stage: n.stageId ?? "" })
+                }
+              />
             </Field>
           )}
 
@@ -318,6 +462,16 @@ export function NodeConfigDialog({
                   className="w-28"
                   value={Number(cfg.dueInDays ?? 1)}
                   onChange={(e) => set({ dueInDays: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="Assign to"
+                hint="If this person is no longer a member when the step runs, the task is created unassigned."
+              >
+                <AssigneeSelect
+                  id="create-task-assignee"
+                  value={(cfg.assignedToUid as string | null) ?? null}
+                  onChange={(uid) => set({ assignedToUid: uid })}
                 />
               </Field>
             </>

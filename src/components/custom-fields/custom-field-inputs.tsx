@@ -3,15 +3,21 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import type {
-  CustomFieldDef,
-  CustomFieldValue,
+import { groupFieldsByFolder } from "@/lib/custom-fields/folders";
+import {
+  GENERAL_FOLDER_NAME,
+  type CustomFieldDef,
+  type CustomFieldFolder,
+  type CustomFieldValue,
 } from "@/types/custom-fields";
 
 /**
  * Renders editable inputs for a set of custom-field definitions, shared by the
  * contact form and the deal dialogs. Controlled: the parent owns the
  * `values` map (keyed by each def's `key`) and gets a new map on every change.
+ * When `folders` is given, fields render grouped: General first, then each
+ * non-empty folder as a collapsible section (General is headed only once a
+ * folder exists).
  *
  * Type → control:
  *   text/url/phone/email → text input (typed)
@@ -23,12 +29,14 @@ import type {
  */
 export function CustomFieldInputs({
   defs,
+  folders,
   values,
   onChange,
   disabled,
   idPrefix = "cf",
 }: {
   defs: CustomFieldDef[];
+  folders?: CustomFieldFolder[];
   values: Record<string, CustomFieldValue>;
   onChange: (next: Record<string, CustomFieldValue>) => void;
   disabled?: boolean;
@@ -38,6 +46,44 @@ export function CustomFieldInputs({
 
   function set(key: string, v: CustomFieldValue) {
     onChange({ ...values, [key]: v });
+  }
+
+  if (folders) {
+    const groups = groupFieldsByFolder(defs, folders).filter(
+      (g) => g.fields.length > 0,
+    );
+    return (
+      <div className="space-y-4">
+        {groups.map(({ folder, fields }) => {
+          // General is headed only once the workspace has folders at all.
+          const heading =
+            folder?.name ?? (folders.length > 0 ? GENERAL_FOLDER_NAME : null);
+          const inputs = (
+            <CustomFieldInputs
+              idPrefix={idPrefix}
+              defs={fields}
+              values={values}
+              onChange={onChange}
+              disabled={disabled}
+            />
+          );
+          return heading ? (
+            <details
+              key={folder?.id ?? "general"}
+              open
+              className="rounded-lg border p-3"
+            >
+              <summary className="cursor-pointer text-xs font-medium">
+                {heading}
+              </summary>
+              <div className="mt-3">{inputs}</div>
+            </details>
+          ) : (
+            <div key="general">{inputs}</div>
+          );
+        })}
+      </div>
+    );
   }
 
   return (

@@ -175,6 +175,21 @@ func (s *SQLite) HasInboundFrom(jid string) (bool, error) {
 	return n > 0, err
 }
 
+// LastInboundFrom is the timestamp of this contact's most recent inbound
+// message, and false when they have never messaged this number.
+func (s *SQLite) LastInboundFrom(jid string) (time.Time, bool, error) {
+	var at sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT MAX(at_unix) FROM messages WHERE jid = ? AND outbound = 0`, jid).Scan(&at)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !at.Valid {
+		return time.Time{}, false, nil
+	}
+	return time.Unix(at.Int64, 0), true, nil
+}
+
 func (s *SQLite) IsAllowlisted(jid string) (bool, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(1) FROM allowlist WHERE jid = ?`, jid).Scan(&n)

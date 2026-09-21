@@ -4,6 +4,7 @@ import {
   addDoc,
   updateDoc,
   getDoc,
+  getDocs,
   limit,
   onSnapshot,
   serverTimestamp,
@@ -30,6 +31,15 @@ export interface ContactQueryOptions {
    * `null` (the default) = no extra clause.
    */
   territoryFilter?: string[] | null;
+  /** Only contacts linked to this `companies/{id}` doc (company detail page). */
+  companyId?: string;
+  /**
+   * Hold the callback until the server has answered. Without it the first
+   * snapshot can come from the in-memory cache and hold only the docs a
+   * concurrent query loaded (the contacts page's newest-page preview) — a
+   * partial list shown as complete.
+   */
+  waitForServer?: boolean;
 }
 
 export function subscribeToContacts(
@@ -76,10 +86,23 @@ export function subscribeToContacts(
     where("subAccountId", "==", scope.subAccountId),
   ];
   if (plan.mode === "in") constraints.push(plan.constraint);
+  if (opts.companyId) constraints.push(where("companyId", "==", opts.companyId));
   const q = query(collection(getFirebaseDb(), CONTACTS), ...constraints);
+  let serverAnswered = false;
   return onSnapshot(
     q,
+    // When the cache already holds the full result (the page revisited in the
+    // same session), the server's confirmation changes no docs — it is
+    // metadata-only and, without this, would never fire.
+    { includeMetadataChanges: opts.waitForServer === true },
     (snap) => {
+      if (opts.waitForServer) {
+        if (snap.metadata.fromCache && !serverAnswered) return;
+        // Once loaded, a metadata-only event (e.g. a write's server ack)
+        // carries no new data — skip the re-sort the default mode never did.
+        if (serverAnswered && snap.docChanges().length === 0) return;
+        serverAnswered = true;
+      }
       const contacts = snap.docs.map(
         (d) => ({ id: d.id, ...(d.data() as Omit<Contact, "id">) }),
       );
@@ -88,6 +111,28 @@ export function subscribeToContacts(
     },
     (err) => onError?.(err),
   );
+}
+
+/**
+ * The newest `count` contacts in a sub-account, one-shot. Lets the contacts
+ * page paint its first rows before the full list (which search, filters and
+ * select-all need) finishes downloading. Needs the (subAccountId, createdAt
+ * desc) index; without it this rejects and callers show no preview. A doc
+ * with no `createdAt` is left out (every create path sets it).
+ */
+export async function fetchNewestContacts(
+  scope: TenantScope,
+  count: number,
+): Promise<Contact[]> {
+  const snap = await getDocs(
+    query(
+      collection(getFirebaseDb(), CONTACTS),
+      where("subAccountId", "==", scope.subAccountId),
+      orderBy("createdAt", "desc"),
+      limit(count),
+    ),
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Contact, "id">) }));
 }
 
 function toMillis(v: unknown): number {
@@ -166,6 +211,8 @@ export async function addNote(
   contactId: string,
   content: string,
   userId: string,
+  source?: Note["source"],
+  mentionedUids: string[] = [],
 ): Promise<string> {
   const ref = await addDoc(
     collection(getFirebaseDb(), CONTACTS, contactId, "notes"),
@@ -173,6 +220,8 @@ export async function addNote(
       content,
       createdBy: userId,
       createdAt: serverTimestamp(),
+      ...(source ? { source } : {}),
+      ...(mentionedUids.length ? { mentionedUids } : {}),
     },
   );
   return ref.id;

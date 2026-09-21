@@ -3,12 +3,20 @@ import type { SubAccountDoc } from "@/types";
 
 const getWabaCreds = vi.fn();
 const sendWhatsappCloud = vi.fn();
+const getBridgeCreds = vi.fn();
+const sendWhatsappBridge = vi.fn();
 
 vi.mock("./cloud-credentials", () => ({
   getWabaCreds: (...a: unknown[]) => getWabaCreds(...a),
 }));
 vi.mock("./cloud-client", () => ({
   sendWhatsappCloud: (...a: unknown[]) => sendWhatsappCloud(...a),
+}));
+vi.mock("./bridge-credentials", () => ({
+  getBridgeCreds: (...a: unknown[]) => getBridgeCreds(...a),
+}));
+vi.mock("./bridge-client", () => ({
+  sendWhatsappBridge: (...a: unknown[]) => sendWhatsappBridge(...a),
 }));
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => {
@@ -38,6 +46,8 @@ describe("dispatchWhatsappSend", () => {
   beforeEach(() => {
     getWabaCreds.mockReset();
     sendWhatsappCloud.mockReset();
+    getBridgeCreds.mockReset();
+    sendWhatsappBridge.mockReset();
   });
 
   it("routes a legacy sub-account to Twilio", async () => {
@@ -80,12 +90,150 @@ describe("dispatchWhatsappSend", () => {
     expect(input.sendViaTwilio).not.toHaveBeenCalled();
   });
 
-  it("refuses on the bridge rail rather than falling through to another", async () => {
+  it("routes a bridge sub-account to the bridge sender and never to Twilio", async () => {
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    const input = baseInput({ subAccount: sub("bridge") });
+    const r = await dispatchWhatsappSend(input);
+    expect(r).toMatchObject({ ok: true, messageId: "3EB0", provider: "bridge" });
+    expect(input.sendViaTwilio).not.toHaveBeenCalled();
+    expect(sendWhatsappCloud).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a send is human unless the caller said so", async () => {
+    // The default has to be false at every layer. A send wrongly marked human
+    // escapes quiet hours, which means a customer's phone lighting up at 03:00
+    // — so "forgot to pass it" must fail towards the guard, not around it.
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge") }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ humanReply: false }),
+    );
+  });
+
+  it("passes humanReply through to the bridge when the caller marks it", async () => {
+    getBridgeCreds.mockResolvedValue({ baseUrl: "http://b:1", token: "t", webhookSecret: "w" });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge"), humanReply: true }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ humanReply: true }),
+    );
+  });
+
+  it("fails clearly when the bridge rail has no credentials", async () => {
+    // Otherwise this fails deep inside a fetch against an empty base URL.
+    getBridgeCreds.mockRejectedValue(new Error("not configured for sa_1"));
     const input = baseInput({ subAccount: sub("bridge") });
     const r = await dispatchWhatsappSend(input);
     expect(r.ok).toBe(false);
-    expect(r.provider).toBe("bridge");
+    expect(r.providerOutcome).toBe("DEFINITELY_REJECTED");
+    expect(sendWhatsappBridge).not.toHaveBeenCalled();
     expect(input.sendViaTwilio).not.toHaveBeenCalled();
+  });
+
+  it("passes a caller-supplied idempotency key through to the bridge", async () => {
+    // The bridge generates one per call when none is given, so a caller whose
+    // own retry must converge has to supply a stable key.
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(
+      baseInput({ subAccount: sub("bridge"), idempotencyKey: "wf-step-7" }),
+    );
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "wf-step-7" }),
+    );
+  });
+
+  it("passes an attachment through to the bridge sender", async () => {
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    const attachment = {
+      filename: "report.png",
+      contentType: "image/png",
+      data: new Blob([new Uint8Array([0, 1, 2])]),
+    };
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge"), attachment }));
+    // Encoded for the bridge's JSON wire format at the last step.
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        media: { filename: "report.png", contentType: "image/png", dataBase64: "AAEC" },
+      }),
+    );
+  });
+
+  it("hands the bridge no media when the caller attached nothing", async () => {
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("bridge") }));
+    expect(sendWhatsappBridge).toHaveBeenCalledWith(
+      expect.objectContaining({ media: null }),
+    );
+  });
+
+  it("refuses an attachment on Twilio rather than dropping it", async () => {
+    // Silently sending the caption alone is the worst outcome: the operator is
+    // told the report went, the prospect never receives it, and nothing in the
+    // thread says which happened.
+    const attachment = {
+      filename: "report.png",
+      contentType: "image/png",
+      data: new Blob([new Uint8Array([0, 1, 2])]),
+    };
+    const input = baseInput({ attachment });
+    const r = await dispatchWhatsappSend(input);
+    expect(r.ok).toBe(false);
+    expect(r.provider).toBe("twilio");
+    expect(r.providerOutcome).toBe("DEFINITELY_REJECTED");
+    // A code, so the route answers 400 (fix the request) rather than 502.
+    expect(r.providerErrorCode).toBe("media_unsupported_rail");
+    expect(input.sendViaTwilio).not.toHaveBeenCalled();
+  });
+
+  it("passes an attachment through to the cloud sender", async () => {
+    getWabaCreds.mockResolvedValue({
+      phoneNumberId: "PN",
+      wabaId: "WA",
+      accessToken: "T",
+    });
+    sendWhatsappCloud.mockResolvedValue({ ok: true, messageId: "wamid.1" });
+    const attachment = {
+      filename: "report.png",
+      contentType: "image/png",
+      data: new Blob([new Uint8Array([0, 1, 2])]),
+    };
+    const r = await dispatchWhatsappSend(
+      baseInput({ subAccount: sub("cloud"), attachment }),
+    );
+    expect(r.ok).toBe(true);
+    expect(sendWhatsappCloud).toHaveBeenCalledWith(
+      expect.objectContaining({ media: attachment }),
+    );
+  });
+
+  it("hands the cloud sender no media when the caller attached nothing", async () => {
+    getWabaCreds.mockResolvedValue({ phoneNumberId: "PN", wabaId: "WA", accessToken: "T" });
+    sendWhatsappCloud.mockResolvedValue({ ok: true, messageId: "wamid.1" });
+    await dispatchWhatsappSend(baseInput({ subAccount: sub("cloud") }));
+    expect(sendWhatsappCloud).toHaveBeenCalledWith(
+      expect.objectContaining({ media: null }),
+    );
   });
 
   it("forwards the window and template to the cloud sender", async () => {
@@ -137,6 +285,8 @@ describe("the window decision is made once, for every rail", () => {
   beforeEach(() => {
     getWabaCreds.mockReset();
     sendWhatsappCloud.mockReset();
+    getBridgeCreds.mockReset();
+    sendWhatsappBridge.mockReset();
   });
 
   const closed = new Date(Date.now() - 30 * 3600_000);
@@ -196,11 +346,18 @@ describe("the window decision is made once, for every rail", () => {
   });
 
   it("does not apply the window to the bridge rail", async () => {
-    // The bridge is not a Meta rail. It fails for being unimplemented, not for
-    // a window that does not apply to it.
+    // The bridge is not a Meta rail: no window, no templates. A send with a
+    // long-closed window must still reach the bridge sender.
+    getBridgeCreds.mockResolvedValue({
+      baseUrl: "http://b:1",
+      token: "t",
+      webhookSecret: "w",
+    });
+    sendWhatsappBridge.mockResolvedValue({ ok: true, messageId: "3EB0" });
     const r = await dispatchWhatsappSend(
       baseInput({ subAccount: sub("bridge"), lastInboundAt: closed }),
     );
-    expect(r.error).toContain("isn't available yet");
+    expect(r.ok).toBe(true);
+    expect(sendWhatsappBridge).toHaveBeenCalledOnce();
   });
 });

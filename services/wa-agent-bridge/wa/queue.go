@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 )
 
 // ErrSendTimeout means the provider was given its full per-send budget and did
@@ -59,7 +60,12 @@ func NewQueue(t Transport, opts QueueOpts) *Queue {
 	return &Queue{t: t, opts: opts}
 }
 
-func (q *Queue) Send(ctx context.Context, jid, text string) (string, error) {
+// Send paces, serialises and bounds one send. media is carried straight
+// through to the transport: an attachment gets the same single-socket
+// serialisation, the same timeout and the same ambiguous-vs-definitive error
+// split as text, because those properties are about the socket, not the
+// payload.
+func (q *Queue) Send(ctx context.Context, jid, text string, media *rails.Media) (string, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -90,7 +96,7 @@ func (q *Queue) Send(ctx context.Context, jid, text string) (string, error) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		id, err := q.t.Send(sendCtx, jid, text)
+		id, err := q.t.Send(sendCtx, jid, text, media)
 		done <- result{id, err}
 	}()
 

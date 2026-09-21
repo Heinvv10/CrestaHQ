@@ -4,14 +4,18 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { subAccountWhatsappIsConfigured } from "@/lib/comms/twilio";
 import {
   DEFAULT_REVIEW_COOLDOWN_DAYS,
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
+  parseReminderSettings,
 } from "@/lib/reviews/constants";
+import { isHttpsUrl } from "@/lib/reviews/review-url";
+import { googleLinkRefusal, reminderRefusal } from "@/lib/reviews/reminder-refusal";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import type { SubAccountDoc } from "@/types";
 import type { GoogleReviewConfig } from "@/types/tenancy";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -23,6 +27,9 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
  *   gating so a client can't bypass it: https review URL, SMS body must contain
  *   {{reviewUrl}}, and a WhatsApp channel requires the agency WhatsApp gate ON +
  *   a configured sender + an APPROVED template.
+ * PATCH — change only `reminder` (SP5 d2). Admin-only; needs a saved config.
+ *   POST keeps the stored reminder when its body has no `reminder` key, so the
+ *   Messaging form (which never sends one) can't switch reminders off.
  * DELETE — clear the config.
  */
 
@@ -35,15 +42,14 @@ interface PostBody {
   cooldownDays?: number;
   triggerOnQuotePaid?: boolean;
   triggerOnDealCompleted?: boolean;
+  reminder?: unknown;
 }
 
-function isHttpsUrl(s: string): boolean {
-  try {
-    return new URL(s).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
+const invalidReminder = () =>
+  NextResponse.json(
+    { error: "Reminders repeat every 1–7 days, at most 5 times.", code: "invalid_reminder", field: "reminder" },
+    { status: 400 },
+  );
 
 export async function POST(
   request: Request,
@@ -60,6 +66,9 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const reminder = body.reminder === undefined ? undefined : parseReminderSettings(body.reminder);
+  if (reminder === null) return invalidReminder();
+
   const reviewUrl = body.reviewUrl?.trim() ?? "";
   if (!reviewUrl || !isHttpsUrl(reviewUrl)) {
     return NextResponse.json(
@@ -70,6 +79,15 @@ export async function POST(
 
   const channel = normalizeReviewChannel(body.channel);
   const isWhatsapp = channel !== "sms";
+  const stored = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? null) as SubAccountDoc | null;
+  if (reminder?.everyDays) {
+    const refusal = reminderRefusal(channel, reviewUrl, stored);
+    if (refusal) return refusal;
+  } else if (reminder === undefined && parseReminderSettings(stored?.googleReviewConfig?.reminder)?.everyDays) {
+    // Reminders stay on (the body doesn't mention them): the link must stay Google's.
+    const refusal = googleLinkRefusal(reviewUrl);
+    if (refusal) return refusal;
+  }
   const messageTemplate =
     body.messageTemplate?.trim() || DEFAULT_REVIEW_SMS_TEMPLATE;
 
@@ -98,11 +116,34 @@ export async function POST(
         { status: 403 },
       );
     }
-    if (!subAccountWhatsappIsConfigured(sub?.twilioConfig)) {
+    // One resolution for the whole route — the rail of the sender this
+    // workspace sends on. The approval check below reads the same value, so a
+    // config that saves is a config that can send.
+    const resolvedSender = resolveWhatsappSender(sub);
+    const rail = resolvedSender.ok ? resolvedSender.provider : "twilio";
+    // The PURE sender check, deliberately NOT checkWhatsappReadiness: this is a
+    // config SAVE, and readiness does a live bridge probe. Refusing to save a
+    // configuration because the bridge happens to be unreachable right now
+    // would be wrong — health belongs on the send path, which re-checks every
+    // time. This only asks whether a sender has been connected at all, on the
+    // rail this workspace actually sends over.
+    if (!whatsappSenderConfigured(sub)) {
       return NextResponse.json(
         {
           error:
-            "Add a WhatsApp sender under Settings → SMS before using WhatsApp for review requests.",
+            rail === "twilio"
+              ? "Add a WhatsApp sender under Settings → SMS before using WhatsApp for review requests."
+              : "Connect this workspace's WhatsApp sender under Settings → WhatsApp before using WhatsApp for review requests.",
+        },
+        { status: 400 },
+      );
+    }
+    // Saving a template config on a rail with no templates configures a send
+    // that can never run — refuse it here rather than at 3am on a trigger.
+    if (channel === "whatsapp_template" && !capabilitiesFor(rail).supportsTemplates) {
+      return NextResponse.json(
+        {
+          error: `This workspace's ${rail} WhatsApp rail can't send templates. Use the in-window WhatsApp message or SMS for review requests.`,
         },
         { status: 400 },
       );
@@ -126,11 +167,10 @@ export async function POST(
       // stale Twilio id while the flat status mirrors the cloud approval, so
       // the old check would accept a template approved on a rail this
       // workspace does not send on.
-      const { provider: waProvider } = resolveProviderForSubAccount(sub);
-      if (!isTemplateApprovedFor(tpl, waProvider)) {
+      if (!isTemplateApprovedFor(tpl, rail)) {
         return NextResponse.json(
           {
-            error: `That WhatsApp template isn't approved on this workspace's ${waProvider} WhatsApp rail — only a template approved there can be used.`,
+            error: `That WhatsApp template isn't approved on this workspace's ${rail} WhatsApp rail — only a template approved there can be used.`,
           },
           { status: 400 },
         );
@@ -149,6 +189,8 @@ export async function POST(
     cooldownDays,
     triggerOnQuotePaid: body.triggerOnQuotePaid === true,
     triggerOnDealCompleted: body.triggerOnDealCompleted === true,
+    // Not in the body → no key here, and the merge below keeps a stored one.
+    ...(reminder ? { reminder } : {}),
     updatedAt: new Date(),
   };
 
@@ -160,6 +202,42 @@ export async function POST(
     );
 
   return NextResponse.json({ ok: true });
+}
+
+export async function PATCH(
+  request: Request,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const { id: subAccountId } = await ctx.params;
+  const access = await requireSubAccountAdmin(request, subAccountId);
+  if (access instanceof NextResponse) return access;
+
+  let body: { reminder?: unknown };
+  try {
+    body = (await request.json()) as { reminder?: unknown };
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const reminder = parseReminderSettings(body.reminder);
+  if (!reminder) return invalidReminder();
+
+  const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
+  const sub = ((await ref.get()).data() ?? null) as SubAccountDoc | null;
+  const current = sub?.googleReviewConfig;
+  if (!current?.reviewUrl) {
+    return NextResponse.json({ error: "Save your review link first." }, { status: 400 });
+  }
+  if (reminder.everyDays) {
+    const refusal = reminderRefusal(normalizeReviewChannel(current.channel), current.reviewUrl, sub);
+    if (refusal) return refusal;
+  }
+  // Field paths: only these two change — never a write-back of the config read above.
+  await ref.update({
+    "googleReviewConfig.reminder": reminder,
+    "googleReviewConfig.updatedAt": new Date(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return NextResponse.json({ ok: true, reminder });
 }
 
 export async function DELETE(

@@ -7,9 +7,10 @@ import {
   sendSmsForSubAccount,
   smsIsConfigured,
   subAccountTwilioIsConfigured,
-  subAccountWhatsappIsConfigured,
   sendWhatsappTemplateForSubAccount,
 } from "@/lib/comms/twilio";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
 import { isWithinServiceWindow } from "@/lib/comms/whatsapp/send-mode";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
@@ -21,6 +22,12 @@ import {
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
 } from "@/lib/reviews/constants";
+import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
+import { logReviewRequest } from "@/lib/reviews/request-log";
+import { planReviewLink, scheduleReviewReminder, supersedeOtherReminders } from "@/lib/reviews/reminder";
+import { phoneHash, templateHash } from "@/lib/reviews/reminder-checks";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -44,21 +51,27 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type ReviewTrigger = "manual" | "quote_paid" | "deal_completed";
+export type ReviewTrigger = "manual" | "quote_paid" | "deal_completed" | "reminder";
 
 export interface SendReviewInput {
   subAccountId: string;
   agencyId: string;
   contactId: string;
   trigger: ReviewTrigger;
+  /** The signed-in sender of a manual send; the log's `createdByUid`. */
+  actorUid?: string;
+  /** SP5 d2: a reminder re-send of this request (trigger "reminder") — same
+   *  link, no cooldown, no new log row; the worker records the attempt. */
+  reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
 }
 
 export interface SendReviewResult {
   sent: boolean;
   /** When sent is false: not_configured | trigger_disabled | no_contact |
    *  no_phone | opted_out | cooldown | sms_not_configured | whatsapp_gate_off |
-   *  whatsapp_not_configured | no_template | template_not_approved |
-   *  template_var_missing | send_failed | error */
+   *  whatsapp_not_configured | window_closed | rail_has_no_templates |
+   *  no_template | template_not_approved | template_var_missing |
+   *  send_failed | error */
   reason?: string;
 }
 
@@ -95,12 +108,16 @@ export async function maybeSendReviewRequest(
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
     const subAccount = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
     const cfg = subAccount?.googleReviewConfig ?? null;
-    if (!subAccount || !cfg || !cfg.reviewUrl) {
+    // The configured URL only — a listing's proposed link is never sent.
+    const reviewUrl = resolveReviewUrl(subAccount).configured;
+    if (!subAccount || !cfg || !reviewUrl) {
       return { sent: false, reason: "not_configured" };
     }
 
     const isManual = input.trigger === "manual";
-    if (!isManual) {
+    // A reminder re-sends a request already made; its trigger's gate was checked then.
+    const isReminder = input.trigger === "reminder" && !!input.reminderOf;
+    if (!isManual && !isReminder) {
       // Each auto trigger is gated by `enabled` + its own per-trigger flag.
       const triggerEnabled =
         input.trigger === "quote_paid"
@@ -124,6 +141,8 @@ export async function maybeSendReviewRequest(
     const channel = normalizeReviewChannel(cfg.channel);
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";
+    // A reminder goes only on the channel its request went on.
+    if (isReminder && convoChannel !== input.reminderOf!.channel) return { sent: false, reason: "channel_changed" };
 
     // Per-channel opt-out.
     if (channel === "sms" && smsSendBlock(contact)) {
@@ -133,8 +152,9 @@ export async function maybeSendReviewRequest(
       return { sent: false, reason: "opted_out" };
     }
 
-    // Cooldown — auto only; manual bypasses (operator intent) but still stamps.
-    if (!isManual) {
+    // Cooldown — auto only; manual (operator intent) and a reminder of THIS
+    // request bypass it, but still stamp.
+    if (!isManual && !isReminder) {
       const cooldownDays =
         cfg.cooldownDays > 0 ? cfg.cooldownDays : DEFAULT_REVIEW_COOLDOWN_DAYS;
       const lastMs = toMillis(contact.reviewRequestedAt);
@@ -144,6 +164,21 @@ export async function maybeSendReviewRequest(
     }
 
     const businessName = subAccount.name ?? "";
+    // SP5 d2: reminders off (the default) → null, and every body below is as before.
+    const plan = planReviewLink({
+      config: cfg,
+      channel,
+      subAccountId: input.subAccountId,
+      reviewUrl,
+      reminderOf: isReminder ? input.reminderOf : undefined,
+      remindable:
+        subAccountTwilioIsConfigured(subAccount.twilioConfig) &&
+        subAccount.twilioConfig?.inboundWebhookConfigured === true &&
+        normalizePhoneE164(contact.phone) === contact.phone &&
+        isGoogleReviewUrl(reviewUrl),
+      newRequestId: () => db.collection(`subAccounts/${input.subAccountId}/reviewRequests`).doc().id,
+    });
+    const bodyUrl = plan?.bodyUrl ?? reviewUrl;
 
     // ---- Send (channel-specific) ----
     let sid: string;
@@ -158,24 +193,49 @@ export async function maybeSendReviewRequest(
       if (subAccount.whatsappEnabledByAgency !== true) {
         return { sent: false, reason: "whatsapp_gate_off" };
       }
-      if (!subAccountWhatsappIsConfigured(subAccount.twilioConfig)) {
+      // Readiness is PER RAIL. The old Twilio-shaped credential check refused
+      // every correctly connected Cloud or bridge workspace and told the
+      // operator to add a Twilio number, which is not the fix on either rail.
+      // The two send helpers below (sendWhatsappFreeFormForSubAccount,
+      // dispatchWhatsappTemplateSend) are themselves rail-agnostic — but this
+      // gate was NOT the only rail-blind check on the path, so converting it
+      // alone would only have moved the refusal one line down: the
+      // whatsapp_manual branch refused a shut 24h window on every rail
+      // (the bridge has no window), and the whatsapp_template branch had no
+      // answer for a rail with no templates. All three are per-rail below —
+      // the window and template checks read `capabilitiesFor`, this gate is
+      // rail-aware in its own right (per-rail credentials and health). Same
+      // readiness call the workflow engine's WhatsApp executors make, so the
+      // two agree.
+      const readiness = await checkWhatsappReadiness({
+        subAccountId: input.subAccountId,
+        subAccount,
+      });
+      if (!readiness.ready) {
         return { sent: false, reason: "whatsapp_not_configured" };
       }
 
       const freeFormBody = fillReviewSms(
         cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl: cfg.reviewUrl },
+        { firstName: firstWord(contact.name), businessName, reviewUrl: bodyUrl },
       );
 
       if (channel === "whatsapp_manual") {
-        // Free-form — only valid while the 24h session window is open (the
-        // customer messaged recently). No approved template required.
-        // Read the window ONCE and hand the timestamp to the dispatcher.
-        // Letting each re-read it would mean two queries that can disagree —
-        // and the caller needs the answer anyway, to report `window_closed`
-        // rather than a generic send failure.
+        // Free-form. No approved template required. Read the window ONCE and
+        // hand the timestamp to the dispatcher: letting each re-read it would
+        // mean two queries that can disagree — and the caller needs the answer
+        // anyway, to report `window_closed` rather than a generic send failure.
         const lastInboundAt = await whatsappLastInboundAt(db, contact.id);
-        if (!isWithinServiceWindow(lastInboundAt, new Date())) {
+        // Whether a shut window refuses the send is a CAPABILITY of the rail,
+        // not a special case for one provider. A rail outside Meta's system
+        // has no service window at all, and `resolveWaSendMode` — which the
+        // dispatcher below runs — reads `enforcesWindow` exactly this way.
+        // Refusing unconditionally here would admit the bridge past the
+        // readiness gate only to turn it away at this one.
+        if (
+          capabilitiesFor(readiness.provider).enforcesWindow &&
+          !isWithinServiceWindow(lastInboundAt, new Date())
+        ) {
           return { sent: false, reason: "window_closed" };
         }
         const res = await sendWhatsappFreeFormForSubAccount({
@@ -191,6 +251,13 @@ export async function maybeSendReviewRequest(
         renderedBody = freeFormBody;
       } else {
         // whatsapp_template — approved template (compliant outside the window).
+        // The bridge has no templates at all, so the configured send can never
+        // run there. That is a different fact from "your template was not
+        // approved" and has a different fix (switch rail, or use the in-window
+        // mode), so it gets its own reason rather than borrowing that one.
+        if (!capabilitiesFor(readiness.provider).supportsTemplates) {
+          return { sent: false, reason: "rail_has_no_templates" };
+        }
         if (!cfg.whatsappTemplateId) return { sent: false, reason: "no_template" };
         const tplSnap = await db
           .doc(`subAccounts/${input.subAccountId}/whatsappTemplates/${cfg.whatsappTemplateId}`)
@@ -240,7 +307,7 @@ export async function maybeSendReviewRequest(
       }
       renderedBody = fillReviewSms(
         cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl: cfg.reviewUrl },
+        { firstName: firstWord(contact.name), businessName, reviewUrl: bodyUrl },
       );
       const res = await sendSmsForSubAccount({
         subAccountId: input.subAccountId,
@@ -322,6 +389,43 @@ export async function maybeSendReviewRequest(
       console.warn("[reviews/request] activity write failed", err);
     }
 
+    // A reminder is an attempt on its request (the worker records it), not a new request.
+    if (isReminder) return { sent: true };
+
+    // The queryable request log (Reputation). Never throws.
+    await logReviewRequest({
+      agencyId: input.agencyId,
+      subAccountId: input.subAccountId,
+      createdByUid: input.actorUid ?? "review-request",
+      contactId: contact.id,
+      channel: isWhatsapp ? "whatsapp" : "sms",
+      source: "dispatcher",
+      trigger: input.trigger,
+      status: "sent",
+      messageSid: sid,
+      // With a reminder: a hash of the number it went to (never the number), so a
+      // reminder can stop if the contact's number changes.
+      ...(plan
+        ? {
+            id: plan.requestId,
+            tracked: plan.tracked,
+            reminder: { ...plan.reminder },
+            toHash: phoneHash(contact.phone),
+            // A hash of the template used — never the body — so a reminder stops if it changes.
+            templateHash: templateHash(cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE),
+          }
+        : {}),
+    });
+    if (plan?.reminder) {
+      await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), plan.requestId);
+      await scheduleReviewReminder({
+        subAccountId: input.subAccountId,
+        requestId: plan.requestId,
+        attempt: 1,
+        everyDays: plan.reminder.everyDays,
+      });
+    }
+
     return { sent: true };
   } catch (err) {
     console.warn("[reviews/request] failed", err);
@@ -392,6 +496,7 @@ async function buildSubject(
       name: contact.name ?? "",
       email: contact.email ?? "",
       phone: contact.phone ?? "",
+      customFields: contact.customFields ?? null,
     },
     owner,
     workspace: { name: subAccount.name ?? "" },

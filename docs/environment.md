@@ -110,6 +110,14 @@ Without these two vars, `/api/comms/email/send` returns **503** and the Email bu
 
 Without these three, `/api/comms/sms/send` returns 503. SMS opt-out (STOP/START) also requires the inbound webhook URL configured on the Twilio number — see the Onboarding Guide below.
 
+**Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER` / `WHATSAPP_SETTINGS_PROVIDER`):
+
+| Var | Purpose |
+|---|---|
+| `SMS_PROVIDER` | `fake` swaps Twilio for a deterministic fake at the ONE seam `sendSmsForSubAccount` uses to place a send (`src/lib/comms/sms/select.ts`) — every SMS path (missed-call text-back, workflows, manual send) benefits, and returns a deterministic `sid` recording nothing else, save for one magic failing number (`+15005550001`) that always throws. Unset/anything else = real Twilio. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]`; otherwise the send throws `SmsFakeRefusedError` rather than falling back. |
+| `SMS_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
+| `SMS_FAKE_AGENCY_ID` | Required with `SMS_PROVIDER=fake`: the fake sends only for sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake send silently no-op-ing for a real tenant's SMS. |
+
 ## Required for automations (disables cleanly if missing)
 | Var | Source |
 |---|---|
@@ -117,7 +125,7 @@ Without these three, `/api/comms/sms/send` returns 503. SMS opt-out (STOP/START)
 | `QSTASH_TOKEN` | same panel |
 | `QSTASH_CURRENT_SIGNING_KEY` | same panel — verifies inbound `Upstash-Signature` headers |
 | `QSTASH_NEXT_SIGNING_KEY` | same panel — used during key rotation |
-| `AUTOMATIONS_TOKEN_SECRET` | `openssl rand -base64 32`. HMAC-signs unsubscribe links so they can't be forged. Rotating this invalidates all outstanding unsubscribe links. |
+| `AUTOMATIONS_TOKEN_SECRET` | `openssl rand -base64 32`. HMAC-signs unsubscribe links so they can't be forged — and the tracked review links (`/rr/…`) sent while review-request reminders are on. Rotating this invalidates all outstanding unsubscribe and tracked review links. |
 
 Without these, `/api/automations/step` and the website-builder poll route return 503. Automation triggers still fire on form submit (the `automation_executions` row gets created) but step 0 never executes — the form submission itself still works.
 
@@ -136,6 +144,32 @@ Without `GITPAGE_API_KEY`, `/api/sub-accounts/[id]/website/[siteId]/build` retur
 | `AI_REPLIES_DEFAULT_MODEL` | Optional. OpenRouter model id used when no per-channel override is set. Defaults to `anthropic/claude-haiku-4-5` (best cost/quality balance for SMS-length replies). Override per channel to use `anthropic/claude-opus-4-7` for premium tiers (~50x cost). |
 
 Without `OPENROUTER_API_KEY`, the AI Agents settings UI still renders but every channel stays silent: the SMS inbound webhook short-circuits past `maybeRespondWithAi`, the Web Chat `/api/web-chat/message` endpoint returns the fallback "I had trouble reaching the server" reply, and the `/api/sub-accounts/[id]/ai-agent/test` endpoint returns 503.
+
+## Optional — wa-manager (self-serve WhatsApp bridge provisioning)
+| Var | Source |
+|---|---|
+| `WA_MANAGER_BASE_URL` | The wa-manager listener, e.g. `http://127.0.0.1:33000`. It binds to loopback on the CRM's own box and stays there — it is never exposed publicly, because every one of its routes is privileged. |
+| `WA_MANAGER_OPERATOR_TOKEN` | `OPERATOR_TOKEN` from the manager's own `.env` on that box. |
+
+CrestaHQ operates the bridge as a service: `wa-manager` runs one
+`wa-agent-bridge` process per sub-account and holds the credentials for all of
+them. **The operator token has no notion of tenant ownership** — it can link a
+WhatsApp device on any tenant on the box — so the CRM, not the manager, is the
+tenancy boundary: every route under
+`/api/sub-accounts/[id]/whatsapp-bridge/*` derives the manager tenant id from
+the authenticated session's sub-account and never from the request.
+
+Without these, nothing 500s and no page breaks: the self-serve provision /
+pairing / restart / disconnect routes answer 503 with a sentence saying the
+manager isn't configured, and a bridge can still be connected by hand through
+`/api/sub-accounts/[id]/whatsapp-bridge-connection` with credentials read off
+the box. A buyer copy deploying to Vercel has no manager and never sets these.
+
+Note there is no rotation route by design. The manager returns the bridge's app
+token and webhook secret exactly once, in the 201 of the provision call, and
+keeps no readable copy. If the CRM loses them the recovery is
+disconnect-and-reprovision, which erases the WhatsApp session and costs the
+customer a re-pair.
 
 ## Optional — Firecrawl (powers the website KB on the AI Agent profile)
 | Var | Source |
@@ -173,10 +207,69 @@ One Meta app powers BOTH the FB Messenger / IG DM inbox AND the Social Planner (
 | `META_APP_ID` | [developers.facebook.com](https://developers.facebook.com) → your app → Settings → Basic. |
 | `META_APP_SECRET` | Same page. Keep secret. |
 | `META_WEBHOOK_VERIFY_TOKEN` | Any string you choose; enter the same value in the Meta app's Webhooks config. Needed for inbound inbox messages (not for posting). |
+| `WHATSAPP_APP_SECRET` | Optional. The app secret of a separate Meta app used for WhatsApp Cloud — e.g. one in the business portfolio that owns the WABAs. The `/api/webhooks/whatsapp-cloud` webhook accepts a signature from this app or from `META_APP_SECRET`'s. Its webhook uses the same `META_WEBHOOK_VERIFY_TOKEN`. |
 
 **Gray-out behavior:** when `META_APP_ID` + `META_APP_SECRET` are absent, `metaAppConfigured()` is false, so the **"Facebook + Instagram inbox"** and **"Social Planner"** toggles in the agency Manage dialog are **disabled/grayed out** (with a "set META_APP_ID / META_APP_SECRET" hint), and the feature-gates PATCH route refuses to enable either gate (400). The client reads this via `GET /api/agency/deployment-config` (returns `{ metaConfigured }` — non-sensitive booleans only). An already-enabled gate can still be turned OFF so a legacy state isn't trapped. Derives from the two secrets — there is no separate `NEXT_PUBLIC` flag to keep in sync.
 
 Beyond the env vars, posting also requires **Meta App Review** for `pages_manage_posts` + `instagram_content_publish` (on top of the messaging review). Until approved, only Meta app admins/testers can connect. See [Social Planner](features/social-planner.md) + the Meta inbox section of [AI Agents](features/ai-agents.md).
+
+## Optional — WhatsApp Cloud API
+Each sub-account connects its own Meta WhatsApp Cloud sender (phone number id, WABA id, system-user token) under Settings → Messaging; nothing deployment-wide is required. The Settings → WhatsApp page (profile, quality badge, message links) and the hourly quality poll (`leadstack-whatsapp-quality` → `/api/cron/whatsapp-quality`) call the Graph API with that stored token.
+
+| Var | Purpose |
+|---|---|
+| `FFMPEG_PATH` / `FFPROBE_PATH` | Optional. Absolute paths to ffmpeg and ffprobe (≥ 5, ffmpeg built with libx264 and aac); unset, both are looked up on `PATH`. When both are found and pass a version check (once per process), composer videos are converted server-side to fit the rail (`src/lib/comms/whatsapp/video-transcode.ts`): phone `.mov`/`.3gp`/`.mp4` up to 250 MB and 180 s. When either is missing — the norm on Vercel — videos keep the rail's own cap (16 MiB Cloud, 8 MiB bridge) and must already be H.264/AAC MP4. A set path that does not work turns conversion off; it never falls back to `PATH`. |
+| `WHATSAPP_GRAPH_VERSION` | Optional. Graph API version for every WhatsApp Cloud call (sends, templates, settings, inbound media download). Default `v23.0`. Inbound photos, voice notes and documents are stored in `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`; without it the message still lands and the row records `mediaDropped: "fetch_failed"`. |
+
+**Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER`):
+
+| Var | Purpose |
+|---|---|
+| `WHATSAPP_SETTINGS_PROVIDER` | `fake` swaps Meta for the deterministic fake settings provider (`src/lib/comms/whatsapp/settings/fake.ts`) behind the Settings → WhatsApp page and the quality poll. Unset/anything else = real Meta. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]`; otherwise every WhatsApp settings route refuses loudly (`WaFakeRefusedError`) rather than falling back. Sends never go through this seam. |
+| `WHATSAPP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
+| `WHATSAPP_FAKE_AGENCY_ID` | Required with `WHATSAPP_SETTINGS_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake profile write or quality alert landing on a real tenant. |
+
+## Optional — Google Calendar sync
+Reuses the Google Business Profile OAuth client and its one redirect URI (below) — no new variable. Enable the **Google Calendar API** on the same Cloud project and add `https://www.googleapis.com/auth/calendar.events` (plus `openid` / `email`) to the consent screen. Each member then connects their own calendar under Settings → Calendar sync, once the agency turns on `googleCalendarEnabledByAgency`. See [google-calendar-sync.md](features/google-calendar-sync.md).
+
+**Dev/CI only — never set on production** (the deploy guard refuses any mention of these names, exactly as for `GBP_PROVIDER`):
+
+| Var | Purpose |
+|---|---|
+| `GCAL_PROVIDER` | `fake` swaps Google Calendar for the fake (`src/lib/google-calendar/provider/fake.ts`): each member's calendar is the Firestore doc `subAccounts/{id}/private/googleCalendarFake_{uid}`. Unset/anything else = real Google. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]`; otherwise every Google Calendar path refuses loudly (`GcalFakeRefusedError`) — busy loading then fails open. |
+| `GCAL_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build (CI's Playwright job boots the production bundle on 127.0.0.1). Any other value refuses. |
+| `GCAL_FAKE_AGENCY_ID` | Required with `GCAL_PROVIDER=fake`: the fake serves only sub-accounts of this agency (the E2E fixture agency) — dev and CI use the production Firestore. |
+| `REVIEWS_AI_PROVIDER` | **Dev/CI only.** `fake` swaps OpenRouter for the deterministic Reviews AI fake (`src/lib/reputation/ai/fake.ts` — sentiment by whole-word keyword rule; every call logged as ids + count, never text, at `subAccounts/{id}/private/reviewsAiFakeLog`). Unset/anything else = OpenRouter (`OPENROUTER_API_KEY`). Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]`; otherwise every Reviews AI path refuses loudly (`ReviewsAiFakeRefusedError`) and never falls back to OpenRouter. |
+| `REVIEWS_AI_FAKE_ALLOW_PROD_BUILD` | **Dev/CI only.** `1` lets the fake run in a `NODE_ENV=production` build (CI's Playwright job). Any other value refuses. |
+| `REVIEWS_AI_FAKE_AGENCY_ID` | **Dev/CI only.** Required with `REVIEWS_AI_PROVIDER=fake`: the fake serves only sub-accounts of this agency (the E2E fixture agency). |
+
+## Dev/CI only — E2E booking rate-limit bypass
+
+| Var | Purpose |
+|---|---|
+| `E2E_DISABLE_BOOKING_RATE_LIMITS` | `1` skips the public booking routes' per-IP / per-sub-account rate limits (`availability` + `book`, `src/lib/booking/rate-limit-e2e.ts`) — the whole Playwright suite runs from one loopback client, which would otherwise trip them mid-run. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is loopback (the same wide fence `instrumentation.ts` uses); refused by name by the deploy guard exactly like `GBP_PROVIDER` / `GCAL_PROVIDER`. |
+
+## Optional — Google Business Profile
+One Google OAuth client lets each sub-account connect the Google account that manages its Business Profile listings. Optional — leave unset and the Connect button reports "not configured on this deployment".
+
+| Var | Source |
+|---|---|
+| `GOOGLE_CLIENT_ID` | [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials → Create credentials → OAuth client ID → **Web application**. |
+| `GOOGLE_CLIENT_SECRET` | Same screen. Keep secret. |
+
+Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth consent screen, and register **one** authorised redirect URI for the whole deployment: `NEXT_PUBLIC_APP_URL` + `/api/google/callback`. Google matches it byte for byte, so a trailing slash or a different host breaks the exchange. The connecting sub-account travels in the HMAC-signed OAuth `state` (keyed by `AUTOMATIONS_TOKEN_SECRET`), so no per-client registration is needed. Tokens are stored server-only at `subAccounts/{id}/private/googleConnection`; the sub-account doc carries display metadata only.
+
+**Dev/CI only — never set on production:**
+
+| Var | Purpose |
+|---|---|
+| `GBP_PROVIDER` | `fake` swaps Google for the deterministic fake provider ([gbp-reviews.md](features/gbp-reviews.md)). Unset/anything else = real Google. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]` (not `0.0.0.0`, `127.0.0.2` or `*.localhost`); otherwise every Google route refuses loudly (`GbpFakeRefusedError`) rather than falling back. |
+| `TRUST_CF_CONNECTING_IP` | `1` makes the public reviews feed's rate limiter key on Cloudflare's `cf-connecting-ip`. Set it **only** where the app is reachable solely through a Cloudflare tunnel that sets that header (CrestaHQ's own velo deployment). Unset (the default, and required on Vercel) = the limiter uses `x-real-ip`, else the left-most `X-Forwarded-For`, because a client could send its own `cf-connecting-ip`. |
+| `GBP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
+| `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
+| `GBP_SYNC_SCHEDULE_ENABLED` | `1` = register the 6-hourly Google Business Profile review sync (`leadstack-gbp-sync`, `0 */6 * * *` → `/api/cron/gbp-sync`) with the other QStash schedules at cold start, and let the Google Business page say "Syncs automatically every 6 hours". Unset/anything else = no schedule; the page says automatic sync is not scheduled, the sync cron answers `not_scheduled` and syncs nobody (a leftover QStash schedule is harmless), and only Sync now syncs. Retention does NOT depend on this flag: the daily `leadstack-gbp-retention` schedule (`/api/cron/gbp-retention`, Firestore only, no Google calls) is always registered. Turning it on in production is an owner step ([gbp-reviews.md](features/gbp-reviews.md)). |
+
+`scripts/deploy-velo.sh` runs `scripts/gbp-deploy-check.mjs` twice. **Before building** it refuses when any `.env*` file in the deploy dir contains the text `GBP_PROVIDER`, `GBP_FAKE_`, `WHATSAPP_SETTINGS_PROVIDER`, `WHATSAPP_FAKE_`, `SMS_PROVIDER`, `SMS_FAKE_`, `GCAL_PROVIDER`, `GCAL_FAKE_`, `REVIEWS_AI_PROVIDER`, `REVIEWS_AI_FAKE_` or `E2E_DISABLE_BOOKING_RATE_LIMITS` anywhere (comments included), when a deploy-shell variable is named so, when `NEXT_PUBLIC_APP_URL` is *defined* more than once in `.env.production`, or when it is defined in any other env file (`.env.example` exempt; comment lines never count as definitions). **After building** it extracts the URL literal inlined into each fake-provider check (GBP's, the WhatsApp settings fake's, the SMS fake's, the Google Calendar fake's and the Reviews AI fake's) in each server chunk and refuses unless every one equals the app URL `sed` read from `.env.production`, that URL parses and is not loopback, and all five checks were found. (`E2E_DISABLE_BOOKING_RATE_LIMITS` has no post-build check — it isn't inlined into the bundle, so the pre-build name refusal is what keeps it out.) Neither check reads systemd `Environment=` lines; those cannot change the inlined URL, which is what the app fence compares.
 
 ## Required for leads map (disables cleanly if missing)
 | Var | Source |

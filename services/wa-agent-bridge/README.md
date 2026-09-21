@@ -100,10 +100,27 @@ Everything comes from the environment (systemd reads
 | `DB_PATH` | `./wa-agent-bridge.db` | Rail state (messages, allowlist, idempotency, flags) |
 | `SESSION_DIR` | `./session` | whatsmeow session store (`session.db` lives here) |
 | `OWNER_JID` | — | Restricts forwarding to this one sender (matched on the user part, device-suffix-agnostic; a bare user with no `@server` matches any server). Non-owner inbound is still recorded (reply-only history stays accurate) but never posted to a consumer webhook. Unset accepts every sender — the **phase-2** shape, and the only safe default (unset meaning "accept none" would brick a deployment that omits the variable, silently and with no error to read). **Phase 1 should SET it:** the design has the bridge verify the sender against the owner JID and drop anything else, because the number is unpublished and the only intended sender is the owner. This row previously called unset "the phase-1 default", contradicting `api/webhook.go`; that was the stale half. |
-| `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin\|quietStartHour\|quietEndHour`, comma-separated. See below. |
+| `CONSUMERS` | *(required)* | `name\|token\|webhookURL\|perHour\|perDay\|admin\|quietStartHour\|quietEndHour\|webhookSecret`, comma-separated. See below. |
 | `CAP_PER_CONTACT_PER_DAY` | `10` | Rail 5 |
 | `CAP_CONSECUTIVE` | `3` | Rail 5 — consecutive outbound to one contact with no reply |
 | `CAP_GLOBAL_DAILY` | `150` | Rail 6 |
+| `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` | `60` | **Inbound**, unlike every cap above it. How many DISTINCT files one sender can make the bridge download in a rolling hour. WhatsApp uploads a file once and any number of messages may cite it, so the bridge also dedupes on the file's own content hash **scoped to the sender**: one upload costs one download however many messages that sender cites it in, and the repeats arrive as `mediaDropped: "duplicate"`. Scoped, because `fileSHA256` is sender-supplied and never verified against any bytes — globally, knowing a file's plaintext hash would be enough to suppress it for everyone, and two customers forwarding one photo (forwards preserve the plaintext, so one hash) would cost the second their file. Past the budget a sender's files arrive as `mediaDropped: "sender_media_budget"`. **The MESSAGE is always forwarded** — only the file is skipped. Unset takes the default; there is no unlimited setting, because unlimited is the amplification this bounds. |
+
+Two more bounds on inbound media are constants rather than environment
+variables, because both are derived from `maxConcurrentMediaDeliveries` and
+mean nothing apart from it (`api/webhook.go`):
+
+- **`maxConcurrentMediaDeliveries` (2)** bounds how many attachments are in
+  flight at once, and therefore memory.
+- **`maxMediaWaiting` (16)** bounds how many deliveries may QUEUE for one of
+  those slots. Without it a flood of DISTINCT senders — each comfortably inside
+  its own `CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR` — queued on the semaphore
+  without limit, a goroutine and a held message each; the per-sender budget
+  bounds one abuser, not an aggregate. Past the bound the file is skipped and
+  the message goes out at once as `mediaDropped: "media_backlog"`. It is sized
+  by LATENCY, not memory: a queued file is a queued MESSAGE, and past eight
+  rounds of media delivery the honest trade is to deliver the message without
+  the file.
 | `QUIET_START_HOUR` / `QUIET_END_HOUR` | `21` / `7` | Rail 8, the DEPLOYMENT-WIDE window; equal values disable. A consumer may override it in `CONSUMERS`. |
 | `QUIET_TZ` | `Africa/Johannesburg` | Local time for quiet hours |
 
@@ -122,7 +139,36 @@ above has **five** pipes before `admin` (`webhookURL`, `perHour` and `perDay`
 are all empty). `ops|tok-ops|||admin` puts `admin` in the `perDay` slot and
 startup refuses it with `unparseable perDay "admin"`.
 
-**Per-consumer quiet hours** are the last two fields, and they are optional.
+**The webhook signing secret** is the ninth and last field, and it is
+optional. When set, every inbound POST to that consumer's `webhookURL` carries
+
+```
+LeadStack-Signature: t=<unix_seconds>,v1=<hex HMAC-SHA256>
+```
+
+over `"<unix_seconds>.<raw body>"`, alongside the `Authorization: Bearer`
+header, which is unchanged. The timestamp is the moment of the POST, not of the
+inbound message, so a receiver enforcing a freshness window measures delivery
+lag rather than how long the message sat in a replay buffer.
+
+Empty — including every entry written before this field existed — means the
+consumer's webhooks are **not signed**. That is the safe default here only
+because it is the pre-existing behaviour: a receiver that requires a signature
+must reject an unsigned POST itself. The bridge cannot invent a secret the
+receiver has never seen.
+
+Being the ninth field, it needs all eight pipes before it. A consumer that
+wants a secret but no privilege and no quiet-hour override writes three empty
+fields:
+
+```
+app|tok-app|http://127.0.0.1:4300/api/webhooks/whatsapp/bridge/sa-123|100|500||||whsec-…
+```
+
+`wa-manager` generates exactly this line, with a fresh secret per tenant.
+
+**Per-consumer quiet hours** are the seventh and eighth fields, and they are
+optional.
 Given, they replace `QUIET_START_HOUR`/`QUIET_END_HOUR` for that consumer;
 omitted, the consumer inherits the deployment window — inheriting the
 restriction, never escaping it. `0|0` (start == end) disables quiet hours for
@@ -152,7 +198,7 @@ restart.**
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/v1/health` | none | For an off-box monitor. Connection state + counters only — never a token, JID or body. `503` when degraded or disconnected. |
-| `POST` | `/v1/send` | bearer | `{"to","text","idempotencyKey"}`. `idempotencyKey` is **required**. |
+| `POST` | `/v1/send` | bearer | `{"to","text","idempotencyKey"}` plus optional `{"media":{"filename","mimeType","dataBase64"}}`. `idempotencyKey` is **required**; every rail applies to a media send exactly as to text. |
 | `POST` | `/v1/allowlist` | bearer (**admin to add**) | `{"jid","remove":bool}` |
 | `GET` | `/v1/allowlist` | bearer (**admin**) | `{"jids":[...],"count":N}` — who has escaped reply-only right now |
 | `POST` | `/v1/kill` | bearer (**admin to lift**) | `{"on":bool}` |
@@ -217,6 +263,99 @@ duplicate-ack outage, not a hypothetical. A reconnect restarts the window.
 
 Expect `inbound during replay window … recorded, not forwarded` in the log
 after a restart. It is not an error.
+
+## Inbound attachments
+
+A photo, voice note, video, document or sticker is downloaded by the bridge and
+forwarded to each consumer **inline**, base64-encoded, in the same payload the
+message travels in — see the Inbound contract in
+[docs/hermes-consumer.md](docs/hermes-consumer.md) for the exact keys.
+
+**The rails run before the download, not just before the POST.** The socket
+handler hands the attachment on as an unresolved thunk (`wa.Inbound.Media`);
+the fanout applies the owner filter, the replay watermark and the catch-up cap,
+and only an admitted message is fetched. A sender the bridge ignores cannot make
+it download anything, and a reconnect does not re-fetch a day of replayed
+history only to discard it. The `LeadStack-Signature` HMAC covers the whole
+body including the file.
+
+**The download is bounded by every route that can make the file longer, not
+by what the sender declared.** whatsmeow's `Download` ends in a plain
+`io.ReadAll`, so a sender who declares 10 bytes and ships 100MB would allocate
+all of it; this bridge uses `DownloadToFile` streaming into a temp file
+(`wa.cappedFile`) whose `Write`, `WriteAt`, `ReadFrom` and `Truncate` all
+refuse to grow it past `wa.maxInboundCiphertextBytes` (16MiB + 4KiB of
+AES-CBC/MAC slack). whatsmeow tries every media host WhatsApp offers, moving
+on after a failed attempt without rewinding the file. So a refusal is labelled
+`too_large` when one host's response is itself over the cap — and stays
+`too_large` for every later host on that file — while two normal-sized
+responses that cross the cap only between them are a corrupt download,
+reported as `fetch_failed`. That list matters: `io.Copy` — which is what whatsmeow
+calls — uses the destination's `ReadFrom` when it has one, and a first version
+of this type that embedded `*os.File` inherited one and was bypassed entirely.
+The type embeds nothing now, and is deliberately not an `*os.File`, so
+whatsmeow's fallocate of the sender's `Content-Length` is skipped too. The
+decrypted file is then measured against **16MiB** (`wa.maxInboundMediaBytes`)
+before it is read into memory. Over either bound, or on a failed download, the
+message is still forwarded with a `mediaDropped` marker — the file is lost, the
+message never is.
+
+**The download never runs on whatsmeow's goroutine.** That is a POPIA
+requirement, not a performance one: past five seconds whatsmeow logs the node
+it is handling at WARN, and a node renders its `from` attribute — the customer's
+number in the clear — through a path `internal/redact` cannot reach. `Deliver`
+returns after the rails and does the fetch, the marshal and the POSTs on its own
+goroutine.
+
+**What this costs, honestly.** During the download itself memory is small (the
+file streams to disk). The peak is the delivery: the decoded bytes (16MiB),
+their base64 encoding (21.3MiB), `json.Marshal`'s internal buffer and the copy
+it returns (~21.3MiB each) are all live until every consumer's POST completes —
+call it **~80MiB per attachment**. `api.maxConcurrentMediaDeliveries` (2) is the
+explicit bound on how many of those may be in flight, so plan for **~160MiB**
+above the baseline, plus the ~21MiB `api/server.go` documents for an outbound
+send. That semaphore is the bound; do not rely on whatsmeow serialising inbound
+— its handler loop moves on to the next node after 300 seconds and runs them
+concurrently. The systemd unit sets **no** `MemoryMax`; if you add one, size it
+off these numbers, not the binary's idle RSS.
+
+**What is NOT bounded: goroutines parked on the semaphore.** Every admitted
+message gets a delivery goroutine; with `OWNER_JID` unset, any WhatsApp user
+can send attachments faster than two slots drain and park one goroutine per
+message (a few KB each) waiting its turn. That is the same posture
+`api/server.go` states for outbound: a bound against a buggy sender, not a
+hostile one, on a number that is unpublished. A bounded queue that drops with
+`mediaDropped: "queue_full"` is the escalation if it is ever measured to
+matter.
+
+**Shutdown.** `fanout.Drain` stops intake, then cancels every in-flight
+download and media POST, so each such message is re-posted text-only with
+`mediaDropped: "shutdown"`. Messages still waiting for a media slot stop
+waiting and post text-only at once, in parallel, without a slot — so a backlog
+drains in roughly one POST's time, not one POST per slot per message — all
+within the 25s `fanoutDrainBudget`; anything still running after that is logged
+as an `ALERT` with redacted JIDs and lost, because the bridge stores no body.
+`TimeoutStopSec=90` in the unit funds the 35s HTTP drain, the 5s whatsmeow
+waits for its handler queue on disconnect, and this 25s — 65s in all.
+
+One narrow loss window remains, stated rather than hidden: a message whose
+handler outlives the socket's disconnect and reaches the fanout after the
+drain has begun is recorded but not forwarded, and it is **not** redelivered
+after restart — it was already decrypted, so WhatsApp's redelivery is ignored
+by whatsmeow as an old message. It is logged as `ALERT inbound LOST during
+shutdown` with the redacted sender and the WhatsApp message id, so an operator
+can find it on the phone.
+
+**View-once media is downloaded and stored like any other.** whatsmeow unwraps
+a "view once" photo into a plain image before this bridge sees it, and the
+bridge deliberately does not branch on `IsViewOnce` — a photo the sender meant
+to disappear is forwarded and kept. This is a deliberate product and POPIA
+decision (2026-09-15), pinned by a test, not an accident of the library; a buyer
+of this template inherits the obligation that comes with holding those bytes.
+
+A POST carrying a file gets a 120s deadline (text keeps 10s). If it still
+fails, the message is re-posted **text-only** with `mediaDropped:
+"delivery_failed"`; consumers dedupe on `messageId`, so the duplicate is safe.
 
 ## Re-pairing after a LoggedOut
 

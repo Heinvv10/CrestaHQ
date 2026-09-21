@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { removeSendingDomain } from "@/lib/comms/resend-domains";
 import { metaAppConfigured } from "@/lib/comms/meta";
+import { clearGbpCache } from "@/lib/gbp/sync/store";
 import type { ResendConfig } from "@/types";
 import type { PlanGateKey } from "@/types/billing";
 
@@ -51,7 +52,12 @@ export type AgencyGateField =
   | "paymentsEnabledByAgency"
   // Webinar1 external-platform connection — standalone like Payments (an
   // outside integration is an explicit per-client decision, not a plan perk).
-  | "webinar1EnabledByAgency";
+  | "webinar1EnabledByAgency"
+  // Google Business Profile OAuth connection — standalone for the same reason
+  // as Webinar1: an outside account link is an explicit per-client decision.
+  | "googleEnabledByAgency"
+  // Per-member Google Calendar sync — standalone for the same reason.
+  | "googleCalendarEnabledByAgency";
 
 export interface ApplyGatesResult {
   /** True when a live Resend sending domain was removed by the email disable. */
@@ -120,5 +126,30 @@ export async function applyFeatureGates(
   }
 
   await subRef.update(updates);
+  // Google Business gate OFF → the synced review cache goes now, on every
+  // path that switches it (Manage dialog route, Workspace Assistant): Google's
+  // 30-day storage rule must not wait for a sweep. After the gate write, so a
+  // sync starting meanwhile is refused by its lease check. The connection and
+  // listing stay — re-enabling resumes with a fresh sync.
+  // A failed clear does not fail the gate (already written): the daily
+  // retention sweep is the backstop, and re-saving the gate retries safely.
+  if (gates.googleEnabledByAgency === false) {
+    try {
+      await clearGbpCache(subAccountId);
+    } catch (err) {
+      console.error(
+        `[feature-gates] GBP cache clear failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`,
+      );
+    }
+  }
+  // Reviews AI switched ON (from off): forget the last complete sentiment run,
+  // so the next sync classifies the existing reviews instead of waiting 24 h.
+  if (gates.reviewsAiEnabledByAgency === true && subSnap.data()?.reviewsAiEnabledByAgency !== true) {
+    try {
+      await db.doc(`subAccounts/${subAccountId}/private/sentimentLease`).set({ lastCompleteAt: FieldValue.delete() }, { merge: true });
+    } catch (err) {
+      console.error(`[feature-gates] sentiment reset failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`);
+    }
+  }
   return result;
 }

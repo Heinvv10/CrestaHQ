@@ -3,7 +3,8 @@
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CONDITION_OPS } from "@/lib/workflows/catalog";
+import { AssigneeSelect } from "@/components/assignee-select";
+import { CONDITION_OPS, REPLY_TEXT_FIELD } from "@/lib/workflows/catalog";
 import type { Condition, ConditionGroup, ConditionOp } from "@/types/workflows";
 
 const COMMON_FIELDS = [
@@ -14,6 +15,7 @@ const COMMON_FIELDS = [
   "source",
   "pipelineStage",
   "tags",
+  "assignedToUid",
 ];
 
 const NO_VALUE_OPS: ConditionOp[] = ["is_set", "not_set"];
@@ -21,9 +23,15 @@ const NO_VALUE_OPS: ConditionOp[] = ["is_set", "not_set"];
 export function ConditionsEditor({
   value,
   onChange,
+  allowReplyField = false,
+  emptyHint = "No conditions — runs for everyone (trigger) / always takes the “yes” path (if/else).",
 }: {
   value: ConditionGroup;
   onChange: (g: ConditionGroup) => void;
+  /** Set on an if_else; leave false for trigger filters. */
+  allowReplyField?: boolean;
+  /** Copy shown when the group is empty; the default is workflow wording. */
+  emptyHint?: string;
 }) {
   const all = value?.all ?? [];
   const match = value?.match === "any" ? "any" : "all";
@@ -35,10 +43,7 @@ export function ConditionsEditor({
   return (
     <div className="space-y-2">
       {all.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          No conditions — runs for everyone (trigger) / always takes the “yes”
-          path (if/else).
-        </p>
+        <p className="text-xs text-muted-foreground">{emptyHint}</p>
       )}
       {all.length > 1 && (
         <div className="flex items-center gap-2 text-xs">
@@ -58,7 +63,7 @@ export function ConditionsEditor({
       {all.map((c, i) => (
         <div key={i} className="flex items-center gap-1.5">
           <Input
-            list="wf-fields"
+            list={allowReplyField ? "wf-fields-reply" : "wf-fields"}
             value={c.field}
             placeholder="field"
             onChange={(e) => update(i, { field: e.target.value })}
@@ -75,14 +80,23 @@ export function ConditionsEditor({
               </option>
             ))}
           </select>
-          {!NO_VALUE_OPS.includes(c.op) && (
-            <Input
-              value={c.value ?? ""}
-              placeholder="value"
-              onChange={(e) => update(i, { value: e.target.value })}
-              className="h-8 flex-1"
-            />
-          )}
+          {!NO_VALUE_OPS.includes(c.op) &&
+            (c.field === "assignedToUid" ? (
+              // The stored value is a uid; pick it by member name.
+              <AssigneeSelect
+                id={`cond-assignee-${i}`}
+                value={c.value ?? null}
+                onChange={(uid) => update(i, { value: uid ?? "" })}
+                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-sm"
+              />
+            ) : (
+              <Input
+                value={c.value ?? ""}
+                placeholder="value"
+                onChange={(e) => update(i, { value: e.target.value })}
+                className="h-8 flex-1"
+              />
+            ))}
           <Button
             type="button"
             variant="ghost"
@@ -94,11 +108,20 @@ export function ConditionsEditor({
           </Button>
         </div>
       ))}
-      <datalist id="wf-fields">
-        {COMMON_FIELDS.map((f) => (
-          <option key={f} value={f} />
-        ))}
+      <datalist id={allowReplyField ? "wf-fields-reply" : "wf-fields"}>
+        {(allowReplyField ? [REPLY_TEXT_FIELD, ...COMMON_FIELDS] : COMMON_FIELDS).map(
+          (f) => (
+            <option key={f} value={f} />
+          ),
+        )}
       </datalist>
+      {allowReplyField && (
+        <p className="text-muted-foreground text-xs">
+          <code>reply.text</code> is what the contact replied with at the
+          preceding &ldquo;Wait for reply&rdquo; step — use it with{" "}
+          <em>contains</em> to branch on their answer.
+        </p>
+      )}
       <Button
         type="button"
         variant="outline"

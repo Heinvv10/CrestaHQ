@@ -32,12 +32,18 @@ type stubSender struct {
 	calls int
 	err   error
 	delay time.Duration
+	// lastMedia is the attachment the handler passed down on the most recent
+	// call, nil for a text send. The media tests assert on it because "the
+	// handler answered 200" does not distinguish a delivered attachment from
+	// one that was validated and then dropped.
+	lastMedia *rails.Media
 }
 
-func (s *stubSender) Send(_ context.Context, _, _ string) (string, error) {
+func (s *stubSender) Send(_ context.Context, _, _ string, media *rails.Media) (string, error) {
 	s.mu.Lock()
 	s.calls++
 	n := s.calls
+	s.lastMedia = media
 	err, delay := s.err, s.delay
 	s.mu.Unlock()
 
@@ -54,6 +60,12 @@ func (s *stubSender) Calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+func (s *stubSender) LastMedia() *rails.Media {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastMedia
 }
 
 // faultyStore injects Store failures the Memory store cannot produce on its

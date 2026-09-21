@@ -14,6 +14,7 @@ import {
   hashEventToken,
 } from "@/lib/booking/event-token";
 import { renderBookingReminderEmail } from "@/lib/booking/email";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, eventOccupiesSlot } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -108,10 +109,6 @@ export async function POST(request: Request) {
   if (!event.contactId) {
     return NextResponse.json({ ok: true, skipped: "no_contact" });
   }
-  if (!emailIsConfigured()) {
-    return NextResponse.json({ ok: true, skipped: "email_not_configured" });
-  }
-
   const [contactSnap, subSnap, pageSnap] = await Promise.all([
     db.collection("contacts").doc(event.contactId).get(),
     db.doc(`subAccounts/${event.subAccountId}`).get(),
@@ -131,6 +128,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "opt_out_or_no_email" });
   }
   const sub = subSnap.data() as SubAccountDoc;
+  if (!emailIsConfigured(sub)) {
+    return NextResponse.json({ ok: true, skipped: "email_not_configured" });
+  }
+
+
   // Booking-page may have been deleted since the schedule landed. Fall
   // back to event-level defaults so the reminder still sends sensibly.
   const page = (pageSnap?.data() ?? null) as BookingPage | null;
@@ -144,11 +146,7 @@ export async function POST(request: Request) {
       businessName: sub.name ?? "Booking",
       businessLogoUrl: sub.logoUrl,
       page: {
-        name: page?.name ?? event.title ?? "Meeting",
-        durationMinutes: page?.durationMinutes ?? Math.max(
-          15,
-          Math.round((endAt.getTime() - startAt.getTime()) / 60_000),
-        ),
+        ...bookedEventLabel(page, event, startAt, endAt),
         timezone: page?.timezone ?? "UTC",
         payment: page?.payment ?? null,
         confirmationMessage: page?.confirmationMessage ?? "",
@@ -173,6 +171,7 @@ export async function POST(request: Request) {
       html: rendered.html,
       replyTo: sub.replyToEmail ?? undefined,
       from: tenantFrom(sub),
+      subAccount: sub,
       meter: { subAccountId: event.subAccountId },
     });
   } catch (err) {

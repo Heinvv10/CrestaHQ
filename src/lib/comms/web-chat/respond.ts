@@ -32,6 +32,7 @@ import {
   setConversationDraft,
   upsertConversationForMessage,
 } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import { webChatConversationId } from "@/types/conversations";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -213,7 +214,7 @@ export async function respondToWebChat(
 
   // Persist the inbound regardless of outcome. The bot's reply (or
   // fallback) is appended at the bottom of this function.
-  await appendMessage({
+  const inboundMessageId = await appendMessage({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     sessionId: input.sessionId,
@@ -222,6 +223,17 @@ export async function respondToWebChat(
     tokens: null,
     aiGenerated: false,
   });
+  // Once the visitor is a contact, their chat is part of that record.
+  if (session.contactId) {
+    await writeInboundMessageActivity(getAdminDb(), {
+      contactId: session.contactId,
+      channel: "webchat",
+      preview: input.incomingMessage,
+      messageId: inboundMessageId,
+      agencyId: input.agencyId,
+      subAccountId: input.subAccountId,
+    });
+  }
 
   // Surface this thread in the unified inbox (session-keyed so anonymous
   // visitors appear live). Best-effort — the upsert swallows its own errors.

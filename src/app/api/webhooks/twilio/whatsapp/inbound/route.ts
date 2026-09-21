@@ -11,8 +11,14 @@ import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { stripWhatsappPrefix } from "@/lib/comms/twilio";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import {
+  firstKeyword,
+  WHATSAPP_START_WORDS,
+  WHATSAPP_STOP_WORDS,
+} from "@/lib/comms/whatsapp/opt-keywords";
 
 export const dynamic = "force-dynamic";
 
@@ -40,16 +46,6 @@ export const dynamic = "force-dynamic";
  *
  * Always returns 200 + empty TwiML so Twilio doesn't retry.
  */
-
-const STOP_WORDS = new Set([
-  "STOP",
-  "STOPALL",
-  "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
-]);
-const START_WORDS = new Set(["START", "UNSTOP", "YES"]);
 
 function emptyTwimlResponse(): string {
   return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
@@ -115,7 +111,14 @@ export async function POST(request: Request) {
 
   const fromRaw = (params["From"] as string | undefined) ?? "";
   const toRaw = (params["To"] as string | undefined) ?? "";
-  const bodyRaw = (params["Body"] as string | undefined) ?? "";
+  // A quick-reply tap is a reply: its button text is the body, so a workflow
+  // waiting on a reply can branch on it. Twilio carries it as ButtonText
+  // (and, as far as we know, in Body too — Body wins when both are set).
+  const bodyRaw =
+    (params["Body"] as string | undefined) ||
+    (params["ButtonText"] as string | undefined) ||
+    "";
+  const buttonPayload = (params["ButtonPayload"] as string | undefined) || null;
   const messageSid = (params["MessageSid"] as string | undefined) ?? "";
   // Strip the `whatsapp:` prefix for our own routing + storage.
   const from = normalisePhone(stripWhatsappPrefix(fromRaw));
@@ -157,10 +160,10 @@ export async function POST(request: Request) {
   }
 
   // Detect opt-out / opt-in keywords.
-  const word = bodyRaw.trim().toUpperCase().split(/\s+/)[0] ?? "";
+  const word = firstKeyword(bodyRaw);
   let nextOptedOut: boolean | null = null;
-  if (STOP_WORDS.has(word)) nextOptedOut = true;
-  else if (START_WORDS.has(word)) nextOptedOut = false;
+  if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
+  else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
 
   const db = getAdminDb();
   const profileName =
@@ -227,6 +230,7 @@ export async function POST(request: Request) {
             from,
             to,
             twilioMessageSid: messageSid || null,
+            ...(buttonPayload ? { buttonPayload } : {}),
             sentByUid: null,
             error: null,
             readAt: null,
@@ -254,8 +258,21 @@ export async function POST(request: Request) {
           channel: "whatsapp",
           direction: "inbound",
           body: bodyRaw,
+          buttonTap: buttonPayload !== null,
         });
       }),
+    );
+    await Promise.all(
+      contactDocs.map((d) =>
+        writeInboundMessageActivity(db, {
+          contactId: d.id,
+          channel: "whatsapp",
+          preview: bodyRaw,
+          messageId: docId,
+          agencyId: route.agencyId ?? "",
+          subAccountId: route.subAccountId,
+        }),
+      ),
     );
   }
 

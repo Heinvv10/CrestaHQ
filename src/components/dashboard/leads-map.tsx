@@ -17,6 +17,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { formatCurrency } from "@/lib/format";
 import { getStage, type Deal } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
+import { contactDisplayName } from "@/lib/contacts/display-name";
 
 interface PopupState {
   lat: number;
@@ -92,7 +93,7 @@ export function LeadsMap({
           },
           properties: {
             contactId: c.id,
-            name: c.name || "Unnamed",
+            name: contactDisplayName(c),
             city: c.city ?? null,
             country: c.country ?? null,
             dealStageId: deal?.stageId ?? null,

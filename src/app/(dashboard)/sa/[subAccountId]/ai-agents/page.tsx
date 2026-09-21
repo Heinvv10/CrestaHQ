@@ -7,6 +7,7 @@ import { VISIBLE_AI_CHANNELS } from "@/components/ai-agents/channels";
 import { ChannelStatusCard } from "@/components/ai-agents/channel-status-card";
 import { AgentProfileSection } from "@/components/ai-agents/agent-profile-section";
 import type { AiChannelConfig } from "@/types/ai";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 
 /**
  * AI Agents Overview — hosts the Agent Profile editor (shared persona)
@@ -84,11 +85,10 @@ export default function AiAgentsOverviewPage() {
     !!voiceConfig?.enabled &&
     voiceNumberReady &&
     subAccount?.inboundVoiceEnabledByAgency !== false;
-  const whatsappSenderConfigured =
-    !!subAccount?.twilioConfig?.whatsappFromNumber;
+  const senderConfigured = whatsappSenderConfigured(subAccount);
   const whatsappEnabled =
     !!whatsappConfig?.enabled &&
-    whatsappSenderConfigured &&
+    senderConfigured &&
     subAccount?.whatsappEnabledByAgency === true;
   // Messenger + Instagram — needs BOTH agency gates (inbox + AI, opt-in) and
   // a connected Meta Page.
@@ -97,6 +97,13 @@ export default function AiAgentsOverviewPage() {
     !!subAccount?.metaConfig?.connected &&
     subAccount?.metaInboxEnabledByAgency === true &&
     subAccount?.metaAgentEnabledByAgency === true;
+  // Google Business — agency-gated, connected (and not needing a reconnect),
+  // with a listing chosen.
+  const googleBusinessEnabled =
+    subAccount?.googleEnabledByAgency === true &&
+    !!subAccount?.googleConnectionMeta?.connected &&
+    !subAccount?.googleConnectionMeta?.reconnectRequired &&
+    !!subAccount?.googleListing;
 
   // Overview grid shows the inbound channels only — Outbound has its own
   // tab + config and isn't a shared-persona inbound channel.
@@ -183,7 +190,9 @@ export default function AiAgentsOverviewPage() {
                         ? whatsappEnabled
                         : channel.id === "meta"
                           ? metaEnabled
-                          : undefined
+                          : channel.id === "google-business"
+                            ? googleBusinessEnabled
+                            : undefined
                 }
               />
             ))}

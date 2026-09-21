@@ -65,11 +65,16 @@ export async function GET(request: Request) {
       sourceSubAccountId: data.sourceSubAccountId ?? null,
       version: data.version ?? SNAPSHOT_VERSION,
       createdAt: data.createdAt?.toMillis?.() ?? null,
+      importedFrom: data.importedFrom
+        ? { importedAt: data.importedFrom.importedAt?.toMillis?.() ?? null }
+        : null,
       counts: {
         forms: payload.forms?.length ?? 0,
         messageTemplates: payload.messageTemplates?.length ?? 0,
         products: payload.products?.length ?? 0,
         workflows: payload.workflows?.length ?? 0,
+        customFields: payload.customFields?.length ?? 0,
+        aiProfile: payload.aiProfile ? 1 : 0,
       },
     };
   });

@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/internal/redact"
+	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/rails"
 )
 
 // ReplayWindow is how long after connecting the bridge records inbound without
@@ -48,7 +49,20 @@ type Client struct {
 	connectedAt time.Time
 	loggedOut   bool
 
-	onInbound   func(jid, text, msgID string, at time.Time)
+	// uploader overrides where attachments are uploaded. Nil in production,
+	// where it falls back to wac. Tests set it to reach the upload-FAILURE
+	// path, which is the one that must return before anything touches the
+	// socket — see mediaUploader.
+	uploader mediaUploader
+
+	// downloader overrides where inbound attachments are fetched from. Nil in
+	// production, where it falls back to wac. Tests set it to reach the
+	// download-FAILURE path, to bound what a hostile sender can stream into
+	// this process, and to prove a refused message downloads nothing at all —
+	// see MediaDownloader.
+	downloader MediaDownloader
+
+	onInbound   func(jid, text, msgID string, at time.Time, media *InboundAttachment, loc *InboundLocation)
 	onLoggedOut func()
 
 	// pairCode is the live QR payload while a pairing is in flight. It is a
@@ -68,7 +82,7 @@ var _ Transport = (*Client)(nil)
 // against.
 func NewClient(
 	sessionDir string,
-	onInbound func(jid, text, msgID string, at time.Time),
+	onInbound func(jid, text, msgID string, at time.Time, media *InboundAttachment, loc *InboundLocation),
 	onLoggedOut func(),
 ) (*Client, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
@@ -211,25 +225,59 @@ func (c *Client) handleEvent(evt any) {
 }
 
 func (c *Client) handleMessage(v *events.Message) {
-	if v.Info.IsFromMe || v.Info.IsGroup {
+	// ParseInbound does the whole decision, and downloads NOTHING: the
+	// attachment arrives as a thunk the fanout calls only after its rails have
+	// admitted the message. Keeping the download off this goroutine is not an
+	// optimisation — see fetchInboundMedia and the POPIA note below.
+	in := ParseInbound(v, c.mediaDownloader())
+	if in == nil || c.onInbound == nil {
 		return
 	}
-	text := v.Message.GetConversation()
-	if text == "" {
-		if ext := v.Message.GetExtendedTextMessage(); ext != nil {
-			text = ext.GetText()
-		}
+	// v.Info.ID is WhatsApp's own message id, carried on Inbound. Forwarding
+	// it lets a consumer dedupe a redelivery on the id rather than on the
+	// body. quotedMessageId (which of OUR messages this is a reply to) is a
+	// different lookup into ContextInfo and stays phase-2 work.
+	c.onInbound(in.JID, in.Text, in.MsgID, in.At, in.Media, in.Location)
+}
+
+// mediaDownloader is where inbound attachments come from: the test override if
+// one is set, otherwise the live whatsmeow client.
+//
+// Returning a nil interface when there is no client is deliberate — callers
+// degrade to a dropped file rather than panicking on a message that is
+// otherwise perfectly deliverable.
+func (c *Client) mediaDownloader() MediaDownloader {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.downloader != nil {
+		return c.downloader
 	}
-	if text == "" {
-		return // non-text events are out of scope
+	if c.wac != nil {
+		return c.wac
 	}
-	if c.onInbound != nil {
-		// v.Info.ID is WhatsApp's own message id. Forwarding it lets a
-		// consumer dedupe a redelivery on the id rather than on the body.
-		// quotedMessageId (which of OUR messages this is a reply to) is a
-		// different lookup into ContextInfo and stays phase-2 work.
-		c.onInbound(v.Info.Sender.String(), text, v.Info.ID, v.Info.Timestamp)
+	return nil
+}
+
+// senderAddress picks the address a consumer can actually reply to.
+//
+// WhatsApp addresses many senders by LID, and for those Info.Sender is
+// "<lid>@lid" while Info.SenderAlt carries "<msisdn>@s.whatsapp.net". A
+// consumer takes the JID's user part as the contact's phone number and
+// rebuilds "<user>@s.whatsapp.net" to reply, so forwarding the LID mints a
+// phone number nobody dialled: the reply is delivered to whoever genuinely
+// owns that number, or to nobody. That is a wrong recipient, not a formatting
+// blemish, which is why this prefers the phone address wherever one exists.
+//
+// It never invents one. With no alternative the sender passes through
+// unchanged — the caller is better served by an address it may not understand
+// than by a dropped message from a real customer.
+func senderAddress(src types.MessageSource) string {
+	if src.Sender.Server == types.HiddenUserServer &&
+		src.SenderAlt.Server == types.DefaultUserServer &&
+		src.SenderAlt.User != "" {
+		return src.SenderAlt.String()
 	}
+	return src.Sender.String()
 }
 
 // handleLoggedOut marks the client dead immediately.
@@ -291,6 +339,15 @@ func (c *Client) Number() string {
 	return wac.Store.ID.User
 }
 
+// ConnectedAt is the moment the current connection was established, or the
+// zero time when there is none. The fanout uses it as the key that tells it a
+// new connection has begun and its watermark needs re-reading.
+func (c *Client) ConnectedAt() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connectedAt
+}
+
 // InReplayWindow reports whether the socket is still inside the post-connect
 // period during which whatsmeow replays recent history. Callers record what
 // arrives during it but must not act on it.
@@ -303,7 +360,43 @@ func (c *Client) InReplayWindow() bool {
 	return time.Since(c.connectedAt) < ReplayWindow
 }
 
-func (c *Client) Send(ctx context.Context, jid, text string) (string, error) {
+// upload puts one attachment on WhatsApp's media servers. Every failure it can
+// return — including its own deadline — is wrapped in ErrMediaUpload, because
+// every one of them happens before SendMessage and is therefore definitive.
+func (c *Client) upload(ctx context.Context, media *rails.Media) (whatsmeow.UploadResponse, error) {
+	c.mu.Lock()
+	up := c.uploader
+	if up == nil && c.wac != nil {
+		up = c.wac
+	}
+	c.mu.Unlock()
+	if up == nil {
+		return whatsmeow.UploadResponse{}, fmt.Errorf("%w: no client", ErrMediaUpload)
+	}
+
+	budget := mediaUploadBudget(ctx)
+	if budget <= 0 {
+		// Not enough of the send budget left to start. Refusing here rather
+		// than starting an upload that cannot finish keeps the failure
+		// DEFINITIVE and keeps the upload's deadline strictly inside the
+		// send's — see mediaUploadBudget.
+		return whatsmeow.UploadResponse{}, fmt.Errorf(
+			"%w: no time left in the send budget", ErrMediaUpload)
+	}
+	uploadCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	resp, err := up.Upload(uploadCtx, media.Data, uploadKindFor(media.MimeType))
+	if err != nil {
+		// The mime type and the byte count, never the bytes and never the
+		// filename — a filename is customer data on this rail.
+		return whatsmeow.UploadResponse{}, fmt.Errorf("%w (%s, %d bytes): %w",
+			ErrMediaUpload, media.MimeType, len(media.Data), err)
+	}
+	return resp, nil
+}
+
+func (c *Client) Send(ctx context.Context, jid, text string, media *rails.Media) (string, error) {
 	c.mu.Lock()
 	loggedOut := c.loggedOut
 	connected := !loggedOut && !c.connectedAt.IsZero()
@@ -320,9 +413,28 @@ func (c *Client) Send(ctx context.Context, jid, text string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("wa: bad jid %s: %w", redact.JID(jid), err)
 	}
-	resp, err := c.wac.SendMessage(ctx, target, &waE2E.Message{
-		Conversation: proto.String(text),
-	})
+
+	msg := &waE2E.Message{Conversation: proto.String(text)}
+	if media != nil {
+		// Uploaded before SendMessage rather than alongside it, and a failure
+		// here returns BEFORE anything reaches the socket. That makes an upload
+		// failure a DEFINITIVE rejection one layer up — api.handleSendError
+		// releases the reservation and the cap slot — which is correct only
+		// because no message was dispatched. Do not move this after the send.
+		//
+		// The upload runs on its OWN deadline, deliberately shorter than the
+		// send context's (see mediaUploadBudget). Without that, a slow upload
+		// would exhaust the queue's send timeout instead, and the caller would
+		// be told "ambiguous" — reservation left to expire, cap slot spent
+		// forever — about a message that provably never left this process.
+		up, upErr := c.upload(ctx, media)
+		if upErr != nil {
+			return "", upErr
+		}
+		msg = mediaMessage(up, text, media)
+	}
+
+	resp, err := c.wac.SendMessage(ctx, target, msg)
 	if err != nil {
 		return "", err
 	}

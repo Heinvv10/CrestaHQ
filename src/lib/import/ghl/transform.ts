@@ -98,6 +98,8 @@ export interface GhlCustomFieldMapEntry {
   ghlName: string;
   /** Target LeadStack custom-field key, or null to SKIP this field. */
   leadstackKey: string | null;
+  /** Target type drives source-value normalisation before LeadStack validation. */
+  leadstackType?: CustomFieldType;
 }
 
 export interface GhlImportMapping {
@@ -143,9 +145,23 @@ function mapCustomFields(
   const out: Record<string, unknown> = {};
   for (const f of fields ?? []) {
     const entry = map[f.id];
-    if (entry?.leadstackKey) out[entry.leadstackKey] = f.value;
+    if (entry?.leadstackKey) {
+      out[entry.leadstackKey] =
+        entry.leadstackType === "date" ? normalizeGhlDate(f.value) : f.value;
+    }
   }
   return out;
+}
+
+function normalizeGhlDate(value: unknown): unknown {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return value.slice(0, 10);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+  return value;
 }
 
 export interface ContactChunkRecord {
@@ -311,7 +327,7 @@ export function suggestCustomFields(
     ghlId: d.id,
     ghlName: d.name,
     entity: (d.model ?? "").toLowerCase() === "opportunity" ? "deal" : "contact",
-    label: d.name,
+    label: d.name.slice(0, 60),
     type: ghlDataTypeToCustomFieldType(d.dataType),
     options: Array.isArray(d.picklistOptions) ? d.picklistOptions : [],
   }));

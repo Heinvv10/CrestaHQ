@@ -66,6 +66,10 @@ export interface WhatsappTemplateVariable {
   mergeTag: string | null;
 }
 
+export type WhatsappTemplateButton =
+  | { type: "quick_reply"; text: string }
+  | { type: "url"; text: string; url: string };
+
 export interface WhatsappTemplateDoc {
   id: string;
   subAccountId: string;
@@ -81,6 +85,18 @@ export interface WhatsappTemplateDoc {
   /** Body with positional {{1}}-style placeholders. */
   body: string;
   variables: WhatsappTemplateVariable[];
+  /** Up to 3 buttons — quick replies first, then URLs. Absent on every
+   *  template that predates buttons. A quick-reply tap comes back as a reply
+   *  whose text is the button's text (see cloud-payload.ts). */
+  buttons?: WhatsappTemplateButton[];
+  /** The unapproved Twilio Content resource its buttons go with in-session,
+   *  keyed by a fingerprint of what Twilio holds — see
+   *  lib/comms/whatsapp/twilio-session-content.ts. */
+  twilioSessionContent?: {
+    sid: string;
+    fingerprint: string;
+    createdAt?: Timestamp | FieldValue | null;
+  } | null;
   /** Twilio Content resource id (HX…). Null until submitted. The send path
    *  references this; the approval-poll keys off it.
    *
@@ -134,6 +150,23 @@ export const WHATSAPP_VARIABLE_MERGE_TAGS: ReadonlyArray<{
   { tag: "bookingLink", description: "Booking page URL" },
 ];
 
-export function isWhatsappMergeTag(tag: string): boolean {
+/** A variable may also map to one of the sub-account's contact custom
+ *  fields — `contact.customFields.<key>` — which the automation resolver
+ *  already renders. Transactional templates need this: an install address or
+ *  a job reference lives in a custom field, not a contact scalar. */
+export const WHATSAPP_CUSTOM_FIELD_TAG_PREFIX = "contact.customFields.";
+
+/** `contactCustomFieldKeys` is the sub-account's defined contact field keys.
+ *  A custom-field tag is accepted only for a key in that set, so a typo is
+ *  refused at save rather than rendering blank into every send. */
+export function isWhatsappMergeTag(
+  tag: string,
+  contactCustomFieldKeys: ReadonlySet<string> = new Set(),
+): boolean {
+  if (tag.startsWith(WHATSAPP_CUSTOM_FIELD_TAG_PREFIX)) {
+    return contactCustomFieldKeys.has(
+      tag.slice(WHATSAPP_CUSTOM_FIELD_TAG_PREFIX.length),
+    );
+  }
   return WHATSAPP_VARIABLE_MERGE_TAGS.some((t) => t.tag === tag);
 }

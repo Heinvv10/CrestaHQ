@@ -12,7 +12,8 @@ import {
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
 import { toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { twilioButtonProblem } from "@/lib/comms/whatsapp/twilio-buttons";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { buildRegistrationUpdate } from "@/lib/comms/whatsapp/template-registrations";
 import { getWabaCreds } from "@/lib/comms/whatsapp/cloud-credentials";
 import {
@@ -70,9 +71,15 @@ export async function POST(
       { status: 403 },
     );
   }
-  // Readiness is per-rail: demanding Twilio credentials from a workspace that
-  // submits over the Graph API would refuse a correctly configured one.
-  const { provider } = resolveProviderForSubAccount(sub);
+  // The rail of the sender this workspace SENDS on, resolved by the same
+  // function the send path uses. Reading `whatsappProvider` here instead would
+  // submit a template for approval on one rail while dispatch sends it on
+  // another — approval belongs to a WABA, so the send then fails at Meta.
+  const submitOn = resolveWhatsappSender(sub);
+  if (!submitOn.ok) {
+    return NextResponse.json({ error: submitOn.error }, { status: 400 });
+  }
+  const { provider } = submitOn;
   if (provider === "bridge") {
     return NextResponse.json(
       {
@@ -90,6 +97,14 @@ export async function POST(
       },
       { status: 400 },
     );
+  }
+  // Twilio's button rules are narrower than Meta's (one action type per
+  // template, 20-character titles). Refuse here, before anything is created,
+  // with a message the operator can act on.
+  const twilioProblem =
+    provider === "twilio" ? twilioButtonProblem(tpl.buttons ?? []) : null;
+  if (twilioProblem) {
+    return NextResponse.json({ error: twilioProblem }, { status: 400 });
   }
   if (!SUBMITTABLE.includes(tpl.status)) {
     return NextResponse.json(
@@ -122,6 +137,7 @@ export async function POST(
         category: tpl.category,
         body: tpl.body,
         variables: tpl.variables,
+        buttons: tpl.buttons ?? [],
       });
       externalId = created.id;
     } else {
@@ -132,6 +148,7 @@ export async function POST(
         language: tpl.language,
         body: tpl.body,
         variables: variablesSample,
+        buttons: tpl.buttons ?? [],
       });
       externalId = created.contentSid;
       await submitForWhatsappApproval({

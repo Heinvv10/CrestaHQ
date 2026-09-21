@@ -49,6 +49,9 @@ export interface CustomFieldDef {
   required: boolean;
   /** Display order in forms (ascending). */
   order: number;
+  /** Folder the field is grouped under (`customFieldFolders/{id}`). Absent or
+   *  null = the implicit "General" folder, which is never persisted. */
+  folderId?: string | null;
 
   agencyId: string;
   subAccountId: string;
@@ -56,6 +59,29 @@ export interface CustomFieldDef {
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
+
+/**
+ * Folders group a sub-account's custom fields GHL-style ("General Info" +
+ * operator folders). Stored at `subAccounts/{id}/customFieldFolders/{folderId}`
+ * with the same server-write-only, member-read model as `customFields`.
+ * Deleting a folder moves its fields back to General.
+ */
+export interface CustomFieldFolder {
+  id: string;
+  name: string;
+  entity: CustomFieldEntity;
+  /** Display order among folders (ascending); General always comes first. */
+  order: number;
+
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
+}
+
+/** Display name of the implicit folder that holds fields with no folderId. */
+export const GENERAL_FOLDER_NAME = "General";
 
 /** The editable subset accepted by the create/update API. */
 export type CustomFieldDefInput = {
@@ -88,4 +114,4 @@ export const CUSTOM_FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
 
 /** Max custom fields per entity per sub-account — generous, but bounded so the
  *  inline value map + forms stay sane. */
-export const MAX_CUSTOM_FIELDS_PER_ENTITY = 50;
+export const MAX_CUSTOM_FIELDS_PER_ENTITY = 100;

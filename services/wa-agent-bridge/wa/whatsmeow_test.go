@@ -123,14 +123,14 @@ func TestLoggedOutSurvivesLaterConnected(t *testing.T) {
 	if c.Connected() {
 		t.Fatal("still logged out after a disconnect")
 	}
-	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi"); !errors.Is(err, ErrLoggedOut) {
+	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi", nil); !errors.Is(err, ErrLoggedOut) {
 		t.Fatalf("Send after LoggedOut = %v, want ErrLoggedOut", err)
 	}
 }
 
 func TestSendRefusesWhileDisconnected(t *testing.T) {
 	c := &Client{}
-	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi"); !errors.Is(err, ErrNotConnected) {
+	if _, err := c.Send(context.Background(), "27831234567@s.whatsapp.net", "hi", nil); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("Send while disconnected = %v, want ErrNotConnected", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestInboundDispatchFilters(t *testing.T) {
 		at        time.Time
 	}
 	var seen []got
-	c := &Client{onInbound: func(jid, text, _ string, at time.Time) {
+	c := &Client{onInbound: func(jid, text, _ string, at time.Time, _ *InboundAttachment, _ *InboundLocation) {
 		seen = append(seen, got{jid, text, at})
 	}}
 
@@ -170,7 +170,7 @@ func TestExtendedTextMessageIsDispatched(t *testing.T) {
 	// ExtendedTextMessage with an empty Conversation field. Missing this
 	// makes the bridge deaf to every quoted reply.
 	var seen string
-	c := &Client{onInbound: func(_, text, _ string, _ time.Time) { seen = text }}
+	c := &Client{onInbound: func(_, text, _ string, _ time.Time, _ *InboundAttachment, _ *InboundLocation) { seen = text }}
 
 	e := msgEvent("27831234567", "", false, false)
 	e.Message = &waE2E.Message{
@@ -180,5 +180,85 @@ func TestExtendedTextMessageIsDispatched(t *testing.T) {
 
 	if seen != "quoted reply" {
 		t.Fatalf("extended text not dispatched, got %q", seen)
+	}
+}
+
+// WhatsApp addresses many senders by LID now, and for those Info.Sender is
+// "<lid>@lid" while Info.SenderAlt carries the real "<msisdn>@s.whatsapp.net".
+//
+// Forwarding the LID is not a cosmetic wart. The consumer stores the JID's user
+// part as the contact's phone number and rebuilds "<user>@s.whatsapp.net" to
+// reply — so a LID becomes a phone number that was never dialled. The reply
+// then goes nowhere, or to whichever stranger genuinely owns that number.
+// Observed in production on 2026-09-05: a real inbound landed in the CRM as
+// contactPhone "+155228775178345".
+func TestLIDSenderIsForwardedAsThePhoneJID(t *testing.T) {
+	var seen string
+	c := &Client{onInbound: func(jid, _, _ string, _ time.Time, _ *InboundAttachment, _ *InboundLocation) { seen = jid }}
+
+	e := msgEvent("27831234567", "hello from a lid-addressed sender", false, false)
+	e.Info.Sender = types.JID{User: "155228775178345", Server: types.HiddenUserServer}
+	e.Info.SenderAlt = types.JID{User: "27831234567", Server: types.DefaultUserServer}
+	e.Info.AddressingMode = types.AddressingModeLID
+	c.handleEvent(e)
+
+	if seen != "27831234567@s.whatsapp.net" {
+		t.Fatalf("forwarded %q; the consumer will treat that as a phone number and reply to a stranger", seen)
+	}
+}
+
+// The fallback must not invent an address. When no alternative is offered there
+// is nothing better than what WhatsApp gave us, and dropping the message would
+// silently lose a real customer.
+func TestSenderIsForwardedUnchangedWithoutAnAlternative(t *testing.T) {
+	var seen string
+	c := &Client{onInbound: func(jid, _, _ string, _ time.Time, _ *InboundAttachment, _ *InboundLocation) { seen = jid }}
+
+	e := msgEvent("27831234567", "ordinary phone-addressed sender", false, false)
+	c.handleEvent(e)
+	if seen != "27831234567@s.whatsapp.net" {
+		t.Fatalf("jid = %q", seen)
+	}
+
+	seen = ""
+	e = msgEvent("27831234567", "lid with no alternative", false, false)
+	e.Info.Sender = types.JID{User: "155228775178345", Server: types.HiddenUserServer}
+	c.handleEvent(e) // SenderAlt is the zero JID
+	if seen != "155228775178345@lid" {
+		t.Fatalf("with no alternative the sender must pass through unchanged, got %q", seen)
+	}
+}
+
+// ConnectedAt is the key the fanout uses to decide a new connection has begun
+// and its replay watermark needs re-reading. STABILITY is the property that
+// matters: a value that changes between calls re-snapshots the watermark on
+// every message, which resets the catch-up counter so the flood cap never
+// fires, and makes any out-of-order message look like history.
+//
+// Tested here rather than on the clientHolder that wraps it, because a
+// *wa.Client with a live connection cannot be constructed from package main
+// without either a whatsmeow socket or a test double promoted into the
+// shipped binary — which this package deliberately refuses to do.
+func TestConnectedAtIsStableWhileConnected(t *testing.T) {
+	c := &Client{}
+	if !c.ConnectedAt().IsZero() {
+		t.Fatal("an unconnected client must report the zero time")
+	}
+
+	c.handleEvent(&events.Connected{})
+	first := c.ConnectedAt()
+	if first.IsZero() {
+		t.Fatal("ConnectedAt must be set once the socket connects")
+	}
+	time.Sleep(2 * time.Millisecond)
+	if second := c.ConnectedAt(); !second.Equal(first) {
+		t.Fatalf("ConnectedAt must not move while one connection lasts: %v then %v", first, second)
+	}
+
+	// A NEW connection must move it, or the watermark is never re-read.
+	time.Sleep(2 * time.Millisecond)
+	c.handleEvent(&events.Connected{})
+	if again := c.ConnectedAt(); !again.After(first) {
+		t.Fatalf("a new connection must advance ConnectedAt: %v then %v", first, again)
 	}
 }

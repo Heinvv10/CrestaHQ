@@ -133,7 +133,7 @@ export const territoryMock = () => ({
 });
 
 export const resendMock = () => ({
-  emailIsConfigured: () => state.emailConfigured,
+  emailIsConfigured: (sub?: { emailProvider?: string }) => state.emailConfigured || sub?.emailProvider === "smtp",
   sendEmail: (input: Record<string, unknown>) => sendEmail(input),
   tenantFrom: (sub: unknown) =>
     (sub as { name?: string } | null)?.name

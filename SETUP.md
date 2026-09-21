@@ -167,6 +167,8 @@ Every value is written into a single file: **`.env.local`**. Nothing is hidden i
 
 **This file is safe and private.** The `.gitignore` ignores all `.env*` files except `.env.example` (which only has empty placeholders). Your keys and secrets will never be committed to GitHub.
 
+**Do not set `TRUST_CF_CONNECTING_IP` on Vercel.** It is for deployments reachable only through a Cloudflare tunnel; on Vercel it would let a visitor choose their own rate-limit identity ([docs/environment.md](docs/environment.md)).
+
 ### Cookie Secrets
 
 Claude Code generates these automatically. If you ever need to regenerate manually:
@@ -278,6 +280,24 @@ Always deploy **both** in the same command. Rules and indexes live in separate f
 The repo already includes `.firebaserc` and `firebase.json` — Claude Code will update `.firebaserc` to point at your project ID if needed.
 
 > **Rerun `firebase deploy --only firestore:rules,firestore:indexes` any time you add a new Firestore collection or a compound query.**
+
+### Storage rules + the Media Library IAM grant
+
+The Media Library (`/sa/…/media`) uploads files straight from the browser to Firebase Storage under `storage.rules`. Deploy those rules too:
+
+```bash
+firebase deploy --only storage
+```
+
+Those rules call `firestore.get()` to check the uploader's membership, and that cross-service read only works once the **Storage** service agent may read Firestore. An interactive `firebase deploy` offers to grant it; `--non-interactive` (CI, scripts) skips the grant silently. Grant it yourself, once per project — `<projectNumber>` is the numeric Project number on the Firebase console's Project settings page, not the project ID:
+
+```bash
+gcloud projects add-iam-policy-binding <projectId> \
+  --member="serviceAccount:service-<projectNumber>@gcp-sa-firebasestorage.iam.gserviceaccount.com" \
+  --role="roles/firebaserules.firestoreServiceAgent"
+```
+
+Allow about two minutes to propagate. **Symptom when it is missing:** every Media Library upload (and every image preview) fails with 403 even for the agency owner with correct claims — the rules deny anything whose `firestore.get()` cannot run. The agent is `gcp-sa-firebasestorage`, not the `firebase-rules` agent.
 
 ---
 
@@ -717,6 +737,7 @@ If anything looks off after an update, your `main` branch and your pushed histor
 | Auth not working | Check that Email/Password is enabled in Firebase Console |
 | `FIREBASE_ADMIN_PRIVATE_KEY` errors | Make sure the value is wrapped in double quotes in `.env.local` and the `\n` escapes are literal |
 | `Missing or insufficient permissions` | The Firestore rules haven't been deployed. Run `firebase deploy --only firestore:rules,firestore:indexes` — and rerun this any time a new collection is added |
+| Media Library: every upload/preview returns 403, even for the owner | The Storage service agent can't read Firestore. Run the `gcloud projects add-iam-policy-binding … --role=roles/firebaserules.firestoreServiceAgent` command from Phase 3 and wait ~2 minutes |
 | `firebase deploy` says "no project" | Edit `.firebaserc` so `"default"` matches your Firebase project ID, then retry |
 
 ### Stripe

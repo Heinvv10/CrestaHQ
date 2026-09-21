@@ -1,9 +1,13 @@
 import "server-only";
 
+import { recordEmailMessage } from "@/lib/server/email-conversations";
 import { Resend } from "resend";
 
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { recordUsage } from "@/lib/server/usage-meter";
+import type { SmtpMeta } from "@/types/email";
+import { getSmtpConnection, sendSmtpEmail } from "./smtp";
+import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
 import type { ResendConfig } from "@/types/tenancy";
 
 let _client: Resend | null = null;
@@ -13,7 +17,7 @@ export function getResend(): Resend {
     const key = process.env.RESEND_API_KEY;
     if (!key) {
       throw new Error(
-        "RESEND_API_KEY is not set. Add it to .env.local to enable email.",
+        "RESEND_API_KEY is not set. Add it to .env.local to enable email."
       );
     }
     _client = new Resend(key);
@@ -21,7 +25,20 @@ export function getResend(): Resend {
   return _client;
 }
 
-export function emailIsConfigured(): boolean {
+export interface EmailAccount {
+  emailProvider?: "resend" | "smtp";
+  smtpConfig?: SmtpMeta | null;
+  replyToEmail?: string | null;
+}
+
+export function emailIsConfigured(sub?: EmailAccount | null): boolean {
+  if (sub?.emailProvider === "smtp") {
+    return !!(
+      sub.smtpConfig?.verifiedAt &&
+      sub.smtpConfig.host &&
+      sub.smtpConfig.fromEmail
+    );
+  }
   // `.trim()` so a present-but-blank env var doesn't read as configured.
   return (
     !!process.env.RESEND_API_KEY?.trim() && !!process.env.EMAIL_FROM?.trim()
@@ -43,7 +60,7 @@ export function tenantFrom(
   sub?: {
     resendConfig?: ResendConfig | null;
     emailDomainEnabledByAgency?: boolean;
-  } | null,
+  } | null
 ): string | undefined {
   if (sub?.emailDomainEnabledByAgency !== true) return undefined;
   const cfg = sub.resendConfig;
@@ -85,7 +102,18 @@ export async function sendEmail({
   subAccount,
   attachments,
   meter,
+  archive = true,
+  contactId,
+  sentByUid,
+  inReplyTo,
+  references,
 }: {
+  /** False for credentials, login links and internal staff notifications. */
+  archive?: boolean;
+  contactId?: string;
+  sentByUid?: string;
+  inReplyTo?: string;
+  references?: string[];
   to: string;
   subject: string;
   /** Plain-text fallback. Required so clients that don't render HTML still get content. */
@@ -107,7 +135,7 @@ export async function sendEmail({
    */
   from?: string;
   /** Sub-account whose `replyToEmail` should answer replies (see `replyTo`). */
-  subAccount?: { replyToEmail?: string | null } | null;
+  subAccount?: EmailAccount | null;
   /**
    * Usage Metering v1 — when set, a successful send increments the
    * workspace's monthly `emailsSent` ledger. Passed by customer/workspace
@@ -123,17 +151,72 @@ export async function sendEmail({
    * plain text — matches Resend's `attachments` contract.
    */
   attachments?: { filename: string; content: string; contentType?: string }[];
-}): Promise<{ id: string }> {
+}): Promise<{ id: string; saved?: boolean; warning?: string }> {
+  const preferredReplyTo = replyTo?.trim() || subAccount?.replyToEmail?.trim();
+  if (subAccount?.emailProvider === "smtp") {
+    if (!meter?.subAccountId) {
+      throw new Error("SMTP sending requires an explicit sub-account.");
+    }
+    const connection = await getSmtpConnection(meter.subAccountId);
+    const result = await sendSmtpEmail(connection, {
+      to,
+      subject,
+      text,
+      html,
+      replyTo: preferredReplyTo || connection.fromEmail,
+      attachments,
+      inReplyTo,
+      references,
+      archive,
+    });
+    void recordUsage({
+      subAccountId: meter.subAccountId,
+      unit: "emailsSent",
+      qty: 1,
+    });
+    if (!archive) return result;
+    try {
+      await recordEmailMessage({
+        subAccountId: meter.subAccountId,
+        contactId,
+        sentByUid,
+        direction: "outbound",
+        subject,
+        body: text,
+        from: connection.fromEmail,
+        to: [to],
+        messageId: result.id,
+        inReplyTo,
+        references,
+        attachments: attachments?.map((a) => ({
+          filename: a.filename,
+          contentType: a.contentType ?? "application/octet-stream",
+          size: Buffer.from(a.content, "base64").length,
+        })),
+        occurredAt: new Date(),
+        historical: false,
+      });
+      return { ...result, saved: true };
+    } catch {
+      // SMTP acceptance is irreversible. Returning success prevents callers/queues retrying delivery.
+      console.warn(
+        "[email/send] SMTP accepted; conversation persistence failed",
+        { subAccountId: meter.subAccountId, messageId: result.id }
+      );
+      return {
+        ...result,
+        saved: false,
+        warning:
+          "Email was sent, but could not be saved to Conversations. Do not resend. Contact your administrator.",
+      };
+    }
+  }
   const resolvedFrom = from ?? process.env.EMAIL_FROM;
   if (!resolvedFrom) {
     throw new Error(
-      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain.",
+      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain."
     );
   }
-  const resolvedReplyTo =
-    replyTo?.trim() ||
-    subAccount?.replyToEmail?.trim() ||
-    (await defaultReplyTo());
   const client = getResend();
   const result = await client.emails.send({
     from: resolvedFrom,
@@ -141,14 +224,14 @@ export async function sendEmail({
     subject,
     text,
     ...(html ? { html } : {}),
-    replyTo: resolvedReplyTo,
+    replyTo: preferredReplyTo || (await defaultReplyTo()),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
-  });
+  }).catch(rethrowAttempted);
   if (result.error) {
-    throw new Error(result.error.message || "Resend send failed");
+    throw markProviderAttempted(new Error(result.error.message || "Resend send failed"));
   }
   if (!result.data?.id) {
-    throw new Error("Resend send failed: no message id returned");
+    throw markProviderAttempted(new Error("Resend send failed: no message id returned"));
   }
   if (meter?.subAccountId) {
     void recordUsage({
@@ -183,7 +266,7 @@ export async function sendPlainTextBroadcast({
   const resolvedFrom = from ?? process.env.EMAIL_FROM;
   if (!resolvedFrom) {
     throw new Error(
-      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain.",
+      "EMAIL_FROM is not set. It must be a sender on a Resend-verified domain."
     );
   }
   const client = getResend();
@@ -201,7 +284,7 @@ export async function sendPlainTextBroadcast({
           subject,
           text,
           ...(replyTo ? { replyTo } : {}),
-        })),
+        }))
       );
       if (res.error) {
         failed += chunk.length;

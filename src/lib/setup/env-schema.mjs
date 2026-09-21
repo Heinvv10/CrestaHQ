@@ -238,6 +238,15 @@ export const GROUPS = [
     ],
   },
   {
+    title: "WhatsApp bridge fleet (wa-manager)",
+    tier: "feature",
+    off: "sub-accounts can't provision or pair their own WhatsApp bridge in-app; a bridge must be connected by hand with credentials read off the box",
+    vars: [
+      ["WA_MANAGER_BASE_URL", "req", isUrl],
+      ["WA_MANAGER_OPERATOR_TOKEN", "req"],
+    ],
+  },
+  {
     title: "AI replies (OpenRouter)",
     tier: "feature",
     off: "AI Agents stay silent on every channel",

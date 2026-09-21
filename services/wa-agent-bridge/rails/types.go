@@ -20,6 +20,44 @@ type SendRequest struct {
 	IdempotencyKey string
 	Consumer       string // registry key: "hermes", "leadstack"
 	Now            time.Time
+	// HumanReply marks a message an operator typed in a thread, as opposed to
+	// anything a workflow, an AI auto-reply or a campaign produced. It relaxes
+	// exactly one rail — quiet hours — and only inside an open session; see
+	// checkQuietHours. It is self-declared by the consumer and is therefore no
+	// stronger than that consumer's token, which is why it buys a narrow
+	// exemption rather than a general one.
+	HumanReply bool
+	// Media is an optional attachment. Nil is a plain text message and is the
+	// only shape that existed before attachments, so every existing caller and
+	// every existing rail keeps exactly the behaviour it had.
+	//
+	// It rides on the SendRequest rather than beside it so that the value the
+	// rails evaluated is the same value that reaches the socket. A separate
+	// media argument threaded past Engine.EvaluateAndReserve would make an
+	// unevaluated attachment representable, and an attachment is the most
+	// expensive thing this number can send at the wrong person.
+	//
+	// NO rail reads it. That is deliberate: reply-only, the volume caps and
+	// quiet hours all bind on WHO is being messaged and HOW OFTEN, not on what
+	// is in the message, so a media send is refused in precisely the cases a
+	// text send is. A rail that branched on Media would be a rail an attacker
+	// could switch off by attaching a file.
+	Media *Media
+}
+
+// Media is one attachment, already decoded. It carries no whatsmeow types and
+// no io.Reader: the whole payload is in memory by the time it reaches here
+// because the API layer had to decode it to size-check it anyway, and a struct
+// of plain values is what lets the rails package stay dependency-free.
+type Media struct {
+	// Filename is what the recipient sees and what a document message is
+	// titled with. Required whenever Media is set.
+	Filename string
+	// MimeType decides the message shape: image/* is sent as an ImageMessage
+	// and video/* as a VideoMessage so they render inline, everything else as
+	// a DocumentMessage.
+	MimeType string
+	Data     []byte
 }
 
 // RefusalCode is machine-readable so a consumer can render a real reason
@@ -105,6 +143,12 @@ type Config struct {
 	// to QuietStartHour/QuietEndHour, so every existing deployment keeps
 	// exactly the behaviour it has.
 	QuietHours map[string]QuietWindow
+
+	// HumanReplySessionWindow is how recently a contact must have messaged for
+	// an operator's reply to count as answering them rather than reaching for
+	// them. Zero disables the exemption entirely, which is the safe default
+	// for a config that forgot to set it.
+	HumanReplySessionWindow time.Duration
 }
 
 // Store is the persisted state the rails consult. Every counter lives on disk:
@@ -120,6 +164,10 @@ type Store interface {
 	// incident, and answering it by grepping logs for past AddAllowlist calls
 	// misses every entry added before the current log file.
 	ListAllowlist() ([]string, error)
+
+	// LastInboundFrom is when this contact last messaged us, and false when
+	// they never have. Quiet hours use it to tell a reply from an outreach.
+	LastInboundFrom(jid string) (time.Time, bool, error)
 
 	OutboundCountForContact(jid string, since time.Time) (int, error)
 	// ConsecutiveOutbound returns the number of outbound messages sent to this
@@ -177,7 +225,15 @@ type Store interface {
 	// LastInboundAt is the timestamp of the most recent inbound message from
 	// anyone, zero when none has ever arrived. The health endpoint reports its
 	// age: a bridge whose socket has quietly died still answers HTTP, and an
-	// inbound age that keeps climbing is the only externally visible symptom.
+	// LastInboundAt is the newest INBOUND timestamp recorded, or the zero time
+	// when there is none.
+	//
+	// Two consumers now, and the second one is data-loss-critical: the health
+	// endpoint reports how long the number has been silent, AND the fanout
+	// snapshots this at connect as the replay watermark. Inbound only is not
+	// incidental there — outbound rows carry this host's wall clock, and
+	// mixing the two lets a fast clock shadow real inbound, which is dropped
+	// permanently because no message body is stored. Do not widen it.
 	LastInboundAt() (time.Time, error)
 
 	// LookupIdempotency is the cheap read-path check for a replay. It is NOT the

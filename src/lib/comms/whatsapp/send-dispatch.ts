@@ -4,10 +4,18 @@ import type { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendWhatsappForSubAccount } from "@/lib/comms/twilio";
 import { getWabaCreds } from "./cloud-credentials";
+import { getBridgeCreds } from "./bridge-credentials";
 import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
-import { resolveProviderForSubAccount } from "./resolve-provider";
+import type { InteractiveResult } from "./interactive";
+import { sendWhatsappBridge } from "./bridge-client";
+import { resolveWhatsappSender } from "./resolve-sender";
 import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
-import type { WhatsAppProviderId, WhatsAppSendResult } from "./provider";
+import {
+  resolveWhatsAppProviderId,
+  type OutboundAttachment,
+  type WhatsAppProviderId,
+  type WhatsAppSendResult,
+} from "./provider";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -37,7 +45,7 @@ import type { SubAccountDoc } from "@/types";
  * a long-closed window anyway.
  */
 export async function readLastInboundAt(
-  contactId: string,
+  contactId: string
 ): Promise<Date | null> {
   const recent = await getAdminDb()
     .collection(`contacts/${contactId}/whatsappMessages`)
@@ -62,18 +70,82 @@ export interface WhatsappDispatchInput {
   windowHours?: number;
   /** Approved template to fall back on when the window is shut. */
   template?: CloudTemplateRef | null;
+  /**
+   * The template's buttons as an in-window interactive message (Cloud only),
+   * or why they cannot be one. Consulted ONLY when the send is in-window:
+   * outside it the approved `template` goes as always, buttons and all.
+   */
+  inWindowButtons?: InteractiveResult | null;
+  /** How the Twilio rail sends those buttons in-session (by ContentSid).
+   *  Absent → a Twilio in-window button send refuses. */
+  sendButtonsViaTwilio?: () => Promise<WhatsAppSendResult>;
   /** Injected by tests and by callers that already read the window. */
   lastInboundAt?: Date | null;
+  /**
+   * Bridge rail only. The bridge requires an idempotency key and generates one
+   * per call when none is given, so a caller whose OWN retry must converge on
+   * the first send rather than duplicate it has to supply a stable key here.
+   */
+  idempotencyKey?: string;
+  /**
+   * Bridge rail only. True when an operator typed this in a thread, as opposed
+   * to a workflow, an AI auto-reply or a campaign producing it.
+   *
+   * It relaxes exactly one guard on the bridge — quiet hours — and only while
+   * the contact is still inside an open session. Default false, so any caller
+   * that does not think about it gets the full guard, which is the direction
+   * that fails safe: a send wrongly marked human reaches a customer at 03:00.
+   */
+  humanReply?: boolean;
+  /**
+   * Optional attachment. Carried by the rails whose capabilities declare
+   * `supportsMedia` (bridge, cloud). Twilio takes media only by public URL,
+   * which this seam does not implement, so an attachment there is refused
+   * below rather than dropped: a caller that asked for a report to be sent
+   * and got back a bare "ok" with no file is the worst of the three outcomes.
+   */
+  attachment?: OutboundAttachment | null;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
 }
 
 export async function dispatchWhatsappSend(
-  input: WhatsappDispatchInput,
-): Promise<WhatsAppSendResult & { provider: WhatsAppProviderId }> {
-  const { provider, capabilities } = resolveProviderForSubAccount(
-    input.subAccount,
-  );
+  input: WhatsappDispatchInput
+): Promise<
+  WhatsAppSendResult & {
+    provider: WhatsAppProviderId;
+    sentAs?: "text" | "template" | "interactive";
+  }
+> {
+  // Through the sender registry, so this dispatcher and the readiness gate in
+  // front of it cannot pick different rails for the same workspace.
+  const resolved = resolveWhatsappSender(input.subAccount);
+  if (!resolved.ok) {
+    return {
+      provider: resolveWhatsAppProviderId(input.subAccount.whatsappProvider),
+      ok: false,
+      error: resolved.error,
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
+  const { provider, capabilities } = resolved;
+
+
+  // Refused before the window is read and before anything is sent. Placed here
+  // rather than in each rail's branch so a fourth rail cannot be added without
+  // deciding what it does with an attachment — the default is "cannot", which
+  // is the direction that fails loudly.
+  if (input.attachment && !capabilities.supportsMedia) {
+    return {
+      provider,
+      ok: false,
+      error: `The ${provider} rail cannot send attachments.`,
+      providerOutcome: "DEFINITELY_REJECTED",
+      // A request error the caller can act on (drop the file, or move the
+      // workspace to a rail that carries one) — not a gateway failure.
+      providerErrorCode: "media_unsupported_rail",
+    };
+  }
 
   const lastInboundAt =
     input.lastInboundAt !== undefined
@@ -84,10 +156,11 @@ export async function dispatchWhatsappSend(
   // restate it differently. The cloud sender re-derives the same decision
   // internally — deliberately, since it must hold even for a caller that
   // bypasses this dispatcher.
+  const now = new Date();
   const decision = resolveWaSendMode({
     lastInboundAt,
     hasApprovedTemplate: input.template?.approved === true,
-    now: new Date(),
+    now,
     windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
     capabilities,
   });
@@ -99,6 +172,31 @@ export async function dispatchWhatsappSend(
       providerOutcome: decision.providerOutcome,
     };
   }
+
+  // In-window with buttons: they go as an interactive message or not at all.
+  // Cloud and Twilio render them; the bridge does not yet (buttons PRs 6–7),
+  // and a template outside the in-window rules cannot be one. Sending the text
+  // bare would deliver a Yes/No nobody can tap, or a review ask with no link.
+  const buttons = decision.mode === "text" ? input.inWindowButtons ?? null : null;
+  if (buttons && !buttons.ok) {
+    return { provider, ok: false, error: buttons.error, providerOutcome: "DEFINITELY_REJECTED" };
+  }
+  // Twilio's unapproved in-session limits are the same as Cloud's in-window
+  // ones (3 quick replies or one link, 20-character titles), so a template
+  // that built for Cloud is valid here; it goes by ContentSid.
+  if (buttons && provider === "twilio" && input.sendButtonsViaTwilio) {
+    const r = await input.sendButtonsViaTwilio();
+    return { ...r, provider, sentAs: "interactive", attempted: true };
+  }
+  if (buttons && provider !== "cloud") {
+    return {
+      provider,
+      ok: false,
+      error: "WA_BUTTONS_UNSUPPORTED_ON_RAIL",
+      providerOutcome: "DEFINITELY_REJECTED",
+    };
+  }
+  const interactive = buttons?.ok ? buttons.interactive : null;
 
   if (provider === "cloud") {
     let creds;
@@ -121,29 +219,53 @@ export async function dispatchWhatsappSend(
       message: input.body,
       lastInboundAt,
       template: input.template ?? null,
+      interactive,
+      media: input.attachment ?? null,
       windowHours: input.windowHours ?? DEFAULT_WA_WINDOW_HOURS,
       provider,
+      now,
     });
-    return { ...r, provider };
+    return { ...r, provider, sentAs: interactive ? "interactive" : decision.mode, attempted: true };
   }
 
   if (provider === "bridge") {
-    // Declared, not silently unreachable. The arm lands in 1.2b; until then a
-    // workspace pointed at it must fail loudly rather than fall through to a
-    // rail it was deliberately switched away from.
-    return {
-      provider,
-      ok: false,
-      error:
-        "The WhatsApp bridge provider isn't available yet. Switch this workspace back to Twilio or Cloud.",
-      providerOutcome: "DEFINITELY_REJECTED",
-    };
+    let creds;
+    try {
+      creds = await getBridgeCreds(input.subAccountId);
+    } catch (e) {
+      // A workspace switched to the bridge rail without credentials would
+      // otherwise fail deep inside a fetch against an empty base URL.
+      return {
+        provider,
+        ok: false,
+        error:
+          e instanceof Error ? e.message : "Bridge credentials unavailable",
+        providerOutcome: "DEFINITELY_REJECTED",
+      };
+    }
+    // The bridge's /v1/send takes the file as base64 JSON; encoded here, at
+    // the wire, so nothing upstream carries a second copy of the bytes.
+    const a = input.attachment;
+    const r = await sendWhatsappBridge({
+      creds,
+      to: input.to,
+      message: input.body,
+      idempotencyKey: input.idempotencyKey,
+      humanReply: input.humanReply === true,
+      media: a
+        ? {
+            filename: a.filename,
+            contentType: a.contentType,
+            dataBase64: Buffer.from(await a.data.arrayBuffer()).toString("base64"),
+          }
+        : null,
+    });
+    return { ...r, provider, attempted: true };
   }
 
   const r = await input.sendViaTwilio();
-  return { ...r, provider };
+  return { ...r, provider, attempted: true };
 }
-
 
 /**
  * Free-form send for call sites that expect the Twilio helper's

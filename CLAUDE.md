@@ -63,11 +63,12 @@ think it is.
 | `pnpm lint` (tenancy check + ESLint) | CI + `deploy-velo.sh` | yes |
 | `pnpm exec tsc --noEmit` | CI + deploy | yes |
 | `pnpm test` | CI + deploy | yes |
+| `pnpm test:rules` (Firestore rules, via the Rules test API) | CI | yes |
 | `pnpm build` | CI + deploy | yes |
 | gitleaks secret scan | CI | yes |
 | Blind `/review` | you, before merge | yes |
 
-`pnpm ci:check` runs the first four locally — byte-for-byte the same commands
+`pnpm ci:check` runs the first five locally — byte-for-byte the same commands
 CI runs, so a green local run means a green pipeline. Keep them identical; a
 `npx` here and a `pnpm exec` there is the first millimetre of the same drift
 that let FibreFlow's baselines diverge across five files.
@@ -166,7 +167,10 @@ refuses to run against a dirty checkout.
 - `pnpm start` — production server
 - `pnpm lint` — tenancy check then ESLint at `--max-warnings 0`
 - `pnpm test` / `pnpm test:watch` — Vitest
-- `pnpm ci:check` — lint + typecheck + test + build, exactly as CI runs them
+- `pnpm test:rules` — evaluates `firestore.rules` through the Firebase Rules
+  test API (no deploy). Needs `FIREBASE_ADMIN_*` in the environment; skips
+  without them locally, fails without them in CI.
+- `pnpm ci:check` — lint + typecheck + test + test:rules + build, exactly as CI runs them
 - `pnpm check:tenancy` — [scripts/check-capability-tenancy.mjs](scripts/check-capability-tenancy.mjs):
   fails when an AI Suite capability's `execute` lacks a visible tenant anchor.
   **Adding a capability means making this pass** — see
@@ -210,13 +214,15 @@ that are expensive to rediscover:
   spam guard, shared-sender comms, usage counters, attribution capture.
 - **[Firestore collections](docs/architecture/firestore-collections.md)** — every
   collection, its scope, and who may write it.
+- **[Audit events](docs/architecture/audit-events.md)** — the append-only
+  `auditEvents` stream: `recordAuditEvent()`, actor types, what is redacted, who reads it.
 - **[Project structure](docs/architecture/project-structure.md)** — the annotated
   `src/` tree.
 
 **Page width:** every dashboard page wraps *all* its top-level returns (including
 loading / locked / empty / not-found states) in a centered container — `/agency/*`
 uses `max-w-5xl`; `/sa/[id]/*` uses `max-w-5xl` for data surfaces and `max-w-3xl` for
-forms, settings, and chat. Pipeline is the only full-bleed page. Don't invent a new
+forms, settings, and chat. Pipeline and Conversations are the only full-bleed pages. Don't invent a new
 width — the one carve-out (`max-w-6xl` for an agency page whose tables genuinely need
 the columns) and the full rule are in
 [docs/architecture/key-architecture.md](docs/architecture/key-architecture.md).
@@ -228,6 +234,7 @@ the columns) and the full rule are in
 Full index with links: **[docs/features/README.md](docs/features/README.md)**.
 
 Specs: [AI Agents](docs/features/ai-agents.md) ·
+[Snapshots](docs/features/snapshots.md) ·
 [Workflows](docs/features/workflows.md) ·
 [Quotes](docs/features/quotes.md) ·
 [Products + Invoices](docs/features/products-invoices.md) ·

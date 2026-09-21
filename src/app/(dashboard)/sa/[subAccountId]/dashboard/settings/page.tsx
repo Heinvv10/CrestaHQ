@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { CreditCard, Download } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
@@ -22,13 +23,19 @@ import { SubAccountPipelineSection } from "@/components/settings/sub-account-pip
 import { GhlImportWizard } from "@/components/import/ghl-import-wizard";
 import { SubAccountSmsSection } from "@/components/settings/sub-account-sms-section";
 import { SubAccountMetaSection } from "@/components/settings/sub-account-meta-section";
+import { SubAccountGoogleSection } from "@/components/settings/sub-account-google-section";
 import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
+import { SubAccountWhatsappSendersSection } from "@/components/settings/sub-account-whatsapp-senders-section";
+import { SubAccountWhatsappBridgeSection } from "@/components/settings/sub-account-whatsapp-bridge-section";
+import { SubAccountMailboxSection } from "@/components/settings/sub-account-mailbox-section";
+import { SubAccountSmtpSection } from "@/components/settings/sub-account-smtp-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
 import { SubAccountPlanBillingSection } from "@/components/settings/sub-account-plan-billing-section";
 import { SubAccountSendingPreferencesSection } from "@/components/settings/sub-account-sending-preferences-section";
 import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account-google-review-section";
 import { SubAccountStripeSection } from "@/components/settings/sub-account-stripe-section";
+import { SubAccountPaystackSection } from "@/components/settings/sub-account-paystack-section";
 import { SubAccountWebinar1Section } from "@/components/settings/sub-account-webinar1-section";
 import { SubAccountApiKeysSection } from "@/components/settings/sub-account-api-keys-section";
 import { SubAccountApiRecipesSection } from "@/components/settings/sub-account-api-recipes-section";
@@ -63,10 +70,19 @@ const PLAN_LABEL: Record<SubscriptionStatus, { label: string; tone: string }> =
     },
   };
 
+const TAB_VALUES = ["admin", "messaging", "api", "custom-fields", "import"] as const;
+
 export default function SettingsPage() {
   const { user, role } = useAuth();
   const { subAccountId, agencyId, subAccount } = useSubAccount();
   const workspaceName = subAccount?.name ?? "this sub-account";
+  // `?tab=` lets a CTA elsewhere (e.g. the Launchpad) land straight on a
+  // tab — Base UI's Tabs is uncontrolled, so this only needs to seed
+  // `defaultValue`, read once on first render.
+  const requestedTab = useSearchParams().get("tab");
+  const initialTab = (TAB_VALUES as readonly string[]).includes(requestedTab ?? "")
+    ? (requestedTab as (typeof TAB_VALUES)[number])
+    : "admin";
   const [profile, setProfile] = useState<UserDoc | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
 
@@ -133,7 +149,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <Tabs defaultValue="admin">
+      <Tabs defaultValue={initialTab}>
         <TabsList>
           <TabsTrigger value="admin">Admin</TabsTrigger>
           <TabsTrigger value="messaging">Messaging</TabsTrigger>
@@ -233,6 +249,11 @@ export default function SettingsPage() {
           {/* Stripe Connect — v2 roadmap placeholder. */}
           <SubAccountStripeSection />
 
+          {/* Paystack — the SA card rail. Same Payments gate as Stripe; both
+              cards can be connected, and an operator outside Stripe's payout
+              countries will only ever use this one. */}
+          <SubAccountPaystackSection />
+
           {/* Webinar1 — connect a self-hosted webinar deployment (create
               webinars from the CRM, sync registrations/attendance back). */}
           <SubAccountWebinar1Section />
@@ -294,9 +315,21 @@ export default function SettingsPage() {
               an operator comparing the two rails should see them together. */}
           <SubAccountWhatsappCloudSection />
 
+          {/* WhatsApp over the operator's OWN number (unofficial linked
+              device) — self-gates on the same admin + agency WhatsApp gate as
+              the Cloud card. Placed beside it because the two are the same
+              decision: which rail this workspace's WhatsApp runs on. */}
+          <SubAccountWhatsappBridgeSection />
+
+          {/* Which numbers this workspace can send FROM. Sits under both rail
+              cards because a sender is added on top of a rail's existing
+              connection — it carries no credentials of its own. */}
+          <SubAccountWhatsappSendersSection />
+
           {/* Facebook + Instagram inbox (beta) — self-gates: renders only when
               the agency flipped metaInboxEnabledByAgency on for this sub-account. */}
           <SubAccountMetaSection />
+          <SubAccountGoogleSection />
 
           {/* Sending preferences — Reply-To, send window, pause-all-workflows.
               Rehomed from the deleted legacy Automations → Settings page; MUST
@@ -305,6 +338,8 @@ export default function SettingsPage() {
           <SubAccountSendingPreferencesSection />
 
           {/* Email sending domain — opt-in dedicated Resend domain. */}
+          <SubAccountSmtpSection />
+          <SubAccountMailboxSection />
           <SubAccountEmailDomainSection />
 
           {/* Google reviews — SMS / WhatsApp review-request sends. */}

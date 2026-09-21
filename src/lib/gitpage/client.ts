@@ -24,7 +24,8 @@ const DEFAULT_BASE_URL = "https://www.gitpage.site";
 
 function getBaseUrl(): string {
   return (
-    process.env.GITPAGE_API_URL?.replace(/\/$/, "") ?? DEFAULT_BASE_URL
+    // `||`, not `??`: .env.example ships `GITPAGE_API_URL=` empty.
+    process.env.GITPAGE_API_URL?.replace(/\/$/, "") || DEFAULT_BASE_URL
   );
 }
 

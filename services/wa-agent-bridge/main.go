@@ -60,6 +60,19 @@ type clientHolder struct {
 
 func (g *clientHolder) set(c *wa.Client) { g.client.Store(c) }
 
+// connectedAt is the fanout's watermark key: it re-snapshots the watermark
+// once per connection. Before the client is set it returns the zero time,
+// which is stable and therefore snapshots nothing — the fanout's first real
+// refresh happens on the first message after the socket connects, which is
+// also the first moment a watermark could be meaningful.
+func (g *clientHolder) connectedAt() time.Time {
+	c := g.client.Load()
+	if c == nil {
+		return time.Time{}
+	}
+	return c.ConnectedAt()
+}
+
 func (g *clientHolder) inReplayWindow() bool {
 	c := g.client.Load()
 	if c == nil {
@@ -114,6 +127,33 @@ func listenValidated(cfg config.Config) (net.Listener, error) {
 	return net.Listen("tcp", cfg.ListenAddr)
 }
 
+// newServer wires the HTTP server's timeouts. Split out of main so they can be
+// asserted: a timeout that silently reverts to zero is indistinguishable from
+// one that was never added.
+func newServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler: handler,
+		// Both bound how long a client may hold a connection — and now a
+		// multi-megabyte read buffer — without finishing its request. Their
+		// absence was a pre-existing gap that only started to matter when
+		// /v1/send grew from a 64KiB text body to a 12MiB one carrying an
+		// attachment: a slow or stalled body used to cost kilobytes for as
+		// long as the client cared to hold it, and now costs megabytes.
+		//
+		// ReadTimeout covers headers AND body, so it has to admit a genuine
+		// 12MiB upload from the CRM over a slow link; 60s is generous for that
+		// and still finite, which is the whole point.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		// WriteTimeout is deliberately NOT set. It bounds the time from the
+		// end of the request read to the end of the response write, and a
+		// legitimate send spends most of that window inside the queue's
+		// pacing delay plus its send timeout. Any value large enough not to
+		// kill a real send is too large to be a defence, and a value smaller
+		// than that would abort sends that are working.
+	}
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -129,7 +169,8 @@ func main() {
 	engine := rails.NewEngine(st, cfg.Rails)
 
 	gate := &clientHolder{}
-	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow)
+	fanout := api.NewFanout(cfg.Consumers, cfg.OwnerJID, st, gate.inReplayWindow, gate.connectedAt,
+		cfg.InboundMediaPerSenderPerHour)
 
 	client, err := wa.NewClient(
 		cfg.SessionDir,
@@ -166,6 +207,23 @@ func main() {
 	// instead of it finishing or timing out cleanly.
 	const shutdownBudget = 35 * time.Second
 
+	// fanoutDrainBudget bounds the second step, the inbound delivery drain.
+	//
+	// The worst case is not one delivery but a BACKLOG of them, so it is worth
+	// being exact about why the backlog drains in parallel. Drain stops intake,
+	// then cancels every in-flight download and media POST. The (at most two)
+	// deliveries holding a media slot finish their abandoned file work — the
+	// HTTP phase stops on cancel; whatsmeow's HMAC, decrypt and hash take no
+	// context but are bounded by the 16MiB cap to a fraction of a second — and
+	// then post text-only. Every delivery still WAITING for a slot stops waiting
+	// and posts text-only at once, without a slot, concurrently with the rest.
+	// So the backlog costs one text POST per consumer in parallel, each on the
+	// 10s client, plus one fallback for the slot holders: ~20s whatever the
+	// backlog size. 25s covers that; anything still running after it is logged
+	// and abandoned rather than holding systemd past TimeoutStopSec, which
+	// would SIGKILL everything including the posts about to succeed.
+	const fanoutDrainBudget = 25 * time.Second
+
 	// The one send path. Everything outbound goes through this queue so that
 	// exactly one message is on the socket at a time and the pacing rails
 	// cannot be bypassed.
@@ -184,15 +242,17 @@ func main() {
 		Now:       time.Now,
 		// Set after this call, via gate.set(client) above; the holder answers
 		// "not connected" until then.
-		Connection: gate,
-		Version:    version,
+		Connection:         gate,
+		InboundSuppression: fanout.SuppressedInbound,
+		InboundDropAge:     fanout.InboundDropAge,
+		Version:            version,
 	})
 
 	ln, err := listenValidated(cfg)
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.ListenAddr, err)
 	}
-	srv := &http.Server{Handler: handler}
+	srv := newServer(handler)
 	go func() {
 		log.Printf("listening on %s", ln.Addr())
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -206,17 +266,30 @@ func main() {
 	log.Printf("shutting down")
 
 	// Order matters: stop accepting sends, then close the socket so no further
-	// inbound arrives, then wait for the webhook deliveries already in flight.
+	// inbound arrives, then drain the webhook deliveries already in flight.
 	// shutdownBudget (35s) outlasts the 30s send-queue timeout so an in-flight
 	// send gets to finish or time out on its own terms before Disconnect pulls
-	// the socket out from under it. TimeoutStopSec=60 in the systemd unit
-	// funds this 35s drain plus fanout.Wait()'s own worst case (bounded by the
-	// webhook http.Client's 10s timeout), with headroom before SIGKILL.
+	// the socket out from under it. client.Disconnect then waits up to 5s for
+	// whatsmeow's handler queue to finish (unlockedDisconnect, client.go:715).
+	// It can return with a handler still running — after that 5s, or at once
+	// when handlerQueueLoop exits mid-node on connCtx.Done (client.go:936-939)
+	// — and that handler can call fanout.Deliver during the drain, which is why
+	// Deliver refuses new work once Drain has begun. fanout.Drain
+	// then gets fanoutDrainBudget (25s): it abandons file work immediately and
+	// the messages go text-only. Worst case end to end is 35s + 5s + 25s = 65s;
+	// TimeoutStopSec=90 in the systemd unit leaves 25s of headroom before
+	// SIGKILL. An unbounded Wait here would let
+	// one in-flight 16MiB attachment (120s download + 120s POST) run straight
+	// into SIGKILL and lose every delivery behind it, message and all.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("WARNING http shutdown: %v", err)
 	}
 	client.Disconnect()
-	fanout.Wait()
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), fanoutDrainBudget)
+	defer drainCancel()
+	if err := fanout.Drain(drainCtx); err != nil {
+		log.Printf("WARNING %v", err)
+	}
 }

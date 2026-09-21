@@ -5,11 +5,13 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
 import type { ActivityType } from "@/types/contacts";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Reassign a team booking to a different host.
@@ -17,8 +19,9 @@ import type { ActivityType } from "@/types/contacts";
  *   POST /api/events/by-id/[id]/assign
  *   body: { assignedToUid: string | null, force?: boolean }
  *
- * Booking-page events only. Allowed for a sub-account admin (incl. agency
- * owner) OR the current assignee. The target must be an active member and —
+ * Booking-page events only, and not collective ones (409 — every host
+ * attends those). Allowed for a sub-account admin (incl. agency owner) OR
+ * the current assignee. The target must be an active member and —
  * when the page still lists hosts — one of the page's configured hosts. A
  * soft conflict check warns when the target already has an overlapping
  * booking; pass `force: true` to proceed anyway.
@@ -72,6 +75,18 @@ export async function POST(
     return NextResponse.json(
       { error: "Only booking-page events can be reassigned." },
       { status: 400 },
+    );
+  }
+
+  // A collective booking belongs to every host in `hostUids` (each one is
+  // busy for it); moving just the owner would leave the list stale.
+  if ((event.hostUids ?? []).length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          "This is a collective booking with every host attending — it can't be reassigned. Cancel and rebook it instead.",
+      },
+      { status: 409 },
     );
   }
 
@@ -135,25 +150,23 @@ export async function POST(
     }
     targetName = (member.displayName || member.email || "Host").slice(0, 120);
 
-    // Soft conflict check (skipped with force). Uses the
-    // events(subAccountId, assignedToUid, startAt) composite index.
+    // Soft conflict check (skipped with force) against every booking the
+    // target attends — owned or collective.
     const start = tsToDate(event.startAt);
     const end = tsToDate(event.endAt);
     if (!force && start && end) {
       try {
         const lookbackMs = 8 * 60 * 60_000;
-        const snap = await db
-          .collection("events")
-          .where("subAccountId", "==", event.subAccountId)
-          .where("assignedToUid", "==", targetUid)
-          .where(
-            "startAt",
-            ">=",
-            Timestamp.fromDate(new Date(start.getTime() - lookbackMs)),
-          )
-          .where("startAt", "<=", Timestamp.fromDate(new Date(end.getTime() + 1000)))
-          .get();
-        const clash = snap.docs.some((d) => {
+        const docs = await queryHostEvents(event.subAccountId, targetUid, (q) =>
+          q
+            .where(
+              "startAt",
+              ">=",
+              Timestamp.fromDate(new Date(start.getTime() - lookbackMs)),
+            )
+            .where("startAt", "<=", Timestamp.fromDate(new Date(end.getTime() + 1000))),
+        );
+        const clash = docs.some((d) => {
           if (d.id === eventId) return false;
           const e = d.data() as CalendarEvent;
           if (!eventOccupiesSlot(eventStatus(e))) return false;
@@ -191,6 +204,8 @@ export async function POST(
     console.error(`[events/assign] update failed event=${eventId}`, err);
     return NextResponse.json({ error: "Couldn't reassign." }, { status: 500 });
   }
+  // Move the Google copy: off the old host's calendar, onto the new one's.
+  await pushBookingToGoogle(eventId);
 
   // Timeline row (best-effort).
   if (event.contactId) {

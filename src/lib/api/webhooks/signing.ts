@@ -88,12 +88,21 @@ export function verifyWebhookSignature(opts: {
   const expectedHmac = createHmac("sha256", opts.secret)
     .update(`${timestamp}.${opts.rawBody}`, "utf8")
     .digest("hex");
-  if (expectedHmac.length !== hmacStr.length) {
+  // Compared as BYTES, not as strings. `timingSafeEqual` throws a RangeError
+  // on a byte-length mismatch, so it must be guarded — but `String.length`
+  // counts UTF-16 code units, and a header of 64 multi-byte characters is 64
+  // units and 128 bytes. Guarding on the string length let exactly that value
+  // through to a throw: an uncaught RangeError, on a route the middleware does
+  // not authenticate, from a caller holding no credentials at all. Building
+  // both buffers first makes the guarded quantity and the compared quantity
+  // the same quantity, which is the only version of this check that is not a
+  // coin flip on the caller's character set.
+  const expected = Buffer.from(expectedHmac, "utf8");
+  const presented = Buffer.from(hmacStr, "utf8");
+  if (expected.length !== presented.length) {
     return { ok: false, reason: "signature_mismatch" };
   }
-  const eq = timingSafeEqual(
-    Buffer.from(expectedHmac, "utf8"),
-    Buffer.from(hmacStr, "utf8"),
-  );
-  return eq ? { ok: true } : { ok: false, reason: "signature_mismatch" };
+  return timingSafeEqual(expected, presented)
+    ? { ok: true }
+    : { ok: false, reason: "signature_mismatch" };
 }

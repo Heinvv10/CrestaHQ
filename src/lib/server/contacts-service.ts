@@ -3,7 +3,8 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
-import { fireWorkflowTrigger } from "@/lib/workflows/engine";
+import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
+import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
 import {
   serializeContactForApi,
   type ContactApiObject,
@@ -51,14 +52,24 @@ export interface CreateContactInput {
    */
   phoneCountry?: string | null;
   company: string;
+  /** Linked `companies/{id}` (routes verify tenancy via resolveCompanyLink). */
+  companyId?: string | null;
   address: string;
   source: string;
   tags: string[];
   pipelineStage?: string | null;
   territoryId?: string | null;
+  /** Member uid (validated by the route) or null. */
+  assignedToUid?: string | null;
   /** Validated custom-field value map (routes validate against live defs). */
   customFields?: Record<string, CustomFieldValue> | null;
   attribution?: ContactAttribution | null;
+  /**
+   * Public-API key id, when the create came in over /api/v1/contacts.
+   * Forwarded to the trigger so enrolments count against that key's hourly
+   * cap (lib/api/enrolment-cap).
+   */
+  apiKeyId?: string;
   /** Optional resolved location (form submit supplies this; UI doesn't). */
   location?: {
     countryCode: string | null;
@@ -72,6 +83,13 @@ export interface CreateContactInput {
 export interface ContactWriteResult {
   id: string;
   contact: ContactApiObject;
+  /**
+   * Whether this write fired a workflow trigger. The tag diff that decides
+   * it lives here and only here, so a caller holding an enrolment
+   * reservation (the public API) can settle it without re-deriving the diff
+   * — see lib/api/enrolment-cap.
+   */
+  firedTrigger: boolean;
 }
 
 /**
@@ -80,20 +98,31 @@ export interface ContactWriteResult {
  * fire-and-forget — the write never blocks on dispatch.
  */
 export async function createContactServerSide(
-  input: CreateContactInput,
+  input: CreateContactInput
 ): Promise<ContactWriteResult> {
-  const db = getAdminDb();
-  const ref = db.collection("contacts").doc();
-  const loc = input.location ?? null;
+  const ref = getAdminDb().collection("contacts").doc();
+  const doc = buildContactDoc(input);
+  await ref.set(doc);
+  const { contact, trigger } = announceContactCreated(input, ref.id, doc);
+  return { id: ref.id, contact, firedTrigger: trigger !== null };
+}
 
-  const doc = {
+/**
+ * The document a new contact is written as. Shared with the phone upsert
+ * (lib/server/contact-upsert), which writes it inside a transaction, so a
+ * contact created either way has the same shape.
+ */
+export function buildContactDoc(input: CreateContactInput) {
+  const loc = input.location ?? null;
+  return {
     name: input.name,
     email: input.email,
     phone: normalizePhoneLenient(input.phone, input.phoneCountry),
     company: input.company,
+    companyId: input.companyId ?? null,
     address: input.address,
     source: input.source,
-    tags: input.tags,
+    tags: [...new Set(input.tags)],
     pipelineStage: input.pipelineStage ?? null,
     customFields: input.customFields ?? {},
     attribution: input.attribution ?? null,
@@ -105,6 +134,7 @@ export async function createContactServerSide(
     lat: loc?.lat ?? null,
     lng: loc?.lng ?? null,
     territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid ?? null,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     createdByUid: input.createdByUid,
@@ -112,16 +142,29 @@ export async function createContactServerSide(
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
-  await ref.set(doc);
+}
 
+type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId">;
+
+/**
+ * Everything a newly written contact announces: the `contact.created`
+ * webhook and, in live mode, the workflow trigger. Returns the trigger's
+ * promise (null when none fired) so a caller that must know the outcome can
+ * await it; every other caller discards it.
+ */
+export function announceContactCreated(
+  input: Announcer,
+  id: string,
+  doc: ReturnType<typeof buildContactDoc>,
+): { contact: ContactApiObject; trigger: Promise<TriggerOutcome> | null } {
   // Serialize from the in-memory doc with a JS `now` for the timestamps
   // (the serverTimestamp sentinels aren't readable without a re-read, and a
   // sub-millisecond drift on created_at is immaterial to subscribers).
   const now = new Date();
   const contact = serializeContactForApi(
-    ref.id,
+    id,
     { ...doc, createdAt: now, updatedAt: now },
-    input.mode,
+    input.mode
   );
 
   void emitWebhookEvent({
@@ -131,16 +174,17 @@ export async function createContactServerSide(
     type: "contact.created",
     payload: { contact },
   });
-  if (input.mode === "live") {
-    void fireWorkflowTrigger({
-      subAccountId: input.subAccountId,
-      agencyId: input.agencyId,
-      type: "contact.created",
-      contactId: ref.id,
-    });
-  }
-
-  return { id: ref.id, contact };
+  const trigger =
+    input.mode === "live"
+      ? fireWorkflowTrigger({
+          subAccountId: input.subAccountId,
+          agencyId: input.agencyId,
+          type: "contact.created",
+          contactId: id,
+          apiKeyId: input.apiKeyId,
+        })
+      : null;
+  return { contact, trigger };
 }
 
 /** Fields that can be patched. All optional; only provided keys are written. */
@@ -149,12 +193,34 @@ export interface UpdateContactPatch {
   email?: string;
   phone?: string;
   company?: string;
+  companyId?: string | null;
   address?: string;
   source?: string;
   tags?: string[];
   pipelineStage?: string | null;
+  /**
+   * Straight field write, same as the public API has always done. A full
+   * territory MOVE (fanning out to the contact's deals/quotes/tasks/events)
+   * still belongs to the dedicated admin endpoint — see the note below.
+   */
+  territoryId?: string | null;
+  /** Member uid (validated by the route) or null to unassign. */
+  assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue>;
+}
+
+/** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
+export function companyStringDrifts(
+  existing: { companyId?: string | null; company?: string },
+  patch: { company?: string; companyId?: string | null },
+): boolean {
+  return (
+    patch.companyId === undefined &&
+    patch.company !== undefined &&
+    !!existing.companyId &&
+    patch.company !== existing.company
+  );
 }
 
 /**
@@ -162,15 +228,20 @@ export interface UpdateContactPatch {
  * webhook payload + return value reflect the merged state. Returns null when
  * the contact doesn't exist.
  *
- * `territoryId` is intentionally NOT handled here — moving a contact's
- * territory fans out to its deals/quotes/tasks/events via a dedicated
- * admin endpoint, so callers route that change separately.
+ * Territory patches atomically update conversation access alongside the contact.
+ * The dashboard endpoint also cascades to deals/quotes/tasks/events.
  */
 export async function updateContactServerSide(opts: {
   contactId: string;
   patch: UpdateContactPatch;
   /** The contact's mode (from the existing doc); defaults to live. */
   mode?: Mode;
+  /**
+   * Public-API key id, when the update came in over /api/v1/contacts.
+   * Forwarded to the trigger so enrolments count against that key's hourly
+   * cap (lib/api/enrolment-cap).
+   */
+  apiKeyId?: string;
 }): Promise<ContactWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`contacts/${opts.contactId}`);
@@ -179,11 +250,60 @@ export async function updateContactServerSide(opts: {
 
   const existing = snap.data()!;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
+  const patch = {
+    ...opts.patch,
+    ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
+    // A writer that changes the free-text `company` without saying which
+    // company (the public API, which has no companyId field) breaks the
+    // link rather than leaving companyId pointing at a company whose name
+    // the contact no longer carries. The dashboard always sends companyId.
+    ...(companyStringDrifts(existing, opts.patch) ? { companyId: null } : {}),
+  };
 
   // update(), not set(..., {merge: true}): merge recurses into nested maps,
   // which would keep cleared customFields values forever. update() replaces
   // a map field wholesale and behaves identically for the scalar fields.
-  await ref.update({ ...opts.patch, updatedAt: FieldValue.serverTimestamp() });
+  const update = { ...patch, updatedAt: FieldValue.serverTimestamp() };
+  if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
+    await db.runTransaction(async (tx) => {
+      const current = (await tx.get(ref)).data();
+      if (
+        !current ||
+        current.subAccountId !== existing.subAccountId ||
+        current.agencyId !== existing.agencyId
+      )
+        throw new Error("Contact tenant changed during territory update.");
+      const conversations = await tx.get(
+        db
+          .collection("conversations")
+          .where("subAccountId", "==", current.subAccountId)
+          .where("contactId", "==", opts.contactId)
+      );
+      for (const conversation of conversations.docs)
+        if (conversation.data().agencyId !== current.agencyId)
+          throw new Error(
+            "Conversation tenant mismatch during territory update."
+          );
+      tx.update(ref, update);
+      for (const conversation of conversations.docs)
+        tx.update(conversation.ref, {
+          territoryId: patch.territoryId ?? null,
+          updatedAt: update.updatedAt,
+        });
+    });
+  } else {
+    await ref.update(update);
+  }
+
+  // Owner mirror (SP2 T1). This is the ONE chokepoint every contact PATCH
+  // goes through — dashboard and public API alike — so mirroring here covers
+  // both. Bulk assign writes its own batch and mirrors itself.
+  if (Object.prototype.hasOwnProperty.call(patch, "assignedToUid")) {
+    await mirrorContactAssignee({
+      contactId: opts.contactId,
+      subAccountId: existing.subAccountId as string,
+    });
+  }
 
   const fresh = await ref.get();
   const contact = serializeContactForApi(fresh.id, fresh.data()!, mode);
@@ -195,23 +315,50 @@ export async function updateContactServerSide(opts: {
     type: "contact.updated",
     payload: { contact },
   });
-  // contact.tag.added fires once per update when the patch introduces a new
-  // tag (replace-semantics patch → diff against the pre-update tags).
-  if (mode === "live" && opts.patch.tags) {
-    const oldTags: string[] = Array.isArray(existing.tags) ? existing.tags : [];
-    const added = opts.patch.tags.filter((t) => !oldTags.includes(t));
-    if (added.length > 0) {
-      void fireWorkflowTrigger({
+  // Replace-semantics patch → diff against the pre-update tags.
+  const trigger = patch.tags
+    ? fireTagsAdded({
         subAccountId: existing.subAccountId,
         agencyId: existing.agencyId,
-        type: "contact.tag.added",
         contactId: opts.contactId,
-        context: { addedTags: added },
-      });
-    }
-  }
+        mode,
+        before: existing.tags,
+        after: patch.tags,
+        apiKeyId: opts.apiKeyId,
+      })
+    : null;
 
-  return { id: ref.id, contact };
+  return { id: ref.id, contact, firedTrigger: trigger !== null };
+}
+
+/**
+ * THE tag diff — the only place that decides whether a write added a tag.
+ * Fires `contact.tag.added` once, with only the tags `after` introduces over
+ * `before`, and only in live mode. Returns the trigger's promise, or null
+ * when nothing fired. Used by the update path above and the phone upsert.
+ */
+export function fireTagsAdded(opts: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  mode: Mode;
+  /** Tags before the write — anything non-array reads as none. */
+  before: unknown;
+  after: string[];
+  apiKeyId?: string;
+}): Promise<TriggerOutcome> | null {
+  if (opts.mode !== "live") return null;
+  const oldTags: string[] = Array.isArray(opts.before) ? opts.before : [];
+  const added = opts.after.filter((t) => !oldTags.includes(t));
+  if (added.length === 0) return null;
+  return fireWorkflowTrigger({
+    subAccountId: opts.subAccountId,
+    agencyId: opts.agencyId,
+    type: "contact.tag.added",
+    contactId: opts.contactId,
+    context: { addedTags: added },
+    apiKeyId: opts.apiKeyId,
+  });
 }
 
 /**

@@ -23,12 +23,27 @@ export type WorkflowTriggerType =
   | "contact.tag.added"
   | "form.submitted"
   | "pipeline.stage.changed"
+  // Deal lifecycle (lib/server/deals-service.ts); won/lost = stage `terminal`.
+  | "deal.created"
+  | "deal.won"
+  | "deal.lost"
   | "booking.created"
   | "booking.cancelled"
   | "booking.rescheduled"
+  // A booking-page slot became confirmed — a free booking at book time, or
+  // a paid hold once the operator marks it paid.
+  | "booking.confirmed"
+  // Operator marked a past booking attended / a no-show. Corrections
+  // (flipping one to the other) fire the matching trigger again.
+  | "booking.showed"
+  | "booking.no_show"
   | "quote.accepted"
   | "quote.paid"
   | "message.received"
+  // A tracked link was clicked by a KNOWN contact — i.e. the visit carried
+  // a per-contact token. A tokenless click has no one to enrol and fires
+  // nothing. See lib/tracked-links/click.ts.
+  | "link.clicked"
   // Payments v1 — a card payment through the sub-account's OWN Stripe was
   // confirmed by Stripe. Sibling of quote.paid (which covers the manual
   // mark-paid path). Fired from lib/server/orders-service.ts.
@@ -43,6 +58,11 @@ export type ConditionOp =
   | "is_set"
   | "not_set"
   | "has_tag"
+  // The only way to express an EXCLUSION over tags. `not_equals` on `tags`
+  // cannot do it: the field holds an array, so it stringifies to "a,b,c" and
+  // the comparison is true for nearly every contact — a filter that reads as
+  // "exclude these people" and matches almost all of them instead.
+  | "not_has_tag"
   | "in_stage"
   | "source_is";
 
@@ -70,8 +90,22 @@ export interface WorkflowTrigger {
   filters: ConditionGroup;
   /** Restrict `form.submitted` to one form. Null/absent = any form. */
   formId?: string | null;
+  /** Restrict `link.clicked` to one tracked link. Null/absent = any link. */
+  linkId?: string | null;
+  /**
+   * Restrict any `booking.*` trigger to one booking page (its slug).
+   * Null/absent = any page.
+   */
+  bookingPageSlug?: string | null;
+  /** Restrict the deal triggers to one pipeline. Null/absent = any. */
+  pipelineId?: string | null;
   /** Restrict `pipeline.stage.changed` to one target stage. */
   toStage?: string | null;
+  /**
+   * Restrict `contact.tag.added` to one tag: the workflow starts only when
+   * THIS tag is among the tags the write added. Null/absent = any new tag.
+   */
+  tag?: string | null;
   /**
    * Restrict `message.received` to one inbox channel
    * (sms | whatsapp | messenger | instagram). Null/absent = any channel.
@@ -85,6 +119,7 @@ export type WorkflowNodeType =
   | "send_email"
   | "send_sms"
   | "whatsapp_template"
+  | "send_whatsapp"
   | "wait"
   | "wait_for_reply"
   | "if_else"
@@ -126,6 +161,24 @@ export interface WorkflowDoc {
   startNodeId: string | null;
   nodes: Record<string, WorkflowNode>;
   stats: { enrolled: number; completed: number };
+  /** `subAccounts/{subAccountId}/workflowFolders/{folderId}`. Absent or null
+   *  = Unfiled. Organisation only — the engine never reads it. */
+  folderId?: string | null;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
+}
+
+/** A folder on the workflows list. Written only through
+ *  /api/sub-accounts/[id]/workflow-folders; deleting one unfiles its
+ *  workflows, never deletes them. */
+export interface WorkflowFolder {
+  id: string;
+  name: string;
+  /** Display order among folders (ascending); Unfiled always comes last. */
+  order: number;
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
@@ -195,10 +248,42 @@ export interface WhatsappTemplateConfig {
   /** Approved WhatsApp template doc id (subAccounts/{id}/whatsappTemplates). */
   templateId: string;
   /**
+   * Which of the sub-account's WhatsApp senders this step goes out on
+   * (`whatsappSenders[].id`). Empty or absent means the workspace default,
+   * which is what every step built before the sender registry carries.
+   */
+  senderId?: string;
+  /**
    * Operator-set values for the template's MANUAL variables, keyed by position
    * (string keys for JSON). May contain merge tags; resolved at run time.
    * `merge_tag` variables auto-resolve from the contact and aren't stored here.
    */
+  manualValues?: Record<string, string>;
+}
+/**
+ * Free-form WhatsApp with a template fallback.
+ *
+ * Distinct from {@link WhatsappTemplateConfig}, which can ONLY send a template.
+ * That node bills every send at template rates even when the contact's service
+ * window is open and free-form text would cost nothing — the ~$87/mo shape
+ * `docs/PARITY_PLAN.md` identified. It is also unusable on the `bridge` rail,
+ * which has no template concept at all.
+ *
+ * This node carries the message itself and defers the send mode to
+ * `resolveWaSendMode()` at run time: free-form when that is legal (window open,
+ * or a rail with no window), the template only as the fallback that re-opens a
+ * closed one. `templateId` is therefore optional — a step that only ever fires
+ * inside an open window needs no template, and so needs no Meta approval.
+ */
+export interface SendWhatsappConfig {
+  /** Free-form message body. Merge tags resolved at run time. */
+  body: string;
+  /**
+   * Approved template used ONLY when the window is shut. Empty means the step
+   * is skipped in that case rather than sent at template rates.
+   */
+  templateId?: string;
+  /** Manual template variable values, as in {@link WhatsappTemplateConfig}. */
   manualValues?: Record<string, string>;
 }
 export interface WaitConfig {
@@ -216,6 +301,9 @@ export interface TagConfig {
 }
 export interface MoveStageConfig {
   stage: string;
+  /** The step always writes contact.pipelineStage; with a pipeline set it
+   *  also moves the contact's most recently updated open deal in it. */
+  pipelineId?: string;
 }
 export interface UpdateFieldConfig {
   field: string;
@@ -224,6 +312,9 @@ export interface UpdateFieldConfig {
 export interface CreateTaskConfig {
   title: string;
   dueInDays?: number;
+  /** Honoured only while the uid is an ACTIVE member of the sub-account;
+   *  otherwise the task is created unassigned. */
+  assignedToUid?: string | null;
 }
 /** Who an Internal notification step emails. Legacy configs predate this
  *  field — the engine treats a missing value like "custom" (use `to`, else

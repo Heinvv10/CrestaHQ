@@ -44,13 +44,6 @@ interface EscalationNotificationParams {
 export async function sendEscalationNotification(
   params: EscalationNotificationParams,
 ): Promise<string | null> {
-  if (!emailIsConfigured()) {
-    console.warn(
-      "[ai/escalation] Resend not configured — escalation email skipped",
-    );
-    return null;
-  }
-
   const link = `${params.appUrl}/sa/${params.subAccountId}/contacts/${params.contactId}`;
   const subject = `AI escalation: "${params.triggeredKeyword}" from ${params.contactName || params.contactPhone}`;
 
@@ -87,7 +80,16 @@ ${link}
       .doc(`subAccounts/${params.subAccountId}`)
       .get();
     const subAccount = subSnap.data() as SubAccountDoc | undefined;
+  if (!emailIsConfigured(subAccount)) {
+    console.warn(
+      "[ai/escalation] Email not configured — escalation email skipped",
+    );
+    return null;
+  }
+
+
     const result = await sendEmail({
+        archive: false,
       to: params.to,
       subject,
       text,

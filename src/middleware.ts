@@ -41,6 +41,19 @@ const PUBLIC_PATHS = [
   // Daily recurring-invoice sweep. Public like the other cron routes — the
   // QStash signature is the authentication.
   "/api/cron/recurring-invoices",
+  "/api/cron/email-sync",
+  // 6-hourly Google Business Profile review sync. Public like the other cron
+  // routes — the QStash signature, verified inside the route, is the auth.
+  "/api/cron/gbp-sync",
+  // Daily GBP review-cache retention (always on). Same auth: the signature.
+  "/api/cron/gbp-retention",
+  // Hourly WhatsApp Cloud quality-rating poll (SP15). Same auth: the signature.
+  "/api/cron/whatsapp-quality",
+  // Daily sweep of abandoned WhatsApp composer uploads. Same auth: the signature.
+  "/api/cron/whatsapp-staging-cleanup",
+  // Review-request reminders (SP5 d2) — one QStash message per scheduled
+  // reminder. Same auth: the signature, bound to this route's URL.
+  "/api/cron/review-reminder",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",
@@ -92,6 +105,8 @@ const PUBLIC_PATHS = [
   "/embed",
   // Widget loader JS — public static file served from /public.
   "/widget.js",
+  // Booking widget loader JS — public static file served from /public.
+  "/booking-embed.js",
   // PWA — the manifest is fetched by the browser without credentials on
   // every page (including /login), and the service worker script must be
   // publicly fetchable for registration. Both are harmless to expose:
@@ -204,6 +219,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   /^\/api\/social\/publish\/step$/,
   // GHL migration drain — QStash callback, signature-verified in the route.
   /^\/api\/import\/ghl\/step$/,
+  // Scheduled conversation message worker (SP2 T5) — QStash callback,
+  // signature-verified inside the route (same model as /api/workflows/step).
+  /^\/api\/scheduled-messages\/fire$/,
   // WhatsApp template approval poll: /api/sub-accounts/{id}/whatsapp-templates/poll
   // QStash callback, signature-verified inside the route.
   /^\/api\/sub-accounts\/[^/]+\/whatsapp-templates\/poll$/,
@@ -213,23 +231,55 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // against that ONE sub-account's stored signing secret — not the session
   // cookie, since the caller is Stripe.
   /^\/api\/webhooks\/stripe\/sa\/[^/]+$/,
+  // Per-sub-account Paystack webhook: /api/webhooks/paystack/sa/{subAccountId}.
+  // Distinct from /api/webhooks/paystack, which is the agency's own Paystack
+  // (Client Billing). Security is the x-paystack-signature HMAC, verified
+  // inside the route against that ONE sub-account's stored secret key — which
+  // for Paystack IS the signing key, so there is no separate webhook secret.
+  /^\/api\/webhooks\/paystack\/sa\/[^/]+$/,
   // Per-sub-account Webinar1 webhook: /api/webhooks/webinar1/sa/{subAccountId}
   // (Webinar1 integration). Security is the X-Webinar1-Signature header,
   // verified inside the route against that ONE sub-account's stored signing
   // secret — not the session cookie, since the caller is the connected
   // webinar deployment.
   /^\/api\/webhooks\/webinar1\/sa\/[^/]+$/,
+  // Per-sub-account WhatsApp bridge inbound:
+  // /api/webhooks/whatsapp/bridge/{subAccountId}. The caller is the
+  // wa-agent-bridge process, which holds no session cookie. Security is two
+  // credentials checked inside the route against that ONE sub-account's stored
+  // secrets: the `LeadStack-Signature` HMAC over the raw body, and the bearer
+  // token. The id in the path is untrusted routing info — it only selects
+  // which stored secrets to verify against.
+  /^\/api\/webhooks\/whatsapp\/bridge\/[^/]+$/,
   // Public booking-deposit card payment: /api/events/{token}/pay
   // (Payments v1). A regex, NOT a `/api/events` PUBLIC_PATHS prefix — that
   // would also expose /api/events/by-id/{id}/mark-paid and friends. Security
   // is the HMAC event token, re-hashed and compared against the stored
   // `publicTokenHash` inside the route.
   /^\/api\/events\/[^/]+\/pay$/,
+  // Public reschedule + cancel, the /e/[token] page's own POSTs. Same
+  // token-hash security as /pay above. Without this an anonymous visitor's
+  // click 307s to /login instead of rescheduling/cancelling — the page
+  // itself is public (`/e` above) but its actions were not.
+  /^\/api\/events\/[^/]+\/reschedule$/,
+  /^\/api\/events\/[^/]+\/cancel$/,
   // Calendar subscription feed: /api/sub-accounts/{id}/calendar.ics
   // Token-gated inside the route via verifyCalendarFeedToken — Google /
   // Apple / Outlook pollers are unauthenticated, so session-cookie auth
   // would block them. The HMAC token in `?t=` is the credential.
   /^\/api\/sub-accounts\/[^/]+\/calendar\.ics$/,
+  // Tracked-link redirect: /l/{token} (per-contact) or /l/{linkId}
+  // (unattributed). Public by definition — the recipient clicking it has
+  // no session. Security is inside the route: an unsigned or forged token
+  // resolves to nothing and 404s, and the destination is re-validated as
+  // http(s) before the 302 so this can't become an open redirect.
+  /^\/l\/[^/]+$/,
+  // Tracked review-request link: /rr/{token} (SP5 d2), in review requests
+  // sent while reminders are on. Public — the customer has no session. The
+  // signed token is the credential; the route reads no identity header, 302s
+  // only to the sub-account's configured https review link, else 404s.
+  // Exactly one segment.
+  /^\/rr\/[^/]+$/,
   // Public competitor comparison pages (SEO landing pages, e.g.
   // /leadstack-vs-gohighlevel). Slug is path-suffixed with a hyphen
   // rather than a slash so the PUBLIC_PATHS prefix-match logic can't
@@ -237,9 +287,22 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // no auth required. Each competitor has its own static route under
   // src/app/leadstack-vs-{slug}/page.tsx; this regex catches them all.
   /^\/leadstack-vs-[a-z0-9-]+$/,
+  // Public Google reviews feed: /api/public/gbp/feed/{publicId}, fetched
+  // cross-origin by a customer's website. The opaque publicId is the only
+  // credential; the route never reads an identity header (a caller can send
+  // its own on a public path), and applies the widget's origin allow-list,
+  // a per-IP limit and a non-enumerating 404 itself. Exactly one segment.
+  /^\/api\/public\/gbp\/feed\/[^/]+$/,
+  // Snapshot share link (SP13): the /s/snapshot/{token} page and its file
+  // download /api/public/snapshots/{token}. The recipient usually has no
+  // account on this deployment. The share token is the credential — hashed
+  // and checked against the stored share inside, with the same "invalid"
+  // answer for unknown, revoked, expired and used-up links. Exactly one segment.
+  /^\/s\/snapshot\/[^/]+$/,
+  /^\/api\/public\/snapshots\/[^/]+$/,
 ];
 
-function isPublicPath(pathname: string): boolean {
+export function isPublicPath(pathname: string): boolean {
   if (
     PUBLIC_PATHS.some(
       (path) => pathname === path || pathname.startsWith(`${path}/`)
@@ -248,6 +311,82 @@ function isPublicPath(pathname: string): boolean {
     return true;
   }
   return PUBLIC_PATH_PATTERNS.some((re) => re.test(pathname));
+}
+
+/**
+ * Build the /login redirect for an unauthenticated request.
+ *
+ * MUST NOT use `request.nextUrl` for the ORIGIN. Under the standalone server
+ * (systemd sets `HOSTNAME=127.0.0.1 PORT=4300`, behind a cloudflared tunnel)
+ * `nextUrl` is derived from the server's own bind address, not the Host header
+ * — so a logged-out visit to any protected route on crm.crestahq.com used to
+ * 307 to `http://localhost:4300/login`, a dead address for every real user.
+ * Verified 2026-09-06 against the live deployment: even an explicit
+ * `Host: crm.crestahq.com` still produced localhost, so this is the app's own
+ * doing, not the tunnel's. (It reproduces only when HOSTNAME is set, as systemd
+ * sets it; without it the adapter emits a relative Location and the bug hides.)
+ *
+ * The mechanism is that Next emits a RELATIVE Location once the URL's host
+ * matches the request Host, and an absolute one when it does not — so pinning
+ * the configured origin fixes this by making them agree, rather than by
+ * literally shipping the public origin in the header.
+ *
+ * `?redirect` carries the path AND query, so a deep link whose query is the
+ * point (a snapshot share link's `?token=`) survives sign-in. The login form
+ * runs it through `safeRedirect`, which refuses anything not same-origin.
+ *
+ * The path and query are still taken from `nextUrl` (preserving any existing
+ * query string, as before); only protocol + host are pinned to
+ * NEXT_PUBLIC_APP_URL. If that var is unset or malformed we fall back to the
+ * previous behaviour rather than throwing inside auth middleware.
+ */
+export function loginRedirectUrl(request: NextRequest, pathname: string): URL {
+  const url = request.nextUrl.clone();
+  url.pathname = "/login";
+  url.searchParams.set("redirect", `${pathname}${request.nextUrl.search}`);
+  // A share link's bearer token belongs only inside `redirect` — not as a
+  // top-level /login param where analytics and referrers would see it twice.
+  url.searchParams.delete("token");
+
+  const configured = process.env.NEXT_PUBLIC_APP_URL;
+  if (configured) {
+    try {
+      // Rebuild against the configured origin rather than assigning
+      // protocol/host onto the clone: the URL `host` setter leaves an existing
+      // port in place unless the new value carries one, which silently yielded
+      // `https://crm.crestahq.com:4300`.
+      return new URL(`${url.pathname}${url.search}`, configured);
+    } catch {
+      // Malformed env var — fall through to the request-derived origin.
+    }
+  }
+  return url;
+}
+
+/**
+ * Forward a public-path request WITHOUT `x-user-uid` / `x-user-email` — the
+ * headers `handleValidToken` stamps from the verified Firebase token, which
+ * every route/helper under src/lib/auth/*, src/lib/comms/route-auth.ts etc.
+ * reads back as "the caller's identity" with no further check. On an
+ * invalid/missing session those two branches used to call `NextResponse
+ * .next()` with no `request` override, which forwards the ORIGINAL request
+ * object — including any `x-user-uid` a caller sent itself.
+ *
+ * This was exploitable, not just theoretical: `/api/forms` is a PUBLIC_PATH
+ * (needed for the unauthenticated submit endpoint), and
+ * `DELETE /api/forms/[id]` trusts `x-user-uid` via `requireSubAccountMember`
+ * to authorize the delete. Before this fix, anyone who knew (or guessed) an
+ * active member's Firebase uid could set that header on an otherwise
+ * session-less request and delete that member's forms + submissions —
+ * no password, no session cookie, nothing else verified. See
+ * src/app/api/forms/[id]/route.test.ts for the regression test through the
+ * real route.
+ */
+export function withoutIdentityHeaders(request: NextRequest): NextResponse {
+  const headers = new Headers(request.headers);
+  headers.delete("x-user-uid");
+  headers.delete("x-user-email");
+  return NextResponse.next({ request: { headers } });
 }
 
 /**
@@ -342,27 +481,21 @@ export default function middleware(request: NextRequest) {
 
       // Allow public paths without authentication
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
       // Redirect unauthenticated users to login for protected paths
-      const url = request.nextUrl.clone();
-      url.pathname = "/login";
-      url.searchParams.set("redirect", pathname);
-      return NextResponse.redirect(url);
+      return NextResponse.redirect(loginRedirectUrl(request, pathname));
     },
     handleError: async () => {
       const pathname = request.nextUrl.pathname;
 
       // On error, allow public paths and redirect protected paths
       if (isPublicPath(pathname)) {
-        return NextResponse.next();
+        return withoutIdentityHeaders(request);
       }
 
-      const url = request.nextUrl.clone();
-      url.pathname = "/login";
-      url.searchParams.set("redirect", pathname);
-      return NextResponse.redirect(url);
+      return NextResponse.redirect(loginRedirectUrl(request, pathname));
     },
   });
 }

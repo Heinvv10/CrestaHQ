@@ -1,10 +1,15 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,10 +38,19 @@ func TestFanoutRecordsInboundAndPostsToConsumers(t *testing.T) {
 		"", // no owner filter
 		st,
 		func() bool { return false },
+		func() time.Time { return time.Time{} },
+		0,
 	)
 
+	// The message must be OLDER than the watermark to count as history. A
+	// blanket mute used to drop everything in the window, including messages
+	// that arrived one second earlier; that lost two real messages on
+	// 2026-09-06, so "inside the window" is no longer sufficient on its own.
 	jid := "27821234567@s.whatsapp.net"
-	f.Deliver(jid, "hello", "wamid.TEST", time.Now())
+	if err := st.RecordInbound("27820000000@s.whatsapp.net", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.Deliver(jid, "hello", "wamid.TEST", time.Now().Add(-time.Hour), nil, nil)
 	f.Wait()
 
 	ok, _ := st.HasInboundFrom(jid)
@@ -72,10 +86,19 @@ func TestFanoutRecordsButDoesNotNotifyDuringReplay(t *testing.T) {
 		"", // no owner filter
 		st,
 		func() bool { return true }, // in replay window
+		func() time.Time { return time.Now() },
+		0,
 	)
 
 	jid := "27821234567@s.whatsapp.net"
-	f.Deliver(jid, "hello", "wamid.TEST", time.Now())
+	// The message must be OLDER than the watermark to count as history. The
+	// blanket mute this replaces dropped everything inside the window,
+	// including messages that had arrived seconds earlier — that is how two
+	// real messages were lost on 2026-09-06.
+	if err := st.RecordInbound("27820000000@s.whatsapp.net", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.Deliver(jid, "hello", "wamid.TEST", time.Now().Add(-time.Hour), nil, nil)
 	f.Wait()
 
 	ok, _ := st.HasInboundFrom(jid)
@@ -100,7 +123,7 @@ func TestNewFanoutPanicsOnNilInReplayWindow(t *testing.T) {
 			t.Fatal("expected panic on nil inReplayWindow")
 		}
 	}()
-	NewFanout(nil, "", nil, nil)
+	NewFanout(nil, "", nil, nil, nil, 0)
 }
 
 // countingRoundTripper counts every HTTP request attempted, including one
@@ -144,9 +167,11 @@ func TestFanoutSkipsConsumersWithNoWebhook(t *testing.T) {
 		"", // no owner filter
 		st,
 		func() bool { return false },
+		func() time.Time { return time.Time{} },
+		0,
 	)
 	f.client.Transport = rt // same package: unexported field access is deliberate here
-	f.Deliver("27821234567@s.whatsapp.net", "hi", "wamid.TEST", time.Now())
+	f.Deliver("27821234567@s.whatsapp.net", "hi", "wamid.TEST", time.Now(), nil, nil)
 	f.Wait()
 
 	rt.mu.Lock()
@@ -170,11 +195,13 @@ func TestFanoutDropsNonOwnerButStillRecordsIt(t *testing.T) {
 		"27820000001@s.whatsapp.net",
 		st,
 		func() bool { return false },
+		func() time.Time { return time.Time{} },
+		0,
 	)
 	f.client.Transport = rt
 
 	stranger := "27829999999@s.whatsapp.net"
-	f.Deliver(stranger, "hello", "wamid.TEST", time.Now())
+	f.Deliver(stranger, "hello", "wamid.TEST", time.Now(), nil, nil)
 	f.Wait()
 
 	if ok, _ := st.HasInboundFrom(stranger); !ok {
@@ -202,10 +229,12 @@ func TestFanoutForwardsOwnerIncludingDeviceSuffix(t *testing.T) {
 			"27820000001@s.whatsapp.net",
 			store.NewMemory(),
 			func() bool { return false },
+			func() time.Time { return time.Time{} },
+			0,
 		)
 		f.client.Transport = rt
 
-		f.Deliver(sender, "hello", "wamid.TEST", time.Now())
+		f.Deliver(sender, "hello", "wamid.TEST", time.Now(), nil, nil)
 		f.Wait()
 
 		rt.mu.Lock()
@@ -227,10 +256,12 @@ func TestFanoutWithNoOwnerConfiguredAcceptsEverySender(t *testing.T) {
 		"",
 		store.NewMemory(),
 		func() bool { return false },
+		func() time.Time { return time.Time{} },
+		0,
 	)
 	f.client.Transport = rt
 
-	f.Deliver("27829999999@s.whatsapp.net", "hello", "wamid.TEST", time.Now())
+	f.Deliver("27829999999@s.whatsapp.net", "hello", "wamid.TEST", time.Now(), nil, nil)
 	f.Wait()
 
 	rt.mu.Lock()
@@ -254,8 +285,8 @@ func TestInboundPayloadCarriesTheMessageID(t *testing.T) {
 
 	f := NewFanout(
 		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL}},
-		"", store.NewMemory(), func() bool { return false })
-	f.Deliver(knownJID, "hello", "wamid.ABC123", time.Now())
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
+	f.Deliver(knownJID, "hello", "wamid.ABC123", time.Now(), nil, nil)
 	f.Wait()
 
 	var payload map[string]any
@@ -278,5 +309,256 @@ func TestInboundPayloadCarriesTheMessageID(t *testing.T) {
 	}
 	if len(payload) != 4 {
 		t.Fatalf("payload gained a key the consumer contract does not publish: %v", payload)
+	}
+}
+
+// A consumer configured with a WebhookSecret must receive a LeadStack-Signature
+// header whose HMAC recomputes correctly over the exact posted body and the
+// timestamp carried in the header itself — the same scheme the CRM receiver
+// implements in src/lib/api/webhooks/signing.ts.
+func TestFanoutSignsWebhookWhenConsumerHasASecret(t *testing.T) {
+	reqBody := make(chan []byte, 1)
+	sig := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		reqBody <- b
+		sig <- r.Header.Get("LeadStack-Signature")
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
+	fixed := time.Unix(1_700_000_000, 0)
+	f.now = func() time.Time { return fixed }
+
+	f.Deliver(knownJID, "hello", "wamid.SIG", time.Now(), nil, nil)
+	f.Wait()
+
+	var body []byte
+	var header string
+	select {
+	case body = <-reqBody:
+		header = <-sig
+	case <-time.After(2 * time.Second):
+		t.Fatal("no webhook delivery")
+	}
+
+	wantTS := fixed.Unix()
+	mac := hmac.New(sha256.New, []byte("whsec_test"))
+	mac.Write([]byte(fmt.Sprintf("%d.", wantTS)))
+	mac.Write(body)
+	wantHeader := fmt.Sprintf("t=%d,v1=%s", wantTS, hex.EncodeToString(mac.Sum(nil)))
+
+	if header != wantHeader {
+		t.Fatalf("signature header mismatch:\n got %q\nwant %q", header, wantHeader)
+	}
+}
+
+// A consumer with no WebhookSecret is the default and the safe one: no
+// signature header at all, and the bearer token — the only credential such a
+// consumer ever had — still goes out unchanged.
+func TestFanoutOmitsSignatureWhenConsumerHasNoSecret(t *testing.T) {
+	sig := make(chan string, 1)
+	bearer := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		sig <- r.Header.Get("LeadStack-Signature")
+		bearer <- r.Header.Get("Authorization")
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL}},
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
+	f.Deliver(knownJID, "hello", "wamid.NOSIG", time.Now(), nil, nil)
+	f.Wait()
+
+	select {
+	case got := <-sig:
+		if got != "" {
+			t.Fatalf("consumer with no secret must get no LeadStack-Signature header, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no webhook delivery")
+	}
+	if got := <-bearer; got != "Bearer tok" {
+		t.Fatalf("bearer header must still be present, got %q", got)
+	}
+}
+
+// TestFanoutSignsWithAFreshTimestampEachSend guards against threading a stale
+// "at" (the WhatsApp inbound time) into the signature instead of the real
+// send time: the receiver enforces a 5-minute tolerance against the
+// timestamp in the header, so signing history rather than "now" would reject
+// on arrival for a reason that has nothing to do with forgery.
+func TestFanoutSignsWithAFreshTimestampEachSend(t *testing.T) {
+	sig := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		sig <- r.Header.Get("LeadStack-Signature")
+	}))
+	defer srv.Close()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "tok", WebhookURL: srv.URL, WebhookSecret: "whsec_test"}},
+		"", store.NewMemory(), func() bool { return false }, func() time.Time { return time.Time{} }, 0)
+	fixed := time.Unix(1_700_000_000, 0)
+	f.now = func() time.Time { return fixed }
+
+	old := time.Now().Add(-24 * time.Hour)
+	f.Deliver(knownJID, "hello", "wamid.OLD", old, nil, nil)
+	f.Wait()
+
+	header := <-sig
+	if !strings.HasPrefix(header, fmt.Sprintf("t=%d,", fixed.Unix())) {
+		t.Fatalf("signature must use the send-time clock, not the inbound message time: %q", header)
+	}
+}
+
+// TestSignPayloadMatchesTheGoldenVector pins the wire format this service
+// shares with the CRM that receives its webhooks.
+//
+// The receiver verifies with src/lib/api/webhooks/signing.ts, in a different
+// language and a module neither side can import. Every other signing test here
+// — and on the TypeScript side — recomputes the digest with the same
+// implementation it is testing, so both suites stay green if either side
+// changes the signed string, the "." separator or the "v1" prefix. Nothing
+// fails until a real inbound message is silently rejected in production.
+//
+// This vector is asserted verbatim in signing.test.ts as well. If the two
+// implementations drift, exactly one of the two suites goes red and names the
+// side that moved. Changing this expectation is a wire-format change: every
+// deployed bridge must be redeployed together with the receiver.
+func TestSignPayloadMatchesTheGoldenVector(t *testing.T) {
+	const (
+		secret = "whsec_golden_vector_do_not_change"
+		body   = `{"from":"27821234567@s.whatsapp.net","text":"hallo — \"toets\"","messageId":"3EB0GOLDEN","at":"2026-09-05T09:00:00Z"}`
+		want   = "t=1788600000,v1=68243cdfdf788bc7bff717acef17e8ee7aec563aa8f0c1462171c3f3146e551c"
+	)
+	if got := signPayload(secret, []byte(body), time.Unix(1788600000, 0)); got != want {
+		t.Fatalf("wire format drifted from the receiver.\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// countingSink is a webhook that records the bodies it received.
+func countingSink(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, string(b))
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), got...) }
+}
+
+// The reason the blanket mute had to go. It could not tell re-delivered
+// history from a message that arrived one second ago, and this bridge stores
+// no message body — so a dropped inbound is gone for good. Two real messages
+// were lost this way on 2026-09-06, to restarts the operator had asked for.
+func TestFanoutForwardsAMessageNewerThanTheWatermarkDuringReplay(t *testing.T) {
+	srv, bodies := countingSink(t)
+	st := store.NewMemory()
+	if err := st.RecordInbound("27820000000@s.whatsapp.net", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	connectedAt := time.Now()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: srv.URL}},
+		"", st,
+		func() bool { return true }, // still inside the replay window
+		func() time.Time { return connectedAt },
+		0,
+	)
+
+	f.Deliver("27821234567@s.whatsapp.net", "sent while we were restarting", "wamid.NEW", time.Now(), nil, nil)
+	f.Wait()
+
+	if got := bodies(); len(got) != 1 {
+		t.Fatalf("a message newer than the watermark must reach the consumer, got %d deliveries", len(got))
+	}
+}
+
+// The protection this must not lose: waking a consumer with re-delivered
+// history is the sibling bridge's incident.
+func TestFanoutStillSuppressesHistoryOlderThanTheWatermark(t *testing.T) {
+	srv, bodies := countingSink(t)
+	st := store.NewMemory()
+	watermark := time.Now().Add(-time.Hour)
+	if err := st.RecordInbound("27820000000@s.whatsapp.net", watermark); err != nil {
+		t.Fatal(err)
+	}
+	connectedAt := time.Now()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: srv.URL}},
+		"", st,
+		func() bool { return true },
+		func() time.Time { return connectedAt },
+		0,
+	)
+
+	jid := "27821234567@s.whatsapp.net"
+	f.Deliver(jid, "yesterday's conversation", "wamid.OLD", watermark.Add(-30*time.Minute), nil, nil)
+	f.Wait()
+
+	if got := bodies(); len(got) != 0 {
+		t.Fatalf("history older than the watermark must not wake a consumer, got %d deliveries", len(got))
+	}
+	if ok, _ := st.HasInboundFrom(jid); !ok {
+		t.Fatal("suppressed history must still be recorded, or reply-only forgets a real contact")
+	}
+}
+
+// A re-pair can hand us a large backlog, all of it newer than the watermark.
+// Forwarding is the right default but must be bounded, or one re-pair floods
+// every thread — and the drop must be counted, because it is real data loss.
+func TestFanoutCapsTheCatchUpBurst(t *testing.T) {
+	srv, bodies := countingSink(t)
+	st := store.NewMemory()
+	connectedAt := time.Now()
+
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: srv.URL}},
+		"", st,
+		func() bool { return true },
+		func() time.Time { return connectedAt },
+		0,
+	)
+
+	for i := 0; i < maxCatchUpForward+25; i++ {
+		f.Deliver("27821234567@s.whatsapp.net", "burst", "wamid.B", time.Now(), nil, nil)
+	}
+	f.Wait()
+
+	if got := len(bodies()); got != maxCatchUpForward {
+		t.Fatalf("catch-up must stop at %d, forwarded %d", maxCatchUpForward, got)
+	}
+	if _, capped := f.SuppressedInbound(); capped != 25 {
+		t.Fatalf("the operator needs the suppressed count; got %d, want 25", capped)
+	}
+}
+
+// Outside the replay window the watermark does not apply at all.
+func TestFanoutIgnoresTheWatermarkOutsideTheReplayWindow(t *testing.T) {
+	srv, bodies := countingSink(t)
+	st := store.NewMemory()
+	if err := st.RecordInbound("27820000000@s.whatsapp.net", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFanout(
+		[]config.Consumer{{Name: "hermes", Token: "t", WebhookURL: srv.URL}},
+		"", st,
+		func() bool { return false }, // window closed
+		func() time.Time { return time.Now() },
+		0,
+	)
+	f.Deliver("27821234567@s.whatsapp.net", "normal traffic", "wamid.X", time.Now().Add(-2*time.Hour), nil, nil)
+	f.Wait()
+	if got := bodies(); len(got) != 1 {
+		t.Fatalf("outside the window every message forwards, got %d", len(got))
 	}
 }

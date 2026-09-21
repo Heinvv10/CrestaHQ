@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +10,10 @@ import (
 	"sync"
 	"testing"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/systemd"
 )
 
 // fakeCtl is declared HERE rather than imported from the systemd package: a
@@ -20,6 +24,10 @@ type fakeCtl struct {
 	mu                                  sync.Mutex
 	enabled, started, stopped, disabled map[string]bool
 	FailStart, FailStop                 bool
+	// OnStart runs inside Start, which is the last injection point Create
+	// offers before it reads the tenant back. See
+	// TestCreateUnwindsWhenTheFinalReadBackFails.
+	OnStart func(instance string)
 }
 
 func newFakeCtl() *fakeCtl {
@@ -54,10 +62,13 @@ func (f *fakeCtl) ResetFailed(string) error { return nil }
 func (f *fakeCtl) Restart(i string) error { return f.mark(f.started, i) }
 func (f *fakeCtl) Start(i string) error {
 	f.mu.Lock()
-	fail := f.FailStart
+	fail, hook := f.FailStart, f.OnStart
 	f.mu.Unlock()
 	if fail {
 		return errors.New("fake: start refused")
+	}
+	if hook != nil {
+		hook(i)
 	}
 	return f.mark(f.started, i)
 }
@@ -101,9 +112,10 @@ func newTestProvisioner(t *testing.T) (*Provisioner, *store.Store, *fakeCtl, str
 	}
 	p := New(st, sc, Opts{
 		Root: root, PortBase: 33100, PortCount: 20,
-		AppToken:     next("app-token"),
-		ManagerToken: next("mgr-token"),
-		WebhookURL:   func(id string) string { return "http://127.0.0.1:8787/wa/" + id },
+		AppToken:      next("app-token"),
+		ManagerToken:  next("mgr-token"),
+		WebhookSecret: next("hook-secret"),
+		WebhookURL:    func(id string) string { return "http://127.0.0.1:8787/wa/" + id },
 	})
 	return p, st, sc, root
 }
@@ -111,7 +123,7 @@ func newTestProvisioner(t *testing.T) (*Provisioner, *store.Store, *fakeCtl, str
 func TestCreateWritesAnInstanceAndStartsIt(t *testing.T) {
 	p, _, sc, root := newTestProvisioner(t)
 
-	ten, err := p.Create("t1", "Blitz Fibre")
+	ten, err := createTenant(p, "t1", "Blitz Fibre")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +156,7 @@ func TestFailedCreateLeavesNoTenantAndFreesThePort(t *testing.T) {
 	p, st, sc, root := newTestProvisioner(t)
 	sc.FailStart = true
 
-	if _, err := p.Create("t1", "Blitz"); err == nil {
+	if _, err := createTenant(p, "t1", "Blitz"); err == nil {
 		t.Fatal("a failed start must fail the whole Create")
 	}
 	if _, err := st.GetTenant("t1"); err == nil {
@@ -159,14 +171,14 @@ func TestFailedCreateLeavesNoTenantAndFreesThePort(t *testing.T) {
 
 	// The port must be reusable immediately.
 	sc.FailStart = false
-	if _, err := p.Create("t1", "Blitz"); err != nil {
+	if _, err := createTenant(p, "t1", "Blitz"); err != nil {
 		t.Fatalf("retry after a failed Create must succeed: %v", err)
 	}
 }
 
 func TestDestroyRemovesTheSessionData(t *testing.T) {
 	p, st, sc, root := newTestProvisioner(t)
-	ten, _ := p.Create("t1", "Blitz")
+	ten, _ := createTenant(p, "t1", "Blitz")
 	dir := filepath.Join(root, ten.Instance)
 
 	if err := p.Destroy("t1"); err != nil {
@@ -189,7 +201,7 @@ func TestDestroyRemovesTheSessionData(t *testing.T) {
 // release the brakes. Anyone may stop sending; only an operator may resume.
 func TestAppConsumerIsNotAdminButTheManagerIs(t *testing.T) {
 	p, _, _, root := newTestProvisioner(t)
-	ten, err := p.Create("t1", "Blitz")
+	ten, err := createTenant(p, "t1", "Blitz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +244,136 @@ func TestAppConsumerIsNotAdminButTheManagerIs(t *testing.T) {
 	}
 }
 
+// The webhook secret is read by FIELD POSITION on the far side, by a different
+// Go module that this one cannot import, so the two can only agree by
+// convention. This test pins the convention: the app entry must be exactly the
+// nine fields the bridge's parseConsumer counts, with the three between the
+// budget and the secret left EMPTY.
+//
+// Filling any of them would be worse than a wrong secret, because it would be
+// silent: "admin" in field 6 hands the app the privileges the previous test
+// exists to deny, and a stray digit in field 7 or 8 is a quiet-hours window
+// nobody wrote down. An off-by-one here reads as a missing secret in the best
+// case and as a granted privilege in the worst.
+func TestTheAppConsumerCarriesTheWebhookSecretInTheFieldTheBridgeReads(t *testing.T) {
+	p, _, _, root := newTestProvisioner(t)
+	ten, err := createTenant(p, "t1", "Blitz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, ten.Instance, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(l, "CONSUMERS=") {
+			line = strings.TrimPrefix(l, "CONSUMERS=")
+		}
+	}
+	if line == "" {
+		t.Fatalf("no CONSUMERS line:\n%s", raw)
+	}
+
+	var sawApp bool
+	for _, entry := range strings.Split(line, ",") {
+		parts := strings.Split(entry, "|")
+		switch parts[0] {
+		case "app":
+			sawApp = true
+			if len(parts) != 9 {
+				t.Fatalf("app entry has %d fields, want exactly 9 (name|token|hook|perHour|perDay|admin|quietStart|quietEnd|webhookSecret): %s",
+					len(parts), entry)
+			}
+			for i, name := range map[int]string{5: "admin", 6: "quietStartHour", 7: "quietEndHour"} {
+				if parts[i] != "" {
+					t.Fatalf("app entry field %d (%s) is %q, want empty; a value here is a privilege or a quiet window nobody asked for: %s",
+						i, name, parts[i], entry)
+				}
+			}
+			if parts[8] == "" {
+				t.Fatal("the app consumer has no webhook secret: inbound would arrive unsigned")
+			}
+			if parts[8] == parts[1] {
+				t.Fatal("the webhook secret is the app's own bearer token; one leak compromises both directions")
+			}
+		case "manager":
+			// The manager has no webhook URL, so a secret there would be a key
+			// nothing can ever use — and one more copy of a secret on disk.
+			if len(parts) >= 9 && parts[8] != "" {
+				t.Fatalf("the manager consumer carries a webhook secret it can never use: %s", entry)
+			}
+		}
+	}
+	if !sawApp {
+		t.Fatalf("no app consumer in %s", line)
+	}
+}
+
+// A generator that hands back one of the bearer tokens is not random, and the
+// consequence is worse than either secret leaking alone: the webhook signing
+// key and the send credential become the same string, so one disclosure
+// forges inbound AND sends outbound.
+//
+// This exists because the guard shipped without it. Five mutations were run
+// against this file when the guard was written and none of them deleted the
+// guard itself — the empty-secret branch beside it was covered, which made the
+// gap look covered too.
+func TestAWebhookSecretEqualToABearerTokenIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, collidesWith string }{
+		{"collides with the app token", "app"},
+		{"collides with the manager token", "manager"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, _ := newTestProvisioner(t)
+			// Pin the tokens so the secret generator can return one of them
+			// verbatim. The fixture's default generators return a fresh value
+			// per call, which can never collide — which is exactly why the
+			// default fixture could not have caught this.
+			p.opts.AppToken = func() string { return "tok-app" }
+			p.opts.ManagerToken = func() string { return "tok-manager" }
+			collision := "tok-" + tc.collidesWith
+			p.opts.WebhookSecret = func() string { return collision }
+
+			if _, err := createTenant(p, "t1", "Blitz"); err == nil {
+				t.Fatalf("Create accepted a webhook secret identical to the %s bearer token; "+
+					"one disclosure would both forge inbound and send outbound", tc.collidesWith)
+			}
+		})
+	}
+}
+
+// A nil WebhookSecret is the pre-signing shape and must keep working; a
+// generator that returns nothing must NOT, because the operator asked for a
+// signed tenant and would get an unsigned one without being told.
+func TestAnEmptyWebhookSecretIsRefusedButNoGeneratorIsFine(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		gen     func() string
+		wantErr bool
+	}{
+		{"no generator", nil, false},
+		{"empty secret", func() string { return "" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, _ := newTestProvisioner(t)
+			p.opts.WebhookSecret = tc.gen
+			_, err := createTenant(p, "t1", "Blitz")
+			if tc.wantErr && err == nil {
+				t.Fatal("Create accepted an empty webhook secret; the tenant would take unsigned inbound while the operator believed it was signed")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Create refused a tenant with no signing configured at all: %v", err)
+			}
+		})
+	}
+}
+
 // .env holds two bearer tokens. Any other user on the box reading it can send
 // as this WhatsApp number.
 func TestEnvIsNotReadableByOtherUsers(t *testing.T) {
 	p, _, _, root := newTestProvisioner(t)
-	ten, err := p.Create("t1", "Blitz")
+	ten, err := createTenant(p, "t1", "Blitz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +393,7 @@ func TestEnvIsNotReadableByOtherUsers(t *testing.T) {
 func TestHostileTenantIDNeverEscapesTheRoot(t *testing.T) {
 	p, st, _, root := newTestProvisioner(t)
 
-	ten, err := p.Create("../../etc/Cron.D/EVIL", "hostile")
+	ten, err := createTenant(p, "../../etc/Cron.D/EVIL", "hostile")
 	if err != nil {
 		// Refusing outright is fine. Nothing may have been created.
 		if _, gerr := st.GetTenant("../../etc/Cron.D/EVIL"); gerr == nil {
@@ -283,11 +420,11 @@ func TestHostileTenantIDNeverEscapesTheRoot(t *testing.T) {
 func TestCollidingInstanceNamesAreRefusedNotShared(t *testing.T) {
 	p, st, _, root := newTestProvisioner(t)
 
-	first, err := p.Create("a.b", "First")
+	first, err := createTenant(p, "a.b", "First")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Create("a-b", "Second"); err == nil {
+	if _, err := createTenant(p, "a-b", "Second"); err == nil {
 		t.Fatalf("two tenants were given the same instance %q — they would share one WhatsApp session", first.Instance)
 	}
 	if _, err := st.GetTenant("a-b"); err == nil {
@@ -314,7 +451,7 @@ func TestIdenticalTokensAreRefused(t *testing.T) {
 		AppToken:     func() string { return "same" },
 		ManagerToken: func() string { return "same" },
 	})
-	if _, err := p.Create("t1", "Blitz"); err == nil {
+	if _, err := createTenant(p, "t1", "Blitz"); err == nil {
 		t.Fatal("the app and manager must never share a token: that hands the app admin")
 	}
 	if _, err := st.GetTenant("t1"); err == nil {
@@ -328,7 +465,7 @@ func TestIdenticalTokensAreRefused(t *testing.T) {
 // deliberately idempotent for a known tenant, so nothing below it catches this.
 func TestReprovisioningALiveTenantIsRefused(t *testing.T) {
 	p, st, _, root := newTestProvisioner(t)
-	first, err := p.Create("t1", "Blitz")
+	first, err := createTenant(p, "t1", "Blitz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +475,7 @@ func TestReprovisioningALiveTenantIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := p.Create("t1", "Blitz again"); err == nil {
+	if _, err := createTenant(p, "t1", "Blitz again"); err == nil {
 		t.Fatal("re-provisioning a live tenant must be refused, not silently re-tokened")
 	}
 	after, err := os.ReadFile(envPath)
@@ -354,8 +491,8 @@ func TestReprovisioningALiveTenantIsRefused(t *testing.T) {
 }
 
 // Two ids that sanitise to one instance name can both clear checkInstanceFree
-// concurrently: AllocatePort seeds `instance` with the OPAQUE id, so no UNIQUE
-// collision exists yet. The loser only discovers it at SetTenantIdentity — by
+// concurrently: AllocatePort seeds `instance` with a "pending:" placeholder, so
+// no UNIQUE collision exists yet. The loser only discovers it at SetTenantIdentity — by
 // which point the winner may already own the directory of that name.
 //
 // The loser must not clean up the winner's instance. Deleting a live bridge's
@@ -376,7 +513,7 @@ func TestALosingCreateDoesNotDeleteTheWinnersInstance(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				<-start
-				got[i], errs[i] = p.Create(ids[i], "concurrent")
+				got[i], errs[i] = createTenant(p, ids[i], "concurrent")
 			}(i)
 		}
 		close(start)
@@ -402,7 +539,7 @@ func TestALosingCreateDoesNotDeleteTheWinnersInstance(t *testing.T) {
 // leaves behind — the port still allocated, and the session still on disk.
 func TestDestroyKeepsThePortWhenTheUnitWillNotStop(t *testing.T) {
 	p, st, sc, root := newTestProvisioner(t)
-	ten, err := p.Create("t1", "Blitz")
+	ten, err := createTenant(p, "t1", "Blitz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +605,7 @@ func TestConcurrentCreatesForOneTenantLeaveOneLiveInstance(t *testing.T) {
 				defer done.Done()
 				ready.Done()
 				<-start
-				got[i], errs[i] = provs[i].Create("acme", "Acme")
+				got[i], errs[i] = createTenant(provs[i], "acme", "Acme")
 			}(i)
 		}
 		ready.Wait()
@@ -554,7 +691,7 @@ func TestEnvPermissionsAreTightenedOnAnExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := p.Create("t1", "Blitz"); err != nil {
+	if _, err := createTenant(p, "t1", "Blitz"); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(envPath)
@@ -563,5 +700,353 @@ func TestEnvPermissionsAreTightenedOnAnExistingFile(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf(".env mode = %o, want 600: it holds two tokens that can send as this number", got)
+	}
+}
+
+// Uppercase is now admitted at the API boundary, so two ids differing only in
+// case reach the provisioner as distinct tenants that lowercase onto ONE
+// instance. That is the "share one WhatsApp session" failure again, wearing a
+// different hat, and the existing instance-uniqueness check must catch it.
+func TestCaseOnlyCollisionIsRefused(t *testing.T) {
+	p, st, _, root := newTestProvisioner(t)
+
+	first, err := createTenant(p, "Acme", "First")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Instance != "acme" {
+		t.Fatalf("instance must be the lowercased id, got %q", first.Instance)
+	}
+	if first.ID != "Acme" {
+		t.Fatalf("the tenant id must be stored verbatim, got %q", first.ID)
+	}
+	if _, err := createTenant(p, "acme", "Second"); err == nil {
+		t.Fatal("two tenants were given the same instance — they would share one WhatsApp session")
+	}
+	if _, err := st.GetTenant("acme"); err == nil {
+		t.Fatal("the refused second tenant left a row (and a consumed port) behind")
+	}
+	if _, err := os.Stat(filepath.Join(root, first.Instance, ".env")); err != nil {
+		t.Fatalf("the failed second Create damaged the first tenant: %v", err)
+	}
+}
+
+// The webhook the bridge is configured with must carry the tenant id exactly as
+// the operator supplied it. A lowercased or otherwise coerced id points at a
+// sub-account that does not exist, and nothing in the stack reports a problem:
+// the bridge posts, the CRM 404s, and every health check stays green.
+func TestRenderedWebhookKeepsTheTenantIDVerbatim(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "mgr.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := New(st, newFakeCtl(), Opts{
+		Root: root, PortBase: 33100, PortCount: 20,
+		AppToken:      func() string { return "app-token" },
+		ManagerToken:  func() string { return "mgr-token" },
+		WebhookSecret: func() string { return "hook-secret" },
+		WebhookURL: func(id string) string {
+			return "https://crm.example/api/webhooks/whatsapp/bridge/" + id
+		},
+	})
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	tenant, err := createTenant(p, id, "CrestaHQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(root, tenant.Instance, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://crm.example/api/webhooks/whatsapp/bridge/" + id
+	if !strings.Contains(string(env), want) {
+		t.Fatalf("rendered .env does not carry the verbatim webhook %q:\n%s", want, env)
+	}
+}
+
+// AllocatePort seeds `instance` with store.PendingInstance(id) and
+// SetTenantIdentity rewrites it to the derived name. The seeded value is one
+// systemd refuses — so a manager killed abruptly between the INSERT and the
+// UPDATE leaves a row that every teardown path bounces off, holding its port
+// forever.
+//
+// The real systemd controller is used deliberately: the fake does not call
+// systemd.Validate, so this test passes against it whether or not the bug
+// exists. The unit name is one that does not resolve, which is harmless because
+// Validate refuses before anything is executed.
+func TestARowStillCarryingItsSeedCanBeDestroyed(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "mgr.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := New(st, systemd.New("wa-agent-bridge-absent"), Opts{
+		Root: root, PortBase: 33100, PortCount: 20,
+		AppToken:     func() string { return "app" },
+		ManagerToken: func() string { return "mgr" },
+	})
+
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	port, inserted, err := st.AllocatePort(id, 33100, 20)
+	if err != nil || !inserted {
+		t.Fatalf("could not reproduce the crash window: port=%d inserted=%v err=%v", port, inserted, err)
+	}
+	ten, err := st.GetTenant(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ten.Instance != store.PendingInstance(id) {
+		t.Fatalf("this test is meaningless unless the row still carries the seed, got %q", ten.Instance)
+	}
+	// The seed must be a name systemd refuses, or Destroy would fall through to
+	// stopping a unit that was never created.
+	if err := systemd.Validate(ten.Instance); err == nil {
+		t.Fatalf("the seed %q passes systemd.Validate; Destroy would try to stop a unit that never existed", ten.Instance)
+	}
+
+	if err := p.Destroy(id); err != nil {
+		t.Fatalf("the row cannot be torn down through the API: %v", err)
+	}
+	if _, err := st.GetTenant(id); err == nil {
+		t.Fatal("Destroy reported success but left the row behind")
+	}
+	// The port must return to the pool, or the range leaks one slot per crash.
+	got, inserted, err := st.AllocatePort("later", 33100, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted || got != port {
+		t.Fatalf("the freed port was not reused: want %d, got %d (inserted=%v)", port, got, inserted)
+	}
+}
+
+// Two ids that sanitise to one instance name both clear checkInstanceFree and
+// both take a port; the loser only finds out at SetTenantIdentity. That is a
+// duplicate tenant — an authored refusal — so it must come back as a
+// *ConflictError, which the API answers 409. Left as a raw sqlite error it
+// became a 500 telling the operator to go and read the manager log.
+//
+// The loser's unwind must also stay inside its own row: at that point nothing
+// is enabled and no directory exists, so it releases its own port and touches
+// neither the winner's row, its port, its name nor its files.
+func TestTwoIdsRacingForOneInstanceNameConflictAndUnwindOnlyTheLoser(t *testing.T) {
+	const rounds = 40
+	lateLosses := 0
+	for round := 0; round < rounds; round++ {
+		p, st, _, root := newTestProvisioner(t)
+
+		ids := [2]string{"a.b", "a-b"}
+		var got [2]store.Tenant
+		var errs [2]error
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range ids {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				got[i], errs[i] = createTenant(p, ids[i], "concurrent")
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		winner, loser := -1, -1
+		for i := range ids {
+			if errs[i] == nil {
+				winner = i
+			} else {
+				loser = i
+			}
+		}
+		if winner < 0 || loser < 0 {
+			t.Fatalf("round %d: exactly one Create must win: %v / %v", round, errs[0], errs[1])
+		}
+
+		var conflict *ConflictError
+		if !errors.As(errs[loser], &conflict) {
+			t.Fatalf("round %d: the loser of an instance-name race must be an authored ConflictError, got %#v",
+				round, errs[loser])
+		}
+		if !strings.Contains(conflict.Error(), ids[loser]) || !strings.Contains(conflict.Error(), "a-b") {
+			t.Fatalf("round %d: the refusal must name the tenant and the contested instance: %q",
+				round, conflict.Error())
+		}
+		// Which of the two exclusion points fired depends on the interleave.
+		// The one this test exists for is the LATE one, inside
+		// SetTenantIdentity; checkInstanceFree only catches the loser when the
+		// winner finished first.
+		if strings.Contains(conflict.Error(), "already held by another tenant") {
+			lateLosses++
+		}
+
+		// The winner is untouched: row, port, name and files.
+		w, err := st.GetTenant(ids[winner])
+		if err != nil {
+			t.Fatalf("round %d: the loser's unwind deleted the winner's row: %v", round, err)
+		}
+		if w.Instance != "a-b" || w.Port != got[winner].Port {
+			t.Fatalf("round %d: the winner's row was disturbed: %+v (created %+v)", round, w, got[winner])
+		}
+		if _, err := os.Stat(filepath.Join(root, "a-b", ".env")); err != nil {
+			t.Fatalf("round %d: the loser's unwind removed the winner's .env: %v", round, err)
+		}
+		// The loser left nothing behind — its port is back in the pool.
+		if _, err := st.GetTenant(ids[loser]); err == nil {
+			t.Fatalf("round %d: the loser's row survived its own unwind", round)
+		}
+	}
+	if lateLosses == 0 {
+		t.Fatalf("no round lost the name at SetTenantIdentity in %d rounds; this test never exercised the path it exists for", rounds)
+	}
+}
+
+// createTenant is Create with its Created result unwrapped to the persisted
+// tenant, which is what nearly every test below asserts on. The freshly minted
+// credentials Create also returns have their own tests, which call Create
+// directly.
+func createTenant(p *Provisioner, id, name string) (store.Tenant, error) {
+	c, err := p.Create(id, name)
+	return c.Tenant, err
+}
+
+// The credentials Create returns must be the app consumer's, and must be the
+// same values the bridge will actually accept — i.e. the ones in the .env.
+// Returning a freshly-minted-but-unwritten token would hand the CRM a
+// credential the bridge refuses, which reads as a revocation.
+func TestCreateReturnsTheAppCredentialsItWroteIntoTheEnv(t *testing.T) {
+	p, _, _, root := newTestProvisioner(t)
+
+	got, err := p.Create("t1", "Blitz Fibre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AppToken == "" || got.WebhookSecret == "" {
+		t.Fatalf("Create returned no credentials: %+v", got)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, got.Tenant.Instance, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(raw)
+	// The app entry is field 2 of the "app|..." consumer; the webhook secret
+	// is field 9. Asserting containment is enough here — renderEnv's exact
+	// layout has its own tests — but the VALUES must match.
+	if !strings.Contains(env, "CONSUMERS=app|"+got.AppToken+"|") {
+		t.Fatalf("returned app token is not the one in the .env:\n%s", env)
+	}
+	if !strings.Contains(env, "|"+got.WebhookSecret+",") {
+		t.Fatalf("returned webhook secret is not the one in the .env:\n%s", env)
+	}
+}
+
+// The MANAGER's token is the admin credential on the same bridge. Create must
+// never return it: the whole asymmetry in renderEnv exists so that a stolen
+// app token cannot allowlist a stranger or lift a kill switch.
+func TestCreateNeverReturnsTheManagerToken(t *testing.T) {
+	p, _, _, _ := newTestProvisioner(t)
+
+	got, err := p.Create("t1", "Blitz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// newTestProvisioner mints "mgr-token-N" for the manager entry.
+	if strings.Contains(got.AppToken, "mgr-token") ||
+		strings.Contains(got.WebhookSecret, "mgr-token") {
+		t.Fatalf("Create handed back the manager's admin token: %+v", got)
+	}
+}
+
+// A manager configured without a webhook-secret generator provisions unsigned
+// tenants — the legal pre-signing shape. Create must report that as an empty
+// secret rather than inventing one the bridge was never given.
+func TestCreateReturnsAnEmptyWebhookSecretWhenSigningIsOff(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "mgr.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p := New(st, newFakeCtl(), Opts{
+		Root: root, PortBase: 33100, PortCount: 20,
+		AppToken:     func() string { return "app-token" },
+		ManagerToken: func() string { return "mgr-token" },
+	})
+
+	got, createErr := p.Create("t1", "Blitz")
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	if got.AppToken != "app-token" {
+		t.Fatalf("app token = %q", got.AppToken)
+	}
+	if got.WebhookSecret != "" {
+		t.Fatalf("webhook secret = %q, want empty for an unsigned tenant", got.WebhookSecret)
+	}
+}
+
+// Create's LAST step reads the tenant back, and that read failing must unwind
+// like every other failure: stop and disable the unit, remove the instance dir,
+// release the port. A bare `return Created{}, err` there reports failure while
+// leaving a running systemd unit, a WhatsApp session directory and a held port
+// behind — an orphan nothing owns and nothing will clean up, because the
+// caller was told the tenant does not exist.
+//
+// Getting the read-back to fail takes a fault injection, because it is the one
+// step with no seam of its own. The store column the projection scans into an
+// int is corrupted to a non-numeric value mid-Create (SQLite columns hold any
+// type regardless of declared affinity), from inside the systemd Start — the
+// last hook before the read. Nothing between Start and the read touches the
+// port: SetTenantState writes state and updated_unix, AppendEvent writes an
+// event row. So the write succeeds, the read fails on the Scan, and the
+// failure lands exactly on the line under test.
+func TestCreateUnwindsWhenTheFinalReadBackFails(t *testing.T) {
+	p, st, sc, root := newTestProvisioner(t)
+
+	instance, err := InstanceName("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.OnStart = func(string) {
+		raw, err := sql.Open("sqlite3", filepath.Join(root, "mgr.db")+"?_busy_timeout=5000")
+		if err != nil {
+			t.Errorf("open raw db: %v", err)
+			return
+		}
+		defer raw.Close()
+		if _, err := raw.Exec(`UPDATE tenants SET port = 'not-a-number' WHERE id = ?`, "t1"); err != nil {
+			t.Errorf("corrupt port: %v", err)
+		}
+	}
+
+	if _, err := p.Create("t1", "Blitz"); err == nil {
+		t.Fatal("a failed read-back must fail the whole Create")
+	}
+
+	// Everything this call made must be gone.
+	if !sc.Stopped(instance) || !sc.Disabled(instance) {
+		t.Fatalf("the unit is still enabled after a failed Create: stopped=%v disabled=%v",
+			sc.Stopped(instance), sc.Disabled(instance))
+	}
+	if _, err := os.Stat(filepath.Join(root, instance)); !os.IsNotExist(err) {
+		t.Fatal("a failed Create left the instance dir, WhatsApp session and all")
+	}
+	if _, err := st.GetTenant("t1"); err == nil {
+		t.Fatal("a failed Create left the tenant row, so its port is still held")
+	}
+
+	// And the port is reusable: provisioning is retried, and a leaked port
+	// eats the range one failure at a time.
+	sc.OnStart = nil
+	ten, err := createTenant(p, "t1", "Blitz")
+	if err != nil {
+		t.Fatalf("retry after a failed read-back must succeed: %v", err)
+	}
+	if ten.Port != 33100 {
+		t.Fatalf("port = %d, want the base port back", ten.Port)
 	}
 }

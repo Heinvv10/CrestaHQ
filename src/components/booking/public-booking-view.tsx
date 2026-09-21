@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   CalendarClock,
   CheckCircle2,
@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Info,
 } from "lucide-react";
+import { pageCalendarType } from "@/lib/booking/calendar-types";
+import { PublicServicePicker } from "@/components/booking/public-service-picker";
 import type { BookingPage, IntakeField } from "@/types/booking";
 
 /**
@@ -26,7 +28,8 @@ import type { BookingPage, IntakeField } from "@/types/booking";
  * lets the visitor switch back to the page's tz if they prefer.
  */
 
-type SlotISO = { startAt: string; endAt: string };
+/** `seatsLeft` is present on class pages only. */
+type SlotISO = { startAt: string; endAt: string; seatsLeft?: number };
 
 interface Branding {
   name: string;
@@ -41,7 +44,23 @@ interface Props {
     updatedAt: null;
   };
   branding: Branding;
+  /**
+   * True only when rendered at /embed/booking/[saId]/[slug] (the iframe
+   * target of the booking-embed.js snippet). Drops the full-viewport
+   * chrome — the loader script sizes the iframe to this content's
+   * natural height, reported below via postMessage.
+   */
+  embedded?: boolean;
 }
+
+/**
+ * Message-type tag the booking-embed.js loader looks for on the parent.
+ * Duplicated (not imported) in public/booking-embed.js's own
+ * RESIZE_MESSAGE_SOURCE — that file is a static asset served as-is, outside
+ * this app's module graph, so a shared import isn't possible. Keep both in
+ * sync by hand if this string ever changes.
+ */
+const RESIZE_MESSAGE_SOURCE = "leadstack-booking-embed";
 
 function detectBrowserTz(): string {
   try {
@@ -86,7 +105,13 @@ function formatDateHeadingInTz(dayKey: string, tz: string): string {
   }).format(anchor);
 }
 
-export function PublicBookingView({ subAccountId, page, branding }: Props) {
+export function PublicBookingView({
+  subAccountId,
+  page,
+  branding,
+  embedded,
+}: Props) {
+  const rootRef = useRef<HTMLElement>(null);
   const pageTz = page.timezone;
   const [viewerTz, setViewerTz] = useState(pageTz);
   const [slots, setSlots] = useState<SlotISO[]>([]);
@@ -99,6 +124,11 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
   const [hosts, setHosts] = useState<{ uid: string; name: string }[]>([]);
   const [allowHostSelection, setAllowHostSelection] = useState(false);
   const [selectedHostUid, setSelectedHostUid] = useState<string | null>(null);
+  // Service pages: nothing to show until the visitor picks a service.
+  const isServicePage = pageCalendarType(page) === "service";
+  const [serviceId, setServiceId] = useState<string | null>(null);
+  const service = (page.services ?? []).find((s) => s.id === serviceId) ?? null;
+  const durationMinutes = service?.durationMinutes ?? page.durationMinutes;
   const [confirmation, setConfirmation] = useState<{
     status: "scheduled" | "awaiting_payment";
     paymentUrl: string | null;
@@ -114,17 +144,42 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
     if (detected !== pageTz) setViewerTz(detected);
   }, [pageTz]);
 
+  // Embed only: report content height to the parent page so the loader
+  // script can size the iframe to fit (no scrollbar-in-a-scrollbar).
+  // Target origin "*" is deliberate — this message carries nothing but a
+  // number, and the loader validates the sender's origin on its side.
+  useEffect(() => {
+    if (!embedded || !rootRef.current) return;
+    if (window.self === window.top) return;
+    const el = rootRef.current;
+    const report = () =>
+      window.parent.postMessage(
+        { source: RESIZE_MESSAGE_SOURCE, type: "resize", height: el.scrollHeight },
+        "*",
+      );
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    report();
+    return () => observer.disconnect();
+  }, [embedded]);
+
   // Fetch availability on mount, and whenever the chosen host changes. No
   // date params — `computeAvailability` defaults to "now → now +
   // page.visibleDays". A `host` param narrows to that person; the response
   // carries the host roster only when the page opted into selection.
   useEffect(() => {
+    if (isServicePage && !serviceId) {
+      setSlots([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    const qs = selectedHostUid
-      ? `?host=${encodeURIComponent(selectedHostUid)}`
-      : "";
+    const params = new URLSearchParams();
+    if (selectedHostUid) params.set("host", selectedHostUid);
+    if (serviceId) params.set("serviceId", serviceId);
+    const qs = params.toString() ? `?${params}` : "";
     fetch(`/api/booking/${subAccountId}/${page.slug}/availability${qs}`, {
       cache: "no-store",
     })
@@ -160,7 +215,7 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [subAccountId, page.slug, selectedHostUid]);
+  }, [subAccountId, page.slug, selectedHostUid, isServicePage, serviceId]);
 
   // Bucket slots by day in the viewer's tz. Re-derives when viewerTz
   // changes — the same UTC instant can sit on different calendar days
@@ -206,7 +261,14 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
     : {};
 
   return (
-    <main className="min-h-screen bg-muted/30 px-4 py-10 text-foreground sm:py-16">
+    <main
+      ref={rootRef}
+      className={
+        embedded
+          ? "bg-muted/30 px-3 py-4 text-foreground"
+          : "min-h-screen bg-muted/30 px-4 py-10 text-foreground sm:py-16"
+      }
+    >
       <article className="mx-auto max-w-3xl space-y-8 rounded-3xl border bg-card p-6 shadow-sm sm:p-10">
         {/* ── Hero ──────────────────────────────────────────── */}
         <header className="space-y-3 text-center">
@@ -236,7 +298,7 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
           )}
           <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
-            {page.durationMinutes} minutes
+            {durationMinutes} minutes
             {page.payment && (
               <>
                 <span className="mx-1">·</span>
@@ -291,9 +353,22 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
           </div>
         )}
 
+        {isServicePage && (
+          <PublicServicePicker
+            services={page.services ?? []}
+            selectedId={serviceId}
+            onPick={(id) => {
+              setServiceId(id);
+              setActiveDay(null);
+              setSelectedSlot(null);
+            }}
+            accentStyle={accentStyle}
+          />
+        )}
+
         {/* ── Slot picker ──────────────────────────────────── */}
         <section className="space-y-4">
-          {loading ? (
+          {isServicePage && !serviceId ? null : loading ? (
             <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed py-12 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading available
               times…
@@ -358,6 +433,11 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
                       style={isSelected ? accentStyle : undefined}
                     >
                       {formatTimeInTz(s.startAt, viewerTz)}
+                      {s.seatsLeft !== undefined && (
+                        <span className="block text-[10px] font-normal opacity-80">
+                          {s.seatsLeft} {s.seatsLeft === 1 ? "seat" : "seats"} left
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -395,6 +475,8 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
             slug={page.slug}
             slot={selectedSlot}
             hostUid={selectedHostUid}
+            serviceId={serviceId}
+            durationMinutes={durationMinutes}
             viewerTz={viewerTz}
             page={page}
             accentStyle={accentStyle}
@@ -406,6 +488,7 @@ export function PublicBookingView({ subAccountId, page, branding }: Props) {
           <ConfirmationPanel
             confirmation={confirmation}
             page={page}
+            embedded={!!embedded}
           />
         )}
 
@@ -422,6 +505,8 @@ function IntakeFormSection({
   slug,
   slot,
   hostUid,
+  serviceId,
+  durationMinutes,
   viewerTz,
   page,
   accentStyle,
@@ -432,6 +517,9 @@ function IntakeFormSection({
   slot: SlotISO;
   /** Chosen host uid (named selection), or null for "anyone available". */
   hostUid: string | null;
+  /** Service pages: the picked service. */
+  serviceId: string | null;
+  durationMinutes: number;
   viewerTz: string;
   page: Props["page"];
   accentStyle: React.CSSProperties;
@@ -480,6 +568,7 @@ function IntakeFormSection({
             phone: phone.trim(),
             extras,
             ...(hostUid ? { hostUid } : {}),
+            ...(serviceId ? { serviceId } : {}),
           }),
         },
       );
@@ -520,7 +609,7 @@ function IntakeFormSection({
             minute: "2-digit",
           }).format(new Date(slot.startAt))}
         </span>
-        <span className="text-muted-foreground"> · {page.durationMinutes} min</span>
+        <span className="text-muted-foreground"> · {durationMinutes} min</span>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -618,6 +707,7 @@ const REDIRECT_COUNTDOWN_SECONDS = 3;
 function ConfirmationPanel({
   confirmation,
   page,
+  embedded,
 }: {
   confirmation: {
     status: "scheduled" | "awaiting_payment";
@@ -626,6 +716,17 @@ function ConfirmationPanel({
     redirectUrl: string | null;
   };
   page: Props["page"];
+  /**
+   * When true, skip the automatic timed redirect and require a click.
+   * Per the HTML "allowed to navigate" algorithm (and Chrome's
+   * enforcement of it), a cross-origin iframe can only navigate the top
+   * browsing context with a live user gesture — a `setTimeout` callback
+   * has none, so an unattended embedded visitor would just sit on this
+   * screen forever while nothing happens. On the plain /b page this isn't
+   * a cross-frame navigation at all (window.top === window), so the timed
+   * redirect there is unaffected and stays automatic.
+   */
+  embedded: boolean;
 }) {
   const pending = confirmation.status === "awaiting_payment";
 
@@ -634,10 +735,11 @@ function ConfirmationPanel({
   // top of the server already nulling redirectUrl for them) so the
   // PayPal CTA stays put.
   const willRedirect = !pending && !!confirmation.redirectUrl;
+  const autoRedirect = willRedirect && !embedded;
   const [secondsLeft, setSecondsLeft] = useState(REDIRECT_COUNTDOWN_SECONDS);
 
   useEffect(() => {
-    if (!willRedirect || !confirmation.redirectUrl) return;
+    if (!autoRedirect || !confirmation.redirectUrl) return;
     const target = confirmation.redirectUrl;
     const tick = setInterval(() => {
       setSecondsLeft((s) => Math.max(0, s - 1));
@@ -651,7 +753,7 @@ function ConfirmationPanel({
       clearInterval(tick);
       clearTimeout(go);
     };
-  }, [willRedirect, confirmation.redirectUrl]);
+  }, [autoRedirect, confirmation.redirectUrl]);
 
   return (
     <section
@@ -693,13 +795,26 @@ function ConfirmationPanel({
       </p>
       {willRedirect && confirmation.redirectUrl && (
         <p className="text-xs">
-          Redirecting you in {secondsLeft}s…{" "}
-          <a
-            href={confirmation.redirectUrl}
-            className="underline underline-offset-2"
-          >
-            Go now
-          </a>
+          {autoRedirect ? (
+            <>
+              Redirecting you in {secondsLeft}s…{" "}
+              <a
+                href={confirmation.redirectUrl}
+                target="_top"
+                className="underline underline-offset-2"
+              >
+                Go now
+              </a>
+            </>
+          ) : (
+            <a
+              href={confirmation.redirectUrl}
+              target="_top"
+              className="underline underline-offset-2"
+            >
+              Continue &rarr;
+            </a>
+          )}
         </p>
       )}
     </section>

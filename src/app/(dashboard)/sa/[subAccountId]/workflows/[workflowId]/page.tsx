@@ -1,14 +1,22 @@
 import { WorkflowBuilderLoader } from "@/components/workflows/workflow-builder-loader";
-import type { BuilderReadiness } from "@/components/workflows/workflow-builder";
+import type {
+  BuilderReadiness,
+  WhatsappSenderOption,
+} from "@/components/workflows/workflow-builder";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import {
   smsIsConfigured,
   subAccountTwilioIsConfigured,
-  subAccountWhatsappIsConfigured,
 } from "@/lib/comms/twilio";
 import type { SubAccountDoc } from "@/types";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
+import {
+  listWhatsappSenders,
+  resolveWhatsappSender,
+} from "@/lib/comms/whatsapp/resolve-sender";
 
 export const dynamic = "force-dynamic";
 
@@ -19,19 +27,13 @@ export default async function WorkflowBuilderPage({
 }) {
   const { subAccountId, workflowId } = await params;
 
-  // Resolve which send-integrations can ACTUALLY run, server-side. Every input
-  // is readable here — the deployment env vars, the sub-account's own
-  // twilioConfig, and (for WhatsApp) its approved-template inventory — so a
-  // doomed step is flagged deterministically. This replaces the client's
-  // optimistic, defaults-open probe that left a step unflagged whenever the
-  // probe failed or hadn't resolved. Mirrors exactly what the engine does at
-  // send time (engine.ts execSendSms / execWhatsappTemplate).
+  // Resolve integration configuration server-side. The builder applies the
+  // template requirement only to template-send nodes. Runtime checks still
+  // validate the selected sender, recipient, and any reply-window restrictions.
   const db = getAdminDb();
   const [snap, approvedWhatsapp] = await Promise.all([
     db.doc(`subAccounts/${subAccountId}`).get(),
-    // WhatsApp also needs ≥1 Meta-approved template — with none, every
-    // whatsapp_template node is skipped (no template to send), so the channel
-    // counts as not-ready even when the gate + sender are configured.
+    // Template-send nodes need an approved template; free-form sends do not.
     db
       .collection(`subAccounts/${subAccountId}/whatsappTemplates`)
       .where("status", "==", "approved")
@@ -47,14 +49,23 @@ export default async function WorkflowBuilderPage({
   // accounts to use the shared sender.
   const smsSub = subAccountTwilioIsConfigured(tc);
   const smsAgency = smsIsConfigured() && (await agencyAllowsSharedSms(sub?.agencyId));
-  const emailSub = tenantFrom(sub) !== undefined;
-  const emailAgency = emailIsConfigured();
+  const emailSub = sub?.emailProvider === "smtp" ? emailIsConfigured(sub) : tenantFrom(sub) !== undefined && emailIsConfigured();
+  const emailAgency = sub?.emailProvider !== "smtp" && emailIsConfigured();
   const whatsappGate = sub?.whatsappEnabledByAgency === true;
-  const whatsappSender = subAccountWhatsappIsConfigured(tc);
-  const whatsappTemplate = !approvedWhatsapp.empty;
+  // Per-rail, and it must agree with executeWhatsappTemplate in the engine —
+  // a builder that paints a node green for a step the run then skips is worse
+  // than one that paints it red. The Twilio-shaped check refused Cloud, whose
+  // templates the dispatcher supports.
+  const whatsappSender = whatsappSenderConfigured(sub);
+  // The rail of the sender a step with no `senderId` sends from — the same
+  // resolution the engine runs, so a green node is a node that can send.
+  const resolvedDefault = resolveWhatsappSender(sub);
+  const whatsappRail = resolvedDefault.ok ? resolvedDefault.provider : "twilio";
+  const whatsappTemplate =
+    capabilitiesFor(whatsappRail).supportsTemplates && !approvedWhatsapp.empty;
 
   const readiness: BuilderReadiness = {
-    emailReady: emailAgency,
+    emailReady: emailIsConfigured(sub),
     smsReady: smsSub || smsAgency,
     whatsappReady: whatsappGate && whatsappSender && whatsappTemplate,
     detail: {
@@ -68,12 +79,27 @@ export default async function WorkflowBuilderPage({
     },
   };
 
+  // Only STORED senders are selectable. The synthesized one has no persisted
+  // id, so offering it would write a `senderId` that stops resolving the
+  // moment the workspace adds a real sender — where "account default" (an
+  // empty senderId) keeps working through every registry change.
+  const whatsappSenders: WhatsappSenderOption[] = (
+    sub?.whatsappSenders?.length ? listWhatsappSenders(sub) : []
+  ).map((s) => ({
+      id: s.id,
+      label: s.label,
+      phoneNumber: s.phoneNumber,
+      isDefault: s.isDefault === true,
+    }),
+  );
+
   return (
     <div className="mx-auto w-full max-w-5xl">
       <WorkflowBuilderLoader
         saId={subAccountId}
         workflowId={workflowId}
         readiness={readiness}
+        whatsappSenders={whatsappSenders}
       />
     </div>
   );

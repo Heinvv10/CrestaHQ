@@ -150,7 +150,12 @@ export function GhlImportWizard() {
       // collecting the generated keys for the mapping.
       const customFields: Record<
         string,
-        { ghlId: string; ghlName: string; leadstackKey: string }
+        {
+          ghlId: string;
+          ghlName: string;
+          leadstackKey: string;
+          leadstackType: CustomFieldType;
+        }
       > = {};
       for (const c of cfChoices.filter((c) => c.include)) {
         const res = await fetch(`/api/sub-accounts/${subAccountId}/custom-fields`, {
@@ -172,6 +177,7 @@ export function GhlImportWizard() {
             ghlId: c.ghlId,
             ghlName: c.ghlName,
             leadstackKey: data.key,
+            leadstackType: c.type,
           };
         }
       }

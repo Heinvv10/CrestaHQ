@@ -94,16 +94,23 @@ function defaultContent(
 }
 
 /**
- * Dispatch a workflow trigger. v1 ships the dispatch plumbing but no
- * recipe type subscribes to booking events yet — mirrors the quote
- * triggers' v1 caveat. Safe to call from any path.
+ * Dispatch a workflow trigger. Maps the legacy `event_*` literal to the
+ * matching Workflow Builder v2 `booking.*` trigger type and fires it —
+ * every `booking.*` trigger is live and enrols contacts today.
+ *
+ * Always passes `{ eventId, bookingPageSlug }` as trigger context so the
+ * Workflow Builder engine's per-page filter (`WorkflowTrigger.bookingPageSlug`)
+ * can match — `bookingPageSlug` is `null` for manual (non-booking-page)
+ * calendar events, which never matches a page-pinned workflow.
  */
 export async function fireBookingTrigger(
-  event: Pick<CalendarEvent, "agencyId" | "subAccountId" | "contactId">,
+  event: Pick<
+    CalendarEvent,
+    "id" | "agencyId" | "subAccountId" | "contactId" | "bookingPageSlug"
+  >,
   trigger: Extract<AutomationTriggerType, `event_${string}`>,
 ): Promise<void> {
   if (!event.contactId) return;
-  // Workflow Builder triggers: created (v1), cancelled + rescheduled (v2).
   const type =
     trigger === "event_booked"
       ? ("booking.created" as const)
@@ -111,13 +118,23 @@ export async function fireBookingTrigger(
         ? ("booking.cancelled" as const)
         : trigger === "event_rescheduled"
           ? ("booking.rescheduled" as const)
-          : null;
+          : trigger === "event_paid" || trigger === "event_confirmed"
+          ? ("booking.confirmed" as const)
+          : trigger === "event_completed"
+            ? ("booking.showed" as const)
+            : trigger === "event_no_show"
+              ? ("booking.no_show" as const)
+              : null;
   if (type) {
     void fireWorkflowTrigger({
       agencyId: event.agencyId,
       subAccountId: event.subAccountId,
       type,
       contactId: event.contactId,
+      context: {
+        eventId: event.id,
+        bookingPageSlug: event.bookingPageSlug ?? null,
+      },
     });
   }
 }

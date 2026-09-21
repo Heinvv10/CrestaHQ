@@ -34,7 +34,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
+import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import {
   ADDABLE_TYPES,
   NODE_LABELS,
@@ -55,6 +55,7 @@ import {
 import { ConditionsEditor } from "./conditions-editor";
 import {
   NodeConfigDialog,
+  type WhatsappSenderOption,
   type WhatsappTemplateOption,
 } from "./node-config-dialog";
 import { TestDialog } from "./test-dialog";
@@ -71,12 +72,19 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "contact.created",
   "contact.tag.added",
   "pipeline.stage.changed",
+  "deal.created",
+  "deal.won",
+  "deal.lost",
   "booking.created",
   "booking.cancelled",
   "booking.rescheduled",
+  "booking.confirmed",
+  "booking.showed",
+  "booking.no_show",
   "quote.accepted",
   "quote.paid",
   "message.received",
+  "link.clicked",
 ];
 
 const MESSAGE_CHANNELS: { value: string; label: string }[] = [
@@ -90,6 +98,7 @@ const ICONS: Record<WorkflowNodeType, typeof Mail> = {
   send_email: Mail,
   send_sms: MessageSquare,
   whatsapp_template: MessageCircle,
+  send_whatsapp: MessageCircle,
   wait: Clock,
   wait_for_reply: Reply,
   if_else: GitBranch,
@@ -149,7 +158,7 @@ export interface BuilderReadiness {
   detail: ReadinessDetail;
 }
 
-export type { WhatsappTemplateOption };
+export type { WhatsappSenderOption, WhatsappTemplateOption };
 
 // Provided once at the top of the builder so the recursive step chain can read
 // it without prop-drilling through Chain/Branch.
@@ -172,17 +181,22 @@ export function WorkflowBuilder({
   saId,
   initial,
   forms,
+  trackedLinks,
+  bookingPages,
   readiness,
   whatsappTemplates,
+  whatsappSenders,
 }: {
   saId: string;
   initial: BuilderInitial;
   forms: { id: string; name: string }[];
+  trackedLinks: { id: string; name: string }[];
+  bookingPages: { slug: string; name: string }[];
   readiness: BuilderReadiness;
   whatsappTemplates: WhatsappTemplateOption[];
+  whatsappSenders: WhatsappSenderOption[];
 }) {
   const router = useRouter();
-  const stages = usePipelineStages();
   const [name, setName] = useState(initial.name);
   const [status, setStatus] = useState<WorkflowStatus>(initial.status);
   const [trigger, setTrigger] = useState<WorkflowTrigger>(initial.trigger);
@@ -336,18 +350,77 @@ export function WorkflowBuilder({
             </select>
           )}
 
-          {trigger.type === "pipeline.stage.changed" && (
+          {trigger.type === "link.clicked" && (
             <select
-              value={trigger.toStage ?? ""}
+              value={trigger.linkId ?? ""}
               onChange={(e) =>
-                setTrigger({ ...trigger, toStage: e.target.value || null })
+                setTrigger({ ...trigger, linkId: e.target.value || null })
               }
               className="border-input bg-background mt-2 h-9 w-full rounded-md border px-2 text-sm"
             >
-              <option value="">Any stage</option>
-              {stages.map((s) => (
-                <option key={s.id} value={s.id}>
-                  Moved to {s.label}
+              <option value="">Any tracked link</option>
+              {trackedLinks.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {trigger.type === "contact.tag.added" && (
+            <>
+              <Input
+                value={trigger.tag ?? ""}
+                onChange={(e) =>
+                  setTrigger({ ...trigger, tag: e.target.value || null })
+                }
+                onBlur={(e) =>
+                  setTrigger({ ...trigger, tag: e.target.value.trim() || null })
+                }
+                placeholder="Any tag"
+                className="mt-2 h-9"
+              />
+              <p className="text-muted-foreground mt-1.5 text-xs">
+                Start only when this exact tag is added. Leave blank to start
+                on any new tag.
+              </p>
+            </>
+          )}
+
+          {(trigger.type === "pipeline.stage.changed" ||
+            trigger.type === "deal.created" ||
+            trigger.type === "deal.won" ||
+            trigger.type === "deal.lost") && (
+            <PipelineTriggerConfig
+              pipelineId={trigger.pipelineId}
+              stageId={trigger.toStage}
+              withStage={trigger.type === "pipeline.stage.changed"}
+              onChange={(n) =>
+                setTrigger({ ...trigger, pipelineId: n.pipelineId, toStage: n.stageId })
+              }
+            />
+          )}
+
+          {(trigger.type === "booking.created" ||
+            trigger.type === "booking.cancelled" ||
+            trigger.type === "booking.rescheduled" ||
+            trigger.type === "booking.confirmed" ||
+            trigger.type === "booking.showed" ||
+            trigger.type === "booking.no_show") && (
+            <select
+              value={trigger.bookingPageSlug ?? ""}
+              onChange={(e) =>
+                setTrigger({
+                  ...trigger,
+                  bookingPageSlug: e.target.value || null,
+                })
+              }
+              className="border-input bg-background mt-2 h-9 w-full rounded-md border px-2 text-sm"
+            >
+              <option value="">Any booking page</option>
+              {bookingPages.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.name}
                 </option>
               ))}
             </select>
@@ -411,6 +484,7 @@ export function WorkflowBuilder({
         <NodeConfigDialog
           step={editing}
           whatsappTemplates={whatsappTemplates}
+          whatsappSenders={whatsappSenders}
           onClose={() => setEditing(null)}
           onSave={(config) => editing && saveConfig(editing.id, config)}
         />
@@ -527,8 +601,10 @@ function Connector() {
 
 const REQUIREMENT_WARNING: Record<string, string> = {
   email:
-    "Email isn't configured on this deployment, so this step will be skipped when the workflow runs. Add RESEND_API_KEY + EMAIL_FROM to fix it.",
+    "Email isn't configured for this sub-account. Connect an email provider in Settings → Messaging.",
   sms: "SMS can't run for this sub-account, so this step will be skipped. Give this sub-account a dedicated Twilio number in Settings → SMS, or have your agency enable the shared SMS sender. (See the sub/agency indicators below.)",
+  whatsappFreeform:
+    "WhatsApp isn't ready for this sub-account. Ask your agency to enable WhatsApp and connect a sender in Settings → SMS.",
   whatsapp:
     "WhatsApp isn't ready for this sub-account, so this step will be skipped. It needs all three: your agency to enable WhatsApp, a WhatsApp sender configured in Settings → SMS, and at least one Meta-approved template.",
 };
@@ -542,9 +618,11 @@ const REQUIREMENT_WARNING: Record<string, string> = {
 function ReadinessChips({
   requirement,
   detail,
+  requiresWhatsappTemplate,
 }: {
   requirement: NodeRequirement;
   detail: ReadinessDetail;
+  requiresWhatsappTemplate: boolean;
 }) {
   const badges: { code: "SA" | "A"; title: string }[] = [];
 
@@ -566,7 +644,7 @@ function ReadinessChips({
       badges.push({
         code: "SA",
         title:
-          "Sub-account sender — this sub-account's own verified sending domain is active; email sends from it.",
+          "Sub-account sender — this sub-account's email provider or verified sending domain is configured.",
       });
     if (detail.emailAgency)
       badges.push({
@@ -577,13 +655,14 @@ function ReadinessChips({
   } else if (
     detail.whatsappGate &&
     detail.whatsappSender &&
-    detail.whatsappTemplate
+    (!requiresWhatsappTemplate || detail.whatsappTemplate)
   ) {
     // WhatsApp is dedicated-only — there's no shared/agency tier.
     badges.push({
       code: "SA",
-      title:
-        "Sub-account sender — WhatsApp is enabled, a sender is configured, and at least one approved template exists.",
+      title: requiresWhatsappTemplate
+        ? "Sub-account sender — WhatsApp is enabled, a sender is configured, and at least one approved template exists."
+        : "Sub-account sender — WhatsApp is enabled and a sender is configured. Free-form sends remain subject to the sender’s reply-window rules.",
     });
   }
 
@@ -621,9 +700,13 @@ function StepCard({
       : requirement === "sms"
         ? !readiness.smsReady
         : requirement === "whatsapp"
-          ? !readiness.whatsappReady
+          ? step.type === "send_whatsapp"
+            ? !(readiness.detail.whatsappGate && readiness.detail.whatsappSender)
+            : !readiness.whatsappReady
           : false;
-  const warning = unmet ? REQUIREMENT_WARNING[requirement!] : null;
+  const warning = unmet
+    ? REQUIREMENT_WARNING[step.type === "send_whatsapp" ? "whatsappFreeform" : requirement!]
+    : null;
 
   const Icon = ICONS[step.type];
   return (
@@ -664,7 +747,11 @@ function StepCard({
           {unmet ? "Won't run — integration not configured" : nodeSummary(step)}
         </div>
         {requirement && (
-          <ReadinessChips requirement={requirement} detail={readiness.detail} />
+          <ReadinessChips
+            requirement={requirement}
+            detail={readiness.detail}
+            requiresWhatsappTemplate={step.type === "whatsapp_template"}
+          />
         )}
       </button>
       <Button

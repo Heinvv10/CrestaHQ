@@ -19,6 +19,7 @@ import {
   isFirebaseConfigured,
 } from "@/lib/firebase/client";
 import { signOutUser } from "@/lib/firebase/auth";
+import { loadIdTokenClaims } from "@/lib/firebase/id-token-claims";
 import type {
   AgencyRole,
   AppConfig,
@@ -64,6 +65,23 @@ export const AuthContext = createContext<AuthContextValue | undefined>(
   undefined,
 );
 
+/**
+ * Waits before each retry of a load that failed because the connection
+ * dropped. A network change (Wi-Fi → LTE, a VPN reconnecting, a host that
+ * adds or removes an interface) aborts every in-flight request and flips
+ * Firestore to "offline", so the first reads reject with `unavailable`.
+ * Taking that as final left a signed-in user with no agency and no
+ * memberships — "Sign in to view your agency", or a bounce to
+ * /agency?error=no-access — until they reloaded. Firestore reconnects on its
+ * own within seconds; these give it ~30s before the old outcome applies.
+ */
+const TRANSIENT_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000];
+
+function isTransientLoadError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "unavailable" || code === "auth/network-request-failed";
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -88,10 +106,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         membershipUnsub = null;
       }
     };
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
     const unsubscribe = onAuthStateChanged(
       getFirebaseAuth(),
-      async (firebaseUser) => {
+      async function onUser(firebaseUser: User | null, attempt = 0) {
+        clearTimeout(retryTimer);
         setUser(firebaseUser);
         cleanupMembership();
 
@@ -111,16 +131,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // on the first membership snapshot (or on error) below.
         setMembershipsLoaded(false);
 
+        let retrying = false;
         try {
           // Refresh the ID token FIRST so newly-set custom claims (status,
           // agencyId, agencyRole) are present on the token before any
           // Firestore read fires. Without this, rules see a stale token
           // missing the `status: "active"` claim and deny the reads with
           // "Missing or insufficient permissions".
-          const tokenResult = await firebaseUser
-            .getIdTokenResult(true)
-            .catch(() => null);
-          const claims = tokenResult?.claims ?? {};
+          const claims = await loadIdTokenClaims(firebaseUser);
 
           const db = getFirebaseDb();
           const [cfgSnap, userSnap] = await Promise.all([
@@ -220,17 +238,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             },
           );
         } catch (err) {
-          console.error("Failed to load auth context", err);
-          // Don't strand membership-gated UI if setup threw before the
-          // subscription was attached.
-          setMembershipsLoaded(true);
+          if (
+            isTransientLoadError(err) &&
+            attempt < TRANSIENT_RETRY_DELAYS_MS.length
+          ) {
+            // Still loading: nothing decides access until this settles.
+            retrying = true;
+            console.warn("[auth] load failed on a dropped connection; retrying", err);
+            retryTimer = setTimeout(
+              () => void onUser(firebaseUser, attempt + 1),
+              TRANSIENT_RETRY_DELAYS_MS[attempt],
+            );
+          } else {
+            console.error("Failed to load auth context", err);
+            // Don't strand membership-gated UI if setup threw before the
+            // subscription was attached.
+            setMembershipsLoaded(true);
+          }
         } finally {
-          setLoading(false);
+          if (!retrying) setLoading(false);
         }
       },
     );
 
     return () => {
+      clearTimeout(retryTimer);
       cleanupMembership();
       unsubscribe();
     };

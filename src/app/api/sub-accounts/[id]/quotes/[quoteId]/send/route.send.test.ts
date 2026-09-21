@@ -82,6 +82,17 @@ describe("token + public URL", () => {
 });
 
 describe("send", () => {
+  it("uses workspace SMTP configuration when platform email is unavailable", async () => {
+    state.emailConfigured = false;
+    state.subDoc = { ...state.subDoc, emailProvider: "smtp" };
+    const { status } = await call();
+    expect(status).toBe(200);
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({
+      subAccount: expect.objectContaining({ emailProvider: "smtp" }),
+      meter: { subAccountId: SUB_ID },
+    }));
+  });
+
   it("sends with the caller as Reply-To and the tenant From", async () => {
     const { status, body } = await call();
     expect(status).toBe(200);
@@ -93,6 +104,7 @@ describe("send", () => {
       html: "<p>html-body</p>",
       replyTo: "operator@example.com",
       from: "tenant-from:Acme Plumbing",
+      subAccount: state.subDoc,
       meter: { subAccountId: SUB_ID },
     });
     expect(renderQuoteEmail).toHaveBeenCalledWith(

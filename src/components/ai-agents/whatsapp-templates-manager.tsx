@@ -17,13 +17,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { parseBodyPositions } from "@/lib/comms/whatsapp/template-validation";
+import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
+import { resolveWhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { subscribeToCustomFields } from "@/lib/firestore/custom-fields";
+import type { CustomFieldDef } from "@/types/custom-fields";
 import {
   WHATSAPP_STARTER_TEMPLATES,
   type WhatsappStarterTemplate,
 } from "@/lib/comms/whatsapp/starter-templates";
+import { WhatsappTemplateButtonsEditor } from "@/components/ai-agents/whatsapp-template-buttons-editor";
 import {
+  WHATSAPP_CUSTOM_FIELD_TAG_PREFIX,
   WHATSAPP_VARIABLE_MERGE_TAGS,
   type WhatsappTemplateCategory,
+  type WhatsappTemplateButton,
   type WhatsappTemplateDoc,
 } from "@/types/whatsapp-templates";
 
@@ -60,7 +67,13 @@ export function WhatsappTemplatesManager() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const agencyEnabled = subAccount?.whatsappEnabledByAgency === true;
-  const senderConfigured = !!subAccount?.twilioConfig?.whatsappFromNumber;
+  // Rail-aware, and NOT simply the shared helper: templates are a Twilio/Cloud
+  // concept and the submit route refuses the bridge outright
+  // ([templateId]/submit/route.ts:76). Treating a connected bridge as "sender
+  // configured" here would advertise a builder whose every submission 400s.
+  const senderConfigured =
+    resolveWhatsAppProviderId(subAccount?.whatsappProvider) !== "bridge" &&
+    whatsappSenderConfigured(subAccount);
 
   // Builder form state.
   const [displayName, setDisplayName] = useState("");
@@ -68,6 +81,7 @@ export function WhatsappTemplatesManager() {
   const [language, setLanguage] = useState("en");
   const [body, setBody] = useState("");
   const [varForms, setVarForms] = useState<Record<number, VarForm>>({});
+  const [buttons, setButtons] = useState<WhatsappTemplateButton[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -91,6 +105,16 @@ export function WhatsappTemplatesManager() {
     );
     return () => unsub();
   }, [subAccountId, isAdmin, agencyEnabled]);
+
+  // Contact custom fields are mappable too (contact.customFields.<key>) —
+  // an install address or job reference lives there, not on the contact.
+  const [contactFields, setContactFields] = useState<CustomFieldDef[]>([]);
+  useEffect(() => {
+    if (!builderOpen) return;
+    return subscribeToCustomFields(subAccountId, "contact", setContactFields, () =>
+      toast.error("Couldn't load contact custom fields for the variable picker."),
+    );
+  }, [subAccountId, builderOpen]);
 
   const positions = useMemo(() => parseBodyPositions(body), [body]);
 
@@ -116,6 +140,7 @@ export function WhatsappTemplatesManager() {
     setLanguage("en");
     setBody("");
     setVarForms({});
+    setButtons([]);
     setEditingId(null);
     setBuilderOpen(false);
   }, []);
@@ -136,6 +161,7 @@ export function WhatsappTemplatesManager() {
       };
     }
     setVarForms(vf);
+    setButtons([]);
     setBuilderOpen(true);
   }
 
@@ -155,6 +181,7 @@ export function WhatsappTemplatesManager() {
       };
     }
     setVarForms(vf);
+    setButtons(t.buttons ?? []);
     setBuilderOpen(true);
   }
 
@@ -178,6 +205,7 @@ export function WhatsappTemplatesManager() {
         language: language.trim() || "en",
         body: body.trim(),
         variables: buildVariablesPayload(),
+        buttons,
       };
       const url = editingId
         ? `/api/sub-accounts/${subAccountId}/whatsapp-templates/${editingId}`
@@ -399,6 +427,18 @@ export function WhatsappTemplatesManager() {
                           {t.description}
                         </option>
                       ))}
+                      {contactFields.length > 0 ? (
+                        <optgroup label="Contact custom fields">
+                          {contactFields.map((f) => (
+                            <option
+                              key={f.id}
+                              value={`${WHATSAPP_CUSTOM_FIELD_TAG_PREFIX}${f.key}`}
+                            >
+                              {f.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
                     </select>
                     <Input
                       value={vf.sampleValue}
@@ -420,6 +460,8 @@ export function WhatsappTemplatesManager() {
               </p>
             </div>
           )}
+
+          <WhatsappTemplateButtonsEditor value={buttons} onChange={setButtons} />
 
           <div className="flex justify-end gap-2">
             <Button

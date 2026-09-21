@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -106,6 +107,21 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"recordFailures": s.recordFailureCount(),
 	}
 	var problems []string
+
+	// Dropped inbound is the one counter here that represents messages a
+	// customer sent and nobody will ever see, so it is a problem, not a stat.
+	if s.deps.InboundSuppression != nil {
+		history, capped := s.deps.InboundSuppression()
+		body["suppressedHistory"] = history
+		// The COUNT is always reported: the loss happened, and this is the only
+		// trace it will ever have. Whether it is a PROBLEM is a separate
+		// question — see InboundDropAge.
+		body["droppedInbound"] = capped
+		if capped > 0 && s.dropIsRecent() {
+			problems = append(problems,
+				fmt.Sprintf("%d inbound message(s) dropped by the catch-up cap since this connection began", capped))
+		}
+	}
 
 	// Fail closed on an unwired Connection: reporting "connected" for something
 	// we cannot observe is exactly the silent failure this endpoint answers.
@@ -212,4 +228,25 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	body["ok"], body["degraded"] = true, false
 	writeJSON(w, http.StatusOK, body)
+}
+
+// dropRecencyWindow is how long a dropped inbound keeps the bridge in an
+// alerting state. Long enough that a poll on any sane interval sees it; short
+// enough that one loss does not mark a healthy number degraded all day.
+const dropRecencyWindow = 30 * time.Minute
+
+// dropIsRecent reports whether the most recent drop is still worth alerting on.
+//
+// Fails OPEN — an unwired InboundDropAge alerts on any non-zero count, which is
+// the old behaviour. A missing dependency must not be the thing that silences a
+// report of lost customer messages.
+func (s *server) dropIsRecent() bool {
+	if s.deps.InboundDropAge == nil {
+		return true
+	}
+	age, ok := s.deps.InboundDropAge()
+	if !ok {
+		return false
+	}
+	return age <= dropRecencyWindow
 }

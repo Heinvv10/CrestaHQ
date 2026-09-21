@@ -2,7 +2,9 @@ package main
 
 import (
 	"net"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/api"
 	"github.com/Heinvv10/CrestaHQ/services/wa-agent-bridge/config"
@@ -56,7 +58,7 @@ func TestFanoutAcceptsTheGatePredicate(t *testing.T) {
 		}
 	}()
 	g := &clientHolder{}
-	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow); f == nil {
+	if f := api.NewFanout(nil, "", store.NewMemory(), g.inReplayWindow, g.connectedAt, 0); f == nil {
 		t.Fatal("nil fanout")
 	}
 }
@@ -113,5 +115,58 @@ func TestClientHolderReportsNotConnectedBeforeSet(t *testing.T) {
 	g := &clientHolder{}
 	if g.Connected() {
 		t.Fatal("before the client exists the holder must report NOT connected")
+	}
+}
+
+// connectedAt is load-bearing and was untested: replacing its body with
+// time.Now() passed every test in the repo while destroying the design. A
+// watermark keyed on a value that changes every call re-snapshots on every
+// message, which resets the catch-up counter — so maxCatchUpForward never
+// fires and the flood protection is gone — and makes any out-of-order message
+// look like history.
+//
+// The property that matters is STABILITY: the same connection must yield the
+// same key. Asserting it with no client set is enough to kill that mutation
+// and needs no whatsmeow socket.
+func TestClientHolderConnectedAtIsStableAcrossCalls(t *testing.T) {
+	g := &clientHolder{}
+	first := g.connectedAt()
+	time.Sleep(2 * time.Millisecond)
+	second := g.connectedAt()
+
+	if !first.Equal(second) {
+		t.Fatalf("connectedAt must be stable for one connection, got %v then %v", first, second)
+	}
+	if !first.IsZero() {
+		t.Fatalf("with no client set the key must be the zero time, got %v", first)
+	}
+}
+
+// The send body grew from 64KiB to 12MiB, so a connection held open mid-read
+// now holds megabytes rather than kilobytes. These timeouts are the bound on
+// how long that can last, and a zero value is the same as not having them.
+func TestServerBoundsHowLongARequestMayBeHeldOpen(t *testing.T) {
+	srv := newServer(http.NewServeMux())
+
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Fatal("ReadHeaderTimeout is unset; a client can hold a connection open indefinitely before sending headers")
+	}
+	if srv.ReadTimeout <= 0 {
+		t.Fatal("ReadTimeout is unset; a stalled 12MiB body is held for as long as the client likes")
+	}
+	// ReadTimeout covers headers and body together, so it must be the larger
+	// of the two or the header timeout is the only one that ever fires.
+	if srv.ReadTimeout <= srv.ReadHeaderTimeout {
+		t.Fatalf("ReadTimeout %v must exceed ReadHeaderTimeout %v", srv.ReadTimeout, srv.ReadHeaderTimeout)
+	}
+	// A genuine 12MiB upload over a slow link must still fit.
+	if srv.ReadTimeout < 30*time.Second {
+		t.Fatalf("ReadTimeout %v is too tight for a 12MiB body over a slow link", srv.ReadTimeout)
+	}
+	// WriteTimeout stays unset on purpose: a legitimate send spends most of
+	// its life in the queue's pacing delay, so any survivable value is too
+	// large to defend anything. See newServer.
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v; setting it aborts sends that are working", srv.WriteTimeout)
 	}
 }

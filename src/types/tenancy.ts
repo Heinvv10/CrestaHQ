@@ -1,6 +1,10 @@
 import type { StripeConnectionMeta } from "@/types/payments";
+import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
+import type { PaystackConnectionMeta } from "@/types/paystack-connection";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
+import type { WhatsappBridgeMeta } from "@/types/whatsapp-bridge";
+import type { WhatsAppSender } from "@/types/whatsapp-senders";
 
 export type AgencyRole = "owner" | "staff";
 export type SubAccountRole = "admin" | "collaborator";
@@ -143,6 +147,9 @@ export interface SubAccountDoc {
    * Orthogonal to `replyToEmail`, which only sets the Reply-To header.
    */
   resendConfig: ResendConfig | null;
+  /** Unset preserves shared Resend. SMTP credentials are server-only. */
+  emailProvider?: "resend" | "smtp";
+  smtpConfig?: import("./email").SmtpMeta | null;
   /**
    * Agency-controlled gate for the dedicated email sending domain feature.
    * Only the agency owner can flip this (PATCH /api/agency/sub-accounts/[id]/
@@ -403,6 +410,18 @@ export interface SubAccountDoc {
    */
   stripeConnectionMeta?: StripeConnectionMeta | null;
   /**
+   * Non-secret display metadata for the connected Paystack account (see
+   * {@link PaystackConnectionMeta}). The South African card rail — Stripe does
+   * not serve SA merchants for payouts — and gated by the same
+   * `paymentsEnabledByAgency` flag as the Stripe connection above.
+   *
+   * The secret key itself is deliberately NOT here, for the same
+   * document-level-rules reason: it lives at
+   * `subAccounts/{id}/private/paystackConnection`. Never add a credential to
+   * this object.
+   */
+  paystackConnectionMeta?: PaystackConnectionMeta | null;
+  /**
    * Webinar1 (webinar platform) connection — display metadata only. The API
    * key + webhook signing secret live at
    * `subAccounts/{id}/private/webinar1Connection` (locked; Admin SDK only),
@@ -421,6 +440,66 @@ export interface SubAccountDoc {
    * connection is preserved, so re-enabling resumes instantly.
    */
   webinar1EnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for the Google Business Profile connection
+   * (Settings → Google Business Profile: the OAuth connect card and the
+   * connect/disconnect routes). Opt-in like every other gate: defaults to
+   * `false` at creation and consumers read `=== true` so legacy docs
+   * (undefined) stay off. Standalone (not plan-managed) like Payments and
+   * Webinar1 — connecting a client's Google account is an explicit per-client
+   * decision. While off the settings card renders nothing and the connect
+   * route refuses. No tear-down on disable: the stored connection is
+   * preserved so re-enabling resumes instantly; disconnecting (which revokes
+   * the token at Google) is always an explicit operator action and stays
+   * available even while the gate is off.
+   */
+  googleEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for per-member Google Calendar sync (Settings →
+   * Calendar sync → Google Calendar; see lib/google-calendar). Opt-in: `false`
+   * at creation, read `=== true`. Standalone (not plan-managed) like the
+   * Business Profile gate — linking staff Google accounts is an explicit
+   * per-client decision. While off the card is hidden, connect refuses, and
+   * booking pages neither read Google busy time nor push bookings. No
+   * tear-down: members' connections are preserved; disconnect stays ungated.
+   */
+  googleCalendarEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for Reviews AI (SP5): AI sentiment on synced Google
+   * reviews and AI reply drafts (SP5 c — they only fill the reply box). Spends the agency's OpenRouter
+   * credits. Opt-in: `false` at creation, read `=== true`. Plan-managed
+   * (`PLAN_GATE_KEYS`, not pre-ticked). No tear-down: cached sentiment labels
+   * stay until the review's own lifecycle (edit, tombstone, retention)
+   * clears them. See docs/features/reputation.md.
+   */
+  reviewsAiEnabledByAgency?: boolean;
+  /**
+   * Reviews AI settings (SP5 c), written only by PUT
+   * /api/sub-accounts/[id]/reputation/ai-settings (admin, Reviews AI gate).
+   * `replyGuidelines` (≤ 1000 chars, "" = none) steer the reply DRAFT only —
+   * nothing posts to Google without the admin's click.
+   */
+  reviewsAiConfig?: { replyGuidelines: string; updatedAt: Date; updatedByUid: string } | null;
+  /**
+   * Non-secret display metadata for the connected Google account (see
+   * {@link GoogleConnectionMeta}). Null/absent until connected.
+   *
+   * The OAuth tokens are deliberately NOT here — this doc is readable by every
+   * active member, and Firestore rules can't hide a single field. The refresh
+   * token lives at `subAccounts/{id}/private/googleConnection`
+   * (`allow read, write: if false`). Never add a credential to this object.
+   */
+  googleConnectionMeta?: GoogleConnectionMeta | null;
+  /**
+   * The Business Profile listing picked on the Google Business page (see
+   * {@link GoogleListing}). Null/absent until selected; cleared on disconnect.
+   */
+  googleListing?: GoogleListing | null;
+  /**
+   * The public reviews widget for the selected listing (see
+   * {@link GbpWidgetMeta}); null/absent when none. Written only by the server.
+   */
+  gbpWidgetMeta?: GbpWidgetMeta | null;
   /**
    * Agency-controlled gate for the Workspace Assistant (the in-app AI
    * assistant at Sidebar → Workspace Assistant). Only the agency owner can
@@ -484,6 +563,21 @@ export interface SubAccountDoc {
    * member-readable. See {@link WhatsappCloudMeta}.
    */
   whatsappCloudMeta?: WhatsappCloudMeta | null;
+  /**
+   * Non-secret display half of the wa-agent-bridge connection. The credentials
+   * themselves are in `private/whatsappBridge` — this doc is member-readable.
+   * See {@link WhatsappBridgeMeta}.
+   */
+  whatsappBridgeMeta?: WhatsappBridgeMeta | null;
+  /**
+   * The numbers this workspace can send WhatsApp FROM, so a workflow step can
+   * choose one. Absent means the registry has never been touched: a single
+   * sender is then synthesized from `whatsappProvider` and that rail's own
+   * display metadata, so nothing about an existing workspace changes.
+   * Display metadata only — credentials stay in `private/*`.
+   * See {@link WhatsAppSender} and `lib/comms/whatsapp/resolve-sender.ts`.
+   */
+  whatsappSenders?: WhatsAppSender[] | null;
   bookingConfig: BookingConfig | null;
   sendWindow: SendWindow | null;
   /**
@@ -555,12 +649,11 @@ export interface SubAccountDoc {
   territoryScopingEnabledAt?: Date | null;
   territoryScopingEnabledByUid?: string | null;
   /**
-   * Optional per-sub-account overrides for the deal pipeline's stage labels +
-   * order. ONLY label/order are editable; ids + won/lost terminals always come
-   * from the canonical {@link PipelineStage} set, so this is a pure display
-   * layer. Absent/undefined (the default for every existing sub-account) →
-   * the canonical stages render unchanged. Set via PATCH
-   * /api/sub-accounts/[id]/pipeline-stages (admin). See "Phase 2 (2A)".
+   * LEGACY. Pre-multi-pipeline label/order overrides for the six canonical
+   * stages. No longer written (the `pipeline-stages` route is gone); read
+   * once to seed `subAccounts/{id}/pipelines/default` on its first load and
+   * for the client's synthetic default until that read lands. After the
+   * default pipeline doc exists this field is ignored.
    */
   pipelineStages?: import("./deals").PipelineStageOverride[];
   /**
@@ -778,6 +871,12 @@ export interface GoogleReviewConfig {
    * (WhatsApp Manual can't auto-send). Undefined on legacy docs → off.
    */
   triggerOnDealCompleted?: boolean;
+  /**
+   * Reminders (SP5 d2): re-send the same request every `everyDays` until the
+   * customer clicks, opts out, or `maxRetries` reminders have gone. Absent or
+   * `everyDays: null` = off (the default) — nothing about sending changes.
+   */
+  reminder?: { everyDays: number | null; maxRetries: number } | null;
   updatedAt: Date;
 }
 
@@ -817,6 +916,19 @@ export interface AgencyMemberDoc {
   displayName: string;
   addedAt: Date;
   addedByUid: string;
+}
+
+/**
+ * The display slice of a member row that GET /api/sub-accounts/[id]/members
+ * returns to every active member for the "Assigned to" pickers.
+ */
+export interface AssignableMember {
+  uid: string;
+  /** Display name, or the email when none is set, or the uid. */
+  displayName: string;
+  /** Empty unless the member has no display name (then it IS the label). */
+  email: string;
+  role: string;
 }
 
 export interface SubAccountMemberDoc {

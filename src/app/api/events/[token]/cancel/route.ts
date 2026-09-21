@@ -19,11 +19,13 @@ import {
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
+import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
  * Public cancel endpoint. The HMAC token IS the credential; we don't
@@ -92,6 +94,7 @@ export async function POST(
 
   if (cancelledEvent) {
     await runSideEffects(cancelledEvent);
+    await pushBookingToGoogle(ref.id);
   }
 
   return NextResponse.json({ ok: true });
@@ -115,7 +118,7 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
             .get()
         : Promise.resolve(null),
     ]);
-    if (contactSnap.exists && subSnap.exists && emailIsConfigured()) {
+    if (contactSnap.exists && subSnap.exists && emailIsConfigured(subSnap.data() as SubAccountDoc)) {
       const contact = contactSnap.data() as Contact;
       const sub = subSnap.data() as SubAccountDoc;
       const page = (pageSnap?.data() ?? null) as BookingPage | null;
@@ -137,10 +140,7 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
             businessName: sub.name ?? "Booking",
             businessLogoUrl: sub.logoUrl,
             page: {
-              name: page?.name ?? event.title ?? "Meeting",
-              durationMinutes:
-                page?.durationMinutes ??
-                Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000)),
+              ...bookedEventLabel(page, event, startAt, endAt),
               timezone: page?.timezone ?? "UTC",
               payment: page?.payment ?? null,
               confirmationMessage: page?.confirmationMessage ?? "",
@@ -159,6 +159,7 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
             html: rendered.html,
             replyTo: sub.replyToEmail ?? undefined,
             from: tenantFrom(sub),
+            subAccount: sub,
             meter: { subAccountId: event.subAccountId },
           });
         } catch (err) {
@@ -182,9 +183,11 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
   );
   await fireBookingTrigger(
     {
+      id: event.id,
       agencyId: event.agencyId,
       subAccountId: event.subAccountId,
       contactId: event.contactId,
+      bookingPageSlug: event.bookingPageSlug ?? null,
     },
     "event_cancelled",
   );

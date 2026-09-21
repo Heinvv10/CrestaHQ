@@ -5,30 +5,47 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
+import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
-import { resolveProviderForSubAccount } from "@/lib/comms/whatsapp/resolve-provider";
+import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import {
   sendSmsForSubAccount,
+  sendWhatsappForSubAccount,
   sendWhatsappTemplateForSubAccount,
   smsIsConfigured,
   subAccountTwilioIsConfigured,
-  subAccountWhatsappIsConfigured,
   SmsRecipientUnsubscribedError,
 } from "@/lib/comms/twilio";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
+import {
+  interactiveFromButtons,
+  type InteractiveResult,
+} from "@/lib/comms/whatsapp/interactive";
+import { ensureTwilioSessionContent } from "@/lib/comms/whatsapp/twilio-session-content";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
+import { isAssignableMember } from "@/lib/server/assignee";
+import { updateDealServerSide } from "@/lib/server/deals-service";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
+import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { checkQuota, UsageQuotaExceededError } from "@/lib/server/usage-meter";
+import { reconcileEnrolments } from "@/lib/api/enrolment-cap";
 import {
   resolveMergeTags,
   type MergeTagSubject,
 } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
+import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
+import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
-import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
+import type { WhatsappTemplateDoc, WhatsappTemplateButton } from "@/types/whatsapp-templates";
+import type { CloudTemplateRef } from "@/lib/comms/whatsapp/cloud-client";
 import type {
   CreateTaskConfig,
   IfElseConfig,
@@ -36,6 +53,7 @@ import type {
   NotifyConfig,
   SendEmailConfig,
   SendSmsConfig,
+  SendWhatsappConfig,
   TagConfig,
   WhatsappTemplateConfig,
   UpdateFieldConfig,
@@ -58,7 +76,9 @@ export type StepResult =
   | { kind: "next" }
   | { kind: "wait"; seconds: number }
   | { kind: "branch"; value: boolean }
-  | { kind: "end" };
+  | { kind: "end" }
+  /** The step definitely did not do its job; the run stops as `failed`. */
+  | { kind: "fail" };
 
 interface NodeContext {
   node: WorkflowNode;
@@ -69,18 +89,72 @@ interface NodeContext {
   agencyId: string;
   /** Workflow author — stamped on writes (tasks) for audit. */
   createdByUid: string;
+  /** The run this step belongs to — stamped on the contact-timeline rows the
+   *  engine writes so the Activity tab can link to the run history. */
+  workflowId: string;
+  runId: string;
   /**
    * The trigger context captured at enrollment (e.g. the submitted form's
    * answers under `formData`). Carried on the run doc; surfaced here so the
    * Webhook step can forward the form fields downstream.
    */
   triggerContext: Record<string, unknown>;
+  /**
+   * Set by a send executor once its outbound content is rendered, and its
+   * provider id once sent (SP5 d1). runStep logs the step as a review ask
+   * when that content carries the sub-account's review link — a failed one
+   * only when `attempted` says a provider was actually called.
+   */
+  sent?: {
+    channel: ReviewRequestChannel;
+    parts: string[];
+    template?: TemplateIdentity | null;
+    templateValues?: string[];
+    messageSid?: string | null;
+    attempted?: boolean;
+  };
 }
 
 /** An executor returns the control-flow result + a short audit log string. */
 type NodeExecutor = (
   ctx: NodeContext
 ) => Promise<{ result: StepResult; log: string }>;
+
+/**
+ * A failed template send stops the run only when the message definitely did
+ * not go out. Continuing past a send that never happened parks the run on a
+ * wait_for_reply for a message the customer never got, and its "no reply"
+ * branch then files a misleading follow-up. An AMBIGUOUS failure (a timeout
+ * after the request left, a provider 5xx) continues: the customer may well
+ * have the message, and acting as if they don't is the worse mistake.
+ *
+ * Template node only. `send_whatsapp` continues on every failure: its next
+ * steps (a follow-up task, a tag) are work that must still happen for the
+ * customer whether or not the message went out.
+ */
+function whatsappSendFailed(
+  log: string,
+  definitelyNotSent: boolean
+): { result: StepResult; log: string } {
+  return { result: definitelyNotSent ? { kind: "fail" } : { kind: "next" }, log };
+}
+
+/** No provider call, a rail refusal, or a provider's definite rejection. An
+ *  AMBIGUOUS outcome wins over all three — the bridge names a refusal such as
+ *  `in_flight` for a send that may still go out.
+ *  Exported for tests only: no template rail returns `refusedBy` today. */
+export function definitelyNotSent(res: {
+  attempted?: boolean;
+  refusedBy?: string;
+  providerOutcome?: "DEFINITELY_REJECTED" | "AMBIGUOUS";
+}): boolean {
+  if (res.providerOutcome === "AMBIGUOUS") return false;
+  return (
+    res.attempted !== true ||
+    Boolean(res.refusedBy) ||
+    res.providerOutcome === "DEFINITELY_REJECTED"
+  );
+}
 
 function mergeSubject(
   ctx: NodeContext,
@@ -91,6 +165,7 @@ function mergeSubject(
       name: ctx.contact.name,
       email: ctx.contact.email,
       phone: ctx.contact.phone,
+      customFields: ctx.contact.customFields ?? null,
     },
     owner: ctx.owner,
     workspace: { name: ctx.subAccount?.name ?? "" },
@@ -106,7 +181,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "skipped:opt_out" };
   const to = contact.email;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_email" };
-  if (!emailIsConfigured()) {
+  if (!emailIsConfigured(ctx.subAccount)) {
     return { result: { kind: "next" }, log: "error:email_not_configured" };
   }
 
@@ -129,22 +204,30 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     cfg.body ?? "",
     mergeSubject(ctx, unsubscribeLink)
   );
+  // HTML render: substituted values are escaped (a contact's name or a
+  // custom field set over the public API is untrusted free text), but the
+  // unsubscribe anchor we supply ourselves must stay real markup.
   const htmlInner = resolveMergeTags(
     cfg.body ?? "",
-    mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`)
+    mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`),
+    { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
+  ctx.sent = { channel: "email", parts: [subject, text] };
 
   try {
     const { id: messageId } = await sendEmail({
+      contactId: contact.id,
       to,
       subject: subject || "(no subject)",
       text,
       html,
       replyTo: ctx.subAccount?.replyToEmail ?? undefined,
       from: tenantFrom(ctx.subAccount),
+      subAccount: ctx.subAccount,
       meter: { subAccountId: ctx.subAccountId },
     });
+    ctx.sent.messageSid = messageId;
     // Trace on the CONTACT, not just the run history — an automation that
     // emails a customer must be visible from the record the operator opens.
     try {
@@ -156,7 +239,12 @@ const execSendEmail: NodeExecutor = async (ctx) => {
           type: "email_sent",
           content: `Email (workflow): ${subject || "(no subject)"}`,
           createdBy: "workflow",
-          meta: { messageId, subject: subject || "(no subject)" },
+          meta: {
+            messageId,
+            subject: subject || "(no subject)",
+            workflowId: ctx.workflowId,
+            runId: ctx.runId,
+          },
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (err) {
@@ -164,6 +252,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     }
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -189,6 +278,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "error:sms_not_configured" };
   }
   const body = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
+  ctx.sent = { channel: "sms", parts: [body] };
   try {
     const sent = await sendSmsForSubAccount({
       subAccountId: ctx.subAccountId,
@@ -196,6 +286,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
       to,
       body,
     });
+    ctx.sent.messageSid = sent.sid;
     // Trace on the contact + unified inbox, mirroring the manual send
     // route. Thread/inbox rows only in dedicated mode: on the shared agency
     // number the inbound webhook can't resolve a sub-account, so a reply
@@ -213,7 +304,12 @@ const execSendSms: NodeExecutor = async (ctx) => {
           type: "sms_sent",
           content: `SMS (workflow): ${preview}`,
           createdBy: "workflow",
-          meta: { sid: sent.sid, mode: sent.mode },
+          meta: {
+            sid: sent.sid,
+            mode: sent.mode,
+            workflowId: ctx.workflowId,
+            runId: ctx.runId,
+          },
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (err) {
@@ -268,6 +364,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = providerAttempted(err);
     if (err instanceof SmsRecipientUnsubscribedError) {
       // The carrier says this number texted STOP (possibly before it was
       // wired to our webhook). Record it so the run history explains the
@@ -286,7 +383,13 @@ const execSendSms: NodeExecutor = async (ctx) => {
             type: "automation_step_skipped",
             content: `SMS refused by carrier — ${to} is unsubscribed (Twilio 21610).`,
             createdBy: "workflow",
-            meta: { kind: "sms_opt_out", word: "21610", optedOut: true },
+            meta: {
+              kind: "sms_opt_out",
+              word: "21610",
+              optedOut: true,
+              workflowId: ctx.workflowId,
+              runId: ctx.runId,
+            },
             createdAt: FieldValue.serverTimestamp(),
           });
       } catch (recordErr) {
@@ -301,7 +404,10 @@ const execSendSms: NodeExecutor = async (ctx) => {
   }
 };
 
-const execWhatsappTemplate: NodeExecutor = async (ctx) => {
+/** Exported for tests only — the registry below is the production entry point.
+ *  The one seam where readiness, template approval and dispatch have to agree
+ *  on the sender has no other place to be asserted from. */
+export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as WhatsappTemplateConfig;
   const contact = ctx.contact;
   if (contact.whatsappOptedOut)
@@ -311,11 +417,25 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   // Requires the agency WhatsApp gate AND a configured WhatsApp sender. The
   // builder surfaces this as a red node, but re-check here in case the gate
   // flipped off after the workflow was built.
-  if (
-    ctx.subAccount?.whatsappEnabledByAgency !== true ||
-    !subAccountWhatsappIsConfigured(ctx.subAccount?.twilioConfig)
-  ) {
-    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  if (ctx.subAccount?.whatsappEnabledByAgency !== true) {
+    return whatsappSendFailed("error:whatsapp_not_configured", true);
+  }
+  // Per-rail, and it must agree with the builder's red-node readiness or the
+  // builder promises a step the run then skips. The old Twilio-shaped check
+  // refused Cloud, whose templates dispatchWhatsappTemplateSend supports.
+  const tplReadiness = await checkWhatsappReadiness({
+    subAccountId: ctx.subAccountId,
+    subAccount: ctx.subAccount ?? null,
+    senderId: cfg.senderId,
+  });
+  if (!tplReadiness.ready) {
+    return whatsappSendFailed("error:whatsapp_not_configured", true);
+  }
+  // The bridge has no templates at all; its own dispatcher refuses, but
+  // skipping here keeps the log honest about WHY rather than surfacing a send
+  // failure for a step that could never run.
+  if (!capabilitiesFor(tplReadiness.provider).supportsTemplates) {
+    return { result: { kind: "next" }, log: "skipped:rail_has_no_templates" };
   }
   if (!cfg.templateId)
     return { result: { kind: "next" }, log: "skipped:no_template" };
@@ -327,10 +447,11 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   // Approval is per rail — a template cleared on Twilio has never been seen by
   // our own WABA. Checking the flat fields would pass a template approved on
   // the rail this workspace no longer uses.
-  const { provider: waProvider } = resolveProviderForSubAccount(ctx.subAccount);
-  if (!tpl || !isTemplateApprovedFor(tpl, waProvider)) {
+  // The rail READINESS resolved, not a second resolution of its own: asking
+  // twice is how a step gets admitted on one rail and refused on another.
+  if (!tpl || !isTemplateApprovedFor(tpl, tplReadiness.provider)) {
     // Deleted, never approved on this rail, or approval lost (paused/disabled).
-    return { result: { kind: "next" }, log: "error:template_not_approved" };
+    return whatsappSendFailed("error:template_not_approved", true);
   }
 
   const subject = mergeSubject(ctx, "");
@@ -345,6 +466,7 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     subject,
     manualValues,
   });
+  ctx.sent = { channel: "whatsapp", parts: [], template: tpl, templateValues: contentVariables };
 
   try {
     // Through the provider dispatcher, not Twilio directly: a workspace on the
@@ -356,6 +478,7 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
       to,
       template: tpl,
       values: contentVariables,
+      senderId: cfg.senderId,
       sendViaTwilio: async (contentSid) => {
         const r = await sendWhatsappTemplateForSubAccount({
           subAccountId: ctx.subAccountId,
@@ -368,16 +491,284 @@ const execWhatsappTemplate: NodeExecutor = async (ctx) => {
       },
     });
     if (!res.ok) {
+      ctx.sent.attempted = res.attempted === true && !res.refusedBy;
+      return whatsappSendFailed(`error:${res.error ?? "send_failed"}`, definitelyNotSent(res));
+    }
+    ctx.sent.messageSid = res.messageId ?? null;
+    // Recorded exactly as send_whatsapp and the manual template route record
+    // it, so an operator reads the rendered template in the thread. A record
+    // failure after a real send does not fail the run: the message went out.
+    const rendered = (tpl.body ?? "").replace(
+      /\{\{\s*(\d+)\s*\}\}/g,
+      (_match, position: string) => contentVariables[Number(position) - 1] ?? "",
+    );
+    try {
+      const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
+      const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();
+      await messageRef.set({
+        agencyId: ctx.agencyId,
+        subAccountId: ctx.subAccountId,
+        contactId: contact.id,
+        direction: "outbound",
+        status: "sent",
+        body: rendered,
+        buttons: null,
+        from: tplReadiness.sender.phoneNumber,
+        to,
+        twilioMessageSid: res.messageId ?? null,
+        sentByUid: null,
+        error: null,
+        readAt: null,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn("[workflows] WhatsApp template message-row write failed", err);
+      return { result: { kind: "next" }, log: "sent:message_record_failed" };
+    }
+    await upsertConversationForMessage({
+      contactId: contact.id,
+      subAccountId: ctx.subAccountId,
+      agencyId: ctx.agencyId,
+      contactName: contact.name ?? "",
+      contactPhone: to,
+      channel: "whatsapp",
+      direction: "outbound",
+      body: rendered || `[Template: ${tpl.displayName}]`,
+    });
+    return { result: { kind: "next" }, log: "ok" };
+  } catch (err) {
+    if (err instanceof UsageQuotaExceededError) {
+      // Stops the run. The quota is checked before the provider is called, so
+      // nothing went out — waiting on a reply to it would only manufacture a
+      // "no reply" follow-up. The log stays `skipped:` so it is not counted as
+      // a failed review ask.
+      return whatsappSendFailed("skipped:quota", true);
+    }
+    ctx.sent.attempted = providerAttempted(err);
+    return whatsappSendFailed(
+      `error:${err instanceof Error ? err.message : "send_failed"}`,
+      !ctx.sent.attempted,
+    );
+  }
+};
+
+/**
+ * Free-form WhatsApp, template only as the closed-window fallback.
+ *
+ * The difference from `execWhatsappTemplate` is where the send mode is decided.
+ * That node always sends a template, so it bills at template rates even when
+ * the contact's service window is open and text would be free — the recurring
+ * cost `docs/PARITY_PLAN.md` traced to the review-ask step. Here the decision
+ * belongs to `dispatchWhatsappSend`, which calls the one shared window rule,
+ * so a step that fires just after a customer replies costs nothing.
+ *
+ * It is also the node a `bridge` workspace uses: the rail has no templates, and
+ * `resolveWaSendMode` returns text mode for it by declared capability rather
+ * than by special case. `checkWhatsappReadiness` now resolves the bridge for
+ * real — credentials plus a live health probe — so this node runs there.
+ *
+ * Readiness goes through `checkWhatsappReadiness` rather than the Twilio-shaped
+ * credential check, which would refuse a correctly configured Cloud or bridge
+ * workspace.
+ */
+/** Exported for tests only — the registry below is the production entry point.
+ *  Its template-variable resolution has no other seam to assert against. */
+export const execSendWhatsapp: NodeExecutor = async (ctx) => {
+  const cfg = ctx.node.config as unknown as SendWhatsappConfig;
+  const contact = ctx.contact;
+  if (contact.whatsappOptedOut)
+    return { result: { kind: "next" }, log: "skipped:opt_out" };
+  const to = contact.phone;
+  if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
+  if (ctx.subAccount?.whatsappEnabledByAgency !== true) {
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  }
+  const readiness = await checkWhatsappReadiness({
+    subAccountId: ctx.subAccountId,
+    subAccount: ctx.subAccount,
+  });
+  if (!readiness.ready) {
+    return { result: { kind: "next" }, log: "error:whatsapp_not_configured" };
+  }
+
+  const subject = mergeSubject(ctx, "");
+  const body = resolveMergeTags(cfg.body ?? "", subject);
+
+  // The template is optional. A step that only ever fires inside an open
+  // window needs none — and needs no Meta approval to ship.
+  let template: CloudTemplateRef | null = null;
+  let inWindowButtons: InteractiveResult | null = null;
+  let templateValues: string[] = [];
+  let templateBody = "";
+  let tplDoc: WhatsappTemplateDoc | null = null;
+  if (cfg.templateId) {
+    const tplSnap = await getAdminDb()
+      .doc(`subAccounts/${ctx.subAccountId}/whatsappTemplates/${cfg.templateId}`)
+      .get();
+    tplDoc = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
+  }
+  if (tplDoc) {
+    // The variables have to be resolved here, exactly as execWhatsappTemplate
+    // does. Meta fills a template's {{1}}, {{2}} from the `parameters` list;
+    // sending an empty `components` for a template that declares variables
+    // is a 400 from Graph, or worse, a message with visible placeholders
+    // reaching the customer. `merge_tag` variables resolve from the contact;
+    // MANUAL ones are operator-set strings that may themselves carry tags.
+    const manualValues: Record<number, string> = {};
+    for (const [pos, val] of Object.entries(cfg.manualValues ?? {})) {
+      manualValues[Number(pos)] = resolveMergeTags(val ?? "", subject);
+    }
+    const values = resolveTemplateVariables({
+      variables: tplDoc.variables ?? [],
+      subject,
+      manualValues,
+    });
+    templateValues = values;
+    templateBody = (tplDoc.body ?? "").replace(
+      /\{\{\s*(\d+)\s*\}\}/g,
+      (_match, position: string) => values[Number(position) - 1] ?? "",
+    );
+    // A template with buttons goes out WITH them inside the window, as a
+    // free interactive message that needs no approval — how the review link
+    // rides behind a "Leave a review" button without becoming a paid,
+    // likely-MARKETING template send. Its text is the template's, since the
+    // buttons belong to it. Whether they CAN be rendered in-window is decided
+    // by the dispatcher once the window is known: outside it an approved
+    // template goes as itself, whatever its buttons.
+    if (tplDoc.buttons?.length) {
+      // An in-window button message with a blank variable is refused: Cloud
+      // would send "Thank you !", and Twilio may substitute the template's
+      // SAMPLE value — a stranger's name — to a real customer. (Out-of-window
+      // template sends are unchanged; that rule is gap 5b.)
+      inWindowButtons = values.some((v) => !v.trim())
+        ? { ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY" }
+        : interactiveFromButtons(templateBody, tplDoc.buttons);
+    }
+    // Approval is per rail, as in execWhatsappTemplate: a template cleared on
+    // Twilio has never been seen by our own WABA. The rail is the one
+    // readiness resolved, so this check and the dispatcher below agree.
+    if (isTemplateApprovedFor(tplDoc, readiness.provider)) {
+      template = {
+        name: tplDoc.name,
+        language: tplDoc.language ?? "en",
+        components: values.length
+          ? [
+              {
+                type: "body",
+                parameters: values.map((text) => ({ type: "text", text })),
+              },
+            ]
+          : [],
+        approved: true,
+      };
+    }
+  }
+  if (!body.trim() && !inWindowButtons)
+    return { result: { kind: "next" }, log: "skipped:empty_body" };
+  // What goes out depends on the window, decided by the dispatcher; until it
+  // answers, either could.
+  ctx.sent = { channel: "whatsapp", parts: [body], template: tplDoc, templateValues };
+
+  try {
+    const res = await dispatchWhatsappSend({
+      subAccountId: ctx.subAccountId,
+      subAccount: ctx.subAccount,
+      contactId: contact.id,
+      to,
+      body,
+      template,
+      inWindowButtons,
+      // Twilio sends in-session buttons only by ContentSid: an unapproved
+      // Content resource per template, cached on the doc.
+      sendButtonsViaTwilio:
+        tplDoc && cfg.templateId && ctx.subAccount?.twilioConfig
+          ? async () => {
+              const contentSid = await ensureTwilioSessionContent({
+                subAccountId: ctx.subAccountId,
+                templateId: cfg.templateId!,
+                template: tplDoc!,
+                accountSid: ctx.subAccount!.twilioConfig!.accountSid,
+                authToken: ctx.subAccount!.twilioConfig!.authToken,
+              });
+              const r = await sendWhatsappTemplateForSubAccount({
+                subAccountId: ctx.subAccountId,
+                subAccount: ctx.subAccount,
+                to,
+                contentSid,
+                contentVariables: templateValues,
+              });
+              return { ok: true, messageId: r.sid };
+            }
+          : undefined,
+      sendViaTwilio: async () => {
+        const r = await sendWhatsappForSubAccount({
+          subAccountId: ctx.subAccountId,
+          subAccount: ctx.subAccount,
+          to,
+          body,
+        });
+        return { ok: true, messageId: r.sid };
+      },
+    });
+    if (!res.ok) {
+      ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return {
         result: { kind: "next" },
         log: `error:${res.error ?? "send_failed"}`,
       };
     }
+    // A successful provider call does not write the CRM thread. Use the same
+    // provider message id as the manual composer so the row is addressable.
+    // Keep recording failures distinct: the message has already been sent.
+    const sentTemplate = res.sentAs === "template" || res.sentAs === "interactive";
+    const recordedBody = sentTemplate ? templateBody : body;
+    // Only an actual interactive-button send records buttons — a template
+    // send that fell back to plain text (outside the window) shows no
+    // buttons the customer never received.
+    const recordedButtons: WhatsappTemplateButton[] | null =
+      res.sentAs === "interactive" && tplDoc?.buttons?.length ? tplDoc.buttons : null;
+    ctx.sent = sentTemplate
+      ? { channel: "whatsapp", parts: [], template: tplDoc, templateValues, messageSid: res.messageId ?? null }
+      : { channel: "whatsapp", parts: [body], messageSid: res.messageId ?? null };
+    try {
+      const messages = getAdminDb().collection(`contacts/${contact.id}/whatsappMessages`);
+      const messageRef = res.messageId ? messages.doc(res.messageId) : messages.doc();
+      await messageRef.set({
+          agencyId: ctx.agencyId,
+          subAccountId: ctx.subAccountId,
+          contactId: contact.id,
+          direction: "outbound",
+          status: "sent",
+          body: recordedBody,
+          buttons: recordedButtons,
+          from: readiness.sender.phoneNumber,
+          to,
+          twilioMessageSid: res.messageId ?? null,
+          sentByUid: null,
+          error: null,
+          readAt: null,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+    } catch (err) {
+      console.warn("[workflows] WhatsApp message-row write failed", err);
+      return { result: { kind: "next" }, log: "sent:message_record_failed" };
+    }
+    await upsertConversationForMessage({
+      contactId: contact.id,
+      subAccountId: ctx.subAccountId,
+      agencyId: ctx.agencyId,
+      contactName: contact.name ?? "",
+      contactPhone: to,
+      channel: "whatsapp",
+      direction: "outbound",
+      body: recordedBody,
+    });
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
+    ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
@@ -391,9 +782,23 @@ const execWait: NodeExecutor = async (ctx) => {
   return { result: { kind: "wait", seconds }, log: `wait:${seconds}s` };
 };
 
-const execIfElse: NodeExecutor = async (ctx) => {
+/** Enough for a button payload or a short free-text answer; short enough that
+ *  carrying it on the run doc costs nothing. */
+const REPLY_TEXT_MAX = 500;
+
+/** Exported for tests only — the registry is the production entry point. */
+export const execIfElse: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as IfElseConfig;
-  const pass = evalConditionGroup(cfg.conditions, ctx.contact);
+  // The reply that resumed an upstream wait_for_reply, if there was one. It
+  // rides run.context (surfaced here as triggerContext) rather than the
+  // contact, because it is per-run: the same contact can be mid-flight in two
+  // runs that are branching on different answers.
+  const lastReply = ctx.triggerContext?.lastReply as
+    | { text?: string }
+    | undefined;
+  const pass = evalConditionGroup(cfg.conditions, ctx.contact, {
+    replyText: lastReply?.text ?? null,
+  });
   return { result: { kind: "branch", value: pass }, log: `branch:${pass}` };
 };
 
@@ -426,16 +831,79 @@ const execRemoveTag: NodeExecutor = async (ctx) => {
   return { result: { kind: "next" }, log: `tag-:${tag}` };
 };
 
+/**
+ * A deal move fires `pipeline.stage.changed`, which can enrol the contact in
+ * another run whose move_stage moves the deal again. A run never re-enters
+ * itself (each trigger enrols a NEW run), and a move to the stage the deal is
+ * already in fires nothing, so a workflow cannot loop on its own — but two
+ * workflows moving the deal back and forth would, forever. Each workflow-made
+ * move therefore carries its depth on the trigger context; past this many
+ * hops the step leaves the deal alone.
+ */
+const MAX_WORKFLOW_DEAL_MOVES = 5;
+
 const execMoveStage: NodeExecutor = async (ctx) => {
-  const stage = (
-    (ctx.node.config as unknown as MoveStageConfig).stage ?? ""
-  ).trim();
+  const cfg = ctx.node.config as unknown as MoveStageConfig;
+  const stage = (cfg.stage ?? "").trim();
   if (!stage) return { result: { kind: "next" }, log: "skipped:no_stage" };
   await getAdminDb()
     .doc(`contacts/${ctx.contact.id}`)
     .update({ pipelineStage: stage, updatedAt: FieldValue.serverTimestamp() });
-  return { result: { kind: "next" }, log: `stage:${stage}` };
+  const pipelineId = (cfg.pipelineId ?? "").trim();
+  if (!pipelineId) return { result: { kind: "next" }, log: `stage:${stage}` };
+  const deal = await moveContactDeal(ctx, pipelineId, stage);
+  return { result: { kind: "next" }, log: `stage:${stage};deal:${deal}` };
 };
+
+const toMillis = (v: unknown): number =>
+  v instanceof Date
+    ? v.getTime()
+    : typeof (v as Timestamp | undefined)?.toMillis === "function"
+      ? (v as Timestamp).toMillis()
+      : 0;
+
+/** Move the contact's most recently updated open deal in `pipelineId` to
+ *  `stage` through the deals service. Returns the step-log suffix. */
+async function moveContactDeal(
+  ctx: NodeContext,
+  pipelineId: string,
+  stage: string
+): Promise<string> {
+  const depth = Number(ctx.triggerContext.workflowDepth) || 0;
+  if (depth >= MAX_WORKFLOW_DEAL_MOVES) return "skipped:loop_guard";
+  const pipeline = await loadPipeline(ctx.subAccountId, pipelineId);
+  if (!pipeline) return "skipped:pipeline_not_found";
+  if (!findStage(pipeline, stage)) return "skipped:stage_not_in_pipeline";
+
+  // Equality-only query; pipeline + open filtering in memory, because a deal
+  // with no pipelineId belongs to the default pipeline and a query can't
+  // match a missing field.
+  const snap = await getAdminDb()
+    .collection("deals")
+    .where("subAccountId", "==", ctx.subAccountId)
+    .where("contactId", "==", ctx.contact.id)
+    .get();
+  const open = snap.docs
+    .map((d) => ({ id: d.id, data: d.data() }))
+    .filter(
+      ({ data }) =>
+        dealPipelineId(data) === pipeline.id &&
+        !findStage(pipeline, data.stageId as string)?.terminal
+    )
+    .sort((a, b) => toMillis(b.data.updatedAt) - toMillis(a.data.updatedAt));
+  const target = open[0];
+  if (!target) return "skipped:no_open_deal";
+  if (target.data.stageId === stage) return `unchanged:${target.id}`;
+
+  await updateDealServerSide({
+    dealId: target.id,
+    patch: { stageId: stage },
+    userId: ctx.createdByUid,
+    expectedSubAccountId: ctx.subAccountId,
+    workflowDepth: depth + 1,
+  });
+  return `moved:${target.id}`;
+}
 
 // Only these top-level contact fields may be set by a workflow — prevents a
 // crafted config from clobbering tenancy/system keys. customFields.* is open.
@@ -473,6 +941,14 @@ const execCreateTask: NodeExecutor = async (ctx) => {
     cfg.dueInDays && cfg.dueInDays > 0
       ? new Date(Date.now() + cfg.dueInDays * 86_400_000)
       : null;
+  // Checked at run time, not save time: a member removed after the workflow
+  // was saved must not keep receiving tasks.
+  const wanted =
+    typeof cfg.assignedToUid === "string" ? cfg.assignedToUid.trim() : "";
+  const assignedToUid =
+    wanted && (await isAssignableMember(ctx.subAccountId, wanted))
+      ? wanted
+      : null;
   await createTaskServerSide({
     subAccountId: ctx.subAccountId,
     agencyId: ctx.agencyId,
@@ -484,8 +960,14 @@ const execCreateTask: NodeExecutor = async (ctx) => {
     contactId: ctx.contact.id,
     dealId: null,
     eventId: null,
+    assignedToUid,
+    workflow: { workflowId: ctx.workflowId, runId: ctx.runId },
   });
-  return { result: { kind: "next" }, log: "task_created" };
+  return {
+    result: { kind: "next" },
+    log:
+      wanted && !assignedToUid ? "task_created:unassigned_not_member" : "task_created",
+  };
 };
 
 /**
@@ -512,7 +994,7 @@ const execNotify: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as NotifyConfig;
   const to = resolveNotifyTo(cfg, ctx);
   if (!to) return { result: { kind: "next" }, log: "skipped:no_recipient" };
-  if (!emailIsConfigured()) {
+  if (!emailIsConfigured(ctx.subAccount)) {
     return { result: { kind: "next" }, log: "error:email_not_configured" };
   }
   const subject = resolveMergeTags(
@@ -520,12 +1002,15 @@ const execNotify: NodeExecutor = async (ctx) => {
     mergeSubject(ctx, "")
   );
   const text = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
-  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${text.replace(
-    /\r?\n/g,
-    "<br>"
-  )}</body></html>`;
+  // Separate render for HTML — the plain-text one interpolates contact
+  // values raw, which is correct for text and unsafe for markup.
+  const htmlInner = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""), {
+    escape: "html",
+  }).replace(/\r?\n/g, "<br>");
+  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
   try {
     await sendEmail({
+      archive: false,
       to,
       subject: subject || "Workflow notification",
       text,
@@ -598,6 +1083,7 @@ const REGISTRY: Partial<Record<WorkflowNodeType, NodeExecutor>> = {
   send_email: execSendEmail,
   send_sms: execSendSms,
   whatsapp_template: execWhatsappTemplate,
+  send_whatsapp: execSendWhatsapp,
   wait: execWait,
   if_else: execIfElse,
   goal: execGoal,
@@ -612,24 +1098,75 @@ const REGISTRY: Partial<Record<WorkflowNodeType, NodeExecutor>> = {
 
 /* ----------------------------- Dispatch -------------------------------- */
 
+const DEAL_TRIGGERS = new Set<WorkflowTriggerType>([
+  "pipeline.stage.changed",
+  "deal.created",
+  "deal.won",
+  "deal.lost",
+]);
+
+const BOOKING_TRIGGERS = new Set<WorkflowTriggerType>([
+  "booking.created",
+  "booking.cancelled",
+  "booking.rescheduled",
+  "booking.confirmed",
+  "booking.showed",
+  "booking.no_show",
+]);
+
 interface FireInput {
   subAccountId: string;
   agencyId: string;
   type: WorkflowTriggerType;
   contactId: string;
   context?: Record<string, unknown>;
+  /**
+   * Public-API key that caused this trigger, when the write came in over
+   * /api/v1/*. Enrolments are counted against the key's hourly cap (see
+   * lib/api/enrolment-cap) so a looping script can't message a whole list.
+   */
+  apiKeyId?: string;
+}
+
+/** Why a matching-type workflow did not take the contact. */
+export type EnrolSkipReason =
+  | "trigger_mismatch"
+  | "filters_not_met"
+  | "reentry_blocked"
+  | "no_start_node";
+
+/**
+ * What one trigger did. Callers that fire and forget ignore it; a caller that
+ * owes its client an answer (the v1 contact upsert) awaits it. `reason` is
+ * set when nothing was even considered.
+ */
+export interface TriggerOutcome {
+  enrolled: Array<{ workflowId: string; runId: string; status: "running" | "failed" }>;
+  skipped: Array<{ workflowId: string; reason: EnrolSkipReason }>;
+  reason: "automations_paused" | "no_active_workflow" | "contact_not_found" | "error" | null;
 }
 
 /**
  * Find every ACTIVE workflow matching the trigger + filters and enroll the
  * contact. Server-only; never throws — a workflow problem must not break the
  * action that triggered it.
+ *
+ * When `apiKeyId` is set the caller has already RESERVED one enrolment
+ * against that key's hourly cap, so this reconciles the reservation against
+ * the number of workflows the contact actually entered. See
+ * lib/api/enrolment-cap.
  */
-export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
+export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutcome> {
   const db = getAdminDb();
+  const outcome: TriggerOutcome = { enrolled: [], skipped: [], reason: null };
+  const settle = (reason: TriggerOutcome["reason"]) => {
+    outcome.reason = reason;
+    return outcome;
+  };
+  let enrolled = 0;
   try {
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
-    if (subSnap.data()?.automationsPaused === true) return;
+    if (subSnap.data()?.automationsPaused === true) return settle("automations_paused");
 
     const matches = await db
       .collection("workflows")
@@ -637,10 +1174,10 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
       .where("status", "==", "active")
       .where("trigger.type", "==", input.type)
       .get();
-    if (matches.empty) return;
+    if (matches.empty) return settle("no_active_workflow");
 
     const contactSnap = await db.doc(`contacts/${input.contactId}`).get();
-    if (!contactSnap.exists) return;
+    if (!contactSnap.exists) return settle("contact_not_found");
     const contact = {
       id: contactSnap.id,
       ...(contactSnap.data() as Omit<Contact, "id">),
@@ -648,7 +1185,13 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
 
     for (const doc of matches.docs) {
       const wf = { id: doc.id, ...(doc.data() as Omit<WorkflowDoc, "id">) };
-      if (!wf.startNodeId) continue;
+      const skip = (reason: EnrolSkipReason) => {
+        outcome.skipped.push({ workflowId: wf.id, reason });
+      };
+      if (!wf.startNodeId) {
+        skip("no_start_node");
+        continue;
+      }
 
       // Trigger-specific narrowing.
       if (
@@ -656,6 +1199,7 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.formId &&
         wf.trigger.formId !== input.context?.formId
       ) {
+        skip("trigger_mismatch");
         continue;
       }
       if (
@@ -663,6 +1207,36 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.toStage &&
         wf.trigger.toStage !== input.context?.toStage
       ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      // Deal triggers may be pinned to one pipeline. Unset = any pipeline,
+      // which is what every workflow saved before pipelines existed means.
+      if (
+        DEAL_TRIGGERS.has(wf.trigger.type) &&
+        wf.trigger.pipelineId &&
+        wf.trigger.pipelineId !== input.context?.pipelineId
+      ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      if (
+        wf.trigger.type === "link.clicked" &&
+        wf.trigger.linkId &&
+        wf.trigger.linkId !== input.context?.linkId
+      ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      // A booking.* workflow may be pinned to one booking page. Unset =
+      // any page (also what a manual, non-booking-page event's absent
+      // `bookingPageSlug` context always fails to match against).
+      if (
+        BOOKING_TRIGGERS.has(wf.trigger.type) &&
+        wf.trigger.bookingPageSlug &&
+        wf.trigger.bookingPageSlug !== input.context?.bookingPageSlug
+      ) {
+        skip("trigger_mismatch");
         continue;
       }
       if (
@@ -670,15 +1244,50 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<void> {
         wf.trigger.channel &&
         wf.trigger.channel !== input.context?.channel
       ) {
+        skip("trigger_mismatch");
         continue;
       }
-      if (!evalConditionGroup(wf.trigger.filters, contact)) continue;
-      if (!(await reentryAllows(wf, contact.id))) continue;
+      // A `contact.tag.added` workflow may name the one tag it starts on.
+      // Without it the workflow starts on ANY new tag, and a has_tag filter
+      // alone cannot tell "this tag was just added" from "this contact
+      // already had it when some other tag arrived".
+      if (
+        wf.trigger.type === "contact.tag.added" &&
+        wf.trigger.tag &&
+        !(input.context?.addedTags as string[] | undefined)?.includes(wf.trigger.tag)
+      ) {
+        skip("trigger_mismatch");
+        continue;
+      }
+      if (!evalConditionGroup(wf.trigger.filters, contact)) {
+        skip("filters_not_met");
+        continue;
+      }
+      if (!(await reentryAllows(wf, contact.id))) {
+        skip("reentry_blocked");
+        continue;
+      }
 
-      await enroll(wf, contact.id, input.context ?? {});
+      const run = await enroll(wf, contact.id, input.context ?? {});
+      outcome.enrolled.push({ workflowId: wf.id, ...run });
+      enrolled += 1;
     }
+    return outcome;
   } catch (err) {
     console.error("[workflows] fireWorkflowTrigger failed", err);
+    return settle("error");
+  } finally {
+    // Settle the reservation the route already charged for this request —
+    // on EVERY exit path, including the early returns above and a throw
+    // part-way through the loop, or a request that enrolled nobody would
+    // keep its reservation for the rest of the hour.
+    if (input.apiKeyId) {
+      await reconcileEnrolments({
+        subAccountId: input.subAccountId,
+        keyId: input.apiKeyId,
+        actual: enrolled,
+      });
+    }
   }
 }
 
@@ -717,7 +1326,7 @@ async function enroll(
   wf: WorkflowDoc,
   contactId: string,
   context: Record<string, unknown>
-): Promise<void> {
+): Promise<{ runId: string; status: "running" | "failed" }> {
   const db = getAdminDb();
   const runRef = db.collection("workflowRuns").doc();
   await runRef.set({
@@ -738,21 +1347,39 @@ async function enroll(
     .doc(`workflows/${wf.id}`)
     .update({ "stats.enrolled": FieldValue.increment(1) })
     .catch(() => {});
+  const run: RunActivityRun = {
+    id: runRef.id,
+    contactId,
+    workflowId: wf.id,
+    subAccountId: wf.subAccountId,
+    agencyId: wf.agencyId,
+  };
+  await writeRunActivity(run, wf.name, "automation_started");
 
   if (!qstashIsConfigured()) {
     await runRef.update({ status: "failed" });
-    return;
+    await writeRunActivity(
+      run,
+      wf.name,
+      "automation_failed",
+      "scheduling is not configured"
+    );
+    return { runId: runRef.id, status: "failed" };
   }
-  await scheduleNode(runRef, wf.startNodeId!, 0);
+  const scheduled = await scheduleNode(runRef, wf.startNodeId!, 0, run, wf);
+  return { runId: runRef.id, status: scheduled ? "running" : "failed" };
 }
 
 /* ------------------------------ Run worker ----------------------------- */
 
+/** Returns false when the step could not be published (run marked failed). */
 async function scheduleNode(
   runRef: FirebaseFirestore.DocumentReference,
   nodeId: string,
-  delaySeconds: number
-): Promise<void> {
+  delaySeconds: number,
+  run: RunActivityRun,
+  wf: WorkflowDoc | null
+): Promise<boolean> {
   const res = await publishCallback({
     pathname: STEP_PATH,
     body: { runId: runRef.id, nodeId },
@@ -764,7 +1391,13 @@ async function scheduleNode(
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return;
+    await writeRunActivity(
+      run,
+      wf?.name ?? null,
+      "automation_failed",
+      "the next step could not be scheduled"
+    );
+    return false;
   }
   await runRef.update({
     currentNodeId: nodeId,
@@ -772,11 +1405,57 @@ async function scheduleNode(
     qstashMessageId: res.messageId,
     updatedAt: FieldValue.serverTimestamp(),
   });
+  return true;
+}
+
+/** The run fields a contact-timeline row needs. */
+type RunActivityRun = Pick<
+  WorkflowRunDoc,
+  "id" | "contactId" | "workflowId" | "subAccountId" | "agencyId"
+>;
+
+/**
+ * `automation_started` / `automation_completed` / `automation_failed` on the
+ * contact — the run lifecycle as the operator sees it from the record.
+ * Keyed by run + type so a QStash redelivery of the step that flipped the
+ * status cannot duplicate the row. Never throws: the run doc is the source
+ * of truth and a timeline row must not fail a step.
+ */
+async function writeRunActivity(
+  run: RunActivityRun,
+  workflowName: string | null,
+  type: "automation_started" | "automation_completed" | "automation_failed",
+  detail?: string
+): Promise<void> {
+  const verb = type.replace("automation_", "");
+  const name = workflowName ? `"${workflowName}"` : run.workflowId;
+  try {
+    await getAdminDb()
+      .collection("contacts")
+      .doc(run.contactId)
+      .collection("activities")
+      .doc(`run_${run.id}_${type}`)
+      .set(
+        {
+          type,
+          content: `Workflow ${name} ${verb}${detail ? ` — ${detail}` : ""}`,
+          createdBy: "workflow",
+          agencyId: run.agencyId,
+          subAccountId: run.subAccountId,
+          meta: { workflowId: run.workflowId, runId: run.id },
+          createdAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+  } catch (err) {
+    console.warn(`[workflows] ${type} activity write failed`, err);
+  }
 }
 
 async function completeRun(
   runRef: FirebaseFirestore.DocumentReference,
-  workflowId: string
+  run: RunActivityRun,
+  wf: WorkflowDoc | null
 ): Promise<void> {
   await runRef.update({
     status: "completed",
@@ -784,9 +1463,10 @@ async function completeRun(
     updatedAt: FieldValue.serverTimestamp(),
   });
   await getAdminDb()
-    .doc(`workflows/${workflowId}`)
+    .doc(`workflows/${run.workflowId}`)
     .update({ "stats.completed": FieldValue.increment(1) })
     .catch(() => {});
+  await writeRunActivity(run, wf?.name ?? null, "automation_completed");
 }
 
 /** Advance one node of a run. Idempotent on the run's history. */
@@ -810,6 +1490,12 @@ export async function runStep(
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),
     });
+    await writeRunActivity(
+      run,
+      null,
+      "automation_failed",
+      "the workflow no longer exists"
+    );
     return;
   }
   const wf = wfSnap.data() as WorkflowDoc;
@@ -825,7 +1511,7 @@ export async function runStep(
 
   const node = wf.nodes[nodeId];
   if (!node) {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   }
 
@@ -867,7 +1553,7 @@ export async function runStep(
 
   const owner = await loadOwner(agency);
   const exec = REGISTRY[node.type] ?? execPassThrough;
-  const { result, log } = await exec({
+  const stepCtx: NodeContext = {
     node,
     contact,
     subAccount,
@@ -875,9 +1561,11 @@ export async function runStep(
     subAccountId: run.subAccountId,
     agencyId: run.agencyId,
     createdByUid: wf.createdByUid,
+    workflowId: run.workflowId,
+    runId,
     triggerContext: run.context ?? {},
-  });
-
+  };
+  const { result, log } = await exec(stepCtx);
   const entry: WorkflowRunHistoryEntry = {
     nodeId,
     type: node.type,
@@ -888,12 +1576,46 @@ export async function runStep(
     history: FieldValue.arrayUnion(entry),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  // A review ask is logged once, here — after the history entry above, the
+  // step's idempotency marker, so nothing sits between the send and the
+  // marker. Sent, or failed after a provider was called; a skipped step, or
+  // one refused before sending, is not a request.
+  const failed = log.startsWith("error:");
+  if (stepCtx.sent && !log.startsWith("skipped:") && (!failed || stepCtx.sent.attempted)) {
+    await logIfReviewAsk({
+      sub: subAccount,
+      agencyId: run.agencyId,
+      subAccountId: run.subAccountId,
+      contactId: contact.id,
+      channel: stepCtx.sent.channel,
+      source: "workflow",
+      parts: stepCtx.sent.parts,
+      template: stepCtx.sent.template,
+      templateValues: stepCtx.sent.templateValues,
+      createdByUid: "workflow",
+      outcome: failed
+        ? { ok: false, failureKind: log.slice("error:".length) }
+        : { ok: true, messageSid: stepCtx.sent.messageSid },
+    });
+  }
 
   // Advance control flow.
   let target: string | null = null;
   let delay = 0;
   if (result.kind === "end") {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
+    return;
+  } else if (result.kind === "fail") {
+    await runRef.update({
+      status: "failed",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await writeRunActivity(
+      run,
+      wf.name ?? null,
+      "automation_failed",
+      `the ${node.type} step failed (${log})`
+    );
     return;
   } else if (result.kind === "branch") {
     const b = node.branches;
@@ -906,10 +1628,10 @@ export async function runStep(
   }
 
   if (!target) {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   }
-  await scheduleNode(runRef, target, delay);
+  await scheduleNode(runRef, target, delay, run, wf);
 }
 
 /* --------------------------- wait_for_reply ---------------------------- */
@@ -969,6 +1691,12 @@ async function stepWaitForReply(
         status: "failed",
         updatedAt: FieldValue.serverTimestamp(),
       });
+      await writeRunActivity(
+        run,
+        wf.name,
+        "automation_failed",
+        "the reply timeout could not be scheduled"
+      );
       return;
     }
     await runRef.update({ qstashMessageId: res.messageId });
@@ -1000,10 +1728,10 @@ async function stepWaitForReply(
 
   const target = node.branches?.whenFalse ?? null;
   if (!target) {
-    await completeRun(runRef, wf.id);
+    await completeRun(runRef, run, wf);
     return;
   }
-  await scheduleNode(runRef, target, 0);
+  await scheduleNode(runRef, target, 0, run, wf);
 }
 
 /**
@@ -1015,12 +1743,19 @@ async function stepWaitForReply(
  *
  * Equality-only query (contactId + status) — no composite index needed.
  * Never throws: a workflow problem must not break the inbound webhook.
+ * Returns how many runs this reply resumed — 0 tells the caller nothing was
+ * waiting (a late button tap is flagged for a human on that basis).
  */
 export async function resumeWaitingRunsOnReply(input: {
   subAccountId: string;
   contactId: string;
   channel: string;
-}): Promise<void> {
+  /** The inbound message body, so a downstream if_else can branch on WHAT the
+   *  contact said and not merely that they said something. Optional: callers
+   *  that predate this still resume the run, they just cannot branch on it. */
+  text?: string | null;
+}): Promise<number> {
+  let resumed = 0;
   try {
     const db = getAdminDb();
     const snap = await db
@@ -1028,7 +1763,7 @@ export async function resumeWaitingRunsOnReply(input: {
       .where("contactId", "==", input.contactId)
       .where("status", "==", "waiting")
       .get();
-    if (snap.empty) return;
+    if (snap.empty) return 0;
 
     for (const doc of snap.docs) {
       const run = doc.data() as WorkflowRunDoc;
@@ -1049,28 +1784,38 @@ export async function resumeWaitingRunsOnReply(input: {
           at: Timestamp.now(),
           result: `replied:${input.channel}`,
         };
+        // Capped: a run doc is read on every step, and an unbounded inbound
+        // body would be carried for the life of the run.
+        const replyText = (input.text ?? "").slice(0, REPLY_TEXT_MAX);
         tx.update(doc.ref, {
           waiting: null,
           status: "running",
           history: FieldValue.arrayUnion(entry),
+          "context.lastReply": {
+            text: replyText,
+            channel: input.channel,
+            at: Timestamp.now(),
+          },
           updatedAt: FieldValue.serverTimestamp(),
         });
         return true;
       });
       if (!claimed) continue;
+      resumed += 1;
 
       const wfSnap = await db.doc(`workflows/${run.workflowId}`).get();
       const wf = wfSnap.exists ? (wfSnap.data() as WorkflowDoc) : null;
       const target = wf?.nodes?.[nodeId]?.branches?.whenTrue ?? null;
       if (!target) {
-        await completeRun(doc.ref, run.workflowId);
+        await completeRun(doc.ref, run, wf);
         continue;
       }
-      await scheduleNode(doc.ref, target, 0);
+      await scheduleNode(doc.ref, target, 0, run, wf);
     }
   } catch (err) {
     console.warn("[workflows] resumeWaitingRunsOnReply failed", err);
   }
+  return resumed;
 }
 
 /** Manually enroll one contact to dry-run a workflow (ignores trigger/filters;

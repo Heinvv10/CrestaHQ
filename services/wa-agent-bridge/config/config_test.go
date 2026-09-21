@@ -237,6 +237,36 @@ func TestConsumerQuietHoursMustBeAPair(t *testing.T) {
 	}
 }
 
+// TestConsumerWebhookSecretIsOptionalAndAdditive: the CONSUMERS format is
+// only ever appended to. The 5-, 6- and 8-field forms that predate the
+// webhook secret must still parse with WebhookSecret empty, and the 9-field
+// form must carry the secret through, trimmed like the other fields.
+func TestConsumerWebhookSecretIsOptionalAndAdditive(t *testing.T) {
+	t.Setenv("CONSUMERS", strings.Join([]string{
+		"two|tok-two",
+		"five|tok-five|http://h/x|10|20",
+		"eight|tok-eight|http://h/x|10|20|admin|0|0",
+		"nine|tok-nine|http://h/x|10|20|admin|0|0| whsec_abc123 ",
+	}, ","))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("the pre-secret forms must still parse: %v", err)
+	}
+
+	byName := map[string]Consumer{}
+	for _, c := range cfg.Consumers {
+		byName[c.Name] = c
+	}
+	for _, name := range []string{"two", "five", "eight"} {
+		if byName[name].WebhookSecret != "" {
+			t.Fatalf("%q declared no webhook secret and must not have acquired one, got %q", name, byName[name].WebhookSecret)
+		}
+	}
+	if got := byName["nine"].WebhookSecret; got != "whsec_abc123" {
+		t.Fatalf("the 9-field form must carry its secret through, trimmed; got %q", got)
+	}
+}
+
 // TestConsumerQuietHoursRejectNonHours: a typo'd hour that silently becomes 0
 // gives a consumer a quiet window it never asked for.
 func TestConsumerQuietHoursRejectNonHours(t *testing.T) {
@@ -249,5 +279,28 @@ func TestConsumerQuietHoursRejectNonHours(t *testing.T) {
 		if _, err := Load(); err == nil {
 			t.Fatalf("%q must be refused at startup", entry)
 		}
+	}
+}
+
+// The inbound media budget is read from the environment like every other cap.
+// Unset stays 0 — "unset", which api resolves to its own default — rather than
+// being defaulted here, so the number lives in exactly one place.
+func TestInboundMediaBudgetFromEnv(t *testing.T) {
+	t.Setenv("CONSUMERS", "hermes|tok")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.InboundMediaPerSenderPerHour != 0 {
+		t.Fatalf("unset budget = %d, want 0 so api can apply its default", cfg.InboundMediaPerSenderPerHour)
+	}
+
+	t.Setenv("CAP_INBOUND_MEDIA_PER_SENDER_PER_HOUR", "7")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.InboundMediaPerSenderPerHour != 7 {
+		t.Fatalf("budget = %d, want 7", cfg.InboundMediaPerSenderPerHour)
 	}
 }

@@ -1,108 +1,57 @@
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
-import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
-import { checkQuota } from "@/lib/server/usage-meter";
-import { recordSend } from "@/lib/comms/usage";
-import type { SubAccountDoc } from "@/types";
+import {
+  isValidEmailSendPayload,
+  sendConversationEmail,
+} from "@/lib/server/conversation-send/email";
+import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 
-type Body = { contactId?: string; subject?: string; body?: string };
-
+/**
+ * Manual email send. Auth + request parsing only — every send-time check and
+ * the send itself live in the conversation send service, which the
+ * scheduled-message worker shares.
+ */
 export async function POST(request: Request) {
-  if (!emailIsConfigured()) {
-    return NextResponse.json(
-      { error: "Email is not configured on this deployment." },
-      { status: 503 },
-    );
-  }
-
   const auth = requireUid(request);
   if (auth instanceof NextResponse) return auth;
 
-  let payload: Body;
+  let payload: unknown;
   try {
-    payload = (await request.json()) as Body;
+    payload = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const contactId = payload.contactId?.trim();
-  const subject = payload.subject?.trim();
-  const body = payload.body?.trim();
+  if (!isValidEmailSendPayload(payload)) {
+    return NextResponse.json(
+      { error: "Invalid email message or thread headers." },
+      { status: 400 }
+    );
+  }
+  const contactId = payload.contactId.trim();
+  const subject = payload.subject.trim();
+  const body = payload.body.trim();
 
   if (!contactId || !subject || !body) {
     return NextResponse.json(
       { error: "contactId, subject, and body are required" },
-      { status: 400 },
+      { status: 400 }
     );
   }
 
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  if (!contact.email) {
-    return NextResponse.json(
-      { error: "This contact has no email address." },
-      { status: 400 },
-    );
-  }
-
-  // Reply-To: prefer the sub-account's nominated reply address (single
-  // source of truth — every reply for this client lands consistently in
-  // one inbox regardless of which teammate triggered the send). Falls
-  // back to the teammate's email if the sub-account hasn't set one yet,
-  // which preserves the old behavior for unconfigured deployments.
-  const subAccountSnap = await getAdminDb()
-    .doc(`subAccounts/${contact.subAccountId}`)
-    .get();
-  const subAccount = subAccountSnap.data() as SubAccountDoc | undefined;
-  const replyTo = subAccount?.replyToEmail ?? auth.email ?? undefined;
-
-  // Monthly email quota (Usage Metering v1). Fails open.
-  const quota = await checkQuota({
-    subAccountId: contact.subAccountId,
-    unit: "emailsSent",
-    subAccount,
+  const outcome = await sendConversationEmail({
+    contactId,
+    contact,
+    subject,
+    body,
+    inReplyTo: payload.inReplyTo,
+    references: payload.references,
+    actor: auth,
   });
-  if (!quota.allowed && quota.error) {
-    return NextResponse.json({ error: quota.error.message }, { status: 429 });
-  }
-
-  let messageId: string;
-  try {
-    const result = await sendEmail({
-      to: contact.email,
-      subject,
-      text: body,
-      replyTo,
-      from: tenantFrom(subAccount),
-      meter: { subAccountId: contact.subAccountId },
-    });
-    messageId = result.id;
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to send email";
-    return NextResponse.json({ error: message }, { status: 502 });
-  }
-
-  try {
-    await getAdminDb()
-      .collection("contacts")
-      .doc(contactId)
-      .collection("activities")
-      .add({
-        type: "email_sent",
-        content: `Email: ${subject}`,
-        createdBy: auth.uid,
-        meta: { messageId, subject },
-        createdAt: FieldValue.serverTimestamp(),
-      });
-  } catch (err) {
-    console.warn("[email/send] activity write failed", err);
-  }
-
-  await recordSend(auth.uid, "email");
-
-  return NextResponse.json({ ok: true, id: messageId });
+  await logInboxReviewAsk({ contact, channel: "email", parts: [subject, body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
+  return sendOutcomeResponse(outcome);
 }

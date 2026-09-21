@@ -1,169 +1,45 @@
-# Handoff — 2026-09-04 16:53 SAST
+> **There is a second open handoff:** `.claude/handoffs/2026-09-14-0818.md` (another session, same day). Read it if continuing that work; `.claude/handoffs/2026-09-13-1935.md` is the one before.
 
-**Project:** CrestaHQ (`Heinvv10/CrestaHQ`, private) — fork of the LeadStack Agency CRM template
-**Branch:** `main`, clean, nothing unpushed. All four of this session's PRs are merged.
-**Session goal:** Continue from the 07:50 handoff — finish Phase 1.1 (the Paystack billing rail)
-and then build Phase 1.3 (recurring invoicing).
+# Handoff — 2026-09-14 17:33 SAST
 
-Supersedes `.claude/handoffs/2026-09-04-0750.md`.
+**Project:** CrestaHQ (LeadStack CRM)
+**Branch:** main (SP5 work all merged; worktrees listed below)
+**Session goal:** SP5 — GHL Reputation & GBP remainder parity: ledger + six PRs (a–f), each blind-reviewed and merged under the Level-3 boundary, no deploy.
 
 ## Status
-
-**Phase 1 is now: 1.1 DONE · 1.2 built-but-unproven · 1.3 engine done, NOT usable · 1.4 DONE.**
-
-Client Billing can run on Paystack end to end — provider adapter, webhook receiver, and one
-lifecycle shared with Stripe. A recurring-invoice engine exists and its Firestore indexes are
-deployed. Neither has ever touched a live external account, and **1.3 has no create API and no
-UI, so a schedule can only be made by hand-writing Firestore.** That is the next build.
-
-Merged this session: **#9, #10, #11, #12, #13**. Open PRs (#5, #6) are `crestahq-c9`'s, not mine.
+SP5 is built and merged. Ledger `docs/parity/sp5.md` rows are all "merged (#N)"; every Google-dependent row carries "live half blocked: case 4-6894000042302". Deployed to crm.crestahq.com 2026-09-14 17:48 SAST (`cde3b17`) on Hein's go; walked on #1000 (`docs/parity/evidence/sp5/prod-1000/`). No Firestore rules or indexes changed, so no rules deploy is needed.
 
 ## What got done this session
-
-### PR #11 — `PaystackBillingProvider` (merged)
-
-The second implementation of the existing `BillingProvider` interface. Three Paystack concepts
-have no Stripe counterpart, all resolved inside the adapter rather than leaking into
-`billing-service.ts`: a Plan *is* the price (so `productId` is synthetic and `updateProduct` /
-`deactivatePrice` are documented no-ops), there is no proration, and there is no customer-level
-portal.
-
-New files: `src/lib/paystack/{client,billing-api}.ts`, `src/lib/billing/paystack-provider.ts`.
-
-### PR #12 — the Paystack webhook (merged)
-
-`/api/webhooks/paystack`. Rather than a second lifecycle beside Stripe's, the three state changes
-were extracted provider-neutral into **`src/lib/server/billing-lifecycle.ts`** —
-`activateSubAccountPlan`, `applySubAccountSubscriptionStatus`, `recordSubAccountSubscriptionId`,
-`markSubAccountChargePaid` — and Stripe's handlers became thin adapters onto them. That file also
-carved ~500 lines out of `billing-service.ts` (1585 → 1094, still far over the 300 cap).
-
-### PR #13 — the recurring-invoice engine (merged)
-
-`recurringInvoices/{id}` schedule doc + `src/lib/recurring/cadence.ts` +
-`src/lib/server/recurring-invoice-{service,cycle}.ts` + `/api/cron/recurring-invoices` (daily,
-auto-registered as `leadstack-recurring-invoices`).
-
-### PRs #9 and #10 (merged)
-
-Both were the previous session's, left open and later broken by my own work. #9 (the send-path
-extraction) had to be rebased past the `billing-service.ts` restructure. #10 (a docs-correction
-PR) had gone **stale in the way it exists to prevent** — it still said 1.1's remaining work was
-`PaystackBillingProvider` alone. It also surfaced a stale claim of mine in `PARITY_PLAN.md`.
-
-### Deployed
-
-`firebase deploy --only firestore:indexes` against **`crestahq-app`**, verified live:
-`recurringInvoices(status, nextRunAt)` and `quotes(recurringInvoiceId, status)`.
-Rules were NOT deployed (compiled only, as that command always does).
-
-**How:** the Firebase CLI is not logged in on this machine. I built a service-account JSON from
-the `FIREBASE_ADMIN_*` values in `.env.local`, deployed with `GOOGLE_APPLICATION_CREDENTIALS`,
-then shredded it. Repeatable; nothing was written to the repo. `.firebaserc` still does not
-exist (gitignored), so `--project crestahq-app` is required on every firebase command.
+- **Ledger** `docs/parity/sp5.md` + GHL evidence `docs/parity/evidence/sp5/ghl/` (CrestaHQ location empty; Blitz aggregates only, sidebars cropped, owner name/number redacted).
+- **(a) #122** Reputation sidebar entry + `/sa/[id]/reputation` (Overview · Reviews · Requests · Widgets · Insights · Settings); Overview metrics (`lib/reputation/overview.ts`, `GET …/reputation/overview`); shared served-reviews loader `lib/gbp/sync/served.ts`.
+- **(e) #121** widget `layout` (carousel/grid/list/badge) + `theme` (light/dark) → feed `display` → `public/embed/gbp-reviews.js`; dashboard preview (same-origin GET, allow-list not loosened).
+- **(f) #126** Insights tab: `fetchDailyMetrics` (Performance API) on the provider seam + fake, `GET …/reputation/insights`, location picker; quota-0 429 → `access_not_approved`; **GBP provider refusals now HTTP 424 not 502** (Cloudflare replaced 502 bodies with HTML — that was #1000's "Couldn't load listings (error)").
+- **(d1) #129** one seam `lib/reviews/request-log.ts` logs every review ask (dispatcher, workflow SMS/WA/template/email, broadcasts, inbox routes, scheduled sends) — detection = rendered content contains the configured review URL; `failed` only after a provider attempt (`lib/comms/provider-attempt.ts` mark); Requests tab + Send Review Request dialog.
+- **(b) #124** sentiment: gate `reviewsAiEnabledByAgency` (opt-in), `lib/reputation/ai/` seam (OpenRouter + fenced `REVIEWS_AI_PROVIDER=fake`), classify after sync via Next `after()`, never re-billed (basisHash), 300 AI calls/sub-account/UTC day, one review per call, 60 s abort via new optional `signal` on `lib/comms/ai/openrouter.ts` `callAi`; strikes only for 403 / unusable answer.
+- **(c) #135** AI reply drafts (`POST …/gbp/reviews/[id]/draft`, human edits + clicks Post — `lib/gbp/reply.ts` still the only poster), reply guidelines, Reputation → Settings tab, best-effort contact guard `lib/reputation/ai/contact-guard.ts`, drafts ≤100 of the 300 daily calls.
+- **(d2) #132** reminders + `/rr/[token]` click tracking — **default off**, SMS-only, needs dedicated Twilio number + `inboundWebhookConfigured` + Google review link + E.164 phone; one chain per person; stops on click/reply/opt-out/etc.; max every 7 days (QStash plan unconfirmed).
+- **#128** flaky `feature-gates/route.gbp.test.ts` (import in `beforeAll`, 60 s) — was failing CI/deploy under box load.
 
 ## What's next
-
-1. **The schedule API + operator UI for 1.3.** Until it lands, acceptance criterion 2 (a real
-   cycle emailing a real invoice) cannot be exercised at all. Needs: create/list/update/pause
-   routes under `/api/sub-accounts/[id]/recurring-invoices`, and a surface to drive them.
-   `computeFirstRunAt` in `cadence.ts` is what a create route calls to set the first `nextRunAt`.
-2. **The live Paystack test-mode payment.** Only Hein can do this. See "Blockers".
-3. **The live WABA test for 1.2** — still gated on Hein provisioning a WhatsApp Business Account.
-4. Optional: a dedupe guard for two live checkout links on one sub-account (Stripe has the same
-   exposure). Recorded in `PARITY_PLAN.md`; belongs in the completion handler.
+1. **Done:** deployed `cde3b17` 2026-09-14 17:48 and walked #1000 (Overview, Insights, Settings, Google Business "not approved" wording).
+2. **Set `OPENROUTER_API_KEY`** in `/home/velo/crestahq-config/.env.production` (Hein) — without it sentiment labels star-only reviews only and drafts are hidden.
+3. **Case 4-6894000042302** (decision ~09-18): on approval, live-prove reviews/replies/insights on a TEST sub-account per `docs/features/gbp-reviews.md` owner checklist.
+4. Enable `reviewsAiEnabledByAgency` per sub-account (agency Manage dialog) and, only with Hein's OK, reminders on a real sub-account.
 
 ## Open questions / blockers
-
-- **Nothing in Phase 1.1 has met a live Paystack account.** One test-mode payment settles all
-  three assumptions the webhook router rests on: (a) does `/transaction/initialize` accept the
-  request — Paystack's docs contradict themselves on whether `amount` is required alongside
-  `plan`, and the code is written to be correct under both readings; (b) does `charge.success`
-  echo our `metadata` back intact; (c) does `subscription.create` really arrive as a separate
-  event. **Do this before billing anyone.**
-- **Paystack is not selected by having a key.** `BILLING_PROVIDER=paystack` is required. This is
-  deliberate — see "Context".
-- Indexes may still have been BUILDING at 16:53; the sweep throws `FAILED_PRECONDITION` until
-  they are READY. Nothing calls it yet (the QStash schedule only auto-registers in production).
+- QStash plan max delay unconfirmed → reminders capped at 7 days.
+- Follow-ups surfaced in review, not built: ~12 non-GBP routes still answer 502 with a JSON body the UI shows (lost behind Cloudflare, e.g. `comms/whatsapp/send-template`, `comms/voice/call`, `broadcasts/email/send`); `lib/reviews/request.ts` (~506 lines) and `workflows/engine.ts` over 300 lines; `inboundWebhookConfigured` is only set by webhook auto-config (hand-set webhooks can't enable reminders).
 
 ## Context the next session needs
-
-**Blind review found 25 real defects across the three PRs, most of them mine, and the pattern is
-worth internalising: the mistakes were never in the code being obviously wrong — they were in
-plausible readings of a third-party API and in tests that asserted the wrong thing.**
-
-Paystack event semantics that cost two review rounds:
-
-- **`subscription.not_renew` does NOT end a subscription.** It means auto-renew was switched off;
-  the subscription is "active, non-renewing" and the paid period runs out. `subscription.disable`
-  is the terminating event. Cancelling on `not_renew` paywalls someone for weeks they paid for.
-- **`charge.success` fires for EVERY charge on the agency's account**, not just renewals. A
-  metadata-less charge is only treated as a renewal if it carries a plan code AND that plan is
-  the workspace's (`matchPriceId` on the shared handler). Without both, a lapsed client paying
-  the agency for something else unlocks a plan they have not paid for.
-- **`subscription.create` proves a subscription object exists, not that money moved**, and can
-  arrive BEFORE the payment. It records the code and never activates.
-- A Paystack plan switch cancels one subscription and opens another with a NEW code.
-  `switchSubscriptionPlan` returns the post-switch id and the caller MUST persist it.
-
-Recurring-invoice constraints:
-
-- **Idempotency lives on the schedule, never on invoice status.** The send path swallows a failed
-  lifecycle write while the email still goes out, so an invoice can sit at `draft` with no
-  `sentAt` after the customer received it. Nobody may add a "re-send unsent invoices" pass
-  without fixing that write first.
-- **Month-end clamps from the stored anchor, never the previous clamped day** (31 Jan → 28 Feb →
-  31 Mar). Carrying it forward costs the schedule its anchor permanently.
-- **Completion is decided inside the claim transaction**, from the cycle claimed — not from
-  `now`, and not on the success path only. Both alternatives were tried and both bill wrongly.
-- Cycles more than `MAX_CATCHUP_DAYS` (31) stale fast-forward without billing, or a backdated
-  schedule emails one real invoice per night until it catches up.
-
-**Testing lessons, all earned the hard way this session:**
-
-- **A test name that asserts the opposite of its body is worse than no test.** Happened twice —
-  once naming a no-op guard as if it did the opposite, once asserting the `not_renew` bug as
-  correct behaviour. Anyone reading the suite takes it for a decision.
-- **`hour12: false` renders midnight as "00" on some ICU builds and "24" on others.** A test
-  passed here and failed for the reviewer. Always pass `hourCycle: "h23"`. An environment-
-  dependent assertion makes a blocking gate a coin flip.
-- **A mock that discards its own writes cannot prove idempotency.** The transaction mock recorded
-  patches without applying them, so no test could observe a second delivery. It applies them now.
-- **Mutation testing cannot reveal a guard nobody thought to test.** Two call-site guards in
-  `billing-service.ts` survived because that file had no tests at all — which is exactly why the
-  defect there was invisible.
-- **Every mutation must md5-verify the file on restore.** Carried from the previous session; held
-  for all ~50 mutations run here.
-
-**Design decisions that look wrong until you know why:**
-
-- `BILLING_PROVIDER=paystack` is required to select the rail; a key alone does nothing. Inferring
-  from key presence was rated CRITICAL — pasting a key would have moved live billing onto a rail
-  whose webhook did not exist, where a payment lands and the workspace stays walled.
-- Arrears count OUTSTANDING invoices, not consecutive ones, and the field is named
-  `outstandingInvoices` for that reason. `draft` is deliberately excluded from
-  `UNPAID_INVOICE_STATUSES` so review-first schedules do not escalate over money nobody was
-  asked for.
-- Escalation fires only when the count is worse than `lastEscalatedCount`, not on every cycle
-  above threshold.
-
-**Non-obvious mechanics:** `gh pr create/merge` still fail with a GraphQL permissions error — use
-`env -u GITHUB_TOKEN -u GH_TOKEN gh api -X POST repos/Heinvv10/CrestaHQ/pulls --input f.json` and
-`-X PUT .../pulls/N/merge -f merge_method=merge`. Node via
-`export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"`. Self-hosted runner only; CI ~2 min.
+- GBP API family (incl. Performance) on project 893869567850 answers 429 `quota_limit_value "0"` until case approval — probed with #1000's real grant 2026-09-14.
+- A PR that conflicts with base gets NO pull_request CI run — merge main into it when a run never appears. The single self-hosted runner queue was ~2 h at times; cancel superseded queued runs.
+- Local E2E: `.env.local` per worktree (ports 3105/3106/3107), lock `/home/hein/Workspace/.sp5-orch/e2e.lock`, never while :3100 is busy (CI). Another session's E2E on another port touched the fixture tenant once.
+- Orchestration notes/mutation logs: `/home/hein/Workspace/.sp5-orch/` (not in repo).
+- DO NOT RESURRECT: auto-response / drip auto-reply to Google reviews — rejected (replies stay a human click). Minimum-rating widget filter — rejected (review gating). Transport-vs-billed rollback classes in sentiment — replaced after 3 fix rounds by "strike only 403/unusable answer".
 
 ## Git state
-
-- **Uncommitted:** clean.
-- **Unpushed commits:** none.
-- **Stashes:** none.
-- **Worktrees:** mine are removed. Remaining are **other sessions' — leave them alone**:
-  `CrestaHQ-wt-snapshots`, `CrestaHQ-wt-wabridge`, `CrestaHQ-wt-waflow`.
-- **Background processes:** none of mine. One `next build` belongs to the IsaFlow project, not
-  this one. No test-db containers, no `gh run watch`.
+- **Uncommitted:** none from this session (the shared checkout is dirty with other sessions' work — don't stage there).
+- **Worktrees from this session:** `../CrestaHQ-wt-sp5`, `../CrestaHQ-wt-sp5d`, `../CrestaHQ-wt-sp5e` (branches merged/deleted; safe to remove).
 
 ## Where to resume
-
-Read `docs/RECURRING_INVOICING_PLAN.md`, then `src/lib/recurring/cadence.ts` (specifically
-`computeFirstRunAt`) and `src/types/recurring-invoices.ts`. Build the schedule API on top of
-those. Verify the `PARITY_PLAN.md` 1.3 row still says "not yet usable" before claiming otherwise.
+Read this file, then `docs/parity/sp5.md` (ledger) and `docs/features/reputation.md`.

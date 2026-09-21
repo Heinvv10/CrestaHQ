@@ -20,3 +20,12 @@ export async function loadCustomFieldDefs(
     (d) => ({ id: d.id, ...(d.data() as Omit<CustomFieldDef, "id">) }),
   );
 }
+
+/** The sub-account's contact custom-field keys, for validating a
+ *  `contact.customFields.<key>` merge tag at the point it is saved. */
+export async function loadContactCustomFieldKeys(
+  subAccountId: string,
+): Promise<Set<string>> {
+  const defs = await loadCustomFieldDefs(subAccountId, "contact");
+  return new Set(defs.map((d) => d.key));
+}

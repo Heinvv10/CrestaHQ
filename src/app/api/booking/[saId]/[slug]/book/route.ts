@@ -11,16 +11,23 @@ import {
   tenantFrom,
 } from "@/lib/comms/resend";
 import { buildPaypalAmountUrl } from "@/lib/paypal/payment-link";
+import { isSlotAvailable, type SlotCandidate } from "@/lib/booking/availability";
 import {
-  computeAvailability,
-  isSlotAvailable,
-  type BusyEvent,
-  type SlotCandidate,
-} from "@/lib/booking/availability";
+  bookedEventLabel,
+  pageCalendarType,
+} from "@/lib/booking/calendar-types";
+import {
+  assignBookingHosts,
+  pageService,
+  selectableHostUid,
+} from "@/lib/booking/page-slots";
+import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
+import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
+import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
+import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
-  pickLeastLoadedHost,
 } from "@/lib/booking/hosts";
 import {
   buildEventPublicUrl,
@@ -42,7 +49,6 @@ import {
 } from "@/lib/booking/email";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
-import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
@@ -68,11 +74,12 @@ import type { SubAccountDoc } from "@/types/tenancy";
  *    the sub-account's verified sending domain when configured),
  *  - schedules QStash reminder callbacks (T-24h + T-1h) for scheduled
  *    bookings, or the auto-expire callback for awaiting-payment holds,
- *  - fires the `event_booked` automation trigger (plumbing only — same
- *    v1 caveat as the quote triggers).
+ *  - fires the `booking.created` workflow trigger, plus `booking.confirmed`
+ *    for a free (non-paid-hold) booking — see lib/booking/lifecycle.ts.
  */
 
 // ── Soft rate limits (per IP + per sub-account, in-memory LRU) ──
+// Skipped entirely when bookingRateLimitsDisabled() is true (E2E only).
 const IP_HOURLY_CAP = 10;
 const SUB_HOURLY_CAP = 100;
 const WINDOW_MS = 60 * 60_000;
@@ -84,6 +91,7 @@ function pushAndCheck(
   key: string,
   cap: number,
 ): boolean {
+  if (bookingRateLimitsDisabled()) return false;
   const now = Date.now();
   const cutoff = now - WINDOW_MS;
   const arr = (bucket.get(key) ?? []).filter((t) => t >= cutoff);
@@ -122,6 +130,8 @@ interface BookBody {
   /** Optional requested host (named-host selection). Honoured only on pages
    *  with `allowHostSelection` on; ignored otherwise. */
   hostUid?: string;
+  /** Service pages: the service the visitor picked. Required there. */
+  serviceId?: string;
 }
 
 export async function POST(
@@ -248,40 +258,58 @@ export async function POST(
   // so the deposit was skipped entirely.
   const paymentRequired = !!page.payment && canTakePayment(sub);
 
+  // Service pages: the visitor's service sizes the slot (the re-verify below
+  // only matches a slot of that service's length) and is stamped on the event.
+  const calendarType = pageCalendarType(page);
+  const service = pageService(page, body.serviceId);
+  if (calendarType === "service" && !service) {
+    return NextResponse.json(
+      { error: "Pick a service before booking." },
+      { status: 400 },
+    );
+  }
+  // Emails, invite and title name the service and its own length.
+  const { name: bookedName, durationMinutes } = bookedEventLabel(
+    page,
+    { serviceName: service?.name ?? null },
+    slotStart,
+    slotEnd,
+  );
+
   // ── Transactional create with re-verify ─────────────────────────
-  // Pull a tight window of busy events around the requested slot,
-  // re-run availability, and only write if the slot survives. A
-  // visitor on a stale UI gets 409, not a double-booked event.
-  const lookbackMs = 8 * 60 * 60_000;
-  const queryFrom = new Date(slotStart.getTime() - lookbackMs);
-  const queryTo = new Date(slotEnd.getTime() + 1000);
+  // Re-resolve availability around the requested slot inside the
+  // transaction, and only write if the slot survives. A visitor on a
+  // stale UI gets 409, not a double-booked event.
   const eventsRef = db.collection("events");
   const eventDocRef = eventsRef.doc(); // pre-allocate id for token mint
   const now = new Date();
 
-  // Team mode: when the page lists hosts, availability is per-host and the
-  // booking is auto-assigned to the least-loaded free host. Pre-compute each
-  // host's upcoming load OUTSIDE the transaction (slightly stale is fine).
-  const hosts = page.hosts ?? [];
-  const teamMode = hosts.length > 0;
   // Named-host selection: honour a requested host ONLY on opted-in pages, and
   // only when it names a real host. Otherwise fall through to pooled
-  // least-loaded assignment (a forged/unknown hostUid can't change behaviour).
-  const allowHostSelection = teamMode && page.allowHostSelection === true;
-  const requestedHostUid = (body.hostUid ?? "").trim() || null;
-  const selectedHostUid =
-    allowHostSelection &&
-    requestedHostUid &&
-    hosts.some((h) => h.uid === requestedHostUid)
-      ? requestedHostUid
-      : null;
-  const loadByHost = teamMode
-    ? await loadHostUpcomingCounts(
-        saId,
-        hosts.map((h) => h.uid),
-        now,
-      )
-    : new Map<string, number>();
+  // assignment (a forged/unknown hostUid can't change behaviour).
+  const selectedHostUid = selectableHostUid(
+    page,
+    (body.hostUid ?? "").trim() || null,
+  );
+  // Round-robin load, read OUTSIDE the transaction (slightly stale is fine).
+  const hosts = page.hosts ?? [];
+  const loadByHost =
+    hosts.length > 0 &&
+    (calendarType === "round_robin" || calendarType === "service")
+      ? await loadHostUpcomingCounts(
+          saId,
+          hosts.map((h) => h.uid),
+          now,
+        )
+      : new Map<string, number>();
+  // Hosts' Google busy (SP3 G2), loaded BEFORE the transaction; fail open.
+  const externalBusy = await loadGoogleBusyForPage({
+    subAccountId: saId,
+    page,
+    now,
+    fromInstant: new Date(slotStart.getTime() - 1),
+    toInstant: new Date(slotEnd.getTime() + 1),
+  });
 
   type CreatedPayload = {
     eventDocRef: FirebaseFirestore.DocumentReference;
@@ -295,92 +323,34 @@ export async function POST(
     paymentHoldExpiresAt: Date | null;
     assignedToUid: string | null;
     assignedToName: string | null;
+    hostUids: string[] | null;
   };
 
   let created: CreatedPayload;
   try {
     created = await db.runTransaction(async (txn) => {
-      const busySnap = await txn.get(
-        eventsRef
-          .where("subAccountId", "==", saId)
-          .where("startAt", ">=", queryFrom)
-          .where("startAt", "<=", queryTo),
-      );
-      // Parse occupying events in the window, tagged by assigned host.
-      //  - `occupying`     — every busy event (single mode treats all as conflicts)
-      //  - `sharedBusy`    — unassigned events; block EVERY host in team mode
-      //  - `occupyingByHost` — a host's own bookings; block only that host
-      const occupying: BusyEvent[] = [];
-      const sharedBusy: BusyEvent[] = [];
-      const occupyingByHost = new Map<string, BusyEvent[]>();
-      for (const d of busySnap.docs) {
-        const e = d.data() as CalendarEvent;
-        const s = e.status ?? "scheduled";
-        if (s !== "scheduled" && s !== "awaiting_payment") continue;
-        const startVal = (
-          e.startAt as { toDate?: () => Date } | null
-        )?.toDate?.();
-        const endVal = (e.endAt as { toDate?: () => Date } | null)?.toDate?.();
-        if (!(startVal instanceof Date) || !(endVal instanceof Date)) continue;
-        const be: BusyEvent = { startAt: startVal, endAt: endVal };
-        occupying.push(be);
-        const host = e.assignedToUid ?? null;
-        if (host == null) {
-          sharedBusy.push(be);
-        } else {
-          const arr = occupyingByHost.get(host) ?? [];
-          arr.push(be);
-          occupyingByHost.set(host, arr);
-        }
-      }
-
+      // The same resolver the visitor's slot list came from, so the
+      // re-verify can't disagree with what was shown. When the customer
+      // picked a specific person, only that host is a candidate — never
+      // silently reassign to someone else.
+      const free = await resolvePageAvailability({
+        subAccountId: saId,
+        page,
+        now,
+        fromInstant: new Date(slotStart.getTime() - 1),
+        toInstant: new Date(slotEnd.getTime() + 1),
+        onlyHostUid: selectedHostUid,
+        serviceId: service?.id ?? null,
+        externalBusy,
+        txn,
+      });
       const candidate: SlotCandidate = { startAt: slotStart, endAt: slotEnd };
-      let assignedToUid: string | null = null;
-      let assignedToName: string | null = null;
-
-      if (teamMode) {
-        // When the customer picked a specific person, only that host is a
-        // candidate — never silently reassign to someone else. If their slot
-        // is gone it's a 409, same as any other conflict.
-        const candidateHosts = selectedHostUid
-          ? hosts.filter((h) => h.uid === selectedHostUid)
-          : hosts;
-        // A host is free at this slot iff the slot survives availability
-        // against (shared busy ∪ that host's bookings), computed against the
-        // host's OWN working hours (override when set). Reuses the same pure
-        // calculator the union availability uses, so the re-verify can't
-        // disagree with what the visitor was shown.
-        const freeHosts = candidateHosts.filter((h) => {
-          const hostBusy = occupyingByHost.get(h.uid) ?? [];
-          const free = computeAvailability({
-            page,
-            now,
-            fromInstant: new Date(slotStart.getTime() - 1),
-            toInstant: new Date(slotEnd.getTime() + 1),
-            busy: [...sharedBusy, ...hostBusy],
-            workingHoursOverride:
-              h.workingHours && h.workingHours.length > 0
-                ? h.workingHours
-                : undefined,
-          });
-          return isSlotAvailable(candidate, free);
-        });
-        const chosen = pickLeastLoadedHost(freeHosts, loadByHost);
-        if (!chosen) throw new SlotConflict();
-        assignedToUid = chosen.uid;
-        assignedToName = chosen.name;
-      } else {
-        const free = computeAvailability({
-          page,
-          now,
-          fromInstant: new Date(slotStart.getTime() - 1),
-          toInstant: new Date(slotEnd.getTime() + 1),
-          busy: occupying,
-        });
-        if (!isSlotAvailable(candidate, free)) {
-          throw new SlotConflict();
-        }
-      }
+      const slotMatch = free.find((s) => isSlotAvailable(candidate, [s]));
+      const assignment = slotMatch
+        ? assignBookingHosts(page, slotMatch, loadByHost)
+        : null;
+      if (!assignment) throw new SlotConflict();
+      const { assignedToUid, assignedToName } = assignment;
 
       // Reconcile the contact OUTSIDE the txn would be ideal (Admin SDK
       // queries inside a txn lock the read set), but the email-equality
@@ -425,7 +395,7 @@ export async function POST(
         }
       }
 
-      const title = `${page.name} — ${name}`;
+      const title = `${bookedName} — ${name}`;
       // Mint token now so we can store hash atomically.
       const { token, hash } = issueEventToken(eventDocRef.id);
 
@@ -463,6 +433,9 @@ export async function POST(
         paymentHoldExpiresAt,
         assignedToUid,
         assignedToName,
+        // Collective / service extras — absent on every other booking.
+        ...(assignment.hostUids ? { hostUids: assignment.hostUids } : {}),
+        ...(service ? { serviceId: service.id, serviceName: service.name } : {}),
         cancelledAt: null,
         cancelledByVisitor: null,
         cancelReason: null,
@@ -483,6 +456,7 @@ export async function POST(
         paymentHoldExpiresAt,
         assignedToUid,
         assignedToName,
+        hostUids: assignment.hostUids,
       };
     });
   } catch (err) {
@@ -510,7 +484,7 @@ export async function POST(
       ?.toLowerCase() ?? "leadstack.dev";
 
   // Confirmation / payment-pending email.
-  if (emailIsConfigured()) {
+  if (emailIsConfigured(sub)) {
     try {
       const rendered = paymentRequired
         ? renderBookingPaymentPendingEmail({
@@ -518,8 +492,8 @@ export async function POST(
             businessName: sub.name ?? "Booking",
             businessLogoUrl: sub.logoUrl,
             page: {
-              name: page.name,
-              durationMinutes: page.durationMinutes,
+              name: bookedName,
+              durationMinutes,
               timezone: page.timezone,
               payment: page.payment,
               confirmationMessage: page.confirmationMessage,
@@ -534,8 +508,8 @@ export async function POST(
             businessName: sub.name ?? "Booking",
             businessLogoUrl: sub.logoUrl,
             page: {
-              name: page.name,
-              durationMinutes: page.durationMinutes,
+              name: bookedName,
+              durationMinutes,
               timezone: page.timezone,
               payment: page.payment,
               confirmationMessage: page.confirmationMessage,
@@ -581,6 +555,7 @@ export async function POST(
         html: rendered.html,
         replyTo: sub.replyToEmail ?? undefined,
         from: tenantFrom(sub),
+        subAccount: sub,
         icsAttachment: attachments,
         meterSubAccountId: saId,
       });
@@ -592,51 +567,52 @@ export async function POST(
   // Notify the assigned host — team-mode confirmed bookings only. Best-effort:
   // a missing host email or a send failure never affects the visitor's
   // confirmed booking. Skipped for unpaid holds (notify on the actual
-  // confirmation, i.e. when the slot isn't payment-pending).
+  // confirmation, i.e. when the slot isn't payment-pending). A collective
+  // booking notifies every host in the meeting.
   if (
     !paymentRequired &&
     created.assignedToUid &&
     created.assignedToName &&
-    emailIsConfigured()
+    emailIsConfigured(sub)
   ) {
-    try {
-      const hostContact = await loadHostNotifyContact(
-        saId,
-        created.assignedToUid,
-      );
-      if (hostContact) {
-        const rendered = renderBookingHostNotificationEmail({
-          hostName: hostContact.name,
-          businessName: sub.name ?? "Booking",
-          businessLogoUrl: sub.logoUrl,
-          page: {
-            name: page.name,
-            durationMinutes: page.durationMinutes,
-            timezone: page.timezone,
-          },
-          startAt: slotStart,
-          endAt: slotEnd,
-          customerName: name,
-          customerEmail: email,
-          customerPhone: phone,
-          notes:
-            Object.entries(extras)
-              .map(([k, v]) => `${labelForField(page, k)}: ${v}`)
-              .join("\n") || null,
-          manageUrl: publicEventUrl,
-        });
-        await sendEmail({
-          to: hostContact.email,
-          subject: rendered.subject,
-          text: rendered.text,
-          html: rendered.html,
-          from: tenantFrom(sub),
-          subAccount: sub,
-          meter: { subAccountId: saId },
-        });
+    for (const hostUid of created.hostUids ?? [created.assignedToUid]) {
+      try {
+        const hostContact = await loadHostNotifyContact(saId, hostUid);
+        if (hostContact) {
+          const rendered = renderBookingHostNotificationEmail({
+            hostName: hostContact.name,
+            businessName: sub.name ?? "Booking",
+            businessLogoUrl: sub.logoUrl,
+            page: {
+              name: bookedName,
+              durationMinutes,
+              timezone: page.timezone,
+            },
+            startAt: slotStart,
+            endAt: slotEnd,
+            customerName: name,
+            customerEmail: email,
+            customerPhone: phone,
+            notes:
+              Object.entries(extras)
+                .map(([k, v]) => `${labelForField(page, k)}: ${v}`)
+                .join("\n") || null,
+            manageUrl: publicEventUrl,
+          });
+          await sendEmail({
+            archive: false,
+            to: hostContact.email,
+            subject: rendered.subject,
+            text: rendered.text,
+            html: rendered.html,
+            from: tenantFrom(sub),
+            subAccount: sub,
+            meter: { subAccountId: saId },
+          });
+        }
+      } catch (err) {
+        console.warn("[booking/book] host notification send failed", err);
       }
-    } catch (err) {
-      console.warn("[booking/book] host notification send failed", err);
     }
   }
 
@@ -660,6 +636,8 @@ export async function POST(
     });
   }
 
+  pushBookingToGoogleAfterResponse(created.eventDocRef.id);
+
   // Activity + automation trigger.
   await recordBookingActivity(
     {
@@ -672,12 +650,28 @@ export async function POST(
   );
   await fireBookingTrigger(
     {
+      id: created.eventDocRef.id,
       agencyId,
       subAccountId: saId,
       contactId: created.contactId,
+      bookingPageSlug: page.slug,
     },
     "event_booked",
   );
+  // A free booking is confirmed the moment it's created; a paid hold only
+  // becomes confirmed once mark-paid fires this same trigger.
+  if (!paymentRequired) {
+    await fireBookingTrigger(
+      {
+        id: created.eventDocRef.id,
+        agencyId,
+        subAccountId: saId,
+        contactId: created.contactId,
+        bookingPageSlug: page.slug,
+      },
+      "event_confirmed",
+    );
+  }
   void emitBookingWebhook({
     eventId: created.eventDocRef.id,
     agencyId,
@@ -728,6 +722,7 @@ function labelForField(page: BookingPage, id: string): string {
 // so the From/Reply-To policy can't be bypassed by the ICS path.
 
 interface SendWithIcs {
+  subAccount: SubAccountDoc;
   to: string;
   subject: string;
   text: string;
@@ -781,6 +776,7 @@ async function sendEmailWithIcs(input: SendWithIcs): Promise<void> {
     html: input.html,
     replyTo: input.replyTo,
     from: input.from,
+    subAccount: input.subAccount,
     meter: input.meterSubAccountId
       ? { subAccountId: input.meterSubAccountId }
       : null,

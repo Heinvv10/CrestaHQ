@@ -13,6 +13,11 @@
 # testing
 /coverage
 
+# playwright: the E2E session cookie, its HTML report, and per-run artifacts
+e2e/.auth/
+playwright-report/
+test-results/
+
 # next.js
 /.next/
 /out/
@@ -62,3 +67,6 @@ docs/plans/
 # so it's normally invisible to git status; entry kept for intent.
 leadstack-pub-tmp/
 PAYMENTS_V1_PLAN.md
+
+# services/qcontact-import run state (seen case ids)
+.qcontact-import-state.json

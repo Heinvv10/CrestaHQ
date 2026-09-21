@@ -1,15 +1,21 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
+  openEnrolmentGate,
+  releaseReservation,
+} from "@/lib/api/enrolment-cap";
+import {
   parseContactPatch,
   serializeContactForApi,
-  type ContactCreateInput,
 } from "@/lib/api/serializers/contacts";
+import {
+  updateContactServerSide,
+  type UpdateContactPatch,
+} from "@/lib/server/contacts-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 
@@ -29,6 +35,12 @@ import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
  * Webhook emission: contact.updated fires on PATCH, contact.deleted on
  * DELETE. The dispatcher is fire-and-forget; failures don't roll back the
  * write.
+ *
+ * PATCH goes through `updateContactServerSide` — the same chokepoint the
+ * dashboard uses — so an API tag add fires `contact.tag.added` exactly like
+ * a tag added in the UI. The tag diff lives THERE, in one place; this route
+ * never re-implements it. Test-mode writes fire no triggers (gate in the
+ * service).
  */
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
@@ -50,10 +62,14 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   if (!parsed.ok) {
     return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
   }
-  const patch = parsed.value!;
+  // `parseContactPatch` already emits the internal camelCase field names,
+  // which is exactly the service's patch shape. It never populates
+  // `customFields` — custom_fields is validated against the live defs
+  // below — so the create shape's nullable variant is dropped here.
+  const { customFields: _cfFromBody, ...patchFields } = parsed.value!;
+  const patch: UpdateContactPatch = patchFields;
 
-  const ref = getAdminDb().doc(`contacts/${params.id}`);
-  const snap = await ref.get();
+  const snap = await getAdminDb().doc(`contacts/${params.id}`).get();
   if (!snap.exists) {
     return apiError(ctx, "not_found", "contact_not_found", "Contact not found.");
   }
@@ -61,15 +77,6 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "contact_not_found", "Contact not found.");
   }
-
-  // Internal-shape patch — map back from `ContactCreateInput` field names
-  // (which already use the internal camelCase shape).
-  const writePatch: Partial<ContactCreateInput> & {
-    updatedAt: FirebaseFirestore.FieldValue;
-  } = {
-    ...patch,
-    updatedAt: FieldValue.serverTimestamp(),
-  };
 
   // custom_fields is a full replacement of the value map when provided.
   if ((body as Record<string, unknown>).custom_fields !== undefined) {
@@ -81,25 +88,42 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     if (!cf.ok) {
       return apiError(ctx, "invalid_request", "invalid_body", cf.error!);
     }
-    writePatch.customFields = cf.value;
+    patch.customFields = cf.value;
   }
 
-  // update(), not set(merge) — merge recurses into nested maps, so a
-  // cleared custom-field value would survive the "full replacement" above.
-  await ref.update(writePatch);
+  // Reserve BEFORE the write when this key has budget left — a tag add that
+  // silently enrolled nobody would be the quiet failure this cap exists to
+  // prevent. From here on this request OWNS a reservation: the service tells
+  // us whether it fired a trigger (it owns the tag diff, and re-deriving it
+  // here is exactly what this design avoids), and every path that did NOT
+  // fire releases the reservation explicitly.
+  const gate = await openEnrolmentGate(ctx);
+  if (gate.refusal) return gate.refusal;
 
-  const fresh = await ref.get();
-  const wire = serializeContactForApi(fresh.id, fresh.data()!, ctx.mode);
+  let written;
+  try {
+    written = await updateContactServerSide({
+      contactId: params.id,
+      patch,
+      mode: ctx.mode,
+      apiKeyId: ctx.keyId,
+    });
+  } catch (err) {
+    // withApiAuth turns this into a 500; without the release the slot would
+    // be held for the rest of the hour by a request that never enrolled.
+    await releaseReservation(gate);
+    throw err;
+  }
 
-  void emitWebhookEvent({
-    subAccountId: ctx.subAccountId,
-    agencyId: ctx.agencyId,
-    mode: ctx.mode,
-    type: "contact.updated",
-    payload: { contact: wire },
-  });
+  // Covers BOTH no-trigger cases: a patch that added no new tag, and a
+  // contact that vanished between the tenancy read and the write.
+  if (!written?.firedTrigger) await releaseReservation(gate);
 
-  return apiOk(ctx, { contact: wire });
+  if (!written) {
+    return apiError(ctx, "not_found", "contact_not_found", "Contact not found.");
+  }
+
+  return apiOk(ctx, { contact: written.contact });
 });
 
 export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {

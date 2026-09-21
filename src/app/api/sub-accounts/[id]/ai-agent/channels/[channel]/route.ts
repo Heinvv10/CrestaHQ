@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
@@ -18,7 +19,6 @@ import {
   DEFAULT_WEB_CHAT_CONFIG,
   DEFAULT_WHATSAPP_CONFIG,
 } from "@/types/ai";
-import { subAccountWhatsappIsConfigured } from "@/lib/comms/twilio";
 import { metaCanInbox } from "@/lib/comms/meta-capabilities";
 import {
   aiChannelGateOn,
@@ -469,14 +469,17 @@ export async function PATCH(
           { status: 403 },
         );
       }
-      if (!subAccountWhatsappIsConfigured(sa?.twilioConfig)) {
-        return NextResponse.json(
-          {
-            error:
-              "Add a WhatsApp sender number under Settings → SMS before enabling the WhatsApp channel. WhatsApp reuses your Twilio credentials.",
-          },
-          { status: 400 },
-        );
+      // Per-rail. The old check demanded Twilio credentials, so a workspace
+      // correctly connected to Cloud or the bridge could never enable the AI
+      // WhatsApp channel — and was told to add a Twilio number, which is not
+      // the fix on either rail. readiness reports the right failure for the
+      // rail this workspace actually sends on.
+      const waReadiness = await checkWhatsappReadiness({
+        subAccountId: id,
+        subAccount: sa,
+      });
+      if (!waReadiness.ready) {
+        return NextResponse.json({ error: waReadiness.error }, { status: 400 });
       }
     }
   }

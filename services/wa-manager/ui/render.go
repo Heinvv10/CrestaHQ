@@ -86,6 +86,11 @@ type Card struct {
 	// spends its width on the number that actually varies.
 	ReplyOnly string
 
+	// LostInbound is the count of customer messages this bridge received and
+	// never delivered. It stays on the card after the bridge stops flagging a
+	// fresh drop as a problem, because the loss does not stop having happened.
+	LostInbound string
+
 	// NeedsPairing offers the re-pair route inline. A disconnected number is
 	// the one card an operator has to act on.
 	NeedsPairing bool
@@ -188,6 +193,7 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 	if r != nil && r.Incomplete {
 		c.Status, c.Tone = "Not checked — the health sweep ran out of time", ToneUnknown
 		c.SentToday, c.LastInbound, c.KillSwitch, c.ReplyOnly = "unknown", "unknown", "unknown", "unknown"
+		c.LostInbound = "unknown"
 		return c
 	}
 	if r == nil || !r.Reachable {
@@ -197,6 +203,7 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 		// Not "on": a bridge we cannot see tells us nothing about its rails,
 		// and a safety claim about an unobserved number is worse than no claim.
 		c.ReplyOnly = "unknown"
+		c.LostInbound = "unknown"
 		if r != nil && r.Err != "" {
 			c.Problems = []string{r.Err}
 		}
@@ -208,6 +215,7 @@ func BuildCard(t store.Tenant, r *health.Report) Card {
 	c.LastInbound = humanizeAge(r.LastInboundAgeSeconds)
 	c.KillSwitch = killState(r.Killed)
 	c.ReplyOnly = replyOnlyState(r.AllowlistCount)
+	c.LostInbound = lostInboundState(r.DroppedInbound)
 	c.Problems = r.Problems
 	return c
 }
@@ -379,5 +387,20 @@ func BuildRolloutLine(state, version, detail string, immediate bool) *RolloutLin
 		}
 	default:
 		return nil
+	}
+}
+
+// lostInboundState words the count for an operator. Plain "none" rather than a
+// zero, so a scan of the fleet reads as prose and a non-zero stands out.
+func lostInboundState(n *int) string {
+	switch {
+	case n == nil:
+		return "unknown"
+	case *n <= 0:
+		return "none"
+	case *n == 1:
+		return "1 message lost since this bridge last connected"
+	default:
+		return fmt.Sprintf("%d messages lost since this bridge last connected", *n)
 	}
 }

@@ -20,7 +20,11 @@ import (
 const (
 	operatorTok = "op-token-hermes"
 	appTok      = "app-token-that-must-never-appear"
-	mgrTok      = "manager-token-for-tenant"
+	// hookSecret is the webhook signing key a real provision would have just
+	// minted. Like appTok it must appear in exactly one response — the 201 of
+	// the call that minted it — and nowhere else.
+	hookSecret = "hook-secret-that-must-never-appear"
+	mgrTok     = "manager-token-for-tenant"
 )
 
 // fakeProvisioner records what it was asked to do WITHOUT touching systemd or
@@ -31,19 +35,28 @@ type fakeProvisioner struct {
 	creates  []string
 	destroys []string
 	tenant   store.Tenant
-	err      error
+	// appToken and webhookSecret are what a real provisioner would have just
+	// minted. They are fields rather than constants so a test can set the
+	// webhook secret empty and assert the pre-signing shape.
+	appToken      string
+	webhookSecret string
+	err           error
 }
 
-func (f *fakeProvisioner) Create(tenantID, displayName string) (store.Tenant, error) {
+func (f *fakeProvisioner) Create(tenantID, displayName string) (provision.Created, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, tenantID)
 	if f.err != nil {
-		return store.Tenant{}, f.err
+		return provision.Created{}, f.err
 	}
 	t := f.tenant
 	t.ID, t.DisplayName = tenantID, displayName
-	return t, nil
+	return provision.Created{
+		Tenant:        t,
+		AppToken:      f.appToken,
+		WebhookSecret: f.webhookSecret,
+	}, nil
 }
 
 func (f *fakeProvisioner) Destroy(tenantID string) error {
@@ -166,7 +179,11 @@ func newHarnessWithPublicOrigin(t *testing.T, publicOrigin string) *harness {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	prov := &fakeProvisioner{tenant: store.Tenant{Instance: "blitz", Port: 8412, State: store.StateProvisioned}}
+	prov := &fakeProvisioner{
+		tenant:        store.Tenant{Instance: "blitz", Port: 8412, State: store.StateProvisioned},
+		appToken:      appTok,
+		webhookSecret: hookSecret,
+	}
 	units := &fakeUnits{}
 	bridge := newFakeBridge(t)
 	poll := &fakePoller{reports: map[string]health.Report{"blitz": {Reachable: true, Connected: true, OutboundLast24h: 7}}}
@@ -303,8 +320,12 @@ func TestCreateReturnsAllocatedPort(t *testing.T) {
 func TestUnsafeTenantIDIsRefusedBeforeProvisioning(t *testing.T) {
 	// Two kinds are refused: ids that yield NO usable instance name, and ids
 	// that would only survive by being silently renamed into one.
+	// "BLITZ" is deliberately absent: case is the one divergence from the
+	// canonical instance name that checkTenantID now admits, because a
+	// LeadStack subAccountId is mixed-case and the tenant id is interpolated
+	// into the inbound webhook. TestCreateAcceptsAMixedCaseTenantID pins that.
 	unsafe := []string{"", "..", "/", "----", "...", " ",
-		"../../etc", "a/../b", "Blitz Fibre", "BLITZ", "a.b", "blitz_fibre", "-blitz"}
+		"../../etc", "a/../b", "Blitz Fibre", "a.b", "blitz_fibre", "-blitz"}
 	for _, id := range unsafe {
 		h := newHarness(t)
 		body, _ := json.Marshal(map[string]string{"tenantId": id, "displayName": "x"})
@@ -324,7 +345,9 @@ func TestUnsafeTenantIDInPathIsRefused(t *testing.T) {
 	// ".." is excluded here only because net/http normalises it out of the
 	// path before any route matches; TestTraversalPathIsNotDispatched covers
 	// that case separately.
-	for _, id := range []string{"----", "Blitz", "a.b", "..%2f..%2fetc"} {
+	// "Blitz" is not here for the reason given in
+	// TestUnsafeTenantIDIsRefusedBeforeProvisioning: mixed case is admitted.
+	for _, id := range []string{"----", "Blitz_Fibre", "a.b", "..%2f..%2fetc"} {
 		for _, rt := range []route{
 			{http.MethodGet, "/api/tenants/" + id + "/pair", ""},
 			{http.MethodPost, "/api/tenants/" + id + "/restart", ""},
@@ -503,24 +526,99 @@ func TestRestartReportsFailure(t *testing.T) {
 	}
 }
 
-// Nothing this API returns is allowed to carry a bearer token. The manager
-// holds one per tenant plus its own; an operator console rendering a response
+// No route that READS state may carry a credential. The manager holds one
+// token per tenant plus its own, and an operator console rendering a response
 // verbatim must not put any of them on a screen or in a log.
-func TestResponsesNeverCarryTokens(t *testing.T) {
+//
+// POST /api/tenants is deliberately excluded and has its own tests below: it
+// discloses the app pair it has just minted, once, and never again. Every
+// other route — including the list route that re-encodes the same tenants —
+// must stay silent.
+func TestReadRoutesNeverCarryTokens(t *testing.T) {
 	h := newHarness(t)
 	h.seed(t, "blitz", "blitz", 8412)
+	// A tenant is created first, so the list route below is re-encoding a
+	// tenant whose credentials the manager has genuinely seen this run.
+	h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
 
 	bodies := []string{
 		h.do(http.MethodGet, "/api/tenants", operatorTok, "").Body.String(),
-		h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`).Body.String(),
 		h.do(http.MethodGet, "/api/tenants/blitz/pair", operatorTok, "").Body.String(),
+		h.do(http.MethodPost, "/api/tenants/blitz/restart", operatorTok, "").Body.String(),
+		h.do(http.MethodDelete, "/api/tenants/blitz?confirm=blitz", operatorTok, "").Body.String(),
 	}
+	// operatorTok and mgrTok ONLY.
+	//
+	// appTok and hookSecret used to be in this list and could not fail it. A
+	// read route can only disclose what it can reach, and those two reach the
+	// server as provision.Created fields — returned by the create call and
+	// never persisted. store.Tenant, which every read route projects, has no
+	// credential field and deliberately must not gain one (see the comment on
+	// provision.Created), so no widening of tenantView could ever make them
+	// appear here. Asserting their absence bought false confidence: it read as
+	// a guard on the projection while being unable to go red for any change to
+	// it. The projection's create-path disclosure is guarded by
+	// TestCreateReturnsTheMintedAppCredentialsOnce and
+	// TestCreateOmitsTheWebhookSecretWhenSigningIsOff instead.
+	//
+	// The two that remain are genuinely reachable: operatorTok is the token
+	// this request presented, and mgrTok is the token the manager presents to
+	// the bridge whose body the pair route relays.
 	for _, b := range bodies {
-		for _, secret := range []string{operatorTok, mgrTok, appTok} {
+		for _, secret := range []string{operatorTok, mgrTok} {
 			if strings.Contains(b, secret) {
-				t.Fatalf("response leaked a token: %s", b)
+				t.Fatalf("response leaked a credential: %s", b)
 			}
 		}
+	}
+}
+
+// The one authorised disclosure: the 201 hands back the pair this call minted,
+// because nothing else can — the manager keeps no readable copy, and the CRM
+// cannot read another service's .env. Without it there is no way to connect a
+// provisioned bridge to the product at all.
+func TestCreateReturnsTheMintedAppCredentialsOnce(t *testing.T) {
+	h := newHarness(t)
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if got["token"] != appTok {
+		t.Fatalf("token = %v, want the freshly minted app token", got["token"])
+	}
+	if got["webhookSecret"] != hookSecret {
+		t.Fatalf("webhookSecret = %v, want the freshly minted secret", got["webhookSecret"])
+	}
+	// The tenant projection must still be there — the caller needs the port to
+	// address the bridge at all.
+	if got["tenantId"] != "acme" || got["port"] != float64(8412) {
+		t.Fatalf("201 lost the tenant projection: %v", got)
+	}
+}
+
+// A manager provisioning unsigned tenants (no webhook-secret generator) must
+// omit the field rather than send "". An empty string reads as "the secret is
+// blank", and a receiver storing it would then verify every inbound against a
+// key the bridge never had.
+func TestCreateOmitsTheWebhookSecretWhenSigningIsOff(t *testing.T) {
+	h := newHarness(t)
+	h.prov.webhookSecret = ""
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok, `{"tenantId":"acme","displayName":"Acme"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := got["webhookSecret"]; present {
+		t.Fatalf("webhookSecret must be absent, not blank: %s", rec.Body.String())
 	}
 }
 
@@ -757,4 +855,204 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 		t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
 	}
 	return out
+}
+
+// A LeadStack subAccountId is a mixed-case Firestore document id, and the
+// manager interpolates the tenant id verbatim into each bridge's inbound
+// webhook (base + "/" + tenantID). Refusing uppercase therefore did not merely
+// inconvenience an operator: it made the CRM's own webhook route unreachable,
+// because no accepted id could ever spell one.
+func TestCreateAcceptsAMixedCaseTenantID(t *testing.T) {
+	h := newHarness(t)
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	h.prov.tenant = store.Tenant{Instance: "54vpi0bs1zdmcxmymaya", Port: 33101, State: store.StateProvisioned}
+
+	rec := h.do(http.MethodPost, "/api/tenants", operatorTok,
+		`{"tenantId":"`+id+`","displayName":"CrestaHQ"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	creates, _ := h.prov.calls()
+	if len(creates) != 1 || creates[0] != id {
+		// Verbatim matters more than acceptance: a lowercased id would build a
+		// webhook URL for a sub-account that does not exist, and inbound would
+		// 404 forever with every component reporting healthy.
+		t.Fatalf("the id must reach the provisioner unchanged, got %v", creates)
+	}
+}
+
+// Widening the alphabet to admit uppercase must not widen it to anything that
+// changes shape on the way to a path, a unit name or a URL.
+func TestCreateStillRefusesUnsafeTenantIDs(t *testing.T) {
+	for _, id := range []string{
+		"../../etc",     // traversal
+		"Blitz Fibre",   // a space: coerced to a name nobody typed
+		"a.b",           // a separator that collapses onto another id
+		"a_b",           // ditto
+		"-acme",         // systemd names start alphanumeric
+		"",              // no id at all
+		"acme/../other", // a slash would split the webhook path
+		"acme?x=1",      // a query string smuggled into the webhook URL
+		"acme#frag",
+		"acmé", // non-ASCII coerces to a dash
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 71 chars: silently truncated
+	} {
+		h := newHarness(t)
+		rec := h.do(http.MethodPost, "/api/tenants", operatorTok,
+			`{"tenantId":`+mustJSONString(id)+`,"displayName":"x"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("tenant id %q: want 400, got %d body=%s", id, rec.Code, rec.Body.String())
+		}
+		if creates, _ := h.prov.calls(); len(creates) != 0 {
+			t.Fatalf("tenant id %q reached the provisioner: %v", id, creates)
+		}
+	}
+}
+
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// The whole point of admitting case is that the id survives verbatim: it is a
+// case-sensitive primary key (store/sqlite.go, no COLLATE NOCASE) and it is
+// interpolated into the bridge's inbound webhook. Every route above reached
+// through the create handler, which ignores checkTenantID's returned id — so
+// a checkTenantID that normalised what it returned would break every PATH
+// route in production while leaving the rest of this suite green.
+//
+// These routes bind that. Each one resolves the id against the store, so a
+// lowercased return value 404s instead of acting.
+func TestPathRoutesResolveAMixedCaseTenantVerbatim(t *testing.T) {
+	const id = "54vPI0BS1zDMcxMyMAyA"
+	const instance = "54vpi0bs1zdmcxmymaya"
+
+	t.Run("pair relays to the bridge", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodGet, "/api/tenants/"+id+"/pair", operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		if len(h.bridge.headers()) != 1 {
+			t.Fatalf("the request never reached the bridge: %v", h.bridge.headers())
+		}
+	})
+
+	t.Run("restart acts on the lowercased instance", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodPost, "/api/tenants/"+id+"/restart", operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		// The unit name is the ONE place the id is allowed to differ, and it
+		// must differ in exactly one way: lowercased, nothing else renamed.
+		if seen := h.units.seen(); len(seen) == 0 || !strings.Contains(strings.Join(seen, ","), instance) {
+			t.Fatalf("systemd was not asked to restart %q: %v", instance, seen)
+		}
+		// Not merely "found the tenant": the id reported back to the operator
+		// must be the one they supplied, byte for byte. This also catches a
+		// refactor that keeps the lookup working but echoes a coerced id.
+		if got := decodeBody(t, rec)["tenantId"]; got != id {
+			t.Fatalf("the response renames the tenant: want %q, got %v", id, got)
+		}
+	})
+
+	t.Run("delete matches the confirm parameter verbatim", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodDelete, "/api/tenants/"+id+"?confirm="+id, operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		_, destroys := h.prov.calls()
+		if len(destroys) != 1 || destroys[0] != id {
+			t.Fatalf("Destroy must receive the id unchanged, got %v", destroys)
+		}
+	})
+
+	t.Run("the operator screen renders the tenant", func(t *testing.T) {
+		h := newHarness(t)
+		h.seed(t, id, instance, 33101)
+		rec := h.do(http.MethodGet, "/tenants/"+id, operatorTok, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), id) {
+			t.Fatalf("the screen does not name the tenant it claims to show:\n%s", rec.Body.String())
+		}
+	})
+}
+
+// Two POSTs whose ids sanitise to one instance name, through the REAL
+// provisioner. One is created; the other is a duplicate tenant, and a duplicate
+// tenant is a 409 naming the conflict. It used to be a 500 — "could not
+// provision this tenant" — because the loser of the instance-name race came
+// back as a raw sqlite error, and before that as a bogus "no free port" from a
+// range that was almost entirely empty.
+func TestConcurrentCreatesForOneInstanceNameYieldA409(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		root := t.TempDir()
+		st, err := store.Open(root + "/manager.db")
+		if err != nil {
+			t.Fatal(err)
+		}
+		units := &fakeUnits{}
+		prov := provision.New(st, units, provision.Opts{
+			Root: root, PortBase: 33100, PortCount: 20,
+			AppToken:     func() string { return "app-" + fmt.Sprint(round) },
+			ManagerToken: func() string { return "mgr-" + fmt.Sprint(round) },
+		})
+		h := &harness{h: New(Deps{
+			Store: st, Provisioner: prov, Poller: &fakePoller{}, Units: units,
+			OperatorToken: operatorTok,
+			TenantToken:   func(string) string { return mgrTok },
+			BridgeBaseURL: func(store.Tenant) string { return "http://127.0.0.1:1" },
+		}), st: st}
+
+		// The API only admits ids it would not rename, so two admissible ids
+		// collide on one instance name exactly when they differ in CASE — the
+		// mixed-case Firestore sub-account id pasted once and retyped in lower
+		// case later, which is how this was reached in the first place.
+		ids := [2]string{"Ab-Cd", "ab-cd"}
+		var codes [2]int
+		var bodies [2]string
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range ids {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				rec := h.do(http.MethodPost, "/api/tenants", operatorTok,
+					fmt.Sprintf(`{"tenantId":%q,"displayName":"Race"}`, ids[i]))
+				codes[i], bodies[i] = rec.Code, rec.Body.String()
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		st.Close()
+
+		created, conflicted := 0, 0
+		for i := range ids {
+			switch codes[i] {
+			case http.StatusCreated:
+				created++
+			case http.StatusConflict:
+				conflicted++
+				if !strings.Contains(bodies[i], "ab-cd") {
+					t.Fatalf("round %d: the 409 must name the contested instance: %s", round, bodies[i])
+				}
+			default:
+				t.Fatalf("round %d: a duplicate tenant must be 409, got %d: %s", round, codes[i], bodies[i])
+			}
+		}
+		if created != 1 || conflicted != 1 {
+			t.Fatalf("round %d: want one 201 and one 409, got %d and %d", round, created, conflicted)
+		}
+	}
 }

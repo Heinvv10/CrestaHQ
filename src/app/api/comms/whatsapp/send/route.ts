@@ -1,19 +1,44 @@
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
-import {
-  sendWhatsappForSubAccount,
-} from "@/lib/comms/twilio";
-import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
-import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
-import { WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE } from "@/lib/comms/whatsapp/send-mode";
-import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
-import { UsageQuotaExceededError } from "@/lib/server/usage-meter";
-import { upsertConversationForMessage } from "@/lib/server/conversations-service";
-import type { SubAccountDoc } from "@/types";
+import { sendConversationWhatsapp } from "@/lib/server/conversation-send/whatsapp";
+import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
+import {
+  deleteStaged,
+  mediaRefusal,
+  stagingPath,
+  stagingRail,
+  statStaged,
+  type StagedAttachment,
+  type StagedObject,
+} from "@/lib/comms/whatsapp/staged-upload";
+import { stagedMediaBudget } from "@/lib/comms/whatsapp/media-budget";
+import { videoTranscodeAvailable } from "@/lib/comms/whatsapp/video-tools";
+import { transcodesVideo, type WhatsAppProviderCapabilities } from "@/lib/comms/whatsapp/provider";
+import { loadStaged, loadVideo } from "./load-attachment";
+import type { Contact } from "@/types/contacts";
 
-type Body = { contactId?: string; body?: string };
+type Body = {
+  contactId?: string;
+  body?: string;
+  /**
+   * Optional file to send alongside the text. Bridge and Cloud rails — see
+   * `dispatchWhatsappSend`, which refuses one on Twilio.
+   *
+   * The file is one the composer already PUT to Storage through
+   * `/api/comms/whatsapp/upload-url`; `stagedId` names it. Its type and size
+   * are read from Storage, never from this body, and are checked against the
+   * rail here, before its bytes are fetched into memory. `contentType` is
+   * accepted and ignored. There is no inline form: a body carrying
+   * `dataBase64` is refused.
+   */
+  attachment?: {
+    filename?: string;
+    contentType?: string;
+    stagedId?: string;
+    dataBase64?: unknown;
+  } | null;
+};
 
 /**
  * Send a manual WhatsApp message from a contact profile.
@@ -27,6 +52,10 @@ type Body = { contactId?: string; body?: string };
  *      window we 409, because sending a template (the only compliant way to
  *      re-open a conversation) is a v2 feature. The window length is read from
  *      the channel config (`whatsapp.sessionWindowHours`, default 24).
+ *
+ * This route is auth + request parsing only; both guards, the rail choice and
+ * the send live in the conversation send service, which the scheduled-message
+ * worker shares (src/lib/server/conversation-send/whatsapp.ts).
  */
 export async function POST(request: Request) {
   const auth = requireUid(request);
@@ -40,173 +69,150 @@ export async function POST(request: Request) {
   }
 
   const contactId = payload.contactId?.trim();
-  const body = payload.body?.trim();
+  const body = payload.body?.trim() ?? "";
 
-  if (!contactId || !body) {
+  // A photo or document may go without a caption, as it can from a phone;
+  // the attachment itself is validated below. Only a send carrying neither
+  // text nor a file is empty.
+  if (!contactId || (!body && !payload.attachment)) {
     return NextResponse.json(
       { error: "contactId and body are required" },
       { status: 400 },
     );
   }
 
+  let staged: { stagedId: string; filename: string } | null = null;
+  if (payload.attachment) {
+    if (payload.attachment.dataBase64 !== undefined) {
+      return NextResponse.json(
+        {
+          error:
+            "Inline attachments are not accepted. Upload the file through /api/comms/whatsapp/upload-url and send its stagedId.",
+          code: "media_invalid",
+        },
+        { status: 400 },
+      );
+    }
+    const filename = payload.attachment.filename?.trim();
+    const stagedId = payload.attachment.stagedId;
+    if (!filename || typeof stagedId !== "string") {
+      return NextResponse.json(
+        { error: "attachment requires filename and stagedId." },
+        { status: 400 },
+      );
+    }
+    // Bounded here, for every rail, before anything is sent — the same 255
+    // bytes the bridge already refuses over (send.go). The thread row and the
+    // activity store this name verbatim; an unbounded one could exceed
+    // Firestore's limits AFTER the customer had the file, and both writes are
+    // best-effort, so the thread would show nothing was sent.
+    if (Buffer.byteLength(filename, "utf8") > 255) {
+      return NextResponse.json(
+        { error: "attachment filename is longer than 255 bytes.", code: "media_invalid" },
+        { status: 400 },
+      );
+    }
+    staged = { stagedId, filename };
+  }
+
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  if (!contact.phone) {
-    return NextResponse.json(
-      { error: "This contact has no phone number." },
-      { status: 400 },
-    );
-  }
-  if (contact.whatsappOptedOut) {
-    return NextResponse.json(
-      { error: "This contact has opted out of WhatsApp." },
-      { status: 400 },
-    );
-  }
-
-  const db = getAdminDb();
-  const subAccountSnap = await db
-    .doc(`subAccounts/${contact.subAccountId}`)
-    .get();
-  const subAccount = subAccountSnap.exists
-    ? (subAccountSnap.data() as SubAccountDoc)
-    : null;
-
-  if (subAccount?.whatsappEnabledByAgency !== true) {
-    return NextResponse.json(
-      { error: "WhatsApp is disabled for this sub-account by your agency." },
-      { status: 403 },
-    );
-  }
-  // Readiness is per-rail. Checking Twilio's credentials for a workspace that
-  // runs on Meta Cloud is not a stricter check, it is the wrong one — it
-  // refuses a correctly configured Cloud workspace and would wave through one
-  // whose Cloud credentials are missing.
-  const readiness = await checkWhatsappReadiness({
-    subAccountId: contact.subAccountId,
-    subAccount,
-  });
-  if (!readiness.ready) {
-    return NextResponse.json({ error: readiness.error }, { status: 503 });
-  }
-
-  // The 24-hour window decision, the rail choice and the send all belong to
-  // dispatchWhatsappSend now. This route used to re-implement the window check
-  // inline; keeping it here as well would let the two drift, which is exactly
-  // how a template gets sent into an open window at 5x the price.
-  const windowHours =
-    (await getChannelConfig(contact.subAccountId, "whatsapp"))?.whatsapp
-      ?.sessionWindowHours ?? 24;
-
-  let sid: string;
-  let fromNumber = "";
-  try {
-    const result = await dispatchWhatsappSend({
+  let stagedPath: string | null = null;
+  if (staged) {
+    // Rebuilt from the authorised contact and the caller's own uid — never
+    // taken from the request. See staged-upload.ts for the argument.
+    stagedPath = stagingPath({
+      agencyId: contact.agencyId,
       subAccountId: contact.subAccountId,
-      subAccount,
-      contactId,
-      to: contact.phone,
-      body,
-      windowHours,
-      // This is the manual free-form composer — it has no template to fall
-      // back on, so a closed window is a refusal, exactly as before.
-      template: null,
-      sendViaTwilio: async () => {
-        const r = await sendWhatsappForSubAccount({
-          subAccountId: contact.subAccountId,
-          subAccount,
-          to: contact.phone,
-          body,
-        });
-        fromNumber = r.from;
-        return { ok: true, messageId: r.sid };
-      },
+      uid: auth.uid,
+      stagedId: staged.stagedId,
     });
-
-    if (!result.ok) {
-      if (result.error === WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE) {
-        return NextResponse.json(
-          {
-            error: `WhatsApp's ${windowHours}-hour messaging window is closed — the contact hasn't messaged within that time. Re-opening the conversation requires an approved message template.`,
-            code: "session_window_closed",
-          },
-          { status: 409 },
-        );
-      }
+    if (!stagedPath) {
       return NextResponse.json(
-        { error: result.error ?? "Failed to send WhatsApp message" },
-        { status: 502 },
+        { error: "attachment stagedId is not valid.", code: "media_invalid" },
+        { status: 400 },
       );
     }
-    sid = result.messageId ?? "";
-  } catch (err) {
-    if (err instanceof UsageQuotaExceededError) {
-      return NextResponse.json({ error: err.message }, { status: 429 });
+  }
+
+  let releaseBudget: (() => void) | null = null;
+  try {
+    let attachment: StagedAttachment | null = null;
+    if (staged && stagedPath) {
+      const host = { videoTranscode: await videoTranscodeAvailable() };
+      const checked = await checkStaged(contact, stagedPath, host);
+      if (checked instanceof NextResponse) return checked;
+      const { obj, caps } = checked;
+      // A video this host transcodes goes to a temp file, not memory; what
+      // this process then holds is at most the rail's video cap.
+      const toDisk = host.videoTranscode && transcodesVideo(caps, obj.contentType);
+      // Held from before the read until the rail has the file — the whole
+      // time its bytes are in this process. A shrink's decode is reserved
+      // separately, from the photo's header (image-shrink.ts).
+      releaseBudget = await stagedMediaBudget.acquire(
+        toDisk ? Math.min(obj.sizeBytes, caps.maxMediaBytes.video) : obj.sizeBytes,
+      );
+      if (!releaseBudget) {
+        return NextResponse.json(
+          {
+            error: "Other large files are being sent right now. Try again in a minute.",
+            code: "media_busy",
+          },
+          { status: 503, headers: { "Retry-After": "30" } },
+        );
+      }
+      const loaded = toDisk
+        ? await loadVideo(obj, staged.filename, caps)
+        : await loadStaged(obj, staged.filename, caps);
+      if (loaded instanceof NextResponse) return loaded;
+      attachment = loaded;
     }
-    const message =
-      err instanceof Error ? err.message : "Failed to send WhatsApp message";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const outcome = await sendConversationWhatsapp({
+      contactId,
+      contact,
+      body,
+      attachment,
+    // This route is the ONLY human-typed send path: requireUid above means a
+    // person with a session pressed send in a thread. Every automated sender
+    // — AI auto-reply, review requests, workflow steps, scheduled sends —
+    // is left unmarked, so it keeps the full quiet-hours guard.
+      humanReply: true,
+      actor: auth,
+    });
+    releaseBudget?.();
+    releaseBudget = null;
+    await logInboxReviewAsk({ contact, channel: "whatsapp", parts: [body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
+    return sendOutcomeResponse(outcome);
+  } finally {
+    releaseBudget?.();
+    // Sent, refused or failed, the staged object has served its purpose: the
+    // thread's copy (if any) was made from it already. A resend attaches the
+    // file again.
+    if (stagedPath) await deleteStaged(stagedPath);
   }
+}
 
-  const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body;
-
-  try {
-    await db
-      .collection("contacts")
-      .doc(contactId)
-      .collection("activities")
-      .add({
-        type: "whatsapp_sent",
-        content: `WhatsApp: ${preview}`,
-        createdBy: auth.uid,
-        meta: { sid },
-        createdAt: FieldValue.serverTimestamp(),
-      });
-  } catch (err) {
-    console.warn("[whatsapp/send] activity write failed", err);
+/**
+ * The staged object, checked against the rail on Storage's word for its type
+ * and size — the client's claim at upload time decided only whether it got a
+ * URL. Nothing is read yet.
+ */
+async function checkStaged(
+  contact: Contact,
+  path: string,
+  host: { videoTranscode: boolean },
+): Promise<{ obj: StagedObject; caps: WhatsAppProviderCapabilities } | NextResponse> {
+  const obj = await statStaged(path);
+  if (!obj) {
+    return NextResponse.json(
+      { error: "The attachment is no longer available. Attach the file again.", code: "media_invalid" },
+      { status: 400 },
+    );
   }
-
-  // Chat-thread row. Doc id = MessageSid so retries dedupe naturally. Note
-  // `from` carries the `whatsapp:` prefix (Twilio's address form) — the
-  // thread UI is read-only on this field so it renders fine.
-  try {
-    await db
-      .collection("contacts")
-      .doc(contactId)
-      .collection("whatsappMessages")
-      .doc(sid)
-      .set({
-        agencyId: contact.agencyId,
-        subAccountId: contact.subAccountId,
-        contactId,
-        direction: "outbound",
-        status: "sent",
-        body,
-        from: fromNumber,
-        to: contact.phone,
-        twilioMessageSid: sid,
-        sentByUid: auth.uid,
-        error: null,
-        readAt: null,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-  } catch (err) {
-    console.warn("[whatsapp/send] message-row write failed", err);
-  }
-
-  // Unified-inbox index — mirror this outbound into the conversation doc.
-  await upsertConversationForMessage({
-    contactId,
-    subAccountId: contact.subAccountId,
-    agencyId: contact.agencyId,
-    contactName: contact.name ?? "",
-    contactPhone: contact.phone,
-    channel: "whatsapp",
-    direction: "outbound",
-    body,
-    pauseBot: true,
-  });
-
-  return NextResponse.json({ ok: true, sid });
+  const rail = await stagingRail(contact.subAccountId);
+  if (!rail.ok) return NextResponse.json({ error: rail.error }, { status: rail.status });
+  const refusal = mediaRefusal(rail.capabilities, obj.contentType, obj.sizeBytes, host);
+  if (refusal) return NextResponse.json(refusal, { status: 400 });
+  return { obj, caps: rail.capabilities };
 }

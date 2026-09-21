@@ -18,6 +18,9 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      // Playwright's generated HTML report bundles a minified viewer app.
+      "playwright-report/**",
+      "test-results/**",
     ],
   },
   {
