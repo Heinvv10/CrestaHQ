@@ -64,6 +64,11 @@ export interface AuditEventInput {
   /** null for an agency-level event (readable by the agency owner only). */
   subAccountId: string | null;
   changes: AuditChangeInput[];
+  /**
+   * The signed-in user a non-user actor acted for — e.g. whoever asked the
+   * Workspace Assistant. Stored as `createdByUid`. Ignored for a user actor.
+   */
+  onBehalfOfUid?: string;
 }
 
 /** The stored doc, minus `createdAt` (a server timestamp). */

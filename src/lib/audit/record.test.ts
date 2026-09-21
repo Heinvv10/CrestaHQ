@@ -63,6 +63,27 @@ describe("recordAuditEvent", () => {
     expect(written[0].data.actor).toEqual({ type: "api_key", id: "key_1" });
   });
 
+  it("stamps createdByUid with the user a non-user actor acted for", async () => {
+    await recordAuditEvent(
+      db,
+      event({ actor: { type: "ai_agent", id: "workspace-assistant" }, onBehalfOfUid: "uid_asker" })
+    );
+    expect(written[0].data.createdByUid).toBe("uid_asker");
+    expect(written[0].data).not.toHaveProperty("onBehalfOfUid");
+  });
+
+  it("a user actor's own uid wins over onBehalfOfUid", async () => {
+    await recordAuditEvent(db, event({ onBehalfOfUid: "uid_other" }));
+    expect(written[0].data.createdByUid).toBe("uid_owner");
+  });
+
+  it("refuses an empty onBehalfOfUid", async () => {
+    await expect(
+      recordAuditEvent(db, event({ actor: { type: "ai_agent", id: "a" }, onBehalfOfUid: "" }))
+    ).rejects.toThrow(/onBehalfOfUid/);
+    expect(written).toHaveLength(0);
+  });
+
   it.each([
     ["missing", undefined],
     ["unknown type", { type: "someone", id: "x" }],

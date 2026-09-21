@@ -118,6 +118,9 @@ export function buildAuditEvent(input: AuditEventInput): AuditEventDoc {
   if (input.subAccountId !== null && !isNonEmptyString(input.subAccountId)) {
     throw new Error("[audit] subAccountId must be a non-empty string or null");
   }
+  if (input.onBehalfOfUid !== undefined && !isNonEmptyString(input.onBehalfOfUid)) {
+    throw new Error("[audit] onBehalfOfUid must be a non-empty string when set");
+  }
   if (!Array.isArray(input.changes) || input.changes.some((c) => !isNonEmptyString(c?.field))) {
     throw new Error("[audit] every change needs a field name");
   }
@@ -128,7 +131,7 @@ export function buildAuditEvent(input: AuditEventInput): AuditEventDoc {
     target: { type: target.type, id: target.id },
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
-    createdByUid: actor.type === "user" ? actor.id : null,
+    createdByUid: actor.type === "user" ? actor.id : (input.onBehalfOfUid ?? null),
     changes: input.changes.map((c) => ({
       field: c.field,
       before: auditValue(input.action, c.field, c.before),
