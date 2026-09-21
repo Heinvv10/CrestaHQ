@@ -38,6 +38,13 @@ const CHANNEL_GATE: Record<
   meta: { field: "metaAgentEnabledByAgency", defaultOn: false },
 };
 
+/** Gate fields whose missing value reads as ON (the opt-OUT channels above). */
+export const DEFAULT_ON_GATE_FIELDS: ReadonlySet<string> = new Set(
+  Object.values(CHANNEL_GATE)
+    .filter((g) => g.defaultOn)
+    .map((g) => g.field),
+);
+
 /**
  * True when the agency has enabled this AI channel for the sub-account.
  * `voice` here is the INBOUND voice gate — outbound voice is gated separately

@@ -94,4 +94,20 @@ describe("feature-gate PATCH audit", () => {
       "[audit] failed to record feature_gates.updated",
     );
   });
+
+  it("diffs against the effective value: an unset opt-OUT gate is already on", async () => {
+    // smsAgentEnabledByAgency is unset (reads as ON); whatsapp is set false.
+    mem.seed(`subAccounts/${SA}`, { agencyId: "ag_1" });
+    expect(await patch({ smsAgentEnabled: true, whatsappEnabled: false })).toBe(200);
+    expect(events()).toHaveLength(0);
+
+    expect(await patch({ webChatEnabled: false, whatsappEnabled: true })).toBe(200);
+    const rows = events();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].changes).toEqual([
+      { field: "whatsappEnabledByAgency", before: false, after: true },
+      { field: "webChatEnabledByAgency", before: true, after: false },
+    ]);
+  });
 });
+
