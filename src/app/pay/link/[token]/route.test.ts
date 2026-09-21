@@ -124,6 +124,22 @@ describe("starting a checkout", () => {
     expect(calls[0].body).toMatchObject({ amount: 115000 });
   });
 
+  it("refuses checkout once the agency has switched Payments off", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", paymentsEnabledByAgency: false });
+    expect((await post({ email: "payer@example.com" })).status).toBe(409);
+    expect((await get()).status).toBe(409);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses an invoice link whose invoice has expired", async () => {
+    seedInvoice("inv1", { validUntil: { seconds: Math.floor(Date.now() / 1000) - 86_400 } });
+    seedLink("link1", { token, invoiceId: "inv1", amountCents: 115000 });
+    const res = await post({ email: "payer@example.com" });
+    expect(res.status).toBe(410);
+    expect(await res.text()).toContain("expired");
+    expect(calls).toEqual([]);
+  });
+
   it("refuses a missing email", async () => {
     expect((await post({})).status).toBe(400);
     expect(calls).toEqual([]);

@@ -8,7 +8,7 @@ import { issuePaymentLinkToken, verifyPaymentLinkToken } from "@/lib/billing/tok
 import { getAdminDb } from "@/lib/firebase/admin";
 import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
-import { computeQuoteTotals } from "@/lib/quotes/calc";
+import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
 
@@ -30,12 +30,17 @@ const MAX_AMOUNT_CENTS = 100_000_000;
 const MAX_DESCRIPTION = 200;
 
 /** Invoice totals are stored in whole units; links are in cents. */
-function invoiceTotalCents(quote: Quote): number {
+export function invoiceTotalCents(quote: Quote): number {
   return Math.round(computeQuoteTotals(quote).total * 100);
 }
 
+/** Same rule as the Stripe invoice pay route: sent or viewed, not expired. */
 function invoicePayable(quote: Quote): boolean {
-  return quote.kind === "invoice" && (quote.status === "sent" || quote.status === "viewed");
+  return (
+    quote.kind === "invoice" &&
+    (quote.status === "sent" || quote.status === "viewed") &&
+    effectiveQuoteStatus(quote) !== "expired"
+  );
 }
 
 export async function createPaymentLink(input: {
@@ -67,7 +72,7 @@ export async function createPaymentLink(input: {
       return fail(404, "Invoice not found");
     }
     if (!invoicePayable(quote)) {
-      return fail(409, "Only a sent, unpaid invoice can get a payment link.");
+      return fail(409, "Only a sent, unpaid, unexpired invoice can get a payment link.");
     }
     if ((quote.currency || "").toUpperCase() !== PAYMENT_LINK_CURRENCY) {
       return fail(409, "Paystack payment links are ZAR only. This invoice is in another currency.");
@@ -143,12 +148,22 @@ export async function loadPayableLink(
   const link = { id: linkId, ...data };
   if (link.status === "paid") return fail(410, "This has already been paid — nothing more to pay.");
   if (!link.active) return fail(410, "This payment link has been withdrawn. Contact the sender if you think that's a mistake.");
+  // Re-checked at pay time, like the Stripe invoice pay route: the agency may
+  // have switched Payments off since the link went out. The webhook does NOT
+  // check this — a payment already taken is recorded regardless.
+  const sub = (await getAdminDb().doc(`subAccounts/${link.subAccountId}`).get()).data();
+  if (sub?.paymentsEnabledByAgency !== true) {
+    return fail(409, "Online payment isn't available for this link. Please contact the sender.");
+  }
 
   if (link.invoiceId) {
     // The link's amount was fixed when it was made. An invoice edited since,
     // or paid another way, must not be charged the stale figure.
     const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
     if (quote?.status === "paid") return fail(410, "This invoice has already been paid — nothing more to pay.");
+    if (quote && effectiveQuoteStatus(quote) === "expired") {
+      return fail(410, "This invoice has expired. Ask the sender for a new one.");
+    }
     if (!quote || !invoicePayable(quote) || invoiceTotalCents(quote) !== link.amountCents) {
       return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
     }

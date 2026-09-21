@@ -7,6 +7,7 @@ import {
   OTHER_SA,
   SA,
   mem,
+  refused,
   seedInvoice,
   seedLink,
   seedSub,
@@ -108,18 +109,121 @@ describe("charge.success → payment link paid", () => {
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
-  it("finishes the invoice on a replay if the first delivery marked only the link", async () => {
+  it("fires the invoice fan-out once when two deliveries overlap", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await Promise.all([deliver(), deliver(), deliver()]);
+    expect(link().status).toBe("paid");
+    expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
+    expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not touch the invoice on a replay — only the first paid transition does", async () => {
     seedInvoice();
     seedLink("link1", { invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: REF });
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
-    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
-  it("never lets a second, different payment overwrite the first", async () => {
-    seedLink("link1", { status: "paid", paystackReference: "pl-link1-ffffffffffffffff" });
+  it("still records the payment when the agency has since switched Payments off", async () => {
+    mem.seed(`subAccounts/${SA}`, { agencyId: "ag1", paymentsEnabledByAgency: false });
     await deliver();
-    expect(link().paystackReference).toBe("pl-link1-ffffffffffffffff");
+    expect(link().status).toBe("paid");
+  });
+
+  it("compares requested_amount, so customer-borne fees don't strand a real payment", async () => {
+    verifyAnswer = () => verified({ reference: REF, amount: 46_300, requested_amount: 45_000 });
+    await deliver();
+    expect(link().status).toBe("paid");
+  });
+
+  it("refuses when requested_amount differs, even if amount happens to match", async () => {
+    verifyAnswer = () => verified({ reference: REF, amount: 45_000, requested_amount: 100 });
+    await deliver();
+    expect(link().status).toBe("open");
+  });
+});
+
+describe("double payment — recorded on the link, never overwriting the first", () => {
+  const FIRST = "pl-link1-ffffffffffffffff";
+
+  it("keeps the first reference and records the second as an extra payment", async () => {
+    seedLink("link1", { status: "paid", paystackReference: FIRST });
+    await deliver();
+    expect(link().paystackReference).toBe(FIRST);
+    expect(link().extraPayments).toEqual([
+      expect.objectContaining({ reference: REF, amountCents: 45000 }),
+    ]);
+  });
+
+  it("records a redelivered second payment only once", async () => {
+    seedLink("link1", { status: "paid", paystackReference: FIRST });
+    await deliver();
+    await deliver();
+    expect(link().extraPayments).toHaveLength(1);
+  });
+});
+
+describe("invoice cannot be marked — link paid, flagged for the operator", () => {
+  it("does not mark an invoice paid whose total changed after the link was made", async () => {
+    seedInvoice("inv1", { globalTaxPercent: null }); // R1,000 now; link and payment R1,150
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().status).toBe("paid");
+    expect(link().attention).toMatch(/changed/i);
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
+  });
+
+  it("does not mark an invoice paid whose currency changed", async () => {
+    seedInvoice("inv1", { currency: "USD" });
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().attention).toBeTruthy();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+  });
+
+  it("flags an invoice that went back to draft", async () => {
+    seedInvoice("inv1", { status: "draft" });
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().status).toBe("paid");
+    expect(link().attention).toBeTruthy();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "draft" });
+  });
+
+  it("flags an invoice that was already paid another way — a refund may be owed", async () => {
+    seedInvoice("inv1", { status: "paid" });
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().status).toBe("paid");
+    expect(link().attention).toMatch(/already paid/i);
+    expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
+  });
+
+  it("flags the link when marking the invoice throws, and still answers 200", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    effects.recordQuoteActivity.mockRejectedValueOnce(new Error("boom"));
+    expect((await deliver()).status).toBe(200);
+    expect(link().status).toBe("paid");
+    expect(link().attention).toBeTruthy();
+  });
+
+  it("leaves a clean invoice payment unflagged", async () => {
+    seedInvoice();
+    seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+    verifyAnswer = () => verified({ reference: REF, amount: 115000 });
+    await deliver();
+    expect(link().attention ?? null).toBeNull();
   });
 });
 
@@ -191,9 +295,24 @@ describe("Paystack unreachable", () => {
     expect(link().status).toBe("open");
   });
 
-  it("treats Paystack refusing the reference as final (200)", async () => {
-    verifyAnswer = () => ({ status: 400, body: { status: false, message: "Transaction reference not found" } });
+  it.each([
+    [400, "Transaction reference not found"],
+    [404, "Transaction not found"],
+  ])("treats a genuine not-found (%i) as final (200)", async (status, message) => {
+    verifyAnswer = () => refused(status, message);
     expect((await deliver()).status).toBe(200);
+    expect(link().status).toBe("open");
+  });
+
+  it.each([
+    [429, "Too many requests"],
+    [401, "Invalid key"],
+    [403, "Forbidden"],
+    [400, "Something else went wrong"],
+    [500, "Internal error"],
+  ])("answers 503 to a %i refusal so a real payment is redelivered", async (status, message) => {
+    verifyAnswer = () => refused(status, message);
+    expect((await deliver()).status).toBe(503);
     expect(link().status).toBe("open");
   });
 });

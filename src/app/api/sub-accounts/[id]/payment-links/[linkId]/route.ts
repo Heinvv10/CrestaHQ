@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGateForContact } from "@/lib/auth/territory-filter";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { deactivatePaymentLink } from "@/lib/server/payment-links-service";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +30,14 @@ export async function PATCH(
   }
   if (body.active !== false) {
     return NextResponse.json({ error: "Only { active: false } is supported." }, { status: 400 });
+  }
+
+  // Same territory rule as create: a scoped collaborator may only act on
+  // links for contacts they can see. Ad-hoc links carry no contact.
+  const link = (await getAdminDb().doc(`paymentLinks/${linkId}`).get()).data();
+  if (link?.subAccountId === subAccountId && link.contactId) {
+    const gate = await territoryGateForContact(access, link.contactId as string);
+    if (gate) return gate;
   }
 
   const result = await deactivatePaymentLink({ subAccountId, linkId });

@@ -17,7 +17,11 @@ vi.mock("@/lib/auth/require-tenancy", () => ({
       ? { uid: "u1", subAccountId, subAccountRole: "admin" }
       : NextResponse.json({ error: "Not a member" }, { status: 403 }),
 }));
-vi.mock("@/lib/auth/territory-filter", () => ({ territoryGateForContact: async () => null }));
+// Contact "c-hidden" is outside the caller's territory.
+vi.mock("@/lib/auth/territory-filter", () => ({
+  territoryGateForContact: async (_access: unknown, contactId: string | null) =>
+    contactId === "c-hidden" ? NextResponse.json({ error: "Outside your territory" }, { status: 403 }) : null,
+}));
 
 process.env.AUTOMATIONS_TOKEN_SECRET = "test-secret-at-least-16";
 
@@ -88,6 +92,18 @@ describe("POST — create", () => {
     expect((await create({ invoiceId: "inv1" })).status).toBe(409);
   });
 
+  it("refuses an expired invoice", async () => {
+    seedInvoice("inv1", { validUntil: { seconds: Math.floor(Date.now() / 1000) - 86_400 } });
+    expect((await create({ invoiceId: "inv1" })).status).toBe(409);
+    expect(mem.list("paymentLinks")).toEqual([]);
+  });
+
+  it("refuses an invoice for a contact outside the caller's territory", async () => {
+    seedInvoice("inv1", { contactId: "c-hidden" });
+    expect((await create({ invoiceId: "inv1" })).status).toBe(403);
+    expect(mem.list("paymentLinks")).toEqual([]);
+  });
+
   it("refuses a draft invoice", async () => {
     seedInvoice("inv1", { status: "draft" });
     expect((await create({ invoiceId: "inv1" })).status).toBe(409);
@@ -123,6 +139,12 @@ describe("PATCH — deactivate", () => {
   it("will not touch another sub-account's link", async () => {
     seedLink("link1", { subAccountId: OTHER_SA });
     expect((await patch("link1")).status).toBe(404);
+    expect(mem.read("paymentLinks/link1")).toMatchObject({ active: true });
+  });
+
+  it("will not deactivate a link for a contact outside the caller's territory", async () => {
+    seedLink("link1", { contactId: "c-hidden", invoiceId: "inv1" });
+    expect((await patch("link1")).status).toBe(403);
     expect(mem.read("paymentLinks/link1")).toMatchObject({ active: true });
   });
 

@@ -102,12 +102,28 @@ export function stubPaystack(
   return calls;
 }
 
-/** A `GET /transaction/verify` success envelope. */
+/**
+ * A `GET /transaction/verify` success envelope. `requested_amount` follows
+ * `amount` unless given — they differ only when the customer bears the fees.
+ */
 export function verified(over: Record<string, unknown> & { reference: string }) {
+  const amount = over.amount ?? 45000;
   return {
     body: {
       status: true,
-      data: { status: "success", amount: 45000, currency: "ZAR", customer: { email: "payer@example.com" }, ...over },
+      data: {
+        status: "success",
+        amount,
+        requested_amount: amount,
+        currency: "ZAR",
+        customer: { email: "payer@example.com" },
+        ...over,
+      },
     },
   };
+}
+
+/** A Paystack refusal envelope at the given HTTP status. */
+export function refused(status: number, message: string) {
+  return { status, body: { status: false, message } };
 }

@@ -24,6 +24,12 @@ export type PaymentLinkStatus = "open" | "paid";
 /** Paystack settles this deployment in ZAR; nothing else is offered. */
 export const PAYMENT_LINK_CURRENCY = "ZAR";
 
+export interface PaymentLinkExtraPayment {
+  reference: string;
+  amountCents: number;
+  paidAt: Timestamp | Date;
+}
+
 export interface PaymentLink {
   id: string;
 
@@ -53,6 +59,16 @@ export interface PaymentLink {
   paystackReference: string | null;
   payerEmail: string | null;
   paidAt: Timestamp | FieldValue | null;
+  /**
+   * Further successful payments after the first — the customer paid twice
+   * (two tabs). Money the operator owes back; shown as "refund owed".
+   */
+  extraPayments?: PaymentLinkExtraPayment[];
+  /**
+   * Set when the money arrived but the invoice could not be marked paid
+   * (edited, voided, already paid another way). The operator must act.
+   */
+  attention?: string | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;
