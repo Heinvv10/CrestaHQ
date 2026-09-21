@@ -39,18 +39,21 @@ readable by members, written only via the API.
 **UI.** Workflows list groups by folder (collapsible, counts, "Unfiled" last); move via row menu;
 folder create/rename/delete inline. Page width stays `max-w-5xl`.
 
-**Snapshots.** Capture includes folders; apply remaps `folderId` like forms remap. SP13 is extending
-snapshots in another session — **check `origin/main` for its changes before touching
-`src/lib/snapshots/*`, and rebase onto it rather than editing in parallel.**
+**Snapshots.** Folders do **not** travel, matching custom-field folders: capture strips `folderId`
+(`src/lib/snapshots/capture.ts`, "folders do not travel"), so applied workflows land Unfiled. SP13 has
+since merged share links, portable snapshot files and a template library — re-read
+`src/lib/snapshots/*` on current `origin/main` before touching it.
 
 **Tests that must fail when wrong** (mutate and watch red):
 - PATCH with a `folderId` belonging to sub-account B on sub-account A → 404, workflow unchanged.
 - Delete folder → its workflows have `folderId: null`, count unchanged.
-- Snapshot apply → folder ids in the target are new ids and every workflow points at one of them.
+- Snapshot capture → no workflow in the payload carries a `folderId`.
 - A workflow doc without `folderId` renders under Unfiled (legacy docs).
 
-**Proof ladder:** fixture tests → CI green → blind `/review` → deployed after 17:00 → folders created and
-a workflow moved on #1000 in the browser, screenshot in the PR. No Blitz/Velocity/Vortex writes.
+**Proof ladder:** fixture tests → CI green → blind `/review` → merge → Firestore rules + indexes deployed
+from `main` by the orchestrator (after checking no open PR carries rules that main lacks) → app deployed
+after 17:00 with Hein's approval → folders created and a workflow moved on #1000 in the browser,
+screenshot in the PR. No Blitz/Velocity/Vortex writes.
 
 **Rollback:** field is optional and ignored by the engine; reverting the PR leaves folder docs orphaned
 and harmless.
@@ -90,12 +93,14 @@ contact first, then customers.
 
 ## 1f–1g — Vortex
 
-1. Hein connects a Vortex SMTP mailbox (Settings → Email). `notify` sends email; without a verified
-   sender the step fails.
+1. Hein connects a Vortex SMTP mailbox (Settings → Email). `notify` sends email. Without a configured
+   sender it does **not** fail: it logs `error:email_not_configured` on that node and the run continues,
+   so the run still shows *completed*.
 2. For each of the 7 flows: check every `pipeline.stage.changed` filter points at a stage that exists
    on Vortex's pipelines today, every `create_task` assignee is an active member, every `notify`
    recipient is Vortex staff. Fix in the builder; record changes in this doc's evidence table.
-3. Test-enrol each on a Vortex staff contact (test dialog exists). **Gate: run log shows completed.**
+3. Test-enrol each on a Vortex staff contact (test dialog exists). **Gate: expand the run and confirm
+   no node result starts with `error:` or `skipped:`** — overall *completed* hides skipped sends.
 4. Hein activates.
 
 ## Found while planning, not in W1 scope

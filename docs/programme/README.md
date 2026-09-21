@@ -7,8 +7,9 @@ the finished SP ledgers in [docs/parity/](../parity/) stay the evidence record.
 ## Decisions (grilled 2026-09-15)
 
 1. **GHL is stopped.** SP14 "cutover" is no longer a finale — its leftovers are live-tenant gaps and rank first.
-2. **SP13 (agency ops) is in flight in another session.** This plan consumes its outputs (media storage,
-   snapshot sharing) and does not re-plan it.
+2. **SP13 (agency ops) was built in another session** and merged on 2026-09-15 after this plan was drafted
+   (media library, snapshot share links and files, template library, launchpad). This plan consumes it
+   and does not re-plan it.
 3. **Ranking key:** what is hurting Blitz / Velocity / Vortex operators today, then resale value.
 4. **Fixed, typed objects — no generic metadata layer.** Tickets layer on Conversations threads,
    forecasts on Deals, scoring and assignment are services. Positioning: operating CRM for
@@ -99,7 +100,7 @@ tenant/provider · **—** absent. Decision — **Now** (waves 1–3) · **Later
 | Coupons, subscriptions, orders | SP9 | — | Later — trigger: a tenant sells recurring products online |
 | Courses / community verification, offers | SP10 | C, unverified | Later — trigger: a tenant launches a course |
 | Prospecting (Get Leads un-park, audit report) | SP12 | parked | Later — trigger: ApexSignal outreach moves into LeadStack |
-| Media library, template library, launchpad | SP13 | in flight elsewhere | Owned by SP13 |
+| Media library, template library, launchpad | SP13 | merged 2026-09-15 (C) | Done in SP13 |
 
 ### Platform, security and administration
 
@@ -130,7 +131,7 @@ flowchart LR
   A[W2 Audit event stream] --> T[W2 Tickets on threads]
   A --> AC[W3 Audit centre UI]
   T --> Q[W2 Queues + SLA]
-  G1 --> T
+  G1 -->|Blitz is the ticket pilot and needs a channel| T
   SH[W3 Stage history] --> R[W3 Reports + roll-up]
   A --> AS[W3 Assignment engine]
   AS --> SC[W3 Rules scoring]
@@ -140,7 +141,9 @@ flowchart LR
   SC --> ML[Later: predictive scoring]
   T --> KB[Later: knowledge base]
   AC --> ROLES[Later: custom roles]
-  SP13[SP13 media — other session] --> MKT[Later: social + composer]
+  SP13[SP13 media — merged] --> MKT[Later: social + composer]
+  GE[W3 Workflow goal events + per-step conversion]
+  SW[W3 Send windows / blackout dates]
   EM[W4 Email tracking + suppression]
   SV[W4 Surveys / conditional forms]
   PL[W4 Paystack payment links]
@@ -152,7 +155,7 @@ flowchart LR
 |---|---|---|---|
 | **W1** | Every business has its automations running again | Blitz channel gate; Blitz 3 + Velocity 1 flows activated; Vortex 7 internal flows; workflow folders | runs > 0 per tenant on prod; one real delivered message per activated flow, confirmed on a handset or inbox |
 | **W2** | Blitz support is worked in LeadStack, and every change is attributable | audit event stream; tickets on threads; queues + SLA | Blitz staff close a real ticket in the browser; audit row for each state change |
-| **W3** | Operators can see and steer the pipeline | stage history; reports roll-up; assignment; rules scoring; follow-up risk; audit centre UI | report numbers reconcile against a Firestore count; assignment + score changes visible in audit |
+| **W3** | Operators can see and steer the pipeline | stage history; reports roll-up; assignment; rules scoring; follow-up risk; audit centre UI; workflow goal events + per-step conversion; per-contact send windows / blackout dates | report numbers reconcile against a Firestore count; assignment + score changes visible in audit |
 | **W4** | Marketing and commerce basics that tenants ask for | email tracking + suppression; conditional forms/surveys; Paystack payment links | a real broadcast shows delivered/opened; a real Paystack test payment via a link |
 
 Specs: [W1 Workflow Operations](w1-workflow-operations.md). W2–W4 specs are written when the previous
@@ -169,5 +172,7 @@ sub-accounts, browser proof on #1000) without touching any live tenant.
 ## Gates that stay human
 
 Activating any workflow on Blitz, Velocity or Vortex · any new WABA or number · template submission to
-Meta · backfills into production · rules/index deploys · production deploys (after 17:00 Mon–Fri) ·
-any Later item moving to Now.
+Meta · backfills into production · production deploys (after 17:00 Mon–Fri) · any Later item moving to Now.
+
+Firestore rules/index deploys are done by the orchestrating session, from `main` only, after checking that
+no open PR carries rules `main` lacks — never from a branch, never chained with the check in one command.
