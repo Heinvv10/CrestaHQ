@@ -162,6 +162,7 @@ export interface MemoryQuery {
 type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
 interface MemoryTx extends Record<"set" | "update" | "create", TxWrite> {
   get: (target: MemoryDocRef | MemoryQuery) => Promise<unknown>;
+  getAll: (...refs: MemoryDocRef[]) => Promise<MemoryDocSnapshot[]>;
   delete: (ref: MemoryDocRef) => MemoryTx;
 }
 
@@ -325,6 +326,11 @@ export function createMemoryFirestore() {
             if ("docs" in r) r.docs.forEach(note);
             else note(r);
             return r;
+          },
+          getAll: async (...refs) => {
+            const snaps = await Promise.all(refs.map((r) => r.get()));
+            snaps.forEach(note);
+            return snaps;
           },
           set: (ref, data, opts) => queue(() => writeSet(ref.path, data, opts?.merge === true)),
           update: (ref, patch) => queue(() => writeUpdate(ref.path, patch)),

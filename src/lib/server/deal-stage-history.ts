@@ -15,7 +15,9 @@ import { dealPipelineId } from "@/lib/pipelines/stages";
  * alone gives the time spent in the stage it left.
  *
  * Rows carry ids and timestamps only — no title, value or contact — and
- * outlive a deleted deal. Design + rejected alternatives:
+ * outlive a deleted deal. `territoryId` / `assignedToUid` are the deal's
+ * at the moment of the move, so reads can be territory-scoped like the
+ * deal itself (rows written now cannot be re-stamped later). Design + rejected alternatives:
  * docs/programme/w3-stage-history.md.
  */
 
@@ -62,6 +64,8 @@ export function appendStageEntry(
     createdByUid: entry.byUid,
     mode: (deal.mode as string | undefined) ?? "live",
     source: entry.source,
+    territoryId: (deal.territoryId as string | null | undefined) ?? null,
+    assignedToUid: (deal.assignedToUid as string | null | undefined) ?? null,
     dealId: entry.dealId,
     pipelineId: dealPipelineId(deal),
     stageId: deal.stageId,

@@ -61,3 +61,30 @@ it("the same deal twice in one chunk compares against the first record, not the 
     ["new", "won"],
   ]);
 });
+
+it("a user move landing mid-import is read inside the commit: the row leaves THAT stage, no row leaves the stale one", async () => {
+  await importDeals([deal("new")]);
+  const id = mem.list("deals")[0].id;
+  // Between the import's read and its commit, a user drags the deal.
+  const realTx = mem.db.runTransaction;
+  let raced = false;
+  mem.db.runTransaction = ((fn: (tx: unknown) => Promise<unknown>) =>
+    realTx(async (tx) => {
+      const out = await fn(tx);
+      if (!raced) {
+        raced = true;
+        mem.seed(`deals/${id}`, { ...mem.read(`deals/${id}`), stageId: "qualified" });
+      }
+      return out;
+    })) as typeof realTx;
+  try {
+    await importDeals([deal("proposal")]);
+  } finally {
+    mem.db.runTransaction = realTx;
+  }
+  expect(raced).toBe(true);
+  expect(rows().filter((r) => r.fromStageId !== null)).toEqual([
+    expect.objectContaining({ dealId: id, fromStageId: "qualified", stageId: "proposal" }),
+  ]);
+  expect(mem.read(`deals/${id}`)?.stageId).toBe("proposal");
+});

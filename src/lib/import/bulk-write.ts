@@ -10,10 +10,7 @@ import { parseEventCreate } from "@/lib/api/serializers/events";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import type { CustomFieldDef } from "@/types/custom-fields";
-import {
-  appendStageEntry,
-  type StageEntry,
-} from "@/lib/server/deal-stage-history";
+import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import {
   IMPORT_ERROR_CAP,
   emptyTotals,
@@ -34,8 +31,11 @@ import {
  * - UPSERTS by the record's `external_id` (re-runs update, never duplicate).
  * - Writes in Firestore batches and SUPPRESSES webhooks + activity logs (no
  *   per-record `*.created` storm).
- * - A deal created, or re-imported onto a different stage, gets its
- *   stage-history row in the same batch as the deal write.
+ * - Deals commit in a TRANSACTION that re-reads each re-imported deal, so a
+ *   deal created, or re-imported onto a different stage, gets its
+ *   stage-history row judged against the stage it holds at commit — a user
+ *   move landing mid-import makes the transaction retry, never a lost or
+ *   duplicate row.
  *
  * The caller (the import endpoints) owns the `importJobs` lifecycle; this
  * function only writes records + mappings and returns counts, so it's
@@ -81,10 +81,17 @@ type Built =
       merge: boolean;
       docId: string;
       parentId: string | null;
-      /** Deals only: the stage entry this write makes, if any. */
-      stageEntry?: StageEntry;
+      /** Deals only: whether this write creates or updates a deal. */
+      deal?: "create" | "update";
     }
   | { ok: false; error: string };
+
+type PendingWrite = {
+  ref: FirebaseFirestore.DocumentReference;
+  data: Record<string, unknown>;
+  merge: boolean;
+  deal?: "create" | "update";
+};
 
 export async function writeImportChunk(
   input: WriteChunkInput,
@@ -127,18 +134,6 @@ export async function writeImportChunk(
     }
   }
 
-  // Re-imported deals: their current stage decides whether this is a move.
-  const currentDeals = new Map<string, FirebaseFirestore.DocumentData>();
-  if (entity === "deals") {
-    const ids = [...existing.values()]
-      .filter((m) => m.entity === "deals")
-      .map((m) => m.leadstackId);
-    if (ids.length > 0) {
-      const snaps = await db.getAll(...ids.map((id) => db.doc(`deals/${id}`)));
-      for (const s of snaps) if (s.exists) currentDeals.set(s.id, s.data()!);
-    }
-  }
-
   const defs: CustomFieldDef[] =
     entity === "contacts"
       ? await loadCustomFieldDefs(subAccountId, "contact")
@@ -146,15 +141,20 @@ export async function writeImportChunk(
         ? await loadCustomFieldDefs(subAccountId, "deal")
         : [];
 
-  // ── Build + commit in batches ──
-  let batch = db.batch();
+  // ── Build + commit in batches (deals: transactions, see commitDeals) ──
+  let pending: PendingWrite[] = [];
   let ops = 0;
   const flush = async () => {
-    if (ops > 0) {
+    if (ops === 0) return;
+    if (entity === "deals") {
+      await commitDeals(db, pending, { agencyId, subAccountId, createdByUid });
+    } else {
+      const batch = db.batch();
+      for (const w of pending) batch.set(w.ref, w.data, { merge: w.merge });
       await batch.commit();
-      batch = db.batch();
-      ops = 0;
     }
+    pending = [];
+    ops = 0;
   };
 
   for (let i = 0; i < records.length; i++) {
@@ -185,21 +185,20 @@ export async function writeImportChunk(
         subAccountId,
         createdByUid,
         existing: ownMap,
-        currentDeal: ownMap ? currentDeals.get(ownMap.leadstackId) : undefined,
       });
       if (!built.ok) {
         fail(result, entity, externalId, built.error);
         continue;
       }
 
-      batch.set(built.ref, built.data, { merge: built.merge });
-      ops++;
-      if (built.stageEntry) {
-        appendStageEntry(db, batch, built.stageEntry);
-        ops++;
-        // A later record in THIS chunk for the same deal compares against it.
-        currentDeals.set(built.docId, built.stageEntry.deal);
-      }
+      pending.push({
+        ref: built.ref,
+        data: built.data,
+        merge: built.merge,
+        deal: built.deal,
+      });
+      // A deal write may add its stage-history row.
+      ops += built.deal ? 2 : 1;
 
       if (externalId && !ownMap) {
         const mapRef = mappingsCol.doc(mappingKey(source, entity, externalId));
@@ -211,7 +210,7 @@ export async function writeImportChunk(
           parentId: built.parentId,
           createdAt: FieldValue.serverTimestamp(),
         };
-        batch.set(mapRef, mapDoc);
+        pending.push({ ref: mapRef, data: { ...mapDoc }, merge: false });
         ops++;
         // Let later records in THIS chunk resolve a contact created earlier.
         existing.set(mappingKey(source, entity, externalId), {
@@ -237,6 +236,48 @@ export async function writeImportChunk(
   return result;
 }
 
+/**
+ * Commit one group of deal (+ mapping) writes in a transaction. Every
+ * re-imported deal is read INSIDE it, so "did the stage change?" is decided
+ * against the stored stage at commit; a concurrent move retries the whole
+ * group. Records later in the group see the earlier ones' writes.
+ */
+async function commitDeals(
+  db: FirebaseFirestore.Firestore,
+  writes: PendingWrite[],
+  who: { agencyId: string; subAccountId: string; createdByUid: string },
+): Promise<void> {
+  await db.runTransaction(async (tx) => {
+    const updated = writes.filter((w) => w.deal === "update");
+    const current = new Map<string, FirebaseFirestore.DocumentData>();
+    if (updated.length > 0) {
+      for (const s of await tx.getAll(...updated.map((w) => w.ref))) {
+        if (s.exists) current.set(s.id, s.data()!);
+      }
+    }
+    for (const w of writes) {
+      let data = w.data;
+      if (w.deal) {
+        const previous = current.get(w.ref.id) ?? null;
+        if (w.deal === "create" || previous?.stageId !== data.stageId) {
+          if (w.deal === "update") {
+            data = { ...data, stageChangedAt: FieldValue.serverTimestamp() };
+          }
+          appendStageEntry(db, tx, {
+            dealId: w.ref.id,
+            deal: { agencyId: who.agencyId, subAccountId: who.subAccountId, ...previous, ...data },
+            previous,
+            byUid: who.createdByUid,
+            source: "import",
+          });
+        }
+        current.set(w.ref.id, { ...previous, ...data });
+      }
+      tx.set(w.ref, data, { merge: w.merge });
+    }
+  });
+}
+
 function fail(
   result: WriteChunkResult,
   entity: ImportEntity,
@@ -260,8 +301,6 @@ interface BuildArgs {
   subAccountId: string;
   createdByUid: string;
   existing?: ImportMappingDoc;
-  /** Deals only: the stored deal an update lands on. */
-  currentDeal?: FirebaseFirestore.DocumentData;
 }
 
 /** Per-entity adapter: validate + shape the doc write (create or upsert). */
@@ -355,26 +394,14 @@ function buildWrite(db: FirebaseFirestore.Firestore, a: BuildArgs): Built {
       };
       if (isUpdate) {
         const id = a.existing!.leadstackId;
-        const moved = a.currentDeal?.stageId !== editable.stageId;
-        const data = moved
-          ? { ...editable, updatedAt: ts, stageChangedAt: ts }
-          : { ...editable, updatedAt: ts };
         return {
           ok: true,
           ref: db.collection("deals").doc(id),
-          data,
+          data: { ...editable, updatedAt: ts },
           merge: true,
           docId: id,
           parentId: null,
-          stageEntry: moved
-            ? {
-                dealId: id,
-                deal: { ...tenancy, ...a.currentDeal, ...data },
-                previous: a.currentDeal ?? null,
-                byUid: a.createdByUid,
-                source: "import",
-              }
-            : undefined,
+          deal: "update",
         };
       }
       const ref = db.collection("deals").doc();
@@ -394,13 +421,7 @@ function buildWrite(db: FirebaseFirestore.Firestore, a: BuildArgs): Built {
         merge: false,
         docId: ref.id,
         parentId: null,
-        stageEntry: {
-          dealId: ref.id,
-          deal: data,
-          previous: null,
-          byUid: a.createdByUid,
-          source: "import",
-        },
+        deal: "create",
       };
     }
 

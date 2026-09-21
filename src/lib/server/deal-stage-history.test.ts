@@ -37,6 +37,7 @@ const create = () =>
   createDealServerSide({
     subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", mode: "live", source: "app",
     title: "Deal", value: 10, currency: "USD", contactId: "c1", stageId: "new", priority: "medium",
+    territoryId: "t_north", assignedToUid: "u_rep",
   });
 const update = (dealId: string, patch: Record<string, unknown>) =>
   updateDealServerSide({ dealId, patch, userId: "u2", source: "app" });
@@ -47,6 +48,7 @@ describe("deal stage history", () => {
     expect(rows(id)).toEqual([
       expect.objectContaining({
         agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", mode: "live", source: "app",
+        territoryId: "t_north", assignedToUid: "u_rep",
         dealId: id, pipelineId: "default", stageId: "new",
         fromPipelineId: null, fromStageId: null, fromStageEnteredAt: null,
       }),
@@ -68,6 +70,17 @@ describe("deal stage history", () => {
     const enteredAt = (move.enteredAt as Date).getTime();
     const stageChangedAt = (mem.read(`deals/${id}`)!.stageChangedAt as Date).getTime();
     expect(Math.abs(enteredAt - stageChangedAt)).toBeLessThan(50);
+  });
+
+  it("a move row carries the territory and assignee the deal has after the write", async () => {
+    const { id } = await create();
+    await update(id, { stageId: "qualified", territoryId: "t_south", assignedToUid: null });
+    expect(rows(id).at(-1)).toMatchObject({ territoryId: "t_south", assignedToUid: null });
+    mem.seed("deals/legacy", {
+      title: "L", contactId: "c1", subAccountId: "sa1", agencyId: "ag1", mode: "live", stageId: "new",
+    });
+    await update("legacy", { stageId: "qualified" });
+    expect(rows("legacy")[0]).toMatchObject({ territoryId: null, assignedToUid: null });
   });
 
   it("an edit that does not change the stage writes no row", async () => {

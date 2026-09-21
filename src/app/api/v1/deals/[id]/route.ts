@@ -85,34 +85,40 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     writePatch.customFields = cf.value;
   }
 
-  let terminal: "won" | "lost" | undefined;
-  if (patch.stage !== undefined) {
-    const pipeline = await loadPipeline(
-      existing.subAccountId as string,
-      dealPipelineId(existing),
-    );
-    const stage = pipeline ? findStage(pipeline, patch.stage) : undefined;
-    if (!stage) {
-      return apiError(
-        ctx,
-        "invalid_request",
-        "invalid_body",
-        `\`stage\` must be one of: ${(pipeline?.stages ?? []).map((s) => s.id).join(", ")}.`,
-      );
-    }
-    terminal = stage.terminal;
-    writePatch.stageId = patch.stage;
-  }
-
-  // The move is judged against the deal as read INSIDE the transaction, and
-  // its history row commits with the write.
-  const current = await db.runTransaction(async (tx) => {
+  // Tenancy, the stage's pipeline and the won/lost decision are all judged
+  // against the deal as read INSIDE the transaction, and the history row
+  // commits with the write. The read above only served the early 404 and
+  // the custom-field defs.
+  const outcome = await db.runTransaction(async (tx) => {
     const data = (await tx.get(ref)).data();
-    if (!data) return null;
+    if (
+      !data ||
+      data.subAccountId !== ctx.subAccountId ||
+      data.mode !== ctx.mode
+    ) {
+      return { kind: "not_found" as const };
+    }
+    let terminal: "won" | "lost" | undefined;
+    let write = writePatch;
+    if (patch.stage !== undefined) {
+      const pipeline = await loadPipeline(
+        data.subAccountId as string,
+        dealPipelineId(data),
+      );
+      const stage = pipeline ? findStage(pipeline, patch.stage) : undefined;
+      if (!stage) {
+        return {
+          kind: "invalid_stage" as const,
+          stages: (pipeline?.stages ?? []).map((s) => s.id),
+        };
+      }
+      terminal = stage.terminal;
+      write = { ...write, stageId: patch.stage };
+    }
     const moved = patch.stage !== undefined && patch.stage !== data.stageId;
-    const write = moved
-      ? { ...writePatch, stageChangedAt: FieldValue.serverTimestamp() }
-      : writePatch;
+    if (moved) {
+      write = { ...write, stageChangedAt: FieldValue.serverTimestamp() };
+    }
     tx.set(ref, write, { merge: true });
     if (moved) {
       appendStageEntry(db, tx, {
@@ -123,11 +129,20 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
         source: "api",
       });
     }
-    return data;
+    return { kind: "ok" as const, current: data, terminal };
   });
-  if (!current) {
+  if (outcome.kind === "not_found") {
     return apiError(ctx, "not_found", "deal_not_found", "Deal not found.");
   }
+  if (outcome.kind === "invalid_stage") {
+    return apiError(
+      ctx,
+      "invalid_request",
+      "invalid_body",
+      `\`stage\` must be one of: ${outcome.stages.join(", ")}.`,
+    );
+  }
+  const { current, terminal } = outcome;
   const previousStage = current.stageId as string | undefined;
   const stageChanged = patch.stage !== undefined && patch.stage !== previousStage;
 
