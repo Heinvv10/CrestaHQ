@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
+import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
@@ -252,6 +253,9 @@ const execSendEmail: NodeExecutor = async (ctx) => {
     }
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
+    if (isEmailSuppressedError(err)) {
+      return { result: { kind: "next" }, log: "skipped:suppressed" };
+    }
     ctx.sent.attempted = providerAttempted(err);
     return {
       result: { kind: "next" },
@@ -1022,6 +1026,9 @@ const execNotify: NodeExecutor = async (ctx) => {
     });
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
+    if (isEmailSuppressedError(err)) {
+      return { result: { kind: "next" }, log: "skipped:suppressed" };
+    }
     return {
       result: { kind: "next" },
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,

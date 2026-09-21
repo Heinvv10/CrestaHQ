@@ -243,7 +243,9 @@ function SendStatus({ send }: { send: BroadcastSendDoc }) {
           ? "No email"
           : send.skippedReason === "contact_missing"
             ? "Contact deleted"
-            : "Skipped";
+            : send.skippedReason === "suppressed"
+              ? "Suppressed"
+              : "Skipped";
     return (
       <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
         {reason}

@@ -12,6 +12,8 @@ vi.mock("node:dns/promises", () => ({ lookup: mocks.lookup }));
 vi.mock("nodemailer", () => ({ default: { createTransport: mocks.createTransport } }));
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: vi.fn() }));
 vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: vi.fn() }));
+// Suppression has its own suite (email-suppression.test.ts); this one is about the provider call.
+vi.mock("./email-suppression", () => ({ assertNotSuppressed: async () => undefined }));
 vi.mock("@/lib/server/email-conversations", () => ({ recordEmailMessage: vi.fn() }));
 vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: vi.fn() }));
 const connection = vi.hoisted(() => ({

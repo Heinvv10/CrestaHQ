@@ -32,3 +32,21 @@ export interface EmailMessageDoc {
   sentByUid: string | null;
   attachments: { filename: string; contentType: string; size: number }[];
 }
+
+/** Why an address is on a sub-account's suppression list. */
+export type EmailSuppressionReason = "hard_bounce" | "complaint" | "manual";
+
+/**
+ * `subAccounts/{id}/emailSuppressions/{sha256(email)}` — an address this
+ * sub-account never emails again until an admin removes it.
+ */
+export interface EmailSuppressionDoc {
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
+  /** Normalised (trimmed, lower-case). */
+  email: string;
+  reason: EmailSuppressionReason;
+  note: string | null;
+  createdAt: Timestamp | FieldValue | null;
+}

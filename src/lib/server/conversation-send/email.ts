@@ -6,6 +6,7 @@ import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { checkQuota } from "@/lib/server/usage-meter";
 import { recordSend } from "@/lib/comms/usage";
 import { providerAttempted } from "@/lib/comms/provider-attempt";
+import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types";
 import {
@@ -134,6 +135,7 @@ export async function sendConversationEmail(
     saved = result.saved;
     warning = result.warning;
   } catch (err) {
+    if (isEmailSuppressedError(err)) return refuse(422, err.message, err.code);
     const message = err instanceof Error ? err.message : "Failed to send email";
     const refusal = refuse(502, message);
     return providerAttempted(err) ? { ...refusal, attempted: true } : refusal;

@@ -8,6 +8,7 @@ import { recordUsage } from "@/lib/server/usage-meter";
 import type { SmtpMeta } from "@/types/email";
 import { getSmtpConnection, sendSmtpEmail } from "./smtp";
 import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
+import { assertNotSuppressed } from "@/lib/comms/email-suppression";
 import type { ResendConfig } from "@/types/tenancy";
 
 let _client: Resend | null = null;
@@ -144,6 +145,9 @@ export async function sendEmail({
    * (blocking) happens at the caller for the few paths that should block;
    * transactional mail (booking confirmations, quotes) is metered here
    * but never refused.
+   *
+   * The same sub-account's email suppression list is enforced here: a
+   * suppressed `to` throws `EmailSuppressedError` before any provider call.
    */
   meter?: { subAccountId: string } | null;
   /**
@@ -152,6 +156,9 @@ export async function sendEmail({
    */
   attachments?: { filename: string; content: string; contentType?: string }[];
 }): Promise<{ id: string; saved?: boolean; warning?: string }> {
+  // Deployment-level mail (invites, agency billing) names no sub-account and
+  // has no suppression list to check.
+  if (meter?.subAccountId) await assertNotSuppressed(meter.subAccountId, to);
   const preferredReplyTo = replyTo?.trim() || subAccount?.replyToEmail?.trim();
   if (subAccount?.emailProvider === "smtp") {
     if (!meter?.subAccountId) {
