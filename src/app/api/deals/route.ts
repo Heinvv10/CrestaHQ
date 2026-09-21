@@ -98,6 +98,7 @@ export async function POST(request: Request) {
     agencyId,
     createdByUid: access.uid,
     mode: "live",
+    source: "app",
     title,
     value,
     currency,

@@ -162,6 +162,7 @@ export interface MemoryQuery {
 type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
 interface MemoryTx extends Record<"set" | "update" | "create", TxWrite> {
   get: (target: MemoryDocRef | MemoryQuery) => Promise<unknown>;
+  getAll: (...refs: MemoryDocRef[]) => Promise<MemoryDocSnapshot[]>;
   delete: (ref: MemoryDocRef) => MemoryTx;
 }
 
@@ -280,8 +281,36 @@ export function createMemoryFirestore() {
     });
   }
 
+  /** All-or-nothing: a failing write (e.g. create on an existing doc) leaves nothing applied. */
+  const applyAll = (writes: Array<() => void>) => {
+    const [before, beforeVersions] = [new Map(store), new Map(versions)];
+    try {
+      for (const w of writes) w();
+    } catch (err) {
+      store.clear();
+      versions.clear();
+      for (const [k, v] of before) store.set(k, v);
+      for (const [k, v] of beforeVersions) versions.set(k, v);
+      throw err;
+    }
+  };
+
   const db = {
     doc: (path: string) => docRef(path),
+    getAll: (...refs: MemoryDocRef[]) => Promise.all(refs.map((r) => r.get())),
+    batch: () => {
+      const writes: Array<() => void> = [];
+      const queue = (w: () => void) => (writes.push(w), b);
+      const b = {
+        set: (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) =>
+          queue(() => writeSet(ref.path, data, opts?.merge === true)),
+        update: (ref: MemoryDocRef, patch: Data) => queue(() => writeUpdate(ref.path, patch)),
+        create: (ref: MemoryDocRef, data: Data) => queue(() => writeCreate(ref.path, data)),
+        delete: (ref: MemoryDocRef) => queue(() => remove(ref.path)),
+        commit: () => tick().then(() => applyAll(writes)),
+      };
+      return b;
+    },
     collection: (path: string) => collectionRef(path),
     collectionGroup: (name: string) =>
       query((parent) => parent.split("/").pop() === name, [], null, null),
@@ -298,6 +327,11 @@ export function createMemoryFirestore() {
             else note(r);
             return r;
           },
+          getAll: async (...refs) => {
+            const snaps = await Promise.all(refs.map((r) => r.get()));
+            snaps.forEach(note);
+            return snaps;
+          },
           set: (ref, data, opts) => queue(() => writeSet(ref.path, data, opts?.merge === true)),
           update: (ref, patch) => queue(() => writeUpdate(ref.path, patch)),
           create: (ref, data) => queue(() => writeCreate(ref.path, data)),
@@ -310,17 +344,7 @@ export function createMemoryFirestore() {
           if (attempt < 5) continue;
           throw Object.assign(new Error("10 ABORTED: contention"), { code: 10 });
         }
-        const [before, beforeVersions] = [new Map(store), new Map(versions)];
-        try {
-          for (const w of writes) w();
-        } catch (err) {
-          // All-or-nothing: a failing create leaves nothing applied.
-          store.clear();
-          versions.clear();
-          for (const [k, v] of before) store.set(k, v);
-          for (const [k, v] of beforeVersions) versions.set(k, v);
-          throw err;
-        }
+        applyAll(writes);
         return result;
       }
     },

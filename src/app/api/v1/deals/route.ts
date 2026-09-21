@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitDealEvents } from "@/lib/server/deals-service";
+import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import {
   parseDealCreate,
   serializeDealForApi,
@@ -171,7 +172,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
 
   const ref = db.collection("deals").doc();
   const now = new Date();
-  await ref.set({
+  const doc = {
     title: input.title,
     value: input.value,
     currency: input.currency,
@@ -191,7 +192,17 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
     stageChangedAt: FieldValue.serverTimestamp(),
+  };
+  const batch = db.batch();
+  batch.set(ref, doc);
+  appendStageEntry(db, batch, {
+    dealId: ref.id,
+    deal: doc,
+    previous: null,
+    byUid: doc.createdByUid,
+    source: "api",
   });
+  await batch.commit();
 
   const created = await ref.get();
   const wire = serializeDealForApi(created.id, created.data()!, ctx.mode);

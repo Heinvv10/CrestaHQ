@@ -67,4 +67,22 @@ describe("applyDealOutcomeForAcceptedQuote", () => {
     await applyDealOutcomeForAcceptedQuote(quote("gone"));
     expect(mem.list("deals")).toHaveLength(3);
   });
+
+  it("both outcomes write a stage-history row: the linked move and the auto-created Won deal", async () => {
+    await applyDealOutcomeForAcceptedQuote(quote("d_won"));
+    await applyDealOutcomeForAcceptedQuote(quote("gone"));
+    const created = mem.list("deals").find((d) => !["d_won", "d_nowon"].includes(d.id))!;
+    expect(mem.list("dealStageHistory")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          dealId: "d_won", fromStageId: "open", stageId: "renewed", source: "quote", createdByUid: "u1",
+        }),
+        expect.objectContaining({
+          dealId: created.id, fromStageId: null, stageId: "won", pipelineId: "default",
+          source: "quote", subAccountId: "sa1", agencyId: "ag1",
+        }),
+      ]),
+    );
+    expect(mem.list("dealStageHistory")).toHaveLength(2);
+  });
 });

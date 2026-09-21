@@ -901,6 +901,7 @@ async function moveContactDeal(
     userId: ctx.createdByUid,
     expectedSubAccountId: ctx.subAccountId,
     workflowDepth: depth + 1,
+    source: "workflow",
   });
   return `moved:${target.id}`;
 }

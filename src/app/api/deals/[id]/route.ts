@@ -132,6 +132,7 @@ export async function PATCH(
       patch,
       userId: access.uid,
       mode: (data.mode as "live" | "test") ?? "live",
+      source: "app",
     });
   } catch (err) {
     if (err instanceof DealStageError) {

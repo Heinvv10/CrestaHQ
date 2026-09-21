@@ -10,6 +10,7 @@ import { parseEventCreate } from "@/lib/api/serializers/events";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import type { CustomFieldDef } from "@/types/custom-fields";
+import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import {
   IMPORT_ERROR_CAP,
   emptyTotals,
@@ -30,6 +31,11 @@ import {
  * - UPSERTS by the record's `external_id` (re-runs update, never duplicate).
  * - Writes in Firestore batches and SUPPRESSES webhooks + activity logs (no
  *   per-record `*.created` storm).
+ * - Deals commit in a TRANSACTION that re-reads each re-imported deal, so a
+ *   deal created, or re-imported onto a different stage, gets its
+ *   stage-history row judged against the stage it holds at commit — a user
+ *   move landing mid-import makes the transaction retry, never a lost or
+ *   duplicate row.
  *
  * The caller (the import endpoints) owns the `importJobs` lifecycle; this
  * function only writes records + mappings and returns counts, so it's
@@ -37,7 +43,7 @@ import {
  */
 
 const MAX_RECORDS_PER_CHUNK = 500;
-const BATCH_OP_LIMIT = 400; // each record writes ≤2 ops; stay under Firestore's 500
+const BATCH_OP_LIMIT = 400; // each record writes ≤3 ops; stay under Firestore's 500
 
 export interface WriteChunkInput {
   subAccountId: string;
@@ -75,8 +81,17 @@ type Built =
       merge: boolean;
       docId: string;
       parentId: string | null;
+      /** Deals only: whether this write creates or updates a deal. */
+      deal?: "create" | "update";
     }
   | { ok: false; error: string };
+
+type PendingWrite = {
+  ref: FirebaseFirestore.DocumentReference;
+  data: Record<string, unknown>;
+  merge: boolean;
+  deal?: "create" | "update";
+};
 
 export async function writeImportChunk(
   input: WriteChunkInput,
@@ -126,15 +141,20 @@ export async function writeImportChunk(
         ? await loadCustomFieldDefs(subAccountId, "deal")
         : [];
 
-  // ── Build + commit in batches ──
-  let batch = db.batch();
+  // ── Build + commit in batches (deals: transactions, see commitDeals) ──
+  let pending: PendingWrite[] = [];
   let ops = 0;
   const flush = async () => {
-    if (ops > 0) {
+    if (ops === 0) return;
+    if (entity === "deals") {
+      await commitDeals(db, pending, { agencyId, subAccountId, createdByUid });
+    } else {
+      const batch = db.batch();
+      for (const w of pending) batch.set(w.ref, w.data, { merge: w.merge });
       await batch.commit();
-      batch = db.batch();
-      ops = 0;
     }
+    pending = [];
+    ops = 0;
   };
 
   for (let i = 0; i < records.length; i++) {
@@ -171,8 +191,14 @@ export async function writeImportChunk(
         continue;
       }
 
-      batch.set(built.ref, built.data, { merge: built.merge });
-      ops++;
+      pending.push({
+        ref: built.ref,
+        data: built.data,
+        merge: built.merge,
+        deal: built.deal,
+      });
+      // A deal write may add its stage-history row.
+      ops += built.deal ? 2 : 1;
 
       if (externalId && !ownMap) {
         const mapRef = mappingsCol.doc(mappingKey(source, entity, externalId));
@@ -184,7 +210,7 @@ export async function writeImportChunk(
           parentId: built.parentId,
           createdAt: FieldValue.serverTimestamp(),
         };
-        batch.set(mapRef, mapDoc);
+        pending.push({ ref: mapRef, data: { ...mapDoc }, merge: false });
         ops++;
         // Let later records in THIS chunk resolve a contact created earlier.
         existing.set(mappingKey(source, entity, externalId), {
@@ -208,6 +234,48 @@ export async function writeImportChunk(
   }
   await flush();
   return result;
+}
+
+/**
+ * Commit one group of deal (+ mapping) writes in a transaction. Every
+ * re-imported deal is read INSIDE it, so "did the stage change?" is decided
+ * against the stored stage at commit; a concurrent move retries the whole
+ * group. Records later in the group see the earlier ones' writes.
+ */
+async function commitDeals(
+  db: FirebaseFirestore.Firestore,
+  writes: PendingWrite[],
+  who: { agencyId: string; subAccountId: string; createdByUid: string },
+): Promise<void> {
+  await db.runTransaction(async (tx) => {
+    const updated = writes.filter((w) => w.deal === "update");
+    const current = new Map<string, FirebaseFirestore.DocumentData>();
+    if (updated.length > 0) {
+      for (const s of await tx.getAll(...updated.map((w) => w.ref))) {
+        if (s.exists) current.set(s.id, s.data()!);
+      }
+    }
+    for (const w of writes) {
+      let data = w.data;
+      if (w.deal) {
+        const previous = current.get(w.ref.id) ?? null;
+        if (w.deal === "create" || previous?.stageId !== data.stageId) {
+          if (w.deal === "update") {
+            data = { ...data, stageChangedAt: FieldValue.serverTimestamp() };
+          }
+          appendStageEntry(db, tx, {
+            dealId: w.ref.id,
+            deal: { agencyId: who.agencyId, subAccountId: who.subAccountId, ...previous, ...data },
+            previous,
+            byUid: who.createdByUid,
+            source: "import",
+          });
+        }
+        current.set(w.ref.id, { ...previous, ...data });
+      }
+      tx.set(w.ref, data, { merge: w.merge });
+    }
+  });
 }
 
 function fail(
@@ -333,24 +401,27 @@ function buildWrite(db: FirebaseFirestore.Firestore, a: BuildArgs): Built {
           merge: true,
           docId: id,
           parentId: null,
+          deal: "update",
         };
       }
       const ref = db.collection("deals").doc();
+      const data = {
+        ...editable,
+        lostReason: null,
+        ...tenancy,
+        ...stamp,
+        createdAt: ts,
+        updatedAt: ts,
+        stageChangedAt: ts,
+      };
       return {
         ok: true,
         ref,
-        data: {
-          ...editable,
-          lostReason: null,
-          ...tenancy,
-          ...stamp,
-          createdAt: ts,
-          updatedAt: ts,
-          stageChangedAt: ts,
-        },
+        data,
         merge: false,
         docId: ref.id,
         parentId: null,
+        deal: "create",
       };
     }
 

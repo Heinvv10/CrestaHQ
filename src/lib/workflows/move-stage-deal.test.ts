@@ -124,6 +124,23 @@ describe("move_stage moves the contact's deal", () => {
     });
   });
 
+  it("the move appends a stage-history row attributed to the workflow; an unchanged deal adds none", async () => {
+    seedDeal("d1", { pipelineId: "p2", stageId: "booked" });
+    seedRun({ stage: "installed", pipelineId: "p2" });
+    await runStep("run1", "n1");
+    await flush();
+    expect(mem.list("dealStageHistory")).toEqual([
+      expect.objectContaining({
+        dealId: "d1", pipelineId: "p2", fromStageId: "booked", stageId: "installed",
+        source: "workflow", createdByUid: "u_owner", subAccountId: "sa1", agencyId: "ag1",
+      }),
+    ]);
+    seedRun({ stage: "installed", pipelineId: "p2" });
+    await runStep("run1", "n1");
+    await flush();
+    expect(mem.list("dealStageHistory")).toHaveLength(1);
+  });
+
   it("a legacy deal with no pipelineId counts as the default pipeline's", async () => {
     seedDeal("legacy", { stageId: "new" });
     seedRun({ stage: "qualified", pipelineId: "default" });

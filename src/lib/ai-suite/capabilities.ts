@@ -1686,6 +1686,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         agencyId: ctx.agencyId,
         createdByUid: ctx.uid,
         mode: "live",
+        source: "ai",
         title: args.title as string,
         value: args.value as number,
         currency: args.currency as string,
@@ -1777,6 +1778,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         dealId: snap.id,
         userId: ctx.uid,
         expectedSubAccountId: ctx.subAccountId!,
+        source: "ai",
         patch: {
           stageId: args.stage as string,
           lostReason: (args.lostReason as string) || null,

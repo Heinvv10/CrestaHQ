@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitDealEvents } from "@/lib/server/deals-service";
+import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import {
   parseDealPatch,
   serializeDealForApi,
@@ -48,7 +49,8 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   }
   const patch = parsed.value!;
 
-  const ref = getAdminDb().doc(`deals/${params.id}`);
+  const db = getAdminDb();
+  const ref = db.doc(`deals/${params.id}`);
   const snap = await ref.get();
   if (!snap.exists) {
     return apiError(ctx, "not_found", "deal_not_found", "Deal not found.");
@@ -58,7 +60,6 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     return apiError(ctx, "not_found", "deal_not_found", "Deal not found.");
   }
 
-  const previousStage = existing.stageId as string | undefined;
   const writePatch: Record<string, unknown> = {
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -84,30 +85,66 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     writePatch.customFields = cf.value;
   }
 
-  const stageChanged = patch.stage !== undefined && patch.stage !== previousStage;
-  let terminal: "won" | "lost" | undefined;
-  if (patch.stage !== undefined) {
-    const pipeline = await loadPipeline(
-      existing.subAccountId as string,
-      dealPipelineId(existing),
-    );
-    const stage = pipeline ? findStage(pipeline, patch.stage) : undefined;
-    if (!stage) {
-      return apiError(
-        ctx,
-        "invalid_request",
-        "invalid_body",
-        `\`stage\` must be one of: ${(pipeline?.stages ?? []).map((s) => s.id).join(", ")}.`,
+  // Tenancy, the stage's pipeline and the won/lost decision are all judged
+  // against the deal as read INSIDE the transaction, and the history row
+  // commits with the write. The read above only served the early 404 and
+  // the custom-field defs.
+  const outcome = await db.runTransaction(async (tx) => {
+    const data = (await tx.get(ref)).data();
+    if (
+      !data ||
+      data.subAccountId !== ctx.subAccountId ||
+      data.mode !== ctx.mode
+    ) {
+      return { kind: "not_found" as const };
+    }
+    let terminal: "won" | "lost" | undefined;
+    let write = writePatch;
+    if (patch.stage !== undefined) {
+      const pipeline = await loadPipeline(
+        data.subAccountId as string,
+        dealPipelineId(data),
       );
+      const stage = pipeline ? findStage(pipeline, patch.stage) : undefined;
+      if (!stage) {
+        return {
+          kind: "invalid_stage" as const,
+          stages: (pipeline?.stages ?? []).map((s) => s.id),
+        };
+      }
+      terminal = stage.terminal;
+      write = { ...write, stageId: patch.stage };
     }
-    terminal = stage.terminal;
-    writePatch.stageId = patch.stage;
-    if (stageChanged) {
-      writePatch.stageChangedAt = FieldValue.serverTimestamp();
+    const moved = patch.stage !== undefined && patch.stage !== data.stageId;
+    if (moved) {
+      write = { ...write, stageChangedAt: FieldValue.serverTimestamp() };
     }
+    tx.set(ref, write, { merge: true });
+    if (moved) {
+      appendStageEntry(db, tx, {
+        dealId: ref.id,
+        deal: { ...data, ...write },
+        previous: data,
+        byUid: `apikey:${ctx.keyPrefix}`,
+        source: "api",
+      });
+    }
+    return { kind: "ok" as const, current: data, terminal };
+  });
+  if (outcome.kind === "not_found") {
+    return apiError(ctx, "not_found", "deal_not_found", "Deal not found.");
   }
-
-  await ref.set(writePatch, { merge: true });
+  if (outcome.kind === "invalid_stage") {
+    return apiError(
+      ctx,
+      "invalid_request",
+      "invalid_body",
+      `\`stage\` must be one of: ${outcome.stages.join(", ")}.`,
+    );
+  }
+  const { current, terminal } = outcome;
+  const previousStage = current.stageId as string | undefined;
+  const stageChanged = patch.stage !== undefined && patch.stage !== previousStage;
 
   const fresh = await ref.get();
   const wire = serializeDealForApi(fresh.id, fresh.data()!, ctx.mode);
