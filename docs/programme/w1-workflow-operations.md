@@ -51,7 +51,7 @@ since merged share links, portable snapshot files and a template library — re-
 - A workflow doc without `folderId` renders under Unfiled (legacy docs).
 
 **Proof ladder:** fixture tests → CI green → blind `/review` → merge → Firestore rules + indexes deployed
-from `main` by the orchestrator (after checking no open PR carries rules that main lacks) → app deployed
+from `main` on Hein's go (orchestrator first checks no open PR carries rules that main lacks) → app deployed
 after 17:00 with Hein's approval → folders created and a workflow moved on #1000 in the browser,
 screenshot in the PR. No Blitz/Velocity/Vortex writes.
 

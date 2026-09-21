@@ -172,7 +172,9 @@ sub-accounts, browser proof on #1000) without touching any live tenant.
 ## Gates that stay human
 
 Activating any workflow on Blitz, Velocity or Vortex · any new WABA or number · template submission to
-Meta · backfills into production · production deploys (after 17:00 Mon–Fri) · any Later item moving to Now.
+Meta · backfills into production · production deploys (after 17:00 Mon–Fri) · Firestore rules/index
+deploys · any Later item moving to Now.
 
-Firestore rules/index deploys are done by the orchestrating session, from `main` only, after checking that
-no open PR carries rules `main` lacks — never from a branch, never chained with the check in one command.
+For a rules/index deploy the orchestrating session prepares it — from `main` only, after checking that no
+open PR carries rules `main` lacks, never chained with that check in one command — and runs it only on
+Hein's go for that deploy.
