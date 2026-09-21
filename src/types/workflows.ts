@@ -161,6 +161,24 @@ export interface WorkflowDoc {
   startNodeId: string | null;
   nodes: Record<string, WorkflowNode>;
   stats: { enrolled: number; completed: number };
+  /** `subAccounts/{subAccountId}/workflowFolders/{folderId}`. Absent or null
+   *  = Unfiled. Organisation only — the engine never reads it. */
+  folderId?: string | null;
+  createdAt: Timestamp | FieldValue | null;
+  updatedAt: Timestamp | FieldValue | null;
+}
+
+/** A folder on the workflows list. Written only through
+ *  /api/sub-accounts/[id]/workflow-folders; deleting one unfiles its
+ *  workflows, never deletes them. */
+export interface WorkflowFolder {
+  id: string;
+  name: string;
+  /** Display order among folders (ascending); Unfiled always comes last. */
+  order: number;
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }

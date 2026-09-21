@@ -75,3 +75,33 @@ describe("saving a workflow's steps", () => {
     expect(mem.read("workflows/wf1")?.nodes).toEqual({});
   });
 });
+
+describe("moving a workflow between folders", () => {
+  beforeEach(() => {
+    mem.seed("subAccounts/sa1/workflowFolders/mine", { name: "Mine", subAccountId: "sa1" });
+    mem.seed("subAccounts/sa2/workflowFolders/theirs", { name: "Theirs", subAccountId: "sa2" });
+  });
+
+  it("files it into a folder of this sub-account, and back to Unfiled", async () => {
+    expect((await save({ folderId: "mine" })).status).toBe(200);
+    expect(mem.read("workflows/wf1")?.folderId).toBe("mine");
+
+    expect((await save({ folderId: null })).status).toBe(200);
+    expect(mem.read("workflows/wf1")?.folderId).toBeNull();
+  });
+
+  it("refuses another sub-account's folder with 404 and writes nothing", async () => {
+    const res = await save({ folderId: "theirs", name: "Renamed" });
+
+    expect(res.status).toBe(404);
+    expect(mem.read("workflows/wf1")).not.toHaveProperty("folderId");
+    expect(mem.read("workflows/wf1")?.name).toBe("Review ask");
+  });
+
+  it("refuses a path-shaped or non-string folder id with 404", async () => {
+    for (const folderId of ["../../subAccounts/sa2/workflowFolders/theirs", 42, ""]) {
+      expect((await save({ folderId })).status).toBe(404);
+    }
+    expect(mem.read("workflows/wf1")).not.toHaveProperty("folderId");
+  });
+});

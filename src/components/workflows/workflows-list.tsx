@@ -2,17 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { toast } from "sonner";
 import {
   CalendarCheck,
   ChevronDown,
+  FolderPlus,
   GitBranch,
   Loader2,
   Plus,
   Reply,
   Sprout,
-  Trash2,
   Workflow,
   Zap,
 } from "lucide-react";
@@ -26,10 +25,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { WorkflowStatusBadge } from "./workflow-status-badge";
-import { SaveToLibraryButton } from "@/components/templates/save-to-library-dialog";
-import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
-import type { WorkflowStatus, WorkflowTriggerType } from "@/types/workflows";
+import { groupWorkflowsByFolder } from "@/lib/workflows/folders";
+import type { WorkflowFolder } from "@/types/workflows";
+import { NewFolderInput, WorkflowFolderSection } from "./workflow-folder-section";
+import { WorkflowRow, type WorkflowListRow } from "./workflow-row";
+
+/** Shown when the folder list fails to load; workflows then render flat. */
+export const FOLDERS_LOAD_ERROR =
+  "Couldn't load workflow folders — showing workflows without them.";
 
 type WorkflowTemplate =
   | "speed-to-lead"
@@ -76,28 +79,82 @@ const TEMPLATES: {
   },
 ];
 
-interface Row {
-  id: string;
-  name: string;
-  status: WorkflowStatus;
-  trigger: { type: WorkflowTriggerType };
-  stats?: { enrolled?: number; completed?: number };
-}
-
 export function WorkflowsList({ saId }: { saId: string }) {
   const router = useRouter();
-  const [rows, setRows] = useState<Row[] | null>(null);
+  const [rows, setRows] = useState<WorkflowListRow[] | null>(null);
+  const [folders, setFolders] = useState<WorkflowFolder[]>([]);
   const [creating, setCreating] = useState(false);
+  const [newFolder, setNewFolder] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const foldersUrl = `/api/sub-accounts/${saId}/workflow-folders`;
 
   async function load() {
-    const res = await fetch(`/api/sub-accounts/${saId}/workflows`);
-    const d = (await res.json().catch(() => ({}))) as { workflows?: Row[] };
+    const [wfRes, folderRes] = await Promise.all([
+      fetch(`/api/sub-accounts/${saId}/workflows`),
+      fetch(foldersUrl).catch(() => null),
+    ]);
+    const d = (await wfRes.json().catch(() => ({}))) as {
+      workflows?: WorkflowListRow[];
+    };
+    const f = folderRes?.ok
+      ? ((await folderRes.json().catch(() => null)) as {
+          folders?: WorkflowFolder[];
+        } | null)
+      : null;
+    if (!f?.folders) toast.error(FOLDERS_LOAD_ERROR);
+    setFolders(f?.folders ?? []);
     setRows(d.workflows ?? []);
   }
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saId]);
+
+  /** A folder write; toasts the server's reason on failure, reloads on success. */
+  async function folderCall(url: string, init: RequestInit, fail: string) {
+    setBusy(true);
+    try {
+      const res = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        ...init,
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        toast.error(data.error ?? fail);
+        return false;
+      }
+      await load();
+      return true;
+    } catch {
+      toast.error(fail);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createFolder(name: string) {
+    const ok = await folderCall(
+      foldersUrl,
+      { method: "POST", body: JSON.stringify({ name }) },
+      "Couldn't create the folder.",
+    );
+    if (ok) setNewFolder(false);
+  }
+
+  async function move(id: string, folderId: string | null) {
+    setRows((r) => r?.map((x) => (x.id === id ? { ...x, folderId } : x)) ?? null);
+    const res = await fetch(`/api/sub-accounts/${saId}/workflows/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folderId }),
+    }).catch(() => null);
+    if (!res?.ok) {
+      toast.error("Couldn't move the workflow");
+      void load();
+    }
+  }
 
   async function create(template?: WorkflowTemplate) {
     setCreating(true);
@@ -137,6 +194,14 @@ export function WorkflowsList({ saId }: { saId: string }) {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            type="button"
+            data-testid="folder-new"
+            onClick={() => setNewFolder(true)}
+          >
+            <FolderPlus className="mr-1 h-4 w-4" /> New folder
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="outline" type="button" disabled={creating} />}
@@ -176,11 +241,19 @@ export function WorkflowsList({ saId }: { saId: string }) {
         </div>
       </div>
 
+      {newFolder && (
+        <NewFolderInput
+          busy={busy}
+          onSave={createFolder}
+          onCancel={() => setNewFolder(false)}
+        />
+      )}
+
       {rows === null ? (
         <div className="flex justify-center py-16 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
         </div>
-      ) : rows.length === 0 ? (
+      ) : rows.length === 0 && folders.length === 0 ? (
         <div className="rounded-xl border border-dashed p-12 text-center">
           <Workflow className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
@@ -188,42 +261,39 @@ export function WorkflowsList({ saId }: { saId: string }) {
           </p>
         </div>
       ) : (
-        <div className="divide-y overflow-hidden rounded-xl border bg-card">
-          {rows.map((w) => (
-            <div
-              key={w.id}
-              data-testid="workflow-row"
-              data-name={w.name}
-              className="flex items-center gap-3 p-4 hover:bg-muted/40"
-            >
-              <Link href={`/sa/${saId}/workflows/${w.id}`} className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-medium">{w.name}</span>
-                  <WorkflowStatusBadge status={w.status} />
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {TRIGGER_LABELS[w.trigger?.type] ?? w.trigger?.type} ·{" "}
-                  {w.stats?.enrolled ?? 0} enrolled
-                </div>
-              </Link>
-              <SaveToLibraryButton
-                subAccountId={saId}
-                kind="workflow"
-                entityId={w.id}
-                entityName={w.name}
-                iconOnly
+        groupWorkflowsByFolder(rows, folders).map(({ folder, workflows }) => (
+          <WorkflowFolderSection
+            key={folder?.id ?? "unfiled"}
+            folder={folder}
+            count={workflows.length}
+            busy={busy}
+            onRename={(name) =>
+              folderCall(
+                `${foldersUrl}/${folder!.id}`,
+                { method: "PATCH", body: JSON.stringify({ name }) },
+                "Couldn't rename the folder.",
+              )
+            }
+            onDelete={() =>
+              void folderCall(
+                `${foldersUrl}/${folder!.id}`,
+                { method: "DELETE" },
+                "Couldn't delete the folder.",
+              )
+            }
+          >
+            {workflows.map((w) => (
+              <WorkflowRow
+                key={w.id}
+                saId={saId}
+                workflow={w}
+                folders={folders}
+                onMove={(folderId) => void move(w.id, folderId)}
+                onDelete={() => void remove(w.id)}
               />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => remove(w.id)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </div>
+            ))}
+          </WorkflowFolderSection>
+        ))
       )}
     </div>
   );
