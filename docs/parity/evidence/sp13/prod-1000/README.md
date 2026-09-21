@@ -17,7 +17,7 @@ The walk was read-only: nothing was uploaded, captured, shared, pushed or saved.
 
 ## Redactions
 
-Sub-accounts #1001–#1005 are real client workspaces. Their names are covered with a grey box in `sub-accounts.png`, `snapshots.png`, `snapshots-shared.png` and `reselling.png`. #1000 is CrestaHQ's own account.
+Sub-accounts #1001–#1005 are real client workspaces. Their names are covered with a dark box in `sub-accounts.png`, `snapshots.png`, `snapshots-shared.png` and `reselling.png`. #1000 is CrestaHQ's own account.
 
 ## Not captured
 
