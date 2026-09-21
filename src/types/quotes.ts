@@ -137,6 +137,13 @@ export interface Quote {
    *  A back-reference only — the schedule is never looked up FROM here at
    *  generation time, and nothing reads an invoice to decide what to send. */
   recurringInvoiceId: string | null;
+  /**
+   * Which payment rail flipped this to paid, written in the same transaction
+   * as `status: "paid"`. Null/absent = marked by hand, or a rail that names
+   * none. Lets a retrying reconciler recognise its OWN earlier success
+   * instead of reading it as "paid another way".
+   */
+  paidVia?: QuotePaidVia | null;
 
   // ── Behaviour flags ──────────────────────────────────────────────
   /** When true, accepting the quote auto-creates a Deal at the "Won"
@@ -249,4 +256,11 @@ export interface QuoteRespondPayload {
   reason?: DeclineReason;
   /** Required when reason === "Other". Optional otherwise. */
   note?: string;
+}
+
+/** See `Quote.paidVia`. */
+export interface QuotePaidVia {
+  rail: "paystack_link";
+  linkId: string;
+  reference: string;
 }

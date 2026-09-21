@@ -44,4 +44,20 @@ describe("overlapping mark-paid calls", () => {
     expect(effects.emitQuoteWebhook).toHaveBeenCalledTimes(1);
     expect(review).toHaveBeenCalledTimes(1);
   });
+
+  it("stores paidVia in the same write, and hands it back to a loser", async () => {
+    const via = { rail: "paystack_link" as const, linkId: "l1", reference: "pl-l1-0123456789abcdef" };
+    const [a, b] = await Promise.all([
+      markQuotePaidServerSide({ quoteId: "inv1", expectSubAccountId: "sa1", paidVia: via }),
+      markQuotePaidServerSide({ quoteId: "inv1", expectSubAccountId: "sa1" }),
+    ]);
+    const loser = [a, b].find((r) => !r.ok)!;
+    expect(mem.read("quotes/inv1")!.paidVia).toEqual(a.ok ? via : null);
+    expect(loser).toMatchObject({ code: "already_paid", paidVia: a.ok ? via : null });
+  });
+
+  it("records no paidVia for a caller that names no rail (the manual button)", async () => {
+    await markQuotePaidServerSide({ quoteId: "inv1", expectSubAccountId: "sa1" });
+    expect(mem.read("quotes/inv1")!.paidVia).toBeNull();
+  });
 });

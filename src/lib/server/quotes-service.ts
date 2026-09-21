@@ -9,7 +9,7 @@ import {
   recordQuoteActivity,
 } from "@/lib/quotes/lifecycle";
 import { maybeSendReviewRequest } from "@/lib/reviews/request";
-import type { Quote } from "@/types/quotes";
+import type { Quote, QuotePaidVia } from "@/types/quotes";
 
 /**
  * Quotes service — the single server-side path that flips a quote/invoice to
@@ -17,8 +17,8 @@ import type { Quote } from "@/types/quotes";
  *
  * Extracted so the Stripe order reconciler, the Paystack payment-link
  * reconciler and the operator's manual "Mark as paid" button drive the SAME
- * transition — a compare-and-set, so when they race exactly one fires the
- * side effects. Payments v1's rule was that
+ * transition — a compare-and-set, so when they race only the winner fires
+ * the side effects (at most once; see below). Payments v1's rule was that
  * a card payment must not invent a second paid-path — otherwise the activity
  * row, the `quote.paid` workflow trigger, the outbound webhook, and the
  * auto Google-review request all drift between the two.
@@ -29,12 +29,21 @@ import type { Quote } from "@/types/quotes";
 
 export type MarkQuotePaidOutcome =
   | { ok: true; quote: Quote & { id: string } }
-  | { ok: false; code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status"; message: string };
+  | {
+      ok: false;
+      code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status";
+      message: string;
+      /** On `already_paid`: who paid it, so a retrying caller can tell its
+       *  own earlier success from someone else's. */
+      paidVia?: QuotePaidVia | null;
+    };
 
 export async function markQuotePaidServerSide(input: {
   quoteId: string;
   /** Refuse if the quote belongs to another sub-account. */
   expectSubAccountId: string;
+  /** Recorded on the quote with the paid write. Omitted = none (manual). */
+  paidVia?: QuotePaidVia;
 }): Promise<MarkQuotePaidOutcome> {
   const db = getAdminDb();
   const ref = db.collection("quotes").doc(input.quoteId);
@@ -61,7 +70,12 @@ export async function markQuotePaidServerSide(input: {
     // paid, must not re-fire the workflow trigger or send a second review
     // request.
     if (quote.status === "paid") {
-      return { ok: false, code: "already_paid", message: "Already marked paid" };
+      return {
+        ok: false,
+        code: "already_paid",
+        message: "Already marked paid",
+        paidVia: quote.paidVia ?? null,
+      };
     }
 
     const allowed =
@@ -81,6 +95,7 @@ export async function markQuotePaidServerSide(input: {
 
     tx.update(ref, {
       status: "paid",
+      paidVia: input.paidVia ?? null,
       paidAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -91,10 +106,11 @@ export async function markQuotePaidServerSide(input: {
 
   const withId = { ...quote, id: input.quoteId, status: "paid" as const };
 
-  // The paid write has committed; nothing below may turn that into a thrown
-  // error. A caller that saw a throw would retry, find "already_paid", and
-  // could never tell it was the one that won. Each effect is caught on its
-  // own so one failing does not skip the next.
+  // The paid write has committed. Side effects fire AT MOST once, and only
+  // for the compare-and-set winner: a loser gets already_paid above. A crash
+  // between the commit and these lines skips them, and nothing re-fires them
+  // (pre-existing; out of scope here). Each is caught on its own so a failing
+  // one neither skips the next nor turns a committed payment into a throw.
   await recordQuoteActivity(withId, "quote_marked_paid").catch((err: unknown) =>
     console.error(`[quotes-service] activity failed quote=${input.quoteId}`, err),
   );
