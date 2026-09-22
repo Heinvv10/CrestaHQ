@@ -93,6 +93,7 @@ export async function paystackRequest<T>(
       // 4xx is our request's fault and is worth showing verbatim; anything
       // else is Paystack being unavailable.
       response.status >= 400 && response.status < 500 ? 400 : 502,
+      response.status,
     );
   }
 

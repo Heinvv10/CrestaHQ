@@ -5,9 +5,17 @@
  */
 export class BillingError extends Error {
   readonly status: number;
-  constructor(message: string, status = 400) {
+  /**
+   * The provider's own HTTP status, when it answered. `status` is what the
+   * operator's request gets back (every 4xx collapses to 400); a webhook
+   * deciding whether to ask for a redelivery needs the original — a 429 or
+   * 401 is worth retrying, a 404 is not. Undefined when it never answered.
+   */
+  readonly providerStatus?: number;
+  constructor(message: string, status = 400, providerStatus?: number) {
     super(message);
     this.name = "BillingError";
     this.status = status;
+    this.providerStatus = providerStatus;
   }
 }

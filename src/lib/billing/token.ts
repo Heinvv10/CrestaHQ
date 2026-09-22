@@ -151,3 +151,51 @@ export function buildChargeCheckoutUrl(token: string): string {
   if (!base) return "";
   return `${base}/pay/charge/${token}`;
 }
+
+// ---------------------------------------------------------------------------
+// Paystack payment-link tokens (/pay/link/[token])
+// ---------------------------------------------------------------------------
+
+/**
+ * Same construction again, under a `paylink.` domain prefix so a charge or
+ * checkout token can never verify as a payment link. Payload id = the
+ * paymentLinks doc id.
+ *
+ * The token itself (not a hash) is stored on the link doc so the operator can
+ * copy the URL again from the list. That is safe here where it would not be
+ * for a checkout token: all a payment-link URL can do is let someone pay the
+ * sub-account the amount stored on the doc.
+ */
+export function issuePaymentLinkToken(linkId: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(linkId)) {
+    throw new Error("Unexpected linkId format for payment-link token");
+  }
+  const nonce = randomBytes(16).toString("hex");
+  const sig = createHmac("sha256", getSecret())
+    .update(`paylink.${linkId}.${nonce}`)
+    .digest("hex");
+  return `${linkId}.${nonce}.${sig}`;
+}
+
+/** The link id on a valid signature, null otherwise. The caller must still
+ *  match the token against the doc's stored `token`. */
+export function verifyPaymentLinkToken(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length !== TOKEN_PARTS) return null;
+  const [linkId, nonce, presentedSig] = parts;
+  if (!linkId || !nonce || !presentedSig) return null;
+
+  let expectedSig: string;
+  try {
+    expectedSig = createHmac("sha256", getSecret())
+      .update(`paylink.${linkId}.${nonce}`)
+      .digest("hex");
+  } catch {
+    return null;
+  }
+  if (presentedSig.length !== expectedSig.length) return null;
+  if (!timingSafeEqual(Buffer.from(presentedSig), Buffer.from(expectedSig))) {
+    return null;
+  }
+  return linkId;
+}

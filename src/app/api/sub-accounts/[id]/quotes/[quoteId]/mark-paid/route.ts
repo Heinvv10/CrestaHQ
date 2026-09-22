@@ -4,7 +4,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGateForContact } from "@/lib/auth/territory-filter";
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
-import type { Quote } from "@/types/quotes";
+import type { PaymentLink } from "@/types/payment-links";
+import type { Quote, QuotePaidVia } from "@/types/quotes";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,7 @@ export async function POST(
   const result = await markQuotePaidServerSide({
     quoteId,
     expectSubAccountId: subAccountId,
+    paidVia: await unsettledPaystackLinkPayment(subAccountId, quoteId),
   });
 
   if (!result.ok) {
@@ -67,4 +69,30 @@ export async function POST(
   }
 
   return NextResponse.json({ ok: true });
+}
+
+/**
+ * A Paystack payment link already paid for this invoice whose invoice step
+ * has not finished (a transient failure; Paystack will redeliver). The
+ * operator's click is then acknowledging THAT payment, so it is recorded as
+ * the payer. Otherwise the redelivery finds the invoice paid by someone else
+ * and flags a refund on a single payment.
+ */
+async function unsettledPaystackLinkPayment(
+  subAccountId: string,
+  invoiceId: string,
+): Promise<QuotePaidVia | undefined> {
+  const snap = await getAdminDb()
+    .collection("paymentLinks")
+    .where("subAccountId", "==", subAccountId)
+    .where("invoiceId", "==", invoiceId)
+    .where("status", "==", "paid")
+    .get();
+  for (const d of snap.docs) {
+    const link = d.data() as PaymentLink;
+    if (!link.invoiceSettledAt && link.paystackReference) {
+      return { rail: "paystack_link", linkId: d.id, reference: link.paystackReference };
+    }
+  }
+  return undefined;
 }

@@ -1,0 +1,238 @@
+import "server-only";
+
+import { randomBytes } from "node:crypto";
+import { FieldValue } from "firebase-admin/firestore";
+
+import { BillingError } from "@/lib/billing/errors";
+import { issuePaymentLinkToken, verifyPaymentLinkToken } from "@/lib/billing/token";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
+import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
+import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
+import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
+import type { Quote } from "@/types/quotes";
+
+/**
+ * Paystack payment links: create, deactivate, and open a checkout.
+ *
+ * Nothing here marks a link paid. That happens only in
+ * `lib/paystack/payment-link-reconciler.ts`, from a verified webhook.
+ */
+
+export type ServiceResult<T> =
+  | ({ ok: true } & T)
+  | { ok: false; status: number; error: string };
+
+const fail = (status: number, error: string) => ({ ok: false as const, status, error });
+
+/** R1,000,000. A typo guard, not a business rule. */
+const MAX_AMOUNT_CENTS = 100_000_000;
+const MAX_DESCRIPTION = 200;
+
+/** Invoice totals are stored in whole units; links are in cents. */
+export function invoiceTotalCents(quote: Quote): number {
+  return Math.round(computeQuoteTotals(quote).total * 100);
+}
+
+/** Same rule as the Stripe invoice pay route: sent or viewed, not expired. */
+function invoicePayable(quote: Quote): boolean {
+  return (
+    quote.kind === "invoice" &&
+    (quote.status === "sent" || quote.status === "viewed") &&
+    effectiveQuoteStatus(quote) !== "expired"
+  );
+}
+
+export async function createPaymentLink(input: {
+  subAccountId: string;
+  uid: string;
+  invoiceId?: string;
+  amountCents?: unknown;
+  description?: unknown;
+}): Promise<ServiceResult<{ link: PaymentLink }>> {
+  const db = getAdminDb();
+  const sub = (await db.doc(`subAccounts/${input.subAccountId}`).get()).data();
+  if (!sub) return fail(404, "Sub-account not found");
+  if (sub.paymentsEnabledByAgency !== true) {
+    return fail(403, "Payments isn't enabled for this workspace. Ask your agency to turn it on.");
+  }
+  if (!(await readPaystackConnectionSecret(input.subAccountId))) {
+    return fail(409, "Connect Paystack under Settings → Payments first.");
+  }
+
+  let invoiceId: string | null = null;
+  let contactId: string | null = null;
+  let description: string;
+  let amountCents: number;
+
+  if (input.invoiceId) {
+    const snap = await db.doc(`quotes/${input.invoiceId}`).get();
+    const quote = snap.data() as Quote | undefined;
+    if (!quote || quote.subAccountId !== input.subAccountId) {
+      return fail(404, "Invoice not found");
+    }
+    if (!invoicePayable(quote)) {
+      return fail(409, "Only a sent, unpaid, unexpired invoice can get a payment link.");
+    }
+    if ((quote.currency || "").toUpperCase() !== PAYMENT_LINK_CURRENCY) {
+      return fail(409, "Paystack payment links are ZAR only. This invoice is in another currency.");
+    }
+    amountCents = invoiceTotalCents(quote);
+    if (amountCents <= 0) return fail(409, "This invoice has nothing to pay.");
+    // One live link per invoice: a second click hands back the open one, so
+    // the customer can't be sent two links and pay both. A deactivated or
+    // paid link doesn't count.
+    const existing = await db
+      .collection("paymentLinks")
+      .where("subAccountId", "==", input.subAccountId)
+      .where("invoiceId", "==", input.invoiceId)
+      .get();
+    const open = existing.docs.find((d) => {
+      const l = d.data() as PaymentLink;
+      return l.active && l.status === "open";
+    });
+    if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
+    invoiceId = input.invoiceId;
+    contactId = quote.contactId ?? null;
+    description = `Invoice ${quote.quoteNumber}`;
+  } else {
+    const amount = input.amountCents;
+    if (typeof amount !== "number" || !Number.isInteger(amount) || amount <= 0 || amount > MAX_AMOUNT_CENTS) {
+      return fail(400, "Enter an amount between R0.01 and R1,000,000.");
+    }
+    const desc = typeof input.description === "string" ? input.description.trim() : "";
+    if (!desc || desc.length > MAX_DESCRIPTION) {
+      return fail(400, `Describe what the payment is for (up to ${MAX_DESCRIPTION} characters).`);
+    }
+    amountCents = amount;
+    description = desc;
+  }
+
+  const ref = db.collection("paymentLinks").doc();
+  const data: Omit<PaymentLink, "id"> = {
+    agencyId: sub.agencyId as string,
+    subAccountId: input.subAccountId,
+    createdByUid: input.uid,
+    invoiceId,
+    contactId,
+    description,
+    amountCents,
+    currency: PAYMENT_LINK_CURRENCY,
+    token: issuePaymentLinkToken(ref.id),
+    active: true,
+    status: "open",
+    paystackReference: null,
+    payerEmail: null,
+    paidAt: null,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await ref.set(data);
+  return { ok: true, link: { id: ref.id, ...data } };
+}
+
+export async function deactivatePaymentLink(input: {
+  subAccountId: string;
+  linkId: string;
+}): Promise<ServiceResult<object>> {
+  const ref = getAdminDb().doc(`paymentLinks/${input.linkId}`);
+  const link = (await ref.get()).data() as PaymentLink | undefined;
+  if (!link || link.subAccountId !== input.subAccountId) {
+    return fail(404, "Payment link not found");
+  }
+  await ref.update({ active: false, updatedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+}
+
+/**
+ * The link behind a public token, or why it can't be paid. Shared by the pay
+ * page's GET (show it) and POST (start checkout) so both refuse the same links.
+ */
+export async function loadPayableLink(
+  token: string,
+): Promise<ServiceResult<{ link: PaymentLink; livemode: boolean }>> {
+  const linkId = verifyPaymentLinkToken(token);
+  if (!linkId) return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
+  const snap = await getAdminDb().doc(`paymentLinks/${linkId}`).get();
+  const data = snap.data() as Omit<PaymentLink, "id"> | undefined;
+  if (!data || data.token !== token) {
+    return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
+  }
+  const link = { id: linkId, ...data };
+  if (link.status === "paid") return fail(410, "This has already been paid — nothing more to pay.");
+  if (!link.active) return fail(410, "This payment link has been withdrawn. Contact the sender if you think that's a mistake.");
+  // Re-checked at pay time, like the Stripe invoice pay route: the agency may
+  // have switched Payments off since the link went out. The webhook does NOT
+  // check this — a payment already taken is recorded regardless.
+  const sub = (await getAdminDb().doc(`subAccounts/${link.subAccountId}`).get()).data();
+  if (sub?.paymentsEnabledByAgency !== true) {
+    return fail(409, "Online payment isn't available for this link. Please contact the sender.");
+  }
+
+  if (link.invoiceId) {
+    // The link's amount was fixed when it was made. An invoice edited since,
+    // or paid another way, must not be charged the stale figure.
+    const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
+    if (quote?.status === "paid") return fail(410, "This invoice has already been paid — nothing more to pay.");
+    if (quote && effectiveQuoteStatus(quote) === "expired") {
+      return fail(410, "This invoice has expired. Ask the sender for a new one.");
+    }
+    if (!quote || !invoicePayable(quote) || invoiceTotalCents(quote) !== link.amountCents) {
+      return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
+    }
+  }
+  // The connection's CURRENT mode — the key checkout will actually use.
+  return { ok: true, link, livemode: sub.paystackConnectionMeta?.livemode === true };
+}
+
+/**
+ * `pl-{linkId}-{nonce}`. A fresh reference per checkout, because Paystack
+ * refuses a reference it has already seen and a customer may open the link
+ * twice. The link id inside it is how the reconciler finds the doc.
+ */
+export function paymentLinkReference(linkId: string): string {
+  return `pl-${linkId}-${randomBytes(8).toString("hex")}`;
+}
+
+export function parsePaymentLinkReference(reference: string): string | null {
+  return /^pl-([A-Za-z0-9]+)-[0-9a-f]{16}$/.exec(reference)?.[1] ?? null;
+}
+
+/**
+ * Open a Paystack checkout for a link. The amount is the doc's — the caller
+ * supplies only the payer's email, and nothing else from the request reaches
+ * Paystack.
+ */
+export async function startPaymentLinkCheckout(input: {
+  token: string;
+  email: string;
+}): Promise<ServiceResult<{ url: string }>> {
+  const loaded = await loadPayableLink(input.token);
+  if (!loaded.ok) return loaded;
+  const { link } = loaded;
+
+  const conn = await readPaystackConnectionSecret(link.subAccountId);
+  if (!conn) {
+    return fail(503, "Online payment is unavailable right now. Please contact the sender.");
+  }
+
+  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
+  try {
+    const { url } = await initializePaystackTransaction({
+      email: input.email,
+      amountCents: link.amountCents,
+      currency: link.currency,
+      // Paystack sends the payer back here. The page only reads the link's
+      // status; it is the webhook that marks it paid.
+      callbackUrl: `${base}/pay/link/${input.token}`,
+      reference: paymentLinkReference(link.id),
+      metadata: { paymentLinkId: link.id, subAccountId: link.subAccountId },
+      displayName: link.description,
+      secretKey: conn.secretKey,
+    });
+    return { ok: true, url };
+  } catch (err) {
+    if (err instanceof BillingError) return fail(502, err.message);
+    throw err;
+  }
+}

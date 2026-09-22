@@ -237,6 +237,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // inside the route against that ONE sub-account's stored secret key — which
   // for Paystack IS the signing key, so there is no separate webhook secret.
   /^\/api\/webhooks\/paystack\/sa\/[^/]+$/,
+  // Paystack payment link: /pay/link/{token} (GET shows it, POST starts the
+  // checkout). Already covered by the "/pay" entry in PUBLIC_PATHS (Client
+  // Billing's checkout prefix); listed here too so it is findable.
+  // The signed token is the credential, and neither handler marks anything
+  // paid — only the verified webhook above does.
+  /^\/pay\/link\/[^/]+$/,
   // Per-sub-account Webinar1 webhook: /api/webhooks/webinar1/sa/{subAccountId}
   // (Webinar1 integration). Security is the X-Webinar1-Signature header,
   // verified inside the route against that ONE sub-account's stored signing

@@ -205,6 +205,17 @@ describe("isPublicPath — snapshot share links", () => {
   });
 });
 
+describe("isPublicPath — Paystack payment links", () => {
+  it("opens the pay page to a payer with no session", () => {
+    expect(isPublicPath("/pay/link/abc.def.123")).toBe(true);
+  });
+
+  it("keeps the operator's create/deactivate API behind a session", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/payment-links")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/payment-links/l1")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the GBP public reviews feed", () => {
   it("lets any website reach the feed without a session (the opaque id is the credential)", () => {
     expect(isPublicPath("/api/public/gbp/feed/AbCdEfGhIjKlMnOpQrStUvWxYz012345")).toBe(true);
