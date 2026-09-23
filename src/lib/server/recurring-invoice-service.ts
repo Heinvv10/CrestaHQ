@@ -115,7 +115,7 @@ export async function runOneSchedule(
       // cannot or the card is declined.
       sent =
         schedule.chargeMode === "card"
-          ? await chargeCycle(schedule, invoiceId, claim.cycle)
+          ? await chargeCycle(schedule, invoiceId, claim.cycle, now)
           : await sendGeneratedInvoice(schedule, invoiceId);
     }
     await settleAfterCycle(schedule, invoiceId);

@@ -10,10 +10,12 @@ import {
   raised,
   seedCardSchedule,
   seedMandate,
+  failNextTasks,
   stubAutoCharge,
   tasksAbout,
 } from "@/test/auto-charge-harness";
-import { KEY, SA, mem, seedInvoice, seedSub } from "@/test/paystack-links-harness";
+import { KEY, OTHER_KEY, SA, mem, seedInvoice, seedSub } from "@/test/paystack-links-harness";
+import { formatCurrency } from "@/lib/format";
 
 /**
  * Fix round 1 (PR #220), webhook side: money that arrives but cannot be
@@ -43,9 +45,9 @@ const { POST } = await import("./route");
 const { POST: MARK_PAID } = await import("@/app/api/sub-accounts/[id]/quotes/[quoteId]/mark-paid/route");
 const { runOneSchedule } = await import("@/lib/server/recurring-invoice-service");
 
-function deliver() {
+function deliver(key = KEY) {
   const body = JSON.stringify({ event: "charge.success", data: { reference: REF } });
-  const signature = createHmac("sha512", KEY).update(body).digest("hex");
+  const signature = createHmac("sha512", key).update(body).digest("hex");
   return POST(
     new Request(`http://app.local/api/webhooks/paystack/sa/${SA}`, {
       method: "POST",
@@ -64,6 +66,7 @@ beforeEach(async () => {
   seedSub();
   seedCardSchedule();
   seedMandate();
+  failNextTasks(0);
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -126,15 +129,74 @@ describe("verified money that cannot be recorded raises one Task, even on replay
   });
 });
 
+describe("money at Paystack that is not recorded raises one Task (N2)", () => {
+  it("verified under a key other than the attempt's", async () => {
+    await chargedCycle();
+    seedSub(SA, OTHER_KEY);
+    await deliver(OTHER_KEY);
+    await deliver(OTHER_KEY);
+    expect(tasksAbout(REF)).toHaveLength(1);
+    expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "flagged" });
+  });
+
+  it("a value mismatch (live-domain payment on a test attempt)", async () => {
+    stubAutoCharge({ verify: { domain: "live" } });
+    await runOneSchedule(SCHEDULE, NOW);
+    await deliver();
+    await deliver();
+    expect(tasksAbout(REF)).toHaveLength(1);
+    expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "flagged" });
+    expect(raised().status).toBe("draft");
+  });
+
+  it("a redelivery under a new key after the charge was recorded raises nothing", async () => {
+    await chargedCycle();
+    await deliver();
+    seedSub(SA, OTHER_KEY);
+    await deliver(OTHER_KEY);
+    expect(mem.list("tasks")).toHaveLength(0);
+    expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "settled" });
+  });
+});
+
+describe("a Task that fails to create is not lost (N3)", () => {
+  it("the delivery answers 503; the redelivery raises exactly one Task", async () => {
+    await chargedCycle();
+    const other = "pl-l9-0123456789abcdef";
+    mem.seed(`quotes/${raised().id}`, { ...raised(), status: "paid", paidVia: { rail: "paystack_link", linkId: "l9", reference: other } });
+    failNextTasks(1);
+    expect((await deliver()).status).toBe(503);
+    expect(tasksAbout(REF)).toHaveLength(0);
+    expect((await deliver()).status).toBe(200);
+    expect((await deliver()).status).toBe(200);
+    expect(tasksAbout(REF)).toHaveLength(1);
+  });
+});
+
 describe("marking a card-cycle draft paid by hand", () => {
-  it("a pending card draft can be marked paid; a late webhook then raises one refund Task", async () => {
+  it("a pending card draft can be marked paid; the late webhook raises one honest Task, not a refund claim", async () => {
     await chargedCycle(chargeAnswer("pending"));
     const id = raised().id;
     expect((await markPaid(id)).status).toBe(200);
     expect(raised()).toMatchObject({ status: "paid", paidVia: null });
     await deliver();
     await deliver();
-    expect(tasksAbout(REF).filter((t) => /refund may be owed/.test(String(t.notes)))).toHaveLength(1);
+    const late = tasksAbout(REF).filter((t) => /marked paid by hand/.test(String(t.notes)));
+    expect(late).toHaveLength(1);
+    expect(late[0].notes).toBe(
+      `Invoice INV-2026-0004 was marked paid by hand before Paystack confirmed saved-card charge ${REF} (${formatCurrency(1150, "ZAR")}). ` +
+        "If the hand mark recorded this card charge, there is nothing to do. " +
+        "If it recorded a different payment, the customer paid twice and a refund may be owed.",
+    );
+    expect(late[0].title).not.toMatch(/^Refund may be owed/);
+  });
+
+  it("marked by hand, but not while THIS charge was pending: still the refund Task", async () => {
+    await chargedCycle();
+    mem.seed(`quotes/${raised().id}`, { ...raised(), status: "paid", paidVia: null, autoCharge: { reference: "ra-sch1-c3", mandateId: "m1", state: "declined", reason: "x" } });
+    await deliver();
+    expect(tasksAbout(REF)).toHaveLength(1);
+    expect(tasksAbout(REF)[0].title).toMatch(/^Refund may be owed/);
   });
 
   it("a plain draft (no card charge) is still refused", async () => {

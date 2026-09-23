@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AMOUNT,
   MANDATE,
+  NEXT,
   NOW,
   REF,
   SCHEDULE,
@@ -141,8 +142,7 @@ describe("a card cycle", () => {
   it("the next cycle charges under the next reference", async () => {
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, NOW);
-    makeDue();
-    await runOneSchedule(SCHEDULE, NOW);
+    await runOneSchedule(SCHEDULE, NEXT);
     expect(chargeCalls(calls).map((c) => c.body!.reference)).toEqual([REF, `ra-${SCHEDULE}-c5`]);
   });
 });
@@ -239,7 +239,7 @@ describe("an invoice that no longer matches the card's terms", () => {
     seedInvoice("inv9", { status: "draft", recurringInvoiceId: SCHEDULE, ...over });
     const calls = stubAutoCharge();
     const sched = { ...schedule(), id: SCHEDULE } as unknown as RecurringInvoiceDoc;
-    expect(await chargeCycle(sched, "inv9", 4)).toBe(true);
+    expect(await chargeCycle(sched, "inv9", 4, NOW)).toBe(true);
     expect(chargeCalls(calls)).toHaveLength(0);
     expect(schedule().lastError).toMatch(/no longer matches/);
   });

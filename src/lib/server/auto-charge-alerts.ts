@@ -10,6 +10,8 @@ import { createTaskServerSide } from "@/lib/server/tasks-service";
  *
  * Callers raise one only on a path that runs once (the attempt being created,
  * or its reason first changing), so a webhook redelivery adds no duplicate.
+ * Throws: the webhook rolls its reason back and asks for a redelivery; the
+ * charge cycle, which nothing re-runs, logs it.
  */
 export async function raiseChargeTask(
   owner: { agencyId: string; subAccountId: string; createdByUid: string; contactId: string | null },
@@ -28,5 +30,5 @@ export async function raiseChargeTask(
     eventId: null,
     // Real money, or real doubt about it — the same as the arrears Task.
     mode: "live",
-  }).catch((err: unknown) => console.error(`[recurring/auto-charge] task not raised: ${title}`, err));
+  });
 }

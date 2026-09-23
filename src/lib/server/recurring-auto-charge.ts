@@ -1,16 +1,17 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { chargePaystackAuthorization } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
+import { minCardChargeGapMs } from "@/lib/recurring/charge-gap";
 import { invoiceTotalCents } from "@/lib/server/payment-links-service";
 import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
 import { termsStillHold } from "@/lib/server/payment-mandates";
-import { schedulesCollection, sendGeneratedInvoice } from "@/lib/server/recurring-invoice-cycle";
+import { schedulesCollection, sendGeneratedInvoice, toDate } from "@/lib/server/recurring-invoice-cycle";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 import { paymentMandateSecretPath, type PaymentMandate, type PaymentMandateSecret } from "@/types/payment-mandates";
@@ -31,7 +32,8 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  *   not chargeable → the invoice is emailed, and the schedule says why;
  *   declined       → recorded on the attempt, invoice and mandate, the invoice
  *                    is emailed (it carries a pay link), `invoice.charge_failed`;
- *   key refused    → like a decline, but not counted against the card; a Task;
+ *   too soon after the last charge (an edit moved the run) → emailed; a Task;
+ *   key refused    → emailed and a Task; not counted against the card, no trigger;
  *   no clear answer → NOT emailed — the card may have been charged — and a
  *                    Task names the reference to check.
  */
@@ -53,10 +55,16 @@ export async function fireChargeTrigger(
 type Opened =
   | { ok: true; secretKey: string; secret: PaymentMandateSecret; mandateId: string; amountCents: number; currency: string }
   | { ok: false; reason: string }
-  | { ok: false; alreadyCharged: true };
+  | { ok: false; alreadyCharged: true }
+  | { ok: false; tooSoonAfter: Date };
 
 /** Returns whether the invoice was emailed. */
-export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: string, cycle: number): Promise<boolean> {
+export async function chargeCycle(
+  schedule: RecurringInvoiceDoc,
+  invoiceId: string,
+  cycle: number,
+  now: Date,
+): Promise<boolean> {
   const db = getAdminDb();
   const reference = autoChargeReference(schedule.id, cycle);
   const invoiceRef = db.doc(`quotes/${invoiceId}`);
@@ -68,12 +76,23 @@ export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: stri
       .doc(schedule.id)
       .update({ lastError: lastError.slice(0, 500), updatedAt: FieldValue.serverTimestamp() })
       .catch((err: unknown) => console.error(`${tag} lastError not written`, err));
+  // No redelivery re-runs a cycle, so a Task that fails to create is logged;
+  // the `lastError` written beside it still tells the operator.
+  const alert = (title: string, notes: string) =>
+    raiseChargeTask(schedule, title, notes).catch((err: unknown) => console.error(`${tag} task not raised: ${title}`, err));
 
-  const opened = await openAttempt(schedule, invoiceId, invoice, reference);
+  const opened = await openAttempt(schedule, invoiceId, invoice, reference, now);
   if ("alreadyCharged" in opened) {
     console.error(`${tag} cycle already has a charge attempt; not charging again`);
     await note(`Card not charged for invoice ${label}: cycle ${cycle} was already charged (Paystack reference ${reference}). Check for a duplicate invoice.`);
     return false;
+  }
+  if ("tooSoonAfter" in opened) {
+    const day = new Intl.DateTimeFormat("en-GB", { timeZone: schedule.timezone, dateStyle: "long" }).format(opened.tooSoonAfter);
+    const why = `the card was charged on ${day} and this cycle came due too soon after it, probably because of a schedule edit — so invoice ${label} was emailed instead, with a payment link.`;
+    await note(`Card not charged for invoice ${label}: ${why}`);
+    await alert(`Card not charged: invoice ${label} came due too soon after the last charge`, `Not charged again: ${why}`);
+    return sendGeneratedInvoice(schedule, invoiceId);
   }
   if (!opened.ok) {
     await note(`Card not charged for invoice ${label}: ${opened.reason} — invoice emailed instead.`);
@@ -99,8 +118,7 @@ export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: stri
         `Check reference ${reference} in your Paystack dashboard before billing again — it is recorded here automatically if it went through.`,
     );
     // Once per cycle: this path runs only for the call that created the attempt.
-    await raiseChargeTask(
-      schedule,
+    await alert(
       `Check Paystack: card charge for invoice ${label} has no clear outcome`,
       `The saved-card charge for invoice ${label} (Paystack reference ${reference}) got no clear answer: ${answer.reason}. ` +
         `The invoice was not emailed: check Paystack before sending this invoice — the card may already have been charged. ` +
@@ -119,8 +137,7 @@ export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: stri
   await setInvoice({ ...base, state: "declined", reason: answer.reason });
   if (keyRefused) {
     await note(`Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`);
-    await raiseChargeTask(
-      schedule,
+    await alert(
       `Paystack refused the key: invoice ${label} was not charged`,
       `Charging the saved card for invoice ${label} (Paystack reference ${reference}) failed because Paystack refused this workspace's key: ${answer.reason}. ` +
         `The invoice was emailed instead. Check the Paystack connection before the next cycle.`,
@@ -132,7 +149,8 @@ export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: stri
     await note(`Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`);
   }
   const sent = await sendGeneratedInvoice(schedule, invoiceId);
-  await fireChargeTrigger(schedule, "invoice.charge_failed");
+  // A refused key is the workspace's problem; the customer's card did not fail.
+  if (!keyRefused) await fireChargeTrigger(schedule, "invoice.charge_failed");
   return sent;
 }
 
@@ -141,15 +159,21 @@ export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: stri
  * the connection: a key switch or revoke landing first retries it and is
  * seen; one landing after finds this attempt open and flags it.
  * `cardMandateId` is only a pointer — the mandate's own status decides.
+ *
+ * Also where "never twice in one period" is enforced: the schedule's
+ * `lastCardChargeAt` is read and written here, with the attempt, so no edit
+ * that moves the next run can charge the card again too soon.
  */
 async function openAttempt(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
   invoice: Quote | undefined,
   reference: string,
+  now: Date,
 ): Promise<Opened> {
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
+  const scheduleRef = schedulesCollection().doc(schedule.id);
   return db.runTransaction(async (t): Promise<Opened> => {
     if ((await t.get(attemptRef)).exists) return { ok: false, alreadyCharged: true };
     const no = (reason: string) => ({ ok: false as const, reason });
@@ -158,6 +182,7 @@ async function openAttempt(
     const mandate = (await t.get(db.doc(`paymentMandates/${mandateId}`))).data() as PaymentMandate | undefined;
     const conn = await readPaystackConnectionSecret(schedule.subAccountId, t);
     const secret = (await t.get(db.doc(paymentMandateSecretPath(mandateId)))).data() as PaymentMandateSecret | undefined;
+    const lastCharge = toDate(((await t.get(scheduleRef)).data() as RecurringInvoiceDoc | undefined)?.lastCardChargeAt);
     if (!mandate || mandate.subAccountId !== schedule.subAccountId || mandate.recurringInvoiceId !== schedule.id) {
       return no("the saved card could not be found");
     }
@@ -177,6 +202,9 @@ async function openAttempt(
     ) {
       return no("the invoice no longer matches the amount the customer authorised");
     }
+    if (lastCharge && now.getTime() - lastCharge.getTime() < minCardChargeGapMs(schedule.cadence)) {
+      return { ok: false, tooSoonAfter: lastCharge };
+    }
     const attempt: Omit<PaymentAttempt, "id"> = {
       agencyId: schedule.agencyId,
       subAccountId: schedule.subAccountId,
@@ -195,6 +223,7 @@ async function openAttempt(
       updatedAt: FieldValue.serverTimestamp(),
     };
     t.create(attemptRef, attempt);
+    t.update(scheduleRef, { lastCardChargeAt: Timestamp.fromDate(now) });
     return { ok: true, secretKey: conn.secretKey, secret, mandateId, amountCents, currency: attempt.currency };
   });
 }

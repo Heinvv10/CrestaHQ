@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { formatCurrency } from "@/lib/format";
 import {
   verifyPaystackTransaction,
   type PaystackVerifiedTransaction,
@@ -11,7 +12,7 @@ import {
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import type { PaymentLinkReconcileResult } from "@/lib/paystack/payment-link-reconciler";
 import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
-import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
+import { loadPaymentAttempt } from "@/lib/server/payment-attempts";
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
 import { fireChargeTrigger } from "@/lib/server/recurring-auto-charge";
 import type { PaymentAttempt } from "@/types/payment-attempts";
@@ -26,7 +27,7 @@ import type { Quote, QuotePaidVia } from "@/types/quotes";
  * Same trust rules as the payment-link reconciler: the body gives only the
  * reference; the facts come from Paystack's verify answer with the tenant's
  * key, and must match our own attempt on key, mode (`domain`), amount and
- * currency. A mismatch flags the attempt and records nothing. Never throws;
+ * currency. A mismatch flags the attempt, raises a Task, records nothing. Never throws;
  * `retry: true` only when Paystack or Firestore could not answer.
  */
 
@@ -56,8 +57,11 @@ export async function reconcileAutoCharge(input: {
     }
     if (attempt.keyFingerprint !== paystackKeyFingerprint(secretKey)) {
       console.error(`${tag} not marking paid: verifying key is not the attempt's`);
-      await flagPaymentAttempt(reference, (a) =>
-        `Paystack reported a saved-card charge (reference ${reference}) under a different key than its ${a.mode}-mode attempt used, and it was not recorded. Check your Paystack dashboard.`,
+      await alertOnce(
+        attempt,
+        `Paystack reported a saved-card charge (reference ${reference}) under a different key than its ${attempt.mode}-mode attempt used, and it was not recorded. Check your Paystack dashboard.`,
+        (invoice) => `Card payment not recorded: invoice ${invoice} (the Paystack key changed)`,
+        { flag: true },
       );
       return { handled: false, detail: "mismatch key" };
     }
@@ -88,10 +92,13 @@ export async function reconcileAutoCharge(input: {
               : null;
     if (mismatch) {
       console.error(`${tag} not marking paid: ${mismatch}`);
-      await flagPaymentAttempt(reference, (a) =>
+      await alertOnce(
+        attempt,
         mismatch.startsWith("mode")
-          ? `A ${tx.domain ?? "unknown"}-mode payment (reference ${reference}) arrived for a ${a.mode}-mode saved-card charge, and was not recorded. Check your Paystack dashboard.`
+          ? `A ${tx.domain ?? "unknown"}-mode payment (reference ${reference}) arrived for a ${attempt.mode}-mode saved-card charge, and was not recorded. Check your Paystack dashboard.`
           : `Paystack received a saved-card payment (reference ${reference}) that does not match its charge — check your Paystack dashboard.`,
+        (invoice) => `Card payment not recorded: invoice ${invoice}`,
+        { flag: true },
       );
       return { handled: false, detail: `mismatch ${mismatch}` };
     }
@@ -135,19 +142,41 @@ async function settleAttempt(reference: string): Promise<boolean> {
  * Record `why` on the attempt and raise a Task for it — once. The reason is
  * written in a transaction, and only the call that changes it raises the
  * Task, so a webhook redelivery (which finds the same reason) adds nothing.
+ * `flag` also marks the attempt flagged — money arrived that was not recorded
+ * — unless it is already settled (a late redelivery under a newer key).
+ *
+ * If the Task cannot be created the reason is put back and the error thrown:
+ * the webhook answers 503, and Paystack's redelivery raises it.
  */
-async function alertOnce(attempt: PaymentAttempt, why: string, title: (invoice: string) => string): Promise<void> {
+async function alertOnce(
+  attempt: PaymentAttempt,
+  why: string,
+  title: (invoice: string) => string,
+  opts: { flag?: boolean } = {},
+): Promise<void> {
   const db = getAdminDb();
   const ref = db.doc(`paymentAttempts/${attempt.id}`);
-  const first = await db.runTransaction(async (t) => {
-    if ((await t.get(ref)).data()?.reason === why) return false;
-    t.update(ref, { reason: why, updatedAt: FieldValue.serverTimestamp() });
-    return true;
+  const before = await db.runTransaction(async (t) => {
+    const current = (await t.get(ref)).data() as PaymentAttempt | undefined;
+    if (!current || current.reason === why || (opts.flag && current.state === "settled")) return null;
+    const flag = opts.flag && current.state !== "flagged";
+    t.update(ref, { reason: why, ...(flag ? { state: "flagged" } : {}), updatedAt: FieldValue.serverTimestamp() });
+    return { reason: current.reason, state: flag ? current.state : null };
   });
-  if (!first) return;
-  const invoice = (await db.doc(`quotes/${attempt.invoiceId}`).get()).data() as Quote | undefined;
-  const owner = { ...attempt, contactId: invoice?.contactId ?? null };
-  await raiseChargeTask(owner, title(invoice?.quoteNumber || attempt.invoiceId!), why);
+  if (!before) return;
+  try {
+    const invoice = (await db.doc(`quotes/${attempt.invoiceId}`).get()).data() as Quote | undefined;
+    const owner = { ...attempt, contactId: invoice?.contactId ?? null };
+    await raiseChargeTask(owner, title(invoice?.quoteNumber || attempt.invoiceId!), why);
+  } catch (err) {
+    await db.runTransaction(async (t) => {
+      const current = (await t.get(ref)).data() as PaymentAttempt | undefined;
+      if (current?.reason !== why) return;
+      const state = before.state && current.state === "flagged" ? { state: before.state } : {};
+      t.update(ref, { reason: before.reason, ...state, updatedAt: FieldValue.serverTimestamp() });
+    });
+    throw err;
+  }
 }
 
 /** Who else paid the invoice, for the operator. */
@@ -197,8 +226,18 @@ async function settleInvoice(
   // The money is in the tenant's account either way; the operator is told why
   // it is not recorded against this invoice.
   const charged = `Charged (Paystack reference ${reference})`;
-  const why =
-    res.code === "already_paid"
+  // Marked paid by hand while this charge was still unconfirmed: the hand
+  // mark may BE this payment, so the Task says so rather than claim a refund.
+  const handMarked =
+    res.code === "already_paid" && !res.paidVia
+      ? ((await db.doc(`quotes/${attempt.invoiceId}`).get()).data() as Quote | undefined)
+      : undefined;
+  const beforeConfirmed = handMarked?.autoCharge?.reference === reference;
+  const why = beforeConfirmed
+    ? `Invoice ${handMarked!.quoteNumber || attempt.invoiceId} was marked paid by hand before Paystack confirmed saved-card charge ${reference} ` +
+      `(${formatCurrency(attempt.amountCents / 100, attempt.currency)}). If the hand mark recorded this card charge, there is nothing to do. ` +
+      `If it recorded a different payment, the customer paid twice and a refund may be owed.`
+    : res.code === "already_paid"
       ? `${charged}, but the invoice was already paid another way (${describeVia(res.paidVia)}) — a refund may be owed.`
       : res.code === "amount_changed"
         ? `${charged}, but the invoice changed after the charge, so it was not marked paid. Check the amount and mark it by hand.`
@@ -207,7 +246,11 @@ async function settleInvoice(
           : `${charged}, but the invoice could not be marked paid: ${res.message}. Record this payment by hand.`;
   console.error(`${tag} ${why}`);
   await alertOnce(attempt, why, (invoice) =>
-    res.code === "already_paid" ? `Refund may be owed: invoice ${invoice} was paid twice` : `Record a card payment by hand: invoice ${invoice}`,
+    beforeConfirmed
+      ? `Check a hand-marked invoice: ${invoice}`
+      : res.code === "already_paid"
+        ? `Refund may be owed: invoice ${invoice} was paid twice`
+        : `Record a card payment by hand: invoice ${invoice}`,
   );
   if (res.code !== "not_found" && res.code !== "wrong_tenant") {
     await db.doc(`quotes/${attempt.invoiceId}`).update({

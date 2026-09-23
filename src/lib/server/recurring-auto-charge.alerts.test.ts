@@ -1,16 +1,16 @@
-import { NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MANDATE,
+  NEXT,
   NOW,
   REF,
   SCHEDULE,
   chargeAnswer,
-  chargeCalls,
   makeDue,
   seedCardSchedule,
   seedMandate,
+  failNextTasks,
   stubAutoCharge,
   tasksAbout,
 } from "@/test/auto-charge-harness";
@@ -20,8 +20,8 @@ import { SA, mem, refused, seedSub } from "@/test/paystack-links-harness";
  * Fix round 1 (PR #220): what needs a human becomes a Task, never only
  * `schedule.lastError` (the next claim clears it); a non-success, non-failed
  * charge status is an unknown outcome, not a payment in flight; Paystack
- * refusing OUR key is not the card's decline; and moving a card schedule's
- * anchor can never pull its next charge forward.
+ * refusing OUR key is not the card's decline (and fires no charge_failed).
+ * Edits that move a card schedule's run: see recurring-auto-charge.gap.test.ts.
  */
 
 const sendQuoteServerSide = vi.fn();
@@ -36,13 +36,8 @@ vi.mock("@/lib/server/quote-send-service", () => ({
 vi.mock("@/lib/workflows/engine", () => ({
   fireWorkflowTrigger: (...a: unknown[]) => fireWorkflowTrigger(...a),
 }));
-vi.mock("@/lib/auth/require-tenancy", () => ({
-  requireSubAccountAdmin: async (_req: Request, subAccountId: string) =>
-    subAccountId === "sa1" ? { uid: "u1", agencyId: "ag1" } : NextResponse.json({}, { status: 403 }),
-}));
 
 const { runOneSchedule } = await import("./recurring-invoice-service");
-const { PATCH } = await import("@/app/api/sub-accounts/[id]/recurring-invoices/[recurringId]/route");
 
 const schedule = () => mem.read(`recurringInvoices/${SCHEDULE}`)!;
 const mandate = () => mem.read(`paymentMandates/${MANDATE}`)!;
@@ -54,6 +49,7 @@ beforeEach(() => {
   seedSub();
   seedCardSchedule();
   seedMandate();
+  failNextTasks(0);
   sendQuoteServerSide.mockResolvedValue({ ok: true });
   fireWorkflowTrigger.mockResolvedValue({ enrolled: [], skipped: [], reason: null });
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -61,7 +57,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -77,8 +72,7 @@ describe("a charge status that is neither success nor failed", () => {
       expect(tasksAbout(REF)).toHaveLength(1);
 
       stubAutoCharge();
-      makeDue();
-      await runOneSchedule(SCHEDULE, NOW);
+      await runOneSchedule(SCHEDULE, NEXT);
       // The claim cleared lastError; the Task is still there.
       expect(schedule().lastError).toBeNull();
       expect(tasksAbout(REF)).toHaveLength(1);
@@ -101,6 +95,14 @@ describe("an unknown outcome raises one Task", () => {
     expect(tasksAbout(REF)).toHaveLength(1);
   });
 
+  it("a Task that fails to create is logged; the cycle still completes and lastError still names the reference", async () => {
+    stubAutoCharge({ charge: () => "network-error" });
+    failNextTasks(1);
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: false });
+    expect(tasksAbout(REF)).toHaveLength(0);
+    expect(schedule().lastError).toContain(REF);
+  });
+
   it("a successful charge raises no Task", async () => {
     stubAutoCharge();
     await runOneSchedule(SCHEDULE, NOW);
@@ -118,56 +120,13 @@ describe("Paystack refusing the workspace's key", () => {
     expect(mandate()).toMatchObject({ status: "active" });
     expect(mandate().consecutiveDeclines).toBeUndefined();
     expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "refused" });
-    expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(1);
+    // N4: the customer's card did not fail — the workspace's key did.
+    expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
   });
 
   it("a 402 card refusal is still a decline", async () => {
     stubAutoCharge({ charge: () => refused(402, "Insufficient funds") });
     await runOneSchedule(SCHEDULE, NOW);
     expect(mandate()).toMatchObject({ consecutiveDeclines: 1 });
-  });
-});
-
-describe("moving a card schedule's billing day", () => {
-  function patch(body: Record<string, unknown>) {
-    return PATCH(
-      new Request("http://x", { method: "PATCH", body: JSON.stringify(body) }),
-      { params: Promise.resolve({ id: SA, recurringId: SCHEDULE }) },
-    );
-  }
-
-  it("charged 1 Mar, anchor moved to the 5th on 2 Mar, run 5 Mar → one charge", async () => {
-    const calls = stubAutoCharge();
-    await runOneSchedule(SCHEDULE, NOW);
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-03-02T08:00:00Z"));
-    expect((await patch({ anchorDay: 5 })).status).toBe(200);
-    vi.useRealTimers();
-    await runOneSchedule(SCHEDULE, new Date("2026-03-05T05:00:00Z"));
-    expect(chargeCalls(calls).map((c) => c.body!.reference)).toEqual([REF]);
-  });
-
-  it("switching to card in the same edit also restarts from the next run", async () => {
-    stubAutoCharge();
-    seedCardSchedule({ chargeMode: "invoice" });
-    await runOneSchedule(SCHEDULE, NOW);
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-03-02T08:00:00Z"));
-    expect((await patch({ chargeMode: "card", anchorDay: 5 })).status).toBe(200);
-    vi.useRealTimers();
-    const next = (schedule().nextRunAt as { toDate: () => Date }).toDate();
-    expect(next.toISOString()).toBe("2026-04-04T22:00:00.000Z");
-  });
-
-  it("an invoice schedule still moves from today", async () => {
-    stubAutoCharge();
-    seedCardSchedule({ chargeMode: "invoice" });
-    await runOneSchedule(SCHEDULE, NOW);
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-03-02T08:00:00Z"));
-    await patch({ anchorDay: 5 });
-    vi.useRealTimers();
-    const next = (schedule().nextRunAt as { toDate: () => Date }).toDate();
-    expect(next.toISOString()).toBe("2026-03-04T22:00:00.000Z");
   });
 });

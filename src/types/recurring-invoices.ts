@@ -119,6 +119,12 @@ export interface RecurringInvoiceDoc {
    * `reviewFirst` — an unattended charge cannot wait for a review.
    */
   chargeMode?: RecurringChargeMode;
+  /**
+   * When the saved card was last charged (an attempt made), written with the
+   * attempt. A card cycle due sooner than the cadence allows after it is
+   * emailed instead — so no schedule edit can charge twice in one period.
+   */
+  lastCardChargeAt?: Timestamp | FieldValue | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;

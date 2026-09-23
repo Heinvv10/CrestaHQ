@@ -16,6 +16,8 @@ export const AMOUNT = 115000;
 export const TERMS = { amountCents: AMOUNT, currency: "ZAR", frequency: "every month", text: "By paying…" };
 /** 1 Mar 2026 07:00 SAST: the schedule's cycle is due. */
 export const NOW = new Date("2026-03-01T05:00:00.000Z");
+/** 1 Apr 2026 07:00 SAST: the cycle after `NOW` (the claim moves nextRunAt there). */
+export const NEXT = new Date("2026-04-01T05:00:00.000Z");
 /** The reference the next cycle (cyclesGenerated 3 → 4) charges under. */
 export const REF = `ra-${SCHEDULE}-c4`;
 
@@ -116,6 +118,10 @@ export function raised(): Record<string, unknown> & { id: string } {
   return all[all.length - 1];
 }
 
+let taskFailures = 0;
+/** The next `n` Task creations throw, as a Firestore outage would. */
+export const failNextTasks = (n = 1) => void (taskFailures = n);
+
 /**
  * `tasks-service` stand-in that writes Tasks to the in-memory store, so a
  * test can show an operator alert outlives the next cycle:
@@ -124,6 +130,10 @@ export function raised(): Record<string, unknown> & { id: string } {
  */
 export const tasksMock = () => ({
   createTaskServerSide: async (input: Record<string, unknown>) => {
+    if (taskFailures > 0) {
+      taskFailures -= 1;
+      throw new Error("tasks unavailable");
+    }
     const ref = await mem.db.collection("tasks").add({ ...input, completed: false });
     return { id: ref.id };
   },

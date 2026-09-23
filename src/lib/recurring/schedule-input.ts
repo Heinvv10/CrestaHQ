@@ -5,7 +5,6 @@ import {
   type Cadence,
 } from "@/lib/recurring/cadence";
 import {
-  cadenceRestart,
   fail,
   hasBillableLineItem,
   parseCadence,
@@ -182,8 +181,8 @@ export interface ScheduleUpdateFields {
   /**
    * Set only when the cadence or the anchor moved: the stored `nextRunAt` was
    * computed from the OLD cadence, so leaving it would bill the next cycle on
-   * a day the operator has just changed away from. Recomputed from today (a
-   * card schedule: from its next run), so an edit never pulls a cycle earlier.
+   * a day the operator has just changed away from. Recomputed from today, so
+   * an edit can never pull a cycle earlier than the day it was made.
    */
   recomputeNextRunFrom?: Date;
 }
@@ -197,7 +196,7 @@ export function parseScheduleUpdate(
     status: RecurringInvoiceStatus;
     /** The cycle the schedule is currently pointed at. */
     nextRunAt: Date | null;
-    /** Judged with `chargeMode` (review, ZAR only) and where a moved cadence restarts. */
+    /** Judged with `chargeMode`: a card cycle cannot wait for review, and is ZAR only. */
     reviewFirst?: boolean; currency?: string; chargeMode?: RecurringChargeMode;
   },
   now: Date,
@@ -242,7 +241,7 @@ export function parseScheduleUpdate(
 
   if (cadenceMoved) {
     out.recomputeNextRunFrom = computeFirstRunAt({
-      startAt: cadenceRestart(now, current.nextRunAt, body.chargeMode ?? current.chargeMode),
+      startAt: now,
       cadence,
       // `??` would let a week cadence's deliberate `null` fall through to the
       // stale numeric anchor of the cadence being edited away from. No caller
