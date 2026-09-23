@@ -6,6 +6,7 @@ import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGateForContact } from "@/lib/auth/territory-filter";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 
 /**
  * Dashboard-facing task creation. Replaces the browser's direct Firestore
@@ -49,6 +50,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "title is required" }, { status: 400 });
   }
 
+  const contactId = typeof body.contactId === "string" ? body.contactId : null;
+  const dealId = typeof body.dealId === "string" ? body.dealId : null;
+  const eventId = typeof body.eventId === "string" ? body.eventId : null;
+  // Linked records must live in this sub-account; a foreign id reads as missing.
+  for (const [collection, id] of [
+    ["contacts", contactId],
+    ["deals", dealId],
+    ["events", eventId],
+  ] as const) {
+    if (id && !(await refInSubAccount(collection, id, subAccountId))) {
+      return NextResponse.json({ error: "Linked record not found" }, { status: 404 });
+    }
+  }
+
   const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const agencyId = (subSnap.data()?.agencyId as string) ?? access.agencyId ?? "";
 
@@ -71,9 +86,9 @@ export async function POST(request: Request) {
     title,
     notes: str(body.notes),
     dueAt: parseDue(body.dueAt),
-    contactId: typeof body.contactId === "string" ? body.contactId : null,
-    dealId: typeof body.dealId === "string" ? body.dealId : null,
-    eventId: typeof body.eventId === "string" ? body.eventId : null,
+    contactId,
+    dealId,
+    eventId,
     assignedToUid: assignedToUid ?? null,
   });
 

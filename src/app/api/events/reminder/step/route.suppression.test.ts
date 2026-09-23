@@ -48,6 +48,15 @@ describe("booking reminder", () => {
     expect(mem.list("contacts/c1/activities")).toEqual([]);
   });
 
+  it("is never sent to a contact outside the event's sub-account", async () => {
+    // An event linked (before the rules checked it) to another tenant's contact.
+    mem.seed("contacts/c1", { name: "Foreign", email: "foreign@example.co.za", agencyId: AGENCY, subAccountId: "sa_other" });
+    const res = await remind();
+    expect(await res.json()).toMatchObject({ skipped: "tenancy_missing" });
+    expect(wireRecipients()).toEqual([]);
+    expect(mem.list("contacts/c1/activities")).toEqual([]);
+  });
+
   it("is refused for a suppressed contact and recorded on their timeline", async () => {
     suppress("thandi@example.co.za");
     await remind();

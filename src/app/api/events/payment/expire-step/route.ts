@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 import {
   emailIsConfigured,
   sendEmail,
@@ -20,7 +21,6 @@ import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
-import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
@@ -112,8 +112,8 @@ async function runExpireSideEffects(event: CalendarEvent): Promise<void> {
   if (!event.contactId) return;
   const db = getAdminDb();
   try {
-    const [contactSnap, subSnap, pageSnap] = await Promise.all([
-      db.collection("contacts").doc(event.contactId).get(),
+    const [contact, subSnap, pageSnap] = await Promise.all([
+      loadEventContact(event),
       db.doc(`subAccounts/${event.subAccountId}`).get(),
       event.bookingPageSlug
         ? db
@@ -123,8 +123,7 @@ async function runExpireSideEffects(event: CalendarEvent): Promise<void> {
             .get()
         : Promise.resolve(null),
     ]);
-    if (contactSnap.exists && subSnap.exists && emailIsConfigured(subSnap.data() as SubAccountDoc)) {
-      const contact = contactSnap.data() as Contact;
+    if (contact && subSnap.exists && emailIsConfigured(subSnap.data() as SubAccountDoc)) {
       const sub = subSnap.data() as SubAccountDoc;
       const page = (pageSnap?.data() ?? null) as BookingPage | null;
       const startAt = (
@@ -182,6 +181,7 @@ async function runExpireSideEffects(event: CalendarEvent): Promise<void> {
       title: event.title || "Meeting",
       contactId: event.contactId,
       bookingPageSlug: event.bookingPageSlug ?? null,
+      subAccountId: event.subAccountId,
     },
     "booking_cancelled",
     { extra: "payment hold expired" },

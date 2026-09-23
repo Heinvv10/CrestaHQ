@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 import {
   emailIsConfigured,
   sendEmail,
@@ -23,7 +24,6 @@ import type {
   EventNotifySkipReason,
   EventStatus,
 } from "@/types/events";
-import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
@@ -228,6 +228,7 @@ async function runStatusSideEffects(
       title: event.title || "Meeting",
       contactId: event.contactId,
       bookingPageSlug: event.bookingPageSlug ?? null,
+      subAccountId: event.subAccountId,
     },
     activityType satisfies ActivityType,
     { extra: reason || null },
@@ -247,8 +248,8 @@ async function runStatusSideEffects(
   if (next !== "cancelled") return { emailSent: false, emailSkipReason: "not_cancelled" };
   const db = getAdminDb();
   try {
-    const [contactSnap, subSnap, pageSnap] = await Promise.all([
-      db.collection("contacts").doc(event.contactId).get(),
+    const [contact, subSnap, pageSnap] = await Promise.all([
+      loadEventContact(event),
       db.doc(`subAccounts/${event.subAccountId}`).get(),
       event.bookingPageSlug
         ? db
@@ -258,13 +259,12 @@ async function runStatusSideEffects(
             .get()
         : Promise.resolve(null),
     ]);
-    if (!contactSnap.exists || !subSnap.exists) {
+    if (!contact || !subSnap.exists) {
       console.warn(
-        `[event-status-service] missing records: contact=${contactSnap.exists} sub=${subSnap.exists} event=${event.id}`,
+        `[event-status-service] missing records: contact=${!!contact} sub=${subSnap.exists} event=${event.id}`,
       );
       return { emailSent: false, emailSkipReason: "missing_records" };
     }
-    const contact = contactSnap.data() as Contact;
     const sub = subSnap.data() as SubAccountDoc;
     if (!emailIsConfigured(sub)) {
       console.warn(

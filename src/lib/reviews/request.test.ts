@@ -177,6 +177,15 @@ describe("no_contact / no_phone", () => {
     expectNothingSent();
   });
 
+  it("refuses a contact in another sub-account: nothing sent, nothing written", async () => {
+    // A linked contact id can reach this from a deal/quote written before the
+    // rules checked it; the dispatcher must not message another tenant.
+    setContact({ subAccountId: "sa_other" });
+    expect(await send()).toEqual({ sent: false, reason: "no_contact" });
+    expectNothingSent();
+    expect(writes).toEqual([]);
+  });
+
   it("refuses when the contact has no phone number", async () => {
     setContact({ phone: "" });
     expect(await send()).toEqual({ sent: false, reason: "no_phone" });

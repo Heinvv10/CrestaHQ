@@ -121,7 +121,12 @@ export async function POST(request: Request) {
           .get()
       : Promise.resolve(null),
   ]);
-  if (!contactSnap.exists || !subSnap.exists) {
+  // A contact outside the event's sub-account is treated as missing.
+  if (
+    !contactSnap.exists ||
+    !subSnap.exists ||
+    contactSnap.data()?.subAccountId !== event.subAccountId
+  ) {
     return NextResponse.json({ ok: true, skipped: "tenancy_missing" });
   }
   const contact = contactSnap.data() as Contact;
