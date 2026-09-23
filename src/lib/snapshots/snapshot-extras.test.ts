@@ -45,6 +45,14 @@ function fakeDb(seed: {
         written.push({ path, data });
       },
     }),
+    // The create-if-absent existence check — nothing in `seed.docs` is a
+    // form/template/product/workflow in these tests, so every ref reads back
+    // as absent (created), matching the old create-only behaviour.
+    getAll: async (...refs: { path: string }[]) =>
+      refs.map((ref) => {
+        const data = seed.docs?.[ref.path];
+        return { ref, exists: data !== undefined, data: () => data };
+      }),
     batch: () => ({
       set: (ref: { path: string }, data: Record<string, unknown>) => {
         written.push({ path: ref.path, data });

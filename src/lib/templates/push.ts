@@ -40,6 +40,7 @@ export async function pushTemplate(
         ok: false,
         error: "Sub-account not found in this agency.",
         created: none,
+        skipped: none,
       });
       continue;
     }
@@ -57,6 +58,11 @@ export async function pushTemplate(
           messageTemplates: r.templatesCreated,
           workflows: r.workflowsCreated,
         },
+        skipped: {
+          forms: r.formsSkipped,
+          messageTemplates: r.templatesSkipped,
+          workflows: r.workflowsSkipped,
+        },
       });
     } catch (err) {
       console.error("[templates/push] apply failed", subAccountId, err);
@@ -65,6 +71,7 @@ export async function pushTemplate(
         ok: false,
         error: err instanceof Error ? err.message : "Push failed.",
         created: none,
+        skipped: none,
       });
     }
   }

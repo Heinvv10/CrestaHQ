@@ -57,6 +57,8 @@ function dropSourceId<T extends { sourceId: string }>(
 
 /** Firestore caps a batch at 500 ops; stay comfortably under. */
 const COMMIT_CHUNK = 450;
+/** `getAll` has no hard cap like `in`'s 30, but stay comfortably bounded. */
+const GET_ALL_CHUNK = 300;
 
 async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
   for (let i = 0; i < writes.length; i += COMMIT_CHUNK) {
@@ -66,6 +68,24 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
     }
     await batch.commit();
   }
+}
+
+/**
+ * Which of `refs` already exist in the target, keyed by path. A prior apply
+ * of this same snapshot writes at these exact (deterministic) ids, so this
+ * is how a retry tells "I already wrote this" from "this is new" — see
+ * {@link writeSnapshot}, which never overwrites a doc this returns.
+ */
+async function existingPaths(
+  db: Firestore,
+  refs: DocumentReference[],
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (let i = 0; i < refs.length; i += GET_ALL_CHUNK) {
+    const snaps = await db.getAll(...refs.slice(i, i + GET_ALL_CHUNK));
+    for (const s of snaps) if (s.exists) found.add(s.ref.path);
+  }
+  return found;
 }
 
 /**
@@ -154,26 +174,32 @@ async function writePersonaIfAbsent(
 }
 
 /**
- * Apply a snapshot's config into a target sub-account. CREATE-OR-OVERWRITE
- * BY DETERMINISTIC ID: every doc's id is derived from
- * (targetSubAccountId, scope.snapshotId, sourceId), never a fresh random
- * one, so re-running the same apply — after a partial failure, or on
- * purpose — overwrites what it wrote before instead of duplicating it. It
- * never touches a doc it didn't itself write on a prior run, so this is
- * still safe against a live sub-account.
+ * Apply a snapshot's config into a target sub-account. CREATE-ONLY BY
+ * DETERMINISTIC ID: every doc's id is derived from
+ * (targetSubAccountId, scope.snapshotId, sourceId) instead of a fresh
+ * random one, so a retry — after a partial failure, or applying the same
+ * snapshot again on purpose — recognises what it already wrote and never
+ * touches it again. A doc that already exists at that id is counted as
+ * skipped, not re-created, and its fields are left exactly as an operator
+ * may have since edited them (an activated workflow stays active, edited
+ * nodes stay edited). It still never touches a doc it didn't itself write,
+ * so this is safe against a live sub-account either way.
  *
  * Order matters for the form→workflow link: forms are written first so we can
  * build an old→new form-id map, then workflows are written with their
  * `trigger.formId` remapped to the imported form (or nulled when the source
- * form isn't part of the snapshot).
+ * form isn't part of the snapshot). The map is populated even for a form
+ * that already existed (skipped, not written this run) — the workflow still
+ * needs to link to it.
  *
  * Two entities need a read before the write, because unlike the others their
  * identity rule isn't "one doc per sourceId":
  *
  *   - Custom fields are keyed by `key`, unique per (subAccount, entity). A key
- *     the target already defines from ANOTHER source is skipped, never
- *     redefined — a second definition for the same key would fight the first
- *     over the same `contact.customFields` slot.
+ *     the target already defines — by this same snapshot on a prior apply, or
+ *     by any other source — is skipped, never redefined; a second definition
+ *     for the same key would fight the first over the same
+ *     `contact.customFields` slot.
  *   - The AI persona lives at the fixed path `aiAgent/profile`. It is written
  *     only when the target has none, so applying a snapshot can never silently
  *     replace a persona an operator already tuned. That check runs inside a
@@ -183,7 +209,9 @@ async function writePersonaIfAbsent(
  * Apply status is recorded at `subAccounts/{targetSubAccountId}/
  * snapshotApplies/{scope.snapshotId}` (started → completed | failed) so a
  * caller — or an operator looking at Firestore — can see a partial apply
- * rather than inferring it from missing docs.
+ * rather than inferring it from missing docs. It's a forensic record only,
+ * not read by any route; a failure to write it must never hide or replace
+ * the real error from the apply itself.
  */
 export async function applySnapshot(
   db: Firestore,
@@ -194,27 +222,42 @@ export async function applySnapshot(
   const statusRef = db.doc(
     `subAccounts/${targetSubAccountId}/snapshotApplies/${scope.snapshotId}`,
   );
-  await statusRef.set(
-    { status: "started", startedAt: FieldValue.serverTimestamp(), error: null },
-    { merge: true },
-  );
+  await recordStatus(statusRef, {
+    status: "started",
+    startedAt: FieldValue.serverTimestamp(),
+    error: null,
+  });
   try {
     const result = await writeSnapshot(db, payload, targetSubAccountId, scope);
-    await statusRef.set(
-      { status: "completed", completedAt: FieldValue.serverTimestamp(), error: null },
-      { merge: true },
-    );
+    await recordStatus(statusRef, {
+      status: "completed",
+      completedAt: FieldValue.serverTimestamp(),
+      error: null,
+    });
     return result;
   } catch (err) {
-    await statusRef.set(
-      {
-        status: "failed",
-        failedAt: FieldValue.serverTimestamp(),
-        error: err instanceof Error ? err.message : "apply failed",
-      },
-      { merge: true },
-    );
+    await recordStatus(statusRef, {
+      status: "failed",
+      failedAt: FieldValue.serverTimestamp(),
+      error: err instanceof Error ? err.message : "apply failed",
+    });
     throw err;
+  }
+}
+
+/**
+ * Best-effort — this is a forensic record, not part of the apply's
+ * correctness. A failure writing it is logged and swallowed so it can never
+ * mask (or replace) the real error the caller above is already handling.
+ */
+async function recordStatus(
+  ref: DocumentReference,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await ref.set(patch, { merge: true });
+  } catch (err) {
+    console.error("[snapshots/apply] failed to record apply status", err);
   }
 }
 
@@ -248,33 +291,83 @@ async function writeSnapshot(
     existingFieldsSnap.docs.map((d) => `${d.data().entity}:${d.data().key}`),
   );
 
-  // 1) Forms first — build old→new id map for the workflow remap.
+  // Resolve every form/template/product/workflow ref up front (ids alone,
+  // no reads) so a single batched existence check tells us which ones a
+  // PRIOR apply already wrote — those are never touched again, see the
+  // doc comment above.
+  const formRefs = payload.forms.map((f) => db.collection("forms").doc(detId("form", f.sourceId)));
+  const templateRefs = payload.messageTemplates.map((t) =>
+    db.collection("message_templates").doc(detId("message_template", t.sourceId)),
+  );
+  const productRefs = payload.products.map((p) =>
+    db.collection("products").doc(detId("product", p.sourceId)),
+  );
+  const workflowRefs = payload.workflows.map((w) =>
+    db.collection("workflows").doc(detId("workflow", w.sourceId)),
+  );
+  const alreadyWritten = await existingPaths(db, [
+    ...formRefs,
+    ...templateRefs,
+    ...productRefs,
+    ...workflowRefs,
+  ]);
+
+  // 1) Forms first — build old→new id map for the workflow remap. The map
+  // gets an entry even for a form this run skips (already written by a
+  // prior apply) — a workflow still needs to link to it.
   const formIdMap = new Map<string, string>();
-  for (const form of payload.forms) {
-    const ref = db.collection("forms").doc(detId("form", form.sourceId));
+  let formsCreated = 0;
+  let formsSkipped = 0;
+  payload.forms.forEach((form, i) => {
+    const ref = formRefs[i];
     formIdMap.set(form.sourceId, ref.id);
+    if (alreadyWritten.has(ref.path)) {
+      formsSkipped += 1;
+      return;
+    }
     writes.push([
       ref,
       { ...dropSourceId(sanitizeForm(form)), id: ref.id, ...tenancy(), submissionCount: 0 },
     ]);
-  }
+    formsCreated += 1;
+  });
 
   // 2) Self-contained config — copies verbatim with fresh identity.
-  for (const template of payload.messageTemplates) {
-    const ref = db
-      .collection("message_templates")
-      .doc(detId("message_template", template.sourceId));
+  let templatesCreated = 0;
+  let templatesSkipped = 0;
+  payload.messageTemplates.forEach((template, i) => {
+    const ref = templateRefs[i];
+    if (alreadyWritten.has(ref.path)) {
+      templatesSkipped += 1;
+      return;
+    }
     writes.push([ref, { ...dropSourceId(template), id: ref.id, ...tenancy() }]);
-  }
-  for (const product of payload.products) {
-    const ref = db.collection("products").doc(detId("product", product.sourceId));
+    templatesCreated += 1;
+  });
+  let productsCreated = 0;
+  let productsSkipped = 0;
+  payload.products.forEach((product, i) => {
+    const ref = productRefs[i];
+    if (alreadyWritten.has(ref.path)) {
+      productsSkipped += 1;
+      return;
+    }
     writes.push([ref, { ...dropSourceId(product), id: ref.id, ...tenancy() }]);
-  }
+    productsCreated += 1;
+  });
 
   // 3) Workflows — sanitize on apply.
   let workflowsLinked = 0;
-  for (const workflow of payload.workflows) {
-    const ref = db.collection("workflows").doc(detId("workflow", workflow.sourceId));
+  let workflowsCreated = 0;
+  let workflowsSkipped = 0;
+  payload.workflows.forEach((workflow, i) => {
+    const ref = workflowRefs[i];
+    if (alreadyWritten.has(ref.path)) {
+      // Already applied — an operator may since have activated it and
+      // edited its nodes. Leave it alone; do not re-link or re-draft it.
+      workflowsSkipped += 1;
+      return;
+    }
     const config = dropSourceId(workflow);
 
     // Remap the trigger's source form id to the imported form, else null it.
@@ -309,9 +402,11 @@ async function writeSnapshot(
         stats: { enrolled: 0, completed: 0 },
       },
     ]);
-  }
+    workflowsCreated += 1;
+  });
 
-  // 4) Custom-field definitions — skip any key the target already defines.
+  // 4) Custom-field definitions — skip any key the target already defines
+  // (by this snapshot on a prior apply, or by any other source).
   let customFieldsCreated = 0;
   let customFieldsSkipped = 0;
   for (const field of payload.customFields ?? []) {
@@ -339,10 +434,14 @@ async function writeSnapshot(
     : false;
 
   return {
-    formsCreated: payload.forms.length,
-    templatesCreated: payload.messageTemplates.length,
-    productsCreated: payload.products.length,
-    workflowsCreated: payload.workflows.length,
+    formsCreated,
+    formsSkipped,
+    templatesCreated,
+    templatesSkipped,
+    productsCreated,
+    productsSkipped,
+    workflowsCreated,
+    workflowsSkipped,
     workflowsLinked,
     customFieldsCreated,
     customFieldsSkipped,

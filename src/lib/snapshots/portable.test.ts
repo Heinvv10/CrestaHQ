@@ -109,6 +109,9 @@ describe("toPortablePayload — form ids", () => {
         get: async () => ({ exists: false, data: () => undefined }),
         set: async (data: Record<string, unknown>) => void written.push({ path, data }),
       }),
+      // Nothing pre-exists at any deterministic id in this test.
+      getAll: async (...refs: { path: string }[]) =>
+        refs.map((ref) => ({ ref, exists: false, data: () => undefined })),
       batch: () => ({
         set: (ref: { path: string }, data: Record<string, unknown>) => void written.push({ path: ref.path, data }),
         commit: async () => undefined,

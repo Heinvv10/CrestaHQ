@@ -51,22 +51,30 @@ beforeEach(() => {
 });
 
 describe("applySnapshot — idempotent retry", () => {
-  it("applying the same snapshot twice does not duplicate any doc", async () => {
+  it("applying the same snapshot twice does not duplicate any doc, and the second run reports everything as skipped", async () => {
     const first = await applySnapshot(db, payload(), "sa_dst", scope);
     expect(first).toMatchObject({
       formsCreated: 1,
+      formsSkipped: 0,
       templatesCreated: 1,
+      templatesSkipped: 0,
       productsCreated: 1,
+      productsSkipped: 0,
       workflowsCreated: 1,
+      workflowsSkipped: 0,
       customFieldsCreated: 1,
     });
 
     const second = await applySnapshot(db, payload(), "sa_dst", scope);
     expect(second).toMatchObject({
-      formsCreated: 1,
-      templatesCreated: 1,
-      productsCreated: 1,
-      workflowsCreated: 1,
+      formsCreated: 0,
+      formsSkipped: 1,
+      templatesCreated: 0,
+      templatesSkipped: 1,
+      productsCreated: 0,
+      productsSkipped: 1,
+      workflowsCreated: 0,
+      workflowsSkipped: 1,
     });
 
     expect(mem.list("forms").filter((f) => f.subAccountId === "sa_dst")).toHaveLength(1);
@@ -77,6 +85,30 @@ describe("applySnapshot — idempotent retry", () => {
 
     const status = mem.read(`subAccounts/sa_dst/snapshotApplies/${scope.snapshotId}`);
     expect(status?.status).toBe("completed");
+  });
+
+  it("never overwrites a workflow an operator has since activated and edited", async () => {
+    await applySnapshot(db, payload(), "sa_dst", scope);
+    const [applied] = mem.list("workflows").filter((w) => w.subAccountId === "sa_dst");
+
+    // The operator reviewed the draft, activated it, and edited a node.
+    await mem.db.doc(`workflows/${applied.id}`).update({
+      status: "active",
+      "nodes.n1.config.tag": "operator-edited",
+    });
+    const edited = mem.read(`workflows/${applied.id}`);
+    expect(edited?.status).toBe("active");
+
+    const result = await applySnapshot(db, payload(), "sa_dst", scope);
+    expect(result.workflowsCreated).toBe(0);
+    expect(result.workflowsSkipped).toBe(1);
+
+    const stillThere = mem.list("workflows").filter((w) => w.subAccountId === "sa_dst");
+    expect(stillThere).toHaveLength(1);
+    expect(stillThere[0].status).toBe("active");
+    expect(
+      (stillThere[0].nodes as Record<string, { config: { tag: string } }>).n1.config.tag,
+    ).toBe("operator-edited");
   });
 
   it("a failure mid-way then a retry completes with no duplicates", async () => {
@@ -119,6 +151,18 @@ describe("applySnapshot — idempotent retry", () => {
 
     const retry = await applySnapshot(db, withPersona, "sa_dst", scope);
     expect(retry.aiProfileApplied).toBe(true);
+    // The batched half already landed on the failed run — the retry finds it
+    // via the deterministic id and skips it rather than re-creating it.
+    expect(retry).toMatchObject({
+      formsCreated: 0,
+      formsSkipped: 1,
+      templatesCreated: 0,
+      templatesSkipped: 1,
+      productsCreated: 0,
+      productsSkipped: 1,
+      workflowsCreated: 0,
+      workflowsSkipped: 1,
+    });
 
     expect(mem.list("forms").filter((f) => f.subAccountId === "sa_dst")).toHaveLength(1);
     expect(mem.list("message_templates").filter((t) => t.subAccountId === "sa_dst")).toHaveLength(1);

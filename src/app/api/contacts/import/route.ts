@@ -158,7 +158,7 @@ export async function POST(request: Request) {
 
   let created = 0;
   let skipped = 0;
-  const errors: { index: number; message: string }[] = [];
+  const errors: { index: number; message: string; duplicate?: true }[] = [];
   // Duplicates within THIS request (same CSV listing the same person twice).
   const seenEmails = new Set<string>();
   const seenPhones = new Set<string>();
@@ -177,7 +177,9 @@ export async function POST(request: Request) {
         (existingPhones.has(row.normPhone) || seenPhones.has(row.normPhone)));
     if (isDuplicate) {
       skipped++;
-      errors.push({ index: i, message: "Skipped — duplicate contact" });
+      // `duplicate: true` lets the caller tell "already exists, nothing to
+      // fix" apart from a genuine per-row failure — see import-contacts-dialog.
+      errors.push({ index: i, message: "Skipped — duplicate contact", duplicate: true });
       continue;
     }
 
