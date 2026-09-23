@@ -25,6 +25,7 @@ const s = vi.hoisted(() => ({
   threadReadThrows: false,
   pauseThrows: false,
   escalations: [] as string[],
+  loopEmails: [] as Array<{ to: string; subject: string }>,
   twilioSends: 0,
   conversationUpdates: [] as Array<Record<string, unknown>>,
   activities: [] as Array<Record<string, unknown>>,
@@ -99,6 +100,14 @@ vi.mock("@/lib/comms/ai/escalation", () => ({
     return null;
   },
 }));
+vi.mock("@/lib/comms/resend", () => ({
+  emailIsConfigured: () => true,
+  tenantFrom: () => "bot@biz.test",
+  sendEmail: async (e: { to: string; subject: string }) => {
+    s.loopEmails.push(e);
+    return { id: "e1" };
+  },
+}));
 vi.mock("@/lib/comms/business-hours", () => ({ isWithinBusinessHours: () => true }));
 vi.mock("@/lib/comms/meta", () => ({ sendMetaMessage: async () => "mid" }));
 vi.mock("@/lib/comms/twilio", () => ({
@@ -128,7 +137,7 @@ vi.mock("@/lib/comms/whatsapp/bridge-client", () => ({
 }));
 
 import { maybeRespondWithAi } from "./respond";
-import { AI_LOOP_FAST_EXCHANGES, AI_LOOP_HARD_CAP, AI_LOOP_PAUSE_MS } from "./loop-guard";
+import { AI_LOOP_HARD_CAP, AI_LOOP_PAUSE_MS } from "./loop-guard";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { ResolvedAiAgent } from "@/types/ai";
@@ -197,6 +206,7 @@ beforeEach(() => {
   s.threadReadThrows = false;
   s.pauseThrows = false;
   s.escalations = [];
+  s.loopEmails = [];
   s.conversationUpdates = [];
   s.activities = [];
   s.llmCalls = 0;
@@ -205,55 +215,65 @@ beforeEach(() => {
   s.twilioSends = 0;
 });
 
+const AUTO_REPLY = "Thanks for your message! We are closed right now and will reply soon."; // 60+ chars
+
 describe("AI reply-loop guard", () => {
-  it("never pauses a human-paced conversation (5 quick Q/A turns in 10 min)", async () => {
-    seedExchanges(5, 45_000);
+  it('never pauses on short repeats — "yes" x3', async () => {
+    seedExchanges(2, 20_000, () => "yes");
+    s.thread[0].body = "Yes";
     expect((await respond("cloud")).kind).toBe("replied");
     expect(s.conversationUpdates).toHaveLength(0);
   });
 
-  it(`pauses instant auto-responder ping-pong after ${AI_LOOP_FAST_EXCHANGES} exchanges`, async () => {
-    seedExchanges(AI_LOOP_FAST_EXCHANGES - 1, 2_000);
+  it("never pauses a fast fragment typer (6 replies within seconds)", async () => {
+    seedExchanges(6, 2_000);
     expect((await respond("cloud")).kind).toBe("replied");
+    expect(s.conversationUpdates).toHaveLength(0);
+  });
 
-    s.thread = [];
-    seedExchanges(AI_LOOP_FAST_EXCHANGES, 2_000);
+  it("pauses when the same long auto-reply arrives 3 times in a row", async () => {
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = `  ${AUTO_REPLY.toUpperCase()} `; // normalised equal
     const out = await respond("cloud");
     expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
-    expect(s.llmCalls).toBe(1); // only the earlier, un-tripped turn
-    expect(s.cloudSends).toBe(1);
+    expect(s.llmCalls).toBe(0);
+    expect(s.cloudSends + s.bridgeSends).toBe(0);
     const pause = s.conversationUpdates[0];
     expect(pause).toMatchObject({ id: "c1" });
-    const until = (pause.botPausedUntil as Date).getTime();
     // One hour — not the 12h a human takeover gets.
     expect(AI_LOOP_PAUSE_MS).toBe(60 * 60 * 1000);
+    const until = (pause.botPausedUntil as Date).getTime();
     expect(until).toBeGreaterThan(Date.now() + 60 * 60 * 1000 - 5_000);
     expect(until).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
-    expect(s.escalations).toEqual(["auto-reply loop"]);
+    expect(s.loopEmails).toEqual([
+      expect.objectContaining({
+        to: "ops@biz.test",
+        subject: "AI auto-reply loop suspected — bot paused for 1h on Cust",
+      }),
+    ]);
+    expect(s.escalations).toEqual([]); // not the keyword-escalation template
     expect(s.activities.at(-1)).toMatchObject({
       type: "ai_skipped",
-      meta: { reason: "reply_loop", loop: "auto_responder", paused: true },
+      meta: { reason: "reply_loop", loop: "repeated_text", paused: true },
     });
   });
 
-  it("pauses when the same text arrives 3 times in a row", async () => {
-    seedExchanges(2, 60_000, () => "  Thanks for your message!  We'll reply SOON ");
-    s.thread[2].body = "thanks for your message! we'll reply soon";
-    expect(await respond("cloud")).toEqual({ kind: "skipped", reason: "reply_loop" });
-    expect(s.activities.at(-1)).toMatchObject({ meta: { loop: "repeated_text" } });
+  it("the same text twice is not enough", async () => {
+    seedExchanges(1, 2_000, () => AUTO_REPLY);
+    expect((await respond("cloud")).kind).toBe("replied");
   });
 
-  it(`hard cap: pauses at ${AI_LOOP_HARD_CAP} AI replies in 10 min even at a human pace`, async () => {
+  it(`hard cap: pauses at ${AI_LOOP_HARD_CAP + 1} AI replies in 10 min`, async () => {
     seedExchanges(AI_LOOP_HARD_CAP - 1, 10_000);
     expect((await respond("cloud")).kind).toBe("replied");
     s.thread = [];
-    seedExchanges(AI_LOOP_HARD_CAP, 10_000);
+    seedExchanges(AI_LOOP_HARD_CAP + 1, 10_000);
     expect(await respond("cloud")).toEqual({ kind: "skipped", reason: "reply_loop" });
     expect(s.activities.at(-1)).toMatchObject({ meta: { loop: "volume_cap" } });
   });
 
   it("a resume sticks: the next message after the reset marker gets a reply", async () => {
-    seedExchanges(AI_LOOP_FAST_EXCHANGES + 2, 2_000);
+    seedExchanges(4, 2_000, () => AUTO_REPLY);
     const last = Math.max(...s.thread.map((r) => r.createdAtMs));
     s.controls.loopResetAtMs = last - 500; // paused, then resumed, before the newest inbound
     expect((await respond("cloud")).kind).toBe("replied");
@@ -266,12 +286,14 @@ describe("AI reply-loop guard", () => {
   });
 
   it("does not claim the bot is paused when the pause write fails", async () => {
-    seedExchanges(AI_LOOP_FAST_EXCHANGES, 2_000);
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
     s.pauseThrows = true;
     expect((await respond("cloud")).kind).toBe("skipped");
     const act = s.activities.at(-1) as { content: string; meta: { paused: boolean } };
     expect(act.meta.paused).toBe(false);
     expect(act.content).not.toContain("Bot paused");
+    expect(s.loopEmails[0].subject).toContain("pausing the bot FAILED");
   });
 });
 

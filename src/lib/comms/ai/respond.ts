@@ -9,6 +9,7 @@ import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
 import {
   detectAiReplyLoop,
   pauseBotForReplyLoop,
+  sendReplyLoopNotification,
   type AiLoopReason,
 } from "@/lib/comms/ai/loop-guard";
 import { sendMetaMessage } from "@/lib/comms/meta";
@@ -340,9 +341,8 @@ async function storeOutboundReply({
 }
 
 const LOOP_LABEL: Record<AiLoopReason, string> = {
-  auto_responder:
-    "the contact answered each of the last several AI replies within seconds (likely an auto-responder)",
-  repeated_text: "the contact sent the same message several times in a row",
+  repeated_text:
+    "the contact sent the same long message several times in a row (likely an auto-reply)",
   volume_cap: "too many AI replies on this conversation in 10 minutes",
 };
 
@@ -429,9 +429,12 @@ export async function maybeRespondWithAi(
     return { kind: "skipped", reason: "quota" };
   }
 
-  // "Human needed" email, when the agent has an escalation address. Shared by
-  // the keyword escalation and the reply-loop guard below.
-  const notifyStaff = async (triggeredKeyword: string) => {
+  // Guard: escalation keyword in the inbound text.
+  const triggered = matchEscalationKeyword(
+    incomingMessage,
+    eff.escalationKeywords,
+  );
+  if (triggered) {
     if (eff.escalationNotifyEmail) {
       const appUrl =
         process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
@@ -447,20 +450,11 @@ export async function maybeRespondWithAi(
           (metaChannel ? `(via ${transport.label})` : replyTo),
         contactId: contact.id,
         subAccountId,
-        triggeredKeyword,
+        triggeredKeyword: triggered,
         incomingMessage,
         appUrl,
       });
     }
-  };
-
-  // Guard: escalation keyword in the inbound text.
-  const triggered = matchEscalationKeyword(
-    incomingMessage,
-    eff.escalationKeywords,
-  );
-  if (triggered) {
-    await notifyStaff(triggered);
     await logActivity({
       contactId: contact.id,
       agencyId: subAccount.agencyId,
@@ -511,7 +505,18 @@ export async function maybeRespondWithAi(
       });
   if (loop) {
     const paused = await pauseBotForReplyLoop(contact.id);
-    await notifyStaff("auto-reply loop");
+    if (eff.escalationNotifyEmail) {
+      await sendReplyLoopNotification({
+        to: eff.escalationNotifyEmail,
+        subAccountId,
+        subAccount,
+        contactId: contact.id,
+        contactName: contact.name ?? "",
+        paused,
+        appUrl:
+          process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev",
+      });
+    }
     await logActivity({
       contactId: contact.id,
       agencyId: subAccount.agencyId,
