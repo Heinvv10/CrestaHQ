@@ -13,6 +13,7 @@ import {
   settleAfterCycle,
   toDate,
 } from "@/lib/server/recurring-invoice-cycle";
+import { chargeCycle } from "@/lib/server/recurring-auto-charge";
 import type {
   RecurringCycleOutcome,
   RecurringInvoiceDoc,
@@ -95,8 +96,8 @@ export async function runRecurringInvoiceSweep(
 }
 
 /**
- * One schedule's cycle: claim it, generate the invoice, send it, then update
- * arrears and completion.
+ * One schedule's cycle: claim it, generate the invoice, send it (or charge
+ * the saved card), then update arrears and completion.
  */
 export async function runOneSchedule(
   scheduleId: string,
@@ -110,7 +111,12 @@ export async function runOneSchedule(
     const invoiceId = await generateInvoice(schedule, now);
     let sent = false;
     if (!schedule.reviewFirst) {
-      sent = await sendGeneratedInvoice(schedule, invoiceId);
+      // A card cycle charges the saved card instead, and emails only when it
+      // cannot or the card is declined.
+      sent =
+        schedule.chargeMode === "card"
+          ? await chargeCycle(schedule, invoiceId, claim.cycle)
+          : await sendGeneratedInvoice(schedule, invoiceId);
     }
     await settleAfterCycle(schedule, invoiceId);
     return { kind: "generated", invoiceId, sent };
@@ -142,7 +148,8 @@ async function claimCycle(
   scheduleId: string,
   now: Date,
 ): Promise<
-  { ok: true; schedule: RecurringInvoiceDoc } | { ok: false; reason: string }
+  | { ok: true; schedule: RecurringInvoiceDoc; cycle: number }
+  | { ok: false; reason: string }
 > {
   const ref = schedulesCollection().doc(scheduleId);
   return getAdminDb().runTransaction(async (tx) => {
@@ -209,6 +216,7 @@ async function claimCycle(
       ...(finished ? { status: "completed" } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { ok: true as const, schedule };
+    // `cycle` numbers the auto-charge reference: one charge per cycle.
+    return { ok: true as const, schedule, cycle: cyclesGenerated };
   });
 }

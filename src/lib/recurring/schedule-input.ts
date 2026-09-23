@@ -6,9 +6,11 @@ import {
 } from "@/lib/recurring/cadence";
 import {
   fail,
+  hasBillableLineItem,
   parseCadence,
   parseEnding,
   parseLocalDate,
+  parseChargeMode,
   parseName,
   parseStatusChange,
   parseThreshold,
@@ -20,6 +22,7 @@ import {
   type QuoteTemplateInput,
 } from "@/lib/quotes/sanitize";
 import type {
+  RecurringChargeMode,
   RecurringInvoiceEndMode,
   RecurringInvoiceStatus,
 } from "@/types/recurring-invoices";
@@ -50,6 +53,7 @@ export interface ScheduleCreateFields {
   endAt: Date | null;
   maxCycles: number | null;
   reviewFirst: boolean;
+  chargeMode: RecurringChargeMode;
   unpaidEscalationThreshold: number;
   currency: string;
   lineItems: ReturnType<typeof sanitizeQuoteTemplate>["lineItems"];
@@ -73,6 +77,7 @@ export interface ScheduleInputBody extends QuoteTemplateInput {
   endDateString?: unknown;
   maxCycles?: unknown;
   reviewFirst?: unknown;
+  chargeMode?: unknown;
   unpaidEscalationThreshold?: unknown;
   status?: unknown;
   [key: string]: unknown;
@@ -114,6 +119,11 @@ export function parseScheduleCreate(
     return fail("Add at least one line item before saving the schedule.");
   }
 
+  const reviewFirst = body.reviewFirst === true;
+  const currency = template.currency ?? "USD";
+  const chargeMode = parseChargeMode(body.chargeMode, "invoice", { reviewFirst, currency });
+  if (!chargeMode.ok) return chargeMode;
+
   const nextRunAt = computeFirstRunAt({ startAt, cadence, anchorDay, timezone });
 
   // An end date the first cycle already sits past is a schedule that would be
@@ -134,9 +144,10 @@ export function parseScheduleCreate(
       endMode: ending.value.endMode,
       endAt: ending.value.endAt,
       maxCycles: ending.value.maxCycles,
-      reviewFirst: body.reviewFirst === true,
+      reviewFirst,
+      chargeMode: chargeMode.value,
       unpaidEscalationThreshold: parseThreshold(body.unpaidEscalationThreshold),
-      currency: template.currency ?? "USD",
+      currency,
       lineItems: template.lineItems,
       globalDiscount: template.globalDiscount ?? null,
       globalTaxPercent: template.globalTaxPercent ?? null,
@@ -158,6 +169,7 @@ export interface ScheduleUpdateFields {
   endAt?: Date | null;
   maxCycles?: number | null;
   reviewFirst?: boolean;
+  chargeMode?: RecurringChargeMode;
   unpaidEscalationThreshold?: number;
   currency?: string;
   lineItems?: ScheduleCreateFields["lineItems"];
@@ -185,6 +197,10 @@ export function parseScheduleUpdate(
     status: RecurringInvoiceStatus;
     /** The cycle the schedule is currently pointed at. */
     nextRunAt: Date | null;
+    /** Judged with `chargeMode`: a card cycle cannot wait for review, and is ZAR only. */
+    reviewFirst?: boolean;
+    currency?: string;
+    chargeMode?: RecurringChargeMode;
   },
   now: Date,
 ): ParseResult<ScheduleUpdateFields> {
@@ -274,26 +290,13 @@ export function parseScheduleUpdate(
   if (template.lineItems && !hasBillableLineItem(template.lineItems)) {
     return fail("A schedule must keep at least one line item.");
   }
+  const chargeMode = parseChargeMode(body.chargeMode, current.chargeMode ?? "invoice", {
+    reviewFirst: out.reviewFirst ?? current.reviewFirst ?? false,
+    currency: template.currency ?? current.currency ?? "",
+  });
+  if (!chargeMode.ok) return chargeMode;
+  if (body.chargeMode !== undefined) out.chargeMode = chargeMode.value;
   Object.assign(out, template);
 
   return { ok: true, value: out };
-}
-
-/**
- * Whether the template would actually invoice for something.
- *
- * A count of line items is not enough: the sanitiser turns `{}` into a valid
- * empty item, so an all-blank template passes a length check and then mails
- * the customer a nil invoice every cycle for as long as the schedule lives. A
- * hand-made invoice at least gets looked at once before it goes out.
- */
-function hasBillableLineItem(
-  items: ScheduleCreateFields["lineItems"] | undefined,
-): items is NonNullable<ScheduleCreateFields["lineItems"]> {
-  return (
-    !!items &&
-    items.some(
-      (item) => item.description.trim() !== "" || item.quantity * item.unitPrice > 0,
-    )
-  );
 }

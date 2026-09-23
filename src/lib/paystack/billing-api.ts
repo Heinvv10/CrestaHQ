@@ -323,6 +323,46 @@ export function verifyPaystackTransaction(
 }
 
 /**
+ * `POST /transaction/charge_authorization`'s `data`. `status` is the charge's
+ * own outcome — "success", "failed", or a pending/interactive state — even
+ * when the HTTP call succeeded. `gateway_response` is the bank's reason
+ * ("Declined", "Insufficient Funds").
+ */
+export interface PaystackChargeResult {
+  status: string;
+  reference?: string;
+  gateway_response?: string | null;
+  message?: string | null;
+}
+
+/**
+ * Charge a saved, reusable authorization, with the key of the account it was
+ * saved on. `amount` is the currency subunit (cents). The answer is NOT proof
+ * of payment: only the verified webhook records one.
+ */
+export function chargePaystackAuthorization(input: {
+  authorizationCode: string;
+  email: string;
+  amountCents: number;
+  currency: string;
+  reference: string;
+  secretKey: string;
+}): Promise<PaystackChargeResult> {
+  return paystackRequest<PaystackChargeResult>(
+    "POST",
+    "/transaction/charge_authorization",
+    {
+      authorization_code: input.authorizationCode,
+      email: input.email,
+      amount: input.amountCents,
+      currency: input.currency,
+      reference: input.reference,
+    },
+    input.secretKey,
+  );
+}
+
+/**
  * Clamp a renewal date forward to now. An unparseable date is treated as past
  * rather than passed through — the switch still happens, one cycle early at
  * worst, instead of failing outright and stranding the client.

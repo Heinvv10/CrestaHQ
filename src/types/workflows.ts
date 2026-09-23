@@ -47,7 +47,12 @@ export type WorkflowTriggerType =
   // Payments v1 — a card payment through the sub-account's OWN Stripe was
   // confirmed by Stripe. Sibling of quote.paid (which covers the manual
   // mark-paid path). Fired from lib/server/orders-service.ts.
-  | "order.paid";
+  | "order.paid"
+  // A recurring schedule charged its saved card: recorded by the verified
+  // webhook, or declined (the invoice was emailed instead). Fired from
+  // lib/server/recurring-auto-charge.ts and lib/paystack/auto-charge-reconciler.ts.
+  | "invoice.charge_succeeded"
+  | "invoice.charge_failed";
 
 /* ------------------------------ Conditions ----------------------------- */
 

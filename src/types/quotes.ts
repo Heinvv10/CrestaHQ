@@ -144,6 +144,8 @@ export interface Quote {
    * instead of reading it as "paid another way".
    */
   paidVia?: QuotePaidVia | null;
+  /** Set by a recurring card cycle. See `QuoteAutoCharge`. */
+  autoCharge?: QuoteAutoCharge | null;
 
   // ── Behaviour flags ──────────────────────────────────────────────
   /** When true, accepting the quote auto-creates a Deal at the "Won"
@@ -259,8 +261,22 @@ export interface QuoteRespondPayload {
 }
 
 /** See `Quote.paidVia`. */
-export interface QuotePaidVia {
-  rail: "paystack_link";
-  linkId: string;
+export type QuotePaidVia =
+  | { rail: "paystack_link"; linkId: string; reference: string }
+  /** A recurring schedule charged its saved card (W5). */
+  | { rail: "paystack_auto"; mandateId: string; reference: string };
+
+/**
+ * A recurring card cycle's charge, for the operator: `pending` until the
+ * webhook records it, `unknown` when Paystack gave no answer (check the
+ * reference before re-billing), `declined` (the invoice was emailed instead),
+ * `paid`, or `needs_attention` — money arrived but could not be recorded
+ * against this invoice (`reason` says why). Informational only: nothing
+ * decides a payment from it.
+ */
+export interface QuoteAutoCharge {
   reference: string;
+  mandateId: string;
+  state: "pending" | "unknown" | "declined" | "paid" | "needs_attention";
+  reason: string | null;
 }

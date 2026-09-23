@@ -1,6 +1,9 @@
 import { utcFromWallClock } from "@/lib/booking/availability";
 import { computeFirstRunAt, type CadenceUnit } from "@/lib/recurring/cadence";
-import type { RecurringInvoiceEndMode } from "@/types/recurring-invoices";
+import type {
+  RecurringChargeMode,
+  RecurringInvoiceEndMode,
+} from "@/types/recurring-invoices";
 
 /**
  * The cadence form's own shape, and the pure functions around it: what a
@@ -22,6 +25,7 @@ export interface ScheduleFormValues {
   endDateString: string;
   maxCycles: number;
   reviewFirst: boolean;
+  chargeMode: RecurringChargeMode;
   unpaidEscalationThreshold: number;
 }
 
@@ -36,6 +40,7 @@ export function defaultScheduleValues(timezone: string): ScheduleFormValues {
     endDateString: "",
     maxCycles: 12,
     reviewFirst: false,
+    chargeMode: "invoice",
     unpaidEscalationThreshold: 2,
   };
 }
@@ -98,6 +103,7 @@ export function schedulePayload(schedule: ScheduleFormValues) {
     endDateString: schedule.endDateString || null,
     maxCycles: schedule.maxCycles,
     reviewFirst: schedule.reviewFirst,
+    chargeMode: schedule.chargeMode,
     unpaidEscalationThreshold: schedule.unpaidEscalationThreshold,
   };
 }
