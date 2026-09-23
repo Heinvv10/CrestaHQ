@@ -11,7 +11,13 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  */
 
 const mem = createMemoryFirestore();
-vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
+let txDown = false;
+const db = {
+  ...mem.db,
+  runTransaction: (fn: Parameters<typeof mem.db.runTransaction>[0]) =>
+    txDown ? Promise.reject(new Error("10 ABORTED: contention")) : mem.db.runTransaction(fn),
+};
+vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => db }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => true,
@@ -40,7 +46,10 @@ const fire = () =>
     contactId: "c1", context: { channel: "whatsapp" },
   });
 
-beforeEach(() => mem.clear());
+beforeEach(() => {
+  mem.clear();
+  txDown = false;
+});
 
 describe("re-entry under concurrent triggers", () => {
   it("unless_active: three simultaneous messages enrol the contact once", async () => {
@@ -72,5 +81,13 @@ describe("re-entry under concurrent triggers", () => {
     seed("every_time");
     await Promise.all([fire(), fire()]);
     expect(mem.list("workflowRuns")).toHaveLength(2);
+  });
+
+  it("a failed re-entry transaction is reported as such and enrols nobody", async () => {
+    seed("unless_active");
+    txDown = true;
+    const outcome = await fire();
+    expect(outcome.skipped).toEqual([{ workflowId: "wf1", reason: "reentry_check_failed" }]);
+    expect(mem.list("workflowRuns")).toHaveLength(0);
   });
 });

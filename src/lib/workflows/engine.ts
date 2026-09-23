@@ -1159,6 +1159,8 @@ export type EnrolSkipReason =
   | "trigger_mismatch"
   | "filters_not_met"
   | "reentry_blocked"
+  /** The re-entry transaction errored; not enrolled (fails closed). */
+  | "reentry_check_failed"
   | "no_start_node";
 
 /**
@@ -1290,8 +1292,8 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         continue;
       }
       const run = await enroll(wf, contact.id, input.context ?? {}, true);
-      if (!run) {
-        skip("reentry_blocked");
+      if (typeof run === "string") {
+        skip(run);
         continue;
       }
       outcome.enrolled.push({ workflowId: wf.id, ...run });
@@ -1338,7 +1340,7 @@ async function createRunUnlessBlocked(
   policy: "unless_active" | "once_ever",
   runRef: FirebaseFirestore.DocumentReference,
   runData: Record<string, unknown>
-): Promise<boolean> {
+): Promise<"created" | "reentry_blocked" | "reentry_check_failed"> {
   const db = getAdminDb();
   const lockRef = db.doc(`workflowEnrolmentLocks/${wf.id}_${contactId}`);
   try {
@@ -1351,7 +1353,7 @@ async function createRunUnlessBlocked(
           .where("contactId", "==", contactId)
       );
       if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) {
-        return false;
+        return "reentry_blocked" as const;
       }
       tx.set(lockRef, {
         workflowId: wf.id,
@@ -1362,22 +1364,24 @@ async function createRunUnlessBlocked(
         updatedAt: FieldValue.serverTimestamp(),
       });
       tx.set(runRef, runData);
-      return true;
+      return "created" as const;
     });
   } catch (err) {
     console.error("[workflows] re-entry transaction failed — not enrolling", err);
-    return false;
+    return "reentry_check_failed";
   }
 }
 
 /** `applyReentry` = enforce the workflow's re-enrollment policy (test
- *  enrolments bypass it). Returns null when the policy blocked the contact. */
+ *  enrolments bypass it). Returns the skip reason when not enrolled. */
 async function enroll(
   wf: WorkflowDoc,
   contactId: string,
   context: Record<string, unknown>,
   applyReentry = false
-): Promise<{ runId: string; status: "running" | "failed" } | null> {
+): Promise<
+  { runId: string; status: "running" | "failed" } | "reentry_blocked" | "reentry_check_failed"
+> {
   const db = getAdminDb();
   const runRef = db.collection("workflowRuns").doc();
   const runData = {
@@ -1397,8 +1401,9 @@ async function enroll(
   const policy = applyReentry ? (wf.reentry ?? "every_time") : "every_time";
   if (policy === "every_time") {
     await runRef.set(runData);
-  } else if (!(await createRunUnlessBlocked(wf, contactId, policy, runRef, runData))) {
-    return null;
+  } else {
+    const created = await createRunUnlessBlocked(wf, contactId, policy, runRef, runData);
+    if (created !== "created") return created;
   }
   await db
     .doc(`workflows/${wf.id}`)
@@ -1429,7 +1434,8 @@ async function enroll(
 
 /* ------------------------------ Run worker ----------------------------- */
 
-/** Returns false when the step could not be published (run marked failed). */
+/** Returns false when the step was not published: the run is no longer live
+ *  (nothing written), or the publish failed (run marked failed). */
 async function scheduleNode(
   runRef: FirebaseFirestore.DocumentReference,
   nodeId: string,
@@ -1440,11 +1446,20 @@ async function scheduleNode(
   // State BEFORE the publish: an immediate step can be delivered and finish
   // before publishCallback returns, and a write after it would drag a run that
   // step parked ("waiting" on a reply) or finished ("completed") back here.
-  await runRef.update({
-    currentNodeId: nodeId,
-    status: delaySeconds > 0 ? "waiting" : "running",
-    updatedAt: FieldValue.serverTimestamp(),
+  // Conditional: a run failed meanwhile (the step route's final retry) or
+  // otherwise ended is never resurrected, and nothing more is published.
+  const live = await getAdminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(runRef);
+    const status = (snap.data() as WorkflowRunDoc | undefined)?.status;
+    if (status !== "running" && status !== "waiting") return false;
+    tx.update(runRef, {
+      currentNodeId: nodeId,
+      status: delaySeconds > 0 ? "waiting" : "running",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return true;
   });
+  if (!live) return false;
   const res = await publishCallback({
     pathname: STEP_PATH,
     body: { runId: runRef.id, nodeId },
@@ -1632,7 +1647,12 @@ export async function runStep(
   const run = runSnap.data() as WorkflowRunDoc;
 
   if (run.status !== "running" && run.status !== "waiting") return;
-  if (run.history.some((h) => h.nodeId === nodeId)) return; // QStash retry
+  const done = run.history.find((h) => h.nodeId === nodeId);
+  if (done) {
+    // QStash retry. The step ran; make sure what came after it happened too.
+    await redriveAfter(runRef, run, done);
+    return;
+  }
 
   const wfSnap = await db.doc(`workflows/${run.workflowId}`).get();
   if (!wfSnap.exists) {
@@ -1717,12 +1737,42 @@ export async function runStep(
     runId,
     triggerContext: run.context ?? {},
   };
-  const { result, log } = await exec(stepCtx);
+  let executed: Awaited<ReturnType<NodeExecutor>>;
+  try {
+    executed = await exec(stepCtx);
+  } catch (err) {
+    // Thrown before any provider call (`sent` is set just before one): nothing
+    // went out, so release the claim and let QStash retry normally. Once a
+    // provider call has started the claim stays — at most once.
+    if (atMostOnce && !stepCtx.sent) {
+      await runRef.update({ stepClaim: null }).catch((releaseErr: unknown) =>
+        console.error("[workflows] step claim release failed", releaseErr)
+      );
+    }
+    throw err;
+  }
+  const { result, log } = executed;
+
+  // Where control goes next, decided now and kept on the history entry, so a
+  // redelivery that finds this step done can re-drive a next step that was
+  // never scheduled (redriveAfter). A failed step has nowhere to go.
+  let target: string | null = null;
+  let delay = 0;
+  if (result.kind === "branch") {
+    const b = node.branches;
+    target = (result.value ? b?.whenTrue : b?.whenFalse) ?? null;
+  } else if (result.kind === "wait") {
+    target = node.next ?? null;
+    delay = result.seconds;
+  } else if (result.kind === "next") {
+    target = node.next ?? null;
+  }
   const entry: WorkflowRunHistoryEntry = {
     nodeId,
     type: node.type,
     at: Timestamp.now(),
     result: log,
+    ...(result.kind === "fail" ? {} : { advance: { to: target, delaySeconds: delay } }),
   };
   await runRef.update({
     history: FieldValue.arrayUnion(entry),
@@ -1753,12 +1803,7 @@ export async function runStep(
   }
 
   // Advance control flow.
-  let target: string | null = null;
-  let delay = 0;
-  if (result.kind === "end") {
-    await completeRun(runRef, run, wf);
-    return;
-  } else if (result.kind === "fail") {
+  if (result.kind === "fail") {
     await runRef.update({
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),
@@ -1770,21 +1815,42 @@ export async function runStep(
       `the ${node.type} step failed (${log})`
     );
     return;
-  } else if (result.kind === "branch") {
-    const b = node.branches;
-    target = (result.value ? b?.whenTrue : b?.whenFalse) ?? null;
-  } else if (result.kind === "wait") {
-    target = node.next ?? null;
-    delay = result.seconds;
-  } else {
-    target = node.next ?? null;
   }
-
   if (!target) {
     await completeRun(runRef, run, wf);
     return;
   }
   await scheduleNode(runRef, target, delay, run, wf);
+}
+
+/**
+ * A redelivery of a step that is already in history. Normally a no-op; but if
+ * the delivery that recorded it died before the next step was scheduled (the
+ * pre-publish write threw, or the process stopped), the run would sit "running"
+ * forever. Re-drive it — only while the run still points at this step or its
+ * unrecorded successor, is not parked on a reply, and that successor is not
+ * mid-send. The publish's deduplication id, the step worker's history guard and
+ * the send claim make a re-drive of a step that WAS scheduled harmless.
+ */
+async function redriveAfter(
+  runRef: FirebaseFirestore.DocumentReference,
+  run: WorkflowRunDoc,
+  entry: WorkflowRunHistoryEntry
+): Promise<void> {
+  const adv = entry.advance;
+  if (!adv || run.waiting) return;
+  if (run.currentNodeId !== entry.nodeId && run.currentNodeId !== adv.to) return;
+  if (adv.to && run.history.some((h) => h.nodeId === adv.to)) return;
+  if (adv.to && run.stepClaim?.nodeId === adv.to) return;
+  const wfSnap = await getAdminDb().doc(`workflows/${run.workflowId}`).get();
+  const wf = wfSnap.exists ? (wfSnap.data() as WorkflowDoc) : null;
+  if (!adv.to) {
+    await completeRun(runRef, run, wf);
+    return;
+  }
+  const at = (entry.at as Timestamp | null)?.toMillis?.() ?? Date.now();
+  const remaining = Math.max(0, adv.delaySeconds - Math.floor((Date.now() - at) / 1000));
+  await scheduleNode(runRef, adv.to, remaining, run, wf);
 }
 
 /* --------------------------- wait_for_reply ---------------------------- */
@@ -1869,6 +1935,7 @@ async function stepWaitForReply(
       type: node.type,
       at: Timestamp.now(),
       result: "timeout",
+      advance: { to: node.branches?.whenFalse ?? null, delaySeconds: 0 },
     };
     tx.update(runRef, {
       waiting: null,

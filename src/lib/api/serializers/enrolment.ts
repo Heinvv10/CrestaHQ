@@ -57,6 +57,7 @@ export function describeEnrolment(input: {
     if (runs.length > 0) return "run_failed";
     if (t.reason === "automations_paused") return "automations_paused";
     if (t.reason === "error" || t.reason === "contact_not_found") return "error";
+    if (skipped.some((s) => s.reason === "reentry_check_failed")) return "error";
     if (skipped.some((s) => s.reason === "reentry_blocked")) return "reentry_blocked";
     if (skipped.some((s) => s.reason === "filters_not_met")) return "filters_not_met";
     return "no_matching_workflow";

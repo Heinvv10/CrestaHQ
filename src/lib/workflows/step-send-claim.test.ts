@@ -13,7 +13,10 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 const mem = createMemoryFirestore();
 let failNextRunUpdate = false;
+let readinessThrows = false;
 const dispatchWhatsappSend = vi.fn();
+const publishCallback = vi.fn();
+const providerAttempted = vi.fn();
 
 // The run doc's `update` can be made to fail once — the "history write failed
 // after the send" case. Everything else is the plain in-memory store.
@@ -45,17 +48,26 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => db }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => true,
-  publishCallback: async () => ({ messageId: "q1" }),
+  publishCallback: (...a: unknown[]) => publishCallback(...a),
+}));
+vi.mock("@/lib/comms/provider-attempt", () => ({
+  providerAttempted: (...a: unknown[]) => providerAttempted(...a),
 }));
 vi.mock("@/lib/comms/whatsapp/send-dispatch", () => ({
   dispatchWhatsappSend: (...a: unknown[]) => dispatchWhatsappSend(...a),
 }));
 vi.mock("@/lib/comms/whatsapp/readiness", () => ({
-  checkWhatsappReadiness: async () => ({
+  checkWhatsappReadiness: async () => {
+    if (readinessThrows) {
+      readinessThrows = false;
+      throw new Error("14 UNAVAILABLE: readiness read failed");
+    }
+    return {
     ready: true,
     provider: "bridge",
     sender: { phoneNumber: "+27110000000" },
-  }),
+    };
+  },
 }));
 vi.mock("@/lib/server/conversations-service", () => ({
   upsertConversationForMessage: async () => undefined,
@@ -66,6 +78,9 @@ const { enrollForTest, runStep, failRunAfterFinalRetry } = await import("./engin
 beforeEach(() => {
   mem.clear();
   failNextRunUpdate = false;
+  readinessThrows = false;
+  publishCallback.mockReset().mockResolvedValue({ messageId: "q1" });
+  providerAttempted.mockReset().mockReturnValue(true);
   dispatchWhatsappSend.mockReset().mockResolvedValue({ ok: true, messageId: "wamid1", sentAs: "text" });
   mem.seed("agencies/ag1", { ownerUid: "u_owner", name: "Agency" });
   mem.seed("users/u_owner", { displayName: "Owner", email: "owner@example.com" });
@@ -129,5 +144,49 @@ describe("send step claim", () => {
     const run = mem.read(`workflowRuns/${runId}`);
     expect(run?.status).toBe("completed");
     expect(run?.stepClaim ?? null).toBeNull();
+  });
+
+  it("a throw BEFORE any provider call releases the claim, so the retry sends", async () => {
+    const runId = await enrolled();
+    readinessThrows = true;
+    await expect(runStep(runId, "n1")).rejects.toThrow(/readiness/);
+    expect(dispatchWhatsappSend).not.toHaveBeenCalled();
+    expect(mem.read(`workflowRuns/${runId}`)?.stepClaim ?? null).toBeNull();
+
+    await runStep(runId, "n1");
+    expect(dispatchWhatsappSend).toHaveBeenCalledTimes(1);
+    expect(mem.read(`workflowRuns/${runId}`)?.status).toBe("completed");
+  });
+
+  it("a throw AFTER the provider call started keeps the claim — never re-sent", async () => {
+    const runId = await enrolled();
+    dispatchWhatsappSend.mockRejectedValueOnce(new Error("socket hang up"));
+    providerAttempted.mockImplementationOnce(() => {
+      throw new Error("classifier blew up");
+    });
+    await expect(runStep(runId, "n1")).rejects.toThrow(/classifier/);
+    expect(mem.read(`workflowRuns/${runId}`)?.stepClaim).toMatchObject({ nodeId: "n1", state: "sending" });
+
+    await expect(runStep(runId, "n1")).rejects.toThrow(/claimed/);
+    expect(dispatchWhatsappSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("a run failed mid-send by the final retry is not resurrected by the finishing delivery", async () => {
+    mem.seed("workflows/wf1", {
+      ...mem.read("workflows/wf1"),
+      nodes: {
+        n1: { id: "n1", type: "send_whatsapp", config: { body: "Hi" }, next: "n2" },
+        n2: { id: "n2", type: "add_tag", config: { tag: "x" }, next: null },
+      },
+    });
+    const runId = await enrolled();
+    dispatchWhatsappSend.mockImplementationOnce(async () => {
+      await failRunAfterFinalRetry(runId, "n1", new Error("step n1 is already claimed"));
+      return { ok: true, messageId: "wamid1", sentAs: "text" };
+    });
+    await runStep(runId, "n1");
+    expect(mem.read(`workflowRuns/${runId}`)?.status).toBe("failed");
+    const published = publishCallback.mock.calls.map((c) => (c[0] as { body: { nodeId: string } }).body.nodeId);
+    expect(published).toEqual(["n1"]);
   });
 });

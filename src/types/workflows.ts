@@ -201,6 +201,12 @@ export interface WorkflowRunHistoryEntry {
    * "replied:<channel>" | "timeout".
    */
   result: string;
+  /**
+   * Where control went after this step (`to: null` = the run ends), so a
+   * redelivery can re-drive a next step that was never scheduled. Absent on
+   * failed steps, reply-resolved waits and entries written before it existed.
+   */
+  advance?: { to: string | null; delaySeconds: number };
 }
 
 /**

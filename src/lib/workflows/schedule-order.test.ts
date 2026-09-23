@@ -11,17 +11,20 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  */
 
 const mem = createMemoryFirestore();
+const publishes: Array<{ retries?: number; body: { phase?: string } }> = [];
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => true,
-  publishCallback: async (input: { body: { runId: string; nodeId: string; phase?: string } }) => {
+  publishCallback: async (input: { retries?: number; body: { runId: string; nodeId: string; phase?: string } }) => {
+    publishes.push(input);
     if (!input.body.phase) await runStep(input.body.runId, input.body.nodeId);
     return { messageId: `q_${input.body.nodeId}` };
   },
 }));
 
-const { enrollForTest, runStep, resumeWaitingRunsOnReply } = await import("./engine");
+const { enrollForTest, runStep, resumeWaitingRunsOnReply, WORKFLOW_STEP_RETRIES } =
+  await import("./engine");
 
 function seed(nodes: Record<string, unknown>) {
   mem.seed("agencies/ag1", { ownerUid: "u_owner", name: "Agency" });
@@ -37,7 +40,10 @@ function seed(nodes: Record<string, unknown>) {
   });
 }
 
-beforeEach(() => mem.clear());
+beforeEach(() => {
+  mem.clear();
+  publishes.length = 0;
+});
 
 const run = () =>
   mem.list("workflowRuns")[0] as unknown as {
@@ -70,6 +76,13 @@ describe("run state vs. an immediately delivered next step", () => {
     await enrollForTest({ subAccountId: "sa1", workflowId: "wf1", contactId: "c1" });
     expect(run().status).toBe("waiting");
     expect(run().currentNodeId).toBe("n2");
+    // Every step publish — the reply timeout included — carries the retry
+    // budget the step route's final-delivery check is measured against.
+    expect(publishes.map((p) => [p.body.phase ?? "step", p.retries])).toEqual([
+      ["step", WORKFLOW_STEP_RETRIES],
+      ["step", WORKFLOW_STEP_RETRIES],
+      ["timeout", WORKFLOW_STEP_RETRIES],
+    ]);
 
     const resumed = await resumeWaitingRunsOnReply({
       subAccountId: "sa1", contactId: "c1", channel: "whatsapp", text: "hi",
