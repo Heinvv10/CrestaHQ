@@ -67,10 +67,14 @@ export function TaskItem({ task, contact, onClick }: TaskItemProps) {
   const [toggling, setToggling] = useState(false);
   // Read "now" after mount, not during render: the server and the client's
   // first paint must agree, and only a hydrated client actually knows the
-  // current time. A stale badge for a few seconds beats a hydration
-  // mismatch every render.
+  // current time. Refreshed every minute so a long-lived tab still flips
+  // Today → Overdue without a remount.
   const [now, setNow] = useState<Date | null>(null);
-  useEffect(() => setNow(new Date()), []);
+  useEffect(() => {
+    setNow(new Date());
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   async function toggleComplete() {
     if (toggling) return;

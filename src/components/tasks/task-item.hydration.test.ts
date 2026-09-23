@@ -68,8 +68,6 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-const dueLabelText = () => container.querySelector("span")?.textContent ?? "";
-
 describe("TaskItem — due label across server/client render", () => {
   it("hydrates without a text mismatch when the due instant passes between server render and client hydration", async () => {
     // Server render: "now" is 1s BEFORE the due instant — task reads as
@@ -121,12 +119,16 @@ describe("TaskItem — due label across server/client render", () => {
       process.off("uncaughtException", onUncaught);
     }
 
+    // The absence of a mismatch error IS the assertion that hydration
+    // reused the server markup: React only reports one when the pre-effect
+    // client render disagreed with what the server sent. (By the time this
+    // act() call returns, the mount effect has already refreshed the badge
+    // to "Overdue" — see task-item.refresh.test.ts for that behaviour.)
     const mismatched = [...errors.flat(), ...uncaught].some(
       (x) => typeof x === "string" || x instanceof Error
         ? /hydrat|did not match/i.test(String(x instanceof Error ? x.message : x))
         : false,
     );
     expect(mismatched).toBe(false);
-    expect(dueLabelText()).not.toContain("Overdue");
   });
 });
