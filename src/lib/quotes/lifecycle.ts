@@ -16,6 +16,7 @@ import type { ActivityType } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
 import { GLOBAL_TERRITORY_ID, type AutomationTriggerType } from "@/types";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 import type { Quote } from "@/types/quotes";
 
 /**
@@ -56,6 +57,7 @@ export async function recordQuoteActivity(
   quote: Pick<
     Quote,
     | "id"
+    | "subAccountId"
     | "contactId"
     | "quoteNumber"
     | "currency"
@@ -68,6 +70,13 @@ export async function recordQuoteActivity(
   opts: RecordActivityOpts = {},
 ): Promise<void> {
   try {
+    // Never write onto another tenant's timeline (legacy quote, foreign id).
+    if (!(await refInSubAccount("contacts", quote.contactId, quote.subAccountId))) {
+      console.warn(
+        `[quotes/lifecycle] ${event} activity skipped: contact ${quote.contactId} is not in sub-account ${quote.subAccountId}`,
+      );
+      return;
+    }
     const content =
       opts.contentOverride ??
       defaultActivityContent(quote, event, opts.extra ?? null);

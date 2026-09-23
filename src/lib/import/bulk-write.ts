@@ -116,6 +116,7 @@ export async function writeImportChunk(
   const recExt: (string | null)[] = [];
   const recContactExt: (string | null)[] = [];
   const keys = new Set<string>();
+  const explicitContactIds = new Set<string>();
   for (const raw of records) {
     const r = (raw ?? {}) as Record<string, unknown>;
     const ext = str(r.external_id);
@@ -124,6 +125,17 @@ export async function writeImportChunk(
     recContactExt.push(cext);
     if (ext) keys.add(mappingKey(source, entity, ext));
     if (cext) keys.add(mappingKey(source, "contacts", cext));
+    const cid = str(r.contact_id);
+    if (cid && entity !== "contacts" && !cid.includes("/")) explicitContactIds.add(cid);
+  }
+  // An explicit `contact_id` must name a contact in THIS sub-account — the
+  // mapping path is already scoped, a raw id is not.
+  const ownContactIds = new Set<string>();
+  if (explicitContactIds.size > 0) {
+    const cRefs = [...explicitContactIds].map((id) => db.collection("contacts").doc(id));
+    for (const s of await db.getAll(...cRefs)) {
+      if (s.exists && s.data()?.subAccountId === subAccountId) ownContactIds.add(s.id);
+    }
   }
   const existing = new Map<string, ImportMappingDoc>();
   const keyList = [...keys];
@@ -164,6 +176,10 @@ export async function writeImportChunk(
     try {
       // Resolve parent contact (explicit id wins, else via mapping).
       let contactId = str(raw.contact_id);
+      if (contactId && entity !== "contacts" && !ownContactIds.has(contactId)) {
+        fail(result, entity, externalId, "contact_id did not resolve to a contact");
+        continue;
+      }
       if (!contactId && contactExt) {
         contactId =
           existing.get(mappingKey(source, "contacts", contactExt))

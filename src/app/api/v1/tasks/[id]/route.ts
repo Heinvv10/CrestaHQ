@@ -9,6 +9,7 @@ import {
   parseTaskPatch,
   serializeTaskForApi,
 } from "@/lib/api/serializers/tasks";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   const snap = await getAdminDb().doc(`tasks/${params.id}`).get();
@@ -36,6 +37,17 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   const existing = snap.data()!;
   if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "task_not_found", "Task not found.");
+  }
+
+  // A re-link must name a record in this key's sub-account + mode, as on create.
+  for (const [collection, id, code] of [
+    ["contacts", patch.contactId, "contact_not_found"],
+    ["deals", patch.dealId, "deal_not_found"],
+    ["events", patch.eventId, "event_not_found"],
+  ] as const) {
+    if (id && !(await refInSubAccount(collection, id, ctx.subAccountId, ctx.mode))) {
+      return apiError(ctx, "not_found", code, "Linked record not found.");
+    }
   }
 
   const wasCompleted = !!existing.completed;
