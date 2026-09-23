@@ -24,7 +24,7 @@ const db = Object.assign(mem.db, {
   },
 }) as unknown as Firestore;
 
-const scope = { agencyId: "ag1", createdByUid: "owner" };
+const scope = { agencyId: "ag1", createdByUid: "owner", templateId: "tpl1" };
 
 const workflowPayload = (): SnapshotPayload => ({
   forms: [

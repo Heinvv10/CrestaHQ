@@ -8,6 +8,9 @@ import type { TemplatePushResult } from "@/types/templates";
 interface PushScope {
   agencyId: string;
   createdByUid: string;
+  /** The template's id — doubles as `applySnapshot`'s dedupe key so a retry
+   *  overwrites rather than duplicates (see ApplyScope.snapshotId). */
+  templateId: string;
 }
 
 /**
@@ -41,7 +44,11 @@ export async function pushTemplate(
       continue;
     }
     try {
-      const r = await applySnapshot(db, payload, subAccountId, scope);
+      const r = await applySnapshot(db, payload, subAccountId, {
+        agencyId: scope.agencyId,
+        createdByUid: scope.createdByUid,
+        snapshotId: scope.templateId,
+      });
       results.push({
         subAccountId,
         ok: true,

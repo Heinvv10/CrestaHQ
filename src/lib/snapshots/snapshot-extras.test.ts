@@ -39,6 +39,11 @@ function fakeDb(seed: {
         const data = seed.docs?.[path];
         return { exists: data !== undefined, data: () => data };
       },
+      // Only `applySnapshot`'s own status doc (snapshotApplies/*) writes via
+      // this path outside a transaction; record it like the batch does.
+      set: async (data: Record<string, unknown>) => {
+        written.push({ path, data });
+      },
     }),
     batch: () => ({
       set: (ref: { path: string }, data: Record<string, unknown>) => {
@@ -166,7 +171,7 @@ describe("captureSnapshot — AI persona", () => {
 });
 
 describe("applySnapshot — create-only guarantees", () => {
-  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const scope = { agencyId: "ag_1", createdByUid: "u_1", snapshotId: "snap_1" };
 
   it("never overwrites a persona the target already tuned", async () => {
     // The bug this guards: aiAgent/profile is a FIXED path, so a plain write
@@ -283,7 +288,7 @@ describe("applySnapshot — create-only guarantees", () => {
 });
 
 describe("applySnapshot — pipeline ids do not cross sub-accounts", () => {
-  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const scope = { agencyId: "ag_1", createdByUid: "u_1", snapshotId: "snap_1" };
 
   it("nulls trigger.pipelineId and move_stage.config.pipelineId, keeps the stage", async () => {
     const { db, written } = fakeDb({ collections: {}, docs: {} });
@@ -328,7 +333,7 @@ describe("applySnapshot — pipeline ids do not cross sub-accounts", () => {
 });
 
 describe("applySnapshot — task assignees do not cross sub-accounts", () => {
-  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const scope = { agencyId: "ag_1", createdByUid: "u_1", snapshotId: "snap_1" };
 
   it("nulls create_task.config.assignedToUid, keeps the rest of the step", async () => {
     const { db, written } = fakeDb({ collections: {}, docs: {} });
@@ -369,7 +374,7 @@ describe("applySnapshot — task assignees do not cross sub-accounts", () => {
 });
 
 describe("applySnapshot — outbound destinations do not cross sub-accounts", () => {
-  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const scope = { agencyId: "ag_1", createdByUid: "u_1", snapshotId: "snap_1" };
   const applyNodes = async (nodes: Record<string, unknown>) => {
     const { db, written } = fakeDb({ collections: {}, docs: {} });
     await applySnapshot(
@@ -431,7 +436,7 @@ describe("applySnapshot — outbound destinations do not cross sub-accounts", ()
 });
 
 describe("applySnapshot — booking page slugs do not cross sub-accounts", () => {
-  const scope = { agencyId: "ag_1", createdByUid: "u_1" };
+  const scope = { agencyId: "ag_1", createdByUid: "u_1", snapshotId: "snap_1" };
 
   it("nulls trigger.bookingPageSlug on a booking.* trigger", async () => {
     const { db, written } = fakeDb({ collections: {}, docs: {} });
