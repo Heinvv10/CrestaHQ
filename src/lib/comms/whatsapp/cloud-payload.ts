@@ -264,6 +264,14 @@ function parseMessage(
 export interface CloudStatus {
   providerMessageId: string;
   status: string;
+  /** The receiving number's Meta id from this receipt's own `value` block —
+   *  the routing key, as for inbound messages. */
+  phoneNumberId?: string;
+  /** The customer's number, bare digits as Meta sends it. */
+  recipientId?: string;
+  /** First entry of `errors` on a failed receipt (e.g. 131047). */
+  errorCode?: string;
+  errorTitle?: string;
 }
 
 /** Delivery receipts. Partial entries are dropped — a status with no message
@@ -275,7 +283,18 @@ export function parseCloudStatuses(payload: unknown): CloudStatus[] {
       const s = asObject(raw);
       const id = typeof s?.id === "string" ? s.id.trim() : "";
       const status = typeof s?.status === "string" ? s.status.trim() : "";
-      if (id && status) out.push({ providerMessageId: id, status });
+      if (!id || !status) continue;
+      const err = asObject(asArray(s?.errors)[0]);
+      const code = err?.code;
+      out.push({
+        providerMessageId: id,
+        status,
+        phoneNumberId: phoneNumberIdOf(value) || undefined,
+        recipientId: str(s?.recipient_id) || undefined,
+        errorCode:
+          typeof code === "number" || typeof code === "string" ? String(code) : undefined,
+        errorTitle: str(err?.title) || undefined,
+      });
     }
   }
   return out;
