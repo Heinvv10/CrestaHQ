@@ -18,6 +18,7 @@
  * feat/workflow-task-assignee-deal-stage).
  */
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
+import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
 
 export type DealEnv = {
   LEADSTACK_API_URL: string;
@@ -41,7 +42,7 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
   return async ({ contactId, caseId, title }) => {
     const listRes = await fetchImpl(
       `${env.LEADSTACK_API_URL}/api/v1/deals?contact_id=${encodeURIComponent(contactId)}`,
-      { headers: { Authorization: `Bearer ${env.LEADSTACK_API_KEY}` } },
+      { headers: { Authorization: `Bearer ${env.LEADSTACK_API_KEY}` }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
     );
     if (!listRes.ok) {
       return { ok: false, error: `HTTP ${listRes.status} listing deals: ${(await listRes.text()).slice(0, 300)}` };
@@ -72,6 +73,7 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
         "Idempotency-Key": dedupedIdempotencyKey(`qcontact-deal-${caseId}`, body),
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!createRes.ok) {
       return { ok: false, error: `HTTP ${createRes.status} creating deal: ${(await createRes.text()).slice(0, 300)}` };

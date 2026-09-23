@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leadstackUpserter, loadState, runImport, saveState, type Env } from "./run.ts";
+import { acquireLock, leadstackUpserter, loadState, runImport, saveState, type Env } from "./run.ts";
 import type { CaseDetail, CaseRow, ContactDetail } from "./qcontact.ts";
 import type { UpsertBody } from "./map.ts";
 import type { DealEnsurer } from "./deals.ts";
@@ -265,6 +265,7 @@ describe("leadstackUpserter", () => {
       "Idempotency-Key": expect.stringMatching(/^qcontact-case-42-[0-9a-f]{12}$/),
     });
     expect(JSON.parse(init.body as string)).toEqual(body);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("gives the same idempotency key for the same body and a different one when the body changes", async () => {
@@ -427,5 +428,64 @@ describe("runImport with syncStage", () => {
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("logs the distinct QContact statuses of cases with no recorded deal id, not just a count", async () => {
+    await seedState({}, {}, [1, 2, 3]); // none of the seen cases have a deal recorded
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
+    const lines: string[] = [];
+    const s = await runImport({
+      qc: fakeQc([
+        row(1, "2026-09-01", "Solved"),
+        row(2, "2026-09-02", "Solved"),
+        row(3, "2026-09-03", "In Progress"),
+      ]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log: (l) => lines.push(l),
+    });
+    expect(s.stageUnmapped).toBe(3);
+    const summaryLine = lines.find((l) => l.startsWith("stage sync:"));
+    expect(summaryLine).toContain("3 case(s) have no recorded deal id");
+    expect(summaryLine).toContain("In Progress");
+    expect(summaryLine).toContain("Solved");
+  });
+});
+
+describe("acquireLock", () => {
+  let lockPath: string;
+  beforeEach(() => {
+    lockPath = join(dir, "state.json.lock");
+  });
+
+  it("acquires a fresh lock and the release function removes the lock file", async () => {
+    const release = await acquireLock(lockPath);
+    expect(release).not.toBeNull();
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid));
+    await release!();
+    await expect(readFile(lockPath, "utf8")).rejects.toThrow();
+  });
+
+  it("refuses to acquire when the lock is held by a live process", async () => {
+    // process.pid is always alive from this process's own point of view.
+    await writeFile(lockPath, String(process.pid));
+    const release = await acquireLock(lockPath);
+    expect(release).toBeNull();
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid)); // untouched
+  });
+
+  it("clears a stale lock (owning PID is gone) and acquires it", async () => {
+    // PID 999999999 is out of range / essentially guaranteed not to exist.
+    await writeFile(lockPath, "999999999");
+    const release = await acquireLock(lockPath);
+    expect(release).not.toBeNull();
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid));
+    await release!();
+  });
+
+  it("treats an unparsable lock file as stale and replaces it", async () => {
+    await writeFile(lockPath, "not-a-pid");
+    const release = await acquireLock(lockPath);
+    expect(release).not.toBeNull();
+    await release!();
   });
 });

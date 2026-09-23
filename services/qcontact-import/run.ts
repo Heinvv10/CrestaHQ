@@ -15,12 +15,13 @@
  * once it has an open deal in that pipeline (see deals.ts) — a failed deal
  * step retries next run too, same as a failed upsert.
  */
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename, unlink, open } from "node:fs/promises";
 import { QContactClient, type CaseRow, type LocationDetail } from "./qcontact.ts";
 import { gpsFromLocationFields, locationPinId, mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
 import { leadstackStageSyncer, statusToStageId, type StageSyncer } from "./stage-sync.ts";
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
+import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
 
 export type Env = {
   QCONTACT_BASE_URL: string;
@@ -113,6 +114,52 @@ export async function saveState(path: string, state: State): Promise<void> {
   await rename(tmp, path);
 }
 
+/**
+ * Exclusive run lock at `${statePath}.lock`, written via O_EXCL so two
+ * concurrent invocations can't both proceed and stomp each other's
+ * full-state overwrite. The timer itself can't overlap the same unit (see
+ * README), but a manual run (e.g. the `node ... run.ts` invocation in the
+ * README) started while a timer-triggered run is still in flight can. A
+ * lock left behind by a process that died without cleaning up is detected
+ * by checking whether its recorded PID is still alive, and replaced once.
+ *
+ * Returns a release function, or null if another run is genuinely active
+ * (the caller should exit cleanly, not treat this as a failure).
+ */
+export async function acquireLock(lockPath: string, retried = false): Promise<(() => Promise<void>) | null> {
+  try {
+    const handle = await open(lockPath, "wx");
+    try {
+      await handle.writeFile(String(process.pid));
+    } finally {
+      await handle.close();
+    }
+    return () => unlink(lockPath).catch(() => {});
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    if (retried) return null; // still contended right after clearing a stale lock — treat as active
+    let pid: number | null = null;
+    try {
+      pid = Number(await readFile(lockPath, "utf8"));
+    } catch {
+      pid = null;
+    }
+    if (pid !== null && Number.isFinite(pid) && isProcessAlive(pid)) return null;
+    // Stale lock (owning process is gone) — clear it and try once more.
+    await unlink(lockPath).catch(() => {});
+    return acquireLock(lockPath, true);
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 export type Upserter = (
   body: UpsertBody,
 ) => Promise<{ ok: true; contactId: string } | { ok: false; error: string }>;
@@ -130,6 +177,7 @@ export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Up
         "Idempotency-Key": dedupedIdempotencyKey(`qcontact-case-${body.custom_fields.qcontact_case_id}`, body),
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.ok) {
       let data: unknown;
@@ -275,6 +323,11 @@ export async function runImport(opts: {
   // why); "differs" is decided against `dealStages`, not a live GET. Never
   // touches `seen`.
   if (syncStage) {
+    // Distinct QContact statuses among stageUnmapped cases (no recorded deal
+    // id) — logged once below so it's clear this is cases missing a deal,
+    // not a gap in STATUS_TO_STAGE_ID (that's summary.skipped.unknown_status,
+    // logged per-case above).
+    const unmappedStatuses = new Set<string>();
     for (const row of rows) {
       const caseKey = String(row.id);
       if (dryRun) {
@@ -284,6 +337,7 @@ export async function runImport(opts: {
       const dealId = deals[caseKey];
       if (!dealId) {
         summary.stageUnmapped++;
+        unmappedStatuses.add(row.status ?? "null");
         continue;
       }
       const stageId = statusToStageId(row.status);
@@ -317,6 +371,9 @@ export async function runImport(opts: {
       log(`stage synced ${row.id} (${row.label})`);
       await saveState(statePath, { seen: [...seen], deals, dealStages, updatedAt: "" });
     }
+    if (summary.stageUnmapped > 0) {
+      log(`stage sync: ${summary.stageUnmapped} case(s) have no recorded deal id, so stage sync is skipped for them; statuses: ${[...unmappedStatuses].sort().join(", ")}`);
+    }
   }
 
   return summary;
@@ -325,6 +382,19 @@ export async function runImport(opts: {
 async function main(): Promise<void> {
   const env = readEnv(process.env);
   const dryRun = process.argv.includes("--dry-run");
+  const release = await acquireLock(`${env.QCONTACT_IMPORT_STATE}.lock`);
+  if (!release) {
+    process.stdout.write("another qcontact-import run is already in progress; exiting\n");
+    return;
+  }
+  try {
+    await runMain(env, dryRun);
+  } finally {
+    await release();
+  }
+}
+
+async function runMain(env: Env, dryRun: boolean): Promise<void> {
   const qc = new QContactClient({
     baseUrl: env.QCONTACT_BASE_URL,
     email: env.QCONTACT_IMPORT_EMAIL,

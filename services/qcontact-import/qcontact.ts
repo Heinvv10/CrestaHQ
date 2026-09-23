@@ -4,6 +4,8 @@
  * reads the Case list view, a Case, and a Contact. Read-only.
  */
 
+import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
+
 export type QContactAuth = { uid: string; client: string; accessToken: string };
 
 export type CaseRow = {
@@ -59,6 +61,7 @@ export class QContactClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: this.cfg.email, password: this.cfg.password }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`QContact sign-in failed: HTTP ${res.status}`);
     const uid = res.headers.get("uid");
@@ -76,6 +79,7 @@ export class QContactClient {
     const a = this.auth!;
     const res = await this.fetchImpl(`${this.cfg.baseUrl}${path}`, {
       headers: { uid: a.uid, client: a.client, "access-token": a.accessToken },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.status === 401 && !retried) {
       this.auth = null;
