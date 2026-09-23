@@ -75,7 +75,12 @@ vi.mock("@/lib/firebase/admin", () => ({
       doc: (id: string) => ({
         get: async () => ({
           exists: name === "contacts",
-          data: () => ({ name: `Contact ${id}`, email: `${id}@example.com` }),
+          data: () => ({
+            name: `Contact ${id}`,
+            email: `${id}@example.com`,
+            subAccountId: "sa1",
+            mode: CTX.mode,
+          }),
         }),
         update: async (patch: Record<string, unknown>) => {
           if (updateThrows) throw new Error("firestore down");

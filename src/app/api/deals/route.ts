@@ -8,6 +8,7 @@ import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { loadPipeline } from "@/lib/pipelines/server";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 import { findStage } from "@/lib/pipelines/stages";
 import { DEAL_PRIORITIES } from "@/types/deals";
 import type { DealPriority } from "@/types/deals";
@@ -44,6 +45,9 @@ export async function POST(request: Request) {
   }
   if (!contactId) {
     return NextResponse.json({ error: "contactId is required" }, { status: 400 });
+  }
+  if (!(await refInSubAccount("contacts", contactId, subAccountId))) {
+    return NextResponse.json({ error: "Contact not found" }, { status: 404 });
   }
 
   // The stage must exist on the target pipeline (absent = default).

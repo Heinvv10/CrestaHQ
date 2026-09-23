@@ -6,6 +6,7 @@ import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { writeTaskCreatedActivity } from "@/lib/server/contact-activities";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 import {
   parseTaskCreate,
   serializeTaskForApi,
@@ -99,6 +100,19 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
       );
     }
     inheritedTerritory = (cd.territoryId as string | null) ?? null;
+  }
+  for (const [collection, id, field] of [
+    ["deals", input.dealId, "deal"],
+    ["events", input.eventId, "event"],
+  ] as const) {
+    if (id && !(await refInSubAccount(collection, id, ctx.subAccountId, ctx.mode))) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        `${field}_not_found`,
+        `${field}_id=${id} does not exist.`,
+      );
+    }
   }
 
   const ref = db.collection("tasks").doc();

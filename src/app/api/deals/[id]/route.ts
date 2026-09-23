@@ -14,6 +14,7 @@ import { maybeSendReviewRequest } from "@/lib/reviews/request";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { loadPipeline } from "@/lib/pipelines/server";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import { DEAL_PRIORITIES } from "@/types/deals";
 import type { DealPriority } from "@/types/deals";
@@ -65,6 +66,12 @@ export async function PATCH(
   }
   if (typeof body.contactId === "string" && body.contactId.trim()) {
     patch.contactId = body.contactId.trim();
+    if (
+      patch.contactId !== data.contactId &&
+      !(await refInSubAccount("contacts", patch.contactId, data.subAccountId as string))
+    ) {
+      return NextResponse.json({ error: "Contact not found" }, { status: 404 });
+    }
   }
   if (body.territoryId === null || typeof body.territoryId === "string") {
     patch.territoryId =

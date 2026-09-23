@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createEventServerSide } from "@/lib/server/events-service";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 
 /**
  * Dashboard-facing calendar-event creation. Replaces the browser's direct
@@ -53,6 +54,11 @@ export async function POST(request: Request) {
     );
   }
 
+  const contactId = typeof body.contactId === "string" ? body.contactId : null;
+  if (contactId && !(await refInSubAccount("contacts", contactId, subAccountId))) {
+    return NextResponse.json({ error: "Contact not found" }, { status: 404 });
+  }
+
   const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const agencyId = (subSnap.data()?.agencyId as string) ?? access.agencyId ?? "";
 
@@ -64,7 +70,7 @@ export async function POST(request: Request) {
     title,
     startAt,
     endAt,
-    contactId: typeof body.contactId === "string" ? body.contactId : null,
+    contactId,
     location: str(body.location),
     notes: str(body.notes),
     meetingUrl: typeof body.meetingUrl === "string" ? body.meetingUrl : null,
