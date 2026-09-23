@@ -97,39 +97,37 @@ export function notifyDraftForReview(
  * `Reply-To` is the sub-account's account contact, not a shared sender: a
  * customer replying to an automated invoice has to reach a human. A send
  * failure does not fail the cycle — the invoice exists and the operator can
- * send it by hand — but it is recorded on the schedule.
+ * send it by hand — but it is recorded on the schedule, after any card `chargeNote`.
+ * `cardLinkFallback`: a card-mode invoice went without its card-on-file link
+ * (see `chooseInvoicePayRail`); the card cycle folds it into its one Task.
  */
 export async function sendGeneratedInvoice(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
-): Promise<boolean> {
+  chargeNote?: string,
+): Promise<{ sent: boolean; cardLinkFallback: string | null }> {
   const replyTo = await accountContactEmail(schedule.subAccountId);
   const result = await sendQuoteServerSide({
     subAccountId: schedule.subAccountId,
     quoteId: invoiceId,
     replyTo,
-    actor: {
-      kind: "system",
-      reason: `recurring invoice schedule ${schedule.id}`,
-    },
+    actor: { kind: "system", reason: `recurring invoice schedule ${schedule.id}` },
   });
   if (!result.ok) {
     console.error(
       `[recurring] send failed for schedule ${schedule.id} invoice ${invoiceId}: ${result.failure.code} ${result.failure.error}`,
     );
+    const lead = chargeNote ? `${chargeNote} Also: invoice not sent` : "Invoice raised but not sent";
     await schedulesCollection()
       .doc(schedule.id)
       .update({
-        lastError: `Invoice raised but not sent: ${result.failure.error}`.slice(
-          0,
-          500,
-        ),
+        lastError: `${lead}: ${result.failure.error}`.slice(0, 500),
         updatedAt: FieldValue.serverTimestamp(),
       })
       .catch(() => {});
-    return false;
+    return { sent: false, cardLinkFallback: null };
   }
-  return true;
+  return { sent: true, cardLinkFallback: result.cardLinkFallback ?? null };
 }
 
 /**

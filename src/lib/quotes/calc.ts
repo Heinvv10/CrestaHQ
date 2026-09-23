@@ -126,6 +126,15 @@ export function effectiveQuoteStatus(
   return isQuoteExpired(quote, now) ? "expired" : quote.status;
 }
 
+/**
+ * A recurring card charge exists for this invoice and was not declined: it
+ * may have taken the money (or will). No second way to pay may be offered —
+ * neither a new pay link nor an existing one.
+ */
+export function cardChargeUnsettled(quote: Pick<Quote, "autoCharge"> | undefined): boolean {
+  return !!quote?.autoCharge && quote.autoCharge.state !== "declined";
+}
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }

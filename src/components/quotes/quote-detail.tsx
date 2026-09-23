@@ -7,6 +7,7 @@ import { ArrowRight, CheckCircle2, Download, Loader2, Send, Trash2 } from "lucid
 
 import { QuoteBuilder, type QuoteFormValues } from "@/components/quotes/quote-builder";
 import { PaystackInvoiceLinkButton } from "@/components/payments/paystack-invoice-link-button";
+import { RecheckCardChargeButton } from "@/components/quotes/recheck-card-charge-button";
 import { QuoteStatusBadge } from "@/components/quotes/quote-status-badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -309,6 +310,9 @@ export function QuoteDetail({
             )}
             {isInvoice && canMarkPaid && (
               <PaystackInvoiceLinkButton invoiceId={quote.id} recurring={!!quote.recurringInvoiceId} />
+            )}
+            {isInvoice && (quote.autoCharge?.state === "pending" || quote.autoCharge?.state === "unknown") && (
+              <RecheckCardChargeButton subAccountId={scope.subAccountId} invoiceId={quote.id} />
             )}
             {(canMarkPaid || canMarkCardDraftPaid) && (
               <Button

@@ -21,7 +21,10 @@ import type { SubAccountDoc } from "@/types/tenancy";
 /** Loose shape so callers can pass a partial/raw Firestore doc. */
 type PaymentCapableSub = Pick<
   SubAccountDoc,
-  "paypalConfig" | "paymentsEnabledByAgency" | "stripeConnectionMeta"
+  | "paypalConfig"
+  | "paymentsEnabledByAgency"
+  | "stripeConnectionMeta"
+  | "paystackConnectionMeta"
 >;
 
 /** paypal.me link generation — stateless, no confirmation callback. */
@@ -51,6 +54,21 @@ export function canTakePayment(
   sub: Partial<PaymentCapableSub> | null | undefined,
 ): boolean {
   return hasPaypalRail(sub) || hasCardRail(sub);
+}
+
+/**
+ * Invoices only: a Paystack connection (read here from its member-readable
+ * meta) also pays an invoice, through a link emailed with it — ZAR invoices
+ * only, which the send enforces. Bookings have no Paystack rail, so this is
+ * NOT part of `canTakePayment`.
+ */
+export function canPayInvoice(
+  sub: Partial<PaymentCapableSub> | null | undefined,
+): boolean {
+  return (
+    canTakePayment(sub) ||
+    (sub?.paymentsEnabledByAgency === true && !!sub?.paystackConnectionMeta)
+  );
 }
 
 /** Shared copy for the "you can't collect money yet" states. */

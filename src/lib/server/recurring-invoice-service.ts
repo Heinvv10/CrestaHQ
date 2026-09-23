@@ -159,7 +159,7 @@ export async function runOneSchedule(
       sent =
         schedule.chargeMode === "card"
           ? await chargeCycle(schedule, invoiceId, claim.cycle, claim.dueAt)
-          : await sendGeneratedInvoice(schedule, invoiceId);
+          : (await sendGeneratedInvoice(schedule, invoiceId)).sent;
     } else {
       // Review wins over card: nothing is charged, the draft waits for a human.
       notifyDraftForReview(schedule, invoice);

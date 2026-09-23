@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { canTakePayment } from "@/lib/payments/can-take-payment";
+import { canPayInvoice } from "@/lib/payments/can-take-payment";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import Link from "next/link";
@@ -39,7 +39,7 @@ export default function NewQuotePage() {
   const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
   // Either rail lets an invoice be sent — card is offered on the public
   // invoice page, paypal.me mints a link at send time.
-  const paymentReady = canTakePayment(subAccount);
+  const paymentReady = canPayInvoice(subAccount);
 
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -171,7 +171,7 @@ export default function NewQuotePage() {
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               You can save this invoice as a draft, but you won&apos;t be able
-              to send it until Stripe or PayPal is connected.{" "}
+              to send it until Paystack, Stripe or PayPal is connected.{" "}
               <Link
                 href={saPath("/dashboard/settings")}
                 className="font-medium text-amber-700 underline-offset-4 hover:underline dark:text-amber-400"

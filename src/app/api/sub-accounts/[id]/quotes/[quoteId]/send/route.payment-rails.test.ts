@@ -64,7 +64,7 @@ describe("invoice payment rails", () => {
     const { status, body } = await call();
     expect(status).toBe(503);
     expect(body.error).toBe(
-      "Connect Stripe or PayPal under Settings → Payments before sending invoices.",
+      "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.",
     );
     expect(sendEmail).not.toHaveBeenCalled();
   });

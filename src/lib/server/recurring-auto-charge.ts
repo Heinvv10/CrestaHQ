@@ -10,7 +10,7 @@ import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client"
 import { minCardChargeGapMs } from "@/lib/recurring/charge-gap";
 import { invoiceTotalCents } from "@/lib/server/payment-links-service";
 import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
-import { termsStillHold } from "@/lib/server/payment-mandates";
+import { countDecline, termsStillHold } from "@/lib/server/payment-mandates";
 import { schedulesCollection, sendGeneratedInvoice, toDate } from "@/lib/server/recurring-invoice-cycle";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import type { PaymentAttempt } from "@/types/payment-attempts";
@@ -29,7 +29,8 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  * the charge call is not proof, and only the verified webhook
  * (`auto-charge-reconciler.ts`) records a payment.
  *
- *   not chargeable → the invoice is emailed, and the schedule says why;
+ *   not chargeable → emailed, and a Task — except a first cycle with no card yet (its email saves one);
+ *                    a card-on-file link the email could not carry joins that one Task;
  *   declined       → recorded on the attempt, invoice and mandate, the invoice
  *                    is emailed (it carries a pay link), `invoice.charge_failed`;
  *   due too soon after the previous cycle (an edit moved it) → emailed; a Task;
@@ -81,6 +82,21 @@ export async function chargeCycle(
   // the `lastError` written beside it still tells the operator.
   const alert = (title: string, notes: string) =>
     raiseChargeTask(schedule, title, notes).catch((err: unknown) => console.error(`${tag} task not raised: ${title}`, err));
+  type TaskText = { title: string; notes: string };
+  // One Task per cycle: a card-on-file link the email couldn't carry joins it (or is it).
+  const emailInstead = async (chargeNote: string, task?: TaskText) => {
+    await note(chargeNote);
+    let fallback: string | null = null;
+    try {
+      const res = await sendGeneratedInvoice(schedule, invoiceId, chargeNote);
+      fallback = res.cardLinkFallback;
+      if (fallback) await note(`${chargeNote} ${fallback}`);
+      return res.sent;
+    } finally {
+      if (task) await alert(task.title, fallback ? `${task.notes} ${fallback}` : task.notes);
+      else if (fallback) await alert(fallback, "Until a card is saved, each cycle emails its invoice instead of charging a card.");
+    }
+  };
 
   const opened = await openAttempt(schedule, invoiceId, invoice, reference, dueAt);
   if ("alreadyCharged" in opened) {
@@ -93,13 +109,14 @@ export async function chargeCycle(
     const { dueAt: due, previousDueAt: prev } = opened.tooSoon;
     const days = Math.round((due.getTime() - prev.getTime()) / 86_400_000);
     const why = `This cycle is due ${day(due)}, only ${days} days after the previous cycle (${day(prev)}) — usually because the billing day or frequency was changed — so the card was not charged and the invoice was emailed instead.`;
-    await note(`Card not charged for invoice ${label}. ${why}`);
-    await alert(`Card not charged: invoice ${label} came due too soon after the previous cycle`, why);
-    return sendGeneratedInvoice(schedule, invoiceId);
+    const title = `Card not charged: invoice ${label} came due too soon after the previous cycle`;
+    return emailInstead(`Card not charged for invoice ${label}. ${why}`, { title, notes: why });
   }
   if (!opened.ok) {
-    await note(`Card not charged for invoice ${label}: ${opened.reason} — invoice emailed instead.`);
-    return sendGeneratedInvoice(schedule, invoiceId);
+    // Except the expected start: a first cycle with no card yet, whose email carries the card-on-file link.
+    const expected = !schedule.cardMandateId && cycle === 1;
+    const task = { title: `Card not charged for invoice ${label}: ${opened.reason}`, notes: "The invoice was emailed instead." };
+    return emailInstead(`Card not charged for invoice ${label}: ${opened.reason} — invoice emailed instead.`, expected ? undefined : task);
   }
 
   const setInvoice = (autoCharge: QuoteAutoCharge) =>
@@ -118,14 +135,14 @@ export async function chargeCycle(
     await setInvoice({ ...base, state: "unknown", reason: answer.reason });
     await note(
       `Card charge for invoice ${label} got no clear answer from Paystack (${answer.reason}). ` +
-        `Check reference ${reference} in your Paystack dashboard before billing again — it is recorded here automatically if it went through.`,
+        `Paystack reference ${reference}: use "Re-check card charge" on the invoice before billing again — it is recorded here automatically if it went through.`,
     );
     // Once per cycle: this path runs only for the call that created the attempt.
     await alert(
       `Check Paystack: card charge for invoice ${label} has no clear outcome`,
       `The saved-card charge for invoice ${label} (Paystack reference ${reference}) got no clear answer: ${answer.reason}. ` +
-        `The invoice was not emailed: check Paystack before sending this invoice — the card may already have been charged. ` +
-        `If the charge went through, it is recorded here automatically.`,
+        `The invoice was not emailed — the card may already have been charged. Use "Re-check card charge" on the invoice: it asks Paystack and records a payment, or a decline so the invoice can be sent. ` +
+        `Do not send a pay link: it would charge the customer twice.`,
     );
     return false;
   }
@@ -138,20 +155,22 @@ export async function chargeCycle(
     (err: unknown) => console.error(`${tag} attempt not refused`, err),
   );
   await setInvoice({ ...base, state: "declined", reason: answer.reason });
+  let chargeNote = `Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`;
+  let task: TaskText | undefined;
   if (keyRefused) {
-    await note(`Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`);
-    await alert(
-      `Paystack refused the key: invoice ${label} was not charged`,
-      `Charging the saved card for invoice ${label} (Paystack reference ${reference}) failed because Paystack refused this workspace's key: ${answer.reason}. ` +
+    chargeNote = `Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`;
+    task = {
+      title: `Paystack refused the key: invoice ${label} was not charged`,
+      notes:
+        `Charging the saved card for invoice ${label} (Paystack reference ${reference}) failed because Paystack refused this workspace's key: ${answer.reason}. ` +
         `The invoice was emailed instead. Check the Paystack connection before the next cycle.`,
-    );
+    };
   } else {
     await countDecline(opened.mandateId, answer.reason, schedule.unpaidEscalationThreshold).catch((err: unknown) =>
       console.error(`${tag} decline not counted on the mandate`, err),
     );
-    await note(`Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`);
   }
-  const sent = await sendGeneratedInvoice(schedule, invoiceId);
+  const sent = await emailInstead(chargeNote, task);
   // A refused key is the workspace's problem; the customer's card did not fail.
   if (!keyRefused) await fireChargeTrigger(schedule, "invoice.charge_failed");
   return sent;
@@ -273,28 +292,5 @@ async function refuseAttempt(reference: string, reason: string): Promise<void> {
     // Only open → refused: never over a settle or a flag.
     if ((await t.get(ref)).data()?.state !== "open") return;
     t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
-  });
-}
-
-/** One more decline in a row; at the schedule's threshold the card needs attention. */
-async function countDecline(mandateId: string, reason: string, threshold: number): Promise<void> {
-  const db = getAdminDb();
-  const ref = db.doc(`paymentMandates/${mandateId}`);
-  await db.runTransaction(async (t) => {
-    const mandate = (await t.get(ref)).data() as PaymentMandate | undefined;
-    if (!mandate) return;
-    const declines = (mandate.consecutiveDeclines ?? 0) + 1;
-    const escalate = threshold > 0 && declines >= threshold && mandate.status === "active";
-    t.update(ref, {
-      consecutiveDeclines: declines,
-      lastDeclineReason: reason,
-      ...(escalate
-        ? {
-            status: "attention",
-            attention: `Declined ${declines} times in a row (last: ${reason}). Invoices are emailed instead until the customer saves a new card.`,
-          }
-        : {}),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
   });
 }

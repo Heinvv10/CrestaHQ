@@ -12,7 +12,7 @@ import {
   recordQuoteActivity,
 } from "@/lib/quotes/lifecycle";
 import { buildQuoteUrl, issueQuoteToken } from "@/lib/quotes/token";
-import { buildPaypalInvoiceUrl } from "@/lib/paypal/payment-link";
+import { chooseInvoicePayRail, type PaymentLinkUpdate } from "@/lib/server/invoice-pay-rail";
 import type { TerritoryDenial } from "@/lib/auth/territory-filter";
 import type { Quote } from "@/types/quotes";
 import type { SubAccountDoc } from "@/types";
@@ -45,11 +45,9 @@ import type { SubAccountDoc } from "@/types";
  *   3. `authorize` hook (territory scoping, when a human caller supplied one).
  *   4. Load the recipient contact + verify an email is present.
  *   5. Load the sub-account for business name, logo and payment config.
- *   5a. Invoice path: requires EITHER a ready Stripe connection (card pay
- *       happens live on /q/[token]) OR a PayPal username. When PayPal is set, a
- *       paypal.me URL is generated from the invoice total — always regenerated
- *       on send (stateless, no API call, no "old link" to deactivate). Failing
- *       only when NEITHER rail is connected.
+ *   5a. Invoice path: pick the payment rail (`invoice-pay-rail.ts`) — a
+ *       Paystack card-on-file or plain link, a paypal.me URL, or Stripe's
+ *       card button on /q/[token]. Fails when no rail is connected.
  *   6. Issue a fresh public token (HMAC-signed); only its hash is persisted.
  *   7. Render + send the email.
  *   8. Persist the lifecycle update.
@@ -82,6 +80,9 @@ export type SendQuoteResult =
       sentTo: string;
       paymentLinkUrl: string | null;
       wasResend: boolean;
+      /** Set when a card-mode invoice's card-on-file link couldn't be made
+       *  and another rail was used: why, and which. */
+      cardLinkFallback: string | null;
     }
   | { ok: false; failure: SendQuoteFailure };
 
@@ -159,55 +160,21 @@ export async function sendQuoteServerSide(input: {
   const businessName = sub?.name || "Your business";
   const businessLogoUrl = sub?.logoUrl ?? null;
 
-  // 5a. Invoice path — build a paypal.me URL from the sub-account's
-  //     PayPal config. Always regenerate on send (paypal.me URLs encode
-  //     the amount inline; no API call; no old link to deactivate).
-  let paymentLinkUpdate: {
-    paymentLinkUrl: string;
-    paymentLinkId: string | null;
-    paymentLinkMintedAt: ReturnType<typeof FieldValue.serverTimestamp>;
-  } | null = null;
+  // 5a. Invoice path — how the recipient pays. See `chooseInvoicePayRail`.
+  let paymentLinkUpdate: PaymentLinkUpdate | null = null;
+  let emailPayUrl: string | null = null;
+  let cardLinkFallback: string | null = null;
   if (quote.kind === "invoice") {
-    const paypal = sub?.paypalConfig ?? null;
-
-    // Payments v1: card is a second rail, so EITHER satisfies the "can this
-    // invoice be paid?" requirement. Before this, sending an invoice hard-
-    // required paypal.me — a Stripe-connected workspace couldn't send one at
-    // all. The card button is rendered on /q/[token] from the live connection
-    // state, so there's no link to mint here.
-    const cardReady =
-      sub?.paymentsEnabledByAgency === true &&
-      sub?.stripeConnectionMeta?.ready === true;
-
-    if (!paypal?.username && !cardReady) {
-      return fail(
-        "no_payment_rail",
-        503,
-        "Connect Stripe or PayPal under Settings → Payments before sending invoices.",
-      );
-    }
-
-    if (paypal?.username) {
-      try {
-        const url = buildPaypalInvoiceUrl({ paypal, invoice: quote });
-        paymentLinkUpdate = {
-          paymentLinkUrl: url,
-          paymentLinkId: null,
-          paymentLinkMintedAt: FieldValue.serverTimestamp(),
-        };
-        // Reflect locally so the email + activity see the fresh URL.
-        quote.paymentLinkUrl = url;
-        quote.paymentLinkId = null;
-      } catch (err) {
-        console.error("[quotes/send] paypal link build failed", err);
-        return fail(
-          "paypal_link_failed",
-          500,
-          `Failed to build PayPal link: ${
-            err instanceof Error ? err.message : "unknown error"
-          }`,
-        );
-      }
+    const rail = await chooseInvoicePayRail(quote, sub);
+    if (!rail.ok) return fail(rail.code, rail.status, rail.error);
+    paymentLinkUpdate = rail.update;
+    emailPayUrl = rail.emailPayUrl;
+    cardLinkFallback = rail.cardLinkFallback;
+    if (cardLinkFallback) console.warn(`[quotes/send] ${quoteId}: ${cardLinkFallback}`);
+    if (paymentLinkUpdate) {
+      // Reflect locally so the email + activity see the fresh URL.
+      quote.paymentLinkUrl = paymentLinkUpdate.paymentLinkUrl;
+      quote.paymentLinkId = paymentLinkUpdate.paymentLinkId;
     }
   }
 
@@ -242,6 +209,7 @@ export async function sendQuoteServerSide(input: {
     businessLogoUrl,
     recipientName: contact.name?.trim() || "",
     publicUrl,
+    payUrl: emailPayUrl,
   });
   try {
     await sendEmail({
@@ -291,5 +259,6 @@ export async function sendQuoteServerSide(input: {
     paymentLinkUrl:
       paymentLinkUpdate?.paymentLinkUrl ?? quote.paymentLinkUrl ?? null,
     wasResend,
+    cardLinkFallback,
   };
 }

@@ -41,6 +41,8 @@ export async function createPaymentLink(input: {
   description?: unknown;
   /** A card-on-file link: pays this cycle's invoice and saves the card. */
   mandate?: boolean;
+  /** Invoice send only (`invoice-pay-rail.ts`): the link is minted just before a draft becomes sent. Never set from a route. */
+  allowDraftForSend?: boolean;
 }): Promise<ServiceResult<{ link: PaymentLink }>> {
   const db = getAdminDb();
   const sub = (await db.doc(`subAccounts/${input.subAccountId}`).get()).data();
@@ -70,7 +72,8 @@ export async function createPaymentLink(input: {
     if (!quote || quote.subAccountId !== input.subAccountId) {
       return fail(404, "Invoice not found");
     }
-    if (!invoicePayable(quote)) {
+    const sendingDraft = input.allowDraftForSend === true && quote.kind === "invoice" && quote.status === "draft";
+    if (!invoicePayable(quote) && !sendingDraft) {
       return fail(409, "Only a sent, unpaid, unexpired invoice can get a payment link.");
     }
     if ((quote.currency || "").toUpperCase() !== PAYMENT_LINK_CURRENCY) {

@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { loadActiveSchedule, termsStillHold } from "@/lib/server/payment-mandates";
-import { effectiveQuoteStatus } from "@/lib/quotes/calc";
+import { cardChargeUnsettled, effectiveQuoteStatus } from "@/lib/quotes/calc";
 import type { PaymentMode } from "@/types/payment-attempts";
 import type { PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
@@ -44,6 +44,10 @@ export async function loadPayableLink(
   const sub = (await getAdminDb().doc(`subAccounts/${link.subAccountId}`).get()).data();
   if (sub?.paymentsEnabledByAgency !== true) {
     return fail(409, "Online payment isn't available for this link. Please contact the sender.");
+  }
+  // A recurring card charge that may have taken the money: no second way to pay.
+  if (link.invoiceId && cardChargeUnsettled((await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined)) {
+    return fail(409, "A card payment for this invoice is still being confirmed. Please contact the sender.");
   }
   // Still open: a returning payer is told their payment is being confirmed,
   // never that the invoice changed or was paid (possibly by them).

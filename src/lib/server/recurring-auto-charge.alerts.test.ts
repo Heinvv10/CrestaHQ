@@ -82,12 +82,15 @@ describe("a charge status that is neither success nor failed", () => {
 });
 
 describe("an unknown outcome raises one Task", () => {
-  it("names the reference and the invoice, and says to check Paystack before sending", async () => {
+  it("names the reference and the invoice, and says to check Paystack and never send a pay link", async () => {
     stubAutoCharge({ charge: () => "network-error" });
     await runOneSchedule(SCHEDULE, NOW);
     const [task] = tasksAbout(REF);
     expect(`${task.title} ${task.notes}`).toContain("INV-2026-0004");
-    expect(task.notes).toContain("check Paystack before sending this invoice — the card may already have been charged");
+    expect(task.notes).toContain("the card may already have been charged");
+    expect(task.notes).toContain("Re-check card charge");
+    expect(task.notes).toContain("Do not send a pay link");
+    expect(task.notes).not.toContain("before sending this invoice");
     expect(task).toMatchObject({ subAccountId: SA, contactId: "c1", createdByUid: "u1" });
     // Re-running the cycle charges nothing and raises nothing more.
     makeDue({ cyclesGenerated: 3 });
