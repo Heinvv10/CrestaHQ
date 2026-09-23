@@ -1,6 +1,7 @@
 import type { FieldValue, Timestamp } from "firebase/firestore";
 
 import type { PaymentMode } from "@/types/payment-attempts";
+import type { MandateTerms } from "@/types/payment-mandates";
 
 /**
  * Paystack payment links — `paymentLinks/{id}`.
@@ -58,6 +59,18 @@ export interface PaymentLink {
    * doc. Absent on links made before the rule; those are refused too.
    */
   mode?: PaymentMode;
+  /**
+   * Set → a card-on-file link for a recurring invoice's cycle: paying it
+   * settles the invoice AND saves the card (`paymentMandates`). The terms are
+   * fixed when the link is made and shown verbatim above the pay button.
+   */
+  mandate?: MandateTerms | null;
+  /** With `mandate`: the schedule the card will be charged for. */
+  recurringInvoiceId?: string | null;
+  /** With `mandate`: the mandate this payment created. */
+  mandateId?: string | null;
+  /** With `mandate`: why the card was NOT saved, though the payment was. */
+  mandateAttention?: string | null;
   /** Paystack's `domain` ("test" | "live") on the verified transaction. */
   paystackDomain?: string | null;
   /**
