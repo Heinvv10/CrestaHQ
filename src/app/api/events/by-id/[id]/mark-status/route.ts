@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import { changeEventStatus } from "@/lib/server/event-status-service";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 
@@ -58,6 +59,8 @@ export async function POST(
 
   const access = await requireSubAccountMember(request, event.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, event.territoryId);
+  if (gate) return gate;
 
   const outcome = await changeEventStatus(event, next, reason);
   if (!outcome.ok) {

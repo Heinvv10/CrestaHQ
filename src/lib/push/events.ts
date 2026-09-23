@@ -1,5 +1,6 @@
 import "server-only";
 
+import { getAdminDb } from "@/lib/firebase/admin";
 import { sendPushForEvent } from "@/lib/push/send";
 import type { EmitWebhookEventInput } from "@/lib/api/webhooks/dispatch";
 
@@ -43,6 +44,18 @@ function str(v: unknown): string | null {
 
 function rec(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+/** The contact's territory, so the send-time gate can keep a scoped
+ *  collaborator from seeing a preview for a contact they can't open. The
+ *  wire payload doesn't carry it, so read the contact. `undefined` when the
+ *  event has no contact (unrestricted); `null` when the contact is untagged. */
+async function contactTerritoryId(
+  contactId: string | null,
+): Promise<string | null | undefined> {
+  if (!contactId) return undefined;
+  const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
+  return str(snap.data()?.territoryId);
 }
 
 export async function dispatchPushForWebhookEvent(
@@ -101,6 +114,7 @@ export async function dispatchPushForWebhookEvent(
           body: when ? `${title} · ${when}` : title,
           url: `/sa/${input.subAccountId}/calendar`,
           tag: str(booking.id) ? `booking-${str(booking.id)}` : undefined,
+          territoryId: await contactTerritoryId(str(booking.contact_id)),
         });
         return;
       }
@@ -121,6 +135,7 @@ export async function dispatchPushForWebhookEvent(
           // Collapse per conversation — a rapid burst from one contact
           // replaces the previous notification instead of stacking.
           tag: contactId ? `msg-${contactId}` : undefined,
+          territoryId: await contactTerritoryId(contactId),
         });
         return;
       }
@@ -167,6 +182,7 @@ export async function dispatchPushForWebhookEvent(
             ? `/sa/${input.subAccountId}/contacts/${contactId}`
             : `/sa/${input.subAccountId}/contacts`,
           tag: contactId ? `call-${contactId}` : undefined,
+          territoryId: await contactTerritoryId(contactId),
         });
         return;
       }
