@@ -246,6 +246,18 @@ export async function markOrderPaid(input: {
 }
 
 /**
+ * Flag a paid order for the operator: the money arrived but what it paid for
+ * could not be settled with it. Overwrites with the same note on a replay, so
+ * a redelivered event never stacks duplicates.
+ */
+export async function flagOrderAttention(orderId: string, note: string): Promise<void> {
+  await getAdminDb().doc(`orders/${orderId}`).update({
+    attention: note,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+}
+
+/**
  * Record a refund against an order. Also idempotent — the same
  * `charge.refunded` event can arrive twice, and refunds are cumulative so a
  * replay would otherwise double-count.

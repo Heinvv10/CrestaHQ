@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 
 /**
  * Community member auth — passwordless magic link → 30-day session cookie.
@@ -15,7 +15,7 @@ import { createHmac, timingSafeEqual } from "crypto";
  * login endpoint never mint junk member docs).
  */
 
-const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
+export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 function getSecret(): string {
@@ -61,6 +61,9 @@ interface TokenPayload {
   k: "ml" | "ses";
   /** Optional "join this group on verify" intent (magic-link tokens only). */
   j?: string;
+  /** Random nonce (magic-link tokens only) so every link is distinct and
+   *  can be consumed exactly once — see `magicLinkUseId`. */
+  n?: string;
 }
 
 function encodeToken(payload: TokenPayload): string {
@@ -115,6 +118,7 @@ export function signMemberMagicLinkToken(
     e: email.trim().toLowerCase(),
     exp: Date.now() + MAGIC_LINK_TTL_MS,
     k: "ml",
+    n: randomBytes(12).toString("hex"),
     ...(joinGroupId ? { j: joinGroupId } : {}),
   });
 }
@@ -143,6 +147,14 @@ export function verifyMemberMagicLinkToken(
     email: payload.e,
     joinGroupId: payload.j,
   };
+}
+
+/**
+ * Doc id recording that a magic link was used (`communityMagicLinkUses/{id}`).
+ * A hash, so the stored id can't be replayed as the link itself.
+ */
+export function magicLinkUseId(token: string): string {
+  return createHash("sha256").update(`ml-use:${token}`).digest("hex");
 }
 
 export function verifyMemberSessionToken(

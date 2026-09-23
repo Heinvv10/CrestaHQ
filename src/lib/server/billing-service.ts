@@ -839,6 +839,7 @@ function serializeCharge(
         : "pending",
     createdAt: tsToIso(data.createdAt),
     paidAt: tsToIso(data.paidAt),
+    extraPaymentCount: Array.isArray(data.extraPaymentRefs) ? data.extraPaymentRefs.length : 0,
   };
 }
 

@@ -743,6 +743,16 @@
       ]
     },
     {
+      "collectionGroup": "communityMagicLinkUses",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        {
+          "queryScope": "COLLECTION_GROUP",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "submissions",
       "fieldPath": "contactId",
       "indexes": [

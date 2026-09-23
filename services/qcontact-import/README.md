@@ -167,6 +167,43 @@ Deals below), `QCONTACT_SYNC_STAGES` (default off — see Deal stage sync
 above). QContact tokens expire after ~12 h; the client re-signs-in on a
 401.
 
+## Run lock
+
+Every fetch in this service has a timeout, so a hung call can't block a run
+forever — but two runs must still never execute at once: both read and
+fully overwrite the same state file, so the slower one's write can revert
+the faster one's entries. The systemd timer can't cause this on its own:
+`qcontact-import.service` is `Type=oneshot`, and systemd treats a unit as a
+singleton — a timer tick that fires while the service is still "active"
+is a no-op, not a second instance (`systemctl --user cat qcontact-import.service`
+/ `.timer`). The actual risk is a manual `node ... run.ts` invocation (the
+`Running` section above) started while a timer-triggered run is still in
+flight.
+
+`main()` takes an exclusive lock at `${QCONTACT_IMPORT_STATE}.lock` before
+doing anything else, written with `O_EXCL` so only one process can create
+it. The lock file holds the owning PID.
+
+- A lock held by a live PID and younger than an hour is normal contention:
+  the new run exits 0 quietly.
+- A lock held by a live PID but **older than an hour** is treated as
+  suspicious rather than auto-reclaimed (the PID could have been reused
+  after a reboot, or belong to a process we can't signal) — the run logs it
+  to stderr and exits non-zero, so it shows up as a failed run in the
+  systemd journal instead of silently doing nothing every 15 minutes
+  forever.
+- A lock with no pid, an unparsable pid, `0`, a negative number, or a dead
+  pid is stale and is cleared and retaken automatically.
+- Right after creating and writing the lock file, the run re-reads it and
+  confirms it still holds its own pid before proceeding. Create-then-write
+  isn't one atomic step, so another run could in principle see the file
+  momentarily empty between the two, judge it stale, and recreate it first;
+  re-reading catches that and backs off instead of two runs both believing
+  they hold the lock.
+
+See `acquireLock` in `run.ts` for the implementation and `run.test.ts` for
+the covered cases.
+
 The code is erasable-syntax TypeScript (no parameter properties, enums or
 namespaces) because Node strips types rather than compiling them. `tsc` and
 vitest will not catch a violation — run the dry-run after touching a file.

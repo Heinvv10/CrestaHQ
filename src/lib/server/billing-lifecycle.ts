@@ -191,6 +191,13 @@ export async function handleSubAccountPlanCheckoutCompleted(
 ): Promise<void> {
   const subAccountId = session.metadata?.subAccountId;
   const planId = session.metadata?.planId;
+  // A delayed payment method (SEPA, ACH, …) completes the session unpaid; the
+  // money lands later with `checkout.session.async_payment_succeeded`, which
+  // comes back through here paid.
+  if (session.payment_status === "unpaid") {
+    console.warn(`[billing] plan checkout ${session.id} completed unpaid — waiting for the payment`);
+    return;
+  }
   if (!subAccountId || !planId) {
     console.error(
       "[billing] subAccountPlan checkout completed without subAccountId/planId metadata",
@@ -467,6 +474,11 @@ export async function handleSubAccountChargeCheckoutCompleted(
   session: Stripe.Checkout.Session,
 ): Promise<void> {
   const chargeId = session.metadata?.chargeId;
+  // Unpaid = a delayed payment method still settling (see the plan handler).
+  if (session.payment_status === "unpaid") {
+    console.warn(`[billing] charge checkout ${session.id} completed unpaid — waiting for the payment`);
+    return;
+  }
   if (!chargeId) {
     console.error(
       "[billing] subAccountCharge checkout completed without chargeId metadata",
@@ -498,13 +510,46 @@ export async function markSubAccountChargePaid(input: {
 }): Promise<void> {
   const { chargeId } = input;
   const ref = chargesCollection().doc(chargeId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    console.error(`[billing] checkout completed for missing charge ${chargeId}`);
-    return;
-  }
-  const charge = snap.data() as BillingChargeDoc;
-  if (charge.status === "paid") return; // webhook retry — idempotent
+
+  // Compare-and-set: two deliveries (a redelivery, or the link paid from two
+  // tabs) can race, and only the one whose write commits may emit charge.paid.
+  const charge = await getAdminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      console.error(`[billing] checkout completed for missing charge ${chargeId}`);
+      return null;
+    }
+    const current = snap.data() as BillingChargeDoc;
+    if (current.status === "paid") {
+      // A redelivery carries the checkout that paid it — idempotent. A
+      // DIFFERENT checkout is a second payment: record it so the agency sees
+      // it and can refund, rather than dropping real money.
+      if (
+        input.checkoutSessionId &&
+        current.stripeCheckoutSessionId &&
+        input.checkoutSessionId !== current.stripeCheckoutSessionId
+      ) {
+        console.warn(
+          `[billing] charge ${chargeId} paid again by ${input.checkoutSessionId} — a refund is owed`,
+        );
+        tx.update(ref, {
+          extraPaymentRefs: FieldValue.arrayUnion(input.checkoutSessionId),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return null;
+    }
+    tx.update(ref, {
+      status: "paid" satisfies BillingChargeStatus,
+      tokenHash: null,
+      stripeCheckoutSessionId: input.checkoutSessionId,
+      stripePaymentIntentId: input.paymentId,
+      paidAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return current;
+  });
+  if (!charge) return;
 
   // The agency cancelled this charge, but the payer completed an already-open
   // payment page. The money is real, so it is recorded rather than dropped —
@@ -516,15 +561,6 @@ export async function markSubAccountChargePaid(input: {
       `[billing] charge ${chargeId} was canceled but has been paid — refund it or reinstate it`,
     );
   }
-
-  await ref.update({
-    status: "paid" satisfies BillingChargeStatus,
-    tokenHash: null,
-    stripeCheckoutSessionId: input.checkoutSessionId,
-    stripePaymentIntentId: input.paymentId,
-    paidAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
 
   recordBillingEvent({
     agencyId: charge.agencyId,

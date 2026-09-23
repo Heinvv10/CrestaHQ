@@ -20,6 +20,17 @@ let chargeDoc: Record<string, unknown> | null;
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
+    // markSubAccountChargePaid is a compare-and-set; one pass is enough here.
+    runTransaction: async <T,>(
+      fn: (tx: {
+        get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
+        update: (_ref: unknown, patch: Record<string, unknown>) => void;
+      }) => Promise<T>,
+    ) =>
+      fn({
+        get: (ref) => ref.get(),
+        update: (_ref, patch) => void updates.push(patch),
+      }),
     doc: (path: string) => ({
       get: async () => ({
         exists: path.startsWith("agencies/") ? !!planDoc : !!subDoc,

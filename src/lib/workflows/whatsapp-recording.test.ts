@@ -82,6 +82,8 @@ vi.mock("@/lib/firebase/admin", () => ({
         get: (r: ReturnType<typeof ref>) => r.get(),
         set: (r: ReturnType<typeof ref>, data: Record<string, unknown>) =>
           write(r.path, data),
+        update: (r: ReturnType<typeof ref>, data: Record<string, unknown>) =>
+          write(r.path, data),
       }),
   }),
 }));

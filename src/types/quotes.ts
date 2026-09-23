@@ -264,7 +264,9 @@ export interface QuoteRespondPayload {
 export type QuotePaidVia =
   | { rail: "paystack_link"; linkId: string; reference: string }
   /** A recurring schedule charged its saved card (W5). */
-  | { rail: "paystack_auto"; mandateId: string; reference: string };
+  | { rail: "paystack_auto"; mandateId: string; reference: string }
+  /** Paid by card through the sub-account's own Stripe (`orders/{orderId}`). */
+  | { rail: "stripe_order"; orderId: string };
 
 /**
  * A recurring card cycle's charge, for the operator: `pending` until the

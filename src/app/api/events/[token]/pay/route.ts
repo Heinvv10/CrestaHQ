@@ -6,6 +6,7 @@ import Stripe from "stripe";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyEventToken } from "@/lib/booking/event-token";
 import { mapStripeSessionError } from "@/lib/stripe/session-error";
+import { stripeCanChargeCurrency, toStripeAmount } from "@/lib/stripe/amount";
 import {
   createCheckoutSessionForSubAccount,
   getSubAccountStripe,
@@ -115,10 +116,13 @@ export async function POST(
     throw err;
   }
 
-  // Booking amounts are stored in MAJOR units (dollars); orders and Stripe
-  // both want cents.
+  // Booking amounts are stored in MAJOR units (dollars); orders want cents.
+  // Stripe wants cents too, except for zero-decimal currencies (see below).
   const amountCents = Math.round(amount * 100);
   const currency = (event.paymentCurrency || "USD").toLowerCase();
+  if (!stripeCanChargeCurrency(currency)) {
+    return fail(`Card payment isn't available in ${currency.toUpperCase()}.`, 409);
+  }
   const label = event.title || "Booking deposit";
   const lineItems: OrderLineItem[] = [
     {
@@ -143,7 +147,7 @@ export async function POST(
             quantity: 1,
             price_data: {
               currency,
-              unit_amount: amountCents,
+              unit_amount: toStripeAmount(amount, currency),
               product_data: { name: label, description: "Deposit" },
             },
           },

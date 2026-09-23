@@ -592,7 +592,7 @@ When you're ready to go live:
 **For production Stripe webhooks:**
 1. Stripe Dashboard > Developers > Webhooks > **Add endpoint**
 2. URL: `https://your-app.vercel.app/api/webhooks/stripe`
-3. Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
+3. Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `customer.subscription.updated`, `customer.subscription.deleted`
 4. Copy the new signing secret and update `STRIPE_WEBHOOK_SECRET` in Vercel
 
 **For production Resend:**

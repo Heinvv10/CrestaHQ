@@ -318,6 +318,8 @@ export interface Purchase {
   paypalUrl: string;
   status: PurchaseStatus;
   grantedByUid: string | null;
+  /** The Stripe order whose payment settled this purchase, when one did. */
+  paidOrderId?: string | null;
   requestedAt: Timestamp | FieldValue | null;
   paidAt: Timestamp | FieldValue | null;
 }

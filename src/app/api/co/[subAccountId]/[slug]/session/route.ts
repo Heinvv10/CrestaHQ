@@ -5,6 +5,7 @@ import Stripe from "stripe";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { mapStripeSessionError } from "@/lib/stripe/session-error";
+import { centsToStripeAmount, stripeCanChargeCurrency } from "@/lib/stripe/amount";
 import {
   createCheckoutSessionForSubAccount,
   getSubAccountStripe,
@@ -148,6 +149,9 @@ export async function POST(
   }
 
   const currency = (main.currency || "USD").toLowerCase();
+  if (!stripeCanChargeCurrency(currency)) {
+    return fail(`Card payment isn't available in ${currency.toUpperCase()}.`, 409);
+  }
   const lineItems: OrderLineItem[] = [
     {
       productId: page.productId,
@@ -265,7 +269,7 @@ export async function POST(
           quantity: li.quantity,
           price_data: {
             currency,
-            unit_amount: li.unitPriceCents,
+            unit_amount: centsToStripeAmount(li.unitPriceCents, currency),
             product_data: {
               name: li.name,
               ...(li.description ? { description: li.description } : {}),

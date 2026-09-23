@@ -5,14 +5,20 @@ import {
   qstashIsConfigured,
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
-import { runStep } from "@/lib/workflows/engine";
+import {
+  failRunAfterFinalRetry,
+  runStep,
+  WORKFLOW_STEP_RETRIES,
+} from "@/lib/workflows/engine";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Workflow step worker — QStash callback that advances one node of a run.
  * Public path; security is the Upstash signature. 5xx → QStash retries (the
- * engine is idempotent on the run's history); 2xx/4xx are terminal.
+ * engine is idempotent on the run's history); 2xx/4xx are terminal. The last
+ * delivery (`Upstash-Retried` = the retry budget) fails the run with the
+ * reason instead, since nothing will ever retry it again.
  */
 export async function POST(request: Request) {
   if (!qstashIsConfigured()) {
@@ -52,6 +58,11 @@ export async function POST(request: Request) {
     );
   } catch (err) {
     console.error("[workflows/step] threw", err);
+    const retried = Number(request.headers.get("upstash-retried") ?? "0");
+    if (retried >= WORKFLOW_STEP_RETRIES) {
+      await failRunAfterFinalRetry(payload.runId, payload.nodeId, err);
+      return NextResponse.json({ ok: false, runFailed: true });
+    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Step failed" },
       { status: 500 },

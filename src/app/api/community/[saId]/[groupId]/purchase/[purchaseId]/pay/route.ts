@@ -6,6 +6,7 @@ import Stripe from "stripe";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireMemberApi } from "@/lib/community/member-context";
 import { mapStripeSessionError } from "@/lib/stripe/session-error";
+import { centsToStripeAmount, stripeCanChargeCurrency } from "@/lib/stripe/amount";
 import {
   createCheckoutSessionForSubAccount,
   getSubAccountStripe,
@@ -112,6 +113,9 @@ export async function POST(
   const label =
     purchase.scope === "group" ? "Group access" : "Course access";
   const currency = (purchase.currency || "USD").toLowerCase();
+  if (!stripeCanChargeCurrency(currency)) {
+    return fail(`Card payment isn't available in ${currency.toUpperCase()}.`, 409);
+  }
   const lineItems: OrderLineItem[] = [
     {
       productId: null,
@@ -135,7 +139,7 @@ export async function POST(
             quantity: 1,
             price_data: {
               currency,
-              unit_amount: purchase.amountCents,
+              unit_amount: centsToStripeAmount(purchase.amountCents, currency),
               product_data: { name: label },
             },
           },

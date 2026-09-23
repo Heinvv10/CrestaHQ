@@ -153,6 +153,7 @@ async function alertOnce(attempt: PaymentAttempt, why: string, title: (invoice: 
 /** Who else paid the invoice, for the operator. */
 function describeVia(via: QuotePaidVia | null | undefined): string {
   if (!via) return "marked paid by hand";
+  if (via.rail === "stripe_order") return `a Stripe card payment (order ${via.orderId})`;
   return via.rail === "paystack_link"
     ? `a payment link, Paystack reference ${via.reference}`
     : `another saved-card charge, Paystack reference ${via.reference}`;
