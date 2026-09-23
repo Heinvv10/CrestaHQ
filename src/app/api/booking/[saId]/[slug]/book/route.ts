@@ -2,6 +2,7 @@ import "server-only";
 import { canTakePayment } from "@/lib/payments/can-take-payment";
 
 import { NextResponse } from "next/server";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -110,12 +111,6 @@ function pushAndCheck(
   return false;
 }
 
-function getClientIp(request: Request): string {
-  const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return request.headers.get("x-real-ip") ?? "unknown";
-}
-
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface SubmittedSlot {
@@ -141,7 +136,7 @@ export async function POST(
   ctx: { params: Promise<{ saId: string; slug: string }> },
 ) {
   const { saId, slug } = await ctx.params;
-  const ip = getClientIp(request);
+  const ip = clientIpFrom(request);
   if (pushAndCheck(ipHits, ip, IP_HOURLY_CAP)) {
     return NextResponse.json(
       { error: "Too many booking attempts. Try again later." },

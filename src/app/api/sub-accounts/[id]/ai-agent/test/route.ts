@@ -9,11 +9,23 @@ import { aiIsConfigured, callAi } from "@/lib/comms/ai/openrouter";
 import { anyAiChannelGateOn } from "@/lib/comms/ai/gates";
 import { buildSystemPrompt } from "@/lib/comms/ai/prompt";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { createFixedWindowLimiter } from "@/lib/server/fixed-window-limit";
 import { DEFAULT_AI_CHANNEL_CONFIG } from "@/types/ai";
 import type { ResolvedAiAgent } from "@/types/ai";
 import type { SubAccountDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Dry-runs are billed to the agency's OpenRouter key but deliberately not
+ * metered into the sub-account's token counters, so each sub-account gets a
+ * budget of its own: generous for an operator iterating on a prompt, a wall
+ * for a script.
+ */
+const checkTestRateLimit = createFixedWindowLimiter({
+  limit: 60,
+  windowMs: 60 * 60 * 1000,
+});
 
 /**
  * Dry-run the agent against a single test message. Calls the LLM with
@@ -76,6 +88,14 @@ export async function POST(
           "AI is disabled for this sub-account by your agency. Ask your agency owner to enable an AI channel first.",
       },
       { status: 403 },
+    );
+  }
+
+  const rate = checkTestRateLimit(id);
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "Too many test messages for this sub-account. Try again later." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
     );
   }
 

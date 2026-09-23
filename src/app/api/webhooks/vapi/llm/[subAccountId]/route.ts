@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { callAi, type AiChatMessage } from "@/lib/comms/ai/openrouter";
 import { incrementChannelTokens, resolveAgent } from "@/lib/comms/ai/agent";
@@ -72,15 +73,6 @@ interface VapiLlmBody {
 
 function badRequest(message: string, status: number): NextResponse {
   return NextResponse.json({ error: { message } }, { status });
-}
-
-function authorize(request: Request): boolean {
-  const expected = process.env.VAPI_WEBHOOK_SECRET?.trim();
-  if (!expected) return false;
-  // Secret travels as a `?s=` query param. URL params are auto-decoded
-  // by URLSearchParams so we compare against the raw secret value.
-  const provided = new URL(request.url).searchParams.get("s")?.trim() ?? "";
-  return provided.length > 0 && provided === expected;
 }
 
 async function findContactByPhone(
@@ -186,7 +178,7 @@ export async function POST(
   request: Request,
   ctx: { params: Promise<{ subAccountId: string }> },
 ) {
-  if (!authorize(request)) {
+  if (!vapiWebhookAuthorized(request)) {
     // Make the #1 cause of "custom-llm 500" visible: the ?s= secret on the
     // assistant URL doesn't match this server's VAPI_WEBHOOK_SECRET (stale
     // secret baked in at provision time, or the assistant points at a

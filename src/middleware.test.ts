@@ -417,3 +417,47 @@ describe("isPublicPath — review-request click link and reminders (SP5 d2)", ()
     expect(isPublicPath("/api/sub-accounts/sa1/google-review")).toBe(false);
   });
 });
+
+describe("middleware() — identity headers are never trusted from the caller (S11)", () => {
+  it("keeps the dev-only wipe route behind a session", () => {
+    expect(isPublicPath("/api/dev-only/danger-wipe-everything")).toBe(false);
+  });
+
+  it("runs on image-extension paths, so a forged uid there is stripped too", async () => {
+    const { config } = await import("./middleware");
+    const pattern = new RegExp(`^${config.matcher[0]}$`);
+    expect(pattern.test("/api/sub-accounts/sa1/photo.png")).toBe(true);
+    expect(pattern.test("/logo.svg")).toBe(true);
+
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY = "test-key";
+    process.env.FIREBASE_ADMIN_PROJECT_ID = "test-project";
+    capturedOptions = null;
+    const res = (await middleware(
+      fullRequest("/api/sub-accounts/sa1/photo.png", { "x-user-uid": "attacker-uid" }),
+    )) as Response;
+    // Static images skip session verification entirely — they are only
+    // stripped, never authenticated or redirected.
+    expect(capturedOptions).toBeNull();
+    expect(overriddenHeaderNames(res).length).toBeGreaterThan(0);
+    expect(overriddenHeaderNames(res)).not.toContain("x-user-uid");
+    expect(res.headers.get("x-middleware-request-x-user-uid")).toBeNull();
+  });
+
+  it("fails closed when Firebase is not configured: strips identity, denies protected paths", async () => {
+    delete process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+    delete process.env.FIREBASE_ADMIN_PROJECT_ID;
+
+    const pub = (await middleware(
+      fullRequest("/api/forms/f1", { "x-user-uid": "attacker-uid" }),
+    )) as Response;
+    expect(overriddenHeaderNames(pub).length).toBeGreaterThan(0);
+    expect(overriddenHeaderNames(pub)).not.toContain("x-user-uid");
+    expect(pub.headers.get("x-middleware-request-x-user-uid")).toBeNull();
+
+    const prot = (await middleware(
+      fullRequest("/api/agency/settings", { "x-user-uid": "attacker-uid" }),
+    )) as Response;
+    expect(prot.status).toBe(307);
+    expect(new URL(prot.headers.get("location")!).pathname).toBe("/login");
+  });
+});

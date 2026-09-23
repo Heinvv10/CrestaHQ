@@ -189,7 +189,7 @@ workflows, broadcasts or inbox messages — change:
 
 **`/rr/{token}`** (public; limited to 60 an hour per client, keyed like the GBP
 feed — `cf-connecting-ip` only with `TRUST_CF_CONNECTING_IP=1`, else
-`x-real-ip`, else the left-most `X-Forwarded-For` — with least-recently-used
+the right-most `X-Forwarded-For` hop, else `x-real-ip` — with least-recently-used
 eviction, never a wholesale clear; reads no identity header): a valid token for
 a tracked request 302s to the sub-account's **configured** https review link as
 it is now. Only a person's **GET** counts as a click: the first stamps

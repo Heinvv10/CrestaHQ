@@ -19,7 +19,7 @@ Every single credential is user-provided. Nothing ships embedded. Store in `.env
 | `COOKIE_SECRET_CURRENT` | `openssl rand -base64 32` |
 | `COOKIE_SECRET_PREVIOUS` | same (different value) |
 | `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` locally, your production URL in prod |
-| `BOOTSTRAP_ADMIN_EMAIL` | The email that's allowed to claim the workspace admin slot on the first signup. Set this BEFORE deploying. Once an admin exists, the var is ignored. |
+| `BOOTSTRAP_ADMIN_EMAIL` | The email that's allowed to claim the workspace admin slot on the first signup. Set this BEFORE deploying — while the workspace is unclaimed and this is unset, every signup is refused. Once an admin exists, the var is ignored. |
 
 ## Required for billing
 | Var | Source |
@@ -264,7 +264,7 @@ Grant the `https://www.googleapis.com/auth/business.manage` scope on the OAuth c
 | Var | Purpose |
 |---|---|
 | `GBP_PROVIDER` | `fake` swaps Google for the deterministic fake provider ([gbp-reviews.md](features/gbp-reviews.md)). Unset/anything else = real Google. Honoured only when `NEXT_PUBLIC_APP_URL`'s host is exactly `127.0.0.1`, `localhost` or `[::1]` (not `0.0.0.0`, `127.0.0.2` or `*.localhost`); otherwise every Google route refuses loudly (`GbpFakeRefusedError`) rather than falling back. |
-| `TRUST_CF_CONNECTING_IP` | `1` makes the public reviews feed's rate limiter key on Cloudflare's `cf-connecting-ip`. Set it **only** where the app is reachable solely through a Cloudflare tunnel that sets that header (CrestaHQ's own velo deployment). Unset (the default, and required on Vercel) = the limiter uses `x-real-ip`, else the left-most `X-Forwarded-For`, because a client could send its own `cf-connecting-ip`. |
+| `TRUST_CF_CONNECTING_IP` | `1` makes every per-IP rate limiter (and the pay-link consent IP) key on Cloudflare's `cf-connecting-ip` — one helper, `clientIpFrom` in `src/lib/checkout/rate-limit.ts`. Set it **only** where the app is reachable solely through a Cloudflare tunnel that sets that header (CrestaHQ's own velo deployment). Unset (the default, and required on Vercel) = the right-most `X-Forwarded-For` hop (the one the proxy appended), else `x-real-ip`, because a client could send its own `cf-connecting-ip` and its own left-most `X-Forwarded-For` entries. |
 | `GBP_FAKE_ALLOW_PROD_BUILD` | `1` lets the fake run in a `NODE_ENV=production` build — needed only because CI's Playwright job boots the production bundle on 127.0.0.1. Any other value refuses. |
 | `GBP_FAKE_AGENCY_ID` | Required with `GBP_PROVIDER=fake`: the fake serves only sub-accounts of this agency (set it to the E2E fixture agency). Local dev and CI use the production Firestore, so this is what stops a fake connection overwriting a real tenant's Google tokens. |
 | `GBP_SYNC_SCHEDULE_ENABLED` | `1` = register the 6-hourly Google Business Profile review sync (`leadstack-gbp-sync`, `0 */6 * * *` → `/api/cron/gbp-sync`) with the other QStash schedules at cold start, and let the Google Business page say "Syncs automatically every 6 hours". Unset/anything else = no schedule; the page says automatic sync is not scheduled, the sync cron answers `not_scheduled` and syncs nobody (a leftover QStash schedule is harmless), and only Sync now syncs. Retention does NOT depend on this flag: the daily `leadstack-gbp-retention` schedule (`/api/cron/gbp-retention`, Firestore only, no Google calls) is always registered. Turning it on in production is an owner step ([gbp-reviews.md](features/gbp-reviews.md)). |

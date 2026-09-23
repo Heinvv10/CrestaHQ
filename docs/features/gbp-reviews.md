@@ -645,7 +645,7 @@ caller can send its own. Order: id shape → rate limit → resolve → origin �
 | Status | When | Body | Headers |
 |---|---|---|---|
 | 404 | malformed id — checked FIRST, so it never becomes a limiter key or a Firestore path | `{"error":"not_found"}` | `Cache-Control: no-store` |
-| 429 | more than 300 requests a minute from one client, or 120 for one client + publicId (in-memory, per instance; least-recently-used, expired windows swept first, never a wholesale reset; a per-client refusal does not spend the per-widget budget). The client is `cf-connecting-ip` **only when `TRUST_CF_CONNECTING_IP=1`**, else `x-real-ip`, else the left-most `X-Forwarded-For` | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
+| 429 | more than 300 requests a minute from one client, or 120 for one client + publicId (in-memory, per instance; least-recently-used, expired windows swept first, never a wholesale reset; a per-client refusal does not spend the per-widget budget). The client is `cf-connecting-ip` **only when `TRUST_CF_CONNECTING_IP=1`**, else the right-most `X-Forwarded-For` hop, else `x-real-ip` | `{"error":"rate_limited"}` | `Retry-After`, `Cache-Control: no-store` |
 | 404 | unknown, disabled, rotated away, revoked, archived sub-account, agency gate off | `{"error":"not_found"}` — byte-identical to the malformed-id 404 | `Cache-Control: no-store` |
 | 403 | an `Origin` header not in `allowedOrigins` (incl. `null`) | `{"error":"origin_not_allowed"}` | no `Access-Control-Allow-Origin`, `no-store` |
 | 200 | otherwise | the body below | `Access-Control-Allow-Origin: <that origin>` only when an allowed Origin was sent (never `*`), `Vary: Origin`, `Cache-Control: public, max-age=60` (no stale-while-revalidate), strong `ETag` |

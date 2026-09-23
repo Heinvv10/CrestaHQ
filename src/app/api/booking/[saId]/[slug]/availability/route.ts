@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import {
@@ -63,21 +64,13 @@ function isRateLimited(ip: string): boolean {
   return false;
 }
 
-function getClientIp(request: Request): string {
-  // x-forwarded-for is the standard proxy header. Fall back to a
-  // sentinel so unconfigured envs still rate-limit (per-instance).
-  const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return request.headers.get("x-real-ip") ?? "unknown";
-}
-
 export async function GET(
   request: Request,
   ctx: { params: Promise<{ saId: string; slug: string }> },
 ) {
   const { saId, slug } = await ctx.params;
 
-  if (isRateLimited(getClientIp(request))) {
+  if (isRateLimited(clientIpFrom(request))) {
     return NextResponse.json(
       { error: "Too many requests. Try again in a minute." },
       { status: 429 },

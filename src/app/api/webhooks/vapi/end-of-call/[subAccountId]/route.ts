@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
 import { handleVapiEndOfCall } from "@/lib/comms/voice/end-of-call";
 
 export const dynamic = "force-dynamic";
@@ -69,14 +70,6 @@ interface VapiServerMessage {
   };
 }
 
-function authorize(request: Request): boolean {
-  const expected = process.env.VAPI_WEBHOOK_SECRET?.trim();
-  if (!expected) return false;
-  // See LLM route's authorize() for why the secret is in the URL.
-  const provided = new URL(request.url).searchParams.get("s")?.trim() ?? "";
-  return provided.length > 0 && provided === expected;
-}
-
 function asString(v: unknown): string | null {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
 }
@@ -133,7 +126,7 @@ export async function POST(
   request: Request,
   ctx: { params: Promise<{ subAccountId: string }> },
 ) {
-  if (!authorize(request)) {
+  if (!vapiWebhookAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

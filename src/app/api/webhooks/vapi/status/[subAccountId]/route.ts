@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,19 +29,11 @@ interface VapiStatusMessage {
   };
 }
 
-function authorize(request: Request): boolean {
-  const expected = process.env.VAPI_WEBHOOK_SECRET?.trim();
-  if (!expected) return false;
-  // See LLM route's authorize() for why the secret is in the URL.
-  const provided = new URL(request.url).searchParams.get("s")?.trim() ?? "";
-  return provided.length > 0 && provided === expected;
-}
-
 export async function POST(
   request: Request,
   ctx: { params: Promise<{ subAccountId: string }> },
 ) {
-  if (!authorize(request)) {
+  if (!vapiWebhookAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

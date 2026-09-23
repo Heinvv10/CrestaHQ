@@ -87,6 +87,7 @@ async function signup(body: Record<string, unknown>) {
 const member = (uid: string) => mem.read(`subAccounts/${SA}/subAccountMembers/${uid}`);
 
 beforeEach(() => {
+  delete process.env.BOOTSTRAP_ADMIN_EMAIL;
   mem.clear();
   created.length = 0;
   deleted.length = 0;
@@ -145,6 +146,7 @@ describe("signup against a pending invite", () => {
 
   it("still lets the first signup become the agency owner without a token", async () => {
     mem.clear();
+    process.env.BOOTSTRAP_ADMIN_EMAIL = EMAIL;
     expect(await signup({})).toBe(200);
     expect(created).toEqual([expect.not.objectContaining({ emailVerified: true })]);
     expect(mem.read("appConfig/main")?.adminUid).toBe("uid_1");
@@ -199,5 +201,29 @@ describe("signup against a pending invite", () => {
     expect(await signup({ inviteToken: tokenOf(first.inviteUrl) })).toBe(403);
     expect(await signup({ inviteToken: tokenOf(second.inviteUrl) })).toBe(200);
     expect(member("uid_1")).toMatchObject({ role: "admin" });
+  });
+});
+
+describe("claiming a fresh workspace (no appConfig yet)", () => {
+  beforeEach(() => mem.clear());
+
+  it("refuses every signup while BOOTSTRAP_ADMIN_EMAIL is unset, with a message naming the fix", async () => {
+    const res = await POST(
+      new Request("http://127.0.0.1:3100/api/auth/signup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "first-comer@example.com", password: "secret123" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toContain("BOOTSTRAP_ADMIN_EMAIL");
+    expect(created).toHaveLength(0);
+    expect(mem.read("appConfig/main")).toBeUndefined();
+  });
+
+  it("refuses a different email when it is set", async () => {
+    process.env.BOOTSTRAP_ADMIN_EMAIL = "owner@example.com";
+    expect(await signup({})).toBe(403);
+    expect(created).toHaveLength(0);
   });
 });

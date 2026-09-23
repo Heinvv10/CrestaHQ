@@ -3,6 +3,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { LANDING_VARIANT } from "@/config/landing";
 import { sendNewInstanceAlert } from "@/lib/affiliate/instances-data";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
+import { createFixedWindowLimiter } from "@/lib/server/fixed-window-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +37,17 @@ export const dynamic = "force-dynamic";
  *
  * Public path: covered by the `/api/v1` prefix already in middleware
  * PUBLIC_PATHS (auth happens in-route, not via session cookie).
+ *
+ * Rate limit: 30 an hour per client IP. A real deployment pings on cold start
+ * and once a day; the limit only bounds a script's writes and new-instance
+ * alert emails. A 429 is safe for the sender — it reads any non-2xx as "no
+ * directive" (lib/gitpage/heartbeat.ts).
  */
+
+const checkHeartbeatRateLimit = createFixedWindowLimiter({
+  limit: 30,
+  windowMs: 60 * 60 * 1000,
+});
 
 const OK_RESPONSE = {
   ok: true,
@@ -58,6 +70,14 @@ function finiteInt(value: unknown): number | null {
 }
 
 export async function POST(request: Request) {
+  const rate = checkHeartbeatRateLimit(clientIpFrom(request));
+  if (!rate.ok) {
+    return NextResponse.json(
+      { error: "Too many requests" },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+    );
+  }
+
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;

@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
+import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
 
 /**
  * !!! DESTRUCTIVE — DEVELOPER USE ONLY !!!
@@ -15,8 +16,11 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
  *
  * Guards (all must pass):
  *   1. process.env.NODE_ENV !== "production"  -> returns 403 if it is
- *   2. ?confirm=NUKE in the query string      -> returns 400 if missing
- *   3. Lives under /api/dev-only/...          -> the path itself is a
+ *   2. Same-origin POST (Origin header)      -> returns 403 otherwise, so a
+ *      page on another site can't fire it from a logged-in browser
+ *   3. Signed-in agency owner (session, not a public path) -> 401/403
+ *   4. ?confirm=NUKE in the query string      -> returns 400 if missing
+ *   5. Lives under /api/dev-only/...          -> the path itself is a
  *      forewarning to anyone reviewing the routes table
  *
  * If you don't recognise this route, you almost certainly do not want to
@@ -31,6 +35,24 @@ export async function POST(request: Request) {
   }
 
   const url = new URL(request.url);
+  // `pnpm dev` with .env.local points at REAL keys, so NODE_ENV alone is not
+  // enough. Require the browser's own Origin to be this app.
+  const origin = request.headers.get("origin");
+  const allowed = [url.origin];
+  try {
+    if (process.env.NEXT_PUBLIC_APP_URL) {
+      allowed.push(new URL(process.env.NEXT_PUBLIC_APP_URL).origin);
+    }
+  } catch {
+    // Malformed env var — only the request's own origin is accepted.
+  }
+  if (!origin || !allowed.includes(origin)) {
+    return NextResponse.json({ error: "Same-origin only." }, { status: 403 });
+  }
+
+  const owner = await requireAgencyOwnerAny(request);
+  if (owner instanceof NextResponse) return owner;
+
   if (url.searchParams.get("confirm") !== "NUKE") {
     return NextResponse.json(
       {
