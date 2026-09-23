@@ -163,6 +163,78 @@ describe("plan payment", () => {
     expect(billing().status).toBe("pending");
   });
 
+  it("answers 200 and changes nothing when Paystack does not know the reference", async () => {
+    verifyAs = () => ({ status: 404, body: { status: false, message: "Transaction reference not found" } });
+    const res = await deliver({ reference: "ref_unknown", metadata: planMeta });
+    // Final, not transient: a redelivery would get the same answer.
+    expect(res.status).toBe(200);
+    expect(billing().status).toBe("pending");
+  });
+
+  it("answers 5xx when the verify call hangs past the timeout", async () => {
+    // Paystack never answers; the fetch is released only by its signal.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit = {}) =>
+          new Promise((_resolve, reject) => {
+            // As real fetch does: an already-aborted signal rejects at once.
+            if (init.signal?.aborted) reject(init.signal.reason);
+            init.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+          }),
+      ),
+    );
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation(() => AbortSignal.abort(new DOMException("timed out", "TimeoutError")));
+    try {
+      const res = await deliver({ reference: "ref_hang", metadata: planMeta });
+      expect(timeout).toHaveBeenCalledWith(10_000);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(billing().status).toBe("pending");
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("does not activate on a partial payment of the requested amount", async () => {
+    verifyAs = () =>
+      verified({ reference: "ref_part", amount: 50000, requested_amount: 99900, metadata: planMeta });
+    const res = await deliver({ reference: "ref_part", metadata: planMeta });
+    expect(res.status).toBe(200);
+    expect(billing().status).toBe("pending");
+    expect(flags()).toHaveLength(1);
+  });
+
+  it("does not activate on a verified success for a different reference", async () => {
+    verifyAs = () => verified({ reference: "ref_elsewhere", amount: 99900, metadata: planMeta });
+    const res = await deliver({ reference: "ref_asked", metadata: planMeta });
+    expect(res.status).toBe(200);
+    expect(billing().status).toBe("pending");
+  });
+
+  it("flags a mismatched payment once per reference, however often it is redelivered", async () => {
+    verifyAs = (call) =>
+      verified({ reference: call.path.split("/").pop()!, amount: 100, metadata: planMeta });
+    await deliver({ reference: "ref_low1", metadata: planMeta });
+    await deliver({ reference: "ref_low1", metadata: planMeta });
+    expect(flags()).toHaveLength(1);
+    await deliver({ reference: "ref_low2", metadata: planMeta });
+    expect(flags()).toHaveLength(2);
+  });
+
+  it("flags a second, separate payment for a plan already active (two tabs)", async () => {
+    await deliver({ reference: "ref_tab1", metadata: planMeta });
+    expect(billing().status).toBe("active");
+    await deliver({ reference: "ref_tab2", metadata: planMeta });
+    expect(flags()).toHaveLength(1);
+    expect(flags()[0]).toMatchObject({ detail: expect.objectContaining({ reference: "ref_tab2" }) });
+    // ...while a redelivery of the payment that activated it stays silent.
+    await deliver({ reference: "ref_tab1", metadata: planMeta });
+    expect(flags()).toHaveLength(1);
+    expect(applyFeatureGates).toHaveBeenCalledTimes(1);
+  });
+
   it("does not activate when Paystack says the transaction did not succeed", async () => {
     verifyAs = () =>
       verified({ reference: "ref_abandoned", amount: 99900, status: "abandoned", metadata: planMeta });
@@ -176,6 +248,14 @@ describe("one-time charge", () => {
   it("does not mark a charge paid for less than it asked", async () => {
     verifyAs = () => verified({ reference: "ref_c1", amount: 100, metadata: chargeMeta });
     const res = await deliver({ reference: "ref_c1", metadata: chargeMeta });
+    expect(res.status).toBe(200);
+    expect(charge().status).toBe("pending");
+    expect(flags()).toHaveLength(1);
+  });
+
+  it("does not mark a charge paid for MORE than it asked — charges match exactly", async () => {
+    verifyAs = () => verified({ reference: "ref_over", amount: 600000, metadata: chargeMeta });
+    const res = await deliver({ reference: "ref_over", metadata: chargeMeta });
     expect(res.status).toBe(200);
     expect(charge().status).toBe("pending");
     expect(flags()).toHaveLength(1);

@@ -34,8 +34,10 @@ import type { BillingChargeDoc } from "@/types/billing";
  *
  * Throws only when Paystack cannot answer (network, 5xx, 429): the route
  * answers 500 and Paystack redelivers. A mismatch is final — nothing is
- * activated or marked paid, the agency gets a `payment.flagged` billing event
- * (money did arrive on their account), and the route answers 200.
+ * activated or marked paid, the money (which did arrive on the agency's
+ * account) is recorded as a `payment.flagged` row in `billingEvents` plus a
+ * console.error, and the route answers 200. Nothing reads `billingEvents` in
+ * the UI yet; surfacing these flags to the agency is a follow-up.
  */
 export async function settleClientBillingPayment(
   reference: string | undefined,
@@ -107,12 +109,22 @@ async function settlePlan(tx: PaystackVerifiedTransaction, metadata: Metadata, t
     billing?.planId !== planId
       ? `plan=${planId} assigned=${billing?.planId ?? null}`
       : amountMismatch(tx, { cents: billing.priceCents, currency: billing.currency, exact: false });
+  const agencyId = String(data.agencyId ?? "");
   if (mismatch) {
-    await flag(tx, { agencyId: String(data.agencyId ?? ""), subAccountId, kind: "plan", mismatch }, tag);
+    await flag(tx, { agencyId, subAccountId, kind: "plan", mismatch }, tag);
     return;
   }
-  // A redelivery of the payment that already activated this plan.
-  if (billing?.status === "active") return;
+  if (billing?.status === "active") {
+    // A redelivery of the payment that activated this plan: nothing to do.
+    if (billing.paystackReference === tx.reference) return;
+    // A second, separate payment for a plan already active (two tabs): real
+    // money that activates nothing, so it is recorded for a refund.
+    await flag(tx, { agencyId, subAccountId, kind: "plan", mismatch: "plan already active — paid twice" }, tag);
+    return;
+  }
+  // Recorded BEFORE activating: a crash between the two then redelivers
+  // into the not-yet-active branch, never into "paid twice".
+  await snap.ref.update({ "billing.paystackReference": tx.reference });
   await activateSubAccountPlan({
     subAccountId,
     planId,
@@ -158,8 +170,9 @@ async function settleCharge(tx: PaystackVerifiedTransaction, metadata: Metadata,
 
 /**
  * Money arrived on the agency's account that does not settle what it claims
- * to. Recorded on the billing audit trail, keyed by reference so a
- * redelivery does not add a second row. Awaited: a flag that silently failed
+ * to. Recorded as a `billingEvents` row (not yet shown in any UI) and a
+ * console.error, keyed by reference so a redelivery does not add a second
+ * row. Awaited: a flag that silently failed
  * to write would leave a real payment unaccounted for.
  */
 async function flag(
