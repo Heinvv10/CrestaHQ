@@ -88,10 +88,16 @@ export async function POST(request: Request) {
     }
     // Last delivery: nothing will run this page again. Fail the campaign
     // visibly rather than leave it queued / calling with fanoutDone false.
-    await campaignRef.update({
-      status: "failed",
-      errorMessage: `Audience fan-out stopped after repeated failures: ${msg}`,
-      completedAt: FieldValue.serverTimestamp(),
+    // Never overwrite an operator's cancel or a finished campaign. Rows
+    // already queued are then skipped ("campaign_failed"), not dialled.
+    await db.runTransaction(async (tx) => {
+      const current = (await tx.get(campaignRef)).data() as VoiceCampaignDoc | undefined;
+      if (current?.status !== "queued" && current?.status !== "calling") return;
+      tx.update(campaignRef, {
+        status: "failed",
+        errorMessage: `Audience fan-out stopped after repeated failures: ${msg}`,
+        completedAt: FieldValue.serverTimestamp(),
+      });
     });
     return NextResponse.json({ ok: false, campaignFailed: true });
   }

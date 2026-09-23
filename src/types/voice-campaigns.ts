@@ -120,6 +120,8 @@ export type VoiceCampaignSkipReason =
   | "contact_missing"
   /** Operator stopped the campaign before this contact was dialled. */
   | "cancelled"
+  /** The campaign failed (e.g. its fan-out gave up) before this contact was dialled. */
+  | "campaign_failed"
   /** Suppressed at fan-out: called too recently by another campaign. */
   | "recently_called"
   /** Suppressed at fan-out: carries the operator's excluded tag. */

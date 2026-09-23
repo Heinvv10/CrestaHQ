@@ -46,9 +46,18 @@ export async function settleQueuedRecipient(
 
 export type DialClaim = "dial" | "cancelled" | "settled";
 
+/** A cancelled or failed campaign places no new calls; the row's skip reason. */
+export function stopReason(
+  campaign: Pick<VoiceCampaignDoc, "status">,
+): "cancelled" | "campaign_failed" | null {
+  if (campaign.status === "cancelled") return "cancelled";
+  if (campaign.status === "failed") return "campaign_failed";
+  return null;
+}
+
 /**
- * The last gate before dialling, in one transaction: a cancelled campaign
- * skips the row; otherwise the row is committed to "called" (callId filled
+ * The last gate before dialling, in one transaction: a cancelled (or
+ * failed) campaign skips the row; otherwise the row is committed to "called" (callId filled
  * in after the dial) and the campaign flips queued → calling. A cancel
  * therefore either lands first — no call — or finds the row already out of
  * "queued" and leaves it alone; and the flip can never overwrite a cancel.
@@ -62,10 +71,11 @@ export async function claimDial(
     const campaign = cSnap?.data() as VoiceCampaignDoc | undefined;
     const rec = rSnap?.data() as VoiceCampaignRecipientDoc | undefined;
     if (!campaign || rec?.status !== "queued") return "settled";
-    if (campaign.status === "cancelled") {
+    const stop = stopReason(campaign);
+    if (stop) {
       tx.update(recRef, {
         status: "skipped",
-        skippedReason: "cancelled",
+        skippedReason: stop,
         settledAt: FieldValue.serverTimestamp(),
         attempts: FieldValue.increment(1),
       });

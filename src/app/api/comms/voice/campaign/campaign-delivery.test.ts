@@ -130,6 +130,54 @@ describe("voice campaign fan-out delivery", () => {
     expect(last.status).toBe(200);
     expect(campaign(id)).toMatchObject({ status: "failed" });
     expect(String(campaign(id).errorMessage)).toMatch(/fan-out/i);
+
+    // The page's already-published steps must not keep dialling.
+    h.failPublish = () => false;
+    await drain(isStep);
+    expect(h.calls).toHaveLength(0);
+    const rows = h.mem.list(`voiceCampaigns/${id}/recipients`);
+    expect(rows.every((r) => r.status === "skipped" && r.skippedReason === "campaign_failed")).toBe(true);
+    expect(campaign(id)).toMatchObject({ status: "failed", totals: { queued: 0 } });
+  });
+
+  it("a final-retry page failure never overwrites an operator's cancel", async () => {
+    seed(450);
+    const id = await launch();
+    const page = firstPage();
+    // The operator cancels while the page runs (just as its next-page
+    // publish fails for the last time).
+    h.failPublish = (m) => {
+      if (isStep(m)) return false;
+      h.mem.seed(`voiceCampaigns/${id}`, { ...campaign(id), status: "cancelled" });
+      return true;
+    };
+    await call(page.pathname, page.body, { "upstash-retried": "3" });
+    expect(campaign(id).status).toBe("cancelled");
+  });
+});
+
+describe("voice campaign call bookkeeping", () => {
+  it("a failed post-dial transaction still stores the call and hangs it up if cancelled", async () => {
+    seed(1);
+    const id = await launch();
+    await drain((m) => !isStep(m));
+    const realTx = h.mem.db.runTransaction.bind(h.mem.db);
+    const spy = vi.spyOn(h.mem.db, "runTransaction");
+    h.duringDial = async () => {
+      h.duringDial = async () => {};
+      await call("/api/comms/voice/campaign/cancel", { campaignId: id });
+      spy.mockImplementationOnce(() => Promise.reject(new Error("tx blip")));
+    };
+    spy.mockImplementation(realTx as typeof h.mem.db.runTransaction);
+    await drain();
+    spy.mockRestore();
+
+    expect(h.calls).toEqual(["c0000"]);
+    expect(h.ended).toEqual(["https://vapi.test/control/c0000"]);
+    expect(h.mem.list(`voiceCampaigns/${id}/recipients`)[0]).toMatchObject({
+      callId: "call-c0000",
+      callControlUrl: "https://vapi.test/control/c0000",
+    });
   });
 });
 

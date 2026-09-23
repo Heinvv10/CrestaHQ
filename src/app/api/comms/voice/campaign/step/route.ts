@@ -23,6 +23,7 @@ import {
   maybeCompleteCampaign,
   recordDialled,
   settleQueuedRecipient,
+  stopReason,
 } from "@/lib/comms/voice/campaign-rows";
 import type {
   VoiceCampaignDoc,
@@ -129,9 +130,11 @@ export async function POST(request: Request) {
   // (The cancel route sweeps queued rows; this catches any QStash callback
   // that raced in before that sweep reached this row. A cancel landing
   // later is caught by claimDial just before the dial.)
-  if (campaign.status === "cancelled") {
-    await skip(recRef, campaignRef, "cancelled");
-    return NextResponse.json({ ok: true, status: "skipped", reason: "cancelled" });
+  // A failed campaign (fan-out gave up) is stopped the same way.
+  const stop = stopReason(campaign);
+  if (stop) {
+    await skip(recRef, campaignRef, stop);
+    return NextResponse.json({ ok: true, status: "skipped", reason: stop });
   }
 
   // Live contact read (opt-out may have flipped since fan-out).
@@ -209,7 +212,7 @@ export async function POST(request: Request) {
   // campaign was cancelled while the checks above ran.
   const claim = await claimDial(recRef, campaignRef);
   if (claim === "cancelled") {
-    return NextResponse.json({ ok: true, status: "skipped", reason: "cancelled" });
+    return NextResponse.json({ ok: true, status: "skipped", reason: "stopped" });
   }
   if (claim === "settled") {
     return NextResponse.json({ ok: true, ignored: "already_settled" });
@@ -248,7 +251,23 @@ export async function POST(request: Request) {
 
   // A cancel that landed while Vapi was dialling found nothing to sweep or
   // end — hang the call up now.
-  if (await recordDialled(recRef, campaignRef, callId, callControlUrl)) {
+  let cancelledMidDial: boolean;
+  try {
+    cancelledMidDial = await recordDialled(recRef, campaignRef, callId, callControlUrl);
+  } catch (err) {
+    // The call is live — never throw it away. Store its ids with a plain
+    // write and re-check the status outside a transaction.
+    console.error("[voice/campaign/step] recordDialled failed; falling back", callId, err);
+    await recRef
+      .update({ callId, callControlUrl })
+      .catch((e) => console.error("[voice/campaign/step] call id write failed", callId, e));
+    const latest = await campaignRef
+      .get()
+      .then((snap) => (snap.data() as VoiceCampaignDoc | undefined)?.status)
+      .catch(() => undefined);
+    cancelledMidDial = latest === "cancelled";
+  }
+  if (cancelledMidDial) {
     if (callControlUrl) {
       await endCallViaControl(callControlUrl).catch((err) =>
         console.warn("[voice/campaign/step] hang-up after cancel failed", err),
