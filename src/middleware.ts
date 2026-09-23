@@ -31,6 +31,8 @@ const PUBLIC_PATHS = [
   // the route.
   "/api/workflows/step",
   "/api/broadcasts/email/step",
+  // Broadcast fan-out pages — QStash callback, signature-verified in the route.
+  "/api/broadcasts/email/fanout",
   "/api/checkout",
   "/api/cron/gitpage-heartbeat",
   // Daily sweep for the public API's TTL'd collections (apiRequestLogs,

@@ -11,10 +11,11 @@ import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { resolveMergeTags } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { logIfReviewAsk } from "@/lib/reviews/review-ask";
+import { claimSend } from "@/lib/broadcasts/claim-send";
+import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
 import type {
   AgencyDoc,
-  BroadcastDoc,
-  BroadcastSendDoc,
+  BroadcastSkipReason,
   MessageTemplateDoc,
   SubAccountDoc,
 } from "@/types";
@@ -34,8 +35,10 @@ interface StepBody {
  * /api/automations/step is.
  *
  * Hot path:
- *   1. Verify signature → load broadcast + send row + contact + template + sub-account
- *   2. Idempotency-check the send row (already sent / failed / skipped → return 200)
+ *   1. Verify signature → claim the send row in a transaction (settled,
+ *      already claimed, or broadcast cancelled → no send)
+ *   2. Load contact + template + sub-account; honour the agency gate, the
+ *      automations kill switch and a disconnected sender
  *   3. Re-check opt-out (operator could have flipped it between fan-out and now)
  *   4. Render merge tags + unsubscribe link → resend.emails.send()
  *   5. Update the send row + atomically increment broadcast totals
@@ -86,23 +89,17 @@ export async function POST(request: Request) {
   const broadcastRef = db.collection("broadcasts").doc(broadcastId);
   const sendRef = broadcastRef.collection("sends").doc(contactId);
 
-  const [broadcastSnap, sendSnap] = await Promise.all([
-    broadcastRef.get(),
-    sendRef.get(),
-  ]);
-  if (!broadcastSnap.exists || !sendSnap.exists) {
-    // Broadcast or row was deleted between schedule and fire. Drop quietly
-    // — QStash retrying won't help.
-    return NextResponse.json({ ok: true, ignored: "missing" });
+  // Claim the row (idempotency + cancel check) before any side effect.
+  const claim = await claimSend(broadcastRef, sendRef);
+  if (claim.outcome === "settled_now") {
+    await maybeMarkBroadcastCompleted(broadcastRef);
+    const status = claim.reason === "cancelled" ? "skipped" : "failed";
+    return NextResponse.json({ ok: true, status, reason: claim.reason });
   }
-  const broadcast = broadcastSnap.data() as BroadcastDoc;
-  const send = sendSnap.data() as BroadcastSendDoc;
-
-  // Idempotency — once a row has settled, we never re-send. Accepts both
-  // QStash's automatic 5xx-retry case and a manual "rerun" attempt.
-  if (send.status !== "queued") {
-    return NextResponse.json({ ok: true, ignored: "already_settled" });
+  if (claim.outcome !== "claimed") {
+    return NextResponse.json({ ok: true, ignored: claim.outcome });
   }
+  const { broadcast } = claim;
 
   // Load the contact (live read — opt-out may have flipped since fan-out)
   // along with the template, sub-account, and agency for merge-tag context.
@@ -114,6 +111,32 @@ export async function POST(request: Request) {
       db.collection("subAccounts").doc(broadcast.subAccountId).get(),
       db.collection("agencies").doc(broadcast.agencyId).get(),
     ]);
+
+  const subAccount = subAccountSnap.exists
+    ? (subAccountSnap.data() as SubAccountDoc)
+    : null;
+  // Stops that can flip after the fan-out: the agency gate, the automations
+  // kill switch, and the sender being disconnected. Each settles the row
+  // terminally with a visible reason — a 5xx here would only make QStash
+  // retry a few times and leave the row queued forever.
+  if (subAccount?.broadcastsEnabledByAgency !== true || subAccount.automationsPaused === true) {
+    await markSkipped(
+      sendRef,
+      broadcastRef,
+      subAccount?.automationsPaused === true ? "automations_paused" : "agency_disabled",
+    );
+    await maybeMarkBroadcastCompleted(broadcastRef);
+    return NextResponse.json({ ok: true, status: "skipped" });
+  }
+  if (!emailIsConfigured(subAccount)) {
+    await markFailed(
+      sendRef,
+      broadcastRef,
+      "Email is not configured for this sub-account (disconnected mid-broadcast). Reconnect it and send again.",
+    );
+    await maybeMarkBroadcastCompleted(broadcastRef);
+    return NextResponse.json({ ok: true, status: "failed" });
+  }
 
   if (!contactSnap.exists) {
     await markSkipped(sendRef, broadcastRef, "contact_missing");
@@ -149,12 +172,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, status: "failed" });
   }
   const template = templateSnap.data() as MessageTemplateDoc;
-  const subAccount = subAccountSnap.exists
-    ? (subAccountSnap.data() as SubAccountDoc)
-    : null;
-  if (!emailIsConfigured(subAccount)) {
-    return NextResponse.json({ error: "Email is not configured for this sub-account." }, { status: 503 });
-  }
   const agency = agencySnap.exists ? (agencySnap.data() as AgencyDoc) : null;
 
   // Owner snapshot for merge tags (matches the automation executor pattern).
@@ -257,9 +274,6 @@ export async function POST(request: Request) {
     await broadcastRef.update({
       "totals.sent": FieldValue.increment(1),
       "totals.queued": FieldValue.increment(-1),
-      // Only flip queued → sending the first time a row settles. The
-      // increment-from-0 check happens via maybeMarkBroadcastCompleted.
-      ...(broadcast.status === "queued" ? { status: "sending", startedAt: FieldValue.serverTimestamp() } : {}),
     });
     // Activity row — same shape as a manual send so the timeline reads cleanly.
     await contactRef
@@ -288,7 +302,6 @@ export async function POST(request: Request) {
     await broadcastRef.update({
       "totals.failed": FieldValue.increment(1),
       "totals.queued": FieldValue.increment(-1),
-      ...(broadcast.status === "queued" ? { status: "sending", startedAt: FieldValue.serverTimestamp() } : {}),
     });
   }
 
@@ -316,7 +329,7 @@ export async function POST(request: Request) {
 async function markSkipped(
   sendRef: FirebaseFirestore.DocumentReference,
   broadcastRef: FirebaseFirestore.DocumentReference,
-  reason: "opt_out" | "no_email" | "contact_missing" | "suppressed",
+  reason: BroadcastSkipReason,
 ): Promise<void> {
   await sendRef.update({
     status: "skipped",
@@ -344,28 +357,5 @@ async function markFailed(
   await broadcastRef.update({
     "totals.failed": FieldValue.increment(1),
     "totals.queued": FieldValue.increment(-1),
-  });
-}
-
-/**
- * If totals.queued is now 0, flip status → "completed" and stamp
- * completedAt. Re-reads the doc so the increment that just happened is
- * reflected; uses a transaction so the flip can't fire twice if two final
- * rows settle at exactly the same time.
- */
-async function maybeMarkBroadcastCompleted(
-  broadcastRef: FirebaseFirestore.DocumentReference,
-): Promise<void> {
-  await getAdminDb().runTransaction(async (tx) => {
-    const snap = await tx.get(broadcastRef);
-    if (!snap.exists) return;
-    const data = snap.data() as BroadcastDoc;
-    if (data.status === "completed" || data.status === "failed") return;
-    if ((data.totals?.queued ?? 0) <= 0) {
-      tx.update(broadcastRef, {
-        status: "completed",
-        completedAt: FieldValue.serverTimestamp(),
-      });
-    }
   });
 }

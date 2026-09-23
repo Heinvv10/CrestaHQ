@@ -10,6 +10,8 @@ import {
   query,
 } from "firebase/firestore";
 import { ArrowLeft, Mail } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { useSubAccount } from "@/context/sub-account-context";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { formatContactDate, formatRelativeTime } from "@/lib/format";
@@ -137,7 +139,13 @@ export default function BroadcastDetailPage() {
                 "—"}
             </p>
           </div>
-          <StatusBadge status={broadcast.status} />
+          <div className="flex items-center gap-2">
+            {(broadcast.status === "queued" ||
+              broadcast.status === "sending") && (
+              <CancelButton broadcastId={broadcast.id} />
+            )}
+            <StatusBadge status={broadcast.status} />
+          </div>
         </div>
       </div>
 
@@ -148,7 +156,7 @@ export default function BroadcastDetailPage() {
         <SummaryCard label="Audience" value={t.audienceSize} tone="muted" />
       </div>
 
-      {broadcast.status !== "completed" && broadcast.status !== "failed" && (
+      {(broadcast.status === "queued" || broadcast.status === "sending") && (
         <div className="rounded-xl border bg-card p-4">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>Progress</span>
@@ -245,7 +253,13 @@ function SendStatus({ send }: { send: BroadcastSendDoc }) {
             ? "Contact deleted"
             : send.skippedReason === "suppressed"
               ? "Suppressed"
-              : "Skipped";
+              : send.skippedReason === "cancelled"
+                ? "Cancelled"
+                : send.skippedReason === "automations_paused"
+                  ? "Paused"
+                  : send.skippedReason === "agency_disabled"
+                    ? "Disabled"
+                    : "Skipped";
     return (
       <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
         {reason}
@@ -262,6 +276,34 @@ function SendStatus({ send }: { send: BroadcastSendDoc }) {
   );
 }
 
+function CancelButton({ broadcastId }: { broadcastId: string }) {
+  const [busy, setBusy] = useState(false);
+  async function cancel() {
+    if (!window.confirm("Cancel this broadcast? Emails not yet sent will be skipped.")) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/broadcasts/email/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ broadcastId }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        toast.error(data.error ?? "Couldn't cancel the broadcast.");
+      }
+    } catch {
+      toast.error("Network error. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Button variant="outline" size="sm" disabled={busy} onClick={cancel}>
+      Cancel broadcast
+    </Button>
+  );
+}
+
 function StatusBadge({ status }: { status: BroadcastDoc["status"] }) {
   const map: Record<BroadcastDoc["status"], string> = {
     queued:
@@ -272,6 +314,8 @@ function StatusBadge({ status }: { status: BroadcastDoc["status"] }) {
       "bg-emerald-500/15 text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300",
     failed:
       "bg-rose-500/15 text-rose-700 ring-1 ring-rose-500/30 dark:text-rose-300",
+    cancelled:
+      "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300",
   };
   return (
     <span

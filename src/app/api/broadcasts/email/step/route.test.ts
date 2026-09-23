@@ -35,49 +35,17 @@ vi.mock("@/lib/automations/unsubscribe-token", () => ({
   buildUnsubscribeUrl: (id: string) => `https://app.test/u/${id}`,
 }));
 
-const docStub = (data: () => unknown) => ({
-  get: async () => ({ exists: true, id: "c1", data }),
-  update: async () => undefined,
-  collection: () => ({
-    doc: () => ({
-      get: async () => ({
-        exists: true,
-        data: () => ({ status: "queued" }),
-      }),
-      update: async () => undefined,
-    }),
-    add: async () => undefined,
-  }),
+const mem = await vi.hoisted(async () => {
+  const { createMemoryFirestore } = await import("@/test/memory-firestore");
+  return createMemoryFirestore();
 });
-
-vi.mock("@/lib/firebase/admin", () => ({
-  getAdminDb: () => ({
-    runTransaction: async () => undefined,
-    collection: (name: string) => {
-      const data: Record<string, () => unknown> = {
-        broadcasts: () => ({
-          subAccountId: "sa1",
-          agencyId: "ag1",
-          templateId: "t1",
-          templateName: "Newsletter",
-          status: "sending",
-          totals: { queued: 1 },
-        }),
-        contacts: () => contact,
-        message_templates: () => template,
-        subAccounts: () => ({ name: "Blitz Fibre" }),
-        agencies: () => ({}),
-        users: () => ({ displayName: "Hein", email: "hein@example.com" }),
-      };
-      if (!data[name]) throw new Error(`unexpected collection ${name}`);
-      return { doc: () => docStub(data[name]!) };
-    },
-  }),
-}));
+vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
 const { POST } = await import("./route");
 
 function step(): Promise<Response> {
+  mem.seed("contacts/c1", contact);
+  mem.seed("message_templates/t1", template);
   return POST(
     new Request("https://app.test/api/broadcasts/email/step", {
       method: "POST",
@@ -89,6 +57,18 @@ function step(): Promise<Response> {
 
 beforeEach(() => {
   sent.length = 0;
+  mem.clear();
+  mem.seed("broadcasts/b1", {
+    subAccountId: "sa1",
+    agencyId: "ag1",
+    templateId: "t1",
+    templateName: "Newsletter",
+    status: "sending",
+    totals: { queued: 1 },
+  });
+  mem.seed("broadcasts/b1/sends/c1", { status: "queued" });
+  mem.seed("subAccounts/sa1", { name: "Blitz Fibre", broadcastsEnabledByAgency: true });
+  mem.seed("agencies/ag1", {});
   contact = {
     name: "Thandi",
     email: "thandi@example.co.za",

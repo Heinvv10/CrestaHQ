@@ -1,5 +1,6 @@
 import "server-only";
 
+import { FieldPath } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastAudienceFilter } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -31,7 +32,31 @@ export interface ResolvedAudience {
   }>;
 }
 
-export async function resolveAudience(
+/** Contacts read per fanout page — bounded so no request loads a whole list. */
+export const AUDIENCE_PAGE_SIZE = 200;
+
+/** The filter's contact query, unpaged — callers add a count() or a page. */
+export function audienceQuery(
+  subAccountId: string,
+  filter: BroadcastAudienceFilter,
+): FirebaseFirestore.Query {
+  let query: FirebaseFirestore.Query = getAdminDb()
+    .collection("contacts")
+    .where("subAccountId", "==", subAccountId);
+
+  if (filter.kind === "tag") {
+    query = query.where("tags", "array-contains", filter.tag);
+  } else if (filter.kind === "pipeline_stage") {
+    query = query.where("pipelineStage", "==", filter.stage);
+  }
+  return query;
+}
+
+/**
+ * One page of the audience, in document-id order after `cursor` (a contact
+ * id, or null for the first page). `nextCursor` is null on the last page.
+ */
+export async function resolveAudiencePage(
   subAccountId: string,
   filter: BroadcastAudienceFilter,
   /**
@@ -43,20 +68,13 @@ export async function resolveAudience(
    * Territory-excluded contacts are dropped silently (not surfaced in
    * `skipped`) so the collaborator never learns they exist.
    */
-  territoryFilter: string[] | null = null,
-): Promise<ResolvedAudience> {
-  const db = getAdminDb();
-  let query: FirebaseFirestore.Query = db
-    .collection("contacts")
-    .where("subAccountId", "==", subAccountId);
-
-  if (filter.kind === "tag") {
-    query = query.where("tags", "array-contains", filter.tag);
-  } else if (filter.kind === "pipeline_stage") {
-    query = query.where("pipelineStage", "==", filter.stage);
-  }
-
-  const snap = await query.get();
+  territoryFilter: string[] | null,
+  cursor: string | null,
+  limit = AUDIENCE_PAGE_SIZE,
+): Promise<ResolvedAudience & { nextCursor: string | null }> {
+  let query = audienceQuery(subAccountId, filter).orderBy(FieldPath.documentId());
+  if (cursor) query = query.startAfter(cursor);
+  const snap = await query.limit(limit).get();
 
   const recipients: Contact[] = [];
   const skipped: ResolvedAudience["skipped"] = [];
@@ -80,5 +98,10 @@ export async function resolveAudience(
     recipients.push(contact);
   }
 
-  return { recipients, skipped };
+  const last = snap.docs[snap.docs.length - 1];
+  return {
+    recipients,
+    skipped,
+    nextCursor: snap.docs.length === limit && last ? last.id : null,
+  };
 }
