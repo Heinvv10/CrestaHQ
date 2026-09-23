@@ -59,11 +59,13 @@ Mode belongs to the **checkout attempt** (W5 PR1, see
 - The reconciler requires the verifying key's fingerprint to be the attempt's, and Paystack's
   `domain` to be the attempt's mode. A mismatch never marks anything paid: it answers 200 and
   flags the attempt, with a sentence on the link's `attention`.
-- **Connection changes.** Before a key is replaced or deleted, every attempt still open under it
-  is checked with Paystack using that key: a success is recorded through the reconciler, a
-  checkout that ended unpaid (abandoned, failed, reversed, or unknown to Paystack) is closed as
-  `refused`. So abandoned checkouts, and a routine key regeneration, raise no false alarms. After
-  the change commits, any attempt still open under another key (Paystack could not answer) is
+- **Connection changes.** Disconnecting or replacing a key commits first — Paystack being slow
+  never holds up removing a key. The attempts that were open under the outgoing key are then
+  checked with Paystack using that key (held in memory, 5 s per call): a success is recorded
+  through the reconciler; `reversed` or unknown to Paystack is closed as `refused`; `abandoned` or
+  `failed` is closed only if its link is already paid or withdrawn, because Paystack lets the
+  customer resume or retry on the same reference. So a routine key regeneration, and abandoned
+  checkouts on paid links, raise no false alarms. Anything still open under another key is then
   flagged, with its reference and amount, on the link's `attention`. A
   webhook that arrives for such an attempt (no key, or signed by the replaced key) cannot be
   verified, so nothing is recorded; it flags the attempt if the change missed it and answers

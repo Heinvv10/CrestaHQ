@@ -500,3 +500,82 @@ describe("before the key changes, open attempts are settled or closed with the O
   });
 });
 
+describe("review round 2 — the sweep never closes a checkout that can still take money, and never blocks a disconnect", () => {
+  const status = (st: string) => (c: PaystackCall) => verified({ reference: c.path.split("/").pop()!, status: st });
+
+  it("F1: an abandoned checkout on an unpaid, active link is flagged on disconnect, not closed", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = status("abandoned");
+    await disconnect();
+    expect(attempt(ref)).toMatchObject({ state: "flagged" });
+    expect(String(mem.read(`paymentLinks/${link.id}`)!.attention)).toContain(ref);
+  });
+
+  it("F1b: a failed checkout on an unpaid link is flagged on a key switch, not closed", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = status("failed");
+    await connect("sk_live_k8");
+    expect(attempt(ref)).toMatchObject({ state: "flagged" });
+  });
+
+  it("an abandoned checkout on a WITHDRAWN link is closed", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    await mem.db.doc(`paymentLinks/${link.id}`).update({ active: false });
+    verifyAs = status("abandoned");
+    await disconnect();
+    expect(attempt(ref)).toMatchObject({ state: "refused" });
+  });
+
+  it("a reversed checkout is closed even on an unpaid link", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = status("reversed");
+    await disconnect();
+    expect(attempt(ref)).toMatchObject({ state: "refused" });
+  });
+
+  it("F2: an attempt settled while the sweep was asking Paystack is never overwritten as refused", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    await mem.db.doc(`paymentLinks/${link.id}`).update({ active: false });
+    verifyAs = (c) => {
+      // The payment lands and settles between the sweep's verify and its write.
+      mem.seed(`paymentAttempts/${ref}`, { ...attempt(ref), state: "settled" });
+      return status("abandoned")(c);
+    };
+    await disconnect();
+    expect(attempt(ref)).toMatchObject({ state: "settled" });
+  });
+
+  it("F3: the key is deleted before Paystack is asked anything, so a hung Paystack cannot hold a disconnect", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    let keyStoredWhenAsked: boolean | null = null;
+    let release: () => void = () => {};
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (!new URL(url).pathname.startsWith("/transaction/verify")) throw new Error(`unexpected ${url}`);
+      keyStoredWhenAsked = mem.read(`subAccounts/${SA}/private/paystackConnection`) !== undefined;
+      return new Promise((_, reject) => { release = () => reject(new TypeError("fetch failed")); });
+    }));
+    const pending = disconnect();
+    await vi.waitFor(() => expect(keyStoredWhenAsked).not.toBeNull());
+    expect(keyStoredWhenAsked).toBe(false);
+    release();
+    expect((await pending).status).toBe(200);
+  });
+});
+
