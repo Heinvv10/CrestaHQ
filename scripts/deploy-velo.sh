@@ -45,7 +45,7 @@ NODE_BIN="${NODE_BIN:-/home/velo/.nvm/versions/node/v${NODE_VERSION}/bin}"
 # systemd scope. velo has no passwordless sudo but does have Linger=yes, so the
 # app runs as a USER service (same as jarvis-bff / ollama-proxy on this box).
 SYSTEMCTL="${SYSTEMCTL:-systemctl --user}"
-LOCK="/tmp/crestahq-deploy.lock"
+LOCK="${LOCK:-/tmp/crestahq-deploy.lock}"
 HEALTH_URL="http://127.0.0.1:${PORT}/login"
 HEALTH_TRIES=30
 
@@ -61,6 +61,48 @@ done
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Outside $DEPLOY_DIR on purpose: this survives `next build` wiping `.next`,
+# and never shows up in the "deploy dir has local changes" dirty-checkout
+# check further down (same reasoning as $LOCK living in /tmp). Lives in
+# velo's own persistent cache, not /tmp, so it survives a reboot.
+ROLLBACK_DIR="${ROLLBACK_DIR:-$HOME/.cache/crestahq-prev}"
+# The commit that produced whatever is currently in $ROLLBACK_DIR, so a
+# rollback can say what it's rolling back TO instead of just "the old one".
+ROLLBACK_SHA_FILE="${ROLLBACK_DIR}.commit"
+
+# Only called once the service has already been restarted onto a build that
+# failed its health check or never ran instrumentation — i.e. once rolling
+# forward has demonstrably failed. Restores the last-good standalone bundle
+# and restarts onto it, then re-checks health so the rollback's own outcome
+# is reported honestly rather than assumed, and exits non-zero either way so
+# the failure is never silent.
+rollback_and_die() {
+  local reason="$1"
+  printf '\n\033[31mFAILED: %s\033[0m\n' "$reason" >&2
+  if [ -d "$ROLLBACK_DIR" ]; then
+    local prev_sha="unknown"
+    [ -f "$ROLLBACK_SHA_FILE" ] && prev_sha="$(cat "$ROLLBACK_SHA_FILE")"
+    echo "rolling back to the last-good standalone bundle (commit $prev_sha)..." >&2
+    rm -rf .next/standalone
+    cp -a "$ROLLBACK_DIR" .next/standalone
+    if $SYSTEMCTL restart "$SERVICE"; then
+      echo "restarted $SERVICE on the rolled-back build ($prev_sha) — investigate $after before retrying." >&2
+      local rb_ok=0 rb_code i
+      for i in $(seq 1 $HEALTH_TRIES); do
+        rb_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" || echo 000)
+        if [ "$rb_code" = "200" ]; then rb_ok=1; echo "rollback build is healthy after ${i}s (HTTP 200)" >&2; break; fi
+        sleep 1
+      done
+      [ "$rb_ok" -eq 1 ] || echo "WARNING: the rolled-back build ($prev_sha) ALSO failed its health check — $SERVICE may be down. This needs immediate manual attention." >&2
+    else
+      echo "WARNING: rollback restart of $SERVICE also failed — $SERVICE needs manual attention." >&2
+    fi
+  else
+    echo "WARNING: no previous standalone bundle at $ROLLBACK_DIR to roll back to — $SERVICE may still be serving the broken build." >&2
+  fi
+  exit 1
+}
 
 # ── Lock ────────────────────────────────────────────────────────────────────
 if [ -f "$LOCK" ]; then
@@ -83,6 +125,9 @@ if [ "$dow" -le 5 ] && [ "$hour" -ge 8 ] && [ "$hour" -lt 17 ]; then
   fi
   echo "WARNING: deploying inside business hours because --force was passed."
 fi
+
+[ -d "$NODE_BIN" ] \
+  || die "NODE_BIN ($NODE_BIN) does not exist — Node v${NODE_VERSION} is not installed for velo. Prepending a nonexistent dir to PATH silently no-ops, so the build would run on whatever Node is already first in PATH instead of failing loudly."
 
 export PATH="$NODE_BIN:$PATH"
 cd "$DEPLOY_DIR" || die "deploy dir $DEPLOY_DIR not found"
@@ -130,6 +175,23 @@ if [ "$SKIP_TESTS" -eq 1 ]; then
 else
   say "Tests"
   pnpm test || die "tests"
+fi
+
+# ── Seed the rollback snapshot, but only if there isn't one yet ─────────────
+# `next build` rebuilds `.next` from scratch, so a rollback needs a copy of
+# the bundle saved BEFORE we build. But "whatever happens to be in
+# .next/standalone right now" is not reliably last-good: a PREVIOUS deploy
+# attempt that failed partway through `pnpm build` can leave it in a
+# half-rebuilt state without the service ever having been restarted onto it.
+# The only trustworthy snapshot is one taken after a deploy's own health +
+# instrumentation checks passed (see below, after the restart) — this seed
+# only runs once, to give a rollback target on the very first deploy under
+# this script, using whatever is currently actually running.
+if [ ! -d "$ROLLBACK_DIR" ] && [ -d .next/standalone ]; then
+  mkdir -p "$(dirname "$ROLLBACK_DIR")"
+  cp -a .next/standalone "$ROLLBACK_DIR"
+  echo "$before" > "$ROLLBACK_SHA_FILE"
+  echo "seeded rollback snapshot from the currently running build ($before) at $ROLLBACK_DIR"
 fi
 
 say "Build"
@@ -180,7 +242,7 @@ done
 if [ "$ok" -ne 1 ]; then
   echo "--- last 40 log lines ---"
   journalctl --user -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
-  die "health check never returned 200 on $HEALTH_URL"
+  rollback_and_die "health check never returned 200 on $HEALTH_URL"
 fi
 
 # instrumentation.ts register() fails by never running: the server answers
@@ -192,6 +254,17 @@ for i in $(seq 1 10); do
       | grep -qF "[instrumentation] register() ran"; then ran=1; break; fi
   sleep 1
 done
-[ "$ran" -eq 1 ] || die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
+[ "$ran" -eq 1 ] || rollback_and_die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
+
+# This build is now PROVEN — it passed both the health check and the
+# instrumentation check — so it becomes the last-good snapshot the NEXT
+# deploy can roll back to. Only recorded here, never from a build whose
+# gates we skipped or that died partway through.
+if [ -d .next/standalone ]; then
+  rm -rf "$ROLLBACK_DIR"
+  mkdir -p "$(dirname "$ROLLBACK_DIR")"
+  cp -a .next/standalone "$ROLLBACK_DIR"
+  echo "$after" > "$ROLLBACK_SHA_FILE"
+fi
 
 say "Deployed $after to $SERVICE on port $PORT"
