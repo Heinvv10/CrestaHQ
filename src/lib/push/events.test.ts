@@ -38,9 +38,11 @@ beforeEach(() => {
   seedMember("rep2", "collaborator", ["t2"]);
   seedMember("boss", "admin", []);
   mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", territoryId: "t1" });
+  mem.seed("contacts/untagged", { agencyId: "ag1", subAccountId: "sa1", territoryId: null });
+  mem.seed("contacts/glob", { agencyId: "ag1", subAccountId: "sa1", territoryId: "global" });
 });
 
-const emit = (type: "message.received" | "call.missed") =>
+const emit = (type: "message.received" | "call.missed", contactId = "c1") =>
   dispatchPushForWebhookEvent({
     subAccountId: "sa1",
     agencyId: "ag1",
@@ -48,13 +50,52 @@ const emit = (type: "message.received" | "call.missed") =>
     type,
     payload:
       type === "message.received"
-        ? { message: { contact_id: "c1", contact_name: "Ann", channel: "whatsapp", preview: "hi" } }
-        : { call: { contact_id: "c1", contact_name: "Ann" } },
+        ? { message: { contact_id: contactId, contact_name: "Ann", channel: "whatsapp", preview: "hi" } }
+        : { call: { contact_id: contactId, contact_name: "Ann" } },
   });
 
 describe.each(["message.received", "call.missed"] as const)("%s push", (type) => {
   it("reaches the in-territory collaborator and the admin, not the out-of-territory one", async () => {
     await emit(type);
     expect(t.sentTo.sort()).toEqual(["boss", "rep1"]);
+  });
+});
+
+describe("untagged and Global contacts", () => {
+  it("an untagged contact reaches admins only, as the read rules hide it", async () => {
+    await emit("message.received", "untagged");
+    expect(t.sentTo.sort()).toEqual(["boss"]);
+  });
+
+  it("a Global contact reaches everyone", async () => {
+    await emit("message.received", "glob");
+    expect(t.sentTo.sort()).toEqual(["boss", "rep1", "rep2"]);
+  });
+
+  it("scoping off: an untagged contact reaches everyone", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", territoryScopingEnabled: false });
+    await emit("message.received", "untagged");
+    expect(t.sentTo.sort()).toEqual(["boss", "rep1", "rep2"]);
+  });
+});
+
+describe("booking.created push", () => {
+  const book = (contactId?: string) =>
+    dispatchPushForWebhookEvent({
+      subAccountId: "sa1",
+      agencyId: "ag1",
+      mode: "live",
+      type: "booking.created",
+      payload: { booking: { id: "b1", title: "Visit", ...(contactId ? { contact_id: contactId } : {}) } },
+    });
+
+  it("carries the booked contact's territory", async () => {
+    await book("c1");
+    expect(t.sentTo.sort()).toEqual(["boss", "rep1"]);
+  });
+
+  it("with no contact at all stays unrestricted", async () => {
+    await book();
+    expect(t.sentTo.sort()).toEqual(["boss", "rep1", "rep2"]);
   });
 });

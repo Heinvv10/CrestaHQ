@@ -105,6 +105,10 @@ describe("POST /api/deals", () => {
   it("refuses a scoped collaborator a deal on an out-of-territory contact or territory", async () => {
     expect((await create({ contactId: "cOut", territoryId: "t2" })).status).toBe(403);
     expect((await create({ contactId: "cIn", territoryId: "t2" })).status).toBe(403);
+    // The contact gate on its own: an in-scope territory can't launder an
+    // out-of-territory contact.
+    expect((await create({ contactId: "cOut", territoryId: "t1" })).status).toBe(403);
+    expect((await create({ contactId: "cOut", territoryId: "global" })).status).toBe(403);
     expect(t.create).not.toHaveBeenCalled();
   });
 
