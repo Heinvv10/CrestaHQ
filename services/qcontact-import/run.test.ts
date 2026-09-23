@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leadstackUpserter, loadState, runImport, saveState, type Env } from "./run.ts";
+import { acquireLock, describeLockRefusal, LOCK_STALE_AGE_MS, leadstackUpserter, loadState, runImport, saveState, type Env } from "./run.ts";
+
+// Real fs/promises by default (each call falls through) — only the one
+// "create-then-write race" test below overrides a single readFile call.
+vi.mock("node:fs/promises", { spy: true });
 import type { CaseDetail, CaseRow, ContactDetail } from "./qcontact.ts";
 import type { UpsertBody } from "./map.ts";
 import type { DealEnsurer } from "./deals.ts";
@@ -265,6 +269,7 @@ describe("leadstackUpserter", () => {
       "Idempotency-Key": expect.stringMatching(/^qcontact-case-42-[0-9a-f]{12}$/),
     });
     expect(JSON.parse(init.body as string)).toEqual(body);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("gives the same idempotency key for the same body and a different one when the body changes", async () => {
@@ -427,5 +432,144 @@ describe("runImport with syncStage", () => {
       view: "v", statePath, upsert, syncStage, dryRun: false, log,
     });
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("logs the distinct QContact statuses of cases with no recorded deal id, not just a count", async () => {
+    await seedState({}, {}, [1, 2, 3]); // none of the seen cases have a deal recorded
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    const syncStage: StageSyncer = vi.fn(async () => ({ ok: true as const, action: "patched" as const }));
+    const lines: string[] = [];
+    const s = await runImport({
+      qc: fakeQc([
+        row(1, "2026-09-01", "Solved"),
+        row(2, "2026-09-02", "Solved"),
+        row(3, "2026-09-03", "In Progress"),
+      ]),
+      view: "v", statePath, upsert, syncStage, dryRun: false, log: (l) => lines.push(l),
+    });
+    expect(s.stageUnmapped).toBe(3);
+    const summaryLine = lines.find((l) => l.startsWith("stage sync:"));
+    expect(summaryLine).toContain("3 case(s) have no recorded deal id");
+    expect(summaryLine).toContain("In Progress");
+    expect(summaryLine).toContain("Solved");
+  });
+});
+
+describe("acquireLock", () => {
+  let lockPath: string;
+  beforeEach(() => {
+    lockPath = join(dir, "state.json.lock");
+  });
+
+  const setMtime = (path: string, ageMs: number) => {
+    const t = new Date(Date.now() - ageMs);
+    return utimes(path, t, t);
+  };
+
+  it("acquires a fresh lock and the release function removes the lock file", async () => {
+    const result = await acquireLock(lockPath);
+    if (!result.ok) throw new Error("expected acquireLock to succeed");
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid));
+    await result.release();
+    await expect(readFile(lockPath, "utf8")).rejects.toThrow();
+  });
+
+  it("refuses to acquire when the lock is held by a live process, and isn't flagged stale", async () => {
+    // process.pid is always alive from this process's own point of view.
+    await writeFile(lockPath, String(process.pid));
+    const result = await acquireLock(lockPath);
+    expect(result).toMatchObject({ ok: false, stale: false });
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid)); // untouched
+  });
+
+  it("clears a stale lock (owning PID is gone) and acquires it", async () => {
+    // PID 999999999 is out of range / essentially guaranteed not to exist.
+    await writeFile(lockPath, "999999999");
+    const result = await acquireLock(lockPath);
+    if (!result.ok) throw new Error("expected acquireLock to succeed");
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid));
+    await result.release();
+  });
+
+  it("treats an unparsable lock file as stale and replaces it", async () => {
+    await writeFile(lockPath, "not-a-pid");
+    const result = await acquireLock(lockPath);
+    if (!result.ok) throw new Error("expected acquireLock to succeed");
+    await result.release();
+  });
+
+  it("treats an empty lock file as stale rather than a live PID (Number('') is 0, not a valid pid)", async () => {
+    await writeFile(lockPath, "");
+    const result = await acquireLock(lockPath);
+    if (!result.ok) throw new Error("expected acquireLock to succeed");
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid));
+    await result.release();
+  });
+
+  it("rejects pid 0 and negative pids as invalid, not live", async () => {
+    await writeFile(lockPath, "0");
+    const result = await acquireLock(lockPath);
+    expect(result.ok).toBe(true);
+  });
+
+  it("flags a refusal as stale once the lock is older than the 1h cap, even with a live-looking pid", async () => {
+    await writeFile(lockPath, String(process.pid));
+    await setMtime(lockPath, LOCK_STALE_AGE_MS + 60_000);
+    const result = await acquireLock(lockPath);
+    expect(result).toMatchObject({ ok: false, stale: true });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.ageMs).toBeGreaterThan(LOCK_STALE_AGE_MS);
+    // Refused, not auto-reclaimed — the file is left exactly as it was.
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(String(process.pid));
+  });
+
+  it("does not flag a refusal as stale when the lock is younger than the cap", async () => {
+    await writeFile(lockPath, String(process.pid));
+    await setMtime(lockPath, LOCK_STALE_AGE_MS - 60_000);
+    const result = await acquireLock(lockPath);
+    expect(result).toMatchObject({ ok: false, stale: false });
+  });
+
+  it("backs off instead of proceeding if the lock no longer holds our pid right after we wrote it", async () => {
+    // Simulates the create-then-write race: another run judges the lock
+    // stale off its momentarily-empty content, deletes it, and recreates it
+    // with its own pid, between our open() and our own read-back.
+    vi.mocked(readFile).mockResolvedValueOnce("999999998" as never);
+    const result = await acquireLock(lockPath);
+    expect(result).toMatchObject({ ok: false, stale: false });
+    // Backing off must not delete what it (falsely, per the mock) believes
+    // is someone else's winning lock — acquireLock's back-off path never
+    // calls unlink, unlike the "genuinely stale" path.
+    await expect(readFile(lockPath, "utf8")).resolves.toBeTypeOf("string");
+  });
+
+  it("logs to stderr when a release fails, instead of swallowing it silently", async () => {
+    const result = await acquireLock(lockPath);
+    if (!result.ok) throw new Error("expected acquireLock to succeed");
+    await rm(lockPath); // release's unlink will now fail with ENOENT
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await result.release();
+      expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("failed to release qcontact-import lock"));
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+});
+
+describe("describeLockRefusal", () => {
+  it("routes a stale refusal to stderr with a non-zero exit code", () => {
+    const r = describeLockRefusal("/tmp/x.lock", { ok: false, stale: true, ageMs: LOCK_STALE_AGE_MS + 120_000 });
+    expect(r.stream).toBe("stderr");
+    expect(r.exitCode).toBe(1);
+    expect(r.message).toContain("/tmp/x.lock");
+    expect(r.message).toContain("still looks held");
+  });
+
+  it("routes a normal (non-stale) refusal to stdout with exit code 0", () => {
+    const r = describeLockRefusal("/tmp/x.lock", { ok: false, stale: false, ageMs: 5_000 });
+    expect(r.stream).toBe("stdout");
+    expect(r.exitCode).toBe(0);
+    expect(r.message).toContain("already in progress");
   });
 });

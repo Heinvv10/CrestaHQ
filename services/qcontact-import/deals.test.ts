@@ -43,6 +43,8 @@ describe("leadstackDealEnsurer", () => {
       value: 0,
       currency: "ZAR",
     });
+    expect(listInit.signal).toBeInstanceOf(AbortSignal);
+    expect(createInit.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("gives the same idempotency key for the same title and a different one when the title changes", async () => {
