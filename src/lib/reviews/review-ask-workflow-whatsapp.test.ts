@@ -23,7 +23,7 @@ vi.mock("@/lib/comms/whatsapp/template-dispatch", () => ({
 vi.mock("@/lib/comms/whatsapp/readiness", () => ({
   checkWhatsappReadiness: async () => ({ ready: true, provider: "cloud", sender: { phoneNumber: "+15550002" } }),
 }));
-vi.mock("@/lib/comms/whatsapp/template-registrations", () => ({ isTemplateApprovedFor: () => true }));
+vi.mock("@/lib/comms/whatsapp/template-registrations", () => ({ isTemplateApprovedFor: () => true, templateRegistration: () => null }));
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
 vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed: true }), UsageQuotaExceededError: class extends Error {} }));
 

@@ -70,6 +70,14 @@ export interface CreateContactInput {
    * cap (lib/api/enrolment-cap).
    */
   apiKeyId?: string;
+  /**
+   * The contact is being created from an inbound WhatsApp opt-out (a
+   * never-seen number whose message is STOP). It is written already opted
+   * out and announces nothing — no `contact.created` webhook, no workflow
+   * enrolment — so no automation can message someone whose only message
+   * was STOP.
+   */
+  optedOutOnWhatsapp?: boolean;
   /** Optional resolved location (form submit supplies this; UI doesn't). */
   location?: {
     countryCode: string | null;
@@ -103,6 +111,15 @@ export async function createContactServerSide(
   const ref = getAdminDb().collection("contacts").doc();
   const doc = buildContactDoc(input);
   await ref.set(doc);
+  if (input.optedOutOnWhatsapp) {
+    const now = new Date();
+    const contact = serializeContactForApi(
+      ref.id,
+      { ...doc, createdAt: now, updatedAt: now },
+      input.mode
+    );
+    return { id: ref.id, contact, firedTrigger: false };
+  }
   const { contact, trigger } = announceContactCreated(input, ref.id, doc);
   return { id: ref.id, contact, firedTrigger: trigger !== null };
 }
@@ -128,6 +145,7 @@ export function buildContactDoc(input: CreateContactInput) {
     attribution: input.attribution ?? null,
     emailOptedOut: false,
     smsOptedOut: false,
+    ...(input.optedOutOnWhatsapp ? { whatsappOptedOut: true } : {}),
     countryCode: loc?.countryCode ?? null,
     country: loc?.country ?? null,
     city: loc?.city ?? null,
