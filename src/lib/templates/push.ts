@@ -8,6 +8,9 @@ import type { TemplatePushResult } from "@/types/templates";
 interface PushScope {
   agencyId: string;
   createdByUid: string;
+  /** The template's id — doubles as `applySnapshot`'s dedupe key so a retry
+   *  overwrites rather than duplicates (see ApplyScope.snapshotId). */
+  templateId: string;
 }
 
 /**
@@ -37,11 +40,16 @@ export async function pushTemplate(
         ok: false,
         error: "Sub-account not found in this agency.",
         created: none,
+        skipped: none,
       });
       continue;
     }
     try {
-      const r = await applySnapshot(db, payload, subAccountId, scope);
+      const r = await applySnapshot(db, payload, subAccountId, {
+        agencyId: scope.agencyId,
+        createdByUid: scope.createdByUid,
+        snapshotId: scope.templateId,
+      });
       results.push({
         subAccountId,
         ok: true,
@@ -49,6 +57,11 @@ export async function pushTemplate(
           forms: r.formsCreated,
           messageTemplates: r.templatesCreated,
           workflows: r.workflowsCreated,
+        },
+        skipped: {
+          forms: r.formsSkipped,
+          messageTemplates: r.templatesSkipped,
+          workflows: r.workflowsSkipped,
         },
       });
     } catch (err) {
@@ -58,6 +71,7 @@ export async function pushTemplate(
         ok: false,
         error: err instanceof Error ? err.message : "Push failed.",
         created: none,
+        skipped: none,
       });
     }
   }

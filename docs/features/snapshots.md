@@ -19,15 +19,28 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   so apply can remap. Resets runtime counters (`workflow.stats`,
   `form.submissionCount`).
 - **Apply** ([src/lib/snapshots/apply.ts](src/lib/snapshots/apply.ts)) —
-  **CREATE-ONLY**: fresh ids, never overwrites/updates/deletes, so it is safe
-  against a live sub-account. Forms are written first to build an old→new id map;
-  workflow `trigger.formId` is remapped through it (or nulled). Workflows always
-  arrive as **drafts** so nothing enrolls a contact before review.
-  `whatsapp_template` nodes have `templateId` nulled — the target has its own
-  Meta-approved templates, so the source id would dangle.
+  **CREATE-ONLY**: never overwrites/updates/deletes, so it is safe against a
+  live sub-account. Each doc's id is **deterministic** — derived from
+  (target sub-account, snapshot, source doc), not a fresh random one — so
+  re-applying the SAME snapshot into the SAME target (a deliberate re-apply,
+  or a retry after a partial failure) recognises what it already wrote and
+  skips it rather than duplicating or overwriting it; an operator's edits
+  since the first apply (an activated workflow, a changed node) are never
+  touched. `applySnapshot`'s result reports each entity as created vs.
+  skipped so a caller can tell the two apart. Forms are written first to
+  build an old→new id map (populated even for a skipped form, so a workflow
+  still links to it); workflow `trigger.formId` is remapped through it (or
+  nulled). Workflows always arrive as **drafts** so nothing enrolls a
+  contact before review. `whatsapp_template` nodes have `templateId`
+  nulled — the target has its own Meta-approved templates, so the source id
+  would dangle. Apply status (`started` → `completed` | `failed`) is
+  recorded at `subAccounts/{id}/snapshotApplies/{snapshotId}` — see
+  [firestore-collections.md](../architecture/firestore-collections.md) — a
+  forensic record only, not read by any route.
 - **Two entities need a pre-read to honour create-only**, because they are not
-  addressed by a fresh auto-id: **custom fields** are keyed by `key` (unique per
-  subAccount+entity), so a key the target already defines is skipped rather than
+  addressed by a deterministic id in the same way: **custom fields** are keyed
+  by `key` (unique per subAccount+entity), so a key the target already defines
+  (from this snapshot before, or from anywhere else) is skipped rather than
   redefined — two definitions would fight over the same `contact.customFields`
   slot. Their `folderId` is stripped on capture: custom-field folders do not
   travel in a snapshot yet, so every applied field lands in General (workflow

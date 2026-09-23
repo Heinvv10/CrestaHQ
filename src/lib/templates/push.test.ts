@@ -24,7 +24,7 @@ const db = Object.assign(mem.db, {
   },
 }) as unknown as Firestore;
 
-const scope = { agencyId: "ag1", createdByUid: "owner" };
+const scope = { agencyId: "ag1", createdByUid: "owner", templateId: "tpl1" };
 
 const workflowPayload = (): SnapshotPayload => ({
   forms: [
@@ -54,9 +54,10 @@ beforeEach(() => {
 describe("pushTemplate", () => {
   it("creates a draft workflow per target, remapped to the pushed form and stamped with the target's tenancy", async () => {
     const results = await pushTemplate(db, workflowPayload(), ["sa1", "sa2"], scope);
+    const none = { forms: 0, messageTemplates: 0, workflows: 0 };
     expect(results).toEqual([
-      { subAccountId: "sa1", ok: true, created: { forms: 1, messageTemplates: 0, workflows: 1 } },
-      { subAccountId: "sa2", ok: true, created: { forms: 1, messageTemplates: 0, workflows: 1 } },
+      { subAccountId: "sa1", ok: true, created: { forms: 1, messageTemplates: 0, workflows: 1 }, skipped: none },
+      { subAccountId: "sa2", ok: true, created: { forms: 1, messageTemplates: 0, workflows: 1 }, skipped: none },
     ]);
     for (const sa of ["sa1", "sa2"]) {
       const wfs = mem.list("workflows").filter((w) => w.subAccountId === sa);

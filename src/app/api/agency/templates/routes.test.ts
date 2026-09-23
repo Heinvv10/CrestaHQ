@@ -202,10 +202,11 @@ describe("POST /api/agency/templates/[id]/push", () => {
     const res = await push.POST(json({ subAccountIds: ["sa1", "foreign", "sa2", "sa2"] }), params("tpl1"));
     expect(res.status).toBe(200);
     const { results } = await res.json();
+    const none = { forms: 0, messageTemplates: 0, workflows: 0 };
     expect(results).toEqual([
-      { subAccountId: "sa1", ok: true, created: { forms: 0, messageTemplates: 0, workflows: 1 } },
-      { subAccountId: "foreign", ok: false, error: "Sub-account not found in this agency.", created: { forms: 0, messageTemplates: 0, workflows: 0 } },
-      { subAccountId: "sa2", ok: true, created: { forms: 0, messageTemplates: 0, workflows: 1 } },
+      { subAccountId: "sa1", ok: true, created: { forms: 0, messageTemplates: 0, workflows: 1 }, skipped: none },
+      { subAccountId: "foreign", ok: false, error: "Sub-account not found in this agency.", created: none, skipped: none },
+      { subAccountId: "sa2", ok: true, created: { forms: 0, messageTemplates: 0, workflows: 1 }, skipped: none },
     ]);
     const pushed = mem.list("workflows").filter((w) => w.name === "Lib wf");
     expect(pushed.map((w) => w.subAccountId).sort()).toEqual(["sa1", "sa2"]);

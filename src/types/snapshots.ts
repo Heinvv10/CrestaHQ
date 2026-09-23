@@ -161,14 +161,27 @@ export interface SnapshotShareSummary {
   status: SnapshotShareStatus;
 }
 
-/** Returned by applySnapshot + the apply API route. */
+/**
+ * Returned by applySnapshot + the apply API route. Every `*Created` count is
+ * docs actually written this run; a doc whose deterministic id (target +
+ * snapshot + sourceId) already exists — from a prior apply of this same
+ * snapshot — is never overwritten, and counts under the matching
+ * `*Skipped` instead. Re-applying the same snapshot is therefore safe to
+ * run any number of times: it fills in whatever didn't make it the first
+ * time and reports the rest as skipped, never as re-created.
+ */
 export interface SnapshotApplyResult {
   formsCreated: number;
+  formsSkipped: number;
   templatesCreated: number;
+  templatesSkipped: number;
   productsCreated: number;
+  productsSkipped: number;
   workflowsCreated: number;
+  workflowsSkipped: number;
   customFieldsCreated: number;
-  /** Custom fields skipped because the target already defines that key. */
+  /** Custom fields skipped because the target already defines that key
+   *  (from this snapshot on a prior apply, or from any other source). */
   customFieldsSkipped: number;
   /** True when the persona was written. False when the snapshot carried none,
    *  or the target already had a persona (apply never overwrites one). */
