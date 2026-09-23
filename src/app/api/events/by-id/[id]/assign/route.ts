@@ -5,6 +5,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
@@ -70,6 +71,8 @@ export async function POST(
 
   const access = await requireSubAccountMember(request, event.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, event.territoryId);
+  if (gate) return gate;
 
   if (eventSource(event) !== "booking_page") {
     return NextResponse.json(

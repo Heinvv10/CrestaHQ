@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import type { Contact } from "@/types/contacts";
 
 export function requireUid(request: Request):
@@ -19,7 +20,9 @@ export function requireUid(request: Request):
  * Confirm the caller can act on the given contact. The caller passes:
  *   - if they're the agency owner of the contact's agency, OR
  *   - if they have an active sub-account membership in the contact's
- *     sub-account.
+ *     sub-account AND, when territory scoping is on and they are a
+ *     collaborator, the contact's territory is one of theirs (the same
+ *     rule as the `contacts` read rule — see `territoryGate`).
  *
  * Returns the resolved Contact on success, or a NextResponse with the
  * appropriate error status. Replaces the legacy `requireContactOwner` which
@@ -69,6 +72,11 @@ export async function requireContactAccessible(
   if (member.status !== "active") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+  const gate = await territoryGate(
+    { uid, subAccountId: data.subAccountId, subAccountRole: member.role },
+    data.territoryId,
+  );
+  if (gate) return gate;
 
   return { id: snap.id, ...data };
 }
