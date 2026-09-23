@@ -63,6 +63,16 @@ describe("twilio whatsapp status callback", () => {
     expect(mem.read(ROW)?.status).toBe("sent");
   });
 
+  it("migrated sub-account: token only in private/twilioCredentials still validates", async () => {
+    mem.seed("subAccounts/sa1", {
+      agencyId: "ag1", whatsappEnabledByAgency: true,
+      twilioConfig: { enabled: true, authTokenSet: true, whatsappFromNumber: "+27110000001" },
+    });
+    mem.seed("subAccounts/sa1/private/twilioCredentials", { authToken: "tok_private" });
+    expect((await post(params(), "tok_private")).status).toBe(200);
+    expect(mem.read(ROW)).toMatchObject({ status: "failed", error: "63016" });
+  });
+
   it("a callback from another sub-account's sender never touches this row", async () => {
     await post(params({ From: "whatsapp:+27110000002" }), "tok_sa2");
     expect(mem.read(ROW)?.status).toBe("sent");
