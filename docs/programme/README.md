@@ -157,8 +157,12 @@ flowchart LR
 | **W2** | Blitz support is worked in LeadStack, and every change is attributable | audit event stream; tickets on threads; queues + SLA | Blitz staff close a real ticket in the browser; audit row for each state change |
 | **W3** | Operators can see and steer the pipeline | stage history; reports roll-up; assignment; rules scoring; follow-up risk; audit centre UI; workflow goal events + per-step conversion; per-contact send windows / blackout dates | report numbers reconcile against a Firestore count; assignment + score changes visible in audit |
 | **W4** | Marketing and commerce basics that tenants ask for | email tracking + suppression; conditional forms/surveys; Paystack payment links | a real broadcast shows delivered/opened; a real Paystack test payment via a link |
+| **W5** | A tenant bills a customer on a cadence without touching it | attempt-scoped payment mode (closes W4's open findings); card mandates; auto-charge on the recurring engine | on #1000 in test mode: two consecutive cycles charge and settle unattended, a third declines and falls back to an emailed invoice |
 
-Specs: [W1 Workflow Operations](w1-workflow-operations.md). W2–W4 specs are written when the previous
+Specs: [W1 Workflow Operations](w1-workflow-operations.md),
+[W2 Service Desk](w2-service-desk.md),
+[W4 Paystack payment links](w4-paystack-payment-links.md),
+[W5 Paystack auto-charge](w5-paystack-auto-charge.md). Specs are written when the previous
 wave's proof lands, so they plan against the code that exists, not the code expected.
 
 ## First implementation slice
