@@ -35,6 +35,19 @@ import { sweepOldWatchdogRuns } from "@/lib/server/agents-watchdog-service";
 const BATCH_LIMIT = 500;
 const CONTINUATION_DELAY_SEC = 60;
 
+/**
+ * Collection groups swept via `collectionGroup(name).where("expiresAt", "<", now)`
+ * below. Each needs a COLLECTION_GROUP-scope ascending index on `expiresAt`
+ * in firestore.indexes.json — a single-field collection index is not enough
+ * for a collectionGroup query. Exported so the index-coverage test can't
+ * drift from what this route actually queries.
+ */
+export const EXPIRES_AT_COLLECTION_GROUPS = [
+  "apiRequestLogs",
+  "apiIdempotency",
+  "webhookEvents",
+] as const;
+
 interface SweepResult {
   collection: string;
   deleted: number;
