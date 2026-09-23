@@ -36,8 +36,11 @@ across territories.
 - **Invoice link** (`invoiceId` set): amount = the invoice total at creation, in cents. Only a
   sent/viewed, unexpired ZAR invoice qualifies. Description `Invoice INV-…`.
 - **Ad-hoc link**: amount and description typed by the operator. Integer cents, R0.01–R1,000,000.
-- One open link per invoice: creating again returns the existing active, unpaid link. A
-  deactivated or paid one doesn't count, so a new link can be made after deactivating.
+- One open link per invoice: creating again returns the existing active, unpaid link while it
+  is still payable (same mode, same amount as the invoice's current total). One that is not —
+  the invoice was edited, or the workspace switched test/live — is withdrawn and replaced, in
+  one transaction, so two clicks replace it once. A deactivated or paid one doesn't count, so
+  a new link can be made after deactivating.
 - No expiry. The operator can deactivate (no reactivate in PR1).
 
 ## Test mode
@@ -90,8 +93,10 @@ Mode belongs to the **checkout attempt** (W5 PR1, see
    agency has switched Payments off since (like the Stripe invoice pay route), and, for an
    invoice link, when the invoice has been paid, has expired, or its total no longer equals the
    link's amount.
-3. **Return** — Paystack redirects to `/pay/link/{token}?reference=…`. The page says
-   "confirming" and writes nothing.
+3. **Return** — Paystack redirects to `/pay/link/{token}?reference=…`. The page writes
+   nothing and checks nothing but the token: it says "Payment received" when the webhook has
+   already recorded that same reference on the link, and "confirming" otherwise — never that
+   the link is dead.
 4. **Reconcile** — `/api/webhooks/paystack/sa/[subAccountId]`, after its existing signature
    check, hands `charge.success` to
    [`payment-link-reconciler.ts`](../../src/lib/paystack/payment-link-reconciler.ts).
@@ -169,8 +174,10 @@ Sending via the inbox, refunds, partial payments, reactivation, link expiry, non
 - **Stripe after Paystack.** A Stripe card payment arriving after a Paystack-link payment for
   the same invoice gets `already_paid` from the shared paid path. The Stripe order is
   recorded, but nothing flags the invoice as paid twice.
-- **Concurrent creates.** Two concurrent creates for the same invoice can make two links: the
-  one-open-link check is a plain query, not a transaction. If both are paid, the second is
+- **Concurrent first creates.** Two concurrent creates for an invoice with NO link yet can
+  make two links: the check runs in a transaction, but nothing is written to a doc both read,
+  so they are not guaranteed to conflict. (Replacing a stale link does conflict, so that
+  case is safe.) If both are paid, the second is
   flagged "paid another way — refund may be owed".
 - **Side effects at most once.** A crash between the invoice's paid commit and its side
   effects skips them (pre-existing, shared paid path).

@@ -83,24 +83,6 @@ export async function createPaymentLink(input: {
     }
     amountCents = invoiceTotalCents(quote);
     if (amountCents <= 0) return fail(409, "This invoice has nothing to pay.");
-    // One live link per invoice: a second click hands back the open one, so
-    // the customer can't be sent two links and pay both. A deactivated or
-    // paid link doesn't count. An open link issued in the OTHER mode can no
-    // longer be paid (see `loadPayableLink`), so it is withdrawn and replaced.
-    const existing = await db
-      .collection("paymentLinks")
-      .where("subAccountId", "==", input.subAccountId)
-      .where("invoiceId", "==", input.invoiceId)
-      .get();
-    const openLinks = existing.docs.filter((d) => {
-      const l = d.data() as PaymentLink;
-      return l.active && l.status === "open";
-    });
-    const open = openLinks.find((d) => (d.data() as PaymentLink).mode === mode);
-    if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
-    for (const stale of openLinks) {
-      await stale.ref.update({ active: false, updatedAt: FieldValue.serverTimestamp() });
-    }
     invoiceId = input.invoiceId;
     contactId = quote.contactId ?? null;
     description = `Invoice ${quote.quoteNumber}`;
@@ -137,8 +119,38 @@ export async function createPaymentLink(input: {
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
-  await ref.set(data);
-  return { ok: true, link: { id: ref.id, ...data } };
+  if (!invoiceId) {
+    await ref.set(data);
+    return { ok: true, link: { id: ref.id, ...data } };
+  }
+  // One live link per invoice: a second click hands back the open one, so
+  // the customer can't be sent two links and pay both. A deactivated or paid
+  // link doesn't count. An open link that can no longer be paid — issued in
+  // the OTHER mode, or for a total the invoice no longer has (see
+  // `loadPayableLink`) — is withdrawn and replaced. In one transaction, so two
+  // clicks racing to replace the same stale link both write it and the loser
+  // retries, finding the winner's link instead of making a second.
+  const linksForInvoice = db
+    .collection("paymentLinks")
+    .where("subAccountId", "==", input.subAccountId)
+    .where("invoiceId", "==", invoiceId);
+  return db.runTransaction(async (t) => {
+    const existing = await t.get(linksForInvoice);
+    const openLinks = existing.docs.filter((d) => {
+      const l = d.data() as PaymentLink;
+      return l.active && l.status === "open";
+    });
+    const open = openLinks.find((d) => {
+      const l = d.data() as PaymentLink;
+      return l.mode === mode && l.amountCents === amountCents && l.currency === PAYMENT_LINK_CURRENCY;
+    });
+    if (open) return { ok: true as const, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
+    for (const stale of openLinks) {
+      t.update(stale.ref, { active: false, updatedAt: FieldValue.serverTimestamp() });
+    }
+    t.set(ref, data);
+    return { ok: true as const, link: { id: ref.id, ...data } };
+  });
 }
 
 export async function deactivatePaymentLink(input: {
@@ -170,6 +182,10 @@ export async function loadPayableLink(
     return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
   }
   const link = { id: linkId, ...data };
+  // A payer back from Paystack is never told the link is dead — telling them
+  // could prompt a second payment. Checked before every refusal below, since
+  // the webhook may already have marked the link (and its invoice) paid.
+  if (opts.returning) return { ok: true, link, mode: null };
   if (link.status === "paid") return fail(410, "This has already been paid — nothing more to pay.");
   if (!link.active) return fail(410, "This payment link has been withdrawn. Contact the sender if you think that's a mistake.");
   // Re-checked at pay time, like the Stripe invoice pay route: the agency may
@@ -192,9 +208,6 @@ export async function loadPayableLink(
       return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
     }
   }
-  // A payer back from Paystack is only told their payment is being confirmed:
-  // telling them the link is dead could prompt a second payment.
-  if (opts.returning) return { ok: true, link, mode: null };
   const conn = await readPaystackConnectionSecret(link.subAccountId);
   if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
   // A link is paid in the mode it was issued in. Switching the workspace

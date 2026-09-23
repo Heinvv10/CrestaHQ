@@ -156,6 +156,33 @@ describe("the payer returning from Paystack", () => {
     expect(calls).toEqual([]);
   });
 
+  it("shows a paid confirmation, not a dead link, when the webhook recorded this reference first", async () => {
+    const ref = "pl-link1-0123456789abcdef";
+    seedInvoice("inv1", { status: "paid" });
+    seedLink("link1", { token, invoiceId: "inv1", amountCents: 115000, status: "paid", paystackReference: ref });
+    const res = await get(`?trxref=${ref}&reference=${ref}`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Payment received");
+    expect(html).not.toContain("can't be used");
+  });
+
+  it("says confirming, not paid, when the link was paid under a different reference", async () => {
+    seedLink("link1", { token, status: "paid", paystackReference: "pl-link1-ffffffffffffffff" });
+    const res = await get("?reference=pl-link1-0123456789abcdef");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Confirming your payment");
+    expect(html).not.toContain("Payment received");
+  });
+
+  it("never tells a returning payer the link is dead, even once it is withdrawn", async () => {
+    seedLink("link1", { token, active: false });
+    const res = await get("?reference=pl-link1-0123456789abcdef");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Confirming your payment");
+  });
+
   it("labels the page TEST MODE while the connection is in test mode", async () => {
     expect(await (await get()).text()).toContain("TEST MODE");
   });
