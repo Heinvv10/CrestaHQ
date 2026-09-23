@@ -16,6 +16,7 @@ import {
 import { scheduleDeliveryRetry } from "@/lib/api/webhooks/dispatch";
 import { signWebhookPayload } from "@/lib/api/webhooks/signing";
 import { LATEST_API_VERSION } from "@/lib/api/versions";
+import { publicFetch } from "@/lib/webhooks/public-fetch";
 
 /**
  * Webhook delivery worker — QStash callback. POSTs the signed event
@@ -139,7 +140,9 @@ export async function POST(request: Request) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(subscription.url, {
+    // publicFetch: refuses internal addresses at connect time and never
+    // follows redirects — the response lands in a tenant-readable log.
+    const res = await publicFetch(subscription.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
