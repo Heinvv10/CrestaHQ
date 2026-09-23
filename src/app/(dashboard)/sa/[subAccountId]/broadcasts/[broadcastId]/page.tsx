@@ -142,7 +142,10 @@ export default function BroadcastDetailPage() {
           <div className="flex items-center gap-2">
             {(broadcast.status === "queued" ||
               broadcast.status === "sending") && (
-              <CancelButton broadcastId={broadcast.id} />
+              <CancelButton
+                broadcastId={broadcast.id}
+                subAccountId={broadcast.subAccountId}
+              />
             )}
             <StatusBadge status={broadcast.status} />
           </div>
@@ -276,7 +279,13 @@ function SendStatus({ send }: { send: BroadcastSendDoc }) {
   );
 }
 
-function CancelButton({ broadcastId }: { broadcastId: string }) {
+function CancelButton({
+  broadcastId,
+  subAccountId,
+}: {
+  broadcastId: string;
+  subAccountId: string;
+}) {
   const [busy, setBusy] = useState(false);
   async function cancel() {
     if (!window.confirm("Cancel this broadcast? Emails not yet sent will be skipped.")) return;
@@ -285,7 +294,7 @@ function CancelButton({ broadcastId }: { broadcastId: string }) {
       const res = await fetch("/api/broadcasts/email/cancel", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ broadcastId }),
+        body: JSON.stringify({ broadcastId, subAccountId }),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };

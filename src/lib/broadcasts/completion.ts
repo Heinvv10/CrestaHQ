@@ -4,6 +4,9 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastDoc } from "@/types";
 
+/** QStash retries for a fanout page; the last delivery fails the broadcast. */
+export const BROADCAST_FANOUT_RETRIES = 3;
+
 /**
  * If the fan-out has finished and totals.queued is now 0, flip status →
  * "completed" and stamp completedAt. Re-reads the doc so the increment that

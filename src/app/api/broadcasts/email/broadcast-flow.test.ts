@@ -21,9 +21,9 @@ import {
  */
 
 vi.mock("@/lib/firebase/admin", async () => {
-  const { h } = await import("@/test/broadcast-harness");
+  const { harnessDb } = await import("@/test/broadcast-harness");
   return {
-    getAdminDb: () => h.mem.db,
+    getAdminDb: () => harnessDb(),
     getAdminAuth: () => ({ getUser: async () => ({ displayName: "Operator" }) }),
   };
 });
@@ -33,15 +33,15 @@ vi.mock("@/lib/automations/qstash", async () =>
 vi.mock("@/lib/comms/resend", async () =>
   (await import("@/test/broadcast-harness")).resendMock(),
 );
-vi.mock("@/lib/auth/require-tenancy", () => ({
-  requireSubAccountMember: async () => ({ uid: "u1", email: "op@tenant.test" }),
-}));
-vi.mock("@/lib/auth/territory-filter", () => ({
-  loadEffectiveTerritoryScope: async () => ({ enforce: false, ids: null }),
-}));
-vi.mock("@/lib/server/usage-meter", () => ({
-  checkQuota: async () => ({ allowed: true }),
-}));
+vi.mock("@/lib/auth/require-tenancy", async () =>
+  (await import("@/test/broadcast-harness")).tenancyMocks.tenancy(),
+);
+vi.mock("@/lib/auth/territory-filter", async () =>
+  (await import("@/test/broadcast-harness")).tenancyMocks.territory(),
+);
+vi.mock("@/lib/server/usage-meter", async () =>
+  (await import("@/test/broadcast-harness")).usageMock(),
+);
 vi.mock("@/lib/automations/unsubscribe-token", () => ({
   buildUnsubscribeUrl: (id: string) => `https://app.test/u/${id}`,
 }));
@@ -172,7 +172,7 @@ describe("step", () => {
     seedTenant(4);
     const { broadcastId } = (await (await sendBroadcast()).json()) as { broadcastId: string };
     await drain(isFanout);
-    const res = await call("/api/broadcasts/email/cancel", { broadcastId });
+    const res = await call("/api/broadcasts/email/cancel", { broadcastId, subAccountId: "sa1" });
     expect(res.status).toBe(200);
     await drain();
 
@@ -187,7 +187,7 @@ describe("step", () => {
   it("stops fanning out once cancelled", async () => {
     seedTenant(450);
     const { broadcastId } = (await (await sendBroadcast()).json()) as { broadcastId: string };
-    await call("/api/broadcasts/email/cancel", { broadcastId });
+    await call("/api/broadcasts/email/cancel", { broadcastId, subAccountId: "sa1" });
     await drain();
     expect(h.publishLog.filter(isStep)).toHaveLength(0);
     expect(h.sent).toHaveLength(0);

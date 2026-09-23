@@ -47,7 +47,7 @@ export async function claimSend(
       if (age < CLAIM_STALE_MS) return { outcome: "in_flight" };
       tx.update(sendRef, {
         status: "failed",
-        error: "Send outcome unknown — the worker was interrupted. Not retried to avoid a duplicate email.",
+        error: "Delivery unknown (interrupted) — not retried to avoid a duplicate email.",
         sentAt: FieldValue.serverTimestamp(),
       });
       settleTotals("totals.failed");

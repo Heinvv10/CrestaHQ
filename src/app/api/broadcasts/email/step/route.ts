@@ -12,9 +12,11 @@ import { resolveMergeTags } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { logIfReviewAsk } from "@/lib/reviews/review-ask";
 import { claimSend } from "@/lib/broadcasts/claim-send";
+import { releaseClaim, settleSend } from "@/lib/broadcasts/settle-send";
 import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
 import type {
   AgencyDoc,
+  BroadcastDoc,
   BroadcastSkipReason,
   MessageTemplateDoc,
   SubAccountDoc,
@@ -96,11 +98,46 @@ export async function POST(request: Request) {
     const status = claim.reason === "cancelled" ? "skipped" : "failed";
     return NextResponse.json({ ok: true, status, reason: claim.reason });
   }
+  if (claim.outcome === "in_flight") {
+    // Another delivery holds a fresh claim. 503 keeps QStash retrying: if
+    // that delivery dies, a later retry finds the claim stale and settles it.
+    return NextResponse.json({ error: "Send in flight" }, { status: 503 });
+  }
   if (claim.outcome !== "claimed") {
+    // A retry after the row settled may be the only chance left to run the
+    // completion check the settling delivery never reached.
+    if (claim.outcome === "already_settled") await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, ignored: claim.outcome });
   }
-  const { broadcast } = claim;
 
+  const progress = { providerReached: false };
+  try {
+    return await deliver(db, broadcastRef, sendRef, claim.broadcast, contactId, progress);
+  } catch (err) {
+    console.error("[broadcasts/step] failed after claim", broadcastId, contactId, err);
+    if (!progress.providerReached) {
+      // Nothing was sent — release the claim so QStash's retry re-runs the row.
+      await releaseClaim(sendRef).catch((e) =>
+        console.error("[broadcasts/step] claim release failed", e),
+      );
+    }
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Step failed" },
+      { status: 500 },
+    );
+  }
+}
+
+async function deliver(
+  db: FirebaseFirestore.Firestore,
+  broadcastRef: FirebaseFirestore.DocumentReference,
+  sendRef: FirebaseFirestore.DocumentReference,
+  broadcast: BroadcastDoc,
+  contactId: string,
+  /** Set just before the provider call: from then on the claim is never released. */
+  progress: { providerReached: boolean },
+): Promise<Response> {
+  const broadcastId = broadcastRef.id;
   // Load the contact (live read — opt-out may have flipped since fan-out)
   // along with the template, sub-account, and agency for merge-tag context.
   const contactRef = db.collection("contacts").doc(contactId);
@@ -242,6 +279,7 @@ export async function POST(request: Request) {
   let resendMessageId: string | null = null;
   let error: string | null = null;
   let attempted = false;
+  progress.providerReached = true;
   try {
     const result = await sendEmail({
       contactId,
@@ -265,16 +303,12 @@ export async function POST(request: Request) {
     attempted = providerAttempted(err);
   }
   if (resendMessageId) {
-    await sendRef.update({
-      status: "sent",
-      resendMessageId,
-      sentAt: FieldValue.serverTimestamp(),
-      attempts: FieldValue.increment(1),
-    });
-    await broadcastRef.update({
-      "totals.sent": FieldValue.increment(1),
-      "totals.queued": FieldValue.increment(-1),
-    });
+    await settleSend(
+      sendRef,
+      broadcastRef,
+      { status: "sent", resendMessageId, sentAt: FieldValue.serverTimestamp() },
+      "totals.sent",
+    );
     // Activity row — same shape as a manual send so the timeline reads cleanly.
     await contactRef
       .collection("activities")
@@ -293,16 +327,12 @@ export async function POST(request: Request) {
         console.warn("[broadcasts/step] activity write failed", err),
       );
   } else {
-    await sendRef.update({
-      status: "failed",
-      error: error ?? "unknown",
-      sentAt: Timestamp.now(),
-      attempts: FieldValue.increment(1),
-    });
-    await broadcastRef.update({
-      "totals.failed": FieldValue.increment(1),
-      "totals.queued": FieldValue.increment(-1),
-    });
+    await settleSend(
+      sendRef,
+      broadcastRef,
+      { status: "failed", error: error ?? "unknown", sentAt: Timestamp.now() },
+      "totals.failed",
+    );
   }
 
   // A review link in it makes this recipient's email a review ask (SP5 d1) —
@@ -326,36 +356,28 @@ export async function POST(request: Request) {
   return NextResponse.json({ ok: true });
 }
 
-async function markSkipped(
+function markSkipped(
   sendRef: FirebaseFirestore.DocumentReference,
   broadcastRef: FirebaseFirestore.DocumentReference,
   reason: BroadcastSkipReason,
 ): Promise<void> {
-  await sendRef.update({
-    status: "skipped",
-    skippedReason: reason,
-    sentAt: FieldValue.serverTimestamp(),
-    attempts: FieldValue.increment(1),
-  });
-  await broadcastRef.update({
-    "totals.skipped": FieldValue.increment(1),
-    "totals.queued": FieldValue.increment(-1),
-  });
+  return settleSend(
+    sendRef,
+    broadcastRef,
+    { status: "skipped", skippedReason: reason, sentAt: FieldValue.serverTimestamp() },
+    "totals.skipped",
+  );
 }
 
-async function markFailed(
+function markFailed(
   sendRef: FirebaseFirestore.DocumentReference,
   broadcastRef: FirebaseFirestore.DocumentReference,
   errorMessage: string,
 ): Promise<void> {
-  await sendRef.update({
-    status: "failed",
-    error: errorMessage,
-    sentAt: FieldValue.serverTimestamp(),
-    attempts: FieldValue.increment(1),
-  });
-  await broadcastRef.update({
-    "totals.failed": FieldValue.increment(1),
-    "totals.queued": FieldValue.increment(-1),
-  });
+  return settleSend(
+    sendRef,
+    broadcastRef,
+    { status: "failed", error: errorMessage, sentAt: FieldValue.serverTimestamp() },
+    "totals.failed",
+  );
 }

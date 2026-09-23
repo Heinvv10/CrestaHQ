@@ -1,7 +1,8 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldPath, FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   publishCallback,
@@ -9,9 +10,11 @@ import {
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
 import { resolveAudiencePage } from "@/lib/broadcasts/audience";
-import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
+import {
+  BROADCAST_FANOUT_RETRIES,
+  maybeMarkBroadcastCompleted,
+} from "@/lib/broadcasts/completion";
 import type { BroadcastDoc, BroadcastSendDoc } from "@/types";
-import type { Contact } from "@/types/contacts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +29,7 @@ export const dynamic = "force-dynamic";
  * marks its row failed, so the broadcast still completes. Redelivery is safe:
  * rows are created (never overwritten), rows already queued are re-published
  * under their original dedup id, settled rows are left alone. Returning 500
- * makes QStash retry the same page.
+ * makes QStash retry the same page; the final retry fails the broadcast.
  */
 
 /**
@@ -37,6 +40,8 @@ export const dynamic = "force-dynamic";
 const SEND_RATE_PER_SECOND = 5;
 /** Publishes in flight at once within a page. */
 const PUBLISH_CONCURRENCY = 20;
+/** Upper bound on this page's already-written rows read on redelivery. */
+const EXISTING_SCAN_LIMIT = 1000;
 
 interface FanoutBody {
   broadcastId?: string;
@@ -73,6 +78,36 @@ export async function POST(request: Request) {
 
   const db = getAdminDb();
   const broadcastRef = db.collection("broadcasts").doc(broadcastId);
+  try {
+    return await runPage(db, broadcastRef, { cursor, slot, territoryIds });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "fan-out failed";
+    console.error("[broadcasts/fanout] page failed", broadcastId, err);
+    const retried = Number(request.headers.get("upstash-retried") ?? "0");
+    if (retried < BROADCAST_FANOUT_RETRIES) {
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+    // Last delivery: nothing will run this page again. Fail the broadcast
+    // visibly rather than leave it queued / sending with fanoutDone false.
+    await broadcastRef.update({
+      status: "failed",
+      errorMessage: `Audience fan-out stopped after repeated failures: ${msg}`,
+      completedAt: FieldValue.serverTimestamp(),
+    });
+    return NextResponse.json({ ok: false, broadcastFailed: true });
+  }
+}
+
+async function runPage(
+  db: FirebaseFirestore.Firestore,
+  broadcastRef: FirebaseFirestore.DocumentReference,
+  { cursor, slot, territoryIds }: {
+    cursor: string | null;
+    slot: number;
+    territoryIds: string[] | null;
+  },
+): Promise<Response> {
+  const broadcastId = broadcastRef.id;
   const snap = await broadcastRef.get();
   if (!snap.exists) return NextResponse.json({ ok: true, ignored: "missing" });
   const broadcast = snap.data() as BroadcastDoc;
@@ -93,24 +128,31 @@ export async function POST(request: Request) {
     ...page.recipients.map((contact) => ({ contact, reason: null })),
     ...page.skipped,
   ];
-  const existing = pageContacts.length
-    ? await db.getAll(...pageContacts.map(({ contact }) => sendsCol.doc(contact.id)))
-    : [];
-  const existingStatus = new Map(
-    existing.filter((s) => s.exists).map((s) => [s.id, (s.data() as BroadcastSendDoc).status]),
+  // Rows a previous delivery of this page already wrote: rows are keyed by
+  // contact id and pages are id-ordered, so they are exactly the rows in
+  // (cursor, page end] — including any whose contact has since opted out,
+  // been deleted or been re-filtered out of the page.
+  let existingQuery = sendsCol.orderBy(FieldPath.documentId());
+  if (cursor) existingQuery = existingQuery.startAfter(cursor);
+  const existing = (await existingQuery.limit(EXISTING_SCAN_LIMIT).get()).docs.filter(
+    (d) => page.nextCursor === null || d.id <= page.nextCursor,
   );
+  const existingStatus = new Map(
+    existing.map((d) => [d.id, (d.data() as BroadcastSendDoc).status]),
+  );
+  // Every still-queued row of this page is (re-)published. The row was the
+  // audience when it was written; the step re-checks opt-out, email and the
+  // contact's existence, so none is stranded queued here.
+  const toPublish: string[] = [...existingStatus]
+    .filter(([, status]) => status === "queued")
+    .map(([id]) => id);
 
   // New rows + their totals in one atomic batch (≤ page size + 1 writes).
   const batch = db.batch();
   let newQueued = 0;
   let newSkipped = 0;
-  const toPublish: Contact[] = [];
   for (const { contact, reason } of pageContacts) {
-    const status = existingStatus.get(contact.id);
-    if (status !== undefined) {
-      if (status === "queued" && !reason) toPublish.push(contact);
-      continue;
-    }
+    if (existingStatus.has(contact.id)) continue;
     const row: Omit<BroadcastSendDoc, "id"> = {
       broadcastId,
       agencyId: broadcast.agencyId,
@@ -131,7 +173,7 @@ export async function POST(request: Request) {
       newSkipped += 1;
     } else {
       newQueued += 1;
-      toPublish.push(contact);
+      toPublish.push(contact.id);
     }
   }
   if (newQueued + newSkipped > 0) {
@@ -148,19 +190,19 @@ export async function POST(request: Request) {
   for (let i = 0; i < toPublish.length; i += PUBLISH_CONCURRENCY) {
     const chunk = toPublish.slice(i, i + PUBLISH_CONCURRENCY);
     const results = await Promise.all(
-      chunk.map((contact, j) =>
+      chunk.map((contactId, j) =>
         publishCallback({
           pathname: "/api/broadcasts/email/step",
-          body: { broadcastId, contactId: contact.id },
+          body: { broadcastId, contactId },
           delaySeconds: Math.ceil((slot + i + j) / SEND_RATE_PER_SECOND),
           // Per-row dedup key — a redelivered page re-publishes under the
           // same id, so QStash drops the duplicate.
-          deduplicationId: `bcast_${broadcastId}_${contact.id}`,
+          deduplicationId: `bcast_${broadcastId}_${contactId}`,
         }),
       ),
     );
     results.forEach((r, j) => {
-      if (!r) failedIds.push(chunk[j]!.id);
+      if (!r) failedIds.push(chunk[j]!);
     });
   }
   // Nothing will ever run these rows — settle them as failed so the
@@ -186,6 +228,7 @@ export async function POST(request: Request) {
 
   if (page.nextCursor) {
     const next = await publishCallback({
+      retries: BROADCAST_FANOUT_RETRIES,
       pathname: "/api/broadcasts/email/fanout",
       body: {
         broadcastId,
@@ -194,11 +237,11 @@ export async function POST(request: Request) {
         territoryIds,
       },
       delaySeconds: 0,
-      deduplicationId: `bcastfan_${broadcastId}_${page.nextCursor.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      deduplicationId: `bcastfan_${broadcastId}_${createHash("sha256").update(page.nextCursor).digest("hex").slice(0, 32)}`,
     });
     if (!next) {
       // Retry this page; its rows are already written and re-publish safely.
-      return NextResponse.json({ error: "Failed to schedule the next page" }, { status: 500 });
+      throw new Error("Failed to schedule the next fan-out page");
     }
     return NextResponse.json({ ok: true, queued: toPublish.length, next: page.nextCursor });
   }

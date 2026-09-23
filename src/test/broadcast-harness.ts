@@ -26,9 +26,33 @@ export const h = {
   /** Emails that reached the provider. */
   sent: [] as Array<{ contactId: string; to: string }>,
   /** Return true to make that publish fail (publishCallback → null). */
-  failPublish: (_m: Published) => false,
+  failPublish: (_m: Published): boolean => false,
+  /** Return true to make that publish THROW (the process died mid-request). */
+  throwPublish: (_m: Published): boolean => false,
   smtpConnected: true,
+  /** checkQuota throws while > 0 (a read blip before the provider call). */
+  quotaThrows: 0,
+  /** The next N batch commits fail (a write blip). */
+  failCommits: 0,
+  member: true,
+  scope: { enforce: false, ids: null } as { enforce: boolean; ids: string[] | null },
 };
+
+/** The in-memory db, with `failCommits` injected into batch commits. */
+export function harnessDb() {
+  const db = h.mem.db;
+  return {
+    ...db,
+    batch: () => {
+      const b = db.batch();
+      const commit = b.commit;
+      return Object.assign(b, {
+        commit: () =>
+          h.failCommits-- > 0 ? Promise.reject(new Error("commit blip")) : commit(),
+      });
+    },
+  };
+}
 
 export function resetHarness(): void {
   h.mem.clear();
@@ -36,7 +60,12 @@ export function resetHarness(): void {
   h.publishLog.length = 0;
   h.sent.length = 0;
   h.failPublish = () => false;
+  h.throwPublish = () => false;
   h.smtpConnected = true;
+  h.quotaThrows = 0;
+  h.failCommits = 0;
+  h.member = true;
+  h.scope = { enforce: false, ids: null };
 }
 
 export const qstashMock = () => ({
@@ -44,6 +73,7 @@ export const qstashMock = () => ({
   verifyQStashSignature: async () => true,
   publishCallback: async (m: Published) => {
     h.publishLog.push(m);
+    if (h.throwPublish(m)) throw new Error("process died mid-request");
     if (h.failPublish(m)) return null;
     h.queue.push(m);
     return { messageId: `m${h.publishLog.length}` };
@@ -91,6 +121,29 @@ export function seedTenant(
   }
 }
 
+export const usageMock = () => ({
+  checkQuota: async () => {
+    if (h.quotaThrows > 0) {
+      h.quotaThrows -= 1;
+      throw new Error("quota read blip");
+    }
+    return { allowed: true };
+  },
+});
+
+export const tenancyMocks = {
+  tenancy: async () => {
+    const { NextResponse } = await import("next/server");
+    return {
+      requireSubAccountMember: async () =>
+        h.member
+          ? { uid: "u1", email: "op@tenant.test" }
+          : NextResponse.json({ error: "Forbidden" }, { status: 403 }),
+    };
+  },
+  territory: () => ({ loadEffectiveTerritoryScope: async () => h.scope }),
+};
+
 type Handler = (req: Request) => Promise<Response>;
 const routes: Record<string, () => Promise<{ POST: Handler }>> = {
   "/api/broadcasts/email/send": () =>
@@ -107,6 +160,7 @@ export function addRoute(pathname: string, load: () => Promise<{ POST: Handler }
 export async function call(
   pathname: string,
   body: Record<string, unknown>,
+  headers: Record<string, string> = {},
 ): Promise<Response> {
   const load = routes[pathname];
   if (!load) throw new Error(`harness: no route for ${pathname}`);
@@ -114,7 +168,7 @@ export async function call(
   return POST(
     new Request(`https://app.test${pathname}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "upstash-signature": "sig" },
+      headers: { "content-type": "application/json", "upstash-signature": "sig", ...headers },
       body: JSON.stringify(body),
     }),
   );

@@ -17,28 +17,31 @@ export const dynamic = "force-dynamic";
  * lands still sends: that email is in flight.
  */
 export async function POST(request: Request) {
-  let payload: { broadcastId?: string };
+  let payload: { broadcastId?: string; subAccountId?: string };
   try {
-    payload = (await request.json()) as { broadcastId?: string };
+    payload = (await request.json()) as typeof payload;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const broadcastId = payload.broadcastId?.trim();
-  if (!broadcastId) {
-    return NextResponse.json({ error: "broadcastId is required" }, { status: 400 });
+  const subAccountId = payload.subAccountId?.trim();
+  if (!broadcastId || !subAccountId) {
+    return NextResponse.json(
+      { error: "broadcastId and subAccountId are required" },
+      { status: 400 },
+    );
   }
+
+  // Membership first, so a non-member can't probe which broadcast ids exist.
+  const access = await requireSubAccountMember(request, subAccountId);
+  if (access instanceof NextResponse) return access;
 
   const db = getAdminDb();
   const broadcastRef = db.collection("broadcasts").doc(broadcastId);
   const snap = await broadcastRef.get();
-  if (!snap.exists) {
+  if (!snap.exists || (snap.data() as BroadcastDoc).subAccountId !== subAccountId) {
     return NextResponse.json({ error: "Broadcast not found" }, { status: 404 });
   }
-  const access = await requireSubAccountMember(
-    request,
-    (snap.data() as BroadcastDoc).subAccountId,
-  );
-  if (access instanceof NextResponse) return access;
 
   const result = await db.runTransaction(async (tx) => {
     const current = (await tx.get(broadcastRef)).data() as BroadcastDoc;

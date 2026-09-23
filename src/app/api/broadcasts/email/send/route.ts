@@ -8,7 +8,8 @@ import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { emailIsConfigured } from "@/lib/comms/resend";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { resolveMergeTags, validateEmailBody } from "@/lib/automations/merge-tags";
-import { audienceQuery } from "@/lib/broadcasts/audience";
+import { countAudience } from "@/lib/broadcasts/audience";
+import { BROADCAST_FANOUT_RETRIES } from "@/lib/broadcasts/completion";
 import type {
   BroadcastAudienceFilter,
   BroadcastDoc,
@@ -135,13 +136,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: bodyValidation }, { status: 400 });
   }
 
-  // Size the audience with an aggregate count — the contacts themselves are
-  // read page by page in the fanout step, never whole inside this request.
-  // The count is pre-skip (opted-out / no-email contacts included), so the
-  // cap errs on the side of refusing.
-  const matching = (
-    await audienceQuery(subAccountId, audienceFilter).count().get()
-  ).data().count;
+  // A scoped collaborator only reaches contacts in their assigned
+  // territories; admins / owners / scoping-off pass null. Applied before
+  // counting, and carried to the fanout step in the (signed) QStash body.
+  const scope = await loadEffectiveTerritoryScope(access);
+  const territoryIds = scope.enforce ? (scope.ids ?? []) : null;
+
+  // Size the audience without reading it — the contacts themselves are read
+  // page by page in the fanout step, never whole inside this request. The
+  // count is pre-skip (opted-out / no-email contacts included), so the cap
+  // errs on the side of refusing.
+  const matching = await countAudience(
+    subAccountId,
+    audienceFilter,
+    territoryIds,
+    MAX_AUDIENCE_SIZE,
+  );
   if (matching === 0) {
     return NextResponse.json(
       { error: "Audience is empty — no contacts match this filter." },
@@ -151,17 +161,11 @@ export async function POST(request: Request) {
   if (matching > MAX_AUDIENCE_SIZE) {
     return NextResponse.json(
       {
-        error: `Audience size ${matching} exceeds the per-broadcast cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter and try again.`,
+        error: `Audience size exceeds the per-broadcast cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter and try again.`,
       },
       { status: 400 },
     );
   }
-
-  // A scoped collaborator only reaches contacts in their assigned
-  // territories; admins / owners / scoping-off pass null. Carried to the
-  // fanout step in the (signed) QStash body.
-  const scope = await loadEffectiveTerritoryScope(access);
-  const territoryIds = scope.enforce ? (scope.ids ?? []) : null;
 
   // Snapshot the trigger user's display name for the broadcast doc.
   let createdByName = access.email;
@@ -210,6 +214,16 @@ export async function POST(request: Request) {
     errorMessage: null,
     fanoutDone: false,
   };
+  // Fixed dedup id: a re-publish on retry collapses into the first.
+  const startFanout = () =>
+    publishCallback({
+      retries: BROADCAST_FANOUT_RETRIES,
+      pathname: "/api/broadcasts/email/fanout",
+      body: { broadcastId: broadcastRef.id, cursor: null, slot: 0, territoryIds },
+      delaySeconds: 0,
+      deduplicationId: `bcastfan_${broadcastRef.id}_start`,
+    });
+
   try {
     await broadcastRef.create({ id: broadcastRef.id, ...broadcast });
   } catch (err) {
@@ -224,6 +238,16 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
+    if (existing.status === "failed") {
+      return NextResponse.json(
+        { error: existing.errorMessage ?? "This broadcast failed to start.", broadcastId: broadcastRef.id },
+        { status: 502 },
+      );
+    }
+    // The first attempt may have died before its fanout publish landed.
+    if (existing.status === "queued" && existing.fanoutDone === false) {
+      await startFanout();
+    }
     return NextResponse.json({
       ok: true,
       broadcastId: broadcastRef.id,
@@ -234,12 +258,7 @@ export async function POST(request: Request) {
 
   // Hand the audience to the fanout step, which pages through it and
   // publishes the staggered per-recipient sends.
-  const fanout = await publishCallback({
-    pathname: "/api/broadcasts/email/fanout",
-    body: { broadcastId: broadcastRef.id, cursor: null, slot: 0, territoryIds },
-    delaySeconds: 0,
-    deduplicationId: `bcastfan_${broadcastRef.id}_start`,
-  });
+  const fanout = await startFanout();
   if (!fanout) {
     await broadcastRef.update({
       status: "failed",

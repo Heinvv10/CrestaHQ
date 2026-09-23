@@ -53,6 +53,37 @@ export function audienceQuery(
 }
 
 /**
+ * How many contacts the audience covers, before opt-out / missing-email
+ * skips. Unscoped: one aggregate count(). Territory-scoped: a projected scan
+ * applying the same territory rule as the page resolver, so a scoped
+ * collaborator never sees (or is capped by) contacts outside their
+ * territories. Stops counting once past `stopAbove`.
+ */
+export async function countAudience(
+  subAccountId: string,
+  filter: BroadcastAudienceFilter,
+  territoryFilter: string[] | null,
+  stopAbove: number,
+): Promise<number> {
+  const query = audienceQuery(subAccountId, filter);
+  if (!territoryFilter) return (await query.count().get()).data().count;
+  if (territoryFilter.length === 0) return 0;
+  let count = 0;
+  let cursor: string | null = null;
+  for (;;) {
+    let page = query.select("territoryId").orderBy(FieldPath.documentId());
+    if (cursor) page = page.startAfter(cursor);
+    const snap = await page.limit(1000).get();
+    for (const d of snap.docs) {
+      const tId = d.data().territoryId as string | undefined;
+      if (tId && territoryFilter.includes(tId)) count += 1;
+    }
+    if (count > stopAbove || snap.docs.length < 1000) return count;
+    cursor = snap.docs[snap.docs.length - 1]!.id;
+  }
+}
+
+/**
  * One page of the audience, in document-id order after `cursor` (a contact
  * id, or null for the first page). `nextCursor` is null on the last page.
  */
