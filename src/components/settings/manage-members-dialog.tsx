@@ -31,7 +31,7 @@ interface ManageMembersDialogProps {
   onRoleChange: (uid: string, role: "admin" | "collaborator") => void;
   onTerritoryChange: (uid: string, next: string[]) => void;
   onRemove: (uid: string, displayName: string) => void;
-  onCopyInviteLink: (email: string) => void;
+  onCopyInviteLink: (invite: PendingInvite) => void;
   onRevokeInvite: (inviteId: string, email: string) => void;
 }
 
@@ -258,7 +258,7 @@ export function ManageMembersDialog({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => onCopyInviteLink(inv.email)}
+                        onClick={() => onCopyInviteLink(inv)}
                         aria-label="Copy invite link"
                         className="h-7 px-2 text-[11px]"
                         disabled={busyInviteId === inv.id}

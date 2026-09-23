@@ -134,6 +134,7 @@ export function PaystackPaymentLinks() {
                     {formatCurrency(link.amountCents / 100, link.currency)} · created{" "}
                     {formatRelativeTime(link.createdAt)}
                     {link.invoiceId ? " · invoice" : ""}
+                    {link.mandate ? " · saves card" : ""}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -166,6 +167,7 @@ export function PaystackPaymentLinks() {
               )}
               {link.attention && <p className="text-sm text-destructive">{link.attention}</p>}
               {link.invoiceAttention && <p className="text-sm text-destructive">{link.invoiceAttention}</p>}
+              {link.mandateAttention && <p className="text-sm text-destructive">{link.mandateAttention}</p>}
               {link.status === "open" && link.active && link.mode !== connectionMode ? (
                 <p className="text-sm text-muted-foreground">
                   Issued {link.mode ? `in ${link.mode} mode` : "before this workspace recorded modes"}, so it can&apos;t be paid now. Create a fresh link.

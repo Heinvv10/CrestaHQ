@@ -24,7 +24,17 @@ LeadStack is a **GHL-style multi-tenant CRM**: an agency operator owns one or mo
 
 ## First signup → agency owner
 
-`/api/auth/signup` runs a transaction on `appConfig/main`. If it doesn't exist, the signing-up user (gated by `BOOTSTRAP_ADMIN_EMAIL`) becomes the agency owner; the route mints an agency, a default "Main" sub-account, owner+admin memberships, and the user's claims. Subsequent signups must match an unrevoked, unaccepted `invites/{auto}` doc that names a specific sub-account + role.
+`/api/auth/signup` runs a transaction on `appConfig/main`. If it doesn't exist, the signing-up user (gated by `BOOTSTRAP_ADMIN_EMAIL`) becomes the agency owner; the route mints an agency, a default "Main" sub-account, owner+admin memberships, and the user's claims. Subsequent signups must match an unrevoked, unaccepted `invites/{auto}` doc that names a specific sub-account + role **and** present that invite's token.
+
+## Invite tokens
+
+Knowing an invitee's email is not proof of receiving the invite (client-side Firebase email/password signup lets anyone create an unverified user with any address). So:
+
+- Each invite link is `/signup?email=…&invite=<token>`; the doc stores only `tokenHash` (SHA-256). Every re-send — including the members page's "Copy link" — rotates the token, so earlier links stop working. Invites created before tokens existed have no `tokenHash` and must be re-sent.
+- `/api/auth/signup` claims only an invite whose `tokenHash` matches, and creates the user with `emailVerified: true` (the token proved inbox access).
+- `/api/auth/claim-pending-invites` (existing accounts) attaches pending invites only when the Firebase Auth record's `emailVerified` is true.
+- Inviting an email that already has an Auth account adds it directly only when that account is verified (or already an active member of the sub-account — a role update). Otherwise a token invite is sent, and signup with the token resolves the existing account: if it has a `users/{uid}` profile (it came through our signup) it is marked verified and the invitee is told to sign in, where the claim route attaches the invite; if it has no profile (made by client-side Firebase signup, no app data) it is deleted and a fresh account created — never adopted, since its creator may still hold a session for that uid.
+- `AnalyticsScripts` renders no third-party tags on `/signup`, which carries the raw token in its query string.
 
 ## Tenancy keys on every doc
 
