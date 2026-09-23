@@ -9,7 +9,11 @@ import { sendWhatsappCloud, type CloudTemplateRef } from "./cloud-client";
 import type { InteractiveResult } from "./interactive";
 import { sendWhatsappBridge } from "./bridge-client";
 import { resolveWhatsappSender } from "./resolve-sender";
-import { DEFAULT_WA_WINDOW_HOURS, resolveWaSendMode } from "./send-mode";
+import {
+  DEFAULT_WA_WINDOW_HOURS,
+  WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE,
+  resolveWaSendMode,
+} from "./send-mode";
 import {
   resolveWhatsAppProviderId,
   type OutboundAttachment,
@@ -107,6 +111,9 @@ export interface WhatsappDispatchInput {
   attachment?: OutboundAttachment | null;
   /** The Twilio arm stays in its existing module; passed in to avoid a cycle. */
   sendViaTwilio: () => Promise<WhatsAppSendResult>;
+  /** How the Twilio rail sends `template` (by Content SID) when the window is
+   *  shut. Absent → an out-of-window Twilio send refuses. */
+  sendTemplateViaTwilio?: () => Promise<WhatsAppSendResult>;
 }
 
 export async function dispatchWhatsappSend(
@@ -263,8 +270,27 @@ export async function dispatchWhatsappSend(
     return { ...r, provider, attempted: true };
   }
 
+  // The window decision binds Twilio as it binds Cloud: outside the window the
+  // free-form body is not legal. Twilio accepts that create anyway and only
+  // rejects it later (63016), so sending it would log a delivery that never
+  // happens. The approved template goes instead, by its Content SID.
+  if (decision.mode === "template") {
+    if (!input.sendTemplateViaTwilio) {
+      return {
+        provider,
+        ok: false,
+        error: WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE,
+        providerOutcome: "DEFINITELY_REJECTED",
+      };
+    }
+    const r = await input.sendTemplateViaTwilio();
+    // The sender may refuse before calling Twilio (a blank variable) and say
+    // so with `attempted: false`; otherwise Twilio was reached.
+    return { attempted: true, ...r, provider, sentAs: "template" };
+  }
+
   const r = await input.sendViaTwilio();
-  return { ...r, provider, attempted: true };
+  return { ...r, provider, sentAs: "text", attempted: true };
 }
 
 /**

@@ -86,7 +86,7 @@ describe("a signed poll", () => {
   it("runs the sweep and reports the tally", async () => {
     const res = await cron();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0 });
+    expect(await res.json()).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0, skipped: 0 });
     expect(quality()).toMatchObject({ rating: "GREEN" });
   });
 

@@ -22,7 +22,10 @@ on:
 jobs:
   smoke:
     name: Playwright vs crm.crestahq.com
-    # Same fixture sub-accounts as the ci.yml E2E job, so the same runner.
+    # Same fixture sub-accounts as the ci.yml E2E job, so the same runner —
+    # only one runner carries the crestahq-e2e label, which is what
+    # serialises fixture-tenant/port-3100 use (see the note on ci.yml's e2e
+    # job for why this must not be a shared concurrency group).
     runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     timeout-minutes: 30
     env:
