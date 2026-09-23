@@ -97,6 +97,38 @@ describe("Paystack plan switch vs the old subscription's disable webhook", () =>
     expect(billing().status).toBe("canceled");
   });
 
+  it("lets only one of two concurrent switches run — the other is refused", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    switchSubscriptionPlan.mockImplementation(async () => {
+      await gate;
+      return { subscriptionId: "SUB_2" };
+    });
+
+    // A double-click: both read SUB_1 live before either finishes.
+    const both = Promise.allSettled([assign(), assign()]);
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    const results = await both;
+
+    // Two replacements for one subscription would bill the client twice.
+    expect(switchSubscriptionPlan).toHaveBeenCalledTimes(1);
+    const refused = results.filter((r) => r.status === "rejected");
+    expect(refused).toHaveLength(1);
+    expect(String((refused[0] as PromiseRejectedResult).reason)).toMatch(/already in progress/i);
+    expect(billing()).toMatchObject({ stripeSubscriptionId: "SUB_2", retiringSubscriptionId: null });
+  });
+
+  it("allows a new switch once an abandoned claim has expired", async () => {
+    mem.seed(`subAccounts/${SA}`, {
+      agencyId: "ag1",
+      billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+    switchSubscriptionPlan.mockResolvedValue({ subscriptionId: "SUB_2" });
+    await assign();
+    expect(billing().stripeSubscriptionId).toBe("SUB_2");
+  });
+
   it("does not mute the old subscription forever if a switch died mid-way", async () => {
     mem.seed(`subAccounts/${SA}`, {
       agencyId: "ag1",

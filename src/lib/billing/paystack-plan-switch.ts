@@ -15,10 +15,12 @@ import type { SwitchSubscriptionInput } from "./provider";
  * plus a disable of the old one — the client is never double-charged and
  * never gets a free period.
  *
- * The new one is opened FIRST. It bills nothing until the renewal date, so
- * the overlap costs nothing; disabling first left a window with no live
+ * The new one is opened FIRST, starting at the old one's renewal date (or
+ * now, for a past-due subscription whose renewal is already owed — see
+ * `createPaystackSubscription`), and the old one is disabled straight after,
+ * so it never bills again. Disabling first left a window with no live
  * subscription at all, in which the old one's disable webhook could paywall
- * a paying client.
+ * a paying client. Two switches at once are prevented by the caller's lock.
  *
  * The returned id is a NEW subscription code and the caller must store it —
  * the one it passed in is dead by the time this returns.
@@ -118,15 +120,28 @@ async function startReplacement(input: {
         err,
         probeErr,
       );
-      throw new BillingError(
-        `Paystack didn't confirm whether the new plan started. The client's current plan is untouched. Check customer ${input.customerCode} in the Paystack dashboard before re-assigning — re-assigning now could open a second subscription. (${detail})`,
-        502,
-      );
+      throw new BillingError(unconfirmed(input.customerCode, detail), 502);
     }
     if (started) return started;
+    // Only Paystack refusing the request (a 4xx) proves nothing was created.
+    // A timeout, a 5xx or a success without a code may still become a live
+    // subscription after this check, so it is reported as unknown.
+    const refused =
+      err instanceof BillingError &&
+      err.providerStatus !== undefined &&
+      err.providerStatus >= 400 &&
+      err.providerStatus < 500;
+    if (!refused) {
+      console.error(`[billing] Paystack plan switch for ${input.old}: create outcome unknown`, err);
+      throw new BillingError(unconfirmed(input.customerCode, detail), 502);
+    }
     throw new BillingError(
       `The new plan didn't start, so nothing changed — the client is still on their current plan. (${detail})`,
       502,
     );
   }
+}
+
+function unconfirmed(customerCode: string, detail: string): string {
+  return `Paystack didn't confirm whether the new plan started. The client's current plan is untouched. Check customer ${customerCode} in the Paystack dashboard before re-assigning — re-assigning now could open a second subscription. (${detail})`;
 }

@@ -128,10 +128,10 @@ describe("switchSubscriptionPlan", () => {
     expect(disabled()).toEqual(["SUB_1"]);
   });
 
-  it("says nothing changed, and disables nothing, when the new plan really did not start", async () => {
+  it("says nothing changed, and disables nothing, when Paystack refused the new plan", async () => {
     paystack({
       "POST /subscription": () => {
-        throw new Error("Paystack: plan not found");
+        throw new BillingError("Paystack: plan not found", 400, 400);
       },
     });
     await expect(switchPlan()).rejects.toThrow(/nothing changed/i);
@@ -141,7 +141,7 @@ describe("switchSubscriptionPlan", () => {
   it("does not mistake another workspace's older subscription on the same plan for the new one", async () => {
     paystack({
       "POST /subscription": () => {
-        throw new Error("timeout");
+        throw new BillingError("Paystack: duplicate", 400, 400);
       },
       "GET /subscription?customer=7&perPage=100&page=1": () => [
         { subscription_code: "SUB_other", status: "active", plan: { plan_code: "PLN_new" }, createdAt: "2026-01-01T00:00:00.000Z" },
@@ -162,6 +162,18 @@ describe("switchSubscriptionPlan", () => {
     });
     await expect(switchPlan()).rejects.toThrow(/before re-assigning/i);
     await expect(switchPlan()).rejects.toBeInstanceOf(BillingError);
+    expect(disabled()).toEqual([]);
+  });
+
+  it("never says nothing changed after a timeout that the re-check cannot yet see", async () => {
+    paystack({
+      "POST /subscription": () => {
+        // As paystackRequest reports an aborted fetch: no provider status.
+        throw new BillingError("Couldn't reach Paystack: The operation was aborted due to timeout", 502);
+      },
+    });
+    // Paystack may still be creating it; "nothing changed" invites a second one.
+    await expect(switchPlan()).rejects.toThrow(/before re-assigning/i);
     expect(disabled()).toEqual([]);
   });
 

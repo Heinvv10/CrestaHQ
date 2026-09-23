@@ -25,6 +25,7 @@ import {
 import { BillingError } from "@/lib/billing/errors";
 import {
   chargesCollection,
+  isRetiring,
   readBilling,
   recordBillingEvent,
 } from "@/lib/server/billing-lifecycle";
@@ -552,11 +553,28 @@ export async function assignPlanToSubAccount(input: {
     // call returns and the new code is stored, and its disable webhook can
     // land in between. Marked so that webhook cannot cancel a paying client.
     // (Stripe keeps the same subscription, so there is nothing to mark.)
+    //
+    // The mark is also the switch's lock, claimed in a transaction: two
+    // switches at once (a double-click, two admins, a retry after a timeout)
+    // would each open a replacement, and one of them would bill untracked.
     const replaces = provider.id === "paystack";
     if (replaces) {
-      await ref.update({
-        "billing.retiringSubscriptionId": billing.stripeSubscriptionId,
-        "billing.retiringSince": FieldValue.serverTimestamp(),
+      await getAdminDb().runTransaction(async (tx) => {
+        const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
+        if (
+          fresh?.stripeSubscriptionId !== billing.stripeSubscriptionId ||
+          (fresh?.retiringSubscriptionId &&
+            isRetiring(fresh, fresh.retiringSubscriptionId))
+        ) {
+          throw new BillingError(
+            "A plan switch for this workspace is already in progress — give it a minute, then check the plan before trying again.",
+            409,
+          );
+        }
+        tx.update(ref, {
+          "billing.retiringSubscriptionId": billing.stripeSubscriptionId,
+          "billing.retiringSince": FieldValue.serverTimestamp(),
+        });
       });
     }
     let subscriptionId: string;

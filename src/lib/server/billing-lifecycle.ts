@@ -469,8 +469,9 @@ export async function applySubAccountSubscriptionStatus(input: {
  * one Paystack customer can back several workspaces (Paystack keys customers
  * on email, and two workspaces can share an account contact). So the customer
  * alone decides nothing when it is shared: the workspace must also be on the
- * event's plan, and if that still leaves more than one, nothing is written and
- * the event is flagged — storing it on the wrong one would point that
+ * event's plan and, if several are, be the one waiting for a subscription (no
+ * code stored, not cancelled). If that still leaves more than one, nothing is
+ * written and the event is flagged — storing it on the wrong one would point that
  * workspace's cancel at another client's subscription.
  */
 export async function recordSubAccountSubscriptionId(input: {
@@ -493,10 +494,19 @@ export async function recordSubAccountSubscriptionId(input: {
     // A comped workspace is not billed at all.
     return !!billing && billing.status !== "comped";
   });
-  const candidates =
+  let candidates =
     billed.length > 1 && input.planCode
       ? billed.filter((d) => readBilling(d.data())?.stripePriceId === input.planCode)
       : billed;
+  if (candidates.length > 1) {
+    // Still shared: the new subscription belongs to a workspace waiting for
+    // one — not a cancelled one, and not one already on its own.
+    const waiting = candidates.filter((d) => {
+      const b = readBilling(d.data());
+      return !b?.stripeSubscriptionId && b?.status !== "canceled";
+    });
+    if (waiting.length > 0) candidates = waiting;
+  }
   if (candidates.length !== 1) {
     console.error(
       `[billing] subscription ${input.subscriptionId} for customer ${input.customerId} matches ${candidates.length} workspaces — not stored`,
@@ -532,11 +542,12 @@ export async function recordSubAccountSubscriptionId(input: {
 const RETIRING_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Whether `subscriptionId` is the one a plan switch is replacing right now.
- * Bounded in time so a switch that crashed before clearing its mark cannot
- * mute that subscription's events forever.
+ * Whether `subscriptionId` is the one a plan switch is replacing right now —
+ * also the switch's lock (see `assignPlanToSubAccount`). Bounded in time so a
+ * switch that crashed before clearing its mark cannot mute that
+ * subscription's events, or block the next switch, forever.
  */
-function isRetiring(billing: SubAccountBilling, subscriptionId: string): boolean {
+export function isRetiring(billing: SubAccountBilling, subscriptionId: string): boolean {
   const since = billing.retiringSince as { toMillis?: () => number } | Date | null | undefined;
   const sinceMs =
     since instanceof Date ? since.getTime() : typeof since?.toMillis === "function" ? since.toMillis() : null;

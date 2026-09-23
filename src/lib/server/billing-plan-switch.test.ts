@@ -33,6 +33,17 @@ vi.mock("@/lib/billing/provider", () => ({
 }));
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
+    // The Paystack switch claims its lock in a transaction; one pass here.
+    runTransaction: async <T,>(
+      fn: (tx: {
+        get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
+        update: (_ref: unknown, patch: Record<string, unknown>) => void;
+      }) => Promise<T>,
+    ) =>
+      fn({
+        get: (ref) => ref.get(),
+        update: (_ref, patch) => void updates.push(patch),
+      }),
     doc: (path: string) => ({
       get: async () => ({ exists: true, data: () => subDoc, id: path }),
       update: async (patch: Record<string, unknown>) => {

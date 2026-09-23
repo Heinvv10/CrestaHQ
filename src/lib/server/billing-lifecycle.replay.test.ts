@@ -175,6 +175,15 @@ describe("a redelivered first payment", () => {
     expect(events("payment.flagged")).toHaveLength(0);
   });
 
+  it("treats a pre-ledger Stripe activation's redelivery as a replay", async () => {
+    // Activated before the ledger existed: the stored subscription is the record.
+    seedWorkspace(SA, { status: "active", stripeSubscriptionId: "sub_1" });
+    await handleSubAccountPlanCheckoutCompleted(session("cs_legacy"));
+    expect(applyFeatureGates).not.toHaveBeenCalled();
+    expect(billing().activatedAt).toBeUndefined();
+    expect(events("payment.flagged")).toHaveLength(0);
+  });
+
   it("treats a pre-ledger Paystack activation's redelivery as a replay", async () => {
     // Activated before the ledger existed: only billing.paystackReference records it.
     seedWorkspace(SA, { status: "canceled", paystackReference: "ref_legacy" });
@@ -212,6 +221,17 @@ describe("subscription.create for a customer two workspaces share", () => {
 
     expect(billing(SA).stripeSubscriptionId).toBe("SUB_A");
     expect(billing("sa0").stripeSubscriptionId).toBe("SUB_B");
+  });
+
+  it("gives the code to the workspace waiting for one, not a cancelled one on the same plan", async () => {
+    seedWorkspace(SA, { status: "canceled", stripeSubscriptionId: "SUB_old" });
+    seedWorkspace("sa0");
+
+    await create("SUB_B", "PLN_pro");
+
+    expect(billing(SA).stripeSubscriptionId).toBe("SUB_old");
+    expect(billing("sa0").stripeSubscriptionId).toBe("SUB_B");
+    expect(events("subscription.flagged")).toHaveLength(0);
   });
 
   it("writes nothing and flags it when the workspaces cannot be told apart", async () => {
