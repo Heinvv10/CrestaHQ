@@ -100,6 +100,8 @@ interface QuoteBuilderProps {
   saveLabel?: string;
 }
 
+// ZAR is what Paystack links and recurring card mode require; without it an
+// operator could not raise a ZAR invoice or schedule at all.
 const COMMON_CURRENCIES = [
   "USD",
   "AUD",
@@ -111,6 +113,7 @@ const COMMON_CURRENCIES = [
   "CHF",
   "SGD",
   "HKD",
+  "ZAR",
 ] as const;
 
 function newId(): string {
