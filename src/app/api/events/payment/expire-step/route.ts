@@ -93,8 +93,12 @@ export async function POST(request: Request) {
       return event;
     });
   } catch (err) {
+    // 5xx so QStash retries: this expiry is scheduled once and nothing
+    // sweeps a missed one, so a 200 here would hold the slot for good. The
+    // transaction re-checks the status, so a retry after a paid/cancelled
+    // flip is a 200 no-op.
     console.error("[events/payment/expire] txn failed", err);
-    return NextResponse.json({ ok: true, skipped: "txn_error" });
+    return NextResponse.json({ error: "txn_error" }, { status: 503 });
   }
 
   if (!expiredEvent) {
