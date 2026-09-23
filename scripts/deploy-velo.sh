@@ -45,7 +45,7 @@ NODE_BIN="${NODE_BIN:-/home/velo/.nvm/versions/node/v${NODE_VERSION}/bin}"
 # systemd scope. velo has no passwordless sudo but does have Linger=yes, so the
 # app runs as a USER service (same as jarvis-bff / ollama-proxy on this box).
 SYSTEMCTL="${SYSTEMCTL:-systemctl --user}"
-LOCK="/tmp/crestahq-deploy.lock"
+LOCK="${LOCK:-/tmp/crestahq-deploy.lock}"
 HEALTH_URL="http://127.0.0.1:${PORT}/login"
 HEALTH_TRIES=30
 
@@ -61,6 +61,34 @@ done
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Outside $DEPLOY_DIR on purpose: this survives `next build` wiping `.next`,
+# and never shows up in the "deploy dir has local changes" dirty-checkout
+# check further down (same reasoning as $LOCK living in /tmp).
+ROLLBACK_DIR="${ROLLBACK_DIR:-/tmp/crestahq-standalone-prev}"
+
+# Only called once the service has already been restarted onto a build that
+# failed its health check or never ran instrumentation — i.e. once rolling
+# forward has demonstrably failed. Restores the last-good standalone bundle
+# and restarts onto it, then exits non-zero either way so the failure is
+# never silent.
+rollback_and_die() {
+  local reason="$1"
+  printf '\n\033[31mFAILED: %s\033[0m\n' "$reason" >&2
+  if [ -d "$ROLLBACK_DIR" ]; then
+    echo "rolling back to the last-good standalone bundle..." >&2
+    rm -rf .next/standalone
+    cp -a "$ROLLBACK_DIR" .next/standalone
+    if $SYSTEMCTL restart "$SERVICE"; then
+      echo "rolled back and restarted $SERVICE — investigate $after before retrying." >&2
+    else
+      echo "WARNING: rollback restart of $SERVICE also failed — $SERVICE needs manual attention." >&2
+    fi
+  else
+    echo "WARNING: no previous standalone bundle at $ROLLBACK_DIR to roll back to — $SERVICE may still be serving the broken build." >&2
+  fi
+  exit 1
+}
 
 # ── Lock ────────────────────────────────────────────────────────────────────
 if [ -f "$LOCK" ]; then
@@ -83,6 +111,9 @@ if [ "$dow" -le 5 ] && [ "$hour" -ge 8 ] && [ "$hour" -lt 17 ]; then
   fi
   echo "WARNING: deploying inside business hours because --force was passed."
 fi
+
+[ -d "$NODE_BIN" ] \
+  || die "NODE_BIN ($NODE_BIN) does not exist — Node v${NODE_VERSION} is not installed for velo. Prepending a nonexistent dir to PATH silently no-ops, so the build would run on whatever Node is already first in PATH instead of failing loudly."
 
 export PATH="$NODE_BIN:$PATH"
 cd "$DEPLOY_DIR" || die "deploy dir $DEPLOY_DIR not found"
@@ -132,6 +163,19 @@ else
   pnpm test || die "tests"
 fi
 
+# ── Snapshot the last-good build for rollback ───────────────────────────────
+# `next build` rebuilds `.next` from scratch, so the only copy of the bundle
+# currently serving traffic has to be saved BEFORE we build, not after — by
+# the time a bad build fails its health check, the old one is already gone
+# from `.next/standalone`.
+rm -rf "$ROLLBACK_DIR"
+if [ -d .next/standalone ]; then
+  cp -a .next/standalone "$ROLLBACK_DIR"
+  echo "snapshotted current standalone bundle to $ROLLBACK_DIR for rollback"
+else
+  echo "no existing standalone bundle to snapshot (first deploy on this box?)"
+fi
+
 say "Build"
 pnpm build || die "build"
 
@@ -165,6 +209,25 @@ node scripts/gbp-deploy-check.mjs post "$DEPLOY_DIR" "$APP_URL" \
 say "Assembling standalone bundle"
 node scripts/assemble-standalone.mjs || die "standalone bundle is incomplete (see above)"
 
+# crestahq.service itself was installed by hand on velo-server and isn't in
+# this repo, so it has none of the user manager's defaults overridden — in
+# particular no TimeoutStopSec, which defaults to 15s. On 2026-09-22 a restart
+# SIGKILLed next-server mid graceful-shutdown (server.close() waiting on an
+# open connection) and cloudflared logged "connection refused" during the
+# gap. Ship the fix as a drop-in (never overwrite the hand-installed unit
+# itself) and install it idempotently before every restart.
+say "Installing systemd drop-in (TimeoutStopSec)"
+DROPIN_SRC="scripts/deploy/systemd/crestahq.service.d/override.conf"
+DROPIN_DST="$HOME/.config/systemd/user/crestahq.service.d/override.conf"
+mkdir -p "$(dirname "$DROPIN_DST")"
+if ! cmp -s "$DROPIN_SRC" "$DROPIN_DST" 2>/dev/null; then
+  cp "$DROPIN_SRC" "$DROPIN_DST"
+  $SYSTEMCTL daemon-reload
+  echo "installed/updated $DROPIN_DST"
+else
+  echo "drop-in already up to date"
+fi
+
 # ── Only now touch the running service ──────────────────────────────────────
 say "Restarting $SERVICE"
 restarted_at="$(date +%s)"
@@ -180,7 +243,7 @@ done
 if [ "$ok" -ne 1 ]; then
   echo "--- last 40 log lines ---"
   journalctl --user -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
-  die "health check never returned 200 on $HEALTH_URL"
+  rollback_and_die "health check never returned 200 on $HEALTH_URL"
 fi
 
 # instrumentation.ts register() fails by never running: the server answers
@@ -192,6 +255,6 @@ for i in $(seq 1 10); do
       | grep -qF "[instrumentation] register() ran"; then ran=1; break; fi
   sleep 1
 done
-[ "$ran" -eq 1 ] || die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
+[ "$ran" -eq 1 ] || rollback_and_die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
 
 say "Deployed $after to $SERVICE on port $PORT"
