@@ -22,6 +22,13 @@ describe("opt keywords match the whole message, not its first word", () => {
     "unsubscribe",
     "Opt out",
     "OPT  OUT!!",
+    "CANCEL",
+    "cancel",
+    "Cancel.",
+    "END",
+    "end",
+    "QUIT",
+    "Quit!",
   ])("opts out on %j", (text) => {
     expect(isOut(text)).toBe(true);
     expect(isIn(text)).toBe(false);
@@ -37,12 +44,8 @@ describe("opt keywords match the whole message, not its first word", () => {
 
   it.each([
     "Cancel my installation tomorrow",
-    "CANCEL",
-    "cancel",
-    "END",
-    "end",
-    "QUIT",
-    "quit",
+    "End of the month is fine",
+    "quit calling me at work please",
     "Yes I'll be there",
     "YES",
     "yes",

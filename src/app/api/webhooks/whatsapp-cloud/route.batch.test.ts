@@ -16,6 +16,13 @@ const m = vi.hoisted(() => ({
   /** phone → contact id, for contacts that already exist. */
   contactsByPhone: new Map<string, string>(),
   created: [] as string[],
+  /** Whether each create asked for an opted-out, unannounced contact. */
+  createdOptedOut: [] as unknown[],
+  /** `${subAccountId}/${contactId}/optOut=${flag}` per conversation upsert. */
+  upsertCalls: [] as string[],
+  /** Contact whose conversation upsert throws, as an outage would. */
+  upsertThrowsFor: "",
+  commitThrows: false,
   messageRows: [] as Array<{ contactId: string; docId: string; body: unknown }>,
   upserts: [] as string[],
   optOuts: [] as Array<{ contactId: string; optedOut: unknown }>,
@@ -42,16 +49,23 @@ vi.mock("@/lib/comms/ai/respond", () => ({
   },
 }));
 vi.mock("@/lib/server/contacts-service", () => ({
-  createContactServerSide: async (a: { phone: string }) => {
+  createContactServerSide: async (a: { phone: string; optedOutOnWhatsapp?: boolean }) => {
     const id = `c_new_${a.phone}`;
     m.created.push(a.phone);
+    m.createdOptedOut.push(a.optedOutOnWhatsapp);
     m.contactsByPhone.set(a.phone, id);
     return { id };
   },
 }));
 vi.mock("@/lib/server/conversations-service", () => ({
-  upsertConversationForMessage: async (a: { contactId: string }) => {
+  upsertConversationForMessage: async (a: {
+    contactId: string;
+    subAccountId: string;
+    optOut?: boolean;
+  }) => {
+    if (a.contactId === m.upsertThrowsFor) throw new Error("index unavailable");
     m.upserts.push(a.contactId);
+    m.upsertCalls.push(`${a.subAccountId}/${a.contactId}/optOut=${a.optOut === true}`);
   },
 }));
 vi.mock("@/lib/server/contact-activities", () => ({
@@ -84,14 +98,20 @@ vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
     collection: (name: string) => {
       if (name === "subAccounts") {
+        // Routes by the phone_number_id queried: pn_2 belongs to sa_2, and
+        // pn_unknown to nobody.
+        let pn = "";
         const sa = {
-          where: () => sa,
+          where: (_f: string, _op: string, value: string) => {
+            pn = value;
+            return sa;
+          },
           limit: () => sa,
           get: async () => ({
-            empty: false,
+            empty: pn === "pn_unknown",
             docs: [
               {
-                id: "sa_1",
+                id: pn === "pn_2" ? "sa_2" : "sa_1",
                 data: () => ({
                   agencyId: "ag_1",
                   whatsappEnabledByAgency: true,
@@ -126,6 +146,7 @@ vi.mock("@/lib/firebase/admin", () => ({
         },
         set: () => {},
         commit: async () => {
+          if (m.commitThrows) throw new Error("contention");
           m.optOuts.push(...pending);
         },
       };
@@ -142,8 +163,8 @@ const msg = (id: string, from: string, body: string) => ({
   text: { body },
 });
 
-function change(value: Record<string, unknown>) {
-  return { value: { metadata: { phone_number_id: "pn_1" }, ...value } };
+function change(value: Record<string, unknown>, pn = "pn_1") {
+  return { value: { metadata: { phone_number_id: pn }, ...value } };
 }
 
 function post(changes: unknown[]) {
@@ -162,6 +183,10 @@ beforeEach(() => {
     ["+27822222222", "c_2"],
   ]);
   m.created.length = 0;
+  m.createdOptedOut.length = 0;
+  m.upsertCalls.length = 0;
+  m.upsertThrowsFor = "";
+  m.commitThrows = false;
   m.messageRows.length = 0;
   m.upserts.length = 0;
   m.optOuts.length = 0;
@@ -186,6 +211,49 @@ describe("cloud inbound handles every message in a delivery", () => {
     ]);
     expect(m.optOuts).toEqual([{ contactId: "c_2", optedOut: true }]);
     expect(m.aiCalls).toEqual(["Is the tech coming?"]);
+    // The STOP is indexed without firing message.received automation.
+    expect(m.upsertCalls).toEqual(["sa_1/c_1/optOut=false", "sa_1/c_2/optOut=true"]);
+  });
+
+  it("routes each message by its own block's phone_number_id", async () => {
+    await post([
+      change({ messages: [msg("wamid.A", "27821111111", "hi")] }, "pn_1"),
+      change({ messages: [msg("wamid.B", "27822222222", "hello")] }, "pn_2"),
+      change({ messages: [msg("wamid.C", "27822222222", "lost")] }, "pn_unknown"),
+    ]);
+
+    expect(m.upsertCalls).toEqual(["sa_1/c_1/optOut=false", "sa_2/c_2/optOut=false"]);
+    expect(m.messageRows.map((r) => r.docId)).toEqual(["wamid.A", "wamid.B"]);
+  });
+
+  it("answers non-2xx when a later message's opt-out cannot be recorded", async () => {
+    m.commitThrows = true;
+    const res = await post([
+      change({
+        messages: [
+          msg("wamid.1", "27821111111", "hi"),
+          msg("wamid.2", "27822222222", "STOP"),
+        ],
+      }),
+    ]);
+
+    expect(res.status).toBe(503);
+    expect(m.messageRows.map((r) => r.docId)).toEqual(["wamid.1", "wamid.2"]);
+  });
+
+  it("keeps going past a message that throws, and asks Meta to retry", async () => {
+    m.upsertThrowsFor = "c_1";
+    const res = await post([
+      change({
+        messages: [
+          msg("wamid.1", "27821111111", "hi"),
+          msg("wamid.2", "27822222222", "STOP"),
+        ],
+      }),
+    ]);
+
+    expect(m.optOuts).toEqual([{ contactId: "c_2", optedOut: true }]);
+    expect(res.status).toBeGreaterThanOrEqual(500);
   });
 
   it("does not treat a delivery that starts with a receipt as receipts only", async () => {
@@ -210,6 +278,10 @@ describe("a never-seen number whose first message is STOP", () => {
     const res = await post([change({ messages: [msg("wamid.N", "27823333333", "STOP")] })]);
 
     expect(m.created).toEqual(["+27823333333"]);
+    // Created already opted out and unannounced: no contact.created webhook
+    // or workflow gets a chance to message them.
+    expect(m.createdOptedOut).toEqual([true]);
+    expect(m.upsertCalls).toEqual(["sa_1/c_new_+27823333333/optOut=true"]);
     expect(m.messageRows).toEqual([
       { contactId: "c_new_+27823333333", docId: "wamid.N", body: "STOP" },
     ]);
@@ -217,5 +289,11 @@ describe("a never-seen number whose first message is STOP", () => {
     expect(m.optOuts).toEqual([{ contactId: "c_new_+27823333333", optedOut: true }]);
     expect(m.aiCalls).toEqual([]);
     expect(await res.json()).toMatchObject({ persisted: true, optedOut: true });
+  });
+
+  it("an ordinary first message from a new number is announced as usual", async () => {
+    await post([change({ messages: [msg("wamid.L", "27824444444", "Hi, pricing?")] })]);
+    expect(m.createdOptedOut).toEqual([false]);
+    expect(m.upsertCalls).toEqual(["sa_1/c_new_+27824444444/optOut=false"]);
   });
 });

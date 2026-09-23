@@ -230,6 +230,7 @@ export async function POST(request: Request) {
           channel: "sms",
           direction: "inbound",
           body: bodyRaw,
+          optOut: nextOptedOut === true,
         });
       }),
     );

@@ -344,7 +344,7 @@ no keyword effect at all.
 
 **PR 2 done:** templates carry up to 3 buttons (quick replies, then links),
 edited in the builder and submitted to Meta as a `BUTTONS` component. A quick
-reply that is an opt-out keyword ("Stop", "Opt out") is refused at save,
+reply that is an opt-out keyword ("Stop", "Cancel", "Opt out") is refused at save,
 from the same keyword rule every inbound route now shares. A
 buttoned template cannot be submitted on Twilio until PR 4 — Twilio would
 approve it without its buttons.

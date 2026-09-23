@@ -470,6 +470,10 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
       }),
     );
     expect(messageWrites[0].contactId).toBe("c_new");
+    expect(createContactServerSide).toHaveBeenCalledWith(
+      expect.objectContaining({ optedOutOnWhatsapp: false }),
+    );
+    expect(conversationUpserts[0]).toMatchObject({ optOut: false });
   });
 
   it("records a never-seen number's STOP: new contact, message row, and the opt-out", async () => {
@@ -482,6 +486,12 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     });
     const res = await post(inbound({ text: "Stop!" }));
     expect(createContactServerSide).toHaveBeenCalledTimes(1);
+    // Created opted out and unannounced; indexed without message.received
+    // automation — nothing can message someone whose only message was STOP.
+    expect(createContactServerSide).toHaveBeenCalledWith(
+      expect.objectContaining({ optedOutOnWhatsapp: true }),
+    );
+    expect(conversationUpserts[0]).toMatchObject({ optOut: true });
     expect(messageWrites.map((w) => [w.contactId, w.data.body])).toEqual([["c_new", "Stop!"]]);
     expect(conversationUpserts).toHaveLength(1);
     expect(contactUpdates).toEqual([expect.objectContaining({ whatsappOptedOut: true })]);
@@ -494,6 +504,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites).toHaveLength(1);
     expect(messageWrites[0].data.body).toBe("STOP");
     expect(await res.json()).toMatchObject({ optedOut: true });
+    expect(conversationUpserts[0]).toMatchObject({ optOut: true });
   });
 
   // ---- Findings from the adversarial and architecture reviews ----

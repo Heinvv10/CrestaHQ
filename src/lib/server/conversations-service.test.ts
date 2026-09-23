@@ -33,6 +33,11 @@ import {
   upsertConversationForMessage,
   setConversationDraft,
 } from "./conversations-service";
+import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import {
+  fireWorkflowTrigger,
+  resumeWaitingRunsOnReply,
+} from "@/lib/workflows/engine";
 const input = {
   contactId: "contact",
   subAccountId: "sa",
@@ -100,5 +105,30 @@ it("an anonymous web-chat row starts with an empty mirror", async () => {
     expect.anything(),
     expect.objectContaining({ assigneeUid: null, contactEmail: null }),
     expect.anything()
+  );
+});
+// An opt-out keyword is applied by the caller AFTER this call, so anything
+// automated fired here would race it — a message.received workflow could text
+// someone whose message was STOP.
+it("an inbound opt-out keyword indexes the thread but fires no automation", async () => {
+  await upsertConversationForMessage({
+    ...input,
+    direction: "inbound",
+    body: "STOP",
+    optOut: true,
+  });
+  expect(m.writes).toHaveBeenCalled();
+  expect(emitWebhookEvent).not.toHaveBeenCalled();
+  expect(resumeWaitingRunsOnReply).not.toHaveBeenCalled();
+  expect(fireWorkflowTrigger).not.toHaveBeenCalled();
+});
+it("an ordinary inbound still fires message.received automation", async () => {
+  await upsertConversationForMessage({ ...input, direction: "inbound" });
+  expect(emitWebhookEvent).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "message.received" })
+  );
+  expect(resumeWaitingRunsOnReply).toHaveBeenCalled();
+  expect(fireWorkflowTrigger).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "message.received" })
   );
 });

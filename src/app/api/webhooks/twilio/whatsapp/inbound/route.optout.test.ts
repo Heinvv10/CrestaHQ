@@ -12,6 +12,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
   contactIds: [] as string[],
   created: 0,
+  createdOptedOut: [] as unknown[],
+  upsertOptOut: [] as unknown[],
   messageRows: [] as Array<{ contactId: string; body: unknown }>,
   upserts: 0,
   updates: [] as Array<Record<string, unknown>>,
@@ -28,16 +30,18 @@ vi.mock("@/lib/comms/ai/agent", () => ({ resolveAgent: async () => null }));
 vi.mock("@/lib/comms/ai/respond", () => ({ maybeRespondWithAi: async () => {} }));
 vi.mock("@/lib/comms/ai/openrouter", () => ({ aiIsConfigured: () => false }));
 vi.mock("@/lib/server/conversations-service", () => ({
-  upsertConversationForMessage: async () => {
+  upsertConversationForMessage: async (a: { optOut?: boolean }) => {
     m.upserts += 1;
+    m.upsertOptOut.push(a.optOut);
   },
 }));
 vi.mock("@/lib/server/contact-activities", () => ({
   writeInboundMessageActivity: async () => {},
 }));
 vi.mock("@/lib/server/contacts-service", () => ({
-  createContactServerSide: async () => {
+  createContactServerSide: async (a: { optedOutOnWhatsapp?: boolean }) => {
     m.created += 1;
+    m.createdOptedOut.push(a.optedOutOnWhatsapp);
     m.contactIds = ["c_new"];
     return { id: "c_new" };
   },
@@ -109,6 +113,8 @@ import { POST } from "./route";
 beforeEach(() => {
   m.contactIds = [];
   m.created = 0;
+  m.createdOptedOut.length = 0;
+  m.upsertOptOut.length = 0;
   m.messageRows.length = 0;
   m.upserts = 0;
   m.updates.length = 0;
@@ -136,6 +142,18 @@ it("records a never-seen number's STOP and opts the new contact out", async () =
   expect(m.messageRows).toEqual([{ contactId: "c_new", body: "STOP" }]);
   expect(m.upserts).toBe(1);
   expect(m.updates).toEqual([expect.objectContaining({ whatsappOptedOut: true })]);
+  // Created opted out and unannounced, and indexed without message.received
+  // automation — nothing can message someone whose only message was STOP.
+  expect(m.createdOptedOut).toEqual([true]);
+  expect(m.upsertOptOut).toEqual([true]);
+});
+
+it("an existing contact's STOP is indexed without message.received automation", async () => {
+  m.contactIds = ["c_1"];
+  await post("stop");
+  expect(m.created).toBe(0);
+  expect(m.upsertOptOut).toEqual([true]);
+  expect(m.updates).toEqual([expect.objectContaining({ whatsappOptedOut: true })]);
 });
 
 it("still creates an ordinary new lead with no opt effect", async () => {
@@ -143,4 +161,6 @@ it("still creates an ordinary new lead with no opt effect", async () => {
   expect(m.created).toBe(1);
   expect(m.messageRows).toHaveLength(1);
   expect(m.updates).toEqual([]);
+  expect(m.createdOptedOut).toEqual([false]);
+  expect(m.upsertOptOut).toEqual([false]);
 });

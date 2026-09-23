@@ -117,6 +117,7 @@ describe("saving buttons", () => {
     ["more than three", [YES, NO, { type: "quick_reply", text: "Maybe" }, { type: "quick_reply", text: "Later" }]],
     ["a label that is an opt-out keyword", [{ type: "quick_reply", text: "Stop!" }]],
     ["a label that is a two-word opt-out keyword", [{ type: "quick_reply", text: "Opt out" }]],
+    ["a label that is exactly Cancel", [{ type: "quick_reply", text: "Cancel" }]],
     ["two buttons with the same text", [YES, { type: "quick_reply", text: "yes, all good" }]],
     ["a link without https", [{ type: "url", text: "Review", url: "http://g.page/x" }]],
     ["text of 26 characters", [{ type: "quick_reply", text: "Yes, everything is fine!!!" }]],

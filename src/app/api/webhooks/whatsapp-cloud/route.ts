@@ -290,23 +290,34 @@ export async function POST(request: Request) {
   }
 
   // Each message routes by its own block's number. Sequential, so two
-  // messages from one sender land in order. A failure on one does not stop
-  // the rest; the first non-2xx is answered, and Meta's retry of the whole
-  // delivery is safe because every message dedups on its own wamid.
+  // messages from one sender land in order. A failure on one — answered or
+  // thrown — does not stop the rest (a later one may be a STOP); the first
+  // non-2xx is answered, and Meta's retry of the whole delivery is safe
+  // because every message dedups on its own wamid.
   const routes = new Map<string, Promise<ResolvedRoute | null>>();
   const results: NextResponse[] = [];
   for (const inbound of inbounds) {
-    let route = routes.get(inbound.phoneNumberId);
-    if (!route) {
-      route = resolveRoute(inbound.phoneNumberId);
-      routes.set(inbound.phoneNumberId, route);
+    try {
+      let route = routes.get(inbound.phoneNumberId);
+      if (!route) {
+        route = resolveRoute(inbound.phoneNumberId);
+        routes.set(inbound.phoneNumberId, route);
+      }
+      const resolved = await route;
+      results.push(
+        resolved
+          ? await handleInbound(resolved, inbound)
+          : ok({ ok: true, ignored: "unrouted" }),
+      );
+    } catch (err) {
+      console.error(
+        `[whatsapp-cloud] inbound ${inbound.providerMessageId} failed — continuing the batch, asking Meta to retry`,
+        err,
+      );
+      results.push(
+        NextResponse.json({ ok: false, error: "message_failed" }, { status: 500 }),
+      );
     }
-    const resolved = await route;
-    results.push(
-      resolved
-        ? await handleInbound(resolved, inbound)
-        : ok({ ok: true, ignored: "unrouted" }),
-    );
   }
   const failed = results.find((r) => r.status >= 300);
   if (failed) return failed;
@@ -368,6 +379,9 @@ async function handleInbound(
         address: "",
         source: "whatsapp",
         tags: [],
+        // A STOP from a never-seen number: written opted out, announcing
+        // nothing, so no contact.created automation can message them.
+        optedOutOnWhatsapp: nextOptedOut === true,
       });
       contactDocs = [await db.collection("contacts").doc(created.id).get()];
     } catch (err) {
@@ -488,6 +502,7 @@ async function handleInbound(
           direction: "inbound",
           body: preview,
           buttonTap: inbound.buttonPayload !== null,
+          optOut: nextOptedOut === true,
         });
       }),
     );

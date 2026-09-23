@@ -8,6 +8,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   updates: [] as Array<Record<string, unknown>>,
+  upsertOptOut: [] as unknown[],
 }));
 
 vi.mock("twilio", () => ({ default: { validateRequest: () => true } }));
@@ -19,7 +20,9 @@ vi.mock("@/lib/comms/ai/respond", () => ({ maybeRespondWithAi: async () => {} })
 vi.mock("@/lib/comms/ai/gates", () => ({ aiChannelGateOn: () => false }));
 vi.mock("@/lib/comms/ai/openrouter", () => ({ aiIsConfigured: () => false }));
 vi.mock("@/lib/server/conversations-service", () => ({
-  upsertConversationForMessage: async () => {},
+  upsertConversationForMessage: async (a: { optOut?: boolean }) => {
+    m.upsertOptOut.push(a.optOut);
+  },
 }));
 vi.mock("@/lib/server/contact-activities", () => ({
   writeInboundMessageActivity: async () => {},
@@ -78,6 +81,7 @@ import { POST } from "./route";
 
 beforeEach(() => {
   m.updates.length = 0;
+  m.upsertOptOut.length = 0;
 });
 
 function post(text: string) {
@@ -95,9 +99,11 @@ function post(text: string) {
   );
 }
 
-it.each(["Stop!", "STOP.", "stop all", "Opt out"])("opts out on %j", async (text) => {
+it.each(["Stop!", "STOP.", "stop all", "Opt out", "END", "Quit", "cancel"])("opts out on %j", async (text) => {
   await post(text);
   expect(m.updates).toEqual([expect.objectContaining({ smsOptedOut: true })]);
+  // Indexed without message.received automation, which would race the flip.
+  expect(m.upsertOptOut).toEqual([true]);
 });
 
 it.each(["Start", "unstop!"])("opts back in on %j", async (text) => {
@@ -105,10 +111,11 @@ it.each(["Start", "unstop!"])("opts back in on %j", async (text) => {
   expect(m.updates).toEqual([expect.objectContaining({ smsOptedOut: false })]);
 });
 
-it.each(["Cancel my appointment tomorrow", "END", "Quit", "Yes I'll be there", "YES"])(
+it.each(["Cancel my appointment tomorrow", "End of the month", "Yes I'll be there", "YES"])(
   "has no opt effect on %j",
   async (text) => {
     await post(text);
     expect(m.updates).toEqual([]);
+    expect(m.upsertOptOut).toEqual([false]);
   },
 );

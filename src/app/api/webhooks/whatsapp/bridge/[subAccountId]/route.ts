@@ -347,6 +347,9 @@ export async function POST(
         address: "",
         source: "whatsapp",
         tags: [],
+        // A STOP from a never-seen number: written opted out, announcing
+        // nothing, so no contact.created automation can message them.
+        optedOutOnWhatsapp: nextOptedOut === true,
       });
       contactDocs = [await db.collection("contacts").doc(created.id).get()];
     } catch (err) {
@@ -586,6 +589,7 @@ export async function POST(
             channel: "whatsapp",
             direction: "inbound",
             body: previewFor(d.id),
+            optOut: nextOptedOut === true,
           });
         })
       );

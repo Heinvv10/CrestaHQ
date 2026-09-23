@@ -4,8 +4,9 @@
  * builder (a quick-reply button's text arrives as the message body, so a
  * button labelled with a stop keyword would opt out whoever taps it).
  *
- * Whole-message, not first-word: "Cancel my installation tomorrow" is a
- * customer talking, not an opt-out, and "Yes I'll be there" is not an opt-in.
+ * Whole-message, not first-word: a bare "Cancel" opts out (the carrier
+ * keyword set), but "Cancel my installation tomorrow" is a customer talking,
+ * and "Yes I'll be there" is not an opt-in.
  */
 export const WHATSAPP_STOP_WORDS = new Set([
   "STOP",
@@ -13,6 +14,9 @@ export const WHATSAPP_STOP_WORDS = new Set([
   "STOP ALL",
   "UNSUBSCRIBE",
   "OPT OUT",
+  "CANCEL",
+  "END",
+  "QUIT",
 ]);
 export const WHATSAPP_START_WORDS = new Set(["START", "UNSTOP"]);
 

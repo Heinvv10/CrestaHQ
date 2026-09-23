@@ -72,6 +72,13 @@ export interface UpsertConversationInput {
   pauseBot?: boolean;
   /** The inbound message was a WhatsApp button tap (it carried a payload). */
   buttonTap?: boolean;
+  /**
+   * The inbound message is an opt-out keyword. The thread is still indexed,
+   * but nothing automated reacts to it: no `message.received` webhook, no
+   * waiting-run resume, no workflow enrolment. The caller applies the opt-out
+   * after this call, so anything fired here would race it.
+   */
+  optOut?: boolean;
 }
 
 function toMillis(v: unknown): number | null {
@@ -208,7 +215,7 @@ export async function upsertConversationForMessage(
     // contactId — at which point later messages fire them normally.
     // For every other channel contactId is always set, so this guard is
     // a no-op and existing behavior is byte-for-byte unchanged.
-    if (input.direction === "inbound" && input.contactId) {
+    if (input.direction === "inbound" && input.contactId && !input.optOut) {
       const contactId = input.contactId;
       void emitWebhookEvent({
         subAccountId: input.subAccountId,
