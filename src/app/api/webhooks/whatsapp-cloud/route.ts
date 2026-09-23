@@ -14,6 +14,7 @@ import {
   parseCloudPhoneNumberId,
   parseCloudStatuses,
   type CloudInbound,
+  type CloudStatus,
   type CloudMediaRef,
 } from "@/lib/comms/whatsapp/cloud-payload";
 import {
@@ -21,6 +22,10 @@ import {
   whatsappMediaPath,
 } from "@/lib/comms/whatsapp/media-storage";
 import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
+import {
+  normalizeDeliveryStatus,
+  recordWhatsappDeliveryStatus,
+} from "@/lib/comms/whatsapp/delivery-status";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
@@ -246,6 +251,44 @@ async function attachInboundMedia(opts: {
   }
 }
 
+/**
+ * Delivery receipts onto their outbound rows, so a message Meta refused after
+ * the send (131047, 131026…) shows as failed instead of "sent" forever. Each
+ * receipt routes by its own block's number. Never throws: a non-2xx makes Meta
+ * retry and eventually disable the subscription, which would stop inbound
+ * messages too.
+ */
+async function recordStatuses(
+  statuses: CloudStatus[],
+  routeFor: (phoneNumberId: string) => Promise<ResolvedRoute | null>,
+): Promise<{ routed: number; recorded: number }> {
+  let routed = 0;
+  let recorded = 0;
+  for (const s of statuses) {
+    if (!s.phoneNumberId) continue;
+    try {
+      const route = await routeFor(s.phoneNumberId);
+      if (!route) continue;
+      routed++;
+      const status = normalizeDeliveryStatus(s.status);
+      if (!status) continue;
+      const r = await recordWhatsappDeliveryStatus({
+        db: getAdminDb(),
+        subAccountId: route.subAccountId,
+        recipientPhone: toE164(s.recipientId ?? ""),
+        providerMessageId: s.providerMessageId,
+        status,
+        errorCode: s.errorCode,
+        errorTitle: s.errorTitle,
+      });
+      recorded += r.updated;
+    } catch (err) {
+      console.warn(`[whatsapp-cloud] status ${s.status} not recorded`, err);
+    }
+  }
+  return { routed, recorded };
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
 
@@ -268,42 +311,53 @@ export async function POST(request: Request) {
     return ok({ ok: true, ignored: "invalid_json" });
   }
 
+  // One resolution per number for the whole delivery.
+  const routes = new Map<string, Promise<ResolvedRoute | null>>();
+  const routeFor = (phoneNumberId: string) => {
+    let route = routes.get(phoneNumberId);
+    if (!route) {
+      route = resolveRoute(phoneNumberId);
+      routes.set(phoneNumberId, route);
+    }
+    return route;
+  };
+
   // Meta may batch several messages — and receipts beside them — into one
   // delivery, across entries and changes. Every message is handled; reading
   // only the first would drop the rest, a STOP among them.
   const inbounds = parseCloudInbounds(payload);
   if (inbounds.length === 0) {
-    const phoneNumberId = parseCloudPhoneNumberId(payload);
-    if (!phoneNumberId) return ok({ ok: true, ignored: "no_phone_number_id" });
-
-    const route = await resolveRoute(phoneNumberId);
-    if (!route) return ok({ ok: true, ignored: "unrouted" });
-
-    // Delivery receipts share this endpoint. They are only ever counted: the
-    // parser reads messages from `messages[]` alone, so a receipt can never
-    // be written into the thread as a customer message.
+    // Delivery receipts share this endpoint. The parser reads messages from
+    // `messages[]` alone, so a receipt can never be written into the thread
+    // as a customer message. Each receipt routes by its own block, so an
+    // unknown number in the first block does not drop the rest.
     const statuses = parseCloudStatuses(payload);
     if (statuses.length > 0) {
-      return ok({ ok: true, statuses: statuses.length });
+      const { routed, recorded } = await recordStatuses(statuses, routeFor);
+      return routed > 0
+        ? ok({ ok: true, statuses: statuses.length, recorded })
+        : ok({ ok: true, ignored: "unrouted" });
     }
+
+    const phoneNumberId = parseCloudPhoneNumberId(payload);
+    if (!phoneNumberId) return ok({ ok: true, ignored: "no_phone_number_id" });
+    const route = await routeFor(phoneNumberId);
+    if (!route) return ok({ ok: true, ignored: "unrouted" });
     return ok({ ok: true, persisted: false });
   }
+
+  // Receipts batched beside the messages are recorded too.
+  await recordStatuses(parseCloudStatuses(payload), routeFor);
 
   // Each message routes by its own block's number. Sequential, so two
   // messages from one sender land in order. A failure on one — answered or
   // thrown — does not stop the rest (a later one may be a STOP); the first
   // non-2xx is answered, and Meta's retry of the whole delivery is safe
   // because every message dedups on its own wamid.
-  const routes = new Map<string, Promise<ResolvedRoute | null>>();
   const results: NextResponse[] = [];
   for (const inbound of inbounds) {
     try {
-      let route = routes.get(inbound.phoneNumberId);
-      if (!route) {
-        route = resolveRoute(inbound.phoneNumberId);
-        routes.set(inbound.phoneNumberId, route);
-      }
-      const resolved = await route;
+      const resolved = await routeFor(inbound.phoneNumberId);
       results.push(
         resolved
           ? await handleInbound(resolved, inbound)

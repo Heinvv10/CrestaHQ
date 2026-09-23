@@ -28,6 +28,7 @@ vi.mock("@/lib/comms/whatsapp/readiness", () => ({
 }));
 vi.mock("@/lib/comms/whatsapp/template-registrations", () => ({
   isTemplateApprovedFor: () => true,
+  templateRegistration: () => null,
 }));
 vi.mock("@/lib/server/conversations-service", () => ({
   upsertConversationForMessage: async () => undefined,
