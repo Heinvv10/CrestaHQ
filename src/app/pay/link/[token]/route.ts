@@ -51,12 +51,13 @@ export async function GET(
   ctx: { params: Promise<{ token: string }> },
 ) {
   const { token } = await ctx.params;
-  const loaded = await loadPayableLink(token);
+  const returning = new URL(request.url).searchParams.has("reference");
+  const loaded = await loadPayableLink(token, { returning });
   if (!loaded.ok) return deadLink(loaded.error, loaded.status);
   const { link, mode } = loaded;
   const amount = formatCurrency(link.amountCents / 100, link.currency);
 
-  if (new URL(request.url).searchParams.has("reference")) {
+  if (returning) {
     return page(
       "Confirming payment",
       `<h1 style="font-size:20px;margin:0 0 8px;">Confirming your payment</h1>

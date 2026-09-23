@@ -59,15 +59,21 @@ Mode belongs to the **checkout attempt** (W5 PR1, see
 - The reconciler requires the verifying key's fingerprint to be the attempt's, and Paystack's
   `domain` to be the attempt's mode. A mismatch never marks anything paid: it answers 200 and
   flags the attempt, with a sentence on the link's `attention`.
-- **Connection changes.** Disconnecting, or connecting a different key, flags every attempt
-  still open under another key, with its reference and amount, on the link's `attention`. A
+- **Connection changes.** Before a key is replaced or deleted, every attempt still open under it
+  is checked with Paystack using that key: a success is recorded through the reconciler, a
+  checkout that ended unpaid (abandoned, failed, reversed, or unknown to Paystack) is closed as
+  `refused`. So abandoned checkouts, and a routine key regeneration, raise no false alarms. After
+  the change commits, any attempt still open under another key (Paystack could not answer) is
+  flagged, with its reference and amount, on the link's `attention`. A
   webhook that arrives for such an attempt (no key, or signed by the replaced key) cannot be
   verified, so nothing is recorded; it flags the attempt if the change missed it and answers
   200 rather than 401 so Paystack stops redelivering. A flag is built from our own attempt
   record — nothing in the unverified body is trusted. A flagged attempt still settles if its
   own key is reconnected and the payment then verifies.
 - A verified payment with **no** attempt (a checkout opened before attempts existed) is flagged
-  on the link, never recorded. Links made before `mode` existed are refused at the pay page.
+  on the link, never recorded. Links made before `mode` existed are refused at the pay page;
+  a payer returning from Paystack (`?reference=`) is always told the payment is being confirmed,
+  never that the link is dead.
 
 ## Flows
 

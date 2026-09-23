@@ -7,7 +7,11 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { BillingError } from "@/lib/billing/errors";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
-import { probePaystackKey } from "@/lib/paystack/sub-account-client";
+import { sweepOpenAttempts } from "@/lib/paystack/attempt-sweep";
+import {
+  probePaystackKey,
+  readPaystackConnectionSecret,
+} from "@/lib/paystack/sub-account-client";
 import { flagStaleAttempts } from "@/lib/server/payment-attempts";
 import {
   PAYSTACK_PUBLIC_KEY_RE,
@@ -26,9 +30,11 @@ import {
  *          stored, then written and the display metadata published.
  * DELETE — disconnect: deletes the secret doc, clears the meta.
  *
- * Either one, once committed, flags every checkout attempt still open under
- * a different key (`flagStaleAttempts`): its payment would be signed by a key
- * this workspace no longer holds, so it could never be recorded.
+ * Before either replaces a key, the attempts still open under it are settled
+ * or closed with that key while it is still stored (`sweepOpenAttempts`).
+ * Once committed, every attempt still open under a different key is flagged
+ * (`flagStaleAttempts`): its payment would be signed by a key this workspace
+ * no longer holds, so it could never be recorded.
  *
  * SECURITY — the key NEVER goes on the sub-account doc. `subAccounts/{id}` is
  * readable by any active member (firestore.rules) and Firestore rules are
@@ -157,6 +163,11 @@ export async function POST(
     connectedAt: new Date(),
   };
 
+  const previous = await readPaystackConnectionSecret(subAccountId);
+  if (previous && previous.secretKey !== secretKey) {
+    await sweepOpenAttempts(subAccountId, previous.secretKey);
+  }
+
   const db = getAdminDb();
   const batch = db.batch();
   batch.set(db.doc(paystackConnectionSecretPath(subAccountId)), secret);
@@ -193,6 +204,8 @@ export async function DELETE(
   if (!(await subRef.get()).exists) {
     return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
   }
+  const previous = await readPaystackConnectionSecret(subAccountId);
+  if (previous) await sweepOpenAttempts(subAccountId, previous.secretKey);
 
   // ONE batch, not two awaits. Clearing the meta first and deleting the key
   // second leaves a window in which a retried Paystack webhook still finds the

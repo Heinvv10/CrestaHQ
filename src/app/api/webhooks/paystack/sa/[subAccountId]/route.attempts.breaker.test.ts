@@ -73,7 +73,8 @@ beforeEach(() => {
   started = [];
   attemptBeforeInitialize = [];
   initializeFails = false;
-  verifyAs = () => ({ status: 404, body: { status: false, message: "Transaction reference not found" } });
+  // By default the customer is still on Paystack's checkout: no outcome yet.
+  verifyAs = (c) => verified({ reference: c.path.split("/").pop()!, status: "ongoing" });
   calls = stubPaystack((c) => {
     if (c.path === "/transaction/initialize") {
       attemptBeforeInitialize.push(mem.read(`paymentAttempts/${String(c.body!.reference)}`) !== undefined);
@@ -249,13 +250,14 @@ describe("BREAK-4 — a key switch mid-checkout is flagged, not retried forever"
     expect(attempt(ref)).toMatchObject({ state: "flagged" });
     expect(String(mem.read(`paymentLinks/${link.id}`)!.attention)).toContain(ref);
 
+    const verifiesAtSwitch = calls.filter((c) => c.path.startsWith("/transaction/verify")).length;
     // Paystack keeps delivering the live payment, signed with the OLD key.
     for (let i = 0; i < 3; i++) expect((await deliver(ref, LIVE_KEY)).status).toBe(200);
     // Flagged once: redeliveries do not repeat the sentence.
     expect(String(mem.read(`paymentLinks/${link.id}`)!.attention).split(ref)).toHaveLength(2);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
-    // Nothing unverified was acted on: no verify call went out.
-    expect(calls.filter((c) => c.path.startsWith("/transaction/verify"))).toHaveLength(0);
+    // Nothing unverified was acted on: the deliveries sent no verify call.
+    expect(calls.filter((c) => c.path.startsWith("/transaction/verify"))).toHaveLength(verifiesAtSwitch);
   });
 
   it("an attempt the switch missed is flagged by its first old-key delivery", async () => {
@@ -401,6 +403,100 @@ describe("guards around the attempt record", () => {
     expect((await deliver("x/y/z", "sk_live_forger")).status).toBe(401);
     expect(mem.read("paymentAttempts/x/y/z")).toMatchObject({ state: "open" });
     expect((await deliver("", "sk_live_forger")).status).toBe(401);
+  });
+});
+
+describe("before the key changes, open attempts are settled or closed with the OLD key (round-1 review)", () => {
+  const abandoned = (c: PaystackCall) => verified({ reference: c.path.split("/").pop()!, status: "abandoned" });
+
+  it("RV-1: abandoned checkouts on a link that was then paid raise no flag on a key rotation", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    for (let i = 0; i < 3; i++) await checkout(link.token);
+    const [r1, r2, r3] = started;
+    verifyAs = () => verified({ reference: r3, amount: 115000, domain: "live" });
+    await deliver(r3, LIVE_KEY);
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+
+    verifyAs = abandoned;
+    expect((await connect("sk_live_k8")).status).toBe(200);
+    expect(attempt(r1)).toMatchObject({ state: "refused" });
+    expect(attempt(r2)).toMatchObject({ state: "refused" });
+    expect(mem.read(`paymentLinks/${link.id}`)!.attention ?? null).toBeNull();
+  });
+
+  it("a checkout Paystack has no record of is closed, not flagged", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = () => ({ status: 404, body: { status: false, message: "Transaction reference not found" } });
+    await disconnect();
+    expect(attempt(ref)).toMatchObject({ state: "refused" });
+    expect(mem.read(`paymentLinks/${link.id}`)!.attention ?? null).toBeNull();
+  });
+
+  it("RV-2: a payment made just before a key regeneration is recorded with the old key, not flagged", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = () => verified({ reference: ref, amount: 115000, domain: "live" });
+    expect((await connect("sk_live_k8")).status).toBe(200);
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(attempt(ref)).toMatchObject({ state: "settled" });
+    expect(mem.read(`paymentLinks/${link.id}`)!.attention ?? null).toBeNull();
+    const verifies = calls.filter((c) => c.path.startsWith("/transaction/verify"));
+    expect(verifies.every((c) => c.auth === `Bearer ${LIVE_KEY}`)).toBe(true);
+  });
+
+  it("a payment made just before a disconnect is recorded before the key is deleted", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = () => verified({ reference: ref, amount: 115000, domain: "live" });
+    await disconnect();
+    expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    expect(attempt(ref)).toMatchObject({ state: "settled" });
+  });
+
+  it("an attempt Paystack cannot answer for at switch time is flagged", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    verifyAs = () => ({ status: 500, body: { status: false, message: "upstream" } });
+    await connect("sk_live_k8");
+    expect(attempt(ref)).toMatchObject({ state: "flagged" });
+    expect(String(mem.read(`paymentLinks/${link.id}`)!.attention)).toContain(ref);
+  });
+
+  it("the sweep asks only about attempts opened under the key being replaced", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    // Open under an older key the workspace no longer holds: the current key
+    // cannot speak for it, so it must be flagged, never closed.
+    seedAttempt("pl-old-0123456789abcdef", { paymentLinkId: link.id, secretKey: "sk_live_old", amountCents: 115000 });
+    verifyAs = () => ({ status: 404, body: { status: false, message: "Transaction reference not found" } });
+    await connect("sk_live_k8");
+    expect(attempt("pl-old-0123456789abcdef")).toMatchObject({ state: "flagged" });
+  });
+
+  it("RV-3/4: a payer returning from Paystack after a switch or disconnect is told it is being confirmed, not to pay again", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    const back = () => PAY_GET(new Request(`https://crm.example.com/pay/link/${link.token}?reference=${ref}`), { params: Promise.resolve({ token: link.token }) });
+    await connect(KEY);
+    let page = await back();
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Confirming");
+    await disconnect();
+    page = await back();
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Confirming");
   });
 });
 

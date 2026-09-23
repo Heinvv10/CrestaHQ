@@ -21,7 +21,8 @@ export type PaymentMode = "test" | "live";
 /**
  * open     — checkout started; no outcome yet.
  * settled  — a verified payment was recorded against it.
- * refused  — Paystack never opened the checkout; nothing can have been charged.
+ * refused  — no money was taken: Paystack never opened the checkout, or said
+ *            (when asked before a key change) that it ended unpaid.
  * flagged  — money may exist that was NOT recorded; `reason` tells the
  *            operator what to check. Still settles if a matching verified
  *            payment later arrives (e.g. the same key is reconnected).

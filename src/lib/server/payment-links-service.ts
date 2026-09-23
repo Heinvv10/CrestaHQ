@@ -160,7 +160,8 @@ export async function deactivatePaymentLink(input: {
  */
 export async function loadPayableLink(
   token: string,
-): Promise<ServiceResult<{ link: PaymentLink; mode: PaymentMode }>> {
+  opts: { returning?: boolean } = {},
+): Promise<ServiceResult<{ link: PaymentLink; mode: PaymentMode | null }>> {
   const linkId = verifyPaymentLinkToken(token);
   if (!linkId) return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
   const snap = await getAdminDb().doc(`paymentLinks/${linkId}`).get();
@@ -191,6 +192,9 @@ export async function loadPayableLink(
       return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
     }
   }
+  // A payer back from Paystack is only told their payment is being confirmed:
+  // telling them the link is dead could prompt a second payment.
+  if (opts.returning) return { ok: true, link, mode: null };
   const conn = await readPaystackConnectionSecret(link.subAccountId);
   if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
   // A link is paid in the mode it was issued in. Switching the workspace
