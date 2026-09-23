@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import {
+  loadEffectiveTerritoryScope,
+  territoryGate,
+} from "@/lib/auth/territory-filter";
+import {
   DealStageError,
   deleteDealServerSide,
   updateDealServerSide,
@@ -44,6 +48,8 @@ export async function PATCH(
 
   const access = await requireSubAccountMember(request, data.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, data.territoryId as string | null);
+  if (gate) return gate;
 
   let body: Record<string, unknown>;
   try {
@@ -69,6 +75,19 @@ export async function PATCH(
   if (body.territoryId === null || typeof body.territoryId === "string") {
     patch.territoryId =
       typeof body.territoryId === "string" ? body.territoryId : null;
+  }
+  // A territory-scoped collaborator may not re-home a deal (its territory
+  // or its contact) — the rules' territoryIdUnchangedOrAdmin, and what the
+  // edit dialog already withholds from them.
+  const moves =
+    (patch.territoryId !== undefined &&
+      patch.territoryId !== ((data.territoryId as string | null) ?? null)) ||
+    (patch.contactId !== undefined && patch.contactId !== data.contactId);
+  if (moves && (await loadEffectiveTerritoryScope(access)).enforce) {
+    return NextResponse.json(
+      { error: "Only admins can move a deal to another contact or territory." },
+      { status: 403 },
+    );
   }
   // A pipeline move must name the landing stage; a stage move is checked
   // against the deal's own pipeline (absent = default).
@@ -174,6 +193,8 @@ export async function DELETE(
 
   const access = await requireSubAccountMember(request, data.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, data.territoryId as string | null);
+  if (gate) return gate;
 
   await deleteDealServerSide({
     dealId: id,
