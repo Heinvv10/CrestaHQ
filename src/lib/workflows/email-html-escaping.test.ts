@@ -251,3 +251,20 @@ describe("workspace email provider routing", () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+describe("execSendEmail — unsubscribe link", () => {
+  it("appends the unsubscribe link when the step body has none", async () => {
+    emailConfig.body = "Hi {{contact.firstName}}, big sale this week.";
+    await runStep("run1", "n1");
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toContain("https://app.test/u/c1");
+    expect(sent[0]!.html).toContain('<a href="https://app.test/u/c1">Unsubscribe</a>');
+  });
+
+  it("does not add a second link when the body already has one", async () => {
+    await runStep("run1", "n1");
+
+    expect(sent[0]!.text.split("https://app.test/u/c1")).toHaveLength(2);
+  });
+});

@@ -204,19 +204,24 @@ const execSendEmail: NodeExecutor = async (ctx) => {
   }
 
   const unsubscribeLink = buildUnsubscribeUrl(contact.id);
+  // A workflow email is marketing as often as not (steps carry no
+  // transactional flag), so like a broadcast it must carry an unsubscribe
+  // link. Broadcasts refuse a template without one up front; a step in a live
+  // automation appends it instead of failing a customer's sequence mid-run.
+  const rawBody = cfg.body ?? "";
+  const body = rawBody.includes("{{unsubscribeLink}}")
+    ? rawBody
+    : `${rawBody}\n\n{{unsubscribeLink}}`;
   const subject = resolveMergeTags(
     cfg.subject ?? "",
     mergeSubject(ctx, unsubscribeLink)
   );
-  const text = resolveMergeTags(
-    cfg.body ?? "",
-    mergeSubject(ctx, unsubscribeLink)
-  );
+  const text = resolveMergeTags(body, mergeSubject(ctx, unsubscribeLink));
   // HTML render: substituted values are escaped (a contact's name or a
   // custom field set over the public API is untrusted free text), but the
   // unsubscribe anchor we supply ourselves must stay real markup.
   const htmlInner = resolveMergeTags(
-    cfg.body ?? "",
+    body,
     mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`),
     { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");

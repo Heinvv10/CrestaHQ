@@ -5,7 +5,7 @@ import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { checkAndCount } from "@/lib/comms/web-chat/rate-limit";
 import { isValidSessionId } from "@/lib/comms/web-chat/session";
 import { respondToWebChat } from "@/lib/comms/web-chat/respond";
-import { ipFromRequest } from "@/lib/contacts/location";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import type { SubAccountDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -102,7 +102,7 @@ export async function POST(request: Request) {
   }
 
   // Rate limit (after auth — don't waste IP budget on rejected requests).
-  const ip = ipFromRequest(request) ?? "unknown";
+  const ip = clientIpFrom(request);
   const rl = checkAndCount(ip, sessionId);
   if (!rl.ok) {
     return NextResponse.json(

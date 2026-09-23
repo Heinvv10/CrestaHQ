@@ -16,6 +16,7 @@ import {
   mergeLocation,
 } from "@/lib/contacts/location";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import {
   checkFormSpam,
   ELAPSED_BODY_KEY,
@@ -159,7 +160,7 @@ async function handleSubmit(
   // not a document fetch. Trap verdicts are acted on after the form loads
   // (the fake success mirrors the real one, thank-you copy included).
   const spam = checkFormSpam({
-    ip: ipFromRequest(request),
+    ip: clientIpFrom(request),
     formId: id,
     honeypot: body[HONEYPOT_BODY_KEY],
     elapsedMs: body[ELAPSED_BODY_KEY],
