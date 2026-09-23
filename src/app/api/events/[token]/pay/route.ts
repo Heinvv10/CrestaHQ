@@ -92,6 +92,28 @@ export async function POST(
     return fail("This booking has no deposit to pay.", 409);
   }
 
+  // The Checkout session must not outlive the hold, or the visitor could pay
+  // after expire-step cancelled the booking and released its slot. Stripe
+  // takes `expires_at` between 30 min and 24 h out (1-minute margin each
+  // side for latency), so a hold with under 31 min left still gets 31. A
+  // payment in that tail reaches a booking expire-step has cancelled:
+  // mark-paid refuses it (`bad_status`, status "cancelled"), the booking
+  // stays cancelled, and the reconciler flags the paid order on
+  // `order.attention` for the operator to refund.
+  const holdEnd = (
+    event.paymentHoldExpiresAt as { toDate?: () => Date } | null | undefined
+  )?.toDate?.();
+  if (holdEnd && holdEnd.getTime() <= Date.now()) {
+    return fail("This booking is no longer awaiting payment.", 409);
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expiresAt = holdEnd
+    ? Math.min(
+        Math.max(Math.floor(holdEnd.getTime() / 1000), nowSec + 31 * 60),
+        nowSec + 24 * 60 * 60 - 60,
+      )
+    : undefined;
+
   const subSnap = await db.doc(`subAccounts/${event.subAccountId}`).get();
   if (subSnap.data()?.paymentsEnabledByAgency !== true) {
     return fail("Card payment isn't available for this booking.", 409);
@@ -154,6 +176,7 @@ export async function POST(
         ],
         success_url: `${base}/e/${token}?paid=1`,
         cancel_url: `${base}/e/${token}?cancelled=1`,
+        ...(expiresAt ? { expires_at: expiresAt } : {}),
         metadata: {
           leadstackSubAccountId: event.subAccountId,
           leadstackEventId: event.id,

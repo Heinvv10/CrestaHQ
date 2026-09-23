@@ -42,6 +42,19 @@ export interface IcsInput {
   attendeeName?: string;
 }
 
+/**
+ * SEQUENCE for an event's next invite update. Each writer stores it on the
+ * event (`icsSequence`) in the same transaction as the change. Events that
+ * predate the field may already have sent SEQUENCE:1, so they continue at 2;
+ * a stored non-number or negative is treated as 0.
+ */
+export function nextIcsSequence(event: { icsSequence?: unknown }): number {
+  const last = event.icsSequence;
+  if (last === undefined) return 2;
+  // A stored value that isn't a sane count (a bad write) restarts from 0.
+  return (Number.isSafeInteger(last) && (last as number) >= 0 ? (last as number) : 0) + 1;
+}
+
 /** Format a Date as a UTC ICS DATE-TIME ("19980119T070000Z"). */
 function formatIcsDate(d: Date): string {
   const pad = (n: number, len = 2) => String(n).padStart(len, "0");

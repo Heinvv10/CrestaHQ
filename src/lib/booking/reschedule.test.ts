@@ -21,7 +21,7 @@ vi.mock("@/lib/comms/resend", () => ({
 vi.mock("@/lib/booking/email", () => ({
   renderBookingConfirmationEmail: m.renderBookingConfirmationEmail,
 }));
-vi.mock("@/lib/booking/ics", () => ({ generateIcs: () => "" }));
+vi.mock("@/lib/booking/ics", () => ({ generateIcs: () => "", nextIcsSequence: () => 2 }));
 vi.mock("@/lib/booking/event-token", () => ({
   issueEventToken: (eventId: string) => ({ token: `tok_${eventId}`, hash: `hash_${eventId}` }),
   buildEventPublicUrl: (token: string) => `https://example.com/e/${token}`,

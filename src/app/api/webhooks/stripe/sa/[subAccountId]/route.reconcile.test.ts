@@ -66,7 +66,8 @@ it("a transient failure marking the invoice paid answers 5xx, and Stripe's retry
 it("a transient failure confirming a booking deposit answers 5xx; the retry confirms it", async () => {
   mem.seed("events/ev1", { subAccountId: SA, agencyId: "ag1", status: "awaiting_payment", contactId: null });
   seedOrder("o1", { source: "booking_deposit", quoteId: null, eventId: "ev1" });
-  const restore = failFirst("events", "update");
+  // Mark-paid is a transaction, so the failure is injected at its read.
+  const restore = failFirst("events", "get");
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBeGreaterThanOrEqual(500);
   expect(mem.read("events/ev1")).toMatchObject({ status: "awaiting_payment" });
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);

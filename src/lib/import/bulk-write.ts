@@ -20,6 +20,7 @@ import {
   type ImportRecordError,
   type ImportSource,
 } from "@/types/import";
+import { isLongEvent } from "@/lib/booking/long-event";
 
 /**
  * Generic, GHL-agnostic bulk-write engine for one chunk of one entity.
@@ -492,6 +493,7 @@ function buildWrite(db: FirebaseFirestore.Firestore, a: BuildArgs): Built {
         title: v.title,
         startAt: v.startAt,
         endAt: v.endAt,
+        isLong: isLongEvent(v.startAt, v.endAt),
         contactId: v.contactId,
         location: v.location,
         notes: v.notes,

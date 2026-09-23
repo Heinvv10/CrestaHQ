@@ -10,7 +10,7 @@ import {
   buildEventPublicUrl,
   issueEventToken,
 } from "@/lib/booking/event-token";
-import { generateIcs } from "@/lib/booking/ics";
+import { generateIcs, nextIcsSequence } from "@/lib/booking/ics";
 import {
   fireBookingTrigger,
   recordBookingActivity,
@@ -67,44 +67,64 @@ export async function markBookingPaidServerSide(input: {
 }): Promise<MarkBookingPaidOutcome> {
   const db = getAdminDb();
   const eventRef = db.collection("events").doc(input.eventId);
-  const eventSnap = await eventRef.get();
-  if (!eventSnap.exists) {
-    return { ok: false, code: "not_found", message: "Event not found" };
-  }
-  const event = eventSnap.data() as CalendarEvent;
-
-  if (event.subAccountId !== input.expectSubAccountId) {
-    return {
-      ok: false,
-      code: "wrong_tenant",
-      message: "Event belongs to a different sub-account",
-    };
-  }
-
-  // Idempotency: a replayed Stripe event (or a double-clicked button) finds
-  // the booking already `scheduled` and stops here, so no second confirmation
-  // email and no duplicate reminder schedule.
-  if (eventStatus(event) !== "awaiting_payment") {
-    return {
-      ok: false,
-      code: "bad_status",
-      message: "Only events awaiting payment can be marked paid.",
-      status: eventStatus(event),
-      paidOrderId: event.paidOrderId ?? null,
-      paidAt: event.paidAt ?? null,
-    };
-  }
-
-  const { token: newToken, hash: newHash } = issueEventToken(input.eventId);
+  // A compare-and-set on `awaiting_payment`: a payment expiry that cancels
+  // between a plain read and write would be overwritten back to
+  // `scheduled` (double-booking the released slot), and a webhook racing
+  // the operator's button would both confirm — two rotations, two emails.
+  let confirmed: { event: CalendarEvent; token: string } | MarkBookingPaidOutcome;
   try {
-    await eventRef.update({
-      status: "scheduled",
-      paidAt: FieldValue.serverTimestamp(),
-      paidByUid: input.paidByUid,
-      ...(input.paidOrderId ? { paidOrderId: input.paidOrderId } : {}),
-      publicTokenHash: newHash,
-      paymentHoldExpiresAt: null,
-      updatedAt: FieldValue.serverTimestamp(),
+    confirmed = await db.runTransaction(async (txn) => {
+      const eventSnap = await txn.get(eventRef);
+      if (!eventSnap.exists) {
+        return { ok: false, code: "not_found", message: "Event not found" } as const;
+      }
+      const event = eventSnap.data() as CalendarEvent;
+
+      if (event.subAccountId !== input.expectSubAccountId) {
+        return {
+          ok: false,
+          code: "wrong_tenant",
+          message: "Event belongs to a different sub-account",
+        } as const;
+      }
+
+      // Idempotency: a replayed Stripe event (or a double-clicked button) finds
+      // the booking already `scheduled` and stops here, so no second confirmation
+      // email and no duplicate reminder schedule.
+      if (eventStatus(event) !== "awaiting_payment") {
+        return {
+          ok: false,
+          code: "bad_status",
+          message: "Only events awaiting payment can be marked paid.",
+          status: eventStatus(event),
+          paidOrderId: event.paidOrderId ?? null,
+          paidAt: event.paidAt ?? null,
+        } as const;
+      }
+
+      const { token, hash } = issueEventToken(input.eventId);
+      const icsSequence = nextIcsSequence(event);
+      txn.update(eventRef, {
+        status: "scheduled",
+        paidAt: FieldValue.serverTimestamp(),
+        paidByUid: input.paidByUid,
+        ...(input.paidOrderId ? { paidOrderId: input.paidOrderId } : {}),
+        paidFromTokenHash: event.publicTokenHash ?? null,
+        publicTokenHash: hash,
+        paymentHoldExpiresAt: null,
+        icsSequence,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return {
+        token,
+        event: {
+          ...event,
+          id: input.eventId,
+          status: "scheduled",
+          publicTokenHash: hash,
+          icsSequence,
+        } as CalendarEvent,
+      };
     });
   } catch (err) {
     console.error("[bookings-service] mark-paid update failed", err);
@@ -114,13 +134,9 @@ export async function markBookingPaidServerSide(input: {
       message: "Couldn't mark as paid.",
     };
   }
+  if ("ok" in confirmed) return confirmed;
+  const { event: updatedEvent, token: newToken } = confirmed;
 
-  const updatedEvent: CalendarEvent = {
-    ...event,
-    id: input.eventId,
-    status: "scheduled",
-    publicTokenHash: newHash,
-  };
   await runMarkPaidSideEffects({ event: updatedEvent, rawToken: newToken });
   await pushBookingToGoogle(input.eventId);
 
@@ -238,7 +254,7 @@ async function runMarkPaidSideEffects(args: {
     location: event.location || "",
     method: "REQUEST",
     status: "CONFIRMED",
-    sequence: 1,
+    sequence: event.icsSequence,
     attendeeEmail: contact.email,
     attendeeName: contact.name ?? undefined,
     organizerEmail: sub.replyToEmail ?? undefined,

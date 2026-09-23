@@ -59,7 +59,7 @@ export interface AvailabilityInput {
   /**
    * Per-host schedule override. When provided, slots are generated against
    * these ranges instead of `page.workingHours` — everything else
-   * (duration / buffer / min-notice / per-day cap / DST handling) is
+   * (duration / buffer / min-notice / DST handling) is
    * unchanged. Used by team-mode host-narrowing so a host with custom hours
    * only offers slots inside their own window. Absent ⇒ use the page hours.
    */
@@ -307,8 +307,6 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
   const endDate = new Date(Date.UTC(endWc.year, endWc.month - 1, endWc.day));
 
   const out: SlotCandidate[] = [];
-  // Track per-tz-day count for maxPerDay. Key: "YYYY-MM-DD" in tz.
-  const dayCounts = new Map<string, number>();
 
   // Precompute busy intervals as numeric ranges for fast overlap.
   const busyRanges = busy
@@ -337,7 +335,6 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
     };
     const dayKey = cursor.toISOString().slice(0, 10);
     const local = localDay(wc.year, wc.month, wc.day, page.timezone);
-    const dayMax = page.maxPerDay ?? Infinity;
     // A date override replaces that weekday's hours for this date only.
     const dayRanges =
       overrides.get(dayKey) ?? rangesByDow.get(wc.dayOfWeek) ?? [];
@@ -346,13 +343,9 @@ export function computeAvailability(input: AvailabilityInput): SlotCandidate[] {
         // Window + min-notice filter.
         if (slot.startAt < fromInstant) continue;
         if (slot.endAt > toInstant) continue;
-        // Day cap.
-        const count = dayCounts.get(dayKey) ?? 0;
-        if (count >= dayMax) break;
         // Conflict filter.
         if (overlapsAny(slot)) continue;
         out.push(slot);
-        dayCounts.set(dayKey, count + 1);
       }
     }
     // Next calendar date (UTC-midnight arithmetic has no DST).

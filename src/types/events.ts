@@ -83,6 +83,12 @@ export interface CalendarEvent {
   /** Set when the operator flips `awaiting_payment` → `scheduled`. */
   paidAt?: Timestamp | FieldValue | null;
   paidByUid?: string | null;
+  /**
+   * `publicTokenHash` as it was when payment confirmed the booking. Stripe
+   * returns the visitor to /e/{that token}?paid=1, so the page accepts it
+   * for a read-only "payment received" view — never for manage actions.
+   */
+  paidFromTokenHash?: string | null;
   /** The Stripe order whose payment confirmed this booking, when one did. */
   paidOrderId?: string | null;
   /** Auto-expire deadline for unpaid holds. Used to schedule the QStash callback. */
@@ -117,6 +123,8 @@ export interface CalendarEvent {
   rescheduledAt?: Timestamp | FieldValue | null;
   /** Number of times this event has been rescheduled. Undefined/0 = never. */
   rescheduleCount?: number;
+  /** SEQUENCE of the last invite update sent; see `nextIcsSequence`. */
+  icsSequence?: number;
   /**
    * API-key mode the event was created under. Set only by the v1 API and
    * the server-side manual create; undefined (booking-page, voice, client

@@ -1,9 +1,9 @@
 import {
   computeAvailability,
-  groupSlotsByLocalDate,
   type BusyEvent,
   type SlotCandidate,
 } from "@/lib/booking/availability";
+import { capBookingsPerDay } from "@/lib/booking/day-cap";
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import type {
   BookingHost,
@@ -45,6 +45,11 @@ export interface PageSlotsInput {
   fromInstant?: Date;
   toInstant?: Date;
   busy: HostBusy[];
+  /**
+   * This page's bookings for the day cap — every status but cancelled.
+   * Absent ⇒ this page's entries in `busy`.
+   */
+  pageBookings?: HostBusy[];
   /** Book-time re-verify of an already-offered slot (voice). See `computeAvailability`. */
   ignoreMinNotice?: boolean;
   /** Named-host selection — pass `selectableHostUid()`'s result, never raw input. */
@@ -57,8 +62,7 @@ export interface PageSlotsInput {
 
 /**
  * Bounds on a slot length taken from an event rather than a validated page:
- * no service is shorter than 5 min, and the resolver only looks back 8 h for
- * running events, so nothing longer is sized reliably.
+ * no service is shorter than 5 min or longer than 8 h.
  */
 export const MIN_SLOT_MINUTES = 5;
 export const MAX_SLOT_MINUTES = 8 * 60;
@@ -163,19 +167,13 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
     seats === null ? input.busy : input.busy.filter((b) => b.bookingPageSlug !== page.slug)
   ).map(pad);
 
-  // Collective and class combine per-host results first (intersection, seat
-  // count), so the day cap applies after — a slot dropped by that step must
-  // not use up the day's allowance. Every other type keeps today's cap inside
-  // the calculator (per host in team mode).
-  const capAfter = type === "collective" || seats !== null;
-  const base = capAfter ? { ...sized, maxPerDay: null } : sized;
   const run = (
     b: BusyEvent[],
     hours?: WorkingHour[],
     host?: Pick<BookingHost, "workingHours" | "dateOverrides">,
   ) =>
     computeAvailability({
-      page: base,
+      page: sized,
       now: input.now,
       fromInstant: input.fromInstant,
       toInstant: input.toInstant,
@@ -207,13 +205,12 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   }
 
   if (seats !== null) slots = applySeats(slots, seatBusy, seats, pad);
-  if (capAfter && page.maxPerDay != null) {
-    const max = page.maxPerDay;
-    slots = groupSlotsByLocalDate(slots, page.timezone).flatMap((d) =>
-      d.slots.slice(0, max),
-    );
-  }
-  return slots;
+  return capBookingsPerDay(
+    slots,
+    input.pageBookings ?? input.busy.filter((b) => b.bookingPageSlug === page.slug),
+    page,
+    { allHosts: !!moving || type === "collective", isClass: seats !== null },
+  );
 }
 
 /**

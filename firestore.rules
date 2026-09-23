@@ -1349,6 +1349,9 @@ service cloud.firestore {
       // assignedToName / source / bookingPageSlug are set by the booking
       // routes and the assign route only — they decide whose Google calendar
       // a push writes to. (The dashboard's client writes never set them.)
+      // icsSequence / paidFromTokenHash are written by mark-paid and
+      // reschedule only: one orders calendar-invite updates, the other
+      // opens the read-only "payment received" page for a stale token.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
@@ -1356,7 +1359,7 @@ service cloud.firestore {
       )
         // Server-set only — the dashboard creates through /api/events. `mode`
         // decides v1 exposure and whether status changes fire side effects.
-        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"])
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash"])
         && linkInTenant("contactId", "contacts");
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
@@ -1370,7 +1373,7 @@ service cloud.firestore {
         // Server-set only. `mode` also decides v1 exposure and whether a
         // status change fires real triggers/email.
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"])
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash"])
         && linkInTenant("contactId", "contacts");
       // An event still mirrored in a Google calendar can't be deleted from
       // the client — its Google copy would be orphaned. Cancel it instead.
