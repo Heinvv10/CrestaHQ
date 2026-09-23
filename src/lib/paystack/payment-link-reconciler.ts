@@ -57,12 +57,12 @@ export interface PaymentLinkReconcileResult {
  * `VerifyResponse.data.requested_amount` (integer, required). Falls back to
  * `amount` only if a response ever omits it.
  */
-function requestedAmount(tx: PaystackVerifiedTransaction): number {
+export function requestedAmount(tx: PaystackVerifiedTransaction): number {
   return typeof tx.requested_amount === "number" ? tx.requested_amount : tx.amount;
 }
 
 /** Paystack answered that the reference does not exist on this account. */
-function isNotFound(err: unknown): boolean {
+export function isNotFound(err: unknown): boolean {
   if (!(err instanceof BillingError)) return false;
   return (
     err.providerStatus === 404 ||
