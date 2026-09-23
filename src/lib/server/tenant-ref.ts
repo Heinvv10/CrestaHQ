@@ -4,7 +4,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 
 /**
  * Whether a doc id taken from request input names a doc in the caller's
- * sub-account (and, when given, the API key's mode). Routes that link a
+ * sub-account (and, when given, the API key's mode — mode-less events
+ * excepted). Routes that link a
  * contact/deal/event by id must check this before writing: membership of
  * the ROUTE's sub-account says nothing about the doc the id points at.
  * Callers answer `false` with a 404, never a 403, so a foreign id is
@@ -21,5 +22,8 @@ export async function refInSubAccount(
   if (!snap.exists) return false;
   const data = snap.data() ?? {};
   if (data.subAccountId !== subAccountId) return false;
-  return mode === undefined || data.mode === mode;
+  if (mode === undefined || data.mode === mode) return true;
+  // Booking-page and voice bookings are written without a `mode`; they are
+  // still this sub-account's events and may be linked.
+  return collection === "events" && data.mode == null;
 }

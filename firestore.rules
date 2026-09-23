@@ -81,6 +81,21 @@ service cloud.firestore {
             == request.resource.data.subAccountId);
     }
 
+    // A linked record id (`contactId` / `dealId` / `eventId`) on a
+    // client-written doc must be unset/empty or name a `coll` doc in the SAME
+    // sub-account — server paths (review requests, quote send, reminders,
+    // workflows) act on the linked record by id. Checked only when set on
+    // create or CHANGED on update, so unrelated edits cost no extra read and
+    // legacy docs stay editable. A missing target fails the get() ⇒ deny.
+    function linkInTenant(field, coll) {
+      return request.resource.data.get(field, null) in [null, ""]
+        || (resource != null
+          && request.resource.data.get(field, null) == resource.data.get(field, null))
+        || (request.resource.data.get(field, null) is string
+          && get(/databases/$(database)/documents/$(coll)/$(request.resource.data.get(field, null))).data.subAccountId
+            == request.resource.data.subAccountId);
+    }
+
     // ---------- territory scoping (opt-in per sub-account) ----------
     // When the sub-account's `territoryScopingEnabled` field is true,
     // collaborators only see deals/contacts whose `territoryId` is in
@@ -1100,13 +1115,19 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      ) && assigneeIsMemberOrNull(request.resource.data.subAccountId);
+      ) && assigneeIsMemberOrNull(request.resource.data.subAccountId)
+        && linkInTenant("contactId", "contacts")
+        && linkInTenant("dealId", "deals")
+        && linkInTenant("eventId", "events");
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
       ) && tenantFieldsLockedOnUpdate()
         && assigneeIsMemberOrNull(resource.data.subAccountId)
+        && linkInTenant("contactId", "contacts")
+        && linkInTenant("dealId", "deals")
+        && linkInTenant("eventId", "events")
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
@@ -1191,7 +1212,9 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
-      ) && !("paidVia" in request.resource.data);
+      ) && !("paidVia" in request.resource.data)
+        && linkInTenant("contactId", "contacts")
+        && linkInTenant("dealId", "deals");
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1201,7 +1224,9 @@ service cloud.firestore {
           resource.data.subAccountId,
           resource.data.agencyId
         )
-        && request.resource.data.get("paidVia", null) == resource.data.get("paidVia", null);
+        && request.resource.data.get("paidVia", null) == resource.data.get("paidVia", null)
+        && linkInTenant("contactId", "contacts")
+        && linkInTenant("dealId", "deals");
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1308,7 +1333,8 @@ service cloud.firestore {
       )
         // Server-set only — the dashboard creates through /api/events. `mode`
         // decides v1 exposure and whether status changes fire side effects.
-        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"])
+        && linkInTenant("contactId", "contacts");
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1321,7 +1347,8 @@ service cloud.firestore {
         // Server-set only. `mode` also decides v1 exposure and whether a
         // status change fires real triggers/email.
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"]);
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug"])
+        && linkInTenant("contactId", "contacts");
       // An event still mirrored in a Google calendar can't be deleted from
       // the client — its Google copy would be orphaned. Cancel it instead.
       allow delete: if canSeeScopedDoc(

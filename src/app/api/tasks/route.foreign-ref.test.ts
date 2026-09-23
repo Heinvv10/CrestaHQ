@@ -54,3 +54,10 @@ it("accepts the sub-account's own contact, deal and event", async () => {
     expect.objectContaining({ contactId: "c1", dealId: "d1", eventId: "e1" }),
   ]);
 });
+
+it("a standalone task (no links) still creates", async () => {
+  expect((await post({})).status).toBe(201);
+  expect(mem.list("tasks")).toEqual([
+    expect.objectContaining({ contactId: null, dealId: null, eventId: null }),
+  ]);
+});

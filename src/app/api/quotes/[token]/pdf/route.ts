@@ -41,7 +41,10 @@ export async function GET(
     db.doc(`contacts/${quote.contactId}`).get(),
     db.doc(`subAccounts/${quote.subAccountId}`).get(),
   ]);
-  const contact = (contactSnap.exists ? contactSnap.data() : null) as {
+  // A contact outside the quote's sub-account renders as no contact.
+  const ownContact =
+    contactSnap.exists && contactSnap.data()?.subAccountId === quote.subAccountId;
+  const contact = (ownContact ? contactSnap.data() : null) as {
     name?: string;
     email?: string;
     phone?: string;

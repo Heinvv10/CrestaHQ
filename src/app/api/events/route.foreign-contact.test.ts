@@ -16,7 +16,7 @@ vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => un
 
 const { POST } = await import("./route");
 
-const post = (contactId: string) =>
+const post = (contactId?: string) =>
   POST(new Request("http://x/api/events", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -41,4 +41,9 @@ it("refuses a contact from another sub-account with 404 and writes nothing", asy
 it("accepts the sub-account's own contact", async () => {
   expect((await post("c1")).status).toBe(201);
   expect(mem.list("events")).toEqual([expect.objectContaining({ contactId: "c1" })]);
+});
+
+it("a standalone event (no contact) still creates", async () => {
+  expect((await post()).status).toBe(201);
+  expect(mem.list("events")).toEqual([expect.objectContaining({ contactId: null })]);
 });

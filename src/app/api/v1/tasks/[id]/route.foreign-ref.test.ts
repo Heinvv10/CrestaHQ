@@ -57,6 +57,9 @@ beforeEach(() => {
   mem.seed("deals/dB", { subAccountId: "saB", agencyId: "ag1", mode: "live" });
   mem.seed("events/e1", { ...own, title: "Visit", contactId: "c1" });
   mem.seed("events/eB", { subAccountId: "saB", agencyId: "ag1", mode: "live" });
+  // Booking-page / voice bookings carry no `mode`.
+  mem.seed("events/eBooking", { subAccountId: "sa1", agencyId: "ag1" });
+  mem.seed("events/eBookingB", { subAccountId: "saB", agencyId: "ag1" });
   mem.seed("tasks/t1", { ...own, title: "Call", contactId: "c1", dealId: null, eventId: null });
 });
 
@@ -104,4 +107,30 @@ it.each([
   expect(res.status).toBe(400);
   expect(((await res.json()) as { error: { code: string } }).error.code).toMatch(/_not_found$/);
   expect(mem.list("tasks").map((t) => t.id)).toEqual(["t1"]);
+});
+
+const postTask = (body: Record<string, unknown>) =>
+  tasksCollection.POST(
+    new Request("http://x/api/v1/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "New", ...body }),
+    }),
+    { params: Promise.resolve({}) } as never,
+  );
+
+it("task POST with no links still creates", async () => {
+  expect((await postTask({})).status).toBe(201);
+  expect(mem.list("tasks")).toHaveLength(2);
+});
+
+it("a mode-less booking event of the same sub-account can be linked (POST and PATCH)", async () => {
+  expect((await postTask({ event_id: "eBooking" })).status).toBe(201);
+  expect((await patch(tasks.PATCH, "t1", { event_id: "eBooking" })).status).toBe(200);
+  expect(mem.read("tasks/t1")?.eventId).toBe("eBooking");
+});
+
+it("a mode-less booking event of another sub-account is still refused", async () => {
+  expect((await postTask({ event_id: "eBookingB" })).status).toBe(400);
+  expect((await patch(tasks.PATCH, "t1", { event_id: "eBookingB" })).status).toBe(404);
 });
