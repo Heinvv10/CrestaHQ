@@ -10,11 +10,12 @@ import {
 } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import type { PaymentLinkReconcileResult } from "@/lib/paystack/payment-link-reconciler";
+import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
 import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
 import { fireChargeTrigger } from "@/lib/server/recurring-auto-charge";
 import type { PaymentAttempt } from "@/types/payment-attempts";
-import type { QuotePaidVia } from "@/types/quotes";
+import type { Quote, QuotePaidVia } from "@/types/quotes";
 
 /**
  * Paystack `charge.success` for a recurring card cycle (`ra-{scheduleId}-c{n}`,
@@ -97,6 +98,12 @@ export async function reconcileAutoCharge(input: {
 
     if (!(await settleAttempt(reference))) {
       console.error(`${tag} succeeded at Paystack after it was recorded as declined`);
+      await alertOnce(
+        attempt,
+        `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as declined and the invoice was emailed. ` +
+          `Check your Paystack dashboard: mark the invoice paid by hand, or refund a second payment.`,
+        (invoice) => `Card charged after its decline: invoice ${invoice} may be paid twice`,
+      );
       return { handled: false, detail: "attempt was refused" };
     }
     return await settleInvoice(attempt, subAccountId, reference, tag);
@@ -110,7 +117,7 @@ export async function reconcileAutoCharge(input: {
  * open/flagged → settled; settled stays settled (a replay still re-runs the
  * invoice step, which recognises its own earlier success). A `refused`
  * attempt — the charge call was read as a decline, and the invoice emailed —
- * is not settled: its reason tells the operator the money arrived after all.
+ * is not settled: the caller tells the operator the money arrived after all.
  */
 async function settleAttempt(reference: string): Promise<boolean> {
   const db = getAdminDb();
@@ -118,18 +125,37 @@ async function settleAttempt(reference: string): Promise<boolean> {
   return db.runTransaction(async (t) => {
     const state = ((await t.get(ref)).data() as PaymentAttempt | undefined)?.state;
     if (state === "settled") return true;
-    if (state === "refused") {
-      t.update(ref, {
-        reason:
-          `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as declined and the invoice was emailed. ` +
-          `Check your Paystack dashboard: mark the invoice paid by hand, or refund a second payment.`,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return false;
-    }
+    if (state === "refused") return false;
     t.update(ref, { state: "settled", updatedAt: FieldValue.serverTimestamp() });
     return true;
   });
+}
+
+/**
+ * Record `why` on the attempt and raise a Task for it — once. The reason is
+ * written in a transaction, and only the call that changes it raises the
+ * Task, so a webhook redelivery (which finds the same reason) adds nothing.
+ */
+async function alertOnce(attempt: PaymentAttempt, why: string, title: (invoice: string) => string): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`paymentAttempts/${attempt.id}`);
+  const first = await db.runTransaction(async (t) => {
+    if ((await t.get(ref)).data()?.reason === why) return false;
+    t.update(ref, { reason: why, updatedAt: FieldValue.serverTimestamp() });
+    return true;
+  });
+  if (!first) return;
+  const invoice = (await db.doc(`quotes/${attempt.invoiceId}`).get()).data() as Quote | undefined;
+  const owner = { ...attempt, contactId: invoice?.contactId ?? null };
+  await raiseChargeTask(owner, title(invoice?.quoteNumber || attempt.invoiceId!), why);
+}
+
+/** Who else paid the invoice, for the operator. */
+function describeVia(via: QuotePaidVia | null | undefined): string {
+  if (!via) return "marked paid by hand";
+  return via.rail === "paystack_link"
+    ? `a payment link, Paystack reference ${via.reference}`
+    : `another saved-card charge, Paystack reference ${via.reference}`;
 }
 
 async function settleInvoice(
@@ -169,14 +195,19 @@ async function settleInvoice(
 
   // The money is in the tenant's account either way; the operator is told why
   // it is not recorded against this invoice.
+  const charged = `Charged (Paystack reference ${reference})`;
   const why =
     res.code === "already_paid"
-      ? "Charged, but the invoice was already paid another way — a refund may be owed."
+      ? `${charged}, but the invoice was already paid another way (${describeVia(res.paidVia)}) — a refund may be owed.`
       : res.code === "amount_changed"
-        ? "Charged, but the invoice changed after the charge, so it was not marked paid. Check the amount and mark it by hand."
-        : `Charged, but the invoice could not be marked paid: ${res.message}. Record this payment by hand.`;
+        ? `${charged}, but the invoice changed after the charge, so it was not marked paid. Check the amount and mark it by hand.`
+        : res.code === "not_found" || res.code === "wrong_tenant"
+          ? `${charged}, but the invoice no longer exists, so it was not marked paid. Record this payment by hand.`
+          : `${charged}, but the invoice could not be marked paid: ${res.message}. Record this payment by hand.`;
   console.error(`${tag} ${why}`);
-  await db.doc(`paymentAttempts/${reference}`).update({ reason: why, updatedAt: FieldValue.serverTimestamp() });
+  await alertOnce(attempt, why, (invoice) =>
+    res.code === "already_paid" ? `Refund may be owed: invoice ${invoice} was paid twice` : `Record a card payment by hand: invoice ${invoice}`,
+  );
   if (res.code !== "not_found" && res.code !== "wrong_tenant") {
     await db.doc(`quotes/${attempt.invoiceId}`).update({
       autoCharge: { reference, mandateId, state: "needs_attention", reason: why },

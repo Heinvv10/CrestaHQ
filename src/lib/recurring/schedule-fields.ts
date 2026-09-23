@@ -175,3 +175,13 @@ export function parseChargeMode(
   }
   return { ok: true, value: mode };
 }
+
+/**
+ * Where a moved cadence or anchor restarts from. A card schedule charges
+ * unattended, so its new billing day never lands before the run already
+ * scheduled: moving the anchor from the 1st to the 5th the day after a charge
+ * would otherwise charge the card twice in one month.
+ */
+export function cadenceRestart(now: Date, scheduled: Date | null, chargeMode: unknown): Date {
+  return chargeMode === "card" && scheduled && scheduled.getTime() > now.getTime() ? scheduled : now;
+}

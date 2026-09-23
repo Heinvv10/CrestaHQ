@@ -8,6 +8,7 @@ import { chargePaystackAuthorization } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { invoiceTotalCents } from "@/lib/server/payment-links-service";
+import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
 import { termsStillHold } from "@/lib/server/payment-mandates";
 import { schedulesCollection, sendGeneratedInvoice } from "@/lib/server/recurring-invoice-cycle";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
@@ -30,8 +31,9 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  *   not chargeable → the invoice is emailed, and the schedule says why;
  *   declined       → recorded on the attempt, invoice and mandate, the invoice
  *                    is emailed (it carries a pay link), `invoice.charge_failed`;
- *   no clear answer → NOT emailed — the card may have been charged — and the
- *                    schedule names the reference to check.
+ *   key refused    → like a decline, but not counted against the card; a Task;
+ *   no clear answer → NOT emailed — the card may have been charged — and a
+ *                    Task names the reference to check.
  */
 
 export const autoChargeReference = (scheduleId: string, cycle: number) => `ra-${scheduleId}-c${cycle}`;
@@ -96,16 +98,39 @@ export async function chargeCycle(schedule: RecurringInvoiceDoc, invoiceId: stri
       `Card charge for invoice ${label} got no clear answer from Paystack (${answer.reason}). ` +
         `Check reference ${reference} in your Paystack dashboard before billing again — it is recorded here automatically if it went through.`,
     );
+    // Once per cycle: this path runs only for the call that created the attempt.
+    await raiseChargeTask(
+      schedule,
+      `Check Paystack: card charge for invoice ${label} has no clear outcome`,
+      `The saved-card charge for invoice ${label} (Paystack reference ${reference}) got no clear answer: ${answer.reason}. ` +
+        `The invoice was not emailed: check Paystack before sending this invoice — the card may already have been charged. ` +
+        `If the charge went through, it is recorded here automatically.`,
+    );
     return false;
   }
 
-  // Declined: no money was taken on this reference.
-  await refuseAttempt(reference, answer.reason).catch((err: unknown) => console.error(`${tag} attempt not refused`, err));
-  await setInvoice({ ...base, state: "declined", reason: answer.reason });
-  await countDecline(opened.mandateId, answer.reason, schedule.unpaidEscalationThreshold).catch((err: unknown) =>
-    console.error(`${tag} decline not counted on the mandate`, err),
+  // Declined, or Paystack refused this workspace's key: no money was taken
+  // on this reference. A refused key says nothing about the card, so it is
+  // not counted against the mandate — the operator has a connection to fix.
+  const keyRefused = answer.kind === "key";
+  await refuseAttempt(reference, `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`).catch(
+    (err: unknown) => console.error(`${tag} attempt not refused`, err),
   );
-  await note(`Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`);
+  await setInvoice({ ...base, state: "declined", reason: answer.reason });
+  if (keyRefused) {
+    await note(`Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`);
+    await raiseChargeTask(
+      schedule,
+      `Paystack refused the key: invoice ${label} was not charged`,
+      `Charging the saved card for invoice ${label} (Paystack reference ${reference}) failed because Paystack refused this workspace's key: ${answer.reason}. ` +
+        `The invoice was emailed instead. Check the Paystack connection before the next cycle.`,
+    );
+  } else {
+    await countDecline(opened.mandateId, answer.reason, schedule.unpaidEscalationThreshold).catch((err: unknown) =>
+      console.error(`${tag} decline not counted on the mandate`, err),
+    );
+    await note(`Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`);
+  }
   const sent = await sendGeneratedInvoice(schedule, invoiceId);
   await fireChargeTrigger(schedule, "invoice.charge_failed");
   return sent;
@@ -174,13 +199,14 @@ async function openAttempt(
   });
 }
 
-type Answer = { kind: "accepted" } | { kind: "declined" | "unknown"; reason: string };
+type Answer = { kind: "accepted" } | { kind: "declined" | "unknown" | "key"; reason: string };
 
 /**
- * Paystack's answer, sorted by what it proves. `failed` or a 4xx refusal is a
- * definite "no money taken". A 429, a timeout, a 5xx, no answer, or a
- * duplicate-reference refusal (an earlier call may have charged) is unknown.
- * Anything else is accepted — pending until the webhook says otherwise.
+ * Paystack's answer, sorted by what it proves. Only `success` is accepted —
+ * still pending until the webhook records it. `failed` or a 4xx refusal is a
+ * definite "no money taken"; a 401/403 is our key refused, not the card. A
+ * 429, a timeout, a 5xx, no answer, a duplicate-reference refusal (an earlier
+ * call may have charged), or any other status is unknown.
  */
 async function charge(opened: Extract<Opened, { ok: true }>, reference: string): Promise<Answer> {
   try {
@@ -192,13 +218,17 @@ async function charge(opened: Extract<Opened, { ok: true }>, reference: string):
       reference,
       secretKey: opened.secretKey,
     });
+    if (res.status === "success") return { kind: "accepted" };
     if (res.status === "failed") {
       return { kind: "declined", reason: res.gateway_response || res.message || "declined by the bank" };
     }
-    return { kind: "accepted" };
+    // pending, send_otp, open_url, …: nobody is present to complete it, and
+    // it may yet settle. Not a decline, not a payment.
+    return { kind: "unknown", reason: `Paystack answered "${res.status}"${res.gateway_response ? ` (${res.gateway_response})` : ""}` };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     const status = err instanceof BillingError ? err.providerStatus : undefined;
+    if (status === 401 || status === 403) return { kind: "key", reason };
     const refused =
       status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429 && !/duplicate/i.test(reason);
     return { kind: refused ? "declined" : "unknown", reason };
@@ -211,7 +241,7 @@ async function refuseAttempt(reference: string, reason: string): Promise<void> {
   await db.runTransaction(async (t) => {
     // Only open → refused: never over a settle or a flag.
     if ((await t.get(ref)).data()?.state !== "open") return;
-    t.update(ref, { state: "refused", reason: `Card declined: ${reason}`, updatedAt: FieldValue.serverTimestamp() });
+    t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
   });
 }
 

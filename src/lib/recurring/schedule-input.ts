@@ -5,6 +5,7 @@ import {
   type Cadence,
 } from "@/lib/recurring/cadence";
 import {
+  cadenceRestart,
   fail,
   hasBillableLineItem,
   parseCadence,
@@ -119,8 +120,7 @@ export function parseScheduleCreate(
     return fail("Add at least one line item before saving the schedule.");
   }
 
-  const reviewFirst = body.reviewFirst === true;
-  const currency = template.currency ?? "USD";
+  const [reviewFirst, currency] = [body.reviewFirst === true, template.currency ?? "USD"];
   const chargeMode = parseChargeMode(body.chargeMode, "invoice", { reviewFirst, currency });
   if (!chargeMode.ok) return chargeMode;
 
@@ -182,8 +182,8 @@ export interface ScheduleUpdateFields {
   /**
    * Set only when the cadence or the anchor moved: the stored `nextRunAt` was
    * computed from the OLD cadence, so leaving it would bill the next cycle on
-   * a day the operator has just changed away from. Recomputed from today, so
-   * an edit can never pull a cycle earlier than the day it was made.
+   * a day the operator has just changed away from. Recomputed from today (a
+   * card schedule: from its next run), so an edit never pulls a cycle earlier.
    */
   recomputeNextRunFrom?: Date;
 }
@@ -197,10 +197,8 @@ export function parseScheduleUpdate(
     status: RecurringInvoiceStatus;
     /** The cycle the schedule is currently pointed at. */
     nextRunAt: Date | null;
-    /** Judged with `chargeMode`: a card cycle cannot wait for review, and is ZAR only. */
-    reviewFirst?: boolean;
-    currency?: string;
-    chargeMode?: RecurringChargeMode;
+    /** Judged with `chargeMode` (review, ZAR only) and where a moved cadence restarts. */
+    reviewFirst?: boolean; currency?: string; chargeMode?: RecurringChargeMode;
   },
   now: Date,
 ): ParseResult<ScheduleUpdateFields> {
@@ -244,7 +242,7 @@ export function parseScheduleUpdate(
 
   if (cadenceMoved) {
     out.recomputeNextRunFrom = computeFirstRunAt({
-      startAt: now,
+      startAt: cadenceRestart(now, current.nextRunAt, body.chargeMode ?? current.chargeMode),
       cadence,
       // `??` would let a week cadence's deliberate `null` fall through to the
       // stale numeric anchor of the cadence being edited away from. No caller

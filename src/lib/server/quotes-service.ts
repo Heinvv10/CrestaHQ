@@ -87,13 +87,17 @@ export async function markQuotePaidServerSide(input: {
       };
     }
 
-    // A recurring card cycle charges its invoice without emailing it, so the
-    // saved-card rail alone may settle a `draft` invoice.
+    // A recurring card cycle charges its invoice without emailing it, so a
+    // `draft` may be settled by the saved-card rail — or by hand, once a card
+    // cycle has touched it (a pending or unknown charge the operator
+    // confirmed in Paystack). A plain draft was never asked to be paid.
+    const cardDraft =
+      quote.status === "draft" &&
+      (input.paidVia?.rail === "paystack_auto" ||
+        (input.paidVia === undefined && !!quote.recurringInvoiceId && !!quote.autoCharge));
     const allowed =
       quote.kind === "invoice"
-        ? quote.status === "sent" ||
-          quote.status === "viewed" ||
-          (quote.status === "draft" && input.paidVia?.rail === "paystack_auto")
+        ? quote.status === "sent" || quote.status === "viewed" || cardDraft
         : quote.status === "accepted";
     if (!allowed) {
       return {

@@ -93,6 +93,10 @@ export function QuoteDetail({
   const canMarkPaid = isInvoice
     ? quote.status === "sent" || quote.status === "viewed"
     : quote.status === "accepted";
+  // A recurring card cycle leaves its invoice a draft (charged, not emailed);
+  // a pending or unknown charge confirmed in Paystack is marked paid by hand.
+  const canMarkCardDraftPaid =
+    isInvoice && quote.status === "draft" && !!quote.recurringInvoiceId && !!quote.autoCharge;
   const canDelete = quote.status === "draft";
   const canConvert = quote.kind === "quote" && quote.status === "accepted";
   const sendLabel =
@@ -306,7 +310,7 @@ export function QuoteDetail({
             {isInvoice && canMarkPaid && (
               <PaystackInvoiceLinkButton invoiceId={quote.id} recurring={!!quote.recurringInvoiceId} />
             )}
-            {canMarkPaid && (
+            {(canMarkPaid || canMarkCardDraftPaid) && (
               <Button
                 type="button"
                 size="sm"

@@ -115,3 +115,21 @@ export function raised(): Record<string, unknown> & { id: string } {
   const all = mem.list("quotes").filter((q) => q.recurringInvoiceId === SCHEDULE);
   return all[all.length - 1];
 }
+
+/**
+ * `tasks-service` stand-in that writes Tasks to the in-memory store, so a
+ * test can show an operator alert outlives the next cycle:
+ *   vi.mock("@/lib/server/tasks-service", async () =>
+ *     (await import("@/test/auto-charge-harness")).tasksMock());
+ */
+export const tasksMock = () => ({
+  createTaskServerSide: async (input: Record<string, unknown>) => {
+    const ref = await mem.db.collection("tasks").add({ ...input, completed: false });
+    return { id: ref.id };
+  },
+  territoryForContact: async () => null,
+});
+
+/** Open Tasks whose title or notes mention `needle`. */
+export const tasksAbout = (needle: string) =>
+  mem.list("tasks").filter((t) => `${t.title} ${t.notes}`.includes(needle));
