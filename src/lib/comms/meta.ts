@@ -109,41 +109,59 @@ export function buildMetaOAuthUrl(opts: {
 // ---------------------------------------------------------------------------
 // CSRF state — HMAC-signed with the existing AUTOMATIONS_TOKEN_SECRET so the
 // callback can trust `state` came from our connect route (and names the right
-// sub-account) without persisting anything.
+// sub-account) without persisting anything. Bound to the admin who started
+// the connect and valid for 10 minutes, so a captured state can't be finished
+// later, or by someone else.
 // ---------------------------------------------------------------------------
+
+const META_STATE_TTL_MS = 10 * 60 * 1000;
 
 function stateSecret(): string {
   return process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
 }
 
-export function signMetaState(subAccountId: string, nonce: string): string {
-  const payload = `${subAccountId}.${nonce}`;
-  const sig = crypto
+function stateSig(payload: string): string {
+  return crypto
     .createHmac("sha256", stateSecret())
     .update(`metastate:${payload}`)
     .digest("hex");
-  return `${payload}.${sig}`;
+}
+
+export function signMetaState(
+  subAccountId: string,
+  uid: string,
+  nonce: string,
+): string {
+  const payload = Buffer.from(
+    JSON.stringify({ sa: subAccountId, u: uid, exp: Date.now() + META_STATE_TTL_MS, n: nonce }),
+  ).toString("base64url");
+  return `${payload}.${stateSig(payload)}`;
 }
 
 export function verifyMetaState(
   state: string,
+  uid: string | null,
 ): { subAccountId: string } | null {
   const parts = state.split(".");
-  if (parts.length !== 3) return null;
-  const [subAccountId, nonce, sig] = parts;
-  const expected = crypto
-    .createHmac("sha256", stateSecret())
-    .update(`metastate:${subAccountId}.${nonce}`)
-    .digest("hex");
+  if (parts.length !== 2 || !uid) return null;
+  const [payload, sig] = parts;
+  const expected = stateSig(payload);
   if (sig.length !== expected.length) return null;
   try {
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
       return null;
     }
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      sa?: unknown;
+      u?: unknown;
+      exp?: unknown;
+    };
+    if (typeof data.sa !== "string" || typeof data.exp !== "number") return null;
+    if (data.u !== uid || Date.now() > data.exp) return null;
+    return { subAccountId: data.sa };
   } catch {
     return null;
   }
-  return { subAccountId };
 }
 
 /**

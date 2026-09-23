@@ -164,6 +164,15 @@ export async function setTaskCompletedServerSide(opts: {
   const justCompleted = opts.completed && !wasCompleted;
   if (justCompleted && existing.contactId) {
     try {
+      // Only onto a contact in the task's own sub-account — a legacy task may
+      // still hold another tenant's contactId.
+      const contactSnap = await db
+        .collection("contacts")
+        .doc(existing.contactId as string)
+        .get();
+      if (contactSnap.data()?.subAccountId !== existing.subAccountId) {
+        throw new Error("linked contact is not in the task's sub-account");
+      }
       await db
         .collection("contacts")
         .doc(existing.contactId as string)

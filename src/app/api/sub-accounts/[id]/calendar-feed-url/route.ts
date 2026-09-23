@@ -11,7 +11,8 @@ import {
  * Returns the caller's HMAC-signed calendar feed URLs for the sub-account.
  * Auth: any active member (admins + collaborators).
  *
- *   url     — all bookings in this sub-account (shared team calendar).
+ *   url     — all bookings in this sub-account (shared team calendar),
+ *             minted for the CALLER so it stops working when they leave.
  *   hostUrl — only the bookings assigned to the CALLER. The uid is taken
  *             from the authenticated session (`access.uid`), never client
  *             input, so a member can only ever mint their own personal feed.
@@ -28,7 +29,7 @@ export async function GET(
   if (access instanceof NextResponse) return access;
 
   try {
-    const url = buildCalendarFeedUrl(subAccountId);
+    const url = buildCalendarFeedUrl(subAccountId, access.uid);
     const hostUrl = buildHostCalendarFeedUrl(subAccountId, access.uid);
     return NextResponse.json({ url, hostUrl });
   } catch (err) {

@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { getCommunityGate } from "@/lib/community/gate";
 import { groupHomePath } from "@/lib/community/group-mode";
 import {
+  magicLinkUseId,
   signMemberSessionToken,
   verifyMemberMagicLinkToken,
 } from "@/lib/community/member-auth";
@@ -39,6 +41,22 @@ export async function GET(
 
   const verified = verifyMemberMagicLinkToken(token);
   if (!verified || verified.subAccountId !== saId) return loginUrl("expired");
+
+  // One link, one sign-in. `create()` fails if the doc exists, atomically, so
+  // a replay — or two taps racing — gets exactly one session between them.
+  try {
+    await getAdminDb()
+      .collection("communityMagicLinkUses")
+      .doc(magicLinkUseId(token))
+      .create({
+        subAccountId: saId,
+        usedAt: new Date(),
+      });
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 6) return loginUrl("expired");
+    console.error("[community/login/verify] consume failed", err);
+    return loginUrl("error");
+  }
 
   let memberId: string;
   try {

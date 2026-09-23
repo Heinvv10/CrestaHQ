@@ -54,7 +54,9 @@ export async function GET(request: Request) {
       new URL("/agency/sub-accounts?meta=bad_state", appBase(request)),
     );
   }
-  const verified = verifyMetaState(state);
+  // Bound to the admin who started the connect (and 10-minute expiry): a
+  // captured state is useless to anyone else, or later.
+  const verified = verifyMetaState(state, request.headers.get("x-user-uid"));
   if (!verified) {
     return NextResponse.redirect(
       new URL("/agency/sub-accounts?meta=bad_state", appBase(request)),

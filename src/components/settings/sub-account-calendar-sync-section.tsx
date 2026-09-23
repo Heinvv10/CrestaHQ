@@ -18,7 +18,8 @@ import { GoogleCalendarCard } from "@/components/settings/google-calendar-card";
  * upgrade path.
  *
  * Visible to every active sub-account member (not admin-only). Two feeds:
- *   - "All bookings" — the shared per-sub-account feed (every booking).
+ *   - "All bookings" — every booking, via a URL minted for the current
+ *     member (it stops working if they leave the sub-account).
  *   - "Just my bookings" — only events assigned to the current member
  *     (useful for team / round-robin booking pages). Server-scoped to the
  *     caller's own uid; see the calendar-feed-url route.

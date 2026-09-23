@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import {
@@ -139,6 +140,20 @@ export async function POST(
       limit: maxResults,
       enrich: true,
     });
+    // Record who owns the id: the poll route answers only for ids this
+    // sub-account submitted (the id is a bearer handle on the agency's
+    // shared Outscraper account).
+    if (requestId.includes("/")) {
+      throw new OutscraperError("Unexpected request id shape", 502);
+    }
+    await getAdminDb()
+      .doc(`subAccounts/${subAccountId}/getLeadsSearches/${requestId}`)
+      .set({
+        agencyId: sub.agencyId,
+        subAccountId,
+        createdByUid: access.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
     return NextResponse.json({ ok: true, requestId });
   } catch (err) {
     const status = err instanceof OutscraperError ? err.status : 502;

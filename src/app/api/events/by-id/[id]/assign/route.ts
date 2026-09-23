@@ -210,9 +210,14 @@ export async function POST(
   // Move the Google copy: off the old host's calendar, onto the new one's.
   await pushBookingToGoogle(eventId);
 
-  // Timeline row (best-effort).
-  if (event.contactId) {
+  // Timeline row (best-effort). Only onto a contact in the event's own
+  // sub-account — a legacy event may still hold another tenant's contactId.
+  if (event.contactId && !event.contactId.includes("/")) {
     try {
+      const contactSnap = await db.collection("contacts").doc(event.contactId).get();
+      if (contactSnap.data()?.subAccountId !== event.subAccountId) {
+        throw new Error("linked contact is not in the event's sub-account");
+      }
       const content = targetName
         ? `Booking "${event.title || "Meeting"}" reassigned to ${targetName}.`
         : `Booking "${event.title || "Meeting"}" host cleared.`;

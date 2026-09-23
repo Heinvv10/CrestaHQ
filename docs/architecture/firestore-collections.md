@@ -16,6 +16,8 @@
 | `auditEvents/{id}` | agency owner + sub-account admin read; server-only write | Append-only "who changed what": `action`, `actor {type, id}`, `target {type, id}`, `changes [{field, before, after}]` (free-text values stored as `[redacted]`) + tenancy keys; `subAccountId: null` = agency-level, owner-only. Written only by `recordAuditEvent()` (`src/lib/audit`). Contract: [audit-events.md](audit-events.md) |
 | `subAccounts/{subAccountId}` | members + agency owner | Workspace metadata; reserved fields for Workflow-Recipes Twilio/Resend/booking/sendWindow |
 | `subAccounts/{subAccountId}/subAccountMembers/{uid}` | admins | Per-sub-account membership rows |
+| `subAccounts/{subAccountId}/getLeadsSearches/{requestId}` | server-only | One row per Get Leads search this sub-account submitted (Outscraper request id as doc id) + tenancy keys. The poll route answers only for ids recorded here |
+| `communityMagicLinkUses/{sha256}` | server-only | `{subAccountId, usedAt}` — one per consumed community magic link, created atomically at verify so each link signs in once |
 | `userMemberships/{uid}/subAccounts/{saId}` | self-read | Denormalized index powering the sub-account switcher |
 | `userMemberships/{uid}/agencies/{agencyId}` | self-read | Denormalized index for agency-level access |
 | `users/{uid}` | self only | Slim profile (display name, photoURL, primaryAgencyId) |

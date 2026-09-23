@@ -1,7 +1,7 @@
 import "server-only";
 
 import { Timestamp } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
+import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import {
   verifyCalendarFeedToken,
   verifyHostCalendarFeedToken,
@@ -19,9 +19,10 @@ import type { SubAccountMemberDoc } from "@/types/tenancy";
  * Public read-only calendar feed for one sub-account. Powers the
  * "Subscribe to my LeadStack bookings from Google Calendar" UX.
  *
- *   GET /api/sub-accounts/{id}/calendar.ics?t=<token>
+ *   GET /api/sub-accounts/{id}/calendar.ics?u=<uid>&t=<token>
  *
- * Security: HMAC token in the URL (see `calendar-feed-token.ts`). The
+ * Security: HMAC token in the URL, bound to the member's uid (see
+ * `calendar-feed-token.ts`), plus a membership check on every poll. The
  * path is in PUBLIC_PATH_PATTERNS — no session-cookie auth — because
  * Google Calendar's polling agent is unauthenticated.
  *
@@ -53,6 +54,39 @@ function tsToDate(v: unknown): Date | null {
   return null;
 }
 
+/**
+ * Is `uid` still allowed to read this sub-account's bookings — an active
+ * member, or the owner of its parent agency (who has no member row)? Checked
+ * on every poll, so a removed member's copied feed URL goes dark.
+ */
+async function canStillRead(subAccountId: string, uid: string): Promise<boolean> {
+  const db = getAdminDb();
+  const member = await db
+    .doc(`subAccounts/${subAccountId}/subAccountMembers/${uid}`)
+    .get();
+  if (member.exists) return member.data()?.status === "active";
+  try {
+    const [record, sub] = await Promise.all([
+      getAdminAuth().getUser(uid),
+      db.doc(`subAccounts/${subAccountId}`).get(),
+    ]);
+    const claims = (record.customClaims ?? {}) as Record<string, unknown>;
+    return (
+      claims.status === "active" &&
+      claims.agencyRole === "owner" &&
+      typeof claims.agencyId === "string" &&
+      claims.agencyId === sub.data()?.agencyId
+    );
+  } catch (err) {
+    // Unknown uid (deleted account) → no access. Anything else is logged so
+    // an auth outage reads as one, not as "feed disappeared".
+    if ((err as { code?: string }).code !== "auth/user-not-found") {
+      console.warn(`[calendar.ics] owner check failed sa=${subAccountId}`, err);
+    }
+    return false;
+  }
+}
+
 const startMs = (d: FirebaseFirestore.QueryDocumentSnapshot) =>
   tsToDate((d.data() as CalendarEvent).startAt)?.getTime() ?? 0;
 
@@ -68,7 +102,8 @@ export async function GET(
   const db = getAdminDb();
 
   // Auth + scope. Two feeds share this route:
-  //  - all-bookings (no `host`)     → the sub-account token.
+  //  - all-bookings (no `host`)     → a token bound to (subAccountId, `u`),
+  //    plus a still-allowed-to-read check on `u`.
   //  - per-host (`?host=<uid>`)      → a token bound to (subAccountId, uid),
   //    plus an active-member check so a removed member's leaked feed stops
   //    returning data.
@@ -88,8 +123,14 @@ export async function GET(
       return new Response("Not found", { status: 404 });
     }
     hostMemberName = member.displayName || member.email || null;
-  } else if (!verifyCalendarFeedToken(subAccountId, token)) {
-    return new Response("Not found", { status: 404 });
+  } else {
+    const reader = url.searchParams.get("u") ?? "";
+    if (
+      !verifyCalendarFeedToken(subAccountId, reader, token) ||
+      !(await canStillRead(subAccountId, reader))
+    ) {
+      return new Response("Not found", { status: 404 });
+    }
   }
   const hostMode = host != null;
 

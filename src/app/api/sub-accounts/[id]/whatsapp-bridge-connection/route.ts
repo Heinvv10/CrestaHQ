@@ -22,9 +22,9 @@ import type { SubAccountDoc } from "@/types";
  * arm of the WhatsApp provider seam, and the only thing in the product that
  * writes the credentials the rest of that arm reads.
  *
- * POST   — `{ baseUrl, token, webhookSecret }`. Probed against the bridge's
- *          own /v1/health before anything is stored, then written and the
- *          workspace switched onto the bridge rail.
+ * POST   — `{ baseUrl, token, webhookSecret }`. Agency owner only. Probed
+ *          against the bridge's own /v1/health before anything is stored,
+ *          then written and the workspace switched onto the bridge rail.
  * DELETE — disconnect: deletes the secret, clears the meta, and returns the
  *          workspace to Twilio.
  *
@@ -106,6 +106,16 @@ export async function POST(
   const { id: subAccountId } = await ctx.params;
   const auth = await requireSubAccountAdmin(request, subAccountId);
   if (auth instanceof NextResponse) return auth;
+  // The server fetches `baseUrl` (the /v1/health probe, then every send), and
+  // the legitimate value is a loopback port the provisioning route assigns,
+  // so the SSRF guard can't apply. A sub-account admin setting it would be a
+  // blind internal port scan; they pair through ../whatsapp-bridge/provision.
+  if (auth.subAccountRole !== "agencyOwner") {
+    return NextResponse.json(
+      { error: "Only your agency owner can connect a bridge by URL. Pair a number from WhatsApp settings instead." },
+      { status: 403 },
+    );
+  }
 
   const db = getAdminDb();
   const saSnap = await db.doc(`subAccounts/${subAccountId}`).get();
