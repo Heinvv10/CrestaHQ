@@ -110,9 +110,10 @@ export async function sendPushForEvent(input: SendPushInput): Promise<void> {
 
     const eligible = [...recipients.values()].filter((r) => {
       if (!territoryApplies) return true;
-      // SubAccountRole is "admin" | "collaborator"; only collaborators are
-      // territory-scoped (admins + the synthetic agencyOwner always pass).
-      if (r.role !== "collaborator") return true;
+      // Only admins and the synthetic agencyOwner bypass the gate. Any other
+      // role — including a missing/empty one — is scoped, as the rules'
+      // isSubAdmin (role == "admin") treats it.
+      if (r.role === "admin" || r.role === "agencyOwner") return true;
       return territoryId !== null && r.assignedTerritoryIds.includes(territoryId);
     });
     if (eligible.length === 0) return;

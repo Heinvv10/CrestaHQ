@@ -50,7 +50,7 @@ function rec(v: unknown): Record<string, unknown> {
  *  collaborator from seeing a preview for a contact they can't open. The
  *  wire payload doesn't carry it, so read the contact. `undefined` when the
  *  event has no contact (unrestricted); `null` when the contact is untagged. */
-async function contactTerritoryId(
+export async function contactTerritoryId(
   contactId: string | null,
 ): Promise<string | null | undefined> {
   if (!contactId) return undefined;
