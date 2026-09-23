@@ -209,7 +209,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
   // link. Broadcasts refuse a template without one up front; a step in a live
   // automation appends it instead of failing a customer's sequence mid-run.
   const rawBody = cfg.body ?? "";
-  const body = rawBody.includes("{{unsubscribeLink}}")
+  const body = /\{\{\s*unsubscribeLink\s*\}\}/.test(rawBody)
     ? rawBody
     : `${rawBody}\n\n{{unsubscribeLink}}`;
   const subject = resolveMergeTags(
@@ -222,7 +222,12 @@ const execSendEmail: NodeExecutor = async (ctx) => {
   // unsubscribe anchor we supply ourselves must stay real markup.
   const htmlInner = resolveMergeTags(
     body,
-    mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`),
+    // No app URL configured → no link: omit the anchor rather than ship an
+    // empty href (same as the broadcast step).
+    mergeSubject(
+      ctx,
+      unsubscribeLink ? `<a href="${unsubscribeLink}">Unsubscribe</a>` : ""
+    ),
     { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;

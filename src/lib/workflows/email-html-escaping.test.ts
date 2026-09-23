@@ -38,8 +38,9 @@ vi.mock("@/lib/server/usage-meter", () => ({
   checkQuota: async () => ({ allowed: true }),
   UsageQuotaExceededError: class extends Error {},
 }));
+let unsubBase = "https://app.test/u/";
 vi.mock("@/lib/automations/unsubscribe-token", () => ({
-  buildUnsubscribeUrl: (id: string) => `https://app.test/u/${id}`,
+  buildUnsubscribeUrl: (id: string) => (unsubBase ? `${unsubBase}${id}` : ""),
 }));
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => false,
@@ -119,6 +120,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 const { runStep } = await import("./engine");
 
 beforeEach(() => {
+  unsubBase = "https://app.test/u/";
   sent.length = 0;
   smtpOnly = false;
   subAccount = { name: "Blitz Fibre" };
@@ -266,5 +268,21 @@ describe("execSendEmail — unsubscribe link", () => {
     await runStep("run1", "n1");
 
     expect(sent[0]!.text.split("https://app.test/u/c1")).toHaveLength(2);
+  });
+
+  it("treats a spaced {{ unsubscribeLink }} as present — no second link", async () => {
+    emailConfig.body = "Sale!\n{{ unsubscribeLink }}";
+    await runStep("run1", "n1");
+
+    expect(sent[0]!.text.split("https://app.test/u/c1")).toHaveLength(2);
+  });
+
+  it("omits the anchor when no unsubscribe URL can be built", async () => {
+    unsubBase = "";
+    emailConfig.body = "Sale!";
+    await runStep("run1", "n1");
+
+    expect(sent[0]!.html).not.toContain("<a href");
+    expect(sent[0]!.html).not.toContain("Unsubscribe");
   });
 });
