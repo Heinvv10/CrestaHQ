@@ -1,7 +1,5 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
-
 import {
   SUB_ACCOUNT_CHARGE_KIND,
   SUB_ACCOUNT_PLAN_KIND,
@@ -18,6 +16,10 @@ import {
   markSubAccountChargePaid,
   readBilling,
 } from "@/lib/server/billing-lifecycle";
+import {
+  activationLedgerRef,
+  flagBillingPayment,
+} from "@/lib/server/billing-payment-ledger";
 import type { BillingChargeDoc } from "@/types/billing";
 
 /**
@@ -105,26 +107,27 @@ async function settlePlan(tx: PaystackVerifiedTransaction, metadata: Metadata, t
   }
   const data = snap.data() as Record<string, unknown>;
   const billing = readBilling(data);
+  // A redelivery of a payment that already activated is settled, whatever has
+  // happened to the workspace since — checked before the plan and amount,
+  // which may have been re-assigned in the meantime and would misread a
+  // replay as a mismatch. (`paystackReference` covers pre-ledger activations.)
+  if (
+    billing?.paystackReference === tx.reference ||
+    (await activationLedgerRef("paystack", tx.reference).get()).exists
+  ) {
+    return;
+  }
   const mismatch =
     billing?.planId !== planId
       ? `plan=${planId} assigned=${billing?.planId ?? null}`
       : amountMismatch(tx, { cents: billing.priceCents, currency: billing.currency, exact: false });
   const agencyId = String(data.agencyId ?? "");
   if (mismatch) {
-    await flag(tx, { agencyId, subAccountId, kind: "plan", mismatch }, tag);
+    await flag(tx, { agencyId, subAccountId, kind: "plan", mismatch });
     return;
   }
-  if (billing?.status === "active") {
-    // A redelivery of the payment that activated this plan: nothing to do.
-    if (billing.paystackReference === tx.reference) return;
-    // A second, separate payment for a plan already active (two tabs): real
-    // money that activates nothing, so it is recorded for a refund.
-    await flag(tx, { agencyId, subAccountId, kind: "plan", mismatch: "plan already active — paid twice" }, tag);
-    return;
-  }
-  // Recorded BEFORE activating: a crash between the two then redelivers
-  // into the not-yet-active branch, never into "paid twice".
-  await snap.ref.update({ "billing.paystackReference": tx.reference });
+  // Comped / re-assigned / already active (paid twice) are decided — and
+  // flagged — in there, atomically with the ledger row.
   await activateSubAccountPlan({
     subAccountId,
     planId,
@@ -132,6 +135,10 @@ async function settlePlan(tx: PaystackVerifiedTransaction, metadata: Metadata, t
     // Paystack creates the subscription asynchronously; `subscription.create`
     // fills this in. Null here must not clear an id already stored.
     subscriptionId: null,
+    provider: "paystack",
+    reference: tx.reference,
+    amountCents: tx.amount,
+    currency: tx.currency ?? null,
   });
 }
 
@@ -152,11 +159,12 @@ async function settleCharge(tx: PaystackVerifiedTransaction, metadata: Metadata,
       ? `charge belongs to sa=${charge.subAccountId}, metadata names sa=${metadata.subAccountId ?? null}`
       : amountMismatch(tx, { cents: charge.amountCents, currency: charge.currency, exact: true });
   if (mismatch) {
-    await flag(
-      tx,
-      { agencyId: charge.agencyId, subAccountId: charge.subAccountId, kind: "charge", mismatch },
-      tag,
-    );
+    await flag(tx, {
+      agencyId: charge.agencyId,
+      subAccountId: charge.subAccountId,
+      kind: "charge",
+      mismatch,
+    });
     return;
   }
   // Already-paid (a redelivery) and paid-after-cancel are decided in there.
@@ -168,36 +176,21 @@ async function settleCharge(tx: PaystackVerifiedTransaction, metadata: Metadata,
   });
 }
 
-/**
- * Money arrived on the agency's account that does not settle what it claims
- * to. Recorded as a `billingEvents` row (not yet shown in any UI) and a
- * console.error, keyed by reference so a redelivery does not add a second
- * row. Awaited: a flag that silently failed
- * to write would leave a real payment unaccounted for.
- */
+/** Money arrived that does not settle what it claims to — see `flagBillingPayment`. */
 async function flag(
   tx: PaystackVerifiedTransaction,
   target: { agencyId: string; subAccountId: string; kind: "plan" | "charge"; mismatch: string },
-  tag: string,
 ) {
-  console.error(`${tag} not settling ${target.kind}: ${target.mismatch}`);
-  await getAdminDb()
-    .collection("billingEvents")
-    .doc(`paystack-flag-${tx.reference}`)
-    .set({
-      agencyId: target.agencyId,
-      subAccountId: target.subAccountId,
-      event: "payment.flagged",
-      detail: {
-        provider: "paystack",
-        reference: tx.reference,
-        kind: target.kind,
-        reason: target.mismatch,
-        amountCents: tx.amount,
-        currency: tx.currency ?? null,
-      },
-      createdAt: FieldValue.serverTimestamp(),
-    });
+  await flagBillingPayment({
+    provider: "paystack",
+    reference: tx.reference,
+    agencyId: target.agencyId,
+    subAccountId: target.subAccountId,
+    kind: target.kind,
+    reason: target.mismatch,
+    amountCents: tx.amount,
+    currency: tx.currency ?? null,
+  });
 }
 
 /**

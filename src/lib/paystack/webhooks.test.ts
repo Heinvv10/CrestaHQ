@@ -134,11 +134,13 @@ describe("subscription.create", () => {
   it("stores the subscription code, the only event that carries it", async () => {
     await handlePaystackEvent({
       event: "subscription.create",
-      data: { subscription_code: "SUB_1", customer: CUSTOMER },
+      data: { subscription_code: "SUB_1", customer: CUSTOMER, plan: { plan_code: "PLN_1" } },
     });
     expect(recordSubAccountSubscriptionId).toHaveBeenCalledWith({
       customerId: "CUS_1",
       subscriptionId: "SUB_1",
+      // One customer can back two workspaces; the plan tells them apart.
+      planCode: "PLN_1",
     });
   });
 

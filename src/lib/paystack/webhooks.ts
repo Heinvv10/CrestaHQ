@@ -137,6 +137,7 @@ async function handleSubscriptionCreate(
   await recordSubAccountSubscriptionId({
     customerId,
     subscriptionId: subscriptionCode,
+    planCode: data.plan?.plan_code ?? null,
   });
 }
 
