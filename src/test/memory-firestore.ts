@@ -11,9 +11,11 @@ import { FieldValue } from "firebase-admin/firestore";
  * it, not before. */
 
 type Data = Record<string, unknown>;
-type WhereOp = "==" | "!=" | "in" | "array-contains" | ">=" | "<=";
+type WhereOp = "==" | "!=" | "in" | "array-contains" | ">=" | "<=" | "<";
 
 const DELETE = Symbol("delete");
+/** Order key standing in for FieldPath.documentId(). */
+const ID_ORDER = "__name__";
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const transformOf = (v: unknown): string | null =>
@@ -109,13 +111,15 @@ function matches(data: Data, field: string, op: WhereOp, value: unknown): boolea
     case "!=": // Firestore: a missing field never matches an inequality
       return actual !== undefined && actual !== value;
     case ">=":
-    case "<=": {
+    case "<=":
+    case "<": {
       // Range filters compare instants: Date and Timestamp are one type here,
       // as in Firestore. A missing field never matches.
       const ms = (v: unknown) =>
         v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : v;
       const [a, b] = [ms(actual), ms(value)];
       if (a === undefined || typeof a !== typeof b) return false;
+      if (op === "<") return (a as number) < (b as number);
       return op === ">=" ? (a as number) >= (b as number) : (a as number) <= (b as number);
     }
   }
@@ -147,11 +151,12 @@ export interface MemoryDocRef {
 
 export interface MemoryQuery {
   where: (field: string, op: WhereOp, value: unknown) => MemoryQuery;
-  orderBy: (field: string, dir?: "asc" | "desc") => MemoryQuery;
+  /** A non-string field (FieldPath.documentId()) orders by document id. */
+  orderBy: (field: string | object, dir?: "asc" | "desc") => MemoryQuery;
   limit: (n: number) => MemoryQuery;
-  /** Continue after this document in the query's order. Only Firestore's
-   *  snapshot overload — not startAfter(...fieldValues). */
-  startAfter: (snap: MemoryDocSnapshot) => MemoryQuery;
+  /** Continue after this document in the query's order. A string is the
+   *  value overload, supported only for document-id order (a cursor id). */
+  startAfter: (snap: MemoryDocSnapshot | string) => MemoryQuery;
   /** Projection is ignored — full docs come back, which is a superset. */
   select: (...fields: string[]) => MemoryQuery;
   get: () => Promise<{ empty: boolean; size: number; docs: MemoryDocSnapshot[] }>;
@@ -228,13 +233,15 @@ export function createMemoryFirestore() {
     filters: Array<[string, WhereOp, unknown]>,
     order: [string, "asc" | "desc"] | null,
     max: number | null,
-    after: string | null = null,
+    after: string | { id: string } | null = null,
   ): MemoryQuery {
     return {
       where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max, after),
-      orderBy: (f, dir = "asc") => query(inScope, filters, [f, dir], max, after),
+      orderBy: (f, dir = "asc") =>
+        query(inScope, filters, [typeof f === "string" ? f : ID_ORDER, dir], max, after),
       limit: (n) => query(inScope, filters, order, n, after),
-      startAfter: (snap) => query(inScope, filters, order, max, snap.ref.path),
+      startAfter: (snap) =>
+        query(inScope, filters, order, max, typeof snap === "string" ? { id: snap } : snap.ref.path),
       select: () => query(inScope, filters, order, max, after),
       // Reads observe the store when ISSUED and resolve a tick later, so two
       // concurrent transactions can both read before either commits.
@@ -246,7 +253,7 @@ export function createMemoryFirestore() {
         });
         if (order) {
           const [f, dir] = order;
-          const key = (p: string, v = getPath(store.get(p)!, f)): number | string =>
+          const key = (p: string, v = f === ID_ORDER ? p.split("/").pop() : getPath(store.get(p)!, f)): number | string =>
             v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : (v as number | string);
           paths.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
           if (dir === "desc") paths.reverse();
@@ -254,7 +261,10 @@ export function createMemoryFirestore() {
         // By position: rows up to and including the cursor doc are skipped. Unlike
         // Firestore, the cursor doc must itself be in this query's result — a
         // cursor that is not throws rather than silently returning every row.
-        if (after !== null) {
+        if (typeof after === "object" && after !== null) {
+          if (order?.[0] !== ID_ORDER) return Promise.reject(new Error("memory-firestore: a value cursor needs document-id order"));
+          paths = paths.filter((p) => p.split("/").pop()! > after.id);
+        } else if (after !== null) {
           const at = paths.indexOf(after);
           if (at === -1) return Promise.reject(new Error(`memory-firestore: startAfter cursor ${after} is not in the query's result`));
           paths = paths.slice(at + 1);

@@ -9,11 +9,22 @@ import {
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
 import { getAgentProfile, getChannelConfig } from "@/lib/comms/ai/agent";
-import { createOutboundCall, vapiIsConfigured } from "@/lib/comms/voice/vapi";
+import {
+  createOutboundCall,
+  endCallViaControl,
+  vapiIsConfigured,
+} from "@/lib/comms/voice/vapi";
 import {
   checkOutboundCompliance,
   type OutboundComplianceCode,
 } from "@/lib/comms/voice/outbound-compliance";
+import {
+  claimDial,
+  maybeCompleteCampaign,
+  recordDialled,
+  settleQueuedRecipient,
+  stopReason,
+} from "@/lib/comms/voice/campaign-rows";
 import type {
   VoiceCampaignDoc,
   VoiceCampaignRecipientDoc,
@@ -116,26 +127,21 @@ export async function POST(request: Request) {
   }
 
   // Kill switch — the operator stopped the campaign. Skip without dialing.
-  // (The cancel route batch-skips queued rows; this catches any QStash
-  // callback that raced in before that write landed.)
-  if (campaign.status === "cancelled") {
-    await skip(recRef, campaignRef, "cancelled");
-    return NextResponse.json({ ok: true, status: "skipped", reason: "cancelled" });
-  }
-
-  // Flip the campaign to "calling" on first activity.
-  if (campaign.status === "queued") {
-    await campaignRef.update({
-      status: "calling",
-      startedAt: FieldValue.serverTimestamp(),
-    });
+  // (The cancel route sweeps queued rows; this catches any QStash callback
+  // that raced in before that sweep reached this row. A cancel landing
+  // later is caught by claimDial just before the dial.)
+  // A failed campaign (fan-out gave up) is stopped the same way.
+  const stop = stopReason(campaign);
+  if (stop) {
+    await skip(recRef, campaignRef, stop);
+    return NextResponse.json({ ok: true, status: "skipped", reason: stop });
   }
 
   // Live contact read (opt-out may have flipped since fan-out).
   const contactSnap = await db.collection("contacts").doc(contactId).get();
   if (!contactSnap.exists) {
     await skip(recRef, campaignRef, "contact_missing");
-    await maybeComplete(campaignRef);
+    await maybeCompleteCampaign(campaignRef);
     return NextResponse.json({ ok: true, status: "skipped" });
   }
   const contact = {
@@ -148,7 +154,7 @@ export async function POST(request: Request) {
   if (!voice || voice.outboundEnabled !== true || !voice.vapiAssistantId || !voice.vapiPhoneNumberId) {
     // Channel turned off / un-provisioned mid-campaign — stop dialing.
     await skip(recRef, campaignRef, "scrub_blocked");
-    await maybeComplete(campaignRef);
+    await maybeCompleteCampaign(campaignRef);
     return NextResponse.json({ ok: true, status: "skipped" });
   }
 
@@ -173,13 +179,23 @@ export async function POST(request: Request) {
           ? Math.max(60, compliance.retryAfterSec ?? 3600)
           : 30; // rate_limited — short backoff
       await recRef.update({ attempts: FieldValue.increment(1) });
-      await publishCallback({
+      const rescheduled = await publishCallback({
         pathname: "/api/comms/voice/campaign/step",
         body: { campaignId, contactId },
         delaySeconds: delay,
         // Fresh nonce so QStash treats the reschedule as a new message.
         deduplicationId: `vcamp_${campaignId}_${contactId}_a${rec.attempts + 1}`,
       });
+      if (!rescheduled) {
+        // Nothing will ever run this row again — settle it visibly rather
+        // than leave it (and the campaign) queued forever.
+        await settleQueuedRecipient(recRef, campaignRef, {
+          status: "failed",
+          error: "Could not reschedule the call (queue publish failed).",
+        });
+        await maybeCompleteCampaign(campaignRef);
+        return NextResponse.json({ ok: true, status: "failed", code });
+      }
       return NextResponse.json({ ok: true, status: "deferred", code });
     }
     // Give up — map the code to a skip reason.
@@ -188,8 +204,18 @@ export async function POST(request: Request) {
         ? "window_unreached"
         : ((code as VoiceCampaignSkipReason | undefined) ?? "scrub_blocked");
     await skip(recRef, campaignRef, reason);
-    await maybeComplete(campaignRef);
+    await maybeCompleteCampaign(campaignRef);
     return NextResponse.json({ ok: true, status: "skipped", code });
+  }
+
+  // Last gate before dialling: commits the row to "called" unless the
+  // campaign was cancelled while the checks above ran.
+  const claim = await claimDial(recRef, campaignRef);
+  if (claim === "cancelled") {
+    return NextResponse.json({ ok: true, status: "skipped", reason: "stopped" });
+  }
+  if (claim === "settled") {
+    return NextResponse.json({ ok: true, ignored: "already_settled" });
   }
 
   // Place the call.
@@ -209,18 +235,46 @@ export async function POST(request: Request) {
     callControlUrl = result.controlUrl;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Vapi call failed";
+    // claimDial counted the row as called — move it to failed.
     await recRef.update({
       status: "failed",
       error: msg,
       settledAt: FieldValue.serverTimestamp(),
-      attempts: FieldValue.increment(1),
     });
     await campaignRef.update({
       "totals.failed": FieldValue.increment(1),
-      "totals.queued": FieldValue.increment(-1),
+      "totals.called": FieldValue.increment(-1),
     });
-    await maybeComplete(campaignRef);
+    await maybeCompleteCampaign(campaignRef);
     return NextResponse.json({ ok: true, status: "failed" });
+  }
+
+  // A cancel that landed while Vapi was dialling found nothing to sweep or
+  // end — hang the call up now.
+  let cancelledMidDial: boolean;
+  try {
+    cancelledMidDial = await recordDialled(recRef, campaignRef, callId, callControlUrl);
+  } catch (err) {
+    // The call is live — never throw it away. Store its ids with a plain
+    // write and re-check the status outside a transaction.
+    console.error("[voice/campaign/step] recordDialled failed; falling back", callId, err);
+    await recRef
+      .update({ callId, callControlUrl })
+      .catch((e) => console.error("[voice/campaign/step] call id write failed", callId, e));
+    const latest = await campaignRef
+      .get()
+      .then((snap) => (snap.data() as VoiceCampaignDoc | undefined)?.status)
+      .catch(() => undefined);
+    cancelledMidDial = latest === "cancelled";
+  }
+  if (cancelledMidDial) {
+    if (callControlUrl) {
+      await endCallViaControl(callControlUrl).catch((err) =>
+        console.warn("[voice/campaign/step] hang-up after cancel failed", err),
+      );
+    } else {
+      console.warn("[voice/campaign/step] cancelled mid-dial but no control URL to end", callId);
+    }
   }
 
   // voiceCalls placeholder (counts toward the gate's caps + shows in the
@@ -262,17 +316,6 @@ export async function POST(request: Request) {
     console.warn("[voice/campaign/step] voiceCalls placeholder failed", err);
   }
 
-  await recRef.update({
-    status: "called",
-    callId,
-    callControlUrl,
-    settledAt: FieldValue.serverTimestamp(),
-    attempts: FieldValue.increment(1),
-  });
-  await campaignRef.update({
-    "totals.called": FieldValue.increment(1),
-    "totals.queued": FieldValue.increment(-1),
-  });
 
   // Stamp the contact for cross-campaign "don't re-call recently contacted"
   // suppression (read by the audience resolver on future campaigns).
@@ -303,47 +346,17 @@ export async function POST(request: Request) {
       console.warn("[voice/campaign/step] activity write failed", err),
     );
 
-  await maybeComplete(campaignRef);
+  await maybeCompleteCampaign(campaignRef);
   return NextResponse.json({ ok: true, status: "called", callId });
 }
 
-async function skip(
+function skip(
   recRef: FirebaseFirestore.DocumentReference,
   campaignRef: FirebaseFirestore.DocumentReference,
   reason: VoiceCampaignSkipReason,
-): Promise<void> {
-  await recRef.update({
+): Promise<boolean> {
+  return settleQueuedRecipient(recRef, campaignRef, {
     status: "skipped",
     skippedReason: reason,
-    settledAt: FieldValue.serverTimestamp(),
-    attempts: FieldValue.increment(1),
-  });
-  await campaignRef.update({
-    "totals.skipped": FieldValue.increment(1),
-    "totals.queued": FieldValue.increment(-1),
-  });
-}
-
-/** Flip the campaign to "completed" once no rows remain queued. Transaction
- *  so two final rows settling at once can't double-fire the flip. */
-async function maybeComplete(
-  campaignRef: FirebaseFirestore.DocumentReference,
-): Promise<void> {
-  await getAdminDb().runTransaction(async (tx) => {
-    const snap = await tx.get(campaignRef);
-    if (!snap.exists) return;
-    const data = snap.data() as VoiceCampaignDoc;
-    if (
-      data.status === "completed" ||
-      data.status === "failed" ||
-      data.status === "cancelled"
-    )
-      return;
-    if ((data.totals?.queued ?? 0) <= 0) {
-      tx.update(campaignRef, {
-        status: "completed",
-        completedAt: FieldValue.serverTimestamp(),
-      });
-    }
   });
 }

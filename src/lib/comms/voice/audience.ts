@@ -1,7 +1,7 @@
 import "server-only";
 
 import { parsePhoneNumberFromString } from "libphonenumber-js";
-import { Timestamp } from "firebase-admin/firestore";
+import { FieldPath, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastAudienceFilter, VoiceCampaignSuppression } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -34,17 +34,15 @@ export interface ResolvedVoiceAudience {
   }>;
 }
 
-export async function resolveVoiceAudience(
+/** Contacts read per fanout page — bounded so no request loads a whole list. */
+export const VOICE_AUDIENCE_PAGE_SIZE = 200;
+
+/** The filter's contact query, unpaged — callers add a count() or a page. */
+export function voiceAudienceQuery(
   subAccountId: string,
   filter: BroadcastAudienceFilter,
-  /** Territory scoping — same semantics as the broadcast resolver. */
-  territoryFilter: string[] | null = null,
-  /** Optional cross-campaign suppression (recently-called / tag / prior
-   *  campaign). Null = no suppression beyond opt-out + phone validity. */
-  suppression: VoiceCampaignSuppression | null = null,
-): Promise<ResolvedVoiceAudience> {
-  const db = getAdminDb();
-  let query: FirebaseFirestore.Query = db
+): FirebaseFirestore.Query {
+  let query: FirebaseFirestore.Query = getAdminDb()
     .collection("contacts")
     .where("subAccountId", "==", subAccountId);
 
@@ -53,6 +51,59 @@ export async function resolveVoiceAudience(
   } else if (filter.kind === "pipeline_stage") {
     query = query.where("pipelineStage", "==", filter.stage);
   }
+  return query;
+}
+
+/**
+ * How many contacts the audience covers, before opt-out / phone /
+ * suppression skips. Unscoped: one aggregate count(). Territory-scoped: a
+ * projected scan applying the same territory rule as the page resolver, so
+ * a scoped collaborator never sees (or is capped by) contacts outside their
+ * territories. Stops counting once past `stopAbove`.
+ */
+export async function countVoiceAudience(
+  subAccountId: string,
+  filter: BroadcastAudienceFilter,
+  territoryFilter: string[] | null,
+  stopAbove: number,
+): Promise<number> {
+  const query = voiceAudienceQuery(subAccountId, filter);
+  if (!territoryFilter) return (await query.count().get()).data().count;
+  if (territoryFilter.length === 0) return 0;
+  let count = 0;
+  let cursor: string | null = null;
+  for (;;) {
+    let page = query.select("territoryId").orderBy(FieldPath.documentId());
+    if (cursor) page = page.startAfter(cursor);
+    const snap = await page.limit(1000).get();
+    for (const d of snap.docs) {
+      const tId = d.data().territoryId as string | undefined;
+      if (tId && territoryFilter.includes(tId)) count += 1;
+    }
+    if (count > stopAbove || snap.docs.length < 1000) return count;
+    cursor = snap.docs[snap.docs.length - 1]!.id;
+  }
+}
+
+/**
+ * One page of the audience, in document-id order after `cursor` (a contact
+ * id, or null for the first page). `nextCursor` is null on the last page.
+ */
+export async function resolveVoiceAudiencePage(
+  subAccountId: string,
+  filter: BroadcastAudienceFilter,
+  /** Territory scoping — same semantics as the broadcast resolver. */
+  territoryFilter: string[] | null,
+  /** Optional cross-campaign suppression (recently-called / tag / prior
+   *  campaign). Null = no suppression beyond opt-out + phone validity. */
+  suppression: VoiceCampaignSuppression | null,
+  cursor: string | null,
+  limit = VOICE_AUDIENCE_PAGE_SIZE,
+): Promise<ResolvedVoiceAudience & { nextCursor: string | null }> {
+  const db = getAdminDb();
+  let query = voiceAudienceQuery(subAccountId, filter).orderBy(FieldPath.documentId());
+  if (cursor) query = query.startAfter(cursor);
+  const snap = await query.limit(limit).get();
 
   // Build the suppression inputs up front.
   const recentCutoff =
@@ -63,18 +114,17 @@ export async function resolveVoiceAudience(
       : null;
   const excludeTag = suppression?.excludeTag?.trim() || null;
 
-  // Prior-campaign exclusion: load that campaign's recipient contact ids.
+  // Prior-campaign exclusion: which of THIS page's contacts were recipients
+  // of that campaign (recipient doc id === contact id).
   let priorIds: Set<string> | null = null;
-  if (suppression?.excludeCampaignId) {
-    const priorSnap = await db
+  if (suppression?.excludeCampaignId && snap.docs.length > 0) {
+    const priorCol = db
       .collection("voiceCampaigns")
       .doc(suppression.excludeCampaignId)
-      .collection("recipients")
-      .get();
-    priorIds = new Set(priorSnap.docs.map((d) => d.id));
+      .collection("recipients");
+    const priorSnaps = await db.getAll(...snap.docs.map((d) => priorCol.doc(d.id)));
+    priorIds = new Set(priorSnaps.filter((p) => p.exists).map((p) => p.id));
   }
-
-  const snap = await query.get();
 
   const recipients: Contact[] = [];
   const skipped: ResolvedVoiceAudience["skipped"] = [];
@@ -119,5 +169,10 @@ export async function resolveVoiceAudience(
     recipients.push(contact);
   }
 
-  return { recipients, skipped };
+  const last = snap.docs[snap.docs.length - 1];
+  return {
+    recipients,
+    skipped,
+    nextCursor: snap.docs.length === limit && last ? last.id : null,
+  };
 }

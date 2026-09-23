@@ -47,7 +47,12 @@ export type WorkflowTriggerType =
   // Payments v1 — a card payment through the sub-account's OWN Stripe was
   // confirmed by Stripe. Sibling of quote.paid (which covers the manual
   // mark-paid path). Fired from lib/server/orders-service.ts.
-  | "order.paid";
+  | "order.paid"
+  // A recurring schedule charged its saved card: recorded by the verified
+  // webhook, or declined (the invoice was emailed instead). Fired from
+  // lib/server/recurring-auto-charge.ts and lib/paystack/auto-charge-reconciler.ts.
+  | "invoice.charge_succeeded"
+  | "invoice.charge_failed";
 
 /* ------------------------------ Conditions ----------------------------- */
 
@@ -201,6 +206,12 @@ export interface WorkflowRunHistoryEntry {
    * "replied:<channel>" | "timeout".
    */
   result: string;
+  /**
+   * Where control went after this step (`to: null` = the run ends), so a
+   * redelivery can re-drive a next step that was never scheduled. Absent on
+   * failed steps, reply-resolved waits and entries written before it existed.
+   */
+  advance?: { to: string | null; delaySeconds: number };
 }
 
 /**
@@ -228,6 +239,16 @@ export interface WorkflowRunDoc {
   /** Non-null while parked on a `wait_for_reply` node. */
   waiting?: WorkflowRunWaiting | null;
   history: WorkflowRunHistoryEntry[];
+  /**
+   * Set while a contact-messaging step is being sent; cleared with its history
+   * entry. Left behind only by a delivery that died mid-step — that step is
+   * never re-run (at most once), and the run is failed with state "failed".
+   */
+  stepClaim?: {
+    nodeId: string;
+    state: "sending" | "failed";
+    at: Timestamp | FieldValue | null;
+  } | null;
   /** Trigger payload snapshot (e.g. { formId, dealId }). */
   context: Record<string, unknown>;
   qstashMessageId: string | null;

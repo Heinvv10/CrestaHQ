@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
@@ -39,7 +40,7 @@ type BookingLifecycleEvent =
  * from manual notes.
  */
 export async function recordBookingActivity(
-  event: Pick<CalendarEvent, "id" | "title" | "contactId" | "bookingPageSlug">,
+  event: Pick<CalendarEvent, "id" | "title" | "contactId" | "bookingPageSlug" | "subAccountId">,
   type: BookingLifecycleEvent,
   opts: {
     extra?: string | null;
@@ -49,6 +50,13 @@ export async function recordBookingActivity(
 ): Promise<void> {
   if (!event.contactId) return;
   try {
+    // Never write onto another tenant's timeline (legacy event, foreign id).
+    if (!(await loadEventContact(event))) {
+      console.warn(
+        `[booking/lifecycle] ${type} activity skipped: contact ${event.contactId} is not in sub-account ${event.subAccountId}`,
+      );
+      return;
+    }
     const content = defaultContent(event.title || "Meeting", type, opts.extra);
     await getAdminDb()
       .collection("contacts")

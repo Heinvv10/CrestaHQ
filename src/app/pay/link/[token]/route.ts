@@ -51,12 +51,22 @@ export async function GET(
   ctx: { params: Promise<{ token: string }> },
 ) {
   const { token } = await ctx.params;
-  const returning = new URL(request.url).searchParams.has("reference");
-  const loaded = await loadPayableLink(token, { returning });
+  const reference = new URL(request.url).searchParams.get("reference");
+  const returning = reference !== null;
+  const loaded = await loadPayableLink(token, { reference });
   if (!loaded.ok) return deadLink(loaded.error, loaded.status);
   const { link, mode } = loaded;
   const amount = formatCurrency(link.amountCents / 100, link.currency);
 
+  // "Paid" only when the verified webhook recorded THIS reference; the query
+  // string alone never says so.
+  if (returning && link.status === "paid" && link.paystackReference === reference) {
+    return page(
+      "Payment received",
+      `<h1 style="font-size:20px;margin:0 0 8px;">Payment received</h1>
+<p style="color:#52525b;font-size:14px;line-height:1.6;">Your payment of ${esc(amount)} for ${esc(link.description)} has been received. You can close this page.</p>`,
+    );
+  }
   if (returning) {
     return page(
       "Confirming payment",

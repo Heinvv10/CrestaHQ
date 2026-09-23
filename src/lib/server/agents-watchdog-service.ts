@@ -6,6 +6,7 @@ import { aiIsConfigured, callAi } from "@/lib/comms/ai/openrouter";
 import { getAgentProfile } from "@/lib/comms/ai/agent";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { sendPushForEvent } from "@/lib/push/send";
+import { contactTerritoryId } from "@/lib/push/events";
 import {
   WATCHDOG_DEFAULT_DAILY_TOKEN_BUDGET,
   WATCHDOG_DEFAULT_THRESHOLD_HOURS,
@@ -461,14 +462,25 @@ async function runWatchdogForSubAccount(
         });
 
         if (!pushSuppressed) {
-          void sendPushForEvent({
-            subAccountId,
-            agencyId: conv.agencyId,
-            title: `⏰ Follow-up needed: ${contactName}`,
-            body: verdict.reason,
-            url: `/sa/${subAccountId}/conversations/${conv.contactId}`,
-            tag: `watchdog-${conv.contactId}`,
-          });
+          // The push names the contact, so it follows the contact's
+          // territory like every other contact-keyed push. If that read
+          // fails, no push (never an unscoped one); the sweep carries on.
+          const pushContactId = conv.contactId;
+          void contactTerritoryId(pushContactId)
+            .then((territoryId) =>
+              sendPushForEvent({
+                subAccountId,
+                agencyId: conv.agencyId,
+                title: `⏰ Follow-up needed: ${contactName}`,
+                body: verdict.reason,
+                url: `/sa/${subAccountId}/conversations/${pushContactId}`,
+                tag: `watchdog-${pushContactId}`,
+                territoryId,
+              }),
+            )
+            .catch((err) =>
+              console.warn("[watchdog] territory read failed; push skipped", err),
+            );
         }
 
         // Activity row — best-effort, never blocks the sweep.

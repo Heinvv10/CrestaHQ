@@ -109,6 +109,10 @@ vi.mock("@/lib/firebase/admin", () => ({
       }
       throw new Error(`unexpected collection ${name}`);
     },
+    // The send step's claim: reads the run, records the claim.
+    runTransaction: async (
+      fn: (tx: { get: (r: { get: () => unknown }) => unknown; update: () => void }) => unknown,
+    ) => fn({ get: (r) => r.get(), update: () => undefined }),
   }),
 }));
 

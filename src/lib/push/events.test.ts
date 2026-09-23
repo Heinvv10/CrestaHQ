@@ -99,3 +99,17 @@ describe("booking.created push", () => {
     expect(t.sentTo.sort()).toEqual(["boss", "rep1", "rep2"]);
   });
 });
+
+describe("member with no role", () => {
+  it.each([["missing", undefined], ["empty", ""]])(
+    "a %s role is territory-scoped like a collaborator, as the rules treat it",
+    async (_label, role) => {
+      mem.seed("subAccounts/sa1/subAccountMembers/norole", {
+        status: "active", assignedTerritoryIds: ["t2"], ...(role === undefined ? {} : { role }),
+      });
+      mem.seed("users/norole/pushSubscriptions/s1", { endpoint: "norole", keys: { p256dh: "p", auth: "a" } });
+      await emit("message.received");
+      expect(t.sentTo.sort()).toEqual(["boss", "rep1"]);
+    },
+  );
+});

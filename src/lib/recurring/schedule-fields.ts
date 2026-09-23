@@ -1,6 +1,7 @@
 import { utcFromWallClock } from "@/lib/booking/availability";
 import { daysInMonth, type Cadence, type CadenceUnit } from "@/lib/recurring/cadence";
 import type {
+  RecurringChargeMode,
   RecurringInvoiceEndMode,
   RecurringInvoiceStatus,
 } from "@/types/recurring-invoices";
@@ -130,4 +131,47 @@ export function parseEnding(
   }
 
   return { ok: true, value: { endMode: "never", endAt: null, maxCycles: null } };
+}
+
+/**
+ * Whether the template would actually invoice for something.
+ *
+ * A count of line items is not enough: the sanitiser turns `{}` into a valid
+ * empty item, so an all-blank template passes a length check and then mails
+ * the customer a nil invoice every cycle for as long as the schedule lives. A
+ * hand-made invoice at least gets looked at once before it goes out.
+ */
+export function hasBillableLineItem<
+  T extends { description: string; quantity: number; unitPrice: number },
+>(items: T[] | undefined): items is T[] {
+  return (
+    !!items &&
+    items.some(
+      (item) => item.description.trim() !== "" || item.quantity * item.unitPrice > 0,
+    )
+  );
+}
+
+/**
+ * How each cycle asks for the money, judged against the schedule's other
+ * settings as they will be after the save. Absent keeps `current`. A card
+ * cycle charges unattended, so it cannot wait for a review; saved cards are
+ * charged in ZAR only.
+ */
+export function parseChargeMode(
+  value: unknown,
+  current: RecurringChargeMode,
+  settings: { reviewFirst: boolean; currency: string },
+): ParseResult<RecurringChargeMode> {
+  if (value !== undefined && value !== "invoice" && value !== "card") {
+    return fail("Charge mode must be invoice or card.");
+  }
+  const mode = value ?? current;
+  if (mode === "card" && settings.reviewFirst) {
+    return fail("A schedule that charges the saved card cannot wait for review. Turn off review, or bill by invoice.");
+  }
+  if (mode === "card" && settings.currency.toUpperCase() !== "ZAR") {
+    return fail("Only ZAR schedules can charge a saved card.");
+  }
+  return { ok: true, value: mode };
 }

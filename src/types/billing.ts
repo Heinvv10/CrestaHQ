@@ -207,6 +207,11 @@ export interface SubAccountBilling {
    */
   checkoutTokenHash: string | null;
   /**
+   * The Paystack transaction that activated the current plan, so a
+   * redelivery of it is told apart from a second payment. Absent for Stripe.
+   */
+  paystackReference?: string | null;
+  /**
    * End of the dunning grace window, stamped when the subscription first
    * goes past_due. Checked at request/render time (no cron): past_due +
    * graceUntil in the past = hard paywall. Cleared on recovery.

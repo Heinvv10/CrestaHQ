@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 import {
   emailIsConfigured,
   sendEmail,
@@ -172,6 +173,7 @@ export async function runRescheduleSideEffects(args: {
         title: event.title || "Meeting",
         contactId: event.contactId,
         bookingPageSlug: event.bookingPageSlug ?? null,
+        subAccountId: event.subAccountId,
       },
       "booking_rescheduled",
       { extra: actor === "visitor" ? null : `by ${actor}` },
@@ -194,14 +196,14 @@ export async function runRescheduleSideEffects(args: {
   let contact: Contact;
   let sub: SubAccountDoc;
   try {
-    const [contactSnap, subSnap] = await Promise.all([
-      db.collection("contacts").doc(event.contactId).get(),
+    const [loaded, subSnap] = await Promise.all([
+      loadEventContact(event),
       db.doc(`subAccounts/${event.subAccountId}`).get(),
     ]);
-    if (!contactSnap.exists || !subSnap.exists) {
+    if (!loaded || !subSnap.exists) {
       return { emailSent: false, emailSkipReason: "missing_records" };
     }
-    contact = contactSnap.data() as Contact;
+    contact = loaded;
     sub = subSnap.data() as SubAccountDoc;
   } catch (err) {
     console.warn("[booking/reschedule] contact/sub-account read failed", err);

@@ -83,6 +83,8 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "booking.no_show",
   "quote.accepted",
   "quote.paid",
+  "invoice.charge_succeeded",
+  "invoice.charge_failed",
   "message.received",
   "link.clicked",
 ];

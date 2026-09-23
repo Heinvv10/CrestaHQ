@@ -209,6 +209,8 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Bulk outbound-call step — QStash callback, signature-verified inside
   // the route (same security model as /api/broadcasts/email/step).
   /^\/api\/comms\/voice\/campaign\/step$/,
+  // Bulk outbound-call fan-out pages — same model as the step above.
+  /^\/api\/comms\/voice\/campaign\/fanout$/,
   // 3-day post-purchase Gitpage bonus reminder — QStash callback,
   // signature-verified inside the route.
   /^\/api\/gitpage-reminder\/step$/,

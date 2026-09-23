@@ -25,6 +25,8 @@ export const TRIGGER_LABELS: Record<WorkflowTriggerType, string> = {
   "quote.paid": "Quote/invoice paid",
   "message.received": "Message received (inbox)",
   "order.paid": "Order paid (card)",
+  "invoice.charge_succeeded": "Invoice card charge succeeded",
+  "invoice.charge_failed": "Invoice card charge failed",
   "link.clicked": "Tracked link clicked",
 };
 

@@ -131,8 +131,20 @@ describe("pre-flight guards", () => {
     expect(body.error).toBe("Recipient contact no longer exists");
   });
 
+  it("404s a quote whose contact lives in another sub-account, sending nothing", async () => {
+    // A quote doc can be written client-side naming any contact id. The send
+    // must not email — or report as `sentTo` — another tenant's contact.
+    state.contactDoc = { email: "someone-else@example.com", name: "X", subAccountId: "other-sub" };
+    const { status, body } = await call();
+    expect(status).toBe(404);
+    expect(body.error).toBe("Recipient contact no longer exists");
+    expect(JSON.stringify(body)).not.toContain("someone-else@example.com");
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(state.quoteUpdates).toHaveLength(0);
+  });
+
   it("400s when the contact has no email", async () => {
-    state.contactDoc = { name: "Jane Doe" };
+    state.contactDoc = { name: "Jane Doe", subAccountId: SUB_ID };
     const { status, body } = await call();
     expect(status).toBe(400);
     expect(body.error).toBe(
@@ -141,7 +153,7 @@ describe("pre-flight guards", () => {
   });
 
   it("treats a whitespace-only email as missing", async () => {
-    state.contactDoc = { email: "   ", name: "Jane Doe" };
+    state.contactDoc = { email: "   ", name: "Jane Doe", subAccountId: SUB_ID };
     const { status } = await call();
     expect(status).toBe(400);
     expect(sendEmail).not.toHaveBeenCalled();

@@ -3,6 +3,7 @@ import "server-only";
 import { BillingError } from "@/lib/billing/errors";
 
 const PAYSTACK_BASE_URL = "https://api.paystack.co";
+const PAYSTACK_TIMEOUT_MS = 10_000;
 
 /**
  * Every Paystack response is `{ status, message, data }`. `status: false` is a
@@ -62,6 +63,9 @@ export async function paystackRequest<T>(
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
       cache: "no-store",
+      // A hung Paystack must not hold a webhook open until the platform
+      // kills it; a timeout is a transient failure (502) like any other.
+      signal: AbortSignal.timeout(PAYSTACK_TIMEOUT_MS),
     });
   } catch (err) {
     throw new BillingError(

@@ -66,6 +66,9 @@ export async function reconcileContactFromCapture(
     capturedName: input.capture.name,
     capturedEmail: input.capture.email,
     capturedPhone: input.capture.phone,
+    // A claimed email/phone that matched an existing contact is unverified:
+    // record that so respond.ts withholds that contact's data from the bot.
+    ...(input.existingContactId ? {} : { contactCreatedBySession: result.created }),
   });
 
   return result;

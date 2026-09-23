@@ -20,13 +20,22 @@ vi.mock("@/lib/server/billing-service", () => ({
     recordSubAccountSubscriptionId(...a),
 }));
 
+// Plan and charge payments are settled on Paystack's verified record — the
+// seam test for that is `app/api/webhooks/paystack/route.verify.test.ts`.
+// Here only the routing is asserted.
+const settleClientBillingPayment = vi.fn();
+vi.mock("./client-billing-payment", async (importActual) => ({
+  ...(await importActual<typeof import("./client-billing-payment")>()),
+  settleClientBillingPayment: (...a: unknown[]) => settleClientBillingPayment(...a),
+}));
+
 const { handlePaystackEvent } = await import("./webhooks");
 
 const CUSTOMER = { customer_code: "CUS_1" };
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("charge.success — a plan's first payment", () => {
+describe("charge.success — a plan's first payment or a one-time charge", () => {
   const planCharge = {
     event: "charge.success",
     data: {
@@ -40,16 +49,12 @@ describe("charge.success — a plan's first payment", () => {
     },
   };
 
-  it("activates the workspace the payment was for", async () => {
+  it("settles a plan payment by its reference, activating nothing from the body", async () => {
     await handlePaystackEvent(planCharge);
-    expect(activateSubAccountPlan).toHaveBeenCalledWith({
-      subAccountId: "sa_1",
-      planId: "plan_1",
-      customerId: "CUS_1",
-      // Paystack creates the subscription in a separate event; claiming one
-      // here would store a reference to something that does not exist.
-      subscriptionId: null,
-    });
+    expect(settleClientBillingPayment).toHaveBeenCalledWith("ref_1");
+    // The body's metadata and amount are payer-controlled; activation happens
+    // only after Paystack's verify endpoint confirms the money.
+    expect(activateSubAccountPlan).not.toHaveBeenCalled();
   });
 
   it("reads metadata Paystack echoed back as a JSON string", async () => {
@@ -57,22 +62,10 @@ describe("charge.success — a plan's first payment", () => {
       ...planCharge,
       data: { ...planCharge.data, metadata: JSON.stringify(planCharge.data.metadata) },
     });
-    expect(activateSubAccountPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ subAccountId: "sa_1" }),
-    );
+    expect(settleClientBillingPayment).toHaveBeenCalledWith("ref_1");
   });
 
-  it("activates nothing when the metadata names no workspace", async () => {
-    await handlePaystackEvent({
-      ...planCharge,
-      data: { ...planCharge.data, metadata: { kind: "subAccountPlan" } },
-    });
-    expect(activateSubAccountPlan).not.toHaveBeenCalled();
-  });
-});
-
-describe("charge.success — a one-time charge", () => {
-  it("marks that charge paid and records the transaction reference", async () => {
+  it("settles a one-time charge by its reference, marking nothing from the body", async () => {
     await handlePaystackEvent({
       event: "charge.success",
       data: {
@@ -82,18 +75,7 @@ describe("charge.success — a one-time charge", () => {
         metadata: { kind: "subAccountCharge", chargeId: "ch_1" },
       },
     });
-    expect(markSubAccountChargePaid).toHaveBeenCalledWith({
-      chargeId: "ch_1",
-      checkoutSessionId: "ref_2",
-      paymentId: "998877",
-    });
-  });
-
-  it("marks nothing paid when the charge is not named", async () => {
-    await handlePaystackEvent({
-      event: "charge.success",
-      data: { reference: "ref_2", metadata: { kind: "subAccountCharge" } },
-    });
+    expect(settleClientBillingPayment).toHaveBeenCalledWith("ref_2");
     expect(markSubAccountChargePaid).not.toHaveBeenCalled();
   });
 });

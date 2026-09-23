@@ -5,7 +5,7 @@ import type { MandateConsent } from "@/types/payment-mandates";
 /**
  * Paystack charge attempts — `paymentAttempts/{reference}`.
  *
- * One doc per checkout (and, later, per mandate charge), written server-side
+ * One doc per checkout or saved-card charge, written server-side
  * BEFORE Paystack is called. The doc id is the Paystack reference.
  *
  * Test vs live is a property of the ATTEMPT: `mode` and `keyFingerprint`
@@ -42,6 +42,13 @@ export interface PaymentAttempt {
 
   /** What the attempt pays. */
   paymentLinkId: string | null;
+  /**
+   * A recurring card cycle's charge (`ra-{scheduleId}-c{cycle}`): the saved
+   * card charged, the invoice it pays and its schedule. Absent on checkouts.
+   */
+  mandateId?: string;
+  invoiceId?: string;
+  recurringInvoiceId?: string;
 
   amountCents: number;
   currency: string;

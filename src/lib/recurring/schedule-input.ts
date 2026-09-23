@@ -4,11 +4,14 @@ import {
   resolveAnchorDay,
   type Cadence,
 } from "@/lib/recurring/cadence";
+import { recomputeNextRun } from "@/lib/recurring/next-run";
 import {
   fail,
+  hasBillableLineItem,
   parseCadence,
   parseEnding,
   parseLocalDate,
+  parseChargeMode,
   parseName,
   parseStatusChange,
   parseThreshold,
@@ -20,6 +23,7 @@ import {
   type QuoteTemplateInput,
 } from "@/lib/quotes/sanitize";
 import type {
+  RecurringChargeMode,
   RecurringInvoiceEndMode,
   RecurringInvoiceStatus,
 } from "@/types/recurring-invoices";
@@ -50,6 +54,7 @@ export interface ScheduleCreateFields {
   endAt: Date | null;
   maxCycles: number | null;
   reviewFirst: boolean;
+  chargeMode: RecurringChargeMode;
   unpaidEscalationThreshold: number;
   currency: string;
   lineItems: ReturnType<typeof sanitizeQuoteTemplate>["lineItems"];
@@ -73,6 +78,7 @@ export interface ScheduleInputBody extends QuoteTemplateInput {
   endDateString?: unknown;
   maxCycles?: unknown;
   reviewFirst?: unknown;
+  chargeMode?: unknown;
   unpaidEscalationThreshold?: unknown;
   status?: unknown;
   [key: string]: unknown;
@@ -114,6 +120,10 @@ export function parseScheduleCreate(
     return fail("Add at least one line item before saving the schedule.");
   }
 
+  const [reviewFirst, currency] = [body.reviewFirst === true, template.currency ?? "USD"];
+  const chargeMode = parseChargeMode(body.chargeMode, "invoice", { reviewFirst, currency });
+  if (!chargeMode.ok) return chargeMode;
+
   const nextRunAt = computeFirstRunAt({ startAt, cadence, anchorDay, timezone });
 
   // An end date the first cycle already sits past is a schedule that would be
@@ -134,9 +144,10 @@ export function parseScheduleCreate(
       endMode: ending.value.endMode,
       endAt: ending.value.endAt,
       maxCycles: ending.value.maxCycles,
-      reviewFirst: body.reviewFirst === true,
+      reviewFirst,
+      chargeMode: chargeMode.value,
       unpaidEscalationThreshold: parseThreshold(body.unpaidEscalationThreshold),
-      currency: template.currency ?? "USD",
+      currency,
       lineItems: template.lineItems,
       globalDiscount: template.globalDiscount ?? null,
       globalTaxPercent: template.globalTaxPercent ?? null,
@@ -158,6 +169,7 @@ export interface ScheduleUpdateFields {
   endAt?: Date | null;
   maxCycles?: number | null;
   reviewFirst?: boolean;
+  chargeMode?: RecurringChargeMode;
   unpaidEscalationThreshold?: number;
   currency?: string;
   lineItems?: ScheduleCreateFields["lineItems"];
@@ -167,13 +179,9 @@ export interface ScheduleUpdateFields {
   billedToOrganization?: string | null;
   billingAddress?: string | null;
   paymentDueDays?: number | null;
-  /**
-   * Set only when the cadence or the anchor moved: the stored `nextRunAt` was
-   * computed from the OLD cadence, so leaving it would bill the next cycle on
-   * a day the operator has just changed away from. Recomputed from today, so
-   * an edit can never pull a cycle earlier than the day it was made.
-   */
+  /** See `recomputeNextRun`; `resumeNote` becomes the schedule's `lastError`. */
   recomputeNextRunFrom?: Date;
+  resumeNote?: string;
 }
 
 export function parseScheduleUpdate(
@@ -185,6 +193,9 @@ export function parseScheduleUpdate(
     status: RecurringInvoiceStatus;
     /** The cycle the schedule is currently pointed at. */
     nextRunAt: Date | null;
+    /** Judged with `chargeMode`: a card cycle cannot wait for review, and is ZAR only. */
+    reviewFirst?: boolean; currency?: string; chargeMode?: RecurringChargeMode;
+    lastRunAt?: Date | null; // an edit never lands at or before it
   },
   now: Date,
 ): ParseResult<ScheduleUpdateFields> {
@@ -226,18 +237,21 @@ export function parseScheduleUpdate(
     out.anchorDay = anchorDay;
   }
 
-  if (cadenceMoved) {
-    out.recomputeNextRunFrom = computeFirstRunAt({
-      startAt: now,
+  const resuming = out.status === "active" && current.status === "paused";
+  if (cadenceMoved || resuming) {
+    const recomputed = recomputeNextRun({
+      cadenceMoved,
+      resuming,
       cadence,
-      // `??` would let a week cadence's deliberate `null` fall through to the
-      // stale numeric anchor of the cadence being edited away from. No caller
-      // can observe the difference today — `computeFirstRunAt` ignores the
-      // anchor for week cadences — so this is guarding the next edit to that
-      // function, not a live bug.
+      // Not `??`: a week cadence's `null` must not fall back to the old anchor.
       anchorDay: "anchorDay" in out ? (out.anchorDay ?? null) : current.anchorDay,
       timezone: current.timezone,
+      nextRunAt: current.nextRunAt,
+      lastRunAt: current.lastRunAt ?? null,
+      now,
     });
+    if (recomputed) out.recomputeNextRunFrom = recomputed.next;
+    if (recomputed?.resumeNote) out.resumeNote = recomputed.resumeNote;
   }
 
   if (
@@ -274,26 +288,13 @@ export function parseScheduleUpdate(
   if (template.lineItems && !hasBillableLineItem(template.lineItems)) {
     return fail("A schedule must keep at least one line item.");
   }
+  const chargeMode = parseChargeMode(body.chargeMode, current.chargeMode ?? "invoice", {
+    reviewFirst: out.reviewFirst ?? current.reviewFirst ?? false,
+    currency: template.currency ?? current.currency ?? "",
+  });
+  if (!chargeMode.ok) return chargeMode;
+  if (body.chargeMode !== undefined) out.chargeMode = chargeMode.value;
   Object.assign(out, template);
 
   return { ok: true, value: out };
-}
-
-/**
- * Whether the template would actually invoice for something.
- *
- * A count of line items is not enough: the sanitiser turns `{}` into a valid
- * empty item, so an all-blank template passes a length check and then mails
- * the customer a nil invoice every cycle for as long as the schedule lives. A
- * hand-made invoice at least gets looked at once before it goes out.
- */
-function hasBillableLineItem(
-  items: ScheduleCreateFields["lineItems"] | undefined,
-): items is NonNullable<ScheduleCreateFields["lineItems"]> {
-  return (
-    !!items &&
-    items.some(
-      (item) => item.description.trim() !== "" || item.quantity * item.unitPrice > 0,
-    )
-  );
 }

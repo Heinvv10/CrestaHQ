@@ -58,6 +58,8 @@ interface PublishCallbackInput {
   delaySeconds: number;
   /** QStash dedup id — underscores only, no colons. Reschedules pass a nonce-suffixed id. */
   deduplicationId: string;
+  /** QStash delivery retries. Absent = QStash's default. */
+  retries?: number;
 }
 
 interface PublishCallbackResult {
@@ -90,6 +92,7 @@ export async function publishCallback(
       body: input.body,
       delay: Math.max(0, Math.floor(input.delaySeconds)),
       deduplicationId: input.deduplicationId,
+      ...(input.retries === undefined ? {} : { retries: input.retries }),
     });
     return { messageId: res.messageId };
   } catch (err) {

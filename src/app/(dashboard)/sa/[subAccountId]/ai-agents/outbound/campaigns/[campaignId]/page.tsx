@@ -380,6 +380,7 @@ const SKIP_LABELS: Record<VoiceCampaignSkipReason, string> = {
   window_unreached: "Window unreached",
   contact_missing: "Contact deleted",
   cancelled: "Stopped",
+  campaign_failed: "Campaign failed",
   recently_called: "Called recently",
   suppressed_tag: "Suppressed (tag)",
   prior_campaign: "In prior campaign",

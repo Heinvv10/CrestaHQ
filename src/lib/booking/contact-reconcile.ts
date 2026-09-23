@@ -75,18 +75,31 @@ export async function reconcileBookingContact(
   if (!existing.empty) {
     const doc = existing.docs[0];
     const data = doc.data() as Contact;
-    // Best-effort update of missing fields (name + phone) — never
-    // overwrites operator-curated data. Territory is left alone (see
-    // function header).
+    // Best-effort fill of a missing name — never overwrites
+    // operator-curated data. Territory is left alone (see function header).
+    // The phone is NEVER written here: the booking page is public, so the
+    // email that matched is an unverified claim, and a backfilled phone
+    // would route this contact's SMS/WhatsApp to whoever booked. A phone
+    // that differs from the one on file is left as a note for staff.
     const patch: Record<string, unknown> = {};
     if (name && !data.name) patch.name = name;
-    if (phone && !data.phone) patch.phone = phone;
     if (Object.keys(patch).length > 0) {
       patch.updatedAt = FieldValue.serverTimestamp();
       try {
         await doc.ref.update(patch);
       } catch {
         // Non-fatal — surface the booking even if the patch blips.
+      }
+    }
+    if (phone && phone !== data.phone) {
+      try {
+        await doc.ref.collection("notes").add({
+          content: `Booking page: visitor entered phone ${phone} — not saved to the contact (unverified).`,
+          createdBy: "booking-page",
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      } catch {
+        // Non-fatal — the host notification email also carries the phone.
       }
     }
     return { id: doc.id, created: false };

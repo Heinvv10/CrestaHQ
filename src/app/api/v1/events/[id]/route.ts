@@ -14,6 +14,7 @@ import {
   statusChangeError,
 } from "@/lib/server/event-status-service";
 import type { CalendarEvent } from "@/types/events";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
 import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
 import { isLongEvent } from "@/lib/booking/long-event";
 
@@ -46,6 +47,13 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   // is a manual (API or dashboard) event.
   if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
+  }
+
+  if (
+    patch.contactId &&
+    !(await refInSubAccount("contacts", patch.contactId, ctx.subAccountId, ctx.mode))
+  ) {
+    return apiError(ctx, "not_found", "contact_not_found", "Contact not found.");
   }
 
   // Status changes go through the same transition table + start-time gate as
