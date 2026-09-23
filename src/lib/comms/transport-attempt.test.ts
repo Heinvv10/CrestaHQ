@@ -15,6 +15,7 @@ vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: vi.fn(), checkQuota: a
 vi.mock("@/lib/agency/policy", () => ({ agencyAllowsSharedSms: async () => false }));
 vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({}) }));
 vi.mock("@/lib/server/email-conversations", () => ({ recordEmailMessage: vi.fn() }));
+vi.mock("@/lib/server/sub-account-secrets", () => ({ readSubAccountSecret: async () => "tok" }));
 
 import { SmsRecipientUnsubscribedError, sendSmsForSubAccount, sendWhatsappForSubAccount, sendWhatsappTemplateForSubAccount } from "./twilio";
 import { sendEmail } from "./resend";

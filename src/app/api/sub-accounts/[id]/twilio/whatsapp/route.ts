@@ -11,6 +11,7 @@ import {
 } from "@/lib/comms/twilio";
 import { autoConfigureInboundWebhook } from "@/lib/comms/twilio-config";
 import type { SubAccountDoc } from "@/types";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 /**
  * Manage the per-sub-account WhatsApp sender. WhatsApp reuses the same Twilio
@@ -140,7 +141,7 @@ export async function POST(
   } else {
     webhookResult = await autoConfigureInboundWebhook({
       accountSid: cfg.accountSid,
-      authToken: cfg.authToken,
+      authToken: await readSubAccountSecret(subAccountId, "twilio", cfg),
       fromNumber: whatsappFromNumber,
       webhookUrl,
     });

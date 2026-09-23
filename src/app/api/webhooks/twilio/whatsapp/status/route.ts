@@ -8,6 +8,7 @@ import {
   normalizeDeliveryStatus,
   recordWhatsappDeliveryStatus,
 } from "@/lib/comms/whatsapp/delivery-status";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import type { SubAccountDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -47,8 +48,9 @@ async function resolveRoute(
   if (snap.empty) return null;
   const sa = snap.docs[0].data() as SubAccountDoc;
   if (sa.whatsappEnabledByAgency !== true) return null;
-  if (!sa.twilioConfig?.authToken) return null;
-  return { authToken: sa.twilioConfig.authToken, subAccountId: snap.docs[0].id };
+  const authToken = await readSubAccountSecret(snap.docs[0].id, "twilio", sa.twilioConfig);
+  if (!authToken) return null;
+  return { authToken, subAccountId: snap.docs[0].id };
 }
 
 export async function POST(request: Request) {

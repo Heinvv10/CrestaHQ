@@ -177,6 +177,17 @@ The parent has `emailProvider` and password-free `smtpConfig` display metadata.
 Admin settings routes verify TLS/auth before atomically switching credentials
 and provider. Disconnect atomically deletes the secret and selects Resend.
 
+### Twilio, Meta and GHL-import credentials
+`subAccounts/{id}/private/twilioCredentials {authToken}`,
+`private/metaCredentials {pageAccessToken}` and
+`private/ghlImportCredentials {token}` hold the three integration secrets
+(paths in `src/types/sub-account-secrets.ts`). Admin SDK only under the
+`private/{docId}` deny rule. The parent keeps only non-secret status in
+`twilioConfig` / `metaConfig` / `ghlImportConfig`. Readers use
+`readSubAccountSecret`, which falls back to the legacy field on the parent for
+docs written before the move; `scripts/migrate-private-credentials.ts` copies
+those into the private docs and deletes the legacy fields.
+
 ### Workspace mailbox and email conversations
 
 `subAccounts/{id}/private/mailboxConnection` stores verified IMAPS credentials,

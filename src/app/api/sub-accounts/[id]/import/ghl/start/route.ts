@@ -9,6 +9,7 @@ import { PIPELINE_STAGES, type PipelineStageId } from "@/types/deals";
 import { type ImportJob } from "@/types/import";
 import type { GhlPhase } from "@/lib/import/ghl/transform";
 import type { GhlImportConfig } from "@/types";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 /**
  * Start a GHL migration (Phase 4). Sub-account admin only.
@@ -47,7 +48,8 @@ export async function POST(
   const sub = subSnap.data() ?? {};
   const agencyId = (sub.agencyId as string | undefined) ?? null;
   const cfg = sub.ghlImportConfig as GhlImportConfig | null | undefined;
-  if (!cfg?.token || !cfg.locationId) {
+  const token = cfg ? await readSubAccountSecret(subAccountId, "ghl", cfg) : "";
+  if (!token || !cfg?.locationId) {
     return NextResponse.json(
       { error: "Connect a GoHighLevel token before starting an import." },
       { status: 400 },

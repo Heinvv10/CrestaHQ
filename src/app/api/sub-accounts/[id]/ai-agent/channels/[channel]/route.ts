@@ -36,6 +36,7 @@ import {
   vapiPhoneNumberExists,
   VapiError,
 } from "@/lib/comms/voice/vapi";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -798,6 +799,11 @@ async function runVoiceProvisioningSideEffect(input: {
       const result = await ensureVapiPhoneNumber({
         subAccountId,
         twilioConfig: subAccount.twilioConfig,
+        authToken: await readSubAccountSecret(
+          subAccountId,
+          "twilio",
+          subAccount.twilioConfig,
+        ),
         assistantId,
         existingPhoneNumberId: voice.vapiPhoneNumberId,
       });

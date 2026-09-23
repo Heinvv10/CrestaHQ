@@ -14,6 +14,7 @@ import {
   DEFAULT_MCTB_RING_TIMEOUT_SEC,
 } from "@/lib/comms/missed-call";
 import type { MissedCallConfig, SubAccountDoc } from "@/types";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 /**
  * Missed Call Text Back config for one sub-account.
@@ -135,7 +136,7 @@ export async function POST(
   } else {
     const result = await configureVoiceWebhook({
       accountSid: cfg.accountSid,
-      authToken: cfg.authToken,
+      authToken: await readSubAccountSecret(subAccountId, "twilio", cfg),
       fromNumber: cfg.fromNumber,
       webhookUrl,
     });
@@ -188,10 +189,11 @@ export async function DELETE(
   const cfg = sa?.twilioConfig ?? null;
 
   // Best-effort restore of the number's prior Voice URL.
-  if (cfg?.accountSid && cfg.authToken && cfg.fromNumber) {
+  const authToken = cfg ? await readSubAccountSecret(subAccountId, "twilio", cfg) : "";
+  if (cfg?.accountSid && authToken && cfg.fromNumber) {
     await restoreVoiceWebhook({
       accountSid: cfg.accountSid,
-      authToken: cfg.authToken,
+      authToken,
       fromNumber: cfg.fromNumber,
       prevVoiceUrl: cfg.missedCall?.prevVoiceUrl ?? null,
     });

@@ -19,6 +19,7 @@ import { metaCanInstagramDm } from "@/lib/comms/meta-capabilities";
 import type { ConversationChannel } from "@/types/conversations";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -100,7 +101,7 @@ async function resolveRoute(
     );
     return null;
   }
-  const token = sa.metaConfig?.pageAccessToken;
+  const token = await readSubAccountSecret(snap.docs[0].id, "meta", sa.metaConfig);
   if (!token) return null;
 
   return {
