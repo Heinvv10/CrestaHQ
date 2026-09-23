@@ -235,8 +235,7 @@ export function BulkCallDialog({
       const data = (await res.json()) as {
         ok?: boolean;
         campaignId?: string;
-        queued?: number;
-        skipped?: number;
+        audienceSize?: number;
         error?: string;
       };
       if (!res.ok || !data.ok || !data.campaignId) {
@@ -244,9 +243,7 @@ export function BulkCallDialog({
         return;
       }
       toast.success(
-        `Calling campaign queued — ${data.queued ?? 0} contacts${
-          data.skipped ? ` (${data.skipped} skipped)` : ""
-        }`,
+        `Calling campaign queued for ${data.audienceSize ?? 0} matching contacts — opted-out, invalid-phone and suppressed contacts are skipped.`,
       );
       onOpenChange(false);
       router.push(saPath(`/ai-agents/outbound/campaigns/${data.campaignId}`));

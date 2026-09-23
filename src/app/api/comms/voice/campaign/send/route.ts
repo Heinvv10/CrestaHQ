@@ -6,7 +6,7 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
-import { resolveVoiceAudience } from "@/lib/comms/voice/audience";
+import { voiceAudienceQuery } from "@/lib/comms/voice/audience";
 import { issueVoiceCampaignCode } from "@/lib/comms/voice/campaign-number";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { vapiIsConfigured } from "@/lib/comms/voice/vapi";
@@ -14,7 +14,6 @@ import type {
   BroadcastAudienceFilter,
   SubAccountDoc,
   VoiceCampaignDoc,
-  VoiceCampaignRecipientDoc,
   VoiceCampaignSuppression,
 } from "@/types";
 
@@ -34,8 +33,9 @@ interface SendBody {
 const MAX_AUDIENCE_SIZE = 25_000;
 
 /**
- * Kick off a bulk outbound AI voice campaign. Resolves a contact audience,
- * creates the campaign + per-recipient rows, and fans out to QStash — one
+ * Kick off a bulk outbound AI voice campaign. Sizes the audience, creates
+ * the campaign doc, and hands off to /api/comms/voice/campaign/fanout, which
+ * pages through the audience creating recipient rows and publishing one
  * delayed message per recipient. Each callback (/api/comms/voice/campaign/
  * step) runs the per-call compliance gate and places (or skips / defers)
  * one call. Staggered at the sub-account's configured per-minute cap so the
@@ -143,33 +143,32 @@ export async function POST(request: Request) {
         : null,
   };
 
-  // Resolve audience (phone-viable, not voice-opted-out), respecting the
-  // caller's territory scope + suppression.
+  // Size the audience with an aggregate count — the contacts themselves are
+  // read page by page in the fanout step, never whole inside this request.
+  // The count is pre-skip (opted-out / no-phone / suppressed included), so
+  // the cap errs on the side of refusing.
+  const matching = (
+    await voiceAudienceQuery(subAccountId, audienceFilter).count().get()
+  ).data().count;
+  if (matching === 0) {
+    return NextResponse.json(
+      { error: "Audience is empty — no contacts match this filter." },
+      { status: 400 },
+    );
+  }
+  if (matching > MAX_AUDIENCE_SIZE) {
+    return NextResponse.json(
+      {
+        error: `Audience size ${matching} exceeds the cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter.`,
+      },
+      { status: 400 },
+    );
+  }
+
+  // The caller's territory scope, carried to the fanout step in the
+  // (signed) QStash body.
   const scope = await loadEffectiveTerritoryScope(access);
-  const audience = await resolveVoiceAudience(
-    subAccountId,
-    audienceFilter,
-    scope.enforce ? (scope.ids ?? []) : null,
-    suppression,
-  );
-  if (audience.recipients.length === 0) {
-    return NextResponse.json(
-      {
-        error:
-          "Audience is empty after pre-flight (no contacts match, or all are opted-out / missing a valid phone).",
-        skipped: audience.skipped.length,
-      },
-      { status: 400 },
-    );
-  }
-  if (audience.recipients.length > MAX_AUDIENCE_SIZE) {
-    return NextResponse.json(
-      {
-        error: `Audience size ${audience.recipients.length} exceeds the cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter.`,
-      },
-      { status: 400 },
-    );
-  }
+  const territoryIds = scope.enforce ? (scope.ids ?? []) : null;
 
   // Trigger-user display name snapshot.
   let createdByName = access.email;
@@ -194,11 +193,12 @@ export async function POST(request: Request) {
     audienceFilter,
     openerPreview: voice.outboundFirstMessage.slice(0, 200),
     status: "queued",
+    // Filled in page by page by the fanout step.
     totals: {
-      audienceSize: audience.recipients.length + audience.skipped.length,
-      queued: audience.recipients.length,
+      audienceSize: 0,
+      queued: 0,
       called: 0,
-      skipped: audience.skipped.length,
+      skipped: 0,
       failed: 0,
       interested: 0,
     },
@@ -209,98 +209,34 @@ export async function POST(request: Request) {
     startedAt: null,
     completedAt: null,
     errorMessage: null,
+    fanoutDone: false,
   };
   await campaignRef.set({ id: campaignRef.id, ...campaign });
 
-  // Per-recipient rows (500-doc batches).
-  const recCol = campaignRef.collection("recipients");
-  for (let i = 0; i < audience.recipients.length; i += 500) {
-    const slice = audience.recipients.slice(i, i + 500);
-    const batch = db.batch();
-    for (const contact of slice) {
-      const row: Omit<VoiceCampaignRecipientDoc, "id"> = {
-        campaignId: campaignRef.id,
-        agencyId,
-        subAccountId,
-        contactId: contact.id,
-        toPhone: contact.phone,
-        toName: contact.name,
-        status: "queued",
-        skippedReason: null,
-        callId: null,
-        callControlUrl: null,
-        outcome: null,
-        callDurationSec: null,
-        endedReason: null,
-        callSummary: null,
-        taskId: null,
-        error: null,
-        attempts: 0,
-        queuedAt: FieldValue.serverTimestamp() as unknown as null,
-        settledAt: null,
-      };
-      batch.set(recCol.doc(contact.id), { id: contact.id, ...row });
-    }
-    await batch.commit();
-  }
-
-  // Pre-skipped rows (terminal — no callback fires).
-  for (let i = 0; i < audience.skipped.length; i += 500) {
-    const slice = audience.skipped.slice(i, i + 500);
-    const batch = db.batch();
-    for (const { contact, reason } of slice) {
-      const row: Omit<VoiceCampaignRecipientDoc, "id"> = {
-        campaignId: campaignRef.id,
-        agencyId,
-        subAccountId,
-        contactId: contact.id,
-        toPhone: contact.phone,
-        toName: contact.name,
-        status: "skipped",
-        skippedReason: reason,
-        callId: null,
-        callControlUrl: null,
-        outcome: null,
-        callDurationSec: null,
-        endedReason: null,
-        callSummary: null,
-        taskId: null,
-        error: null,
-        attempts: 0,
-        queuedAt: FieldValue.serverTimestamp() as unknown as null,
-        settledAt: FieldValue.serverTimestamp() as unknown as null,
-      };
-      batch.set(recCol.doc(contact.id), { id: contact.id, ...row });
-    }
-    await batch.commit();
-  }
-
-  // Fan out — stagger at the per-minute cap so calls are paced and the
-  // burst limiter never trips. delay = i * (60s / perMinuteCap).
+  // Hand the audience to the fanout step, which pages through it and
+  // publishes the paced per-recipient steps — stagger at the per-minute cap
+  // so calls are paced and the burst limiter never trips.
   const perMinute = Math.max(1, voice.outboundPerMinuteCap);
-  const spacingSec = 60 / perMinute;
-  let queuedCount = 0;
-  let publishFailures = 0;
-  for (let i = 0; i < audience.recipients.length; i++) {
-    const contact = audience.recipients[i];
-    const result = await publishCallback({
-      pathname: "/api/comms/voice/campaign/step",
-      body: { campaignId: campaignRef.id, contactId: contact.id },
-      delaySeconds: Math.ceil(i * spacingSec),
-      deduplicationId: `vcamp_${campaignRef.id}_${contact.id}`,
-    });
-    if (result) queuedCount += 1;
-    else publishFailures += 1;
-  }
-
-  if (queuedCount === 0 && publishFailures > 0) {
+  const fanout = await publishCallback({
+    pathname: "/api/comms/voice/campaign/fanout",
+    body: {
+      campaignId: campaignRef.id,
+      cursor: null,
+      slot: 0,
+      spacingSec: 60 / perMinute,
+      territoryIds,
+    },
+    delaySeconds: 0,
+    deduplicationId: `vcampfan_${campaignRef.id}_start`,
+  });
+  if (!fanout) {
     await campaignRef.update({
       status: "failed",
-      errorMessage: "Every QStash publish failed. Check NEXT_PUBLIC_APP_URL.",
+      errorMessage: "Could not schedule the campaign. Check QStash and NEXT_PUBLIC_APP_URL.",
       completedAt: FieldValue.serverTimestamp(),
     });
     return NextResponse.json(
-      { error: "Failed to schedule any calls. Check QStash configuration." },
+      { error: "Failed to schedule the campaign. Check QStash configuration." },
       { status: 502 },
     );
   }
@@ -308,8 +244,6 @@ export async function POST(request: Request) {
   return NextResponse.json({
     ok: true,
     campaignId: campaignRef.id,
-    queued: queuedCount,
-    skipped: audience.skipped.length,
-    publishFailures,
+    audienceSize: matching,
   });
 }

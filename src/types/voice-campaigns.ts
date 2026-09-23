@@ -95,6 +95,12 @@ export interface VoiceCampaignDoc {
   startedAt: Timestamp | FieldValue | null;
   completedAt: Timestamp | FieldValue | null;
   errorMessage: string | null;
+  /**
+   * False while the fanout step is still paging through the audience; the
+   * campaign cannot complete before it turns true. Absent on campaigns
+   * created before paged fan-out — those were fully fanned out at creation.
+   */
+  fanoutDone?: boolean;
 }
 
 /**
