@@ -98,6 +98,13 @@ export interface Order {
    */
   attribution: ContactAttribution | null;
 
+  /**
+   * Set when the money arrived but the invoice / booking it paid for could not
+   * be settled with it (second payment, amount changed, booking no longer
+   * waiting). The operator must act by hand — refund or reconcile.
+   */
+  attention?: string | null;
+
   createdAt: Timestamp | FieldValue | null;
   paidAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;

@@ -83,6 +83,8 @@ export interface CalendarEvent {
   /** Set when the operator flips `awaiting_payment` → `scheduled`. */
   paidAt?: Timestamp | FieldValue | null;
   paidByUid?: string | null;
+  /** The Stripe order whose payment confirmed this booking, when one did. */
+  paidOrderId?: string | null;
   /** Auto-expire deadline for unpaid holds. Used to schedule the QStash callback. */
   paymentHoldExpiresAt?: Timestamp | FieldValue | null;
   /**

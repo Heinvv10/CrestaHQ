@@ -258,6 +258,9 @@ export interface BillingChargeDoc {
   tokenHash: string | null;
   stripeCheckoutSessionId: string | null;
   stripePaymentIntentId: string | null;
+  /** Checkouts that paid this charge AGAIN after it was paid — each one is a
+   *  refund the agency owes. Absent/empty on a normal charge. */
+  extraPaymentRefs?: string[];
   createdByUid: string;
   createdAt: Timestamp | FieldValue | Date | null;
   paidAt: Timestamp | FieldValue | Date | null;
@@ -274,4 +277,6 @@ export interface BillingChargeResponse {
   status: BillingChargeStatus;
   createdAt: string | null;
   paidAt: string | null;
+  /** Times it was paid again after being paid (see `extraPaymentRefs`). */
+  extraPaymentCount: number;
 }

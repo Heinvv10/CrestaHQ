@@ -259,8 +259,7 @@ export interface QuoteRespondPayload {
 }
 
 /** See `Quote.paidVia`. */
-export interface QuotePaidVia {
-  rail: "paystack_link";
-  linkId: string;
-  reference: string;
-}
+export type QuotePaidVia =
+  | { rail: "paystack_link"; linkId: string; reference: string }
+  /** Paid by card through the sub-account's own Stripe (`orders/{orderId}`). */
+  | { rail: "stripe_order"; orderId: string };

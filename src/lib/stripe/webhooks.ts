@@ -21,6 +21,21 @@ import {
 } from "@/lib/server/billing-service";
 import type { SubscriptionStatus } from "@/types";
 
+/**
+ * A delayed payment method (SEPA, ACH, …) settled after its session completed
+ * unpaid. Only Client Billing waits on these; the founders and legacy flows
+ * act on `checkout.session.completed` alone and are not re-run here.
+ */
+export async function handleCheckoutAsyncPaymentSucceeded(
+  session: Stripe.Checkout.Session,
+) {
+  if (session.metadata?.kind === SUB_ACCOUNT_PLAN_KIND) {
+    await handleSubAccountPlanCheckoutCompleted(session);
+  } else if (session.metadata?.kind === SUB_ACCOUNT_CHARGE_KIND) {
+    await handleSubAccountChargeCheckoutCompleted(session);
+  }
+}
+
 export async function handleCheckoutCompleted(
   session: Stripe.Checkout.Session,
 ) {

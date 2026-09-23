@@ -37,6 +37,8 @@ export type MarkQuotePaidOutcome =
       /** On `already_paid`: who paid it, so a retrying caller can tell its
        *  own earlier success from someone else's. */
       paidVia?: QuotePaidVia | null;
+      /** On `already_paid`: when it was marked paid. */
+      paidAt?: unknown;
     };
 
 export async function markQuotePaidServerSide(input: {
@@ -84,6 +86,7 @@ export async function markQuotePaidServerSide(input: {
         code: "already_paid",
         message: "Already marked paid",
         paidVia: quote.paidVia ?? null,
+        paidAt: quote.paidAt ?? null,
       };
     }
 

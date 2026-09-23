@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStripeServer } from "@/lib/stripe/server";
 import {
+  handleCheckoutAsyncPaymentSucceeded,
   handleCheckoutCompleted,
   handleSubscriptionUpdated,
   handleSubscriptionDeleted,
@@ -43,6 +44,11 @@ export async function POST(request: Request) {
     switch (event.type) {
       case "checkout.session.completed":
         await handleCheckoutCompleted(
+          event.data.object as Stripe.Checkout.Session,
+        );
+        break;
+      case "checkout.session.async_payment_succeeded":
+        await handleCheckoutAsyncPaymentSucceeded(
           event.data.object as Stripe.Checkout.Session,
         );
         break;

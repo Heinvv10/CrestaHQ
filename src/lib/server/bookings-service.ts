@@ -49,6 +49,10 @@ export type MarkBookingPaidOutcome =
       code: "not_found" | "wrong_tenant" | "bad_status" | "write_failed";
       message: string;
       status?: string;
+      /** On `bad_status`: the Stripe order that confirmed it, if one did. */
+      paidOrderId?: string | null;
+      /** On `bad_status`: when it was marked paid, if it was. */
+      paidAt?: unknown;
     };
 
 export async function markBookingPaidServerSide(input: {
@@ -57,6 +61,8 @@ export async function markBookingPaidServerSide(input: {
   expectSubAccountId: string;
   /** Operator uid for the audit stamp; null when Stripe confirmed it. */
   paidByUid: string | null;
+  /** The Stripe order paying for it, recorded so a redelivery knows its own. */
+  paidOrderId?: string;
 }): Promise<MarkBookingPaidOutcome> {
   const db = getAdminDb();
   const eventRef = db.collection("events").doc(input.eventId);
@@ -83,6 +89,8 @@ export async function markBookingPaidServerSide(input: {
       code: "bad_status",
       message: "Only events awaiting payment can be marked paid.",
       status: eventStatus(event),
+      paidOrderId: event.paidOrderId ?? null,
+      paidAt: event.paidAt ?? null,
     };
   }
 
@@ -92,6 +100,7 @@ export async function markBookingPaidServerSide(input: {
       status: "scheduled",
       paidAt: FieldValue.serverTimestamp(),
       paidByUid: input.paidByUid,
+      ...(input.paidOrderId ? { paidOrderId: input.paidOrderId } : {}),
       publicTokenHash: newHash,
       paymentHoldExpiresAt: null,
       updatedAt: FieldValue.serverTimestamp(),
