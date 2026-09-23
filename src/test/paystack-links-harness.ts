@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 
+import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -9,8 +10,8 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  *   vi.mock("@/lib/firebase/admin", async () =>
  *     (await import("@/test/paystack-links-harness")).adminMock());
  *
- * No app imports — a mock factory that imported the admin module would
- * deadlock.
+ * No app imports that reach the admin module — a mock factory that imported
+ * it would deadlock. (`key-fingerprint` is pure.)
  */
 
 export const mem = createMemoryFirestore();
@@ -60,6 +61,7 @@ export function seedLink(id = "link1", over: Record<string, unknown> = {}) {
     description: "Call-out fee",
     amountCents: 45000,
     currency: "ZAR",
+    mode: "test",
     token: "unused",
     active: true,
     status: "open",
@@ -67,6 +69,28 @@ export function seedLink(id = "link1", over: Record<string, unknown> = {}) {
     payerEmail: null,
     paidAt: null,
     ...over,
+  });
+}
+
+/**
+ * The attempt a checkout would have recorded for `reference`
+ * (`pl-{linkId}-{nonce}`): open, in the mode of `secretKey`, for the link's
+ * default R450.00.
+ */
+export function seedAttempt(reference: string, over: Record<string, unknown> & { secretKey?: string } = {}) {
+  const { secretKey = KEY, ...rest } = over;
+  mem.seed(`paymentAttempts/${reference}`, {
+    agencyId: AGENCY,
+    subAccountId: SA,
+    createdByUid: "u1",
+    paymentLinkId: /^pl-([A-Za-z0-9]+)-/.exec(reference)?.[1] ?? null,
+    amountCents: 45000,
+    currency: "ZAR",
+    mode: paystackKeyMode(secretKey),
+    keyFingerprint: paystackKeyFingerprint(secretKey),
+    state: "open",
+    reason: null,
+    ...rest,
   });
 }
 

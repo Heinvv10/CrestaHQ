@@ -53,7 +53,7 @@ export async function GET(
   const { token } = await ctx.params;
   const loaded = await loadPayableLink(token);
   if (!loaded.ok) return deadLink(loaded.error, loaded.status);
-  const { link, livemode } = loaded;
+  const { link, mode } = loaded;
   const amount = formatCurrency(link.amountCents / 100, link.currency);
 
   if (new URL(request.url).searchParams.has("reference")) {
@@ -64,9 +64,9 @@ export async function GET(
     );
   }
 
-  // The sub-account's current connection mode, not the mode at link creation:
-  // it is the key the checkout below will charge with.
-  const testBanner = livemode
+  // The mode checkout will charge in: the link's own, which the checkout
+  // re-checks against the key inside the transaction that records the attempt.
+  const testBanner = mode === "live"
     ? ""
     : `<p style="background:#fef3c7;color:#92400e;font-size:13px;font-weight:600;padding:8px 12px;border-radius:8px;margin:0 0 16px;">TEST MODE — no real money will be taken</p>`;
   return page(

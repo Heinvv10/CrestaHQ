@@ -7,8 +7,10 @@ import { BillingError } from "@/lib/billing/errors";
 import { issuePaymentLinkToken, verifyPaymentLinkToken } from "@/lib/billing/token";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
+import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
+import type { PaymentAttempt, PaymentMode } from "@/types/payment-attempts";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
 
@@ -56,9 +58,11 @@ export async function createPaymentLink(input: {
   if (sub.paymentsEnabledByAgency !== true) {
     return fail(403, "Payments isn't enabled for this workspace. Ask your agency to turn it on.");
   }
-  if (!(await readPaystackConnectionSecret(input.subAccountId))) {
+  const conn = await readPaystackConnectionSecret(input.subAccountId);
+  if (!conn) {
     return fail(409, "Connect Paystack under Settings → Payments first.");
   }
+  const mode = paystackKeyMode(conn.secretKey);
 
   let invoiceId: string | null = null;
   let contactId: string | null = null;
@@ -81,17 +85,22 @@ export async function createPaymentLink(input: {
     if (amountCents <= 0) return fail(409, "This invoice has nothing to pay.");
     // One live link per invoice: a second click hands back the open one, so
     // the customer can't be sent two links and pay both. A deactivated or
-    // paid link doesn't count.
+    // paid link doesn't count. An open link issued in the OTHER mode can no
+    // longer be paid (see `loadPayableLink`), so it is withdrawn and replaced.
     const existing = await db
       .collection("paymentLinks")
       .where("subAccountId", "==", input.subAccountId)
       .where("invoiceId", "==", input.invoiceId)
       .get();
-    const open = existing.docs.find((d) => {
+    const openLinks = existing.docs.filter((d) => {
       const l = d.data() as PaymentLink;
       return l.active && l.status === "open";
     });
+    const open = openLinks.find((d) => (d.data() as PaymentLink).mode === mode);
     if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
+    for (const stale of openLinks) {
+      await stale.ref.update({ active: false, updatedAt: FieldValue.serverTimestamp() });
+    }
     invoiceId = input.invoiceId;
     contactId = quote.contactId ?? null;
     description = `Invoice ${quote.quoteNumber}`;
@@ -118,6 +127,7 @@ export async function createPaymentLink(input: {
     description,
     amountCents,
     currency: PAYMENT_LINK_CURRENCY,
+    mode,
     token: issuePaymentLinkToken(ref.id),
     active: true,
     status: "open",
@@ -150,7 +160,7 @@ export async function deactivatePaymentLink(input: {
  */
 export async function loadPayableLink(
   token: string,
-): Promise<ServiceResult<{ link: PaymentLink; livemode: boolean }>> {
+): Promise<ServiceResult<{ link: PaymentLink; mode: PaymentMode }>> {
   const linkId = verifyPaymentLinkToken(token);
   if (!linkId) return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
   const snap = await getAdminDb().doc(`paymentLinks/${linkId}`).get();
@@ -181,9 +191,19 @@ export async function loadPayableLink(
       return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
     }
   }
-  // The connection's CURRENT mode — the key checkout will actually use.
-  return { ok: true, link, livemode: sub.paystackConnectionMeta?.livemode === true };
+  const conn = await readPaystackConnectionSecret(link.subAccountId);
+  if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
+  // A link is paid in the mode it was issued in. Switching the workspace
+  // between test and live retires open links rather than silently changing
+  // what they charge — so the banner the payer sees, the key checkout uses,
+  // and the attempt the webhook checks all agree. (A link with no `mode`
+  // predates the rule and is retired too.)
+  const mode = paystackKeyMode(conn.secretKey);
+  if (link.mode !== mode) return fail(410, RETIRED);
+  return { ok: true, link, mode };
 }
+
+const RETIRED = "This payment link is no longer valid. Ask the sender for a fresh payment link.";
 
 /**
  * `pl-{linkId}-{nonce}`. A fresh reference per checkout, because Paystack
@@ -202,6 +222,12 @@ export function parsePaymentLinkReference(reference: string): string | null {
  * Open a Paystack checkout for a link. The amount is the doc's — the caller
  * supplies only the payer's email, and nothing else from the request reaches
  * Paystack.
+ *
+ * The `paymentAttempts/{reference}` record is committed BEFORE Paystack is
+ * called, in a transaction that reads the connection: a disconnect or key
+ * switch that lands first makes the transaction retry and see it, and one
+ * that lands after finds this attempt open and flags it. Checkout then uses
+ * exactly the key the attempt recorded.
  */
 export async function startPaymentLinkCheckout(input: {
   token: string;
@@ -211,10 +237,32 @@ export async function startPaymentLinkCheckout(input: {
   if (!loaded.ok) return loaded;
   const { link } = loaded;
 
-  const conn = await readPaystackConnectionSecret(link.subAccountId);
-  if (!conn) {
-    return fail(503, "Online payment is unavailable right now. Please contact the sender.");
-  }
+  const db = getAdminDb();
+  const reference = paymentLinkReference(link.id);
+  const attemptRef = db.doc(`paymentAttempts/${reference}`);
+  const opened = await db.runTransaction(async (t) => {
+    const conn = await readPaystackConnectionSecret(link.subAccountId, t);
+    if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
+    const mode = paystackKeyMode(conn.secretKey);
+    if (mode !== link.mode) return fail(410, RETIRED);
+    const attempt: Omit<PaymentAttempt, "id"> = {
+      agencyId: link.agencyId,
+      subAccountId: link.subAccountId,
+      createdByUid: link.createdByUid,
+      paymentLinkId: link.id,
+      amountCents: link.amountCents,
+      currency: link.currency,
+      mode,
+      keyFingerprint: paystackKeyFingerprint(conn.secretKey),
+      state: "open",
+      reason: null,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    t.create(attemptRef, attempt);
+    return { ok: true as const, secretKey: conn.secretKey };
+  });
+  if (!opened.ok) return opened;
 
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
   try {
@@ -225,13 +273,19 @@ export async function startPaymentLinkCheckout(input: {
       // Paystack sends the payer back here. The page only reads the link's
       // status; it is the webhook that marks it paid.
       callbackUrl: `${base}/pay/link/${input.token}`,
-      reference: paymentLinkReference(link.id),
+      reference,
       metadata: { paymentLinkId: link.id, subAccountId: link.subAccountId },
       displayName: link.description,
-      secretKey: conn.secretKey,
+      secretKey: opened.secretKey,
     });
     return { ok: true, url };
   } catch (err) {
+    // Paystack opened no checkout, so nothing can be charged on this
+    // reference. If this write fails too the attempt stays open, and at
+    // worst a later disconnect flags a checkout that never took money.
+    await attemptRef
+      .update({ state: "refused", reason: "Paystack did not open the checkout.", updatedAt: FieldValue.serverTimestamp() })
+      .catch((e: unknown) => console.error(`[payment-links] attempt ${reference} not marked refused`, e));
     if (err instanceof BillingError) return fail(502, err.message);
     throw err;
   }

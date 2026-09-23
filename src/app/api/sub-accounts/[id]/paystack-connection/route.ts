@@ -6,7 +6,9 @@ import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { BillingError } from "@/lib/billing/errors";
+import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { probePaystackKey } from "@/lib/paystack/sub-account-client";
+import { flagStaleAttempts } from "@/lib/server/payment-attempts";
 import {
   PAYSTACK_PUBLIC_KEY_RE,
   PAYSTACK_SECRET_KEY_RE,
@@ -23,6 +25,10 @@ import {
  * POST   — body `{ secretKey }`. Probed against Paystack before anything is
  *          stored, then written and the display metadata published.
  * DELETE — disconnect: deletes the secret doc, clears the meta.
+ *
+ * Either one, once committed, flags every checkout attempt still open under
+ * a different key (`flagStaleAttempts`): its payment would be signed by a key
+ * this workspace no longer holds, so it could never be recorded.
  *
  * SECURITY — the key NEVER goes on the sub-account doc. `subAccounts/{id}` is
  * readable by any active member (firestore.rules) and Firestore rules are
@@ -160,6 +166,7 @@ export async function POST(
     { merge: true },
   );
   await batch.commit();
+  await flagStaleAttempts(subAccountId, paystackKeyFingerprint(secretKey));
 
   return NextResponse.json({
     ok: true,
@@ -203,6 +210,7 @@ export async function DELETE(
   );
   batch.delete(db.doc(paystackConnectionSecretPath(subAccountId)));
   await batch.commit();
+  await flagStaleAttempts(subAccountId, null);
 
   return NextResponse.json({ ok: true });
 }

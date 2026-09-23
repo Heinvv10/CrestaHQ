@@ -71,9 +71,20 @@ describe("POST — create", () => {
     expect(onlyLink()).toMatchObject({ invoiceId: "inv1", amountCents: 115000, description: "Invoice INV-2026-0001" });
   });
 
-  it("stores no per-link mode — the connection's current mode decides", async () => {
+  it("stamps the link with the mode of the key it was issued under", async () => {
     await create({ amountCents: 45000, description: "x" });
+    expect(onlyLink()).toMatchObject({ mode: "test" });
     expect(onlyLink()).not.toHaveProperty("livemode");
+  });
+
+  it("replaces an open invoice link issued in the other mode instead of handing it back", async () => {
+    seedInvoice();
+    seedLink("old", { invoiceId: "inv1", amountCents: 115000, mode: "live" });
+    const res = await create({ invoiceId: "inv1" });
+    const { id } = (await res.json()) as { id: string };
+    expect(id).not.toBe("old");
+    expect(mem.read("paymentLinks/old")).toMatchObject({ active: false });
+    expect(mem.read(`paymentLinks/${id}`)).toMatchObject({ mode: "test", active: true });
   });
 
   it("returns the existing active link for an invoice instead of making a second", async () => {
