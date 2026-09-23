@@ -40,7 +40,7 @@ vi.mock("@/lib/firebase/admin", () => ({
       doc: () => ({
         get: async () => ({
           exists: recordsExist,
-          data: () => ({ name: "Visitor", email: "visitor@example.com" }),
+          data: () => ({ name: "Visitor", email: "visitor@example.com", subAccountId: "sa1" }),
         }),
         update: async (patch: Record<string, unknown>) => {
           updatedPatch = patch;

@@ -60,6 +60,8 @@ beforeEach(() => {
   // Booking-page / voice bookings carry no `mode`.
   mem.seed("events/eBooking", { subAccountId: "sa1", agencyId: "ag1" });
   mem.seed("events/eBookingB", { subAccountId: "saB", agencyId: "ag1" });
+  mem.seed("contacts/cNoMode", { subAccountId: "sa1", agencyId: "ag1" });
+  mem.seed("deals/dNoMode", { subAccountId: "sa1", agencyId: "ag1" });
   mem.seed("tasks/t1", { ...own, title: "Call", contactId: "c1", dealId: null, eventId: null });
 });
 
@@ -133,4 +135,12 @@ it("a mode-less booking event of the same sub-account can be linked (POST and PA
 it("a mode-less booking event of another sub-account is still refused", async () => {
   expect((await postTask({ event_id: "eBookingB" })).status).toBe(400);
   expect((await patch(tasks.PATCH, "t1", { event_id: "eBookingB" })).status).toBe(404);
+});
+
+it.each([
+  ["contact_id", { contact_id: "cNoMode" }],
+  ["deal_id", { deal_id: "dNoMode" }],
+])("the mode-less exception is events-only: a mode-less %s is refused", async (_l, body) => {
+  expect((await patch(tasks.PATCH, "t1", body)).status).toBe(404);
+  expect(mem.read("tasks/t1")).toMatchObject({ contactId: "c1", dealId: null });
 });

@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
 import {
@@ -140,8 +141,8 @@ async function runMarkPaidSideEffects(args: {
   let sub: SubAccountDoc | null = null;
   let contact: Contact | null = null;
   try {
-    const [contactSnap, subSnap, pageSnap] = await Promise.all([
-      db.collection("contacts").doc(event.contactId).get(),
+    const [contactDoc, subSnap, pageSnap] = await Promise.all([
+      loadEventContact(event),
       db.doc(`subAccounts/${event.subAccountId}`).get(),
       event.bookingPageSlug
         ? db
@@ -151,7 +152,7 @@ async function runMarkPaidSideEffects(args: {
             .get()
         : Promise.resolve(null),
     ]);
-    contact = (contactSnap.exists ? contactSnap.data() : null) as Contact | null;
+    contact = contactDoc;
     sub = (subSnap.exists ? subSnap.data() : null) as SubAccountDoc | null;
     page = (pageSnap?.data() ?? null) as BookingPage | null;
   } catch (err) {
@@ -177,6 +178,7 @@ async function runMarkPaidSideEffects(args: {
       title: event.title || "Meeting",
       contactId: event.contactId,
       bookingPageSlug: event.bookingPageSlug ?? null,
+      subAccountId: event.subAccountId,
     },
     "booking_payment_received",
     {
