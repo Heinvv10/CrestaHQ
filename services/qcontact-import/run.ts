@@ -15,7 +15,7 @@
  * once it has an open deal in that pipeline (see deals.ts) — a failed deal
  * step retries next run too, same as a failed upsert.
  */
-import { readFile, writeFile, rename, unlink, open } from "node:fs/promises";
+import { readFile, writeFile, rename, unlink, open, stat } from "node:fs/promises";
 import { QContactClient, type CaseRow, type LocationDetail } from "./qcontact.ts";
 import { gpsFromLocationFields, locationPinId, mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
@@ -114,19 +114,26 @@ export async function saveState(path: string, state: State): Promise<void> {
   await rename(tmp, path);
 }
 
+/** See "Run lock" in README.md for why this exists and how staleness is decided. */
+export const LOCK_STALE_AGE_MS = 60 * 60 * 1000; // 1h
+
+export type AcquireLockResult =
+  | { ok: true; release: () => Promise<void> }
+  /** `stale: true` = the lock looks stuck (older than LOCK_STALE_AGE_MS) but its PID still
+   *  reads as alive (PID reuse after a reboot, or no permission to signal it) — refused rather
+   *  than auto-reclaimed, since that PID may genuinely belong to something else now. The
+   *  caller should log this loudly and fail non-zero so it's visible in the systemd journal,
+   *  instead of the quiet, expected "another run is active" case. */
+  | { ok: false; stale: boolean; ageMs: number };
+
 /**
  * Exclusive run lock at `${statePath}.lock`, written via O_EXCL so two
  * concurrent invocations can't both proceed and stomp each other's
- * full-state overwrite. The timer itself can't overlap the same unit (see
- * README), but a manual run (e.g. the `node ... run.ts` invocation in the
- * README) started while a timer-triggered run is still in flight can. A
- * lock left behind by a process that died without cleaning up is detected
- * by checking whether its recorded PID is still alive, and replaced once.
- *
- * Returns a release function, or null if another run is genuinely active
- * (the caller should exit cleanly, not treat this as a failure).
+ * full-state overwrite. See README.md's "Run lock" section for why this
+ * exists (the timer can't overlap the same systemd unit; a manual run can)
+ * and how a leftover lock is detected.
  */
-export async function acquireLock(lockPath: string, retried = false): Promise<(() => Promise<void>) | null> {
+export async function acquireLock(lockPath: string, retried = false): Promise<AcquireLockResult> {
   try {
     const handle = await open(lockPath, "wx");
     try {
@@ -134,21 +141,42 @@ export async function acquireLock(lockPath: string, retried = false): Promise<((
     } finally {
       await handle.close();
     }
-    return () => unlink(lockPath).catch(() => {});
+    // The create (open wx) and the write aren't one atomic step: another run
+    // can see this file between them, judge it stale off its (momentarily
+    // empty) content, delete it, and recreate it with its own pid. Re-read
+    // before trusting we hold it; if it's not our pid any more, back off
+    // rather than proceeding as if we'd acquired it.
+    const holder = await readFile(lockPath, "utf8").catch(() => "");
+    if (holder !== String(process.pid)) return { ok: false, stale: false, ageMs: 0 };
+    return { ok: true, release: () => unlink(lockPath).catch((err) => logLockError(`failed to release qcontact-import lock ${lockPath}: ${err instanceof Error ? err.message : String(err)}`)) };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    if (retried) return null; // still contended right after clearing a stale lock — treat as active
-    let pid: number | null = null;
-    try {
-      pid = Number(await readFile(lockPath, "utf8"));
-    } catch {
-      pid = null;
+    const st = await stat(lockPath).catch(() => null);
+    const ageMs = st ? Date.now() - st.mtimeMs : 0;
+    const pid = await readPid(lockPath);
+    const alive = pid !== null && isProcessAlive(pid);
+    if (alive) {
+      // A validly-alive PID older than the stale cap is suspicious (reused
+      // after a reboot, or belongs to something we can't signal) rather than
+      // trusted outright — refuse instead of guessing, and flag it as such.
+      return { ok: false, stale: ageMs > LOCK_STALE_AGE_MS, ageMs };
     }
-    if (pid !== null && Number.isFinite(pid) && isProcessAlive(pid)) return null;
-    // Stale lock (owning process is gone) — clear it and try once more.
+    if (retried) return { ok: false, stale: ageMs > LOCK_STALE_AGE_MS, ageMs }; // still contended right after clearing a stale lock
+    // No pid, an invalid pid, or a dead one — genuinely stale. Clear it and try once more.
     await unlink(lockPath).catch(() => {});
     return acquireLock(lockPath, true);
   }
+}
+
+async function readPid(lockPath: string): Promise<number | null> {
+  let raw: string;
+  try {
+    raw = (await readFile(lockPath, "utf8")).trim();
+  } catch {
+    return null;
+  }
+  const pid = Number(raw);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -158,6 +186,10 @@ function isProcessAlive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code !== "ESRCH";
   }
+}
+
+function logLockError(line: string): void {
+  process.stderr.write(`${line}\n`);
 }
 
 export type Upserter = (
@@ -379,18 +411,48 @@ export async function runImport(opts: {
   return summary;
 }
 
+/**
+ * How a lock refusal should be surfaced: the stale case (older than
+ * LOCK_STALE_AGE_MS but still reading as held) is not normal contention, so
+ * it's logged to stderr and made to fail the run non-zero — visible as a
+ * failed run in the systemd journal, instead of a silent no-op every 15
+ * minutes. A fresh, genuinely-active lock logs to stdout and exits 0.
+ */
+export function describeLockRefusal(lockPath: string, result: Extract<AcquireLockResult, { ok: false }>): {
+  stream: "stdout" | "stderr";
+  message: string;
+  exitCode: 0 | 1;
+} {
+  const ageSec = Math.round(result.ageMs / 1000);
+  if (result.stale) {
+    return {
+      stream: "stderr",
+      message: `qcontact-import lock ${lockPath} is ${ageSec}s old and still looks held; refusing to run — check whether it's stuck and remove it if so\n`,
+      exitCode: 1,
+    };
+  }
+  return {
+    stream: "stdout",
+    message: `another qcontact-import run is already in progress (lock ${lockPath}, ${ageSec}s old); exiting\n`,
+    exitCode: 0,
+  };
+}
+
 async function main(): Promise<void> {
   const env = readEnv(process.env);
   const dryRun = process.argv.includes("--dry-run");
-  const release = await acquireLock(`${env.QCONTACT_IMPORT_STATE}.lock`);
-  if (!release) {
-    process.stdout.write("another qcontact-import run is already in progress; exiting\n");
+  const lockPath = `${env.QCONTACT_IMPORT_STATE}.lock`;
+  const lock = await acquireLock(lockPath);
+  if (!lock.ok) {
+    const { stream, message, exitCode } = describeLockRefusal(lockPath, lock);
+    process[stream].write(message);
+    process.exitCode = exitCode;
     return;
   }
   try {
     await runMain(env, dryRun);
   } finally {
-    await release();
+    await lock.release();
   }
 }
 
