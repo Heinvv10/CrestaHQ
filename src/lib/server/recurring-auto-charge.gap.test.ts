@@ -27,7 +27,8 @@ const sendPushForEvent = vi.fn();
 const fireWorkflowTrigger = vi.fn();
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/paystack-links-harness")).adminMock());
-vi.mock("@/lib/quotes/number", () => ({ issueQuoteNumber: async () => "INV-2026-0004" }));
+const issueQuoteNumber = vi.fn();
+vi.mock("@/lib/quotes/number", () => ({ issueQuoteNumber: (...a: unknown[]) => issueQuoteNumber(...a) }));
 vi.mock("@/lib/server/tasks-service", async () => (await import("@/test/auto-charge-harness")).tasksMock());
 vi.mock("@/lib/server/quote-send-service", () => ({
   sendQuoteServerSide: (...a: unknown[]) => sendQuoteServerSide(...a),
@@ -49,6 +50,7 @@ const at = (day: string) => new Date(`${day}T05:00:00.000Z`);
 /** Local midnight (SAST) of a date, as the schedule stores it. */
 const midnight = (day: string) => Timestamp.fromDate(new Date(new Date(`${day}T00:00:00.000Z`).getTime() - 2 * 3_600_000));
 const refs = (calls: Parameters<typeof chargeCalls>[0]) => chargeCalls(calls).map((c) => c.body!.reference);
+const lastDue = () => (mem.read(`recurringInvoices/${SCHEDULE}`)!.lastDueAt as Timestamp | null | undefined)?.toDate().toISOString();
 const nextRun = () => (mem.read(`recurringInvoices/${SCHEDULE}`)!.nextRunAt as Timestamp).toDate().toISOString();
 
 async function edit(day: string, body: Record<string, unknown>) {
@@ -68,6 +70,7 @@ beforeEach(() => {
   seedCardSchedule();
   seedMandate();
   sendQuoteServerSide.mockResolvedValue({ ok: true });
+  issueQuoteNumber.mockResolvedValue("INV-2026-0004");
   fireWorkflowTrigger.mockResolvedValue({ enrolled: [], skipped: [], reason: null });
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -196,6 +199,40 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
   });
 });
 
+describe("round 4: legacy schedules, and a cycle that raised nothing", () => {
+  it("L1: a schedule billed before lastDueAt existed falls back to lastRunAt", async () => {
+    seedCardSchedule({ chargeMode: "invoice", nextRunAt: midnight("2026-04-01"), lastRunAt: Timestamp.fromDate(at("2026-03-01")) });
+    const calls = stubAutoCharge();
+    await edit("2026-03-02", { chargeMode: "card", anchorDay: 5 });
+    expect(nextRun()).toBe("2026-03-04T22:00:00.000Z");
+    await runOneSchedule(SCHEDULE, at("2026-03-05"));
+    expect(refs(calls)).toEqual([]);
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
+    expect(tasksAbout("too soon")).toHaveLength(1);
+  });
+
+  it("C1: a cycle that failed before raising an invoice does not block re-raising that period", async () => {
+    seedCardSchedule({ lastDueAt: midnight("2026-02-01"), lastRunAt: Timestamp.fromDate(at("2026-02-01")) });
+    const calls = stubAutoCharge();
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "failed" });
+    expect(mem.list("quotes")).toHaveLength(0);
+    expect(lastDue()).toBe("2026-01-31T22:00:00.000Z");
+    await edit("2026-03-02", { anchorDay: 5 });
+    await runOneSchedule(SCHEDULE, at("2026-03-05"));
+    expect(refs(calls)).toHaveLength(1);
+  });
+
+  it("C1: once the invoice exists, a later failure keeps lastDueAt", async () => {
+    stubAutoCharge();
+    sendQuoteServerSide.mockRejectedValueOnce(new Error("mailer down"));
+    seedCardSchedule({ chargeMode: "invoice" });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "failed" });
+    expect(mem.list("quotes")).toHaveLength(1);
+    expect(lastDue()).toBe("2026-02-28T22:00:00.000Z");
+  });
+});
+
 describe("normal cycles are still charged", () => {
   it("monthly, including 31 Jan → 28 Feb", async () => {
     seedCardSchedule({ anchorDay: 31, nextRunAt: midnight("2026-01-31") });
@@ -207,7 +244,6 @@ describe("normal cycles are still charged", () => {
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
   });
 
-  const lastDue = () => (mem.read(`recurringInvoices/${SCHEDULE}`)!.lastDueAt as Timestamp | undefined)?.toDate().toISOString();
 
   it("the claim records each billed cycle's due date — not the sweep time — in either mode", async () => {
     stubAutoCharge();

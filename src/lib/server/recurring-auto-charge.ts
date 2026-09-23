@@ -176,7 +176,8 @@ async function openAttempt(
 ): Promise<Opened> {
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
-  const previousDueAt = toDate(schedule.lastDueAt); // pre-claim: the PREVIOUS cycle's; absent (billed before the field existed) = unguarded
+  // Pre-claim: the PREVIOUS cycle's due date. A schedule last billed before `lastDueAt` existed falls back to `lastRunAt` (≥ that due date, so it errs toward emailing).
+  const previousDueAt = toDate(schedule.lastDueAt) ?? toDate(schedule.lastRunAt);
   return db.runTransaction(async (t): Promise<Opened> => {
     if ((await t.get(attemptRef)).exists) return { ok: false, alreadyCharged: true };
     const no = (reason: string) => ({ ok: false as const, reason });

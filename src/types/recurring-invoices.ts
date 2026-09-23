@@ -125,7 +125,7 @@ export interface RecurringInvoiceDoc {
    * The due date of the last cycle actually billed (any charge mode), written
    * by the claim. A card cycle due sooner than its cadence allows after it is
    * emailed instead of charged — so no edit can charge twice in one period.
-   * Absent on schedules last billed before it existed.
+   * Absent on older schedules (the guard then uses `lastRunAt`); restored if no invoice was raised.
    */
   lastDueAt?: Timestamp | FieldValue | null;
 
