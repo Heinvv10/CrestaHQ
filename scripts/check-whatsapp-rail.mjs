@@ -102,7 +102,7 @@ const ALLOWED_HELPER = new Map([
  * is available. Only the Twilio rail stores it.
  *
  * HELPER — `subAccountWhatsappIsConfigured(...)` standing in for readiness.
- * It requires accountSid + authToken + whatsappFromNumber, so it is false for
+ * It requires accountSid + a stored auth token + whatsappFromNumber, so it is false for
  * every correctly connected Cloud or bridge workspace. Blind review found two
  * routes doing this on 2026-09-06: a Cloud workspace could not send a template
  * or enable the AI WhatsApp channel, and was told to add a Twilio number.
@@ -121,7 +121,7 @@ const ALLOWED_HELPER = new Map([
 //   1. An identifier assembled at runtime —
 //      `(twilio as any)["subAccountWhatsapp" + "IsConfigured"](…)`.
 //   2. The defect written out fresh with neither name —
-//      `!!sub?.twilioConfig?.accountSid && !!sub?.twilioConfig?.authToken`.
+//      `!!sub?.twilioConfig?.accountSid && !!sub?.twilioConfig?.authTokenSet`.
 //   3. An alias RE-EXPORTED from an allowlisted file. `lib/comms/twilio.ts` is
 //      listed under both rules, so `export const waReady =
 //      subAccountWhatsappIsConfigured` there makes every consumer invisible.

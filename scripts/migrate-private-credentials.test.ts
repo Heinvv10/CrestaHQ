@@ -68,7 +68,14 @@ describe("migrate-private-credentials", () => {
     // Nothing secret left on any member-readable doc; status fields intact.
     const parents = JSON.stringify(mem.list("subAccounts"));
     for (const s of SECRETS) expect(parents).not.toContain(s);
-    expect(mem.read("subAccounts/sa1")!.twilioConfig).toEqual({ enabled: true, accountSid: "AC1", fromNumber: "+1" });
+    expect(mem.read("subAccounts/sa1")!.twilioConfig).toEqual({
+      enabled: true,
+      accountSid: "AC1",
+      fromNumber: "+1",
+      authTokenSet: true,
+    });
+    expect(mem.read("subAccounts/sa2")!.twilioConfig).toMatchObject({ authTokenSet: true });
+    expect(mem.read("subAccounts/sa1")!.metaConfig).not.toHaveProperty("authTokenSet");
     expect(mem.read("subAccounts/sa1")!.ghlImportConfig).toEqual({ locationId: "loc" });
 
     expect(mem.read("subAccounts/sa1/private/twilioCredentials")).toEqual({ authToken: "tw-secret" });

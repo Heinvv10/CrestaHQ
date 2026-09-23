@@ -74,13 +74,17 @@ export function smsIsConfigured(): boolean {
   );
 }
 
-// No auth-token check here or below: the token lives in the server-only
-// `private/twilioCredentials` doc, not on the config these read, and the save
-// route only sets `enabled` after Twilio accepted the token.
+// The token itself lives in the server-only `private/twilioCredentials` doc;
+// `authTokenSet` is its non-secret marker. `authToken` covers a doc written
+// before the move and not yet migrated.
+function hasAuthToken(cfg: TwilioConfig): boolean {
+  return cfg.authTokenSet === true || !!cfg.authToken;
+}
+
 export function subAccountTwilioIsConfigured(
   cfg: TwilioConfig | null | undefined,
 ): boolean {
-  return !!cfg?.enabled && !!cfg.accountSid && !!cfg.fromNumber;
+  return !!cfg?.enabled && !!cfg.accountSid && hasAuthToken(cfg) && !!cfg.fromNumber;
 }
 
 /**
@@ -96,6 +100,7 @@ export function subAccountWhatsappIsConfigured(
   return (
     !!cfg?.enabled &&
     !!cfg.accountSid &&
+    hasAuthToken(cfg) &&
     !!cfg.whatsappFromNumber
   );
 }

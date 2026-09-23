@@ -110,7 +110,11 @@ export async function migratePrivateCredentials(
         const copy = !(typeof held === "string" && held);
         if (args.apply) {
           if (copy) tx.set(privRef, { [field]: legacy }, { merge: true });
-          tx.update(row.ref, { [`${parent}.${field}`]: FieldValue.delete() });
+          tx.update(row.ref, {
+            [`${parent}.${field}`]: FieldValue.delete(),
+            // Twilio's "configured" check reads this marker instead of the token.
+            ...(kind === "twilio" ? { "twilioConfig.authTokenSet": true } : {}),
+          });
         }
         return copy ? "copied" : "privateKept";
       });

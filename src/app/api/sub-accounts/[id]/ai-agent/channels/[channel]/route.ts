@@ -784,15 +784,12 @@ async function runVoiceProvisioningSideEffect(input: {
       }
       const result = await ensureVapiPhoneNumber({
         subAccountId,
-        // Vapi needs the token itself; it lives in the private doc.
-        twilioConfig: {
-          ...subAccount.twilioConfig,
-          authToken: await readSubAccountSecret(
-            subAccountId,
-            "twilio",
-            subAccount.twilioConfig,
-          ),
-        },
+        twilioConfig: subAccount.twilioConfig,
+        authToken: await readSubAccountSecret(
+          subAccountId,
+          "twilio",
+          subAccount.twilioConfig,
+        ),
         assistantId,
         existingPhoneNumberId: voice.vapiPhoneNumberId,
       });

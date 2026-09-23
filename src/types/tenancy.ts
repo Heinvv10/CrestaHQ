@@ -711,6 +711,12 @@ export interface TwilioConfig {
    * Never write it; read the token via `readSubAccountSecret(id, "twilio", cfg)`.
    */
   authToken?: string;
+  /**
+   * Non-secret marker: true once the token is stored in
+   * `private/twilioCredentials` (set by the save route and the migration), so
+   * "is dedicated Twilio configured" stays answerable from this doc alone.
+   */
+  authTokenSet?: boolean;
   /** E.164 (e.g. "+15551234567"). The number this sub-account sends from. */
   fromNumber: string;
   /**

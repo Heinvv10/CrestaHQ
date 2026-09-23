@@ -14,7 +14,11 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  */
 
 const mem = createMemoryFirestore();
-const calls = vi.hoisted(() => ({ ghl: [] as string[], twilioClient: [] as string[] }));
+const calls = vi.hoisted(() => ({
+  ghl: [] as string[],
+  twilioClient: [] as string[],
+  metaUnsubscribe: [] as string[],
+}));
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
@@ -48,6 +52,9 @@ vi.mock("@/lib/comms/meta", async (importOriginal) => ({
     },
   ],
   subscribePageToWebhook: async () => undefined,
+  unsubscribePageFromWebhook: async (_pageId: string, token: string) => {
+    calls.metaUnsubscribe.push(token);
+  },
 }));
 vi.mock("@/lib/import/ghl/client", async (importOriginal) => {
   const record = async (token: string) => {
@@ -67,7 +74,9 @@ const twilioRoute = await import("@/app/api/sub-accounts/[id]/twilio/route");
 const metaCallback = await import("@/app/api/meta/callback/route");
 const ghlConnect = await import("@/app/api/sub-accounts/[id]/import/ghl/connect/route");
 const ghlPreview = await import("@/app/api/sub-accounts/[id]/import/ghl/preview/route");
-const { getTwilioForSubAccount } = await import("@/lib/comms/twilio");
+const metaDisconnect = await import("@/app/api/sub-accounts/[id]/meta/route");
+const { getTwilioForSubAccount, subAccountTwilioIsConfigured, subAccountWhatsappIsConfigured } =
+  await import("@/lib/comms/twilio");
 const { prepareMetaSend } = await import("@/lib/server/conversation-send/meta");
 const { readSubAccountSecret, subAccountSecretPath } = await import("./sub-account-secrets");
 
@@ -84,6 +93,7 @@ beforeEach(() => {
   mem.clear();
   calls.ghl.length = 0;
   calls.twilioClient.length = 0;
+  calls.metaUnsubscribe.length = 0;
   mem.seed("subAccounts/sa1", {
     agencyId: "ag1",
     name: "Acme",
@@ -103,7 +113,12 @@ describe("connect routes keep the secret off the member-readable doc", () => {
     expect(res.status).toBe(200);
     expect(memberVisible()).not.toContain(TWILIO);
     const cfg = mem.read("subAccounts/sa1")!.twilioConfig as Record<string, unknown>;
-    expect(cfg).toMatchObject({ enabled: true, accountSid: "AC123", fromNumber: "+15550001111" });
+    expect(cfg).toMatchObject({
+      enabled: true,
+      accountSid: "AC123",
+      fromNumber: "+15550001111",
+      authTokenSet: true,
+    });
     expect(cfg).not.toHaveProperty("authToken");
     expect(mem.read(subAccountSecretPath("sa1", "twilio"))).toEqual({ authToken: TWILIO });
     expect((await getTwilioForSubAccount("sa1")).authToken).toBe(TWILIO);
@@ -136,6 +151,19 @@ describe("connect routes keep the secret off the member-readable doc", () => {
       "messenger",
     );
     expect(prepared).toMatchObject({ ok: true, pageAccessToken: PAGE });
+  });
+
+  it("Meta disconnect unsubscribes with the private token, then deletes it", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", metaConfig: { connected: true, pageId: "page1" } });
+    mem.seed(subAccountSecretPath("sa1", "meta"), { pageAccessToken: PAGE });
+    const res = await metaDisconnect.DELETE(
+      new Request("https://app.test/x", { method: "DELETE" }),
+      params,
+    );
+    expect(res.status).toBe(200);
+    expect(calls.metaUnsubscribe).toEqual([PAGE]);
+    expect(mem.read("subAccounts/sa1")!.metaConfig).toBeNull();
+    expect(mem.read(subAccountSecretPath("sa1", "meta"))).toBeUndefined();
   });
 
   it("GHL: token lands in private/, parent keeps the location id only", async () => {
@@ -198,6 +226,8 @@ describe("readers: private doc first, legacy parent field as the pre-migration f
           enabled: true,
           accountSid: "AC1",
           fromNumber: "+15550001111",
+          // The writer stamps the marker whenever it stores the private token.
+          ...(s.priv ? { authTokenSet: true } : {}),
           ...(s.legacy ? { authToken: LEGACY } : {}),
         },
       });
@@ -225,6 +255,21 @@ describe("readers: private doc first, legacy parent field as the pre-migration f
       if (s.priv) mem.seed(subAccountSecretPath("sa1", "ghl"), { token: PRIVATE });
       expect((await ghlPreview.GET(new Request("https://app.test/x"), params)).status).toBe(200);
       expect(calls.ghl[0]).toBe(s.want);
+    });
+  }
+});
+
+describe("dedicated-Twilio predicates read the non-secret marker, not the token", () => {
+  const base = { enabled: true, accountSid: "AC1", fromNumber: "+1", whatsappFromNumber: "+2" };
+  const cases = [
+    { name: "marker (post-move)", cfg: { ...base, authTokenSet: true }, want: true },
+    { name: "legacy token (pre-migration)", cfg: { ...base, authToken: "t" }, want: true },
+    { name: "no token anywhere", cfg: base, want: false },
+  ];
+  for (const c of cases) {
+    it(c.name, () => {
+      expect(subAccountTwilioIsConfigured(c.cfg as never)).toBe(c.want);
+      expect(subAccountWhatsappIsConfigured(c.cfg as never)).toBe(c.want);
     });
   }
 });
