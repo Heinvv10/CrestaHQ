@@ -25,10 +25,12 @@ export const dynamic = "force-dynamic";
  * which secret to verify against, and a request that can't produce a valid
  * signature for that secret gets nothing.
  *
- * Always returns 200 on anything that isn't a signature failure. A non-2xx
- * makes Stripe retry — which for an already-recorded payment is pure noise,
- * and repeated failures eventually disable the endpoint on the client's own
- * account (breaking their payments, in their dashboard, which we can't fix).
+ * Returns 200 for everything except a signature failure (400) and a genuine
+ * processing failure (500). The 500 is deliberate: without Stripe's retry, a
+ * transient Firestore error would leave a paid order pending for good. It is
+ * safe because the reconciler recognises its own earlier work on redelivery;
+ * ignored types and replays still answer 200, so a healthy endpoint is never
+ * disabled on the client's account by retries.
  *
  * Tier 2 adds a sibling `/api/webhooks/stripe/connect` that resolves the
  * sub-account from `event.account` and calls the same reconciler.
@@ -81,6 +83,11 @@ export async function POST(
     );
   }
 
-  const result = await reconcileStripeEvent({ subAccountId, event });
-  return NextResponse.json({ received: true, ...result });
+  try {
+    const result = await reconcileStripeEvent({ subAccountId, event });
+    return NextResponse.json({ received: true, ...result });
+  } catch {
+    // Already logged with the event id by the reconciler.
+    return NextResponse.json({ error: "retry" }, { status: 500 });
+  }
 }

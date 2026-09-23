@@ -666,6 +666,12 @@ export function SubAccountBillingSection({ subAccount, disabled }: Props) {
                       </span>
                       <span className="min-w-0 flex-1 truncate">
                         {c.description}
+                        {c.extraPaymentCount > 0 && (
+                          <span className="ml-1.5 text-amber-600 dark:text-amber-400">
+                            · paid {c.extraPaymentCount} extra time
+                            {c.extraPaymentCount === 1 ? "" : "s"} — refund owed
+                          </span>
+                        )}
                       </span>
                       <span className="shrink-0 font-medium tabular-nums">
                         {formatBillingPrice(c.amountCents, c.currency)}

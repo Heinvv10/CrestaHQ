@@ -7,12 +7,14 @@ import {
   emitOrderEvents,
   findOrderByCheckoutSession,
   findOrderByPaymentIntent,
+  flagOrderAttention,
   markOrderPaid,
   recordOrderRefund,
 } from "@/lib/server/orders-service";
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
 import { markBookingPaidServerSide } from "@/lib/server/bookings-service";
 import { markPurchasePaidServerSide } from "@/lib/server/community-purchase-service";
+import { stripeAmountToCents, toStripeAmount } from "@/lib/stripe/amount";
 import type { Order } from "@/types/orders";
 
 /**
@@ -33,9 +35,10 @@ import type { Order } from "@/types/orders";
  * Stripe (founders checkout, Client Billing subscriptions). Different account,
  * different secret, different collection.
  *
- * Never throws — the caller always 200s to Stripe. A thrown error would make
- * Stripe retry a payment we may have already recorded, and repeated failures
- * eventually disable the endpoint on the client's account.
+ * Throws only on a genuine processing failure (e.g. Firestore unavailable),
+ * which the route turns into a 5xx so Stripe redelivers. Everything else —
+ * ignored types, foreign sessions, replays — resolves normally and gets a 200.
+ * A redelivery is safe: every step recognises its own earlier success.
  */
 
 /** Audit stamp for access granted by a confirmed Stripe payment rather than
@@ -57,6 +60,9 @@ export async function reconcileStripeEvent(input: {
   try {
     switch (event.type) {
       case "checkout.session.completed":
+      // Delayed methods (SEPA, ACH, …) complete the session unpaid and settle
+      // later with this event, carrying the same session, now paid.
+      case "checkout.session.async_payment_succeeded":
         return await handleCheckoutCompleted(subAccountId, event);
       case "charge.refunded":
         return await handleChargeRefunded(subAccountId, event);
@@ -70,7 +76,7 @@ export async function reconcileStripeEvent(input: {
       `[order-reconciler] ${event.type} failed sa=${subAccountId} event=${event.id}`,
       err,
     );
-    return { handled: false, detail: "error" };
+    throw err;
   }
 }
 
@@ -118,31 +124,46 @@ async function handleCheckoutCompleted(
     buyerName: session.customer_details?.name ?? null,
   });
 
-  // The idempotency point: a redelivered event finds the order already paid
-  // and stops here, so no duplicate webhook / workflow / activity.
-  if (!changed || !updated) {
-    return { handled: true, detail: "already paid (idempotent no-op)" };
+  if (!updated) return { handled: true, detail: "order no longer exists" };
+
+  // The idempotency point for the order's own events: a redelivered event
+  // finds the order already paid, so no duplicate webhook / workflow / activity.
+  if (changed) {
+    emitOrderEvents({
+      order: updated,
+      type: "order.paid",
+      activity: {
+        type: "order_paid",
+        content: `Paid ${formatCurrency(
+          updated.totalCents / 100,
+          updated.currency.toUpperCase(),
+        )} by card.`,
+      },
+    });
+  } else if (updated.status !== "paid" && updated.status !== "partially_refunded") {
+    return { handled: true, detail: `order ${updated.id} is ${updated.status}` };
   }
 
-  emitOrderEvents({
-    order: updated,
-    type: "order.paid",
-    activity: {
-      type: "order_paid",
-      content: `Paid ${formatCurrency(
-        updated.totalCents / 100,
-        updated.currency.toUpperCase(),
-      )} by card.`,
-    },
-  });
+  // Source-specific follow-through (Phase B). Runs on a redelivery too: an
+  // earlier delivery may have paid the order and then failed here, and
+  // Stripe's retry is what finishes the job. Each branch recognises its own
+  // earlier success, so a plain replay changes nothing.
+  const problem = await applySourceEffects(updated, session);
+  if (problem) {
+    console.warn(`[order-reconciler] order ${updated.id} needs attention: ${problem}`);
+    await flagOrderAttention(updated.id, problem);
+  }
 
-  // Source-specific follow-through (Phase B). The order is already paid and
-  // its events already fired — anything below is an ADDITIONAL surface being
-  // brought in line, and a failure here must not undo the payment record.
-  await applySourceEffects(updated);
-
-  return { handled: true, detail: `order ${updated.id} paid` };
+  return {
+    handled: true,
+    detail: changed ? `order ${updated.id} paid` : "already paid (idempotent no-op)",
+  };
 }
+
+const PAID_ANOTHER_WAY =
+  "Paid, but the invoice was already paid (another payment, or marked paid by hand) — a refund may be owed.";
+const INVOICE_CHANGED =
+  "Paid, but the invoice total or currency changed after checkout opened, so it was not marked paid. Check the amount and mark it by hand.";
 
 /**
  * Bring the originating surface in line with a paid order.
@@ -152,49 +173,76 @@ async function handleCheckoutCompleted(
  * the record of the money, and it must stand on its own even if the surface it
  * came from has since been deleted or is in an unexpected state.
  *
- * Never throws. The payment already happened; the worst case is an invoice
- * that still reads "sent" and needs the operator's manual Mark as paid.
+ * Returns why the surface could not be settled with this payment (the order
+ * is flagged for the operator), or null. Throws on a transient failure so the
+ * route answers 5xx and Stripe redelivers.
  */
-async function applySourceEffects(order: Order): Promise<void> {
-  try {
-    if (order.source === "quote" && order.quoteId) {
-      // Routes through the SAME service the operator's "Mark as paid" button
-      // uses, so the activity row, `quote.paid` workflow trigger, outbound
-      // webhook, and auto review-request fire identically — at most once, and
-      // only for the caller that wins its compare-and-set (a crash after the
-      // commit skips them). A replayed Stripe event gets already_paid.
-      const res = await markQuotePaidServerSide({
-        quoteId: order.quoteId,
-        expectSubAccountId: order.subAccountId,
-      });
-      if (!res.ok && res.code !== "already_paid") {
-        console.warn(
-          `[order-reconciler] invoice ${order.quoteId} not marked paid: ${res.code} — ${res.message}`,
-        );
-      }
-    }
-
-    if (order.source === "booking_deposit" && order.eventId) {
-      // Same service the operator's "Mark as paid" button uses: rotates the
-      // public token, clears the hold, schedules reminders, and sends the ICS
-      // confirmation. Its own awaiting_payment guard makes a replayed Stripe
-      // event a no-op, so the visitor never gets two confirmations.
-      const res = await markBookingPaidServerSide({
-        eventId: order.eventId,
-        expectSubAccountId: order.subAccountId,
-        paidByUid: null,
-      });
-      if (!res.ok && res.code !== "bad_status") {
-        console.warn(
-          `[order-reconciler] booking ${order.eventId} not confirmed: ${res.code} — ${res.message}`,
-        );
-      }
-    }
+async function applySourceEffects(
+  order: Order,
+  session: Stripe.Checkout.Session,
+): Promise<string | null> {
+  if (order.source === "quote" && order.quoteId) {
+    // The invoice is settled only for the amount this session collected,
+    // which must be the amount the order was opened for.
     if (
-      order.source === "community" &&
-      order.communityGroupId &&
-      order.purchaseId
+      session.amount_total !== toStripeAmount(order.totalCents / 100, order.currency) ||
+      (session.currency ?? "").toLowerCase() !== order.currency.toLowerCase()
     ) {
+      return `Paid ${session.amount_total ?? "?"} ${(session.currency ?? "").toUpperCase()} (Stripe units), which differs from this order — the invoice was not marked paid. Check it by hand.`;
+    }
+    // Routes through the SAME service the operator's "Mark as paid" button
+    // uses, so the activity row, `quote.paid` workflow trigger, outbound
+    // webhook, and auto review-request fire identically — at most once, and
+    // only for the caller that wins its compare-and-set (a crash after the
+    // commit skips them). The expected total is re-checked inside that
+    // compare-and-set: the invoice may have been edited since checkout opened.
+    const res = await markQuotePaidServerSide({
+      quoteId: order.quoteId,
+      expectSubAccountId: order.subAccountId,
+      paidVia: { rail: "stripe_order", orderId: order.id },
+      expectTotalCents: order.totalCents,
+      expectCurrency: order.currency,
+    });
+    if (res.ok) return null;
+    if (res.code === "already_paid") {
+      // Our own earlier success (a redelivery) is not a second payment.
+      return res.paidVia?.rail === "stripe_order" && res.paidVia.orderId === order.id
+        ? null
+        : PAID_ANOTHER_WAY;
+    }
+    if (res.code === "amount_changed") return INVOICE_CHANGED;
+    return `Paid, but the invoice could not be marked paid: ${res.message}`;
+  }
+
+  if (order.source === "booking_deposit" && order.eventId) {
+    // Same service the operator's "Mark as paid" button uses: rotates the
+    // public token, clears the hold, schedules reminders, and sends the ICS
+    // confirmation. Its own awaiting_payment guard makes a replayed Stripe
+    // event a no-op, so the visitor never gets two confirmations.
+    const res = await markBookingPaidServerSide({
+      eventId: order.eventId,
+      expectSubAccountId: order.subAccountId,
+      paidByUid: null,
+      paidOrderId: order.id,
+    });
+    if (res.ok) return null;
+    if (res.code === "write_failed") {
+      throw new Error(`booking ${order.eventId} confirm write failed`);
+    }
+    if (res.code === "bad_status") {
+      return res.paidOrderId === order.id
+        ? null
+        : `Paid, but the booking was no longer awaiting payment (${res.status ?? "unknown"}) — confirm it by hand or refund the deposit.`;
+    }
+    return `Paid, but the booking could not be confirmed: ${res.message}`;
+  }
+
+  if (
+    order.source === "community" &&
+    order.communityGroupId &&
+    order.purchaseId
+  ) {
+    try {
       // Same service a staff admin's manual "mark paid" uses: flips the
       // purchase, grants group membership or unlocks the course, and fires
       // community.member.joined / community.purchase.paid. Already idempotent
@@ -205,13 +253,14 @@ async function applySourceEffects(order: Order): Promise<void> {
         purchaseId: order.purchaseId,
         grantedByUid: STRIPE_GRANTOR,
       });
+    } catch (err) {
+      console.error(
+        `[order-reconciler] source effects failed order=${order.id} source=${order.source}`,
+        err,
+      );
     }
-  } catch (err) {
-    console.error(
-      `[order-reconciler] source effects failed order=${order.id} source=${order.source}`,
-      err,
-    );
   }
+  return null;
 }
 
 async function handleChargeRefunded(
@@ -241,7 +290,8 @@ async function handleChargeRefunded(
   // replays, so partial refunds accumulate correctly.
   const { changed, order: updated } = await recordOrderRefund({
     orderId: order.id,
-    refundedCentsTotal: charge.amount_refunded,
+    // Stripe's amount is in whole units for zero-decimal currencies.
+    refundedCentsTotal: stripeAmountToCents(charge.amount_refunded, order.currency),
   });
   if (!changed || !updated) {
     return { handled: true, detail: "refund already recorded (idempotent no-op)" };

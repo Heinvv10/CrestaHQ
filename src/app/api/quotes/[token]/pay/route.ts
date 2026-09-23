@@ -7,6 +7,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyQuoteToken } from "@/lib/quotes/token";
 import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
 import { mapStripeSessionError } from "@/lib/stripe/session-error";
+import { toStripeAmount } from "@/lib/stripe/amount";
 import {
   createCheckoutSessionForSubAccount,
   getSubAccountStripe,
@@ -103,6 +104,7 @@ export async function POST(
 
   const currency = (quote.currency || "USD").toLowerCase();
   // Quote line items are in WHOLE units (legacy schema); orders are in cents.
+  // Stripe's own amount differs for zero-decimal currencies (toStripeAmount).
   const totalCents = Math.round(totals.total * 100);
   const lineItems: OrderLineItem[] = [
     {
@@ -146,7 +148,7 @@ export async function POST(
             quantity: 1,
             price_data: {
               currency,
-              unit_amount: totalCents,
+              unit_amount: toStripeAmount(totals.total, currency),
               product_data: { name: `Invoice ${quote.quoteNumber}` },
             },
           },

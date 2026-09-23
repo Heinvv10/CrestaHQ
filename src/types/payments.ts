@@ -86,6 +86,7 @@ export const SECRET_KEY_RE = /^sk_(live|test)_[A-Za-z0-9]+$/;
  */
 export const SUB_ACCOUNT_WEBHOOK_EVENTS = [
   "checkout.session.completed",
+  "checkout.session.async_payment_succeeded",
   "charge.refunded",
   "charge.dispute.created",
 ] as const;
