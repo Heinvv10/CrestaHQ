@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import {
   updateContactServerSide,
   type UpdateContactPatch,
@@ -95,6 +96,8 @@ export async function PATCH(
 
   const access = await requireSubAccountMember(request, data.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, data.territoryId);
+  if (gate) return gate;
 
   let body: Record<string, unknown>;
   try {

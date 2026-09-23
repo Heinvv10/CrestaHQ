@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGateForContact } from "@/lib/auth/territory-filter";
 import { enrollForTest } from "@/lib/workflows/engine";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +23,8 @@ export async function POST(
   if (!body.contactId) {
     return NextResponse.json({ error: "Missing contactId" }, { status: 400 });
   }
+  const gate = await territoryGateForContact(access, body.contactId);
+  if (gate) return gate;
 
   const result = await enrollForTest({
     subAccountId,
