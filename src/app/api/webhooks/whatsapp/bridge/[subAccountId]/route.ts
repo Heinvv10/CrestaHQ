@@ -26,7 +26,7 @@ import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import {
-  firstKeyword,
+  optKeyword,
   WHATSAPP_START_WORDS,
   WHATSAPP_STOP_WORDS,
 } from "@/lib/comms/whatsapp/opt-keywords";
@@ -315,7 +315,7 @@ export async function POST(
   // customer typed (usually nothing), which keeps the AI gate below from
   // answering a bare location. Same rule as the Cloud route.
   const rowBody = body || (location ? locationPreviewLabel(location) : "");
-  const word = firstKeyword(body);
+  const word = optKeyword(body);
   let nextOptedOut: boolean | null = null;
   if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
   else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
@@ -328,12 +328,12 @@ export async function POST(
     .get();
 
   // Unknown senders become contacts so a "message us on WhatsApp" flow
-  // captures new leads — except a never-seen number whose first word is
-  // STOP/START, where minting a contact purely to opt it out is noise. No
-  // ProfileName on this rail, so the new contact has no name.
+  // captures new leads. That includes a never-seen number whose message is
+  // STOP: the opt-out below lands on the new contact rather than being
+  // silently dropped. No ProfileName on this rail, so the new contact has no
+  // name.
   let contactDocs: DocumentSnapshot[] = matches.docs;
   if (matches.empty) {
-    if (nextOptedOut !== null) return ok({ ok: true, persisted: false });
     try {
       const created = await createContactServerSide({
         subAccountId,
@@ -347,6 +347,9 @@ export async function POST(
         address: "",
         source: "whatsapp",
         tags: [],
+        // A STOP from a never-seen number: written opted out, announcing
+        // nothing, so no contact.created automation can message them.
+        optedOutOnWhatsapp: nextOptedOut === true,
       });
       contactDocs = [await db.collection("contacts").doc(created.id).get()];
     } catch (err) {
@@ -586,6 +589,7 @@ export async function POST(
             channel: "whatsapp",
             direction: "inbound",
             body: previewFor(d.id),
+            optOut: nextOptedOut === true,
           });
         })
       );

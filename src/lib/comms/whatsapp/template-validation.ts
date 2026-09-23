@@ -3,7 +3,7 @@ import {
   type WhatsappTemplateButton,
   type WhatsappTemplateVariable,
 } from "@/types/whatsapp-templates";
-import { firstKeyword, WHATSAPP_STOP_WORDS } from "@/lib/comms/whatsapp/opt-keywords";
+import { optKeyword, WHATSAPP_STOP_WORDS } from "@/lib/comms/whatsapp/opt-keywords";
 
 /**
  * Shared validation for WhatsApp template bodies + variables. Used by the
@@ -94,9 +94,9 @@ const MAX_URL_BUTTONS = 2;
  * otherwise in the order given.
  *
  * A quick reply's text comes back as the customer's message, and every
- * WhatsApp inbound route reads a first word of STOP / CANCEL / … as an
- * opt-out. So "Cancel my booking" is refused here rather than silently
- * unsubscribing whoever taps it.
+ * inbound route reads a whole message of STOP / OPT OUT / … as an opt-out.
+ * So a "Stop" button is refused here rather than silently unsubscribing
+ * whoever taps it.
  */
 export function sanitiseButtons(
   raw: unknown,
@@ -122,9 +122,9 @@ export function sanitiseButtons(
       return { error: `Two buttons can't both say "${text}".` };
     }
     if (r.type === "quick_reply") {
-      if (WHATSAPP_STOP_WORDS.has(firstKeyword(text))) {
+      if (WHATSAPP_STOP_WORDS.has(optKeyword(text))) {
         return {
-          error: `"${text}" starts with an opt-out word — tapping it would unsubscribe the customer. Reword it.`,
+          error: `"${text}" is an opt-out keyword — tapping it would unsubscribe the customer. Reword it.`,
         };
       }
       out.push({ type: "quick_reply", text });
