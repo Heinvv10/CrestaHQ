@@ -13,6 +13,7 @@ import {
   readPaystackConnectionSecret,
 } from "@/lib/paystack/sub-account-client";
 import { flagStaleAttempts } from "@/lib/server/payment-attempts";
+import { flagStaleMandates } from "@/lib/server/payment-mandates";
 import {
   PAYSTACK_PUBLIC_KEY_RE,
   PAYSTACK_SECRET_KEY_RE,
@@ -35,7 +36,8 @@ import {
  * settles or closes those attempts with the outgoing key held in memory
  * (`sweepAttempts`), then flags every attempt still open under a different
  * key (`flagStaleAttempts`): its payment would be signed by a key this
- * workspace no longer holds, so it could never be recorded here.
+ * workspace no longer holds, so it could never be recorded here. Saved cards
+ * made under another key go to attention the same way (`flagStaleMandates`).
  *
  * SECURITY — the key NEVER goes on the sub-account doc. `subAccounts/{id}` is
  * readable by any active member (firestore.rules) and Firestore rules are
@@ -81,6 +83,25 @@ function webhookUrlFor(subAccountId: string): string | null {
 async function currentFingerprint(subAccountId: string): Promise<string | null> {
   const conn = await readPaystackConnectionSecret(subAccountId);
   return conn ? paystackKeyFingerprint(conn.secretKey) : null;
+}
+
+/**
+ * Flag what the change stranded under another key: open checkout attempts,
+ * and saved cards (mandates). Both always run — one failing must not skip
+ * the other — then the first failure is thrown, so the operator sees an
+ * error and a retry finishes the job.
+ */
+async function flagStranded(subAccountId: string): Promise<void> {
+  const current = await currentFingerprint(subAccountId);
+  const errors: unknown[] = [];
+  for (const flag of [flagStaleAttempts, flagStaleMandates]) {
+    try {
+      await flag(subAccountId, current);
+    } catch (err) {
+      errors.push(err);
+    }
+  }
+  if (errors.length) throw errors[0];
 }
 
 /**
@@ -188,7 +209,7 @@ export async function POST(
   );
   await batch.commit();
   if (outgoing) await sweepAttempts(subAccountId, outgoing, toSweep);
-  await flagStaleAttempts(subAccountId, await currentFingerprint(subAccountId));
+  await flagStranded(subAccountId);
 
   return NextResponse.json({
     ok: true,
@@ -235,7 +256,7 @@ export async function DELETE(
   batch.delete(db.doc(paystackConnectionSecretPath(subAccountId)));
   await batch.commit();
   if (previous) await sweepAttempts(subAccountId, previous.secretKey, toSweep);
-  await flagStaleAttempts(subAccountId, await currentFingerprint(subAccountId));
+  await flagStranded(subAccountId);
 
   return NextResponse.json({ ok: true });
 }

@@ -12,6 +12,9 @@ import { beforeAll, describe, expect, it } from "vitest";
  *   - `paymentAttempts` and `paymentLinks`: members read, NO client writes.
  *     An attempt's mode and key fingerprint decide whether a payment may be
  *     recorded, and a link's `status: "paid"` is a statement about money.
+ *   - `paymentMandates`: members read the display doc, NO client writes;
+ *     its `private/authorization` (what can charge the card) no client may
+ *     read or write — not even the agency owner.
  *   - `quotes.paidVia`: no member may create, add, change or remove it. The
  *     reconciler trusts it to tell its own payment from one made another way.
  *
@@ -141,11 +144,25 @@ const PAID_LINK = { ...LINK, status: "paid" };
 const QUOTE = { ...TENANT, kind: "invoice", status: "sent", quoteNumber: "INV-1", paidVia: null };
 const PAID_VIA = { rail: "paystack_link", linkId: "link1", reference: "pl-link1-0123456789abcdef" };
 
+const MANDATE = {
+  ...TENANT,
+  contactId: "c1",
+  recurringInvoiceId: "rec1",
+  paymentLinkId: "link1",
+  mode: "live",
+  keyFingerprint: "fp-live-key",
+  status: "active",
+  attention: null,
+};
+const SECRET = { authorizationCode: "AUTH_x", customerCode: "CUS_x", email: "payer@example.com", signature: null };
+
 type Outcome = "allow" | "deny" | "deny: not a member";
 
 const ATT = "paymentAttempts/pl-link1-0123456789abcdef";
 const LNK = "paymentLinks/link1";
 const QTE = "quotes/inv1";
+const MND = "paymentMandates/pl-link1-0123456789abcdef";
+const MND_SECRET = `${MND}/private/authorization`;
 
 const CASES: [string, Case, Outcome][] = [
   // ---- paymentAttempts: member-read, server-only write ----
@@ -170,6 +187,24 @@ const CASES: [string, Case, Outcome][] = [
   ["links: admin cannot mark one paid", { caller: saAdmin, method: "update", path: LNK, before: LINK, after: PAID_LINK }, "deny"],
   ["links: owner cannot mark one paid", { caller: owner, method: "update", path: LNK, before: LINK, after: PAID_LINK }, "deny"],
   ["links: admin cannot delete one", { caller: saAdmin, method: "delete", path: LNK, before: LINK }, "deny"],
+
+  // ---- paymentMandates: member-read display doc, server-only write ----
+  ["mandates: sub-account admin reads", { caller: saAdmin, method: "get", path: MND, before: MANDATE }, "allow"],
+  ["mandates: collaborator lists (member)", { caller: collaborator, method: "list", path: MND, before: MANDATE }, "allow"],
+  ["mandates: agency owner reads", { caller: owner, method: "get", path: MND, before: MANDATE }, "allow"],
+  ["mandates: another sub-account's admin is denied", { caller: otherSaAdmin, method: "get", path: MND, before: MANDATE }, "deny: not a member"],
+  ["mandates: signed-out is denied", { caller: null, method: "get", path: MND, before: MANDATE }, "deny"],
+  ["mandates: admin cannot create one", { caller: saAdmin, method: "create", path: MND, after: MANDATE }, "deny"],
+  ["mandates: owner cannot revive a revoked one", { caller: owner, method: "update", path: MND, before: { ...MANDATE, status: "revoked" }, after: MANDATE }, "deny"],
+  ["mandates: admin cannot revoke one directly", { caller: saAdmin, method: "update", path: MND, before: MANDATE, after: { ...MANDATE, status: "revoked" } }, "deny"],
+  ["mandates: owner cannot change its key fingerprint", { caller: owner, method: "update", path: MND, before: MANDATE, after: { ...MANDATE, keyFingerprint: "fp-other" } }, "deny"],
+  ["mandates: admin cannot delete one", { caller: saAdmin, method: "delete", path: MND, before: MANDATE }, "deny"],
+
+  // ---- paymentMandates/{id}/private: the authorization — no client at all ----
+  ["mandate secret: agency owner cannot read it", { caller: owner, method: "get", path: MND_SECRET, before: { ...TENANT, ...SECRET } }, "deny"],
+  ["mandate secret: sub-account admin cannot read it", { caller: saAdmin, method: "get", path: MND_SECRET, before: { ...TENANT, ...SECRET } }, "deny"],
+  ["mandate secret: sub-account admin cannot list it", { caller: saAdmin, method: "list", path: MND_SECRET, before: { ...TENANT, ...SECRET } }, "deny"],
+  ["mandate secret: owner cannot write it", { caller: owner, method: "create", path: MND_SECRET, after: { ...TENANT, ...SECRET } }, "deny"],
 
   // ---- quotes.paidVia: no client may write it ----
   ["quotes: admin edits a quote, paidVia untouched (control)", { caller: saAdmin, method: "update", path: QTE, before: QUOTE, after: { ...QUOTE, status: "viewed" } }, "allow"],
