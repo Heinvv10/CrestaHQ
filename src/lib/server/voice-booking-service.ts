@@ -348,6 +348,7 @@ export async function bookVoiceSlot(input: {
         title: created.title,
         contactId: contactId!,
         bookingPageSlug: page.slug,
+        subAccountId,
       },
       "booking_page_booked",
     );

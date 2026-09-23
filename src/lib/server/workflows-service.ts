@@ -451,9 +451,11 @@ export async function listWorkflowRuns(
   await Promise.all(
     ids.map(async (id) => {
       const c = await db.doc(`contacts/${id}`).get();
+      // Never show a name from another sub-account's contact.
+      const d = c.data()?.subAccountId === subAccountId ? c.data() : undefined;
       nameById.set(
         id,
-        (c.data()?.name as string) || (c.data()?.email as string) || "Contact",
+        (d?.name as string) || (d?.email as string) || "Contact",
       );
     }),
   );
