@@ -22,6 +22,8 @@ export const NEXT = new Date("2026-04-01T05:00:00.000Z");
 export const REF = `ra-${SCHEDULE}-c4`;
 
 export function seedCardSchedule(over: Record<string, unknown> = {}) {
+  // The claim refuses (and pauses) a schedule whose contact was deleted.
+  mem.seed("contacts/c1", { agencyId: AGENCY, subAccountId: SA, email: "payer@example.com" });
   mem.seed(`recurringInvoices/${SCHEDULE}`, {
     agencyId: AGENCY,
     subAccountId: SA,
@@ -80,11 +82,15 @@ export function seedMandate(over: Record<string, unknown> = {}, secretKey = KEY)
   });
 }
 
-/** Move the schedule back to due, as the next cycle (or the same one, re-run). */
+/**
+ * Move the schedule back to due, as the next cycle (or the same one, re-run).
+ * Clears `lastRunAt` too, or the claim's one-cycle-a-day rule refuses it.
+ */
 export function makeDue(over: Record<string, unknown> = {}) {
   const current = mem.read(`recurringInvoices/${SCHEDULE}`)!;
   mem.seed(`recurringInvoices/${SCHEDULE}`, {
     ...current,
+    lastRunAt: null,
     nextRunAt: Timestamp.fromDate(new Date("2026-02-28T22:00:00.000Z")),
     ...over,
   });

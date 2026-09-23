@@ -14,6 +14,7 @@ const written: Record<string, unknown>[] = [];
 const sendQuoteServerSide = vi.fn();
 const createTaskServerSide = vi.fn();
 const issueQuoteNumber = vi.fn();
+const sendPushForEvent = vi.fn();
 
 let schedule: Record<string, unknown> | null;
 /** txUpdates.length at the moment the invoice number was issued. */
@@ -83,6 +84,9 @@ vi.mock("@/lib/server/quote-send-service", () => ({
 vi.mock("@/lib/server/tasks-service", () => ({
   createTaskServerSide: (...a: unknown[]) => createTaskServerSide(...a),
   territoryForContact: async () => "terr_1",
+}));
+vi.mock("@/lib/push/send", () => ({
+  sendPushForEvent: (...a: unknown[]) => sendPushForEvent(...a),
 }));
 vi.mock("firebase-admin/firestore", () => ({
   FieldValue: {
@@ -227,6 +231,27 @@ describe("generating a cycle", () => {
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
   });
 
+  it("tells the operator a review-first draft is waiting", async () => {
+    schedule = makeSchedule({ reviewFirst: true });
+    await runOneSchedule("sch_1", NOW);
+    // A draft nobody knows about is an invoice nobody sends.
+    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
+    expect(sendPushForEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subAccountId: "sa_1",
+        agencyId: "ag_1",
+        url: "/sa/sa_1/quotes/inv_new",
+        territoryId: "terr_1",
+        body: expect.stringContaining("INV-2026-0004"),
+      }),
+    );
+  });
+
+  it("does not notify for an invoice that was sent automatically", async () => {
+    await runOneSchedule("sch_1", NOW);
+    expect(sendPushForEvent).not.toHaveBeenCalled();
+  });
+
   it("keeps the invoice when the send fails, and records why", async () => {
     sendQuoteServerSide.mockResolvedValue({
       ok: false,
@@ -356,6 +381,39 @@ describe("arrears", () => {
     await runOneSchedule("sch_1", NOW);
     expect(createTaskServerSide).toHaveBeenCalledTimes(1);
     expect(settle().lastEscalatedCount).toBe(4);
+  });
+
+  it("clears the escalation mark once the customer catches up", async () => {
+    schedule = makeSchedule({ lastEscalatedCount: 3 });
+    unpaidInvoiceIds = ["inv_new"];
+    await runOneSchedule("sch_1", NOW);
+    expect(settle().lastEscalatedCount).toBeNull();
+  });
+
+  it("escalates again when a customer who caught up falls behind again", async () => {
+    // Behind at 3, paid up, then behind at 2 again. Without the reset the
+    // stale mark of 3 silences every Task until arrears pass 3 — and the
+    // threshold of 2 quietly stops meaning anything.
+    schedule = makeSchedule({ lastEscalatedCount: 3 });
+    unpaidInvoiceIds = ["inv_new"];
+    await runOneSchedule("sch_1", NOW);
+    // Carry forward exactly what the settle wrote, as Firestore would.
+    const settled = settle();
+
+    updates.length = 0;
+    txUpdates.length = 0;
+    schedule = { ...makeSchedule({ lastEscalatedCount: 3 }), ...settled };
+    unpaidInvoiceIds = ["inv_new", "a", "b"];
+    await runOneSchedule("sch_1", NOW);
+    expect(createTaskServerSide).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the mark while arrears stay at or above the threshold", async () => {
+    schedule = makeSchedule({ lastEscalatedCount: 4 });
+    unpaidInvoiceIds = ["inv_new", "a", "b"];
+    await runOneSchedule("sch_1", NOW);
+    expect(settle().lastEscalatedCount).toBeUndefined();
+    expect(createTaskServerSide).not.toHaveBeenCalled();
   });
 
   it("never escalates when the threshold is 0", async () => {

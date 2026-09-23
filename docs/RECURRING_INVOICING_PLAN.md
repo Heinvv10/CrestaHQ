@@ -196,7 +196,15 @@ real date so nothing is inferred.
 Contact and start date are fixed after creation; both are what the invoices
 already raised were raised against. Changing the cadence or the anchor
 recomputes `nextRunAt` **from today**, never earlier — the stored value came
-from the old cadence. `completed` is the engine's word and cannot be set by an
+from the old cadence — and never at or before `lastRunAt`, so an edit cannot
+re-bill the cycle a sweep already billed that day. That is all it guarantees:
+an anchor change may shorten or lengthen the period straddling the edit
+(billed on the 15th, moved to the 20th, bills again on the 20th; moved the
+other way, the next bill is a month later). Resuming a paused schedule keeps a
+cycle due today that was never billed, steps past cycles due before today, and
+names the skipped dates in `lastError` so they can be raised by hand. A
+schedule whose contact has been deleted is paused by the sweep, with the
+reason in `lastError`. `completed` is the engine's word and cannot be set by an
 operator; `cancelled` is terminal, because resuming billing after a cancellation
 is a new agreement.
 

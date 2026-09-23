@@ -23,6 +23,7 @@ import { SA, mem, seedSub } from "@/test/paystack-links-harness";
  */
 
 const sendQuoteServerSide = vi.fn();
+const sendPushForEvent = vi.fn();
 const fireWorkflowTrigger = vi.fn();
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/paystack-links-harness")).adminMock());
@@ -31,6 +32,7 @@ vi.mock("@/lib/server/tasks-service", async () => (await import("@/test/auto-cha
 vi.mock("@/lib/server/quote-send-service", () => ({
   sendQuoteServerSide: (...a: unknown[]) => sendQuoteServerSide(...a),
 }));
+vi.mock("@/lib/push/send", () => ({ sendPushForEvent: (...a: unknown[]) => sendPushForEvent(...a) }));
 vi.mock("@/lib/workflows/engine", () => ({
   fireWorkflowTrigger: (...a: unknown[]) => fireWorkflowTrigger(...a),
 }));
@@ -146,14 +148,25 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
   });
 
-  it("G3: paused over the due date, resumed, caught up 19 Mar → 1 Apr is still charged", async () => {
+  it("G3: a monthly sweep 18 days late (1 Mar cycle billed 19 Mar) → 1 Apr is still charged", async () => {
     const calls = stubAutoCharge();
-    await edit("2026-02-25", { status: "paused" });
-    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped" });
-    await edit("2026-03-18", { status: "active" });
     await runOneSchedule(SCHEDULE, at("2026-03-19"));
     await runOneSchedule(SCHEDULE, at("2026-04-01"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
+  });
+
+  it("G3 with #200's resume: charged 1 Feb, paused over 1 Mar, resumed 18 Mar → skips to 1 Apr, which is charged", async () => {
+    seedCardSchedule({ nextRunAt: midnight("2026-02-01") });
+    const calls = stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-02-01"));
+    await edit("2026-02-25", { status: "paused" });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped" });
+    await edit("2026-03-18", { status: "active" });
+    expect(nextRun()).toBe("2026-03-31T22:00:00.000Z");
+    // The gap to the old lastDueAt (1 Feb) only grew: not "too soon".
+    await runOneSchedule(SCHEDULE, at("2026-04-01"));
+    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
   });
 
   it("a late sweep does not launder a too-close due date (1 Mar charged, moved to the 20th, swept 30 Mar)", async () => {
@@ -203,6 +216,30 @@ describe("normal cycles are still charged", () => {
     seedCardSchedule({ chargeMode: "invoice" });
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
     expect(lastDue()).toBe("2026-02-28T22:00:00.000Z");
+  });
+
+  it("#200's claim refusals record nothing: ran today, contact deleted, a claim that throws", async () => {
+    seedCardSchedule({ lastRunAt: Timestamp.fromDate(at("2026-03-01")) });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped", reason: "ran_today" });
+    expect(lastDue()).toBeUndefined();
+    seedCardSchedule();
+    await mem.db.doc("contacts/c1").delete();
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped", reason: "contact_gone" });
+    expect(lastDue()).toBeUndefined();
+    seedCardSchedule({ timezone: "Not/AZone" });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "failed" });
+    expect(lastDue()).toBeUndefined();
+  });
+
+  it("a card cycle sends no review-draft push; review wins over a stored card mode, and notifies", async () => {
+    stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-03-01"));
+    expect(sendPushForEvent).not.toHaveBeenCalled();
+    seedCardSchedule({ reviewFirst: true });
+    const calls = stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-03-01"));
+    expect(calls).toHaveLength(0);
+    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   });
 
   it("a too-stale fast-forward or an already-finished close records nothing", async () => {
