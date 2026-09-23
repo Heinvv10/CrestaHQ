@@ -74,7 +74,11 @@ export function ContactPaymentMandates({ subAccountId, contactId }: { subAccount
           <p className="text-xs text-muted-foreground">
             {formatCurrency(m.terms.amountCents / 100, m.terms.currency)} {m.terms.frequency}
           </p>
-          {m.attention && m.status === "attention" && <p className="text-xs text-destructive">{m.attention}</p>}
+          {m.attention && (
+            <p className={m.status === "attention" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+              {m.attention}
+            </p>
+          )}
           <details className="text-xs text-muted-foreground">
             <summary className="cursor-pointer">Consent record</summary>
             <p className="mt-1">&ldquo;{m.consent.text}&rdquo;</p>

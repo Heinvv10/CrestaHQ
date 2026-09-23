@@ -120,7 +120,8 @@ describe("breaker: one schedule, many mandates", () => {
     const REF2 = "pl-link2-fedcba9876543210";
     seedInvoice("inv2", { recurringInvoiceId: "rec1", quoteNumber: "INV-2026-0002" });
     seedLink("link2", { invoiceId: "inv2", contactId: "c1", amountCents: 115000, recurringInvoiceId: "rec1", mandate: TERMS });
-    seedAttempt(REF2, { amountCents: 115000, consent: CONSENT });
+    // The next cycle's card, authorised later.
+    seedAttempt(REF2, { amountCents: 115000, consent: { ...CONSENT, acceptedAt: new Date("2026-10-23T08:00:00Z") } });
     await deliver(REF2);
     const forRec1 = activeMandates().filter((m) => (m as { recurringInvoiceId?: string }).recurringInvoiceId === "rec1");
     expect(forRec1).toHaveLength(1);

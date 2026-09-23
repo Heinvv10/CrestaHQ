@@ -135,6 +135,12 @@ export function planMandate(
   };
 }
 
+/** When the customer consented; Timestamp once stored, Date before. */
+function consentMillis(m: Pick<PaymentMandate, "consent">): number {
+  const at = m.consent?.acceptedAt as { toMillis?: () => number; getTime?: () => number } | undefined;
+  return at?.toMillis?.() ?? at?.getTime?.() ?? Number.NEGATIVE_INFINITY;
+}
+
 const notSaved = (why: string) =>
   `Paid, but the card was not saved for future charges: ${why}. Send a new card-on-file link, or bill this customer by invoice.`;
 
@@ -151,9 +157,12 @@ type MandateOutcome = Pick<PaymentLink, "mandateId" | "mandateAttention">;
  * runs after its commit and so sees any mandate committed before it).
  *
  * Returns the writer, called with the link update: it stores the mandate
- * (id = the payment's reference, so written once) and revokes the
- * schedule's older mandates — a newer card replaces the older, so a
- * schedule never has two to charge.
+ * (id = the payment's reference, so written once), revokes the schedule's
+ * other mandates, and points the schedule at it (`cardMandateId`). "Newer"
+ * is the customer's CONSENT time, not settle time: a late webhook for an
+ * older consent saves nothing once any card — even a revoked one — was
+ * authorised more recently. Every settle writes the schedule doc it read,
+ * so two settles for one schedule conflict and one retries, seeing the other.
  */
 export async function prepareMandate(
   t: Transaction,
@@ -163,6 +172,7 @@ export async function prepareMandate(
   if ("reason" in plan) return () => ({ mandateId: null, mandateAttention: plan.reason });
   const { mandate, secret } = plan;
   const db = getAdminDb();
+  const scheduleRef = db.doc(`recurringInvoices/${mandate.recurringInvoiceId}`);
   const schedule = await loadActiveSchedule(mandate.subAccountId, mandate.recurringInvoiceId, t);
   const conn = await readPaystackConnectionSecret(mandate.subAccountId, t);
   const older = await t.get(
@@ -176,7 +186,9 @@ export async function prepareMandate(
       ? "the recurring schedule changed or stopped after the customer agreed to its terms"
       : !conn || paystackKeyFingerprint(conn.secretKey) !== mandate.keyFingerprint
         ? "the Paystack connection changed while the payment was being confirmed"
-        : null;
+        : older.docs.some((d) => consentMillis(d.data() as PaymentMandate) >= consentMillis(mandate))
+          ? "the customer authorised a card for this schedule more recently"
+          : null;
   if (why) return () => ({ mandateId: null, mandateAttention: notSaved(why) });
 
   const id = mandate.reference;
@@ -194,6 +206,7 @@ export async function prepareMandate(
     }
     t.set(db.doc(`paymentMandates/${id}`), mandate);
     t.set(db.doc(paymentMandateSecretPath(id)), secret);
+    t.update(scheduleRef, { cardMandateId: id, updatedAt: FieldValue.serverTimestamp() });
     return { mandateId: id, mandateAttention: null };
   };
 }
