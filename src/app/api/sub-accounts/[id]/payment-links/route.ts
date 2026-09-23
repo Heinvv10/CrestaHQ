@@ -11,7 +11,8 @@ export const dynamic = "force-dynamic";
  * POST /api/sub-accounts/[id]/payment-links — create a Paystack payment link.
  *
  * Body: `{ invoiceId }` for an invoice, or `{ amountCents, description }` for
- * an ad-hoc amount. Any member may create one, as any member may send an
+ * an ad-hoc amount. `{ invoiceId, mandate: true }` makes a card-on-file link
+ * for a recurring invoice: paying it also saves the card. Any member may create one, as any member may send an
  * invoice. The amount stored here is the only amount the pay page will ever
  * charge. Listing happens client-side (member-read Firestore rule).
  */
@@ -23,7 +24,7 @@ export async function POST(
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
-  let body: { invoiceId?: unknown; amountCents?: unknown; description?: unknown };
+  let body: { invoiceId?: unknown; amountCents?: unknown; description?: unknown; mandate?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -46,6 +47,7 @@ export async function POST(
     invoiceId,
     amountCents: body.amountCents,
     description: body.description,
+    mandate: body.mandate === true,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });

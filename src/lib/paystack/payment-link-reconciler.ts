@@ -10,6 +10,7 @@ import {
 } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
+import { planMandate, writeMandate } from "@/lib/server/payment-mandates";
 import {
   invoiceTotalCents,
   parsePaymentLinkReference,
@@ -165,6 +166,8 @@ export async function reconcilePaystackCharge(input: {
       return { handled: false, detail: `mismatch ${mismatch}` };
     }
 
+    // A card-on-file link also saves the card, from verify's answer only.
+    const card = link.mandate ? planMandate(link, attempt, tx) : null;
     const attemptRef = db.doc(`paymentAttempts/${reference}`);
     const { outcome, current } = await db.runTransaction(async (t) => {
       const fresh = (await t.get(ref)).data() as PaymentLink | undefined;
@@ -188,6 +191,7 @@ export async function reconcilePaystackCharge(input: {
           // `attention` is deliberately NOT cleared: it records a real
           // mismatched payment the operator may still need to refund.
           ...settleAttempt(fresh?.attention),
+          ...(card ? writeMandate(t, card) : {}),
           updatedAt: FieldValue.serverTimestamp(),
         });
         return { outcome: "paid" as const, current: fresh ?? link };

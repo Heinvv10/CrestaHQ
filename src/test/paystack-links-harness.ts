@@ -51,6 +51,22 @@ export function seedInvoice(id = "inv1", over: Record<string, unknown> = {}) {
   });
 }
 
+/** A monthly recurring schedule whose template totals R1,150.00, like `seedInvoice`. */
+export function seedSchedule(id = "rec1", over: Record<string, unknown> = {}) {
+  mem.seed(`recurringInvoices/${id}`, {
+    agencyId: AGENCY,
+    subAccountId: SA,
+    contactId: "c1",
+    status: "active",
+    currency: "ZAR",
+    lineItems: [{ id: "li1", description: "Install", quantity: 1, unitPrice: 1000 }],
+    globalDiscount: null,
+    globalTaxPercent: 15,
+    cadence: { unit: "month", interval: 1 },
+    ...over,
+  });
+}
+
 export function seedLink(id = "link1", over: Record<string, unknown> = {}) {
   mem.seed(`paymentLinks/${id}`, {
     agencyId: AGENCY,
