@@ -3193,7 +3193,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
     menuLabel:
       "Invite someone to this workspace by email (as admin or collaborator)",
     description:
-      "Add someone (by email) to this sub-account as 'admin' (manages members + settings) or 'collaborator' (works the data, no member management). If the email is NEW, they get an email with a signup link and the invite stays pending until they sign up. If the email ALREADY has an account, they're added to this workspace directly (nothing to accept) and emailed a notification — this is how someone already in another sub-account gets added here. Re-adding an existing member just updates their role. Ask which role the user wants if they didn't say; default to collaborator when they just say 'invite'.",
+      "Add someone (by email) to this sub-account as 'admin' (manages members + settings) or 'collaborator' (works the data, no member management). If the email is NEW, they get an email with a signup link and the invite stays pending until they sign up. If the email ALREADY has a verified account (or is already a member here), they're added to this workspace directly (nothing to accept) and emailed a notification — this is how someone already in another sub-account gets added here. Re-adding an existing member just updates their role. Ask which role the user wants if they didn't say; default to collaborator when they just say 'invite'.",
     parameters: {
       type: "object",
       properties: {
@@ -3273,7 +3273,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
             res.mailError
               ? "the send failed"
               : "email isn't configured on this deployment"
-          }) — share this signup link with them directly: ${res.inviteUrl}`;
+          }) — copy their invite link from Settings → Members → Pending invites and share it with them directly.`;
       return {
         resultText: `Invited ${res.email} to “${res.subAccountName}” as ${roleLabel}.${reusedNote} ${delivery} Pending invites are managed under Settings → Members.`,
         ref: { kind: "invite", id: res.inviteId },

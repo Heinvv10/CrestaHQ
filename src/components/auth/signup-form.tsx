@@ -21,10 +21,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 export function SignupForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  // Pre-fill email when arriving from an invite link (/signup?email=…). The
-  // signup API still re-validates against the invite doc by email, so this is
-  // pure UX convenience.
+  // Pre-fill email when arriving from an invite link
+  // (/signup?email=…&invite=…). The invite token is what the signup API
+  // checks against the invite doc; the email pre-fill is pure convenience.
   const initialEmail = searchParams?.get("email") ?? "";
+  const inviteToken = searchParams?.get("invite") ?? undefined;
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -60,6 +61,7 @@ export function SignupForm() {
           email,
           password,
           displayName: email.split("@")[0],
+          inviteToken,
         }),
       });
 

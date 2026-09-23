@@ -4,12 +4,15 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { seedDefaultTemplates } from "@/lib/automations/seed-templates";
+import { inviteTokenMatches } from "@/lib/server/invite-token";
 import { GLOBAL_TERRITORY_ID, type Role } from "@/types";
 
 interface SignupBody {
   email?: string;
   password?: string;
   displayName?: string;
+  /** Raw token from the invite link (`?invite=`). Required for invitees. */
+  inviteToken?: string;
 }
 
 type Decision =
@@ -35,6 +38,8 @@ export async function POST(request: Request) {
   const email = body.email?.trim().toLowerCase();
   const password = body.password;
   const displayName = body.displayName?.trim() || email?.split("@")[0] || "";
+  const inviteToken =
+    typeof body.inviteToken === "string" ? body.inviteToken : undefined;
 
   if (!email || !password) {
     return NextResponse.json(
@@ -73,23 +78,30 @@ export async function POST(request: Request) {
       if (!adminUid) {
         throw new Error("Workspace is misconfigured (missing adminUid).");
       }
-      // Find an unrevoked, unaccepted typed invite for this email. Typed
-      // invites name a specific sub-account + role; that's the membership
-      // we'll mint.
+      // Find an unrevoked, unaccepted typed invite for this email whose
+      // token matches the one from the invite link. Matching the email
+      // alone is not proof the caller received the invite. Typed invites
+      // name a specific sub-account + role; that's the membership we'll mint.
       const inviteQuery = await tx.get(
         db
           .collection("invites")
           .where("email", "==", email)
           .where("acceptedByUid", "==", null)
           .where("revokedAt", "==", null)
-          .limit(1)
       );
       if (inviteQuery.empty) {
         throw new Error(
           "This email is not invited. Ask the agency to invite you."
         );
       }
-      const inviteDoc = inviteQuery.docs[0];
+      const inviteDoc = inviteQuery.docs.find((d) =>
+        inviteTokenMatches(inviteToken, d.data().tokenHash)
+      );
+      if (!inviteDoc) {
+        throw new Error(
+          "This invite link is invalid or has expired. Open the latest invite email, or ask the agency to re-send your invite."
+        );
+      }
       const invite = inviteDoc.data();
       const agencyId = invite.agencyId as string | undefined;
       const subAccountId = invite.subAccountId as string | null | undefined;
@@ -132,7 +144,47 @@ export async function POST(request: Request) {
   // never leave orphan auth users when the gate rejects.
   let userRecord;
   try {
-    userRecord = await auth.createUser({ email, password, displayName });
+    // An invitee proved inbox access by presenting the emailed token, so
+    // the address is verified — later invites to other sub-accounts can
+    // then attach via /api/auth/claim-pending-invites.
+    const props = {
+      email,
+      password,
+      displayName,
+      ...(decision.kind === "subAccountMember" ? { emailVerified: true } : {}),
+    };
+    try {
+      userRecord = await auth.createUser(props);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (
+        code !== "auth/email-already-exists" ||
+        decision.kind !== "subAccountMember"
+      ) {
+        throw err;
+      }
+      // A token-proven invitee whose address already has an Auth account
+      // (the invite service only direct-adds VERIFIED accounts, so an
+      // unverified one gets a pending invite instead). Two cases:
+      //   - It has a users/{uid} profile → it came through this signup
+      //     route, i.e. it's the invitee's own account. Mark the address
+      //     verified and send them to sign in; claim-pending-invites then
+      //     attaches the invite. Their password is untouched.
+      //   - No profile → created outside the app (client-side Firebase
+      //     signup), holding no app data. Whoever made it may still hold a
+      //     session for that uid, so it is deleted rather than adopted and
+      //     the invitee gets a fresh account.
+      const existing = await auth.getUserByEmail(email);
+      const profile = await db.doc(`users/${existing.uid}`).get();
+      if (profile.exists) {
+        if (!existing.emailVerified) {
+          await auth.updateUser(existing.uid, { emailVerified: true });
+        }
+        throw err;
+      }
+      await auth.deleteUser(existing.uid);
+      userRecord = await auth.createUser(props);
+    }
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === "auth/email-already-exists") {

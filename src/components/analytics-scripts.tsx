@@ -52,7 +52,12 @@ export function AnalyticsScripts() {
     return () => window.clearInterval(interval);
   }, [isEmbed, isClientPublic]);
 
-  if (isEmbed) return null;
+  // /signup carries the single-use invite token in its query string; third-
+  // party tags report the full page URL (Pixel PageView, GTM, Crisp), so none
+  // load there. Decided from the pathname, so they're never rendered at all.
+  const isSignup = pathname === "/signup";
+
+  if (isEmbed || isSignup) return null;
 
   return (
     <>

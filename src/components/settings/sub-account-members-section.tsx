@@ -223,15 +223,45 @@ export function SubAccountMembersSection() {
     }
   }
 
-  async function copyInviteLink(email: string) {
-    const origin =
-      typeof window !== "undefined" ? window.location.origin : "";
-    const url = `${origin}/signup?email=${encodeURIComponent(email)}`;
+  // The link carries a single-use token whose hash is all the server keeps,
+  // so copying means re-issuing through the invite endpoint (same role +
+  // territories). That rotates the token: older links for this invite stop
+  // working, and the invitee is re-emailed the new one when mail is set up.
+  async function copyInviteLink(inv: InviteDocV2 & { id: string }) {
+    setBusyInviteId(inv.id);
     try {
-      await navigator.clipboard.writeText(url);
-      toast.success("Invite link copied");
-    } catch {
-      toast.error("Could not copy — your browser blocked clipboard access");
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: inv.email,
+          role: inv.subAccountRole === "admin" ? "admin" : "collaborator",
+          assignedTerritoryIds: inv.assignedTerritoryIds ?? [],
+        }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        inviteUrl?: string;
+        mailed?: boolean;
+      };
+      if (!res.ok || !payload.inviteUrl) {
+        throw new Error(payload.error ?? "Could not create an invite link");
+      }
+      try {
+        await navigator.clipboard.writeText(payload.inviteUrl);
+      } catch {
+        toast.error("Could not copy — your browser blocked clipboard access");
+        return;
+      }
+      toast.success(
+        `New invite link copied${payload.mailed ? " and re-emailed" : ""} — earlier links for this invite no longer work`,
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Could not copy invite link.",
+      );
+    } finally {
+      setBusyInviteId(null);
     }
   }
 
@@ -493,7 +523,7 @@ export function SubAccountMembersSection() {
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => copyInviteLink(inv.email)}
+                      onClick={() => copyInviteLink(inv)}
                       aria-label="Copy invite link"
                       className="h-7 px-2 text-[11px]"
                       disabled={busyInviteId === inv.id}

@@ -9,7 +9,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
  * webhook dispatcher and the mailer.
  */
 
-const users = new Map<string, { uid: string; email: string }>();
+const users = new Map<string, { uid: string; email: string; emailVerified?: boolean }>();
 
 vi.mock("@/lib/firebase/admin", async () => {
   const base = (await import("@/test/gbp-sync-store")).adminMock();
@@ -20,7 +20,7 @@ vi.mock("@/lib/firebase/admin", async () => {
       getUserByEmail: async (email: string) => {
         const u = users.get(email);
         if (!u) throw Object.assign(new Error("no user"), { code: "auth/user-not-found" });
-        return { ...u, displayName: "", disabled: false, customClaims: { status: "active", agencyId: "ag_1" } };
+        return { emailVerified: true, ...u, displayName: "", disabled: false, customClaims: { status: "active", agencyId: "ag_1" } };
       },
     }),
   };
@@ -97,6 +97,32 @@ describe("invite route", () => {
     expect(role("uid_n")).toBe("admin");
     expect(await invite({ email: "new@example.com", role: "admin" })).toBe(200);
     expect(events()).toHaveLength(0);
+  });
+});
+
+describe("invite route — existing accounts", () => {
+  it("does not add an unverified account that holds the invitee's email; it gets a token invite", async () => {
+    users.set("u@example.com", { uid: "uid_u", email: "u@example.com", emailVerified: false });
+    expect(await invite({ email: "u@example.com", role: "admin" })).toBe(200);
+    expect(role("uid_u")).toBeUndefined();
+    expect(mem.read("userMemberships/uid_u/subAccounts/sa_1")).toBeUndefined();
+    const pending = mem.list("invites");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ email: "u@example.com", acceptedByUid: null });
+  });
+
+  it("adds a verified account directly", async () => {
+    users.set("v@example.com", { uid: "uid_v", email: "v@example.com", emailVerified: true });
+    expect(await invite({ email: "v@example.com", role: "admin" })).toBe(200);
+    expect(role("uid_v")).toBe("admin");
+    expect(mem.list("invites")).toHaveLength(0);
+  });
+
+  it("still updates the role of an unverified account that is already an active member", async () => {
+    users.set("m@example.com", { uid: "uid_m", email: "m@example.com", emailVerified: false });
+    expect(await invite({ email: "m@example.com", role: "admin" })).toBe(200);
+    expect(role("uid_m")).toBe("admin");
+    expect(mem.list("invites")).toHaveLength(0);
   });
 });
 

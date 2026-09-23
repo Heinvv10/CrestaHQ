@@ -9,6 +9,7 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import type { AuditActor } from "@/lib/audit/types";
 import { resolveBrandName } from "@/lib/landing/resolve-brand";
+import { generateInviteToken } from "@/lib/server/invite-token";
 
 /**
  * Server-side member invites — the single write path shared by the invite
@@ -125,7 +126,20 @@ export async function createInviteServerSide(
     if (code !== "auth/user-not-found") throw err;
   }
 
-  if (existingUser) {
+  // Direct-add only a VERIFIED account (or one already active here, where
+  // re-inviting just updates the role). Anyone can create an unverified
+  // Firebase user with any address, so an unverified match falls through to
+  // the token invite below; signup then resolves it (see /api/auth/signup).
+  const directAdd =
+    existingUser !== null &&
+    (existingUser.emailVerified ||
+      (
+        await db
+          .doc(`subAccounts/${subAccountId}/subAccountMembers/${existingUser.uid}`)
+          .get()
+      ).data()?.status === "active");
+
+  if (existingUser && directAdd) {
     return addExistingUserAsMember({
       db,
       existingUser,
@@ -149,6 +163,10 @@ export async function createInviteServerSide(
     .limit(1)
     .get();
 
+  // Every (re-)issue mints a fresh single-use token; only its hash is
+  // stored, so a resend rotates it and earlier links stop working.
+  const { token, tokenHash } = generateInviteToken();
+
   let inviteId: string;
   let reused = false;
   if (!dupSnap.empty) {
@@ -159,6 +177,7 @@ export async function createInviteServerSide(
     await dupSnap.docs[0].ref.update({
       subAccountRole: role,
       assignedTerritoryIds,
+      tokenHash,
     });
   } else {
     const ref = await db.collection("invites").add({
@@ -173,11 +192,12 @@ export async function createInviteServerSide(
       acceptedAt: null,
       revokedAt: null,
       assignedTerritoryIds,
+      tokenHash,
     });
     inviteId = ref.id;
   }
 
-  const inviteUrl = buildInviteUrl(email);
+  const inviteUrl = buildInviteUrl(email, token);
 
   // Send the delivery email. Failures here don't roll back the invite — the
   // admin can still copy the link from the UI and share it manually.
@@ -525,9 +545,9 @@ async function validateTerritoryIds(
     .map((s) => s.id);
 }
 
-function buildInviteUrl(email: string): string {
+function buildInviteUrl(email: string, token: string): string {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
-  const path = `/signup?email=${encodeURIComponent(email)}`;
+  const path = `/signup?email=${encodeURIComponent(email)}&invite=${encodeURIComponent(token)}`;
   return appUrl ? `${appUrl}${path}` : path;
 }
 

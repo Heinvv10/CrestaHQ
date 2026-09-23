@@ -1003,6 +1003,12 @@ export interface InviteDocV2 {
    * ignored for admin invites (admins always see every territory).
    */
   assignedTerritoryIds?: string[];
+  /**
+   * SHA-256 of the single-use token in the invite link. Signup must present
+   * the matching token; rotated on every re-send. Absent on invites created
+   * before tokens existed — those must be re-sent to be claimable.
+   */
+  tokenHash?: string;
 }
 
 export interface UserSubAccountMembership {
