@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/event-status-service";
 import type { CalendarEvent } from "@/types/events";
 import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
+import { isLongEvent } from "@/lib/booking/long-event";
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   const snap = await getAdminDb().doc(`events/${params.id}`).get();
@@ -74,6 +75,12 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   if (patch.title !== undefined) writePatch.title = patch.title;
   if (patch.startAt !== undefined) writePatch.startAt = patch.startAt;
   if (patch.endAt !== undefined) writePatch.endAt = patch.endAt;
+  if (patch.startAt !== undefined || patch.endAt !== undefined) {
+    writePatch.isLong = isLongEvent(
+      patch.startAt ?? existing.startAt,
+      patch.endAt ?? existing.endAt,
+    );
+  }
   if (patch.contactId !== undefined) writePatch.contactId = patch.contactId;
   if (patch.location !== undefined) writePatch.location = patch.location;
   if (patch.notes !== undefined) writePatch.notes = patch.notes;

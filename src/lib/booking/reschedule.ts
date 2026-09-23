@@ -23,6 +23,7 @@ import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { isLongEvent } from "@/lib/booking/long-event";
 
 /**
  * Who moved the booking. Threaded through so the activity-timeline row can
@@ -111,6 +112,7 @@ export async function rescheduleWithoutAvailabilityCheck(
       endAt: newEnd,
       publicTokenHash: newHash,
       icsSequence,
+      isLong: isLongEvent(newStart, newEnd),
       rescheduledAt: FieldValue.serverTimestamp(),
       rescheduleCount: FieldValue.increment(1),
       updatedAt: FieldValue.serverTimestamp(),

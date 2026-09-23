@@ -10,6 +10,7 @@ import {
   serializeEventForApi,
 } from "@/lib/api/serializers/events";
 import { GLOBAL_TERRITORY_ID } from "@/types";
+import { isLongEvent } from "@/lib/booking/long-event";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -101,6 +102,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     title: input.title,
     startAt: input.startAt,
     endAt: input.endAt,
+    isLong: isLongEvent(input.startAt, input.endAt),
     contactId: input.contactId,
     location: input.location,
     notes: input.notes,

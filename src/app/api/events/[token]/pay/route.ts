@@ -94,9 +94,11 @@ export async function POST(
   // The Checkout session must not outlive the hold, or the visitor could pay
   // after expire-step cancelled the booking and released its slot. Stripe
   // takes `expires_at` between 30 min and 24 h out (1-minute margin each
-  // side for latency), so a hold with under 31 min left still gets 31: a
-  // payment in that tail reaches a cancelled booking, which the reconciler
-  // leaves for the operator to confirm by hand or refund.
+  // side for latency), so a hold with under 31 min left still gets 31. A
+  // payment in that tail reaches a booking expire-step has cancelled:
+  // mark-paid refuses it (`bad_status`, status "cancelled") and the order is
+  // recorded as paid, but today nothing flags the booking — the operator must
+  // spot it and refund. PR #197's reconciler flags it on the order.
   const holdEnd = (
     event.paymentHoldExpiresAt as { toDate?: () => Date } | null | undefined
   )?.toDate?.();

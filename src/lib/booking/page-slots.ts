@@ -45,6 +45,11 @@ export interface PageSlotsInput {
   fromInstant?: Date;
   toInstant?: Date;
   busy: HostBusy[];
+  /**
+   * This page's bookings for the day cap — every status but cancelled.
+   * Absent ⇒ this page's entries in `busy`.
+   */
+  pageBookings?: HostBusy[];
   /** Book-time re-verify of an already-offered slot (voice). See `computeAvailability`. */
   ignoreMinNotice?: boolean;
   /** Named-host selection — pass `selectableHostUid()`'s result, never raw input. */
@@ -202,7 +207,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   if (seats !== null) slots = applySeats(slots, seatBusy, seats, pad);
   return capBookingsPerDay(
     slots,
-    input.busy.filter((b) => b.bookingPageSlug === page.slug),
+    input.pageBookings ?? input.busy.filter((b) => b.bookingPageSlug === page.slug),
     page,
     { allHosts: !!moving || type === "collective", isClass: seats !== null },
   );

@@ -13,6 +13,20 @@ vi.mock("@/lib/comms/smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 vi.mock("@/lib/automations/qstash", () => ({ verifyQStashSignature: async () => true }));
+let renderFailsOnce = false;
+vi.mock("@/lib/booking/email", async (orig) => {
+  const real = await orig<typeof import("@/lib/booking/email")>();
+  return {
+    ...real,
+    renderBookingReminderEmail: (...args: Parameters<typeof real.renderBookingReminderEmail>) => {
+      if (renderFailsOnce) {
+        renderFailsOnce = false;
+        throw new Error("render blew up");
+      }
+      return real.renderBookingReminderEmail(...args);
+    },
+  };
+});
 
 const { SA, AGENCY, mem, resetSeam, smtpSend } = await s();
 const { POST } = await import("./route");
@@ -64,6 +78,16 @@ describe("a redelivered reminder", () => {
     mem.seed("events/e1", { ...mem.read("events/e1"), publicTokenHash: moved.hash });
     await remind(60, moved.token);
     expect(smtpSend).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("a failure before the send", () => {
+  it("leaves no claim behind: the retry sends exactly once", async () => {
+    renderFailsOnce = true;
+    await expect(remind()).rejects.toThrow("render blew up");
+    expect((await remind()).status).toBe(200);
+    await remind();
+    expect(smtpSend).toHaveBeenCalledTimes(1);
   });
 });
 

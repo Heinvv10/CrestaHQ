@@ -66,15 +66,17 @@ export class BusyQueryError extends Error {
   }
 }
 
-// Look back far enough that an event which started before the window but is
-// still running is seen as busy — including a multi-day "Out of office". The
-// query can only range on `startAt`, so this is a bound: an event longer than
-// 31 days that began before it is missed. It also covers the start of the
-// window's first local date, which the day cap counts bookings on.
-const BUSY_LOOKBACK_MS = 31 * 24 * 60 * 60_000;
+// The main busy read ranges on `startAt`, so it looks back 26 h: far enough
+// for the start of the window's first local date (the day cap counts bookings
+// on the whole date) and for any slot-sized event still running. Events
+// longer than 8 h are read by a second query on `isLong` — see long-event.ts.
+const BUSY_LOOKBACK_MS = 26 * 60 * 60_000;
 // The day cap counts the page's bookings on a slot's whole local date, so
 // with a cap the read runs to the end of the window's last local date too.
 const DAY_CAP_LOOKAHEAD_MS = 26 * 60 * 60_000;
+// How far back the long-event query reaches. A longer-running event that
+// began before this is missed.
+const LONG_LOOKBACK_MS = 366 * 24 * 60 * 60_000;
 
 export async function resolvePageAvailability(
   opts: ResolveAvailabilityOptions,
@@ -99,8 +101,9 @@ export async function resolvePageAvailability(
       (opts.page.maxPerDay != null ? DAY_CAP_LOOKAHEAD_MS : 0),
   );
 
-  const busy = await loadEventBusy(
+  const { busy, pageBookings } = await loadEventBusy(
     opts.subAccountId,
+    opts.page.slug,
     queryFrom,
     queryTo,
     opts.movingEvent?.id ?? null,
@@ -116,6 +119,7 @@ export async function resolvePageAvailability(
     fromInstant: opts.fromInstant,
     toInstant: opts.toInstant,
     busy,
+    pageBookings,
     ignoreMinNotice: opts.ignoreMinNotice,
     onlyHostUid: opts.onlyHostUid,
     movingEvent: opts.movingEvent,
@@ -174,19 +178,24 @@ export async function departedHostMessage(
   return null;
 }
 
-/** Occupying events in the sub-account starting inside [from, to]. */
+/**
+ * Occupying events in the sub-account starting inside [from, to], plus long
+ * events (`isLong`) that began up to `LONG_LOOKBACK_MS` earlier; and this
+ * page's bookings in the same read that the day cap counts — every status
+ * but cancelled, since a completed or no-show booking still used the day.
+ */
 async function loadEventBusy(
   subAccountId: string,
+  pageSlug: string,
   from: Date,
   to: Date,
   excludeEventId: string | null,
   txn: FirebaseFirestore.Transaction | undefined,
-): Promise<HostBusy[]> {
-  const query = getAdminDb()
+): Promise<{ busy: HostBusy[]; pageBookings: HostBusy[] }> {
+  const events = getAdminDb()
     .collection("events")
-    .where("subAccountId", "==", subAccountId)
-    .where("startAt", ">=", from)
-    .where("startAt", "<=", to);
+    .where("subAccountId", "==", subAccountId);
+  const query = events.where("startAt", ">=", from).where("startAt", "<=", to);
   let snap: FirebaseFirestore.QuerySnapshot;
   try {
     snap = txn ? await txn.get(query) : await query.get();
@@ -196,24 +205,73 @@ async function loadEventBusy(
     if (txn) throw err;
     throw new BusyQueryError(err);
   }
+  // Read OUTSIDE the transaction even when there is one, so a book or
+  // reschedule doesn't read-lock months of old events. It needs no conflict
+  // detection: what the transaction guards against is a concurrent booking,
+  // and bookings are slot-sized (never `isLong`), so they are in the main
+  // read above. A long event added mid-transaction from the dashboard isn't
+  // availability-checked anyway.
+  const longDocs = await loadLongEvents(
+    events
+      .where("isLong", "==", true)
+      .where("startAt", ">=", new Date(from.getTime() - LONG_LOOKBACK_MS))
+      .where("startAt", "<=", to),
+    txn !== undefined,
+  );
 
-  const out: HostBusy[] = [];
-  for (const d of snap.docs) {
-    if (d.id === excludeEventId) continue;
+  const busy: HostBusy[] = [];
+  const pageBookings: HostBusy[] = [];
+  const seen = new Set<string>();
+  for (const d of [...snap.docs, ...longDocs]) {
+    if (d.id === excludeEventId || seen.has(d.id)) continue;
+    seen.add(d.id);
     const e = d.data() as CalendarEvent;
-    if (!eventOccupiesSlot(eventStatus(e))) continue;
     // Skip malformed timestamps so one bad doc can't break every slot.
     const startAt = toDate(e.startAt);
     const endAt = toDate(e.endAt);
     if (!startAt || !endAt) continue;
-    out.push({
+    const status = eventStatus(e);
+    const entry: HostBusy = {
       startAt,
       endAt,
       hostUids: eventHostUids(e),
       bookingPageSlug: e.bookingPageSlug ?? null,
-    });
+    };
+    if (eventOccupiesSlot(status)) busy.push(entry);
+    if (entry.bookingPageSlug === pageSlug && status !== "cancelled") {
+      pageBookings.push(entry);
+    }
   }
-  return out;
+  return { busy, pageBookings };
+}
+
+let longIndexMissingLogged = false;
+
+/**
+ * The long-event query needs the `(subAccountId, isLong, startAt)` index. Until
+ * it is deployed (and existing events backfilled) it fails SOFT — no long
+ * events, logged once — so availability is never worse than the short read.
+ */
+async function loadLongEvents(
+  query: FirebaseFirestore.Query,
+  inTxn: boolean,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  try {
+    return (await query.get()).docs;
+  } catch (err) {
+    const e = err as { code?: unknown; message?: unknown } | null;
+    if (e?.code === 9 || String(e?.message ?? "").includes("FAILED_PRECONDITION")) {
+      if (!longIndexMissingLogged) {
+        longIndexMissingLogged = true;
+        console.warn(
+          "[resolve-availability] long-event index missing — long events not read until firestore.indexes.json is deployed",
+        );
+      }
+      return [];
+    }
+    if (inTxn) throw err;
+    throw new BusyQueryError(err);
+  }
 }
 
 function toDate(v: unknown): Date | null {

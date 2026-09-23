@@ -4,7 +4,8 @@ import { SA, mem, post, resetBookingHarness, seedEvent, seedPage, slot } from "@
 /**
  * Through the real availability + book routes and resolver:
  *  - a multi-day busy event (an "Out of office" that began days ago) blocks
- *    slots. The busy read only looked back 8 h, so it was never seen.
+ *    slots. The busy read only looked back 8 h, so it was never seen; long
+ *    events (`isLong`) now have their own query.
  *  - "Max per day" caps BOOKINGS made on the page that day. It used to cap
  *    the free slots offered instead — first N shown, the rest hidden, and
  *    no limit at all on how many were booked.
@@ -48,6 +49,7 @@ describe("a busy event that started days before the window", () => {
       title: "Out of office",
       startAt: ts("2026-09-11T00:00:00Z"),
       endAt: ts("2026-09-15T00:00:00Z"),
+      isLong: true,
       assignedToUid: null,
     });
   });
@@ -62,6 +64,15 @@ describe("a busy event that started days before the window", () => {
 });
 
 describe("max per day", () => {
+  it("counts completed and no-show bookings, not cancelled ones", async () => {
+    seedPage("p", { maxPerDay: 2 });
+    seedEvent("done", "09:00", "09:30", { bookingPageSlug: "p", status: "completed" });
+    seedEvent("gone", "09:30", "10:00", { bookingPageSlug: "p", status: "cancelled" });
+    expect(await offered("p")).toHaveLength(6); // past statuses free the slot itself
+    seedEvent("noshow", "10:00", "10:30", { bookingPageSlug: "p", status: "no_show" });
+    expect(await offered("p")).toEqual([]);
+  });
+
   it("offers every free slot while the day is under the cap", async () => {
     seedPage("p", { maxPerDay: 2 });
     seedEvent("b1", "09:00", "09:30", { bookingPageSlug: "p" });

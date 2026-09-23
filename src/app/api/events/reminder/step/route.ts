@@ -138,22 +138,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "email_not_configured" });
   }
 
-  const claimRef = db.doc(
-    `events/${eventId}/reminderSends/${offsetMinutes}_${hashEventToken(token).slice(0, 16)}`,
-  );
-  try {
-    await claimRef.create({
-      agencyId: event.agencyId,
-      subAccountId: event.subAccountId,
-      claimedAt: FieldValue.serverTimestamp(),
-    });
-  } catch (err) {
-    if ((err as { code?: unknown } | null)?.code === 6) {
-      return NextResponse.json({ ok: true, skipped: "already_sent" });
-    }
-    throw err;
-  }
-
   // Booking-page may have been deleted since the schedule landed. Fall
   // back to event-level defaults so the reminder still sends sensibly.
   const page = (pageSnap?.data() ?? null) as BookingPage | null;
@@ -184,6 +168,26 @@ export async function POST(request: Request) {
     offsetMinutes,
   );
 
+  // Claimed immediately before the send, so nothing that can throw sits
+  // between the claim and the send; released on every failure a retry
+  // could fix.
+  const claimRef = db.doc(
+    `events/${eventId}/reminderSends/${offsetMinutes}_${hashEventToken(token).slice(0, 16)}`,
+  );
+  try {
+    await claimRef.create({
+      agencyId: event.agencyId,
+      subAccountId: event.subAccountId,
+      claimedAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === 6) {
+      return NextResponse.json({ ok: true, skipped: "already_sent" });
+    }
+    throw err;
+  }
+
+  let keepClaim = false;
   try {
     await sendEmail({
       to: contact.email,
@@ -195,6 +199,7 @@ export async function POST(request: Request) {
       subAccount: sub,
       meter: { subAccountId: event.subAccountId },
     });
+    keepClaim = true;
   } catch (err) {
     const suppressed = await recordSuppressedEmail(err, {
       contactId: event.contactId,
@@ -205,10 +210,15 @@ export async function POST(request: Request) {
     if (!suppressed) console.warn("[events/reminder] send failed", err);
     // SmtpError below 500 is a refusal decided before sending (e.g. a bad
     // address); anything else — provider or network — may clear on retry.
-    const permanent = suppressed || (err instanceof SmtpError && err.status < 500);
-    if (!permanent) {
-      await claimRef.delete();
+    keepClaim = suppressed || (err instanceof SmtpError && err.status < 500);
+    if (!keepClaim) {
       return NextResponse.json({ error: "Send failed; retry" }, { status: 503 });
+    }
+  } finally {
+    if (!keepClaim) {
+      await claimRef.delete().catch((err: unknown) => {
+        console.error("[events/reminder] claim release failed", err);
+      });
     }
   }
 

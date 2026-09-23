@@ -112,3 +112,15 @@ describe("ICS SEQUENCE", () => {
     expect(seq[2]).toBeGreaterThan(seq[1]);
   });
 });
+
+describe("nextIcsSequence", () => {
+  it("continues a stored count, starts legacy events at 2, and treats junk as 0", async () => {
+    const { nextIcsSequence } = await import("./ics");
+    expect(nextIcsSequence({ icsSequence: 4 })).toBe(5);
+    expect(nextIcsSequence({})).toBe(2);
+    expect(nextIcsSequence({ icsSequence: "7" })).toBe(1);
+    expect(nextIcsSequence({ icsSequence: Number.NaN })).toBe(1);
+    expect(nextIcsSequence({ icsSequence: -3 })).toBe(1);
+    expect(nextIcsSequence({ icsSequence: null })).toBe(1);
+  });
+});

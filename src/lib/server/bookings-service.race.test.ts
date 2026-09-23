@@ -60,13 +60,21 @@ describe("mark-paid against a racing payment expiry", () => {
     const [paid] = await Promise.all([markPaid(null), runExpire()]);
     const status = read().status;
     if (status === "cancelled") {
-      expect(paid).toMatchObject({ ok: false, code: "bad_status" });
+      expect(paid).toMatchObject({ ok: false, code: "bad_status", status: "cancelled" });
       expect(triggers.mock.calls.map(([, t]) => t)).toEqual(["event_cancelled"]);
     } else {
       expect(status).toBe("scheduled");
       expect(paid).toMatchObject({ ok: true });
       expect(triggers.mock.calls.map(([, t]) => t)).toEqual(["event_paid"]);
     }
+  });
+});
+
+describe("mark-paid after the expiry cancelled", () => {
+  it("refuses with the cancelled status, so the payment can be told apart from a replay", async () => {
+    await runExpire();
+    expect(await markPaid(null)).toMatchObject({ ok: false, code: "bad_status", status: "cancelled" });
+    expect(read().status).toBe("cancelled");
   });
 });
 

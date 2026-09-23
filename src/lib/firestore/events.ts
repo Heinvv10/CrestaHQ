@@ -21,6 +21,7 @@ import {
 } from "@/lib/firestore/territory-query";
 import type { CalendarEvent, EventFormData } from "@/types/events";
 import { GLOBAL_TERRITORY_ID, type TenantScope } from "@/types";
+import { isLongEvent } from "@/lib/booking/long-event";
 
 const EVENTS = "events";
 
@@ -94,6 +95,7 @@ export async function createEvent(
     title: data.title,
     startAt: Timestamp.fromDate(data.startAt),
     endAt: Timestamp.fromDate(data.endAt),
+    isLong: isLongEvent(data.startAt, data.endAt),
     contactId: data.contactId,
     location: data.location,
     notes: data.notes,
@@ -125,6 +127,10 @@ export async function updateEvent(
   if (data.startAt !== undefined)
     patch.startAt = Timestamp.fromDate(data.startAt);
   if (data.endAt !== undefined) patch.endAt = Timestamp.fromDate(data.endAt);
+  // The dialog always sends both times together.
+  if (data.startAt !== undefined && data.endAt !== undefined) {
+    patch.isLong = isLongEvent(data.startAt, data.endAt);
+  }
   if (data.contactId !== undefined) {
     patch.contactId = data.contactId;
     // Re-derive territory when the linked contact changes so the event
