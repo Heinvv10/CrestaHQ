@@ -231,6 +231,8 @@ export async function initializePaystackTransaction(input: {
   displayName?: string;
   /** Our own reference. Omitted → Paystack generates one. */
   reference?: string;
+  /** Restrict the payment methods offered, e.g. `["card"]`. */
+  channels?: string[];
   /**
    * A sub-account's OWN secret key (payment links). Omitted → the agency's
    * `PAYSTACK_SECRET_KEY`, as Client Billing wants. See `paystackRequest`.
@@ -248,6 +250,7 @@ export async function initializePaystackTransaction(input: {
       ? { currency: assertSupportedCurrency(input.currency) }
       : {}),
     ...(input.plan ? { plan: input.plan } : {}),
+    ...(input.channels ? { channels: input.channels } : {}),
     // Paystack has one return URL, not Stripe's success/cancel pair. An
     // abandoned payment simply never leaves the Paystack page, so a caller's
     // cancelUrl has nothing to bind to.
@@ -289,6 +292,21 @@ export interface PaystackVerifiedTransaction {
   id?: number | string;
   /** Echoed checkout metadata — object, JSON string, or empty. */
   metadata?: unknown;
+  /**
+   * The card (or other instrument) that paid. `reusable` is Paystack saying
+   * `/transaction/charge_authorization` may charge `authorization_code` again.
+   */
+  authorization?: {
+    authorization_code?: string | null;
+    reusable?: boolean | null;
+    channel?: string | null;
+    brand?: string | null;
+    card_type?: string | null;
+    last4?: string | null;
+    exp_month?: string | null;
+    exp_year?: string | null;
+    signature?: string | null;
+  } | null;
 }
 
 /**

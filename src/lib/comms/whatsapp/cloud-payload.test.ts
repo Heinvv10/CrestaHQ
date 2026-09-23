@@ -290,7 +290,7 @@ describe("parseCloudInbounds on a batched delivery", () => {
       ["PN2", "wamid.IN2"],
     ]);
     expect(parseCloudStatuses(payload)).toEqual([
-      { providerMessageId: "wamid.OUT", status: "read" },
+      { providerMessageId: "wamid.OUT", status: "read", phoneNumberId: "PN1" },
     ]);
   });
 
@@ -325,8 +325,23 @@ describe("parseCloudStatuses", () => {
       ],
     };
     expect(parseCloudStatuses(payload)).toEqual([
-      { providerMessageId: "wamid.A", status: "delivered" },
-      { providerMessageId: "wamid.B", status: "read" },
+      { providerMessageId: "wamid.A", status: "delivered", phoneNumberId: "PN1" },
+      { providerMessageId: "wamid.B", status: "read", phoneNumberId: "PN1" },
+    ]);
+  });
+
+  it("carries the recipient and the first error of a failed receipt", () => {
+    const payload = {
+      entry: [{ changes: [{ value: { statuses: [{
+        id: "wamid.F", status: "failed", recipient_id: "27821234567",
+        errors: [{ code: 131047, title: "Re-engagement message" }],
+      }] } }] }],
+    };
+    expect(parseCloudStatuses(payload)).toEqual([
+      {
+        providerMessageId: "wamid.F", status: "failed", recipientId: "27821234567",
+        errorCode: "131047", errorTitle: "Re-engagement message",
+      },
     ]);
   });
 

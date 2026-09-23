@@ -10,6 +10,8 @@ const m = vi.hoisted(() => ({
 vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountMember: m.access,
 }));
+// Territory scoping is covered in ../route.territory-actions.test.ts.
+vi.mock("@/lib/auth/territory-filter", () => ({ territoryGate: async () => null }));
 vi.mock("@/lib/booking/lifecycle", () => ({
   fireBookingTrigger: m.fireBookingTrigger,
   recordBookingActivity: m.recordBookingActivity,

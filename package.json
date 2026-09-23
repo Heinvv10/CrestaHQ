@@ -12,7 +12,7 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "node scripts/check-capability-tenancy.mjs && node scripts/check-whatsapp-rail.mjs && eslint --max-warnings 0",
+    "lint": "node scripts/check-capability-tenancy.mjs && node scripts/check-whatsapp-rail.mjs && node scripts/lint-cors.mjs && eslint --max-warnings 0",
     "check:tenancy": "node scripts/check-capability-tenancy.mjs",
     "check:wa-rail": "node scripts/check-whatsapp-rail.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",

@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
@@ -24,6 +25,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (!snap.exists) return NextResponse.json({ error: "Event not found" }, { status: 404 });
   const access = await requireSubAccountMember(request, snap.data()?.subAccountId as string);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, snap.data()?.territoryId as string | null | undefined);
+  if (gate) return gate;
 
   // One retry per event per 30 s: each is a round of Google calls per host.
   // Read and stamp in one transaction so two concurrent clicks can't both pass.

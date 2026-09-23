@@ -46,6 +46,9 @@ const OPEN_CORS_ALLOWLIST = new Set([
   "web-chat/config/route.ts",
   "web-chat/message/route.ts",
   "web-chat/capture/route.ts",
+  // Same widget, no cookie auth — the unguessable session id is the
+  // credential (see the route's own comment). Read-only delivery poll.
+  "web-chat/poll/route.ts",
 ]);
 
 const CORS_REGEX =

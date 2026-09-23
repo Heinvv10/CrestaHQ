@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import { buildEventPublicUrl } from "@/lib/booking/event-token";
 import {
   RescheduleRejected,
@@ -70,6 +71,8 @@ export async function POST(
   const { subAccountId } = snap.data() as { subAccountId: string };
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, snap.data()?.territoryId as string | null | undefined);
+  if (gate) return gate;
 
   let outcome: Awaited<ReturnType<typeof rescheduleWithoutAvailabilityCheck>>;
   try {

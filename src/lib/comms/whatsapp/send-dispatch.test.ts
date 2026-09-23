@@ -360,4 +360,49 @@ describe("the window decision is made once, for every rail", () => {
     expect(r.ok).toBe(true);
     expect(sendWhatsappBridge).toHaveBeenCalledOnce();
   });
+
+  describe("Twilio rail with the window shut", () => {
+    const shut = new Date(Date.now() - 48 * 3600_000);
+    const approved = { name: "t", language: "en", components: [], approved: true };
+
+    it("sends the approved template, never the free-form body", async () => {
+      // Twilio accepts the free-form create and rejects it asynchronously
+      // (63016), so a step that sent the body logged ok for a message that
+      // was never delivered.
+      const sendTemplateViaTwilio = vi.fn().mockResolvedValue({ ok: true, messageId: "SMt" });
+      const input = baseInput({ lastInboundAt: shut, template: approved, sendTemplateViaTwilio });
+      const r = await dispatchWhatsappSend(input);
+      expect(r).toMatchObject({ ok: true, messageId: "SMt", provider: "twilio", sentAs: "template" });
+      expect(sendTemplateViaTwilio).toHaveBeenCalledOnce();
+      expect(input.sendViaTwilio).not.toHaveBeenCalled();
+    });
+
+    it("keeps a template sender's own attempted:false refusal", async () => {
+      const sendTemplateViaTwilio = vi.fn().mockResolvedValue({
+        ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY", providerOutcome: "DEFINITELY_REJECTED", attempted: false,
+      });
+      const r = await dispatchWhatsappSend(baseInput({ lastInboundAt: shut, template: approved, sendTemplateViaTwilio }));
+      expect(r).toMatchObject({ ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY", attempted: false });
+    });
+
+    it("refuses with the window reason when no Twilio template sender was given", async () => {
+      const input = baseInput({ lastInboundAt: shut, template: approved });
+      const r = await dispatchWhatsappSend(input);
+      expect(r).toMatchObject({
+        ok: false,
+        provider: "twilio",
+        error: "WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE",
+        providerOutcome: "DEFINITELY_REJECTED",
+      });
+      expect(input.sendViaTwilio).not.toHaveBeenCalled();
+    });
+
+    it("still sends free-form inside the window even with a template available", async () => {
+      const sendTemplateViaTwilio = vi.fn();
+      const input = baseInput({ template: approved, sendTemplateViaTwilio });
+      const r = await dispatchWhatsappSend(input);
+      expect(r).toMatchObject({ ok: true, messageId: "SM1", sentAs: "text" });
+      expect(sendTemplateViaTwilio).not.toHaveBeenCalled();
+    });
+  });
 });

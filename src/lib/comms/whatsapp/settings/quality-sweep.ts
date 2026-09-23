@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
 import type { StoredQuality } from "@/types/whatsapp-cloud";
+import { WabaNotConfiguredError } from "../cloud-credentials";
 import { recordQualityDrop, resolveOpenAlerts } from "./quality-alert";
 import { WaFakeRefusedError, getWhatsappSettingsProviderFor, whatsappSettingsProviderMode } from "./select";
 import type { WaPhoneStatus } from "./types";
@@ -54,6 +55,7 @@ export interface QualitySweepResult {
   alerted: number;
   recovered: number;
   failed: number;
+  skipped: number;
 }
 
 type Candidate = { id: string; sub: SubAccountDoc };
@@ -104,7 +106,7 @@ export async function runWhatsappQualitySweep(
   // Fake mode (dev/CI against production Firestore): the alert doc is written,
   // but no push or email ever leaves the box for a fixture drop.
   const deliver = whatsappSettingsProviderMode() !== "fake";
-  const result: QualitySweepResult = { processed: 0, alerted: 0, recovered: 0, failed: 0 };
+  const result: QualitySweepResult = { processed: 0, alerted: 0, recovered: 0, failed: 0, skipped: 0 };
   for (const c of list) {
     try {
       const alert = await pollOne(c, now, deliver);
@@ -112,6 +114,12 @@ export async function runWhatsappQualitySweep(
       if (alert === "drop") result.alerted += 1;
       if (alert === "recovered") result.recovered += 1;
     } catch (err) {
+      if (err instanceof WabaNotConfiguredError) {
+        // Meta creds were never finished for this tenant (e.g. connection
+        // abandoned mid-setup) — not a failure, nothing to retry hourly.
+        result.skipped += 1;
+        continue;
+      }
       // Outside the fake's fence, or Meta refused, or Firestore failed:
       // that tenant's reading stays as it was and the next hour retries.
       const kind = err instanceof WaFakeRefusedError ? "fake refused" : "poll threw";

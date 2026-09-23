@@ -293,6 +293,18 @@ export async function sendSmsForSubAccount({
 }
 
 /**
+ * Where Twilio reports a WhatsApp message's real outcome (delivered, read,
+ * failed with 63016…) after accepting the create. Omitted when the app URL is
+ * unset: Twilio rejects a relative callback, which would fail the send itself.
+ */
+function whatsappStatusCallback(): { statusCallback?: string } {
+  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
+  return /^https?:\/\//.test(base)
+    ? { statusCallback: `${base}/api/webhooks/twilio/whatsapp/status` }
+    : {};
+}
+
+/**
  * Sub-account WhatsApp send over Twilio. Reuses the sub-account's dedicated
  * Twilio client (same creds as SMS) but sends from the `whatsappFromNumber`
  * with both addresses carrying the `whatsapp:` prefix. There is no shared
@@ -337,6 +349,7 @@ export async function sendWhatsappForSubAccount({
     from,
     to: toWhatsappAddress(to),
     body,
+    ...whatsappStatusCallback(),
   }).catch(rethrowAttempted);
   void recordUsage({
     subAccountId,
@@ -399,6 +412,7 @@ export async function sendWhatsappTemplateForSubAccount({
     to: toWhatsappAddress(to),
     contentSid,
     contentVariables: JSON.stringify(varMap),
+    ...whatsappStatusCallback(),
   }).catch(rethrowAttempted);
   void recordUsage({
     subAccountId,
