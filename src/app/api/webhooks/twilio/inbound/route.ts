@@ -13,6 +13,11 @@ import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
+import {
+  optKeyword,
+  WHATSAPP_START_WORDS,
+  WHATSAPP_STOP_WORDS,
+} from "@/lib/comms/whatsapp/opt-keywords";
 
 export const dynamic = "force-dynamic";
 
@@ -39,16 +44,6 @@ export const dynamic = "force-dynamic";
  * Always returns 200 + empty TwiML so Twilio doesn't retry. Dropped
  * messages are logged but not reported back to Twilio.
  */
-
-const STOP_WORDS = new Set([
-  "STOP",
-  "STOPALL",
-  "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
-]);
-const START_WORDS = new Set(["START", "UNSTOP", "YES"]);
 
 function emptyTwimlResponse(): string {
   return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
@@ -179,11 +174,11 @@ export async function POST(request: Request) {
     return twimlResponse(emptyTwimlResponse());
   }
 
-  // Detect opt-out / opt-in keywords (first whitespace-delimited word, upper-cased).
-  const word = bodyRaw.trim().toUpperCase().split(/\s+/)[0] ?? "";
+  // Detect opt-out / opt-in keywords — the whole message, same rule as WhatsApp.
+  const word = optKeyword(bodyRaw);
   let nextOptedOut: boolean | null = null;
-  if (STOP_WORDS.has(word)) nextOptedOut = true;
-  else if (START_WORDS.has(word)) nextOptedOut = false;
+  if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
+  else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
 
   // Match contacts.
   // Shared mode: existing behavior — across all contacts (legacy).
@@ -241,6 +236,7 @@ export async function POST(request: Request) {
           channel: "sms",
           direction: "inbound",
           body: bodyRaw,
+          optOut: nextOptedOut === true,
         });
       }),
     );

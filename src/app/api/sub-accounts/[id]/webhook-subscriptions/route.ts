@@ -14,7 +14,7 @@ import {
   type WebhookEventType,
 } from "@/types/webhooks";
 import { eventsAreSingleCategory } from "@/lib/webhooks/event-categories";
-import { validateWebhookUrl } from "@/lib/webhooks/validate-url";
+import { validatePublicUrl } from "@/lib/webhooks/validate-url";
 
 /**
  * Webhook subscriptions management. Mirrors the api-keys CRUD shape:
@@ -79,7 +79,7 @@ export async function POST(
     );
   }
 
-  const urlCheck = validateWebhookUrl(body.url ?? "");
+  const urlCheck = await validatePublicUrl(body.url ?? "");
   if (!urlCheck.ok) {
     return NextResponse.json({ error: urlCheck.error }, { status: 400 });
   }

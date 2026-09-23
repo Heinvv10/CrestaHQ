@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { validatePublicUrl } from "@/lib/webhooks/validate-url";
 import {
   Webinar1ConnectionError,
   getWebinar1ClientForCredentials,
@@ -129,6 +130,10 @@ export async function POST(
       { error: "The platform URL must be https." },
       { status: 400 }
     );
+  }
+  const publicCheck = await validatePublicUrl(baseUrl);
+  if (!publicCheck.ok) {
+    return NextResponse.json({ error: publicCheck.error }, { status: 400 });
   }
   if (!apiKey.startsWith("wbk_")) {
     return NextResponse.json(

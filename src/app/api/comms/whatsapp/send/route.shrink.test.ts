@@ -90,7 +90,7 @@ vi.mock("@/lib/comms/whatsapp/media-budget", async (importOriginal) => {
 // Real sharp, counted: a file refused by its magic bytes must never reach it.
 const sharpCalls = vi.hoisted(() => ({ n: 0 }));
 vi.mock("sharp", async (importOriginal) => {
-  const real = (await importOriginal<{ default: typeof import("sharp") }>()).default;
+  const real = (await importOriginal<{ default: typeof sharp }>()).default;
   const counted = (...a: Parameters<typeof real>) => {
     sharpCalls.n += 1;
     return real(...a);

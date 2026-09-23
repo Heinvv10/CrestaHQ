@@ -22,9 +22,15 @@ on:
 jobs:
   smoke:
     name: Playwright vs crm.crestahq.com
-    # Same fixture sub-accounts as the ci.yml E2E job, so the same runner.
+    # Same fixture sub-accounts as the ci.yml E2E job, so the same runner —
+    # only one runner carries the crestahq-e2e label, which is what
+    # serialises fixture-tenant/port-3100 use. Shares a concurrency group
+    # with ci.yml's e2e job so the two workflows queue instead of colliding.
     runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     timeout-minutes: 30
+    concurrency:
+      group: crestahq-e2e-runner
+      cancel-in-progress: false
     env:
       # No build step: the target is already running. Only the values the
       # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK

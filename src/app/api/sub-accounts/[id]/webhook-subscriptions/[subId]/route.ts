@@ -14,6 +14,7 @@ import {
   type WebhookSubscriptionStatus,
 } from "@/types/webhooks";
 import { eventsAreSingleCategory } from "@/lib/webhooks/event-categories";
+import { validatePublicUrl } from "@/lib/webhooks/validate-url";
 
 const EVENT_SET = new Set(WEBHOOK_EVENT_TYPES);
 const VALID_STATUS: WebhookSubscriptionStatus[] = ["active", "paused"];
@@ -74,18 +75,12 @@ export async function PATCH(
   const patch: Parameters<typeof updateSubscription>[2] = {};
 
   if (body.url !== undefined) {
-    try {
-      const url = new URL(body.url);
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        return NextResponse.json(
-          { error: "URL must use http or https." },
-          { status: 400 },
-        );
-      }
-      patch.url = url.toString();
-    } catch {
-      return NextResponse.json({ error: "Invalid URL." }, { status: 400 });
+    // Same rules as create — an edit must not be a way around them.
+    const urlCheck = await validatePublicUrl(body.url);
+    if (!urlCheck.ok) {
+      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
     }
+    patch.url = urlCheck.url;
   }
 
   if (body.events !== undefined) {
