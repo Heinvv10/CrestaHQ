@@ -153,3 +153,21 @@ export function hasWhatsappSenderOnRail(
     (s) => resolveWhatsAppProviderId(s.provider) === provider,
   );
 }
+
+/**
+ * The sender on `provider` a reply should go out on — the rail's default if it
+ * is the workspace default, else the first sender on that rail. Null when the
+ * workspace has no sender on it (the caller then falls back to the default).
+ *
+ * Replies must leave from the number the customer wrote to: answering an
+ * inbound on one number from another is a message from a stranger.
+ */
+export function whatsappSenderIdOnRail(
+  sub: WhatsappSenderSource | null | undefined,
+  provider: WhatsAppProviderId,
+): string | null {
+  const onRail = listWhatsappSenders(sub).filter(
+    (s) => resolveWhatsAppProviderId(s.provider) === provider,
+  );
+  return (onRail.find((s) => s.isDefault === true) ?? onRail[0])?.id ?? null;
+}

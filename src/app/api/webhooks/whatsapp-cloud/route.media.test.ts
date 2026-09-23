@@ -440,6 +440,8 @@ describe("cloud inbound media — ordering against the redelivery guard", () => 
     expect(row()).toMatchObject({ body: "the text survives", mediaDropped: "fetch_failed" });
     expect(row()).not.toHaveProperty("media");
     expect(m.aiCalls).toHaveLength(1);
+    // The reply goes back out on the rail the customer wrote in on.
+    expect(m.aiCalls[0]).toMatchObject({ inboundProvider: "cloud" });
   });
 });
 

@@ -699,6 +699,7 @@ export async function POST(
           contact,
           incomingMessage: body,
           replyTo: from,
+          inboundProvider: "bridge",
         });
       }
     } catch (err) {

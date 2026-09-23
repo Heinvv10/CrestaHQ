@@ -4,6 +4,9 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
+import { whatsappSenderIdOnRail } from "@/lib/comms/whatsapp/resolve-sender";
+import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
+import { aiReplyLoopTripped, pauseBotForReplyLoop } from "@/lib/comms/ai/loop-guard";
 import { sendMetaMessage } from "@/lib/comms/meta";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { isWithinBusinessHours } from "@/lib/comms/business-hours";
@@ -50,6 +53,10 @@ interface RespondInput {
   /** REQUIRED when channelId === "meta": which platform the DM arrived on.
    *  The reply mirrors it, and it becomes the conversation/draft channel. */
   metaChannel?: "messenger" | "instagram";
+  /** WhatsApp only: the rail the inbound arrived on. The reply goes back out
+   *  on the same rail (so from the number the customer wrote to), not on the
+   *  workspace's default sender. */
+  inboundProvider?: WhatsAppProviderId;
 }
 
 type AiSkipReason =
@@ -61,6 +68,7 @@ type AiSkipReason =
   | "bot_off"
   | "bot_paused"
   | "quota"
+  | "reply_loop"
   | "llm_failed";
 
 type RespondOutcome =
@@ -103,6 +111,7 @@ interface ChannelTransport {
 function getChannelTransport(
   channelId: ConfiguredChannelId,
   metaChannel?: "messenger" | "instagram",
+  inboundProvider?: WhatsAppProviderId,
 ): ChannelTransport {
   if (channelId === "whatsapp") {
     // Routed through the provider dispatcher, not Twilio directly, so a
@@ -126,6 +135,9 @@ function getChannelTransport(
           to,
           body,
           lastInboundAt: new Date(),
+          senderId: inboundProvider
+            ? whatsappSenderIdOnRail(subAccount, inboundProvider)
+            : null,
         }),
       outboundRowExtras: (sid) => ({ twilioMessageSid: sid }),
     };
@@ -340,9 +352,10 @@ export async function maybeRespondWithAi(
     incomingMessage,
     replyTo,
     metaChannel,
+    inboundProvider,
   } = input;
   const eff = agent.effective;
-  const transport = getChannelTransport(channelId, metaChannel);
+  const transport = getChannelTransport(channelId, metaChannel, inboundProvider);
   // The conversation/draft channel mirrors the platform for Meta DMs
   // ("messenger" | "instagram"); for Twilio channels it IS the channel id.
   const conversationChannel = (metaChannel ?? channelId) as ConversationChannel;
@@ -469,6 +482,29 @@ export async function maybeRespondWithAi(
     return { kind: "skipped", reason: "bot_off" };
   }
   const suggestOnly = controls.botMode === "suggest";
+
+  // Guard: bot-to-bot reply loop (see loop-guard.ts). Before the LLM call, so
+  // a tripped loop spends nothing. Suggest mode sends nothing, so cannot loop.
+  if (
+    !suggestOnly &&
+    (await aiReplyLoopTripped({
+      contactId: contact.id,
+      messagesCollection: transport.messagesCollection,
+      lastHumanReplyAtMs: controls.lastHumanReplyAtMs,
+    }))
+  ) {
+    await pauseBotForReplyLoop(contact.id);
+    await logActivity({
+      contactId: contact.id,
+      agencyId: subAccount.agencyId,
+      subAccountId,
+      type: "ai_skipped",
+      content:
+        "AI reply stopped — too many automated replies in a row with no human reply (possible auto-responder loop). Bot paused on this conversation; a human needs to pick it up.",
+      meta: { reason: "reply_loop", channel: channelId },
+    });
+    return { kind: "skipped", reason: "reply_loop" };
+  }
 
   // Build LLM context and call the model.
   let completion;

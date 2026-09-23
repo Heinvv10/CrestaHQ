@@ -22,7 +22,7 @@ import type {
  * pause auto-expires; the operator can also Resume it from the inbox. Keeps the
  * AI from jumping back into a thread a human is actively handling.
  */
-const PAUSE_WINDOW_MS = 12 * 60 * 60 * 1000;
+export const PAUSE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Server-side write for the unified-inbox index. Called right after every
@@ -298,13 +298,20 @@ export async function upsertConversationForMessage(
  */
 export async function getConversationControls(
   conversationId: string
-): Promise<{ botMode: ConversationBotMode; botPausedUntilMs: number | null }> {
+): Promise<{
+  botMode: ConversationBotMode;
+  botPausedUntilMs: number | null;
+  /** When a human last replied — resets the AI reply-loop guard. */
+  lastHumanReplyAtMs: number | null;
+}> {
   try {
     const snap = await getAdminDb()
       .collection("conversations")
       .doc(conversationId)
       .get();
-    if (!snap.exists) return { botMode: "auto", botPausedUntilMs: null };
+    if (!snap.exists) {
+      return { botMode: "auto", botPausedUntilMs: null, lastHumanReplyAtMs: null };
+    }
     const d = snap.data() ?? {};
     const botMode = (d.botMode as ConversationBotMode) ?? "auto";
     const bp = d.botPausedUntil as
@@ -313,10 +320,14 @@ export async function getConversationControls(
       | undefined;
     const botPausedUntilMs =
       bp && typeof bp.toMillis === "function" ? bp.toMillis() : null;
-    return { botMode, botPausedUntilMs };
+    return {
+      botMode,
+      botPausedUntilMs,
+      lastHumanReplyAtMs: toMillis(d.lastHumanReplyAt),
+    };
   } catch (err) {
     console.warn("[conversations/controls] read failed", err);
-    return { botMode: "auto", botPausedUntilMs: null };
+    return { botMode: "auto", botPausedUntilMs: null, lastHumanReplyAtMs: null };
   }
 }
 

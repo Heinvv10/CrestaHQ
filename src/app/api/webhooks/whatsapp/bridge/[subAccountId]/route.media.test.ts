@@ -600,6 +600,8 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     expect(maybeRespondWithAi).toHaveBeenCalledTimes(1);
     expect(maybeRespondWithAi.mock.calls[0][0]).toMatchObject({
       incomingMessage: "is this the right router?",
+      // The reply goes back out on the rail the customer wrote in on.
+      inboundProvider: "bridge",
     });
   });
 
