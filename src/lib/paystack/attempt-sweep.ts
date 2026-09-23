@@ -80,7 +80,19 @@ async function paystackStatus(reference: string, secretKey: string, timeoutMs: n
   }
 }
 
+/**
+ * Never throws: a failure here leaves the attempt open, and the caller's
+ * `flagStaleAttempts` — which must still run — flags it.
+ */
 async function sweepOne(subAccountId: string, secretKey: string, reference: string, timeoutMs: number) {
+  try {
+    await settleOrClose(subAccountId, secretKey, reference, timeoutMs);
+  } catch (err) {
+    console.error(`[paystack/attempt-sweep] sa=${subAccountId} ref=${reference} left open`, err);
+  }
+}
+
+async function settleOrClose(subAccountId: string, secretKey: string, reference: string, timeoutMs: number) {
   const status = await paystackStatus(reference, secretKey, timeoutMs);
   if (status === "success") {
     await reconcilePaystackCharge({ subAccountId, secretKey, reference });

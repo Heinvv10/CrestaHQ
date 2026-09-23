@@ -579,3 +579,71 @@ describe("review round 2 — the sweep never closes a checkout that can still ta
   });
 });
 
+describe("review round 3 — a failing sweep never skips the flag step", () => {
+  it("G1: a Firestore error closing one attempt still sweeps the rest and flags what stayed open", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    for (let i = 0; i < 3; i++) await checkout(link.token);
+    const [r1] = started;
+    await mem.db.doc(`paymentLinks/${link.id}`).update({ active: false });
+    verifyAs = (c) => verified({ reference: c.path.split("/").pop()!, status: "abandoned" });
+    const realTx = mem.db.runTransaction;
+    let failed = false;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
+      if (!failed) {
+        failed = true;
+        return Promise.reject(Object.assign(new Error("10 ABORTED: contention"), { code: 10 }));
+      }
+      return realTx(fn);
+    });
+    expect((await disconnect()).status).toBe(200);
+    const states = started.map((r) => attempt(r).state);
+    expect(states.filter((st) => st === "refused")).toHaveLength(2);
+    expect(states.filter((st) => st === "flagged")).toHaveLength(1);
+    expect(String(mem.read(`paymentLinks/${link.id}`)!.attention)).toContain(started[states.indexOf("flagged")]);
+    void r1;
+  });
+
+  it("G2: reconnecting the same key while a disconnect is still sweeping leaves its attempts unflagged", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    let release: () => void = () => {};
+    let asked = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/balance") return new Response(JSON.stringify({ status: true, data: [{ currency: "ZAR" }] }));
+      asked = true;
+      return new Promise<Response>((_, reject) => { release = () => reject(new TypeError("fetch failed")); });
+    }));
+    const pendingDisconnect = disconnect();
+    await vi.waitFor(() => expect(asked).toBe(true));
+    expect((await connect(LIVE_KEY)).status).toBe(200);
+    release();
+    await pendingDisconnect;
+    expect(attempt(ref).state).toBe("open");
+    expect(mem.read(`paymentLinks/${link.id}`)!.attention ?? null).toBeNull();
+  });
+  it("G2b: switching back to the original key while a key switch is still sweeping leaves its attempts unflagged", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    await checkout(link.token);
+    const [ref] = started;
+    let release: () => void = () => {};
+    let asked = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/balance") return new Response(JSON.stringify({ status: true, data: [{ currency: "ZAR" }] }));
+      asked = true;
+      return new Promise<Response>((_, reject) => { release = () => reject(new TypeError("fetch failed")); });
+    }));
+    const pendingSwitch = connect("sk_live_k8");
+    await vi.waitFor(() => expect(asked).toBe(true));
+    expect((await connect(LIVE_KEY)).status).toBe(200);
+    release();
+    await pendingSwitch;
+    expect(attempt(ref).state).toBe("open");
+  });
+});
+

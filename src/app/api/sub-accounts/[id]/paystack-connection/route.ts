@@ -74,6 +74,16 @@ function webhookUrlFor(subAccountId: string): string | null {
 }
 
 /**
+ * The key stored NOW, not the one this request started with: the sweep can
+ * take seconds, and a concurrent reconnect must not have its own open
+ * attempts flagged as lost.
+ */
+async function currentFingerprint(subAccountId: string): Promise<string | null> {
+  const conn = await readPaystackConnectionSecret(subAccountId);
+  return conn ? paystackKeyFingerprint(conn.secretKey) : null;
+}
+
+/**
  * POST only. Disconnect is deliberately NOT gated — see DELETE.
  */
 async function loadGatedSubAccount(
@@ -178,7 +188,7 @@ export async function POST(
   );
   await batch.commit();
   if (outgoing) await sweepAttempts(subAccountId, outgoing, toSweep);
-  await flagStaleAttempts(subAccountId, paystackKeyFingerprint(secretKey));
+  await flagStaleAttempts(subAccountId, await currentFingerprint(subAccountId));
 
   return NextResponse.json({
     ok: true,
@@ -225,7 +235,7 @@ export async function DELETE(
   batch.delete(db.doc(paystackConnectionSecretPath(subAccountId)));
   await batch.commit();
   if (previous) await sweepAttempts(subAccountId, previous.secretKey, toSweep);
-  await flagStaleAttempts(subAccountId, null);
+  await flagStaleAttempts(subAccountId, await currentFingerprint(subAccountId));
 
   return NextResponse.json({ ok: true });
 }
