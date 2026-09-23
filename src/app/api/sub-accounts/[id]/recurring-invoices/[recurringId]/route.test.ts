@@ -89,4 +89,12 @@ it("moves a resumed schedule past the cycles it missed while paused", async () =
   expect(m.written[0].status).toBe("active");
   const next = (m.written[0].nextRunAt as { toDate: () => Date }).toDate();
   expect(localDay(next)).toBe("2026-07-15");
+  // The skipped cycles land on the operator's list rather than vanishing.
+  expect(String(m.written[0].lastError)).toContain("2026-03-15");
+});
+
+it("clears lastError on an ordinary edit", async () => {
+  vi.setSystemTime(new Date("2026-06-10T12:00:00Z"));
+  expect((await patch({ name: "Renamed" })).status).toBe(200);
+  expect(m.written[0].lastError).toBeNull();
 });

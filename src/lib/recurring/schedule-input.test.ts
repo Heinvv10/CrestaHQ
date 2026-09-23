@@ -336,12 +336,61 @@ describe("resuming a paused schedule", () => {
     expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-07-15");
   });
 
-  it("skips a cycle that fell due earlier on the day of the resume", () => {
-    const now = new Date("2026-06-15T08:00:00Z");
-    const result = parseScheduleUpdate({ status: "active" }, PAUSED, now);
+  it("names every cycle it stepped past, so the operator can raise them", () => {
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      PAUSED,
+      new Date("2026-06-20T12:00:00Z"),
+    );
     if (!result.ok) throw new Error(result.error);
-    expect(result.value.recomputeNextRunFrom!.getTime()).toBeGreaterThan(now.getTime());
+    const note = result.value.resumeNote!;
+    for (const day of ["2026-03-15", "2026-04-15", "2026-05-15", "2026-06-15"]) {
+      expect(note).toContain(day);
+    }
+    expect(note).toContain("by hand");
+  });
+
+  it("keeps a cycle due today that was never billed", () => {
+    // Resumed at 10:00 local on the 15th: today's cycle is still owed.
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      PAUSED,
+      new Date("2026-06-15T08:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-06-15");
+    expect(result.value.resumeNote).not.toContain("2026-06-15");
+    expect(result.value.resumeNote).toContain("2026-05-15");
+  });
+
+  it("changes nothing for a pause and resume before today's sweep", () => {
+    // Paused and resumed at 06:00 local on the 15th, before the 05:00Z sweep:
+    // the 15th's cycle must still be billed by that sweep.
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      { ...PAUSED, nextRunAt: new Date("2026-06-14T22:00:00Z") },
+      new Date("2026-06-15T04:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.recomputeNextRunFrom).toBeUndefined();
+    expect(result.value.resumeNote).toBeUndefined();
+  });
+
+  it("steps past today's cycle only when today's cycle was already billed", () => {
+    // Behind when paused: the 05:00Z sweep billed an older cycle today, so
+    // today's cannot also be billed today — it is named, not dropped silently.
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      {
+        ...PAUSED,
+        nextRunAt: new Date("2026-06-14T22:00:00Z"),
+        lastRunAt: new Date("2026-06-15T05:00:00Z"),
+      },
+      new Date("2026-06-15T08:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
     expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-07-15");
+    expect(result.value.resumeNote).toContain("2026-06-15");
   });
 
   it("keeps a weekly schedule on its weekday", () => {

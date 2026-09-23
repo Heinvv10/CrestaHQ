@@ -18,6 +18,7 @@ import {
   settleAfterCycle,
   toDate,
 } from "@/lib/server/recurring-invoice-cycle";
+import { recordClaimFailure } from "@/lib/server/recurring-claim-failure";
 import type {
   RecurringCycleOutcome,
   RecurringInvoiceDoc,
@@ -138,23 +139,11 @@ export async function runOneSchedule(
   try {
     claim = await claimCycle(scheduleId, now);
   } catch (err) {
-    // Bad stored data (a timezone or cadence the arithmetic rejects) throws
-    // here on every sweep. Failing the whole sweep would block every schedule
-    // after this one, daily — so it fails alone, visibly on the operator's
-    // list, and `lastFailedAt` keeps today's continuations off it.
-    const reason = err instanceof Error ? err.message : String(err);
-    console.error(`[recurring] claim failed for ${scheduleId}: ${reason}`);
-    await schedulesCollection()
-      .doc(scheduleId)
-      .update({
-        lastError: `This schedule could not run: ${reason}`.slice(0, 500),
-        lastFailedAt: Timestamp.fromDate(now),
-        updatedAt: FieldValue.serverTimestamp(),
-      })
-      .catch((writeErr) =>
-        console.error(`[recurring] could not record failure for ${scheduleId}`, writeErr),
-      );
-    return { kind: "failed", reason };
+    // Bad data fails this schedule alone; a transient error fails the sweep
+    // so QStash retries it today. See `recurring-claim-failure.ts`.
+    const failure = await recordClaimFailure(scheduleId, err, now);
+    if (failure.transient) throw err;
+    return { kind: "failed", reason: failure.reason };
   }
   if (!claim.ok) return { kind: "skipped", reason: claim.reason };
   const schedule = claim.schedule;
@@ -280,6 +269,9 @@ async function claimCycle(
     // threw after the claim would leave it active to bill once too many.
     const finished = isFinalCycle(schedule, cyclesGenerated, nextRunAt);
 
+    if (schedule.lastError) {
+      console.warn(`[recurring] ${scheduleId} claimed; clearing lastError: ${schedule.lastError}`);
+    }
     tx.update(ref, {
       nextRunAt: Timestamp.fromDate(nextRunAt),
       cyclesGenerated,

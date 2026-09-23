@@ -1,10 +1,10 @@
 import {
   computeFirstRunAt,
-  firstRunAfter,
   normalizeAnchorDay,
   resolveAnchorDay,
   type Cadence,
 } from "@/lib/recurring/cadence";
+import { recomputeNextRun } from "@/lib/recurring/next-run";
 import {
   fail,
   parseCadence,
@@ -168,12 +168,9 @@ export interface ScheduleUpdateFields {
   billedToOrganization?: string | null;
   billingAddress?: string | null;
   paymentDueDays?: number | null;
-  /**
-   * Set when the cadence or anchor moved (the stored `nextRunAt` came from the
-   * OLD cadence), or a resume finds it past. Never earlier than today, never a
-   * cycle already billed; a resume skips the cycles it slept through.
-   */
+  /** See `recomputeNextRun`; `resumeNote` becomes the schedule's `lastError`. */
   recomputeNextRunFrom?: Date;
+  resumeNote?: string;
 }
 
 export function parseScheduleUpdate(
@@ -229,22 +226,19 @@ export function parseScheduleUpdate(
 
   const resuming = out.status === "active" && current.status === "paused";
   if (cadenceMoved || resuming) {
-    const timing = {
+    const recomputed = recomputeNextRun({
+      cadenceMoved,
+      resuming,
       cadence,
-      // `??` would let a week cadence's deliberate `null` fall through to the
-      // stale numeric anchor of the cadence being edited away from. No caller
-      // can observe the difference today — `computeFirstRunAt` ignores the
-      // anchor for week cadences — so this is guarding the next edit to that
-      // function, not a live bug.
+      // Not `??`: a week cadence's `null` must not fall back to the old anchor.
       anchorDay: "anchorDay" in out ? (out.anchorDay ?? null) : current.anchorDay,
       timezone: current.timezone,
-    };
-    const from = cadenceMoved ? computeFirstRunAt({ ...timing, startAt: now }) : current.nextRunAt;
-    // Today's midnight cycle may already be billed. A resume skips all that
-    // fell due while paused, today's included.
-    const after = resuming ? now : (current.lastRunAt ?? null);
-    const next = from && after ? firstRunAfter({ ...timing, from, after }) : from;
-    if (next && (cadenceMoved || next !== from)) out.recomputeNextRunFrom = next;
+      nextRunAt: current.nextRunAt,
+      lastRunAt: current.lastRunAt ?? null,
+      now,
+    });
+    if (recomputed) out.recomputeNextRunFrom = recomputed.next;
+    if (recomputed?.resumeNote) out.resumeNote = recomputed.resumeNote;
   }
 
   if (

@@ -16,6 +16,8 @@ const contacts = new Set<string>();
 const written: Record<string, unknown>[] = [];
 const claimsAttempted: string[] = [];
 let invoiceSeq = 0;
+/** Thrown by the next transaction, then cleared — a one-off Firestore hiccup. */
+let txError: Error | null = null;
 
 const ts = (d: Date) => ({ toDate: () => d });
 
@@ -85,8 +87,13 @@ vi.mock("@/lib/firebase/admin", () => ({
       path,
       get: async () => ({ exists: true, data: () => ({}) }),
     }),
-    runTransaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+    runTransaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+      if (txError) {
+        const err = txError;
+        txError = null;
+        throw err;
+      }
+      return fn({
         get: async (ref: { path: string }) => {
           const [col, id] = ref.path.split("/");
           if (col === "contacts") return { exists: contacts.has(id), id };
@@ -97,7 +104,8 @@ vi.mock("@/lib/firebase/admin", () => ({
         update: (ref: { path: string }, patch: Record<string, unknown>) => {
           Object.assign(schedules.get(ref.path.split("/")[1])!, patch);
         },
-      }),
+      });
+    },
   }),
 }));
 vi.mock("@/lib/quotes/number", () => ({
@@ -164,7 +172,9 @@ beforeEach(() => {
   written.length = 0;
   claimsAttempted.length = 0;
   invoiceSeq = 0;
+  txError = null;
   vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
 describe("a schedule more than one cycle behind", () => {
@@ -237,6 +247,32 @@ describe("one broken schedule", () => {
     expect(claimsAttempted).toEqual([]);
     expect(again.processed).toBe(0);
     expect(again.hasMore).toBe(false);
+  });
+});
+
+describe("a transient Firestore error", () => {
+  it("still fails the sweep so QStash retries it the same day", async () => {
+    addSchedule("a", { nextRunAt: ts(new Date(NOW.getTime() - DAY)) });
+    txError = Object.assign(new Error("14 UNAVAILABLE: try again"), { code: 14 });
+
+    await expect(runRecurringInvoiceSweep(NOW)).rejects.toThrow("UNAVAILABLE");
+
+    // Traced — the claim may have committed — but not parked for the day.
+    expect(String(schedules.get("a")!.lastError)).toContain("by hand");
+    expect(schedules.get("a")!.lastFailedAt).toBeUndefined();
+
+    // The retry reaches it and bills it.
+    const retry = await runRecurringInvoiceSweep(new Date(NOW.getTime() + 60_000));
+    expect(retry.generated).toBe(1);
+    expect(invoicesFor("a")).toBe(1);
+  });
+
+  it("isolates an error without a retryable code", async () => {
+    addSchedule("a", { nextRunAt: ts(new Date(NOW.getTime() - DAY)) });
+    txError = Object.assign(new Error("bad data"), { code: 3 });
+    const result = await runRecurringInvoiceSweep(NOW);
+    expect(result.failed).toBe(1);
+    expect(schedules.get("a")!.lastFailedAt).toBeDefined();
   });
 });
 
