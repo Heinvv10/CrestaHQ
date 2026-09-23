@@ -21,10 +21,11 @@ export const dynamic = "force-dynamic";
  * The emailed magic link lands here.
  *
  * GET only renders a "Sign in" button that POSTs the token back — it never
- * consumes the link. Mail security scanners (Defender Safe Links, Mimecast,
+ * consumes the link (the only inline JS is disabling the button on submit, a
+ * double-tap guard — nothing submits by itself). Mail security scanners (Defender Safe Links, Mimecast,
  * Proofpoint) fetch every URL in a message before the recipient does; if GET
  * signed in, the scanner would burn the single-use link and the member could
- * never get in. No JS auto-submit, for the same reason (some scanners run JS).
+ * never get in. No auto-submit, for the same reason (some scanners run JS).
  */
 export async function GET(
   request: Request,
@@ -45,7 +46,7 @@ export async function GET(
 <style>body{font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:16px;background:#fafafa;color:#111}
 form{text-align:center}button{font:inherit;padding:12px 28px;border:0;border-radius:8px;background:#111;color:#fff;cursor:pointer}</style>
 </head><body>
-<form method="post" action="${escapeHtml(action)}">
+<form method="post" action="${escapeHtml(action)}" onsubmit="this.querySelector('button').disabled=true">
 <p>Tap below to finish signing in.</p>
 <input type="hidden" name="token" value="${escapeHtml(token)}">
 <button type="submit">Sign in</button>
@@ -131,7 +132,10 @@ export async function POST(
         expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
       });
   } catch (err) {
-    if ((err as { code?: unknown }).code === 6) return loginUrl("expired");
+    // Already used — almost always a double-tap, whose first POST has just
+    // set the session cookie. Send them in; this request itself mints nothing,
+    // so a replayed link still gets no session of its own.
+    if ((err as { code?: unknown }).code === 6) return redirect(`/c/${saId}`);
     console.error("[community/login/verify] consume failed", err);
     return loginUrl("error");
   }

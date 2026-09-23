@@ -169,33 +169,38 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   const now = new Date();
 
-  // Run all three sweeps sequentially. They're independent collection
-  // groups but parallelising adds little — each sweep is dominated by
-  // the Firestore ops, not CPU.
-  const results: SweepResult[] = [];
-  try {
-    results.push(await sweepFlatCollection(API_REQUEST_LOGS, now));
-    results.push(await sweepFlatCollection(API_IDEMPOTENCY, now));
-    results.push(await sweepWebhookEvents(now));
-    results.push(await sweepFlatCollection(COMMUNITY_MAGIC_LINK_USES, now));
-    results.push(await scrubReviewFeedbackPii(now));
+  // Sweeps run sequentially, each in its OWN try: one failing sweep (e.g. a
+  // collection-group index not deployed yet → FAILED_PRECONDITION) must never
+  // stop the others — above all the POPIA PII scrub. Failures are logged and
+  // reported in a 500 so QStash and the logs show them.
+  const sweeps: Array<[string, () => Promise<SweepResult>]> = [
+    [API_REQUEST_LOGS, () => sweepFlatCollection(API_REQUEST_LOGS, now)],
+    [API_IDEMPOTENCY, () => sweepFlatCollection(API_IDEMPOTENCY, now)],
+    [WEBHOOK_EVENTS, () => sweepWebhookEvents(now)],
+    [COMMUNITY_MAGIC_LINK_USES, () => sweepFlatCollection(COMMUNITY_MAGIC_LINK_USES, now)],
+    ["reviewFeedback/pii", () => scrubReviewFeedbackPii(now)],
     // Watchdog run logs older than 30 days (Labs custom agent).
-    const watchdogDeleted = await sweepOldWatchdogRuns();
-    results.push({
-      collection: "customAgents/runs",
-      deleted: watchdogDeleted,
-      hitCap: false,
-    });
-  } catch (err) {
-    console.error("[cron/api-cleanup] sweep failed", err);
-    return NextResponse.json(
-      {
-        error: "sweep_failed",
+    [
+      "customAgents/runs",
+      async () => ({
+        collection: "customAgents/runs",
+        deleted: await sweepOldWatchdogRuns(),
+        hitCap: false,
+      }),
+    ],
+  ];
+  const results: SweepResult[] = [];
+  const failures: Array<{ collection: string; message: string }> = [];
+  for (const [collection, run] of sweeps) {
+    try {
+      results.push(await run());
+    } catch (err) {
+      console.error(`[cron/api-cleanup] sweep failed collection=${collection}`, err);
+      failures.push({
+        collection,
         message: err instanceof Error ? err.message : "unknown",
-        partial: results,
-      },
-      { status: 500 },
-    );
+      });
+    }
   }
 
   const anyHitCap = results.some((r) => r.hitCap);
@@ -216,10 +221,14 @@ export async function POST(request: Request) {
     });
   }
 
-  return NextResponse.json({
-    ok: true,
-    durationMs: Date.now() - startedAt,
-    results,
-    continuationScheduled: anyHitCap,
-  });
+  return NextResponse.json(
+    {
+      ok: failures.length === 0,
+      ...(failures.length > 0 ? { error: "sweep_failed", failures } : {}),
+      durationMs: Date.now() - startedAt,
+      results,
+      continuationScheduled: anyHitCap,
+    },
+    { status: failures.length > 0 ? 500 : 200 },
+  );
 }

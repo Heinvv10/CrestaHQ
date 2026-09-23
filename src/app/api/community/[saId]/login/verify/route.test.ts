@@ -49,6 +49,7 @@ describe("community magic link", () => {
       const html = await res.text();
       expect(html).toContain('method="post"');
       expect(html).not.toMatch(/<script/i);
+      expect(html).toContain("onsubmit=\"this.querySelector('button').disabled=true\"");
       expect((await HEAD()).status).toBe(204);
     }
     expect(uses()).toEqual([]);
@@ -63,7 +64,7 @@ describe("community magic link", () => {
     expect(html).toContain("&#34;&#62;&#60;script&#62;");
   });
 
-  it("POST signs in once (303 into the community), then refuses the same link", async () => {
+  it("POST signs in once (303 into the community); the same link again mints no second session", async () => {
     const token = signMemberMagicLinkToken(SA, "member@example.com");
     const first = await signIn(token);
     expect(first.status).toBe(303);
@@ -71,8 +72,19 @@ describe("community magic link", () => {
     expect(setMemberSessionCookie).toHaveBeenCalledTimes(1);
     expect(uses()).toEqual([expect.objectContaining({ subAccountId: SA, expiresAt: expect.any(Date) })]);
 
-    expect(location(await signIn(token))).toBe(`/c/${SA}/login?error=expired`);
+    // A double-tap's second POST: sent into the community (the first POST set
+    // the cookie), but no session is minted by this request.
+    const second = await signIn(token);
+    expect(second.status).toBe(303);
+    expect(location(second)).toBe(`/c/${SA}`);
     expect(setMemberSessionCookie).toHaveBeenCalledTimes(1);
+    expect(ensureMember).toHaveBeenCalledTimes(2);
+    expect(uses()).toHaveLength(1);
+  });
+
+  it("an expired or forged token is still refused", async () => {
+    expect(location(await signIn("not-a-token"))).toBe(`/c/${SA}/login?error=expired`);
+    expect(setMemberSessionCookie).not.toHaveBeenCalled();
   });
 
   it("lets only one of two concurrent POSTs through", async () => {
