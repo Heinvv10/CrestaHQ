@@ -141,6 +141,23 @@ describe("starting a checkout", () => {
     expect(calls).toEqual([]);
   });
 
+  it("refuses checkout when the link is withdrawn after the page check but before the attempt", async () => {
+    const db = mem.db as { runTransaction: typeof mem.db.runTransaction };
+    const real = db.runTransaction;
+    db.runTransaction = (fn) => {
+      db.runTransaction = real;
+      seedLink("link1", { token, active: false }); // the operator's withdraw lands here
+      return real(fn);
+    };
+    try {
+      expect((await post({ email: "payer@example.com" })).status).toBe(410);
+    } finally {
+      db.runTransaction = real;
+    }
+    expect(calls).toEqual([]);
+    expect(mem.list("paymentAttempts")).toEqual([]);
+  });
+
   it("refuses a missing email", async () => {
     expect((await post({})).status).toBe(400);
     expect(calls).toEqual([]);
@@ -176,11 +193,28 @@ describe("the payer returning from Paystack", () => {
     expect(html).not.toContain("Payment received");
   });
 
-  it("never tells a returning payer the link is dead, even once it is withdrawn", async () => {
-    seedLink("link1", { token, active: false });
+  it("tells a returning payer their payment is being confirmed even once the invoice changed", async () => {
+    seedInvoice("inv1", { status: "paid" }); // e.g. paid by this very checkout
+    seedLink("link1", { token, invoiceId: "inv1", amountCents: 115000 });
     const res = await get("?reference=pl-link1-0123456789abcdef");
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Confirming your payment");
+  });
+
+  it("keeps refusing a withdrawn link, whatever reference the query names", async () => {
+    seedLink("link1", { token, active: false });
+    const res = await get("?reference=junk");
+    expect(res.status).toBe(410);
+    const html = await res.text();
+    expect(html).not.toContain("Call-out fee");
+    expect(html).not.toMatch(/450/);
+  });
+
+  it("keeps refusing a link once Payments is off, whatever reference the query names", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", paymentsEnabledByAgency: false });
+    const res = await get("?reference=junk");
+    expect(res.status).toBe(409);
+    expect(await res.text()).not.toContain("Call-out fee");
   });
 
   it("labels the page TEST MODE while the connection is in test mode", async () => {

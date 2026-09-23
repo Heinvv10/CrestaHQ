@@ -94,9 +94,11 @@ Mode belongs to the **checkout attempt** (W5 PR1, see
    invoice link, when the invoice has been paid, has expired, or its total no longer equals the
    link's amount.
 3. **Return** — Paystack redirects to `/pay/link/{token}?reference=…`. The page writes
-   nothing and checks nothing but the token: it says "Payment received" when the webhook has
-   already recorded that same reference on the link, and "confirming" otherwise — never that
-   the link is dead.
+   nothing. It says "Payment received" when the webhook has already recorded that same
+   reference on the link, and "confirming" for any other paid or still-open link, even if the
+   invoice has changed or been paid since. A withdrawn link, or Payments switched off, is still
+   refused. Checkout re-reads the link inside the attempt transaction, so a withdraw that lands
+   after the page check still stops it.
 4. **Reconcile** — `/api/webhooks/paystack/sa/[subAccountId]`, after its existing signature
    check, hands `charge.success` to
    [`payment-link-reconciler.ts`](../../src/lib/paystack/payment-link-reconciler.ts).

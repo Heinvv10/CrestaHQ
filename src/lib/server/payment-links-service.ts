@@ -1,6 +1,5 @@
 import "server-only";
 
-import { randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
@@ -9,10 +8,14 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
-import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
+import { effectiveQuoteStatus } from "@/lib/quotes/calc";
 import type { PaymentAttempt, PaymentMode } from "@/types/payment-attempts";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
+
+import { invoicePayable, invoiceTotalCents, paymentLinkReference } from "./payment-link-rules";
+
+export { invoiceTotalCents, parsePaymentLinkReference, paymentLinkReference } from "./payment-link-rules";
 
 /**
  * Paystack payment links: create, deactivate, and open a checkout.
@@ -30,20 +33,6 @@ const fail = (status: number, error: string) => ({ ok: false as const, status, e
 /** R1,000,000. A typo guard, not a business rule. */
 const MAX_AMOUNT_CENTS = 100_000_000;
 const MAX_DESCRIPTION = 200;
-
-/** Invoice totals are stored in whole units; links are in cents. */
-export function invoiceTotalCents(quote: Quote): number {
-  return Math.round(computeQuoteTotals(quote).total * 100);
-}
-
-/** Same rule as the Stripe invoice pay route: sent or viewed, not expired. */
-function invoicePayable(quote: Quote): boolean {
-  return (
-    quote.kind === "invoice" &&
-    (quote.status === "sent" || quote.status === "viewed") &&
-    effectiveQuoteStatus(quote) !== "expired"
-  );
-}
 
 export async function createPaymentLink(input: {
   subAccountId: string;
@@ -182,10 +171,9 @@ export async function loadPayableLink(
     return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
   }
   const link = { id: linkId, ...data };
-  // A payer back from Paystack is never told the link is dead — telling them
-  // could prompt a second payment. Checked before every refusal below, since
-  // the webhook may already have marked the link (and its invoice) paid.
-  if (opts.returning) return { ok: true, link, mode: null };
+  // A payer back from Paystack whose payment the webhook already recorded is
+  // shown it, not "already paid" — that could prompt a second payment.
+  if (opts.returning && link.status === "paid") return { ok: true, link, mode: null };
   if (link.status === "paid") return fail(410, "This has already been paid — nothing more to pay.");
   if (!link.active) return fail(410, "This payment link has been withdrawn. Contact the sender if you think that's a mistake.");
   // Re-checked at pay time, like the Stripe invoice pay route: the agency may
@@ -195,6 +183,9 @@ export async function loadPayableLink(
   if (sub?.paymentsEnabledByAgency !== true) {
     return fail(409, "Online payment isn't available for this link. Please contact the sender.");
   }
+  // Still open: a returning payer is told their payment is being confirmed,
+  // never that the invoice changed or was paid (possibly by them).
+  if (opts.returning) return { ok: true, link, mode: null };
 
   if (link.invoiceId) {
     // The link's amount was fixed when it was made. An invoice edited since,
@@ -223,19 +214,6 @@ export async function loadPayableLink(
 const RETIRED = "This payment link is no longer valid. Ask the sender for a fresh payment link.";
 
 /**
- * `pl-{linkId}-{nonce}`. A fresh reference per checkout, because Paystack
- * refuses a reference it has already seen and a customer may open the link
- * twice. The link id inside it is how the reconciler finds the doc.
- */
-export function paymentLinkReference(linkId: string): string {
-  return `pl-${linkId}-${randomBytes(8).toString("hex")}`;
-}
-
-export function parsePaymentLinkReference(reference: string): string | null {
-  return /^pl-([A-Za-z0-9]+)-[0-9a-f]{16}$/.exec(reference)?.[1] ?? null;
-}
-
-/**
  * Open a Paystack checkout for a link. The amount is the doc's — the caller
  * supplies only the payer's email, and nothing else from the request reaches
  * Paystack.
@@ -258,6 +236,9 @@ export async function startPaymentLinkCheckout(input: {
   const reference = paymentLinkReference(link.id);
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
   const opened = await db.runTransaction(async (t) => {
+    // Re-read: a withdraw or payment landing after `loadPayableLink` must win.
+    const now = (await t.get(db.doc(`paymentLinks/${link.id}`))).data() as PaymentLink | undefined;
+    if (!now?.active || now.status !== "open") return fail(410, RETIRED);
     const conn = await readPaystackConnectionSecret(link.subAccountId, t);
     if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
     const mode = paystackKeyMode(conn.secretKey);
