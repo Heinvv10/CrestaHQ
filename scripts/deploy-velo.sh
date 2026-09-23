@@ -64,23 +64,37 @@ die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # Outside $DEPLOY_DIR on purpose: this survives `next build` wiping `.next`,
 # and never shows up in the "deploy dir has local changes" dirty-checkout
-# check further down (same reasoning as $LOCK living in /tmp).
-ROLLBACK_DIR="${ROLLBACK_DIR:-/tmp/crestahq-standalone-prev}"
+# check further down (same reasoning as $LOCK living in /tmp). Lives in
+# velo's own persistent cache, not /tmp, so it survives a reboot.
+ROLLBACK_DIR="${ROLLBACK_DIR:-$HOME/.cache/crestahq-prev}"
+# The commit that produced whatever is currently in $ROLLBACK_DIR, so a
+# rollback can say what it's rolling back TO instead of just "the old one".
+ROLLBACK_SHA_FILE="${ROLLBACK_DIR}.commit"
 
 # Only called once the service has already been restarted onto a build that
 # failed its health check or never ran instrumentation — i.e. once rolling
 # forward has demonstrably failed. Restores the last-good standalone bundle
-# and restarts onto it, then exits non-zero either way so the failure is
-# never silent.
+# and restarts onto it, then re-checks health so the rollback's own outcome
+# is reported honestly rather than assumed, and exits non-zero either way so
+# the failure is never silent.
 rollback_and_die() {
   local reason="$1"
   printf '\n\033[31mFAILED: %s\033[0m\n' "$reason" >&2
   if [ -d "$ROLLBACK_DIR" ]; then
-    echo "rolling back to the last-good standalone bundle..." >&2
+    local prev_sha="unknown"
+    [ -f "$ROLLBACK_SHA_FILE" ] && prev_sha="$(cat "$ROLLBACK_SHA_FILE")"
+    echo "rolling back to the last-good standalone bundle (commit $prev_sha)..." >&2
     rm -rf .next/standalone
     cp -a "$ROLLBACK_DIR" .next/standalone
     if $SYSTEMCTL restart "$SERVICE"; then
-      echo "rolled back and restarted $SERVICE — investigate $after before retrying." >&2
+      echo "restarted $SERVICE on the rolled-back build ($prev_sha) — investigate $after before retrying." >&2
+      local rb_ok=0 rb_code i
+      for i in $(seq 1 $HEALTH_TRIES); do
+        rb_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" || echo 000)
+        if [ "$rb_code" = "200" ]; then rb_ok=1; echo "rollback build is healthy after ${i}s (HTTP 200)" >&2; break; fi
+        sleep 1
+      done
+      [ "$rb_ok" -eq 1 ] || echo "WARNING: the rolled-back build ($prev_sha) ALSO failed its health check — $SERVICE may be down. This needs immediate manual attention." >&2
     else
       echo "WARNING: rollback restart of $SERVICE also failed — $SERVICE needs manual attention." >&2
     fi
@@ -163,17 +177,21 @@ else
   pnpm test || die "tests"
 fi
 
-# ── Snapshot the last-good build for rollback ───────────────────────────────
-# `next build` rebuilds `.next` from scratch, so the only copy of the bundle
-# currently serving traffic has to be saved BEFORE we build, not after — by
-# the time a bad build fails its health check, the old one is already gone
-# from `.next/standalone`.
-rm -rf "$ROLLBACK_DIR"
-if [ -d .next/standalone ]; then
+# ── Seed the rollback snapshot, but only if there isn't one yet ─────────────
+# `next build` rebuilds `.next` from scratch, so a rollback needs a copy of
+# the bundle saved BEFORE we build. But "whatever happens to be in
+# .next/standalone right now" is not reliably last-good: a PREVIOUS deploy
+# attempt that failed partway through `pnpm build` can leave it in a
+# half-rebuilt state without the service ever having been restarted onto it.
+# The only trustworthy snapshot is one taken after a deploy's own health +
+# instrumentation checks passed (see below, after the restart) — this seed
+# only runs once, to give a rollback target on the very first deploy under
+# this script, using whatever is currently actually running.
+if [ ! -d "$ROLLBACK_DIR" ] && [ -d .next/standalone ]; then
+  mkdir -p "$(dirname "$ROLLBACK_DIR")"
   cp -a .next/standalone "$ROLLBACK_DIR"
-  echo "snapshotted current standalone bundle to $ROLLBACK_DIR for rollback"
-else
-  echo "no existing standalone bundle to snapshot (first deploy on this box?)"
+  echo "$before" > "$ROLLBACK_SHA_FILE"
+  echo "seeded rollback snapshot from the currently running build ($before) at $ROLLBACK_DIR"
 fi
 
 say "Build"
@@ -209,25 +227,6 @@ node scripts/gbp-deploy-check.mjs post "$DEPLOY_DIR" "$APP_URL" \
 say "Assembling standalone bundle"
 node scripts/assemble-standalone.mjs || die "standalone bundle is incomplete (see above)"
 
-# crestahq.service itself was installed by hand on velo-server and isn't in
-# this repo, so it has none of the user manager's defaults overridden — in
-# particular no TimeoutStopSec, which defaults to 15s. On 2026-09-22 a restart
-# SIGKILLed next-server mid graceful-shutdown (server.close() waiting on an
-# open connection) and cloudflared logged "connection refused" during the
-# gap. Ship the fix as a drop-in (never overwrite the hand-installed unit
-# itself) and install it idempotently before every restart.
-say "Installing systemd drop-in (TimeoutStopSec)"
-DROPIN_SRC="scripts/deploy/systemd/crestahq.service.d/override.conf"
-DROPIN_DST="$HOME/.config/systemd/user/crestahq.service.d/override.conf"
-mkdir -p "$(dirname "$DROPIN_DST")"
-if ! cmp -s "$DROPIN_SRC" "$DROPIN_DST" 2>/dev/null; then
-  cp "$DROPIN_SRC" "$DROPIN_DST"
-  $SYSTEMCTL daemon-reload
-  echo "installed/updated $DROPIN_DST"
-else
-  echo "drop-in already up to date"
-fi
-
 # ── Only now touch the running service ──────────────────────────────────────
 say "Restarting $SERVICE"
 restarted_at="$(date +%s)"
@@ -256,5 +255,16 @@ for i in $(seq 1 10); do
   sleep 1
 done
 [ "$ran" -eq 1 ] || rollback_and_die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
+
+# This build is now PROVEN — it passed both the health check and the
+# instrumentation check — so it becomes the last-good snapshot the NEXT
+# deploy can roll back to. Only recorded here, never from a build whose
+# gates we skipped or that died partway through.
+if [ -d .next/standalone ]; then
+  rm -rf "$ROLLBACK_DIR"
+  mkdir -p "$(dirname "$ROLLBACK_DIR")"
+  cp -a .next/standalone "$ROLLBACK_DIR"
+  echo "$after" > "$ROLLBACK_SHA_FILE"
+fi
 
 say "Deployed $after to $SERVICE on port $PORT"
