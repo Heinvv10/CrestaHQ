@@ -268,7 +268,7 @@ describe("cloud inbound handles every message in a delivery", () => {
 
   it("still acks a receipt-only delivery without writing anything", async () => {
     const res = await post([change({ statuses: [{ id: "wamid.OUT", status: "read" }] })]);
-    expect(await res.json()).toEqual({ ok: true, statuses: 1 });
+    expect(await res.json()).toEqual({ ok: true, statuses: 1, recorded: 0 });
     expect(m.messageRows).toEqual([]);
   });
 });

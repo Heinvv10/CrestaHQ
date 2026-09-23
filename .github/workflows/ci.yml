@@ -205,6 +205,12 @@ jobs:
   # E2E jobs on two runners would collide on both. The other jobs share no
   # port or tenant; they do share the runner user's pnpm store and Go caches,
   # which both tools lock for concurrent use.
+  #
+  # e2e-smoke.yml's "smoke" job runs on the SAME runner label for the same
+  # reason (same fixture tenants, same port 3100). The single labelled runner
+  # is what serialises the two. Do NOT add a shared `concurrency:` group for
+  # this: GitHub keeps at most one pending job per group and cancels the
+  # older pending one, so every PR's E2E but the newest would be cancelled.
   e2e:
     name: E2E (Playwright)
     runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]

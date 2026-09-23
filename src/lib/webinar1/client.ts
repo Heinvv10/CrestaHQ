@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { publicFetch } from "@/lib/webhooks/public-fetch";
 import {
   webinar1ConnectionSecretPath,
   type Webinar1ConnectionSecret,
@@ -79,7 +80,9 @@ export function webinar1Fetcher(baseUrl: string, apiKey: string): RawClient {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15_000);
-        res = await fetch(`${base}/api/launchcast/v1${path}`, {
+        // publicFetch: the base URL is tenant-supplied — no internal
+        // addresses, no redirects.
+        res = await publicFetch(`${base}/api/launchcast/v1${path}`, {
           method,
           headers: {
             Authorization: `Bearer ${apiKey}`,
