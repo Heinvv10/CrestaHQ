@@ -162,12 +162,15 @@ export interface ReconcileResult {
  * phone was extracted (nothing to match on, and creating a contact with
  * just a name risks storing hallucinations).
  *
- * On an existing match, best-effort backfills any BLANK name/email/phone
- * from what the visitor/caller just volunteered — mirroring the booking
- * reconciler (`src/lib/booking/contact-reconcile.ts`). Without this a name
- * or email offered mid-conversation was silently dropped whenever the
- * person already existed (matched by their other identifier). Curated data
- * on file is never overwritten.
+ * On an existing match, best-effort backfills a BLANK name from what the
+ * visitor/caller just volunteered. Curated data on file is never
+ * overwritten. Channel fields (email / phone) are NEVER backfilled: every
+ * caller of this is public and unauthenticated (web chat, checkout, voice
+ * with a spoofable caller ID), so the identifier that matched is only a
+ * claim — writing the other one onto the contact would let a stranger who
+ * knows a customer's email route that customer's SMS/WhatsApp (or email)
+ * to themselves. Each channel keeps the captured values on its own session
+ * artifact (webChatSessions / voiceCalls / checkout session) instead.
  */
 export async function reconcileContactFromCapture(
   input: ReconcileInput,
@@ -290,10 +293,10 @@ export async function reconcileContactFromCapture(
 }
 
 /**
- * Fill blank name/email/phone on an already-existing contact from the
- * captured fields. Only touches fields that are currently empty — never
- * overwrites data already on file — and swallows write errors so a patch
- * blip can't break the capture flow (the Contact id is already resolved).
+ * Fill a blank name on an already-existing contact from the captured
+ * fields. Never touches email/phone (see reconcileContactFromCapture),
+ * never overwrites data already on file, and swallows write errors so a
+ * patch blip can't break the capture flow (the Contact id is resolved).
  */
 async function backfillContactFromCapture(
   doc: QueryDocumentSnapshot,
@@ -302,8 +305,6 @@ async function backfillContactFromCapture(
   const data = doc.data() as Contact;
   const patch: Record<string, unknown> = {};
   if (capture.name && !data.name?.trim()) patch.name = capture.name;
-  if (capture.email && !data.email?.trim()) patch.email = capture.email;
-  if (capture.phone && !data.phone?.trim()) patch.phone = capture.phone;
   if (Object.keys(patch).length === 0) return;
 
   patch.updatedAt = FieldValue.serverTimestamp();
