@@ -304,7 +304,7 @@ export function QuoteDetail({
               </Button>
             )}
             {isInvoice && canMarkPaid && (
-              <PaystackInvoiceLinkButton invoiceId={quote.id} />
+              <PaystackInvoiceLinkButton invoiceId={quote.id} recurring={!!quote.recurringInvoiceId} />
             )}
             {canMarkPaid && (
               <Button

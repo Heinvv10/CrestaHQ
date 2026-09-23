@@ -28,6 +28,7 @@ export const LIVE_KEY = "sk_live_k3";
 export function seedSub(subAccountId = SA, secretKey = KEY) {
   mem.seed(`subAccounts/${subAccountId}`, {
     agencyId: AGENCY,
+    name: "Acme Fibre",
     paymentsEnabledByAgency: true,
     paystackConnectionMeta: { webhookSeenAt: null, livemode: secretKey.startsWith("sk_live_") },
   });
@@ -47,6 +48,22 @@ export function seedInvoice(id = "inv1", over: Record<string, unknown> = {}) {
     lineItems: [{ id: "li1", description: "Install", quantity: 1, unitPrice: 1000 }],
     globalDiscount: null,
     globalTaxPercent: 15,
+    ...over,
+  });
+}
+
+/** A monthly recurring schedule whose template totals R1,150.00, like `seedInvoice`. */
+export function seedSchedule(id = "rec1", over: Record<string, unknown> = {}) {
+  mem.seed(`recurringInvoices/${id}`, {
+    agencyId: AGENCY,
+    subAccountId: SA,
+    contactId: "c1",
+    status: "active",
+    currency: "ZAR",
+    lineItems: [{ id: "li1", description: "Install", quantity: 1, unitPrice: 1000 }],
+    globalDiscount: null,
+    globalTaxPercent: 15,
+    cadence: { unit: "month", interval: 1 },
     ...over,
   });
 }

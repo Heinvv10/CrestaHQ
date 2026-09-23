@@ -80,14 +80,19 @@ export async function GET(
   const testBanner = mode === "live"
     ? ""
     : `<p style="background:#fef3c7;color:#92400e;font-size:13px;font-weight:600;padding:8px 12px;border-radius:8px;margin:0 0 16px;">TEST MODE — no real money will be taken</p>`;
+  // A card-on-file link states its recurring terms above the button — the
+  // exact wording the checkout then records as the payer's consent.
+  const terms = link.mandate
+    ? `<p style="background:#f4f4f5;color:#18181b;font-size:13px;line-height:1.6;text-align:left;padding:12px;border-radius:8px;margin:0 0 16px;">${esc(link.mandate.text)}</p>`
+    : "";
   return page(
     link.description,
     `${testBanner}<p style="color:#52525b;font-size:14px;margin:0 0 4px;">${esc(link.description)}</p>
 <h1 style="font-size:28px;margin:0 0 24px;">${esc(amount)}</h1>
-<form method="post" style="display:flex;flex-direction:column;gap:12px;text-align:left;">
+${terms}<form method="post" style="display:flex;flex-direction:column;gap:12px;text-align:left;">
 <label for="email" style="font-size:14px;">Your email (for the receipt)</label>
 <input id="email" name="email" type="email" required autocomplete="email" style="padding:10px;font-size:16px;border:1px solid #d4d4d8;border-radius:8px;">
-<button type="submit" style="padding:12px;font-size:16px;border:0;border-radius:8px;background:#18181b;color:#fff;cursor:pointer;">Pay ${esc(amount)}</button>
+<button type="submit" style="padding:12px;font-size:16px;border:0;border-radius:8px;background:#18181b;color:#fff;cursor:pointer;">Pay ${esc(amount)}${link.mandate ? " and save card" : ""}</button>
 </form>
 <p style="color:#71717a;font-size:12px;margin-top:16px;">Secure payment by Paystack.</p>`,
   );
@@ -99,7 +104,8 @@ export async function POST(
 ) {
   const { token } = await ctx.params;
 
-  const rate = checkCheckoutRateLimit(clientIpFrom(request));
+  const ip = clientIpFrom(request);
+  const rate = checkCheckoutRateLimit(ip);
   if (!rate.ok) {
     return new NextResponse("Too many attempts. Please try again shortly.", {
       status: 429,
@@ -117,7 +123,7 @@ export async function POST(
     return deadLink("Enter a valid email address and try again.", 400);
   }
 
-  const started = await startPaymentLinkCheckout({ token, email });
+  const started = await startPaymentLinkCheckout({ token, email, ip });
   if (!started.ok) return deadLink(started.error, started.status);
   return NextResponse.redirect(started.url, 303);
 }

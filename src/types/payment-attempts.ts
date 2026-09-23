@@ -1,5 +1,7 @@
 import type { FieldValue, Timestamp } from "firebase/firestore";
 
+import type { MandateConsent } from "@/types/payment-mandates";
+
 /**
  * Paystack charge attempts — `paymentAttempts/{reference}`.
  *
@@ -43,6 +45,12 @@ export interface PaymentAttempt {
 
   amountCents: number;
   currency: string;
+
+  /**
+   * A card-on-file checkout: the terms shown, when the customer clicked pay,
+   * and from where. Copied onto the mandate the payment creates.
+   */
+  consent?: MandateConsent | null;
 
   mode: PaymentMode;
   /** `paystackKeyFingerprint` of the key the checkout was opened with. */

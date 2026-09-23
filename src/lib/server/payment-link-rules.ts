@@ -5,6 +5,12 @@ import type { Quote } from "@/types/quotes";
 
 /** Pure payment-link rules shared by the service and the reconciler. */
 
+export type ServiceResult<T> =
+  | ({ ok: true } & T)
+  | { ok: false; status: number; error: string };
+
+export const fail = (status: number, error: string) => ({ ok: false as const, status, error });
+
 /** Invoice totals are stored in whole units; links are in cents. */
 export function invoiceTotalCents(quote: Quote): number {
   return Math.round(computeQuoteTotals(quote).total * 100);
