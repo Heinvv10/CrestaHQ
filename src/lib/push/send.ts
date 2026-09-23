@@ -1,9 +1,15 @@
 import "server-only";
 
+import https from "node:https";
 import webpush from "web-push";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { pushIsConfigured, getVapidKeys } from "@/lib/push/config";
 import { CUSTOM_BRAND } from "@/config/landing";
+import {
+  publicLookup,
+  resolvePublicAddresses,
+  ssrfGuardEnabled,
+} from "@/lib/webhooks/validate-url";
 import { GLOBAL_TERRITORY_ID } from "@/types/tenancy";
 import type {
   AgencyDoc,
@@ -137,13 +143,23 @@ export async function sendPushForEvent(input: SendPushInput): Promise<void> {
             subsSnap.docs.map(async (subDoc) => {
               const sub = subDoc.data();
               try {
+                const endpoint = sub.endpoint as string;
+                // Endpoints are client-supplied: refuse internal hosts (IP
+                // literals here, rebinding names at connect via the agent).
+                const guard = ssrfGuardEnabled();
+                if (guard) await resolvePublicAddresses(new URL(endpoint).hostname);
                 await webpush.sendNotification(
                   {
-                    endpoint: sub.endpoint as string,
+                    endpoint,
                     keys: sub.keys as { p256dh: string; auth: string },
                   },
                   payload,
-                  { vapidDetails: { subject, publicKey, privateKey } },
+                  {
+                    vapidDetails: { subject, publicKey, privateKey },
+                    ...(guard
+                      ? { agent: new https.Agent({ lookup: publicLookup }) }
+                      : {}),
+                  },
                 );
               } catch (err) {
                 const status = (err as { statusCode?: number }).statusCode;

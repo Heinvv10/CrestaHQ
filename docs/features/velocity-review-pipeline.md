@@ -337,15 +337,15 @@ payload stored on the message. `src/lib/workflows/button-tap-branch.test.ts`
 posts real webhooks through the real routes, conversations service and
 engine, then runs the `if_else` step and asserts the branch. Every tap shape
 is proven on its Yes case, because a dropped tap would also land on No.
-One interaction to know: a button labelled exactly `Yes` or `Stop` counts as
-an opt-in or opt-out keyword, as typed text does. "Yes, all good" does not —
-the keyword check reads the first word, and "Yes," with its comma is not
-"YES".
+One interaction to know: a button labelled exactly `Stop` (or another
+opt-out keyword) counts as an opt-out, as typed text does. The keyword check
+reads the whole message, so "Yes, all good" is not a keyword, and `Yes` has
+no keyword effect at all.
 
 **PR 2 done:** templates carry up to 3 buttons (quick replies, then links),
 edited in the builder and submitted to Meta as a `BUTTONS` component. A quick
-reply starting with an opt-out word ("Cancel my booking") is refused at save,
-from the same keyword list every WhatsApp inbound route now shares. A
+reply that is an opt-out keyword ("Stop", "Cancel", "Opt out") is refused at save,
+from the same keyword rule every inbound route now shares. A
 buttoned template cannot be submitted on Twilio until PR 4 — Twilio would
 approve it without its buttons.
 

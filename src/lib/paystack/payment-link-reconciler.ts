@@ -8,6 +8,8 @@ import {
   verifyPaystackTransaction,
   type PaystackVerifiedTransaction,
 } from "@/lib/paystack/billing-api";
+import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
+import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
 import {
   invoiceTotalCents,
   parsePaymentLinkReference,
@@ -27,6 +29,11 @@ import type { Quote } from "@/types/quotes";
  * `charge.success`. So the body is used only for its reference; the facts come
  * from Paystack's verify endpoint, called with the same tenant key, and must
  * match the doc on status, reference, amount and currency.
+ *
+ * Test vs live is judged against the checkout ATTEMPT (`paymentAttempts/
+ * {reference}`), never against today's connection: the key that verified the
+ * transaction must be the key the attempt was opened with, and Paystack's
+ * `domain` must be the attempt's mode. Anything else is flagged, not paid.
  *
  * NOT gated on `paymentsEnabledByAgency`: once money is taken it is recorded,
  * whatever the agency has switched off since. The pay page is gated instead.
@@ -89,6 +96,21 @@ export async function reconcilePaystackCharge(input: {
       return { handled: false, detail: "tenancy mismatch" };
     }
 
+    const attempt = await loadPaymentAttempt(reference);
+    if (attempt && (attempt.subAccountId !== subAccountId || attempt.paymentLinkId !== linkId)) {
+      console.error(`${tag} attempt belongs to sa=${attempt.subAccountId} link=${attempt.paymentLinkId}`);
+      return { handled: false, detail: "attempt tenancy mismatch" };
+    }
+    // Verifying with a key other than the attempt's would ask a different
+    // Paystack account about this reference. Terminal, and visible.
+    if (attempt && attempt.keyFingerprint !== paystackKeyFingerprint(secretKey)) {
+      console.error(`${tag} not marking paid: verifying key is not the attempt's`);
+      await flagPaymentAttempt(reference, (a) =>
+        `Paystack reported a payment (reference ${reference}) under a different key than its ${a.mode}-mode checkout used, and it was not recorded. Check your Paystack dashboard.`,
+      );
+      return { handled: false, detail: "mismatch key" };
+    }
+
     let tx: PaystackVerifiedTransaction;
     try {
       tx = await verifyPaystackTransaction(reference, secretKey);
@@ -100,15 +122,25 @@ export async function reconcilePaystackCharge(input: {
     }
 
     const amount = requestedAmount(tx);
-    // The connection's CURRENT mode — the same key that verified this
-    // transaction and that checkout charges with. Not stamped per link: a key
-    // switched test → live after the link was made must still reconcile.
-    const liveConnection = secretKey.startsWith("sk_live_");
     // Not a success, or not this reference: Paystack received nothing for
     // this link. Logged only.
     if (tx.status !== "success" || tx.reference !== reference) {
       console.error(`${tag} not marking paid: status=${tx.status} reference=${tx.reference}`);
       return { handled: false, detail: "not a success for this reference" };
+    }
+    // Money arrived for a checkout this workspace never recorded opening
+    // (one started before attempts existed, or a reference made elsewhere):
+    // no mode to judge it by, so it is shown to the operator, not recorded.
+    if (!attempt) {
+      console.error(`${tag} not marking paid: no attempt`);
+      if (!(link.attention ?? "").includes(reference)) {
+        const note = `Paystack reported a payment (reference ${reference}) for a checkout this workspace has no record of, and it was not recorded. Check your Paystack dashboard.`;
+        await ref.update({
+          attention: link.attention ? `${link.attention}\n${note}` : note,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return { handled: false, detail: "no attempt" };
     }
     // A verified success that doesn't match the link: money DID arrive on the
     // tenant's account, so the operator is told on the link. Still no paid
@@ -120,20 +152,32 @@ export async function reconcilePaystackCharge(input: {
           ? `partial amount=${tx.amount} requested=${amount}`
           : (tx.currency ?? "").toUpperCase() !== link.currency
             ? `currency=${tx.currency} expected=${link.currency}`
-            : (tx.domain === "live") !== liveConnection
-              ? `mode domain=${tx.domain} connection=${liveConnection ? "live" : "test"}`
+            : tx.domain !== attempt.mode
+              ? `mode domain=${tx.domain} attempt=${attempt.mode}`
               : null;
     if (mismatch) {
-      const attention = mismatch.startsWith("mode")
-        ? `A ${tx.domain ?? "unknown"}-mode payment arrived while this workspace's Paystack is in ${liveConnection ? "live" : "test"} mode, and was not recorded. Check your Paystack dashboard.`
-        : "Paystack received a payment that does not match this link — check your Paystack dashboard.";
       console.error(`${tag} not marking paid: ${mismatch}`);
-      await ref.update({ attention, updatedAt: FieldValue.serverTimestamp() });
+      await flagPaymentAttempt(reference, (a) =>
+        mismatch.startsWith("mode")
+          ? `A ${tx.domain ?? "unknown"}-mode payment (reference ${reference}) arrived for a ${a.mode}-mode checkout, and was not recorded. Check your Paystack dashboard.`
+          : `Paystack received a payment (reference ${reference}) that does not match this link — check your Paystack dashboard.`,
+      );
       return { handled: false, detail: `mismatch ${mismatch}` };
     }
 
+    const attemptRef = db.doc(`paymentAttempts/${reference}`);
     const { outcome, current } = await db.runTransaction(async (t) => {
       const fresh = (await t.get(ref)).data() as PaymentLink | undefined;
+      const attemptState = (await t.get(attemptRef)).data()?.state;
+      // The money is recorded below, so the attempt is settled. One that was
+      // flagged as possibly lost (its key was reconnected since) says so.
+      const settleAttempt = (linkAttention: string | null | undefined) => {
+        if (attemptState === "settled") return {};
+        t.update(attemptRef, { state: "settled", updatedAt: FieldValue.serverTimestamp() });
+        if (attemptState !== "flagged") return {};
+        const note = `Reference ${reference} has since been recorded.`;
+        return { attention: linkAttention ? `${linkAttention}\n${note}` : note };
+      };
       if (fresh?.status !== "paid") {
         t.update(ref, {
           status: "paid",
@@ -143,6 +187,7 @@ export async function reconcilePaystackCharge(input: {
           paidAt: FieldValue.serverTimestamp(),
           // `attention` is deliberately NOT cleared: it records a real
           // mismatched payment the operator may still need to refund.
+          ...settleAttempt(fresh?.attention),
           updatedAt: FieldValue.serverTimestamp(),
         });
         return { outcome: "paid" as const, current: fresh ?? link };
@@ -155,6 +200,7 @@ export async function reconcilePaystackCharge(input: {
       }
       t.update(ref, {
         extraPayments: FieldValue.arrayUnion({ reference, amountCents: amount, paidAt: new Date() }),
+        ...settleAttempt(fresh.attention),
         updatedAt: FieldValue.serverTimestamp(),
       });
       return { outcome: "duplicate" as const, current: fresh };

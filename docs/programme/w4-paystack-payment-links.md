@@ -42,19 +42,40 @@ across territories.
 
 ## Test mode
 
-There is **no per-link mode**. Everything uses the sub-account's *current* connection:
-- the pay page banner reads `paystackConnectionMeta.livemode`;
-- checkout charges with the stored key;
-- the reconciler checks the key it verified with (`sk_live_…`).
+Mode belongs to the **checkout attempt** (W5 PR1, see
+[w5-paystack-auto-charge.md](w5-paystack-auto-charge.md)):
 
-So a link made under a test key and paid after the live key is connected is shown, charged and
-recorded as live. An earlier design stamped the mode on the link, and that could take real money
-under a "no real money" banner and then refuse to record it. Test mode is allowed (#1000 is
-proven in test mode by design) and labelled. While the connection is in test mode, the pay page
-shows "TEST MODE — no real money will be taken" and open links in the list show a TEST MODE
-badge. The reconciler stores Paystack's `domain` and refuses a transaction whose domain doesn't
-match the connection's mode. There is no paid transition: it answers 200 and sets `attention`
-on the link.
+- Each checkout writes `paymentAttempts/{reference}` **before** Paystack is called, in a
+  transaction that reads the stored key: `mode` and a key fingerprint (a truncated SHA-256,
+  never the key), amount, currency, the link, and `state` (`open` → `settled` / `refused` /
+  `flagged`, with `reason`).
+- A link records the mode it was **issued** in (`paymentLinks.mode`) and is paid only in that
+  mode. After the workspace switches between test and live, the pay page refuses the link
+  (410, "ask for a fresh link") and the list says so; creating a link for the invoice again
+  withdraws the old one. So a live invoice link can never become a test checkout (the round-5
+  HIGH), and a test link can never charge real money under a "no real money" banner.
+- The banner shows the link's mode, which the checkout transaction re-checks against the key it
+  records on the attempt: what the payer is shown is what is charged.
+- The reconciler requires the verifying key's fingerprint to be the attempt's, and Paystack's
+  `domain` to be the attempt's mode. A mismatch never marks anything paid: it answers 200 and
+  flags the attempt, with a sentence on the link's `attention`.
+- **Connection changes.** Disconnecting or replacing a key commits first — Paystack being slow
+  never holds up removing a key. The attempts that were open under the outgoing key are then
+  checked with Paystack using that key (held in memory, 5 s per call): a success is recorded
+  through the reconciler; `reversed` or unknown to Paystack is closed as `refused`; `abandoned` or
+  `failed` is closed only if its link is already paid or withdrawn, because Paystack lets the
+  customer resume or retry on the same reference. So a routine key regeneration, and abandoned
+  checkouts on paid links, raise no false alarms. Anything still open under another key is then
+  flagged, with its reference and amount, on the link's `attention`. A
+  webhook that arrives for such an attempt (no key, or signed by the replaced key) cannot be
+  verified, so nothing is recorded; it flags the attempt if the change missed it and answers
+  200 rather than 401 so Paystack stops redelivering. A flag is built from our own attempt
+  record — nothing in the unverified body is trusted. A flagged attempt still settles if its
+  own key is reconnected and the payment then verifies.
+- A verified payment with **no** attempt (a checkout opened before attempts existed) is flagged
+  on the link, never recorded. Links made before `mode` existed are refused at the pay page;
+  a payer returning from Paystack (`?reference=`) is always told the payment is being confirmed,
+  never that the link is dead.
 
 ## Flows
 
@@ -84,7 +105,7 @@ on the link.
   that names a different reference, means nothing was received: it is logged and answered 200.
   A **verified success** must also match the link: `requested_amount === link.amountCents`,
   `amount >= requested_amount` (no partial payment), currency `ZAR`, and Paystack's `domain`
-  equal to the link's mode. `requested_amount` is used because `amount` includes the fees when
+  equal to the attempt's mode (see Test mode). `requested_amount` is used because `amount` includes the fees when
   the customer pays them (PaystackOSS/openapi `VerifyResponse`). The webhook body's own amount
   is never used. If a verified success does not match, money did arrive on the tenant's
   account, so the link gets `attention` ("does not match this link — check your Paystack

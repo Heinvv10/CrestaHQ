@@ -1156,6 +1156,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- paymentAttempts (Paystack checkout attempts) ----------
+    // One per checkout, keyed by the Paystack reference. Member-read so a
+    // flagged attempt is visible to the operator; ALL writes server-only —
+    // the attempt's mode and key fingerprint are what the webhook trusts to
+    // decide whether a payment may be recorded. Mirrors paymentLinks.
+    match /paymentAttempts/{reference} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
+
     // ---------- quotes ----------
     // GHL-style "Estimates" — operator-built quote → public accept page.
     // Reads + edits by any active sub-account member (matches the

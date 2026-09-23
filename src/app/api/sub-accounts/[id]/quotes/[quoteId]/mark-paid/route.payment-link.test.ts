@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { KEY, SA, mem, seedInvoice, seedLink, seedSub, stubPaystack, verified } from "@/test/paystack-links-harness";
+import { KEY, SA, mem, seedAttempt, seedInvoice, seedLink, seedSub, stubPaystack, verified } from "@/test/paystack-links-harness";
 
 /**
  * Ported from the round-4 breaker repro. A Paystack link is paid, the invoice
@@ -47,6 +47,7 @@ beforeEach(() => {
   seedSub();
   seedInvoice();
   seedLink("link1", { invoiceId: "inv1", amountCents: 115000 });
+  seedAttempt(REF, { amountCents: 115000 });
   stubPaystack(() => verified({ reference: REF, amount: 115000 }));
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});

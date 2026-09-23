@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { Transaction } from "firebase-admin/firestore";
+
 import { getAdminDb } from "@/lib/firebase/admin";
 import { paystackRequest } from "@/lib/paystack/client";
 import {
@@ -19,13 +21,17 @@ import {
  * customers. Confusing the two moves money into the wrong balance.
  */
 
-/** Read the server-only secret doc. Returns null when never connected. */
+/**
+ * Read the server-only secret doc. Returns null when never connected.
+ * Pass `tx` to read it inside a transaction, so a connection change that
+ * lands before the commit retries the transaction.
+ */
 export async function readPaystackConnectionSecret(
   subAccountId: string,
+  tx?: Transaction,
 ): Promise<PaystackConnectionSecret | null> {
-  const snap = await getAdminDb()
-    .doc(paystackConnectionSecretPath(subAccountId))
-    .get();
+  const ref = getAdminDb().doc(paystackConnectionSecretPath(subAccountId));
+  const snap = tx ? await tx.get(ref) : await ref.get();
   if (!snap.exists) return null;
   const key = (snap.data() as { secretKey?: string } | undefined)?.secretKey;
   if (!key) return null;

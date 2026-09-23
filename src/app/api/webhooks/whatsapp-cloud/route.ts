@@ -10,9 +10,11 @@ import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { verifyMetaSignature, metaWebhookVerifyToken } from "@/lib/comms/meta";
 import { fetchCloudMedia } from "@/lib/comms/whatsapp/cloud-media";
 import {
-  parseCloudInbound,
+  parseCloudInbounds,
   parseCloudPhoneNumberId,
   parseCloudStatuses,
+  type CloudInbound,
+  type CloudStatus,
   type CloudMediaRef,
 } from "@/lib/comms/whatsapp/cloud-payload";
 import {
@@ -20,6 +22,10 @@ import {
   whatsappMediaPath,
 } from "@/lib/comms/whatsapp/media-storage";
 import { hasWhatsappSenderOnRail } from "@/lib/comms/whatsapp/resolve-sender";
+import {
+  normalizeDeliveryStatus,
+  recordWhatsappDeliveryStatus,
+} from "@/lib/comms/whatsapp/delivery-status";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
@@ -34,7 +40,7 @@ import {
 } from "@/types/whatsapp-media";
 import { locationPreviewLabel } from "@/types/whatsapp-location";
 import {
-  firstKeyword,
+  optKeyword,
   WHATSAPP_START_WORDS,
   WHATSAPP_STOP_WORDS,
 } from "@/lib/comms/whatsapp/opt-keywords";
@@ -245,6 +251,44 @@ async function attachInboundMedia(opts: {
   }
 }
 
+/**
+ * Delivery receipts onto their outbound rows, so a message Meta refused after
+ * the send (131047, 131026…) shows as failed instead of "sent" forever. Each
+ * receipt routes by its own block's number. Never throws: a non-2xx makes Meta
+ * retry and eventually disable the subscription, which would stop inbound
+ * messages too.
+ */
+async function recordStatuses(
+  statuses: CloudStatus[],
+  routeFor: (phoneNumberId: string) => Promise<ResolvedRoute | null>,
+): Promise<{ routed: number; recorded: number }> {
+  let routed = 0;
+  let recorded = 0;
+  for (const s of statuses) {
+    if (!s.phoneNumberId) continue;
+    try {
+      const route = await routeFor(s.phoneNumberId);
+      if (!route) continue;
+      routed++;
+      const status = normalizeDeliveryStatus(s.status);
+      if (!status) continue;
+      const r = await recordWhatsappDeliveryStatus({
+        db: getAdminDb(),
+        subAccountId: route.subAccountId,
+        recipientPhone: toE164(s.recipientId ?? ""),
+        providerMessageId: s.providerMessageId,
+        status,
+        errorCode: s.errorCode,
+        errorTitle: s.errorTitle,
+      });
+      recorded += r.updated;
+    } catch (err) {
+      console.warn(`[whatsapp-cloud] status ${s.status} not recorded`, err);
+    }
+  }
+  return { routed, recorded };
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
 
@@ -267,22 +311,79 @@ export async function POST(request: Request) {
     return ok({ ok: true, ignored: "invalid_json" });
   }
 
-  const phoneNumberId = parseCloudPhoneNumberId(payload);
-  if (!phoneNumberId) return ok({ ok: true, ignored: "no_phone_number_id" });
+  // One resolution per number for the whole delivery.
+  const routes = new Map<string, Promise<ResolvedRoute | null>>();
+  const routeFor = (phoneNumberId: string) => {
+    let route = routes.get(phoneNumberId);
+    if (!route) {
+      route = resolveRoute(phoneNumberId);
+      routes.set(phoneNumberId, route);
+    }
+    return route;
+  };
 
-  const route = await resolveRoute(phoneNumberId);
-  if (!route) return ok({ ok: true, ignored: "unrouted" });
+  // Meta may batch several messages — and receipts beside them — into one
+  // delivery, across entries and changes. Every message is handled; reading
+  // only the first would drop the rest, a STOP among them.
+  const inbounds = parseCloudInbounds(payload);
+  if (inbounds.length === 0) {
+    // Delivery receipts share this endpoint. The parser reads messages from
+    // `messages[]` alone, so a receipt can never be written into the thread
+    // as a customer message. Each receipt routes by its own block, so an
+    // unknown number in the first block does not drop the rest.
+    const statuses = parseCloudStatuses(payload);
+    if (statuses.length > 0) {
+      const { routed, recorded } = await recordStatuses(statuses, routeFor);
+      return routed > 0
+        ? ok({ ok: true, statuses: statuses.length, recorded })
+        : ok({ ok: true, ignored: "unrouted" });
+    }
 
-  // Delivery receipts share this endpoint. Ack them before the inbound path so
-  // a receipt can never be written into the thread as a customer message.
-  const statuses = parseCloudStatuses(payload);
-  if (statuses.length > 0) {
-    return ok({ ok: true, statuses: statuses.length });
+    const phoneNumberId = parseCloudPhoneNumberId(payload);
+    if (!phoneNumberId) return ok({ ok: true, ignored: "no_phone_number_id" });
+    const route = await routeFor(phoneNumberId);
+    if (!route) return ok({ ok: true, ignored: "unrouted" });
+    return ok({ ok: true, persisted: false });
   }
 
-  const inbound = parseCloudInbound(payload);
-  if (!inbound) return ok({ ok: true, persisted: false });
+  // Receipts batched beside the messages are recorded too.
+  await recordStatuses(parseCloudStatuses(payload), routeFor);
 
+  // Each message routes by its own block's number. Sequential, so two
+  // messages from one sender land in order. A failure on one — answered or
+  // thrown — does not stop the rest (a later one may be a STOP); the first
+  // non-2xx is answered, and Meta's retry of the whole delivery is safe
+  // because every message dedups on its own wamid.
+  const results: NextResponse[] = [];
+  for (const inbound of inbounds) {
+    try {
+      const resolved = await routeFor(inbound.phoneNumberId);
+      results.push(
+        resolved
+          ? await handleInbound(resolved, inbound)
+          : ok({ ok: true, ignored: "unrouted" }),
+      );
+    } catch (err) {
+      console.error(
+        `[whatsapp-cloud] inbound ${inbound.providerMessageId} failed — continuing the batch, asking Meta to retry`,
+        err,
+      );
+      results.push(
+        NextResponse.json({ ok: false, error: "message_failed" }, { status: 500 }),
+      );
+    }
+  }
+  const failed = results.find((r) => r.status >= 300);
+  if (failed) return failed;
+  return results.length === 1
+    ? results[0]
+    : ok({ ok: true, messages: results.length });
+}
+
+async function handleInbound(
+  route: ResolvedRoute,
+  inbound: CloudInbound,
+): Promise<NextResponse> {
   const from = toE164(inbound.fromPhone);
   if (!from) return ok({ ok: true, ignored: "no_sender" });
 
@@ -301,7 +402,7 @@ export async function POST(request: Request) {
     : "";
 
   const db = getAdminDb();
-  const word = firstKeyword(inbound.text);
+  const word = optKeyword(inbound.text);
   let nextOptedOut: boolean | null = null;
   if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
   else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
@@ -314,11 +415,11 @@ export async function POST(request: Request) {
     .get();
 
   // Unknown senders become contacts so a public "message us on WhatsApp" link
-  // captures new leads — except a never-seen number whose first word is
-  // STOP/START, where minting a contact purely to opt it out is noise.
+  // captures new leads. That includes a never-seen number whose message is
+  // STOP: the opt-out below lands on the new contact, so a later bulk send to
+  // that number is refused instead of the STOP having been silently dropped.
   let contactDocs: DocumentSnapshot[] = matches.docs;
   if (matches.empty) {
-    if (nextOptedOut !== null) return ok({ ok: true, persisted: false });
     try {
       const created = await createContactServerSide({
         subAccountId: route.subAccountId,
@@ -332,6 +433,9 @@ export async function POST(request: Request) {
         address: "",
         source: "whatsapp",
         tags: [],
+        // A STOP from a never-seen number: written opted out, announcing
+        // nothing, so no contact.created automation can message them.
+        optedOutOnWhatsapp: nextOptedOut === true,
       });
       contactDocs = [await db.collection("contacts").doc(created.id).get()];
     } catch (err) {
@@ -398,7 +502,7 @@ export async function POST(request: Request) {
           status: "received",
           body: inbound.text || locationLabel,
           from,
-          to: phoneNumberId,
+          to: inbound.phoneNumberId,
           provider: "cloud",
           providerMessageId: inbound.providerMessageId,
           ...(inbound.buttonPayload ? { buttonPayload: inbound.buttonPayload } : {}),
@@ -452,6 +556,7 @@ export async function POST(request: Request) {
           direction: "inbound",
           body: preview,
           buttonTap: inbound.buttonPayload !== null,
+          optOut: nextOptedOut === true,
         });
       }),
     );

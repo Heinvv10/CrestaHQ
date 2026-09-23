@@ -15,7 +15,7 @@ import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import {
-  firstKeyword,
+  optKeyword,
   WHATSAPP_START_WORDS,
   WHATSAPP_STOP_WORDS,
 } from "@/lib/comms/whatsapp/opt-keywords";
@@ -38,8 +38,8 @@ export const dynamic = "force-dynamic";
  *   5. Resolve the contact by phone. Unknown senders are auto-created
  *      (phone-first, name from the WhatsApp `ProfileName`, `source: "whatsapp"`)
  *      so a public "Contact Us on WhatsApp" flow captures brand-new leads
- *      instead of dropping them — except a never-seen number whose first
- *      message is STOP/START, which is dropped without minting a contact.
+ *      instead of dropping them — a never-seen number that sends STOP is
+ *      created too, so its opt-out is recorded.
  *   6. STOP/START → flip `whatsappOptedOut`. Otherwise persist the inbound to
  *      `contacts/{id}/whatsappMessages/{sid}` and (when the channel is enabled
  *      + OpenRouter is configured) dispatch the AI auto-reply.
@@ -160,7 +160,7 @@ export async function POST(request: Request) {
   }
 
   // Detect opt-out / opt-in keywords.
-  const word = firstKeyword(bodyRaw);
+  const word = optKeyword(bodyRaw);
   let nextOptedOut: boolean | null = null;
   if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
   else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
@@ -179,14 +179,11 @@ export async function POST(request: Request) {
   // Resolve the contact(s) this inbound belongs to. Unknown senders are
   // auto-created (phone-first, name from the WhatsApp ProfileName, source
   // "whatsapp") so a public "Contact Us on WhatsApp" flow captures + replies
-  // to brand-new leads. The one exception: a never-seen number whose FIRST
-  // message is STOP/START — don't mint a contact just to immediately opt it
-  // out; drop silently.
+  // to brand-new leads. That includes a never-seen number whose message is
+  // STOP: the opt-out below lands on the new contact rather than being
+  // silently dropped.
   let contactDocs: DocumentSnapshot[] = matches.docs;
   if (matches.empty) {
-    if (nextOptedOut !== null) {
-      return twimlResponse(emptyTwimlResponse());
-    }
     try {
       const created = await createContactServerSide({
         subAccountId: route.subAccountId,
@@ -200,6 +197,9 @@ export async function POST(request: Request) {
         address: "",
         source: "whatsapp",
         tags: [],
+        // A STOP from a never-seen number: written opted out, announcing
+        // nothing, so no contact.created automation can message them.
+        optedOutOnWhatsapp: nextOptedOut === true,
       });
       contactDocs = [await db.collection("contacts").doc(created.id).get()];
     } catch (err) {
@@ -259,6 +259,7 @@ export async function POST(request: Request) {
           direction: "inbound",
           body: bodyRaw,
           buttonTap: buttonPayload !== null,
+          optOut: nextOptedOut === true,
         });
       }),
     );

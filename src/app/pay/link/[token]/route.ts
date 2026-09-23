@@ -51,12 +51,13 @@ export async function GET(
   ctx: { params: Promise<{ token: string }> },
 ) {
   const { token } = await ctx.params;
-  const loaded = await loadPayableLink(token);
+  const returning = new URL(request.url).searchParams.has("reference");
+  const loaded = await loadPayableLink(token, { returning });
   if (!loaded.ok) return deadLink(loaded.error, loaded.status);
-  const { link, livemode } = loaded;
+  const { link, mode } = loaded;
   const amount = formatCurrency(link.amountCents / 100, link.currency);
 
-  if (new URL(request.url).searchParams.has("reference")) {
+  if (returning) {
     return page(
       "Confirming payment",
       `<h1 style="font-size:20px;margin:0 0 8px;">Confirming your payment</h1>
@@ -64,9 +65,9 @@ export async function GET(
     );
   }
 
-  // The sub-account's current connection mode, not the mode at link creation:
-  // it is the key the checkout below will charge with.
-  const testBanner = livemode
+  // The mode checkout will charge in: the link's own, which the checkout
+  // re-checks against the key inside the transaction that records the attempt.
+  const testBanner = mode === "live"
     ? ""
     : `<p style="background:#fef3c7;color:#92400e;font-size:13px;font-weight:600;padding:8px 12px;border-radius:8px;margin:0 0 16px;">TEST MODE — no real money will be taken</p>`;
   return page(

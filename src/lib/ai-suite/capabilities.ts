@@ -14,6 +14,7 @@ import { sendDirectTestDelivery } from "@/lib/webhooks/direct-test";
 import {
   detectAutomationUrl,
   n8nProductionUrl,
+  validatePublicUrl,
   validateWebhookUrl,
 } from "@/lib/webhooks/validate-url";
 import {
@@ -1935,6 +1936,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         );
       }
 
+      // validate() is sync and string-only; resolve DNS here, as the REST
+      // create route does.
+      const publicCheck = await validatePublicUrl(args.url as string);
+      if (!publicCheck.ok) throw new CapabilityUserError(publicCheck.error);
+
       const signingSecret = generateSigningSecret();
       const doc = await createSubscription({
         subAccountId: ctx.subAccountId!,
@@ -2250,6 +2256,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           `That webhook already points at ${targetUrl} — nothing to change.`
         );
       }
+      const publicCheck = await validatePublicUrl(targetUrl);
+      if (!publicCheck.ok) throw new CapabilityUserError(publicCheck.error);
 
       // A paused hook (usually the circuit breaker tripping on the old dead
       // URL) is resumed as part of the repoint — the pause reason no longer

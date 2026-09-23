@@ -28,8 +28,10 @@ export function PaystackPaymentLinks() {
 
   const gateOn = subAccount?.paymentsEnabledByAgency === true;
   const ready = gateOn && !!subAccount?.paystackConnectionMeta;
-  // The connection's current mode: open links are charged with today's key.
-  const testMode = subAccount?.paystackConnectionMeta?.livemode === false;
+  // A link is paid only in the mode it was issued in; an open link from the
+  // other mode can no longer be paid (the pay page refuses it).
+  const meta = subAccount?.paystackConnectionMeta;
+  const connectionMode = meta ? (meta.livemode ? "live" : "test") : null;
 
   useEffect(() => {
     if (authLoading || !user || !subAccountId || !gateOn) return;
@@ -135,7 +137,7 @@ export function PaystackPaymentLinks() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {testMode && link.status === "open" && (
+                  {link.mode === "test" && (
                     <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
                       TEST MODE — no real money
                     </Badge>
@@ -164,7 +166,13 @@ export function PaystackPaymentLinks() {
               )}
               {link.attention && <p className="text-sm text-destructive">{link.attention}</p>}
               {link.invoiceAttention && <p className="text-sm text-destructive">{link.invoiceAttention}</p>}
-              {link.status === "open" && link.active && <CopyablePayUrl token={link.token} />}
+              {link.status === "open" && link.active && link.mode !== connectionMode ? (
+                <p className="text-sm text-muted-foreground">
+                  Issued {link.mode ? `in ${link.mode} mode` : "before this workspace recorded modes"}, so it can&apos;t be paid now. Create a fresh link.
+                </p>
+              ) : (
+                link.status === "open" && link.active && <CopyablePayUrl token={link.token} />
+              )}
             </Card>
           ))}
         </div>
