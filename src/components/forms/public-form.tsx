@@ -14,6 +14,17 @@ import {
 } from "@/lib/attribution";
 import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
+/**
+ * The seam handleSubmit navigates through — exported so the guard against a
+ * `javascript:`/`data:` redirectUrl is tested against the code this
+ * component actually runs, not just the shared helper in isolation.
+ */
+export function resolveSafeFormRedirect(
+  redirectUrl: string | null | undefined,
+): string | null {
+  return redirectUrl && isSafeFormRedirectUrl(redirectUrl) ? redirectUrl : null;
+}
+
 interface PublicFormProps {
   form: LeadForm;
 }
@@ -102,8 +113,9 @@ export function PublicForm({ form }: PublicFormProps) {
       trackLeadEvent({
         utmCampaign: attributionRef.current?.utmCampaign ?? null,
       });
-      if (data.redirectUrl && isSafeFormRedirectUrl(data.redirectUrl)) {
-        window.location.href = data.redirectUrl;
+      const redirect = resolveSafeFormRedirect(data.redirectUrl);
+      if (redirect) {
+        window.location.href = redirect;
         return;
       }
       setSuccess({

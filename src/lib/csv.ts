@@ -88,15 +88,23 @@ export function serializeCsv(
 
 // Cells starting with these characters are formulas to Excel/Sheets when the
 // CSV is opened (OWASP CSV injection). A leading apostrophe forces
-// spreadsheet apps to treat the cell as text without changing the visible
-// value. Skipped for actual numbers so negatives (e.g. -12.5) stay numeric.
+// spreadsheet apps to treat the cell as text; the value still opens fine,
+// it just can no longer execute as a formula. Skipped for actual numbers
+// and for phone-like strings (digits plus spaces/parens/dots/hyphens, e.g.
+// "+27 68 760 8830" or "-12.5") — nothing there is a formula operator, and
+// prefixing would corrupt an exported E.164 number.
 const FORMULA_TRIGGER_RE = /^[=+\-@\t\r]/;
+const NUMERIC_OR_PHONE_RE = /^[+-]?\d[\d\s().-]*$/;
 
 function escapeCsvCell(v: unknown): string {
   if (v === null || v === undefined) return "";
   const s = Array.isArray(v) ? v.join("; ") : String(v);
   const safe =
-    typeof v !== "number" && FORMULA_TRIGGER_RE.test(s) ? `'${s}` : s;
+    typeof v !== "number" &&
+    FORMULA_TRIGGER_RE.test(s) &&
+    !NUMERIC_OR_PHONE_RE.test(s)
+      ? `'${s}`
+      : s;
   if (safe.includes(",") || safe.includes('"') || safe.includes("\n")) {
     return `"${safe.replace(/"/g, '""')}"`;
   }

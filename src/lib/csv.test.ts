@@ -38,4 +38,21 @@ describe("serializeCsv formula injection", () => {
     const csv = serializeCsv(["name"], [{ name: "=A1,B1" }]);
     expect(csv.trim().split("\n")[1]).toBe(`"'=A1,B1"`);
   });
+
+  it("exports a phone number unchanged even though it starts with +", () => {
+    const csv = serializeCsv(["phone"], [
+      { phone: "+27 68 760 8830" },
+      { phone: "-012 345 6789" },
+      { phone: "(011) 123-4567" },
+    ]);
+    const lines = csv.trim().split("\n");
+    expect(lines[1]).toBe("+27 68 760 8830");
+    expect(lines[2]).toBe("-012 345 6789");
+    expect(lines[3]).toBe("(011) 123-4567");
+  });
+
+  it("keeps a negative decimal string numeric, not prefixed", () => {
+    const csv = serializeCsv(["amount"], [{ amount: "-12.5" }]);
+    expect(csv.trim().split("\n")[1]).toBe("-12.5");
+  });
 });

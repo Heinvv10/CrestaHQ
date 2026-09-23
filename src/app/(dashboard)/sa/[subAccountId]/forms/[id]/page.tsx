@@ -46,6 +46,7 @@ import {
   type FormSettings,
   type LeadForm,
 } from "@/types/forms";
+import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
 /**
  * Headless HTML snippet — gives the developer a copy-pasteable unstyled
@@ -820,6 +821,12 @@ export default function FormBuilderPage() {
                   placeholder="https://…"
                   className="h-8 text-sm"
                 />
+                {form.settings.redirectUrl &&
+                  !isSafeFormRedirectUrl(form.settings.redirectUrl) && (
+                    <p className="text-xs text-destructive">
+                      Must be a full http:// or https:// URL, or left blank.
+                    </p>
+                  )}
               </div>
             </div>
           </section>
