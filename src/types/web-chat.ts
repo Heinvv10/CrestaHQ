@@ -28,8 +28,14 @@ export interface WebChatSession {
   subAccountId: string;
   /** Null until the bot extracts identity via a [[capture …]] marker.
    *  Once set, the session is "identified" — the contact context block
-   *  gets injected on every subsequent reply. */
+   *  gets injected on subsequent replies only when
+   *  `contactCreatedBySession` is true. */
   contactId: string | null;
+  /** True only when THIS session created `contactId` from the visitor's own
+   *  details. False/absent when the visitor's claimed email/phone matched a
+   *  pre-existing contact — that claim is unverified, so the bot is NOT given
+   *  that contact's context (deals etc.). See lib/comms/web-chat/respond.ts. */
+  contactCreatedBySession?: boolean;
   /** The host page URL when the session was created. Useful for the
    *  operator to know what page the visitor was on. */
   pageUrl: string | null;
