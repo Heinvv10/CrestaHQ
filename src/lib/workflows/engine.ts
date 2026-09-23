@@ -70,6 +70,12 @@ import type {
 } from "@/types/workflows";
 
 const STEP_PATH = "/api/workflows/step";
+/**
+ * QStash retries per step delivery — set explicitly (it is also QStash's
+ * default) so the step route can tell the LAST delivery from its
+ * `Upstash-Retried` header and fail the run instead of letting it hang.
+ */
+export const WORKFLOW_STEP_RETRIES = 3;
 
 /* --------------------------- Node executors ---------------------------- */
 
@@ -682,6 +688,8 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       body,
       template,
       inWindowButtons,
+      // Bridge rail: a redelivery converges on this send instead of repeating it.
+      idempotencyKey: `wf_${ctx.runId}_${ctx.node.id}`,
       // Twilio sends in-session buttons only by ContentSid: an unapproved
       // Content resource per template, cached on the doc.
       sendButtonsViaTwilio:
@@ -925,7 +933,17 @@ const execUpdateField: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as UpdateFieldConfig;
   const field = (cfg.field ?? "").trim();
   if (!field) return { result: { kind: "next" }, log: "skipped:no_field" };
-  if (!field.startsWith("customFields.") && !WRITABLE_FIELDS.has(field)) {
+  // A custom field is exactly one path segment under customFields: an empty
+  // key ("customFields.") or one carrying `.`, `~`, `*`, `/`, `[`, `]` is not
+  // a valid Firestore field path — the update throws on every retry.
+  const customKey = field.startsWith("customFields.")
+    ? field.slice("customFields.".length)
+    : null;
+  const writable =
+    customKey === null
+      ? WRITABLE_FIELDS.has(field)
+      : /^[^.~*/[\]]+$/.test(customKey);
+  if (!writable) {
     return { result: { kind: "next" }, log: "skipped:field_not_writable" };
   }
   await getAdminDb()
@@ -1271,12 +1289,11 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         skip("filters_not_met");
         continue;
       }
-      if (!(await reentryAllows(wf, contact.id))) {
+      const run = await enroll(wf, contact.id, input.context ?? {}, true);
+      if (!run) {
         skip("reentry_blocked");
         continue;
       }
-
-      const run = await enroll(wf, contact.id, input.context ?? {});
       outcome.enrolled.push({ workflowId: wf.id, ...run });
       enrolled += 1;
     }
@@ -1299,45 +1316,71 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
   }
 }
 
+const isLive = (d: { data: () => unknown }) => {
+  const s = (d.data() as WorkflowRunDoc).status;
+  return s === "running" || s === "waiting";
+};
+
 /**
- * Enforce the workflow's re-enrollment policy. "every_time" (default, incl.
- * every pre-v2 doc) never blocks. Equality-only query + in-memory status
- * filter — a contact rarely has more than a handful of runs per workflow.
- * Fails open: an unexpected read error must not silently kill enrollments.
+ * Create the run doc only if the workflow's re-enrollment policy allows it —
+ * the check and the create in ONE transaction, so simultaneous triggers (three
+ * inbound messages, three webhooks) cannot all pass a check none has yet
+ * written past. A query alone gives no phantom protection, so the transaction
+ * also reads and writes a per-(workflow, contact) lock doc: concurrent
+ * enrolments conflict on it and the losers re-run, now seeing the winner's
+ * run. "unless_active" blocks while a run is live; "once_ever" once any
+ * exists. Fails CLOSED: an error here skips the enrolment rather than risk
+ * the duplicate auto-reply the policy exists to prevent.
  */
-async function reentryAllows(
+async function createRunUnlessBlocked(
   wf: WorkflowDoc,
-  contactId: string
+  contactId: string,
+  policy: "unless_active" | "once_ever",
+  runRef: FirebaseFirestore.DocumentReference,
+  runData: Record<string, unknown>
 ): Promise<boolean> {
-  const policy = wf.reentry ?? "every_time";
-  if (policy === "every_time") return true;
+  const db = getAdminDb();
+  const lockRef = db.doc(`workflowEnrolmentLocks/${wf.id}_${contactId}`);
   try {
-    const snap = await getAdminDb()
-      .collection("workflowRuns")
-      .where("workflowId", "==", wf.id)
-      .where("contactId", "==", contactId)
-      .get();
-    if (snap.empty) return true;
-    if (policy === "once_ever") return false;
-    // unless_active — block only while a run is live.
-    return !snap.docs.some((d) => {
-      const s = (d.data() as WorkflowRunDoc).status;
-      return s === "running" || s === "waiting";
+    return await db.runTransaction(async (tx) => {
+      await tx.get(lockRef);
+      const runs = await tx.get(
+        db
+          .collection("workflowRuns")
+          .where("workflowId", "==", wf.id)
+          .where("contactId", "==", contactId)
+      );
+      if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) {
+        return false;
+      }
+      tx.set(lockRef, {
+        workflowId: wf.id,
+        contactId,
+        subAccountId: wf.subAccountId,
+        agencyId: wf.agencyId,
+        lastRunId: runRef.id,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(runRef, runData);
+      return true;
     });
   } catch (err) {
-    console.warn("[workflows] reentry check failed — allowing", err);
-    return true;
+    console.error("[workflows] re-entry transaction failed — not enrolling", err);
+    return false;
   }
 }
 
+/** `applyReentry` = enforce the workflow's re-enrollment policy (test
+ *  enrolments bypass it). Returns null when the policy blocked the contact. */
 async function enroll(
   wf: WorkflowDoc,
   contactId: string,
-  context: Record<string, unknown>
-): Promise<{ runId: string; status: "running" | "failed" }> {
+  context: Record<string, unknown>,
+  applyReentry = false
+): Promise<{ runId: string; status: "running" | "failed" } | null> {
   const db = getAdminDb();
   const runRef = db.collection("workflowRuns").doc();
-  await runRef.set({
+  const runData = {
     id: runRef.id,
     subAccountId: wf.subAccountId,
     agencyId: wf.agencyId,
@@ -1350,7 +1393,13 @@ async function enroll(
     qstashMessageId: null,
     enrolledAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
-  });
+  };
+  const policy = applyReentry ? (wf.reentry ?? "every_time") : "every_time";
+  if (policy === "every_time") {
+    await runRef.set(runData);
+  } else if (!(await createRunUnlessBlocked(wf, contactId, policy, runRef, runData))) {
+    return null;
+  }
   await db
     .doc(`workflows/${wf.id}`)
     .update({ "stats.enrolled": FieldValue.increment(1) })
@@ -1388,11 +1437,20 @@ async function scheduleNode(
   run: RunActivityRun,
   wf: WorkflowDoc | null
 ): Promise<boolean> {
+  // State BEFORE the publish: an immediate step can be delivered and finish
+  // before publishCallback returns, and a write after it would drag a run that
+  // step parked ("waiting" on a reply) or finished ("completed") back here.
+  await runRef.update({
+    currentNodeId: nodeId,
+    status: delaySeconds > 0 ? "waiting" : "running",
+    updatedAt: FieldValue.serverTimestamp(),
+  });
   const res = await publishCallback({
     pathname: STEP_PATH,
     body: { runId: runRef.id, nodeId },
     delaySeconds,
     deduplicationId: `wf_${runRef.id}_${nodeId}`,
+    retries: WORKFLOW_STEP_RETRIES,
   });
   if (!res) {
     await runRef.update({
@@ -1407,12 +1465,7 @@ async function scheduleNode(
     );
     return false;
   }
-  await runRef.update({
-    currentNodeId: nodeId,
-    status: delaySeconds > 0 ? "waiting" : "running",
-    qstashMessageId: res.messageId,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  await runRef.update({ qstashMessageId: res.messageId });
   return true;
 }
 
@@ -1475,6 +1528,95 @@ async function completeRun(
     .update({ "stats.completed": FieldValue.increment(1) })
     .catch(() => {});
   await writeRunActivity(run, wf?.name ?? null, "automation_completed");
+}
+
+/**
+ * Steps that message a contact run AT MOST ONCE. The history entry is written
+ * after the send, so on its own it cannot stop a second delivery that arrives
+ * mid-step, or one that follows a failed history write or a crash. These
+ * steps are claimed first; a claim without its history entry is never re-run
+ * — the delivery throws, and its final retry fails the run with the reason
+ * (failRunAfterFinalRetry) rather than risk messaging the contact twice.
+ */
+const AT_MOST_ONCE_NODES = new Set<WorkflowNodeType>([
+  "send_email",
+  "send_sms",
+  "whatsapp_template",
+  "send_whatsapp",
+]);
+
+/**
+ * Claim a step for this delivery. False = nothing to do (the run moved on or
+ * the step is already recorded). Throws when another delivery holds the claim:
+ * it may still be sending, or may have died after sending — either way this
+ * one must not send, and a 5xx lets QStash look again later.
+ */
+async function claimStep(
+  runRef: FirebaseFirestore.DocumentReference,
+  nodeId: string
+): Promise<boolean> {
+  return getAdminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(runRef);
+    if (!snap.exists) return false;
+    const r = snap.data() as WorkflowRunDoc;
+    if (r.status !== "running" && r.status !== "waiting") return false;
+    if (r.history.some((h) => h.nodeId === nodeId)) return false;
+    if (r.stepClaim?.nodeId === nodeId) {
+      throw new Error(
+        `step ${nodeId} is already claimed by an earlier delivery that did not finish; not re-run so the contact is not messaged twice`
+      );
+    }
+    tx.update(runRef, {
+      stepClaim: { nodeId, state: "sending", at: Timestamp.now() },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return true;
+  });
+}
+
+/**
+ * The step route's last word on a delivery that kept throwing: QStash will not
+ * retry it again, so without this the run would sit "running" forever (and
+ * block `unless_active` re-entry). Marks it failed with the reason, unless it
+ * finished or moved on meanwhile. Never throws.
+ */
+export async function failRunAfterFinalRetry(
+  runId: string,
+  nodeId: string,
+  err: unknown
+): Promise<void> {
+  try {
+    const db = getAdminDb();
+    const runRef = db.collection("workflowRuns").doc(runId);
+    const failed = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(runRef);
+      if (!snap.exists) return null;
+      const r = snap.data() as WorkflowRunDoc;
+      if (r.status !== "running" && r.status !== "waiting") return null;
+      if (r.history.some((h) => h.nodeId === nodeId)) return null;
+      tx.update(runRef, {
+        status: "failed",
+        ...(r.stepClaim?.nodeId === nodeId
+          ? { stepClaim: { ...r.stepClaim, state: "failed" } }
+          : {}),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return r;
+    });
+    if (!failed) return;
+    const wfSnap = await db.doc(`workflows/${failed.workflowId}`).get();
+    const wf = wfSnap.exists ? (wfSnap.data() as WorkflowDoc) : null;
+    const type = wf?.nodes?.[nodeId]?.type ?? nodeId;
+    const reason = err instanceof Error ? err.message : String(err);
+    await writeRunActivity(
+      { ...failed, id: runId },
+      wf?.name ?? null,
+      "automation_failed",
+      `the ${type} step failed after every retry (${reason.slice(0, 300)})`
+    );
+  } catch (e) {
+    console.error("[workflows] could not fail the run after its final retry", e);
+  }
 }
 
 /** Advance one node of a run. Idempotent on the run's history. */
@@ -1560,6 +1702,8 @@ export async function runStep(
   }
 
   const owner = await loadOwner(agency);
+  const atMostOnce = AT_MOST_ONCE_NODES.has(node.type);
+  if (atMostOnce && !(await claimStep(runRef, nodeId))) return;
   const exec = REGISTRY[node.type] ?? execPassThrough;
   const stepCtx: NodeContext = {
     node,
@@ -1582,6 +1726,7 @@ export async function runStep(
   };
   await runRef.update({
     history: FieldValue.arrayUnion(entry),
+    ...(atMostOnce ? { stepClaim: null } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
   // A review ask is logged once, here — after the history entry above, the
@@ -1692,6 +1837,7 @@ async function stepWaitForReply(
       body: { runId: run.id, nodeId: node.id, phase: "timeout" },
       delaySeconds: seconds,
       deduplicationId: `wf_${run.id}_${node.id}_timeout`,
+      retries: WORKFLOW_STEP_RETRIES,
     });
     if (!res) {
       await runRef.update({

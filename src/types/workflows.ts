@@ -228,6 +228,16 @@ export interface WorkflowRunDoc {
   /** Non-null while parked on a `wait_for_reply` node. */
   waiting?: WorkflowRunWaiting | null;
   history: WorkflowRunHistoryEntry[];
+  /**
+   * Set while a contact-messaging step is being sent; cleared with its history
+   * entry. Left behind only by a delivery that died mid-step — that step is
+   * never re-run (at most once), and the run is failed with state "failed".
+   */
+  stepClaim?: {
+    nodeId: string;
+    state: "sending" | "failed";
+    at: Timestamp | FieldValue | null;
+  } | null;
   /** Trigger payload snapshot (e.g. { formId, dealId }). */
   context: Record<string, unknown>;
   qstashMessageId: string | null;
