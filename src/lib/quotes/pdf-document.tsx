@@ -208,8 +208,9 @@ const styles = StyleSheet.create({
 interface InvoicePdfProps {
   quote: Quote;
   businessName: string;
-  /** Optional sub-account logo (public https URL). When present, renders
-   *  above the business name in the header. */
+  /** Optional sub-account logo as a PNG/JPEG `data:` URI (pdf-render
+   *  fetches it through the SSRF guard). Remote URLs are ignored so the
+   *  renderer never fetches anything itself. */
   businessLogoUrl?: string | null;
   recipientName: string;
   /** ISO date string for "Issued" line. Defaults to today. */
@@ -225,7 +226,7 @@ export function InvoicePdfDocument({
 }: InvoicePdfProps) {
   const safeLogoUrl =
     typeof businessLogoUrl === "string" &&
-    /^https?:\/\/.+/i.test(businessLogoUrl)
+    /^data:image\/(png|jpeg);base64,/.test(businessLogoUrl)
       ? businessLogoUrl
       : null;
   const isInvoice = quote.kind === "invoice";

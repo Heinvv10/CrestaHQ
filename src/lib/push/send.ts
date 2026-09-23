@@ -1,9 +1,15 @@
 import "server-only";
 
+import https from "node:https";
 import webpush from "web-push";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { pushIsConfigured, getVapidKeys } from "@/lib/push/config";
 import { CUSTOM_BRAND } from "@/config/landing";
+import {
+  publicLookup,
+  resolvePublicAddresses,
+  ssrfGuardEnabled,
+} from "@/lib/webhooks/validate-url";
 import { GLOBAL_TERRITORY_ID } from "@/types/tenancy";
 import type {
   AgencyDoc,
@@ -24,10 +30,11 @@ import type {
  *   2. The agency owner, if not already an explicit member — OPT-IN only
  *      (prefs key must be exactly true), since implicit-admin-everywhere
  *      would otherwise buzz them for every event in every client account.
- *   3. When territory scoping is on and the event carries a territoryId,
- *      collaborators only receive it for territories they're assigned to
- *      (admins and Global-territory events pass for everyone) — mirroring
- *      the read-side rules so a push can't leak a lead a rep can't open.
+ *   3. When territory scoping is on and the event belongs to a record
+ *      (`territoryId` is not undefined), collaborators only receive it for
+ *      territories they're assigned to; an untagged record (null) reaches
+ *      admins/owners only. Global passes for everyone — mirroring the
+ *      read-side rules so a push can't leak a lead a rep can't open.
  *
  * Membership is re-checked at send time, so a removed member stops
  * receiving pushes the moment their membership row flips — even if their
@@ -43,7 +50,9 @@ export interface SendPushInput {
   url: string;
   /** Collapse key — same tag replaces the previous notification. */
   tag?: string;
-  /** Territory of the underlying record, when the feature applies. */
+  /** Territory of the underlying record. `undefined` = the event has no
+   *  territory-scoped record (unrestricted); `null` = an untagged record,
+   *  hidden from scoped collaborators exactly as the read rules hide it. */
   territoryId?: string | null;
 }
 
@@ -91,19 +100,20 @@ export async function sendPushForEvent(input: SendPushInput): Promise<void> {
     if (recipients.size === 0) return;
 
     // Territory gate — collaborators only hear about territories they can
-    // read. Admins/owner always pass; Global (or untagged) events pass for
-    // everyone, matching the shared-floor read semantics.
+    // read (canSeeScopedDoc). Admins/owner always pass; Global passes for
+    // everyone; an untagged record (null) is admins/owner only; an event
+    // with no record at all (undefined) is unrestricted.
     const scopingOn = subAccount.territoryScopingEnabled === true;
-    const territoryId = input.territoryId ?? null;
+    const territoryId = input.territoryId;
     const territoryApplies =
-      scopingOn && !!territoryId && territoryId !== GLOBAL_TERRITORY_ID;
+      scopingOn && territoryId !== undefined && territoryId !== GLOBAL_TERRITORY_ID;
 
     const eligible = [...recipients.values()].filter((r) => {
       if (!territoryApplies) return true;
       // SubAccountRole is "admin" | "collaborator"; only collaborators are
       // territory-scoped (admins + the synthetic agencyOwner always pass).
       if (r.role !== "collaborator") return true;
-      return r.assignedTerritoryIds.includes(territoryId!);
+      return territoryId !== null && r.assignedTerritoryIds.includes(territoryId);
     });
     if (eligible.length === 0) return;
 
@@ -137,13 +147,23 @@ export async function sendPushForEvent(input: SendPushInput): Promise<void> {
             subsSnap.docs.map(async (subDoc) => {
               const sub = subDoc.data();
               try {
+                const endpoint = sub.endpoint as string;
+                // Endpoints are client-supplied: refuse internal hosts (IP
+                // literals here, rebinding names at connect via the agent).
+                const guard = ssrfGuardEnabled();
+                if (guard) await resolvePublicAddresses(new URL(endpoint).hostname);
                 await webpush.sendNotification(
                   {
-                    endpoint: sub.endpoint as string,
+                    endpoint,
                     keys: sub.keys as { p256dh: string; auth: string },
                   },
                   payload,
-                  { vapidDetails: { subject, publicKey, privateKey } },
+                  {
+                    vapidDetails: { subject, publicKey, privateKey },
+                    ...(guard
+                      ? { agent: new https.Agent({ lookup: publicLookup }) }
+                      : {}),
+                  },
                 );
               } catch (err) {
                 const status = (err as { statusCode?: number }).statusCode;

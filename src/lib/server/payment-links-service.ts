@@ -9,9 +9,11 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
+import { loadActiveSchedule, mandateTerms, termsStillHold } from "@/lib/server/payment-mandates";
 import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
 import type { PaymentAttempt, PaymentMode } from "@/types/payment-attempts";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
+import type { MandateTerms } from "@/types/payment-mandates";
 import type { Quote } from "@/types/quotes";
 
 /**
@@ -51,6 +53,8 @@ export async function createPaymentLink(input: {
   invoiceId?: string;
   amountCents?: unknown;
   description?: unknown;
+  /** A card-on-file link: pays this cycle's invoice and saves the card. */
+  mandate?: boolean;
 }): Promise<ServiceResult<{ link: PaymentLink }>> {
   const db = getAdminDb();
   const sub = (await db.doc(`subAccounts/${input.subAccountId}`).get()).data();
@@ -68,6 +72,11 @@ export async function createPaymentLink(input: {
   let contactId: string | null = null;
   let description: string;
   let amountCents: number;
+  let mandate: MandateTerms | null = null;
+  let recurringInvoiceId: string | null = null;
+  if (input.mandate && !input.invoiceId) {
+    return fail(400, "A card-on-file link is made from a recurring invoice.");
+  }
 
   if (input.invoiceId) {
     const snap = await db.doc(`quotes/${input.invoiceId}`).get();
@@ -83,10 +92,30 @@ export async function createPaymentLink(input: {
     }
     amountCents = invoiceTotalCents(quote);
     if (amountCents <= 0) return fail(409, "This invoice has nothing to pay.");
+    if (input.mandate) {
+      // The terms are fixed now, from the schedule, and shown verbatim on the
+      // pay page. They must describe this invoice's amount too.
+      const schedule = await loadActiveSchedule(input.subAccountId, quote.recurringInvoiceId);
+      if (!schedule) return fail(409, "A card-on-file link needs an invoice from an active recurring schedule.");
+      // The customer authorises a named business, never "the sender".
+      if (typeof sub.name !== "string" || !sub.name.trim()) {
+        return fail(409, "Set this workspace's business name first: the customer authorises it by name.");
+      }
+      mandate = mandateTerms(sub.name.trim(), schedule);
+      if (mandate.currency !== PAYMENT_LINK_CURRENCY) {
+        return fail(409, "Card-on-file links are ZAR only. This recurring schedule is in another currency.");
+      }
+      if (mandate.amountCents !== amountCents) {
+        return fail(409, "This invoice's amount differs from its recurring schedule's. Fix one of them first.");
+      }
+      recurringInvoiceId = schedule.id;
+    }
     // One live link per invoice: a second click hands back the open one, so
     // the customer can't be sent two links and pay both. A deactivated or
     // paid link doesn't count. An open link issued in the OTHER mode can no
-    // longer be paid (see `loadPayableLink`), so it is withdrawn and replaced.
+    // longer be paid (see `loadPayableLink`), and one of the other kind
+    // (card-on-file vs plain) is not what was asked for: both are withdrawn
+    // and replaced.
     const existing = await db
       .collection("paymentLinks")
       .where("subAccountId", "==", input.subAccountId)
@@ -96,7 +125,10 @@ export async function createPaymentLink(input: {
       const l = d.data() as PaymentLink;
       return l.active && l.status === "open";
     });
-    const open = openLinks.find((d) => (d.data() as PaymentLink).mode === mode);
+    const open = openLinks.find((d) => {
+      const l = d.data() as PaymentLink;
+      return l.mode === mode && !!l.mandate === !!input.mandate;
+    });
     if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
     for (const stale of openLinks) {
       await stale.ref.update({ active: false, updatedAt: FieldValue.serverTimestamp() });
@@ -128,6 +160,7 @@ export async function createPaymentLink(input: {
     amountCents,
     currency: PAYMENT_LINK_CURRENCY,
     mode,
+    ...(mandate ? { mandate, recurringInvoiceId } : {}),
     token: issuePaymentLinkToken(ref.id),
     active: true,
     status: "open",
@@ -195,6 +228,11 @@ export async function loadPayableLink(
   // A payer back from Paystack is only told their payment is being confirmed:
   // telling them the link is dead could prompt a second payment.
   if (opts.returning) return { ok: true, link, mode: null };
+  // A card-on-file link's terms were fixed when it was made. A schedule since
+  // paused, re-priced or re-timed would make them false.
+  if (link.mandate && !termsStillHold(link.mandate, await loadActiveSchedule(link.subAccountId, link.recurringInvoiceId))) {
+    return fail(410, "The terms of this card link have changed. Ask the sender for a fresh link.");
+  }
   const conn = await readPaystackConnectionSecret(link.subAccountId);
   if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
   // A link is paid in the mode it was issued in. Switching the workspace
@@ -236,6 +274,8 @@ export function parsePaymentLinkReference(reference: string): string | null {
 export async function startPaymentLinkCheckout(input: {
   token: string;
   email: string;
+  /** The payer's IP — consent evidence on a card-on-file link. */
+  ip: string;
 }): Promise<ServiceResult<{ url: string }>> {
   const loaded = await loadPayableLink(input.token);
   if (!loaded.ok) return loaded;
@@ -256,6 +296,9 @@ export async function startPaymentLinkCheckout(input: {
       paymentLinkId: link.id,
       amountCents: link.amountCents,
       currency: link.currency,
+      // Clicking pay under the terms shown is the consent: the same stored
+      // wording, the server's clock, the payer's IP.
+      ...(link.mandate ? { consent: { text: link.mandate.text, acceptedAt: new Date(), ip: input.ip } } : {}),
       mode,
       keyFingerprint: paystackKeyFingerprint(conn.secretKey),
       state: "open",
@@ -280,6 +323,8 @@ export async function startPaymentLinkCheckout(input: {
       reference,
       metadata: { paymentLinkId: link.id, subAccountId: link.subAccountId },
       displayName: link.description,
+      // Only a card can be charged again; bank or EFT would save nothing.
+      ...(link.mandate ? { channels: ["card"] } : {}),
       secretKey: opened.secretKey,
     });
     return { ok: true, url };

@@ -12,6 +12,7 @@ import {
 import { signWebhookPayload } from "@/lib/api/webhooks/signing";
 import { LATEST_API_VERSION } from "@/lib/api/versions";
 import { SAMPLE_PAYLOADS } from "@/lib/webhooks/sample-payloads";
+import { publicFetch } from "@/lib/webhooks/public-fetch";
 import type {
   WebhookEventType,
   WebhookSubscriptionDoc,
@@ -88,7 +89,7 @@ export async function sendDirectTestDelivery(
     | { kind: "success"; status: number; bodyExcerpt: string }
     | { kind: "failure"; status: number | null; message: string };
   try {
-    const res = await fetch(subscription.url, {
+    const res = await publicFetch(subscription.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

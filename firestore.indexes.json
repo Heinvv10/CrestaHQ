@@ -713,6 +713,36 @@
   ],
   "fieldOverrides": [
     {
+      "collectionGroup": "apiRequestLogs",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        {
+          "queryScope": "COLLECTION_GROUP",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "apiIdempotency",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        {
+          "queryScope": "COLLECTION_GROUP",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "webhookEvents",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        {
+          "queryScope": "COLLECTION_GROUP",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "submissions",
       "fieldPath": "contactId",
       "indexes": [

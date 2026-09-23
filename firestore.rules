@@ -1169,6 +1169,26 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- paymentMandates (saved cards for recurring invoices) ----------
+    // The display doc — card last4/brand/expiry, terms, consent evidence,
+    // status — is member-read, so the contact page can show it. ALL writes are
+    // server-only: the reconciler creates it from a verified payment, and the
+    // revoke route / connection change move its status. What can actually
+    // charge the card lives in `private/authorization`, which NO client may
+    // read or write — not even the agency owner. Do not widen this match to
+    // `{mandateId=**}`: that would expose the authorization.
+    match /paymentMandates/{mandateId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+
+      match /private/{docId} {
+        allow read, write: if false;
+      }
+    }
+
     // ---------- quotes ----------
     // GHL-style "Estimates" — operator-built quote → public accept page.
     // Reads + edits by any active sub-account member (matches the

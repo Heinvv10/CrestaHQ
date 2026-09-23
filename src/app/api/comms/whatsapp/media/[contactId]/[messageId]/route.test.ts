@@ -24,6 +24,8 @@ type Doc = Record<string, unknown> | null;
 
 let contactDoc: Doc;
 let memberDoc: Doc;
+/** The sub-account row — only read for a collaborator's territory check. */
+let subAccountDoc: Doc;
 let messageDoc: Doc;
 let claims: Record<string, unknown> | null;
 /** Every object path the route asked the bucket for. Empty means it never
@@ -56,6 +58,7 @@ const fakeDb = {
   doc: (path: string) => ({
     get: async () => {
       if (path.includes("/subAccountMembers/")) return snap(memberDoc, path);
+      if (path === `subAccounts/${SUB_ACCOUNT_ID}`) return snap(subAccountDoc, path);
       if (path.includes("/whatsappMessages/")) return snap(messageDoc, path);
       throw new Error(`unexpected doc path ${path}`);
     },
@@ -129,6 +132,7 @@ beforeEach(() => {
   claims = { status: "active", agencyId: AGENCY_ID, agencyRole: "staff" };
   contactDoc = { agencyId: AGENCY_ID, subAccountId: SUB_ACCOUNT_ID, name: "Ada" };
   memberDoc = { status: "active" };
+  subAccountDoc = null;
   messageDoc = {
     agencyId: AGENCY_ID,
     subAccountId: SUB_ACCOUNT_ID,
@@ -157,6 +161,24 @@ describe("GET /api/comms/whatsapp/media/[contactId]/[messageId]", () => {
     const res = await call(AUTHED);
     expect(res.status).toBe(403);
     expect(fileCalls).toEqual([]);
+  });
+
+  it("403s a territory-scoped collaborator for a contact outside their territories", async () => {
+    subAccountDoc = { territoryScopingEnabled: true };
+    memberDoc = { status: "active", role: "collaborator", assignedTerritoryIds: ["t1"] };
+    contactDoc = { ...(contactDoc as Record<string, unknown>), territoryId: "t2" };
+    const res = await call(AUTHED);
+    expect(res.status).toBe(403);
+    expect(fileCalls).toEqual([]);
+  });
+
+  it("serves a territory-scoped collaborator a contact in their territory", async () => {
+    subAccountDoc = { territoryScopingEnabled: true };
+    memberDoc = { status: "active", role: "collaborator", assignedTerritoryIds: ["t1"] };
+    contactDoc = { ...(contactDoc as Record<string, unknown>), territoryId: "t1" };
+    const res = await call(AUTHED);
+    expect(res.status).toBe(200);
+    expect(fileCalls).toEqual([EXPECTED_PATH]);
   });
 
   it("404s when the message row carries no media", async () => {
