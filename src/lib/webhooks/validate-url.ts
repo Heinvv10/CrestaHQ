@@ -107,7 +107,8 @@ export function isNonPublicAddress(ip: string): boolean {
  * `resolvePublicAddresses` for that.
  */
 function isBlockedHostname(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // One trailing dot is the fully-qualified spelling of the same name.
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (h === "localhost" || h.endsWith(".localhost")) return true;
   return ipaddr.isValid(h) && isNonPublicAddress(h);
 }

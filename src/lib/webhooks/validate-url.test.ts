@@ -24,6 +24,9 @@ import {
 
 const BAD = [
   "https://localhost/x",
+  "https://localhost./x", // trailing-dot FQDN spelling
+  "https://LOCALHOST./x",
+  "https://api.localhost./x",
   "https://127.0.0.1/x",
   "https://2130706433/x", // decimal 127.0.0.1
   "https://0177.0.0.1/x", // octal
