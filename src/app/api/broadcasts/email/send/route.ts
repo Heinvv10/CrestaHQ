@@ -8,11 +8,11 @@ import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { emailIsConfigured } from "@/lib/comms/resend";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { resolveMergeTags, validateEmailBody } from "@/lib/automations/merge-tags";
-import { resolveAudience } from "@/lib/broadcasts/audience";
+import { countAudience } from "@/lib/broadcasts/audience";
+import { BROADCAST_FANOUT_RETRIES } from "@/lib/broadcasts/completion";
 import type {
   BroadcastAudienceFilter,
   BroadcastDoc,
-  BroadcastSendDoc,
   MessageTemplateDoc,
 } from "@/types";
 
@@ -22,24 +22,17 @@ interface SendBody {
   subAccountId?: string;
   templateId?: string;
   audienceFilter?: BroadcastAudienceFilter;
+  /** Client-generated per submit; a retry with the same key is a no-op. */
+  idempotencyKey?: string;
 }
-
-/**
- * QStash fan-out throttle. We send at 5 messages/sec by default — well
- * under Resend's free-tier 10 req/sec API cap, leaving headroom for
- * concurrent one-off sends from the contact-profile UI. Each recipient gets
- * its own delayed QStash message; the batch fully drains in roughly
- * (audienceSize / SEND_RATE) seconds.
- *
- * 200ms × 50,000 = 10,000s ≈ 2h47m. Acceptable for an MVP — Resend's
- * Broadcasts API would beat us at scale, but per-contact merge-tag
- * rendering is the main reason we picked the fan-out route.
- */
-const SEND_RATE_PER_SECOND = 5;
-const DELAY_BETWEEN_SENDS_MS = 1000 / SEND_RATE_PER_SECOND;
 
 /** Hard cap on per-broadcast audience size to prevent runaway sends. */
 const MAX_AUDIENCE_SIZE = 25_000;
+
+/** gRPC ALREADY_EXISTS — create() on a doc that is already there. */
+const ALREADY_EXISTS = 6;
+
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,64}$/;
 
 export async function POST(request: Request) {
   if (!qstashIsConfigured()) {
@@ -60,9 +53,17 @@ export async function POST(request: Request) {
   const templateId = payload.templateId?.trim();
   const audienceFilter = payload.audienceFilter;
 
+  const idempotencyKey = payload.idempotencyKey;
+
   if (!subAccountId || !templateId || !audienceFilter) {
     return NextResponse.json(
       { error: "subAccountId, templateId, and audienceFilter are required" },
+      { status: 400 },
+    );
+  }
+  if (typeof idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
+    return NextResponse.json(
+      { error: "idempotencyKey (8-64 chars of A-Z, a-z, 0-9, _ or -) is required" },
       { status: 400 },
     );
   }
@@ -135,28 +136,32 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: bodyValidation }, { status: 400 });
   }
 
-  // Resolve audience. A scoped collaborator only reaches contacts in
-  // their assigned territories; admins / owners / scoping-off pass null.
+  // A scoped collaborator only reaches contacts in their assigned
+  // territories; admins / owners / scoping-off pass null. Applied before
+  // counting, and carried to the fanout step in the (signed) QStash body.
   const scope = await loadEffectiveTerritoryScope(access);
-  const audience = await resolveAudience(
+  const territoryIds = scope.enforce ? (scope.ids ?? []) : null;
+
+  // Size the audience without reading it — the contacts themselves are read
+  // page by page in the fanout step, never whole inside this request. The
+  // count is pre-skip (opted-out / no-email contacts included), so the cap
+  // errs on the side of refusing.
+  const matching = await countAudience(
     subAccountId,
     audienceFilter,
-    scope.enforce ? (scope.ids ?? []) : null,
+    territoryIds,
+    MAX_AUDIENCE_SIZE,
   );
-  if (audience.recipients.length === 0) {
+  if (matching === 0) {
     return NextResponse.json(
-      {
-        error:
-          "Audience is empty after pre-flight (no contacts match, or all are opted-out / missing email).",
-        skipped: audience.skipped.length,
-      },
+      { error: "Audience is empty — no contacts match this filter." },
       { status: 400 },
     );
   }
-  if (audience.recipients.length > MAX_AUDIENCE_SIZE) {
+  if (matching > MAX_AUDIENCE_SIZE) {
     return NextResponse.json(
       {
-        error: `Audience size ${audience.recipients.length} exceeds the per-broadcast cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter and try again.`,
+        error: `Audience size exceeds the per-broadcast cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter and try again.`,
       },
       { status: 400 },
     );
@@ -178,7 +183,11 @@ export async function POST(request: Request) {
     .slice(0, 200);
 
   const agencyId = templateSnap.data()?.agencyId as string;
-  const broadcastRef = db.collection("broadcasts").doc();
+  // The idempotency key names the doc, so a retried or double-clicked submit
+  // lands on the same broadcast instead of starting a second one.
+  const broadcastRef = db
+    .collection("broadcasts")
+    .doc(`${subAccountId}_${idempotencyKey}`);
 
   const broadcast: Omit<BroadcastDoc, "id"> = {
     agencyId,
@@ -195,117 +204,69 @@ export async function POST(request: Request) {
     }),
     audienceFilter,
     status: "queued",
-    totals: {
-      audienceSize: audience.recipients.length + audience.skipped.length,
-      queued: audience.recipients.length,
-      sent: 0,
-      skipped: audience.skipped.length,
-      failed: 0,
-    },
+    // Filled in page by page by the fanout step.
+    totals: { audienceSize: 0, queued: 0, sent: 0, skipped: 0, failed: 0 },
     createdByUid: access.uid,
     createdBy: { displayName: createdByName, email: access.email },
     createdAt: FieldValue.serverTimestamp() as unknown as null,
     startedAt: null,
     completedAt: null,
     errorMessage: null,
+    fanoutDone: false,
   };
-  await broadcastRef.set({ id: broadcastRef.id, ...broadcast });
-
-  // Write the per-send rows for recipients (in 500-doc batches — Firestore's
-  // hard limit is 500 ops per batch).
-  const sendsCol = broadcastRef.collection("sends");
-  const recipientsToQueue = audience.recipients;
-  for (let i = 0; i < recipientsToQueue.length; i += 500) {
-    const slice = recipientsToQueue.slice(i, i + 500);
-    const batch = db.batch();
-    for (const contact of slice) {
-      const sendRef = sendsCol.doc(contact.id);
-      const sendDoc: Omit<BroadcastSendDoc, "id"> = {
-        broadcastId: broadcastRef.id,
-        agencyId,
-        subAccountId,
-        contactId: contact.id,
-        toEmail: contact.email,
-        toName: contact.name,
-        status: "queued",
-        skippedReason: null,
-        resendMessageId: null,
-        error: null,
-        attempts: 0,
-        queuedAt: FieldValue.serverTimestamp() as unknown as null,
-        sentAt: null,
-      };
-      batch.set(sendRef, { id: contact.id, ...sendDoc });
-    }
-    await batch.commit();
-  }
-
-  // Also write a row per skipped contact so the detail page shows them with
-  // their reason. These are terminal — no QStash callback fires.
-  const skippedToWrite = audience.skipped;
-  for (let i = 0; i < skippedToWrite.length; i += 500) {
-    const slice = skippedToWrite.slice(i, i + 500);
-    const batch = db.batch();
-    for (const { contact, reason } of slice) {
-      const sendRef = sendsCol.doc(contact.id);
-      const sendDoc: Omit<BroadcastSendDoc, "id"> = {
-        broadcastId: broadcastRef.id,
-        agencyId,
-        subAccountId,
-        contactId: contact.id,
-        toEmail: contact.email,
-        toName: contact.name,
-        status: "skipped",
-        skippedReason: reason,
-        resendMessageId: null,
-        error: null,
-        attempts: 0,
-        queuedAt: FieldValue.serverTimestamp() as unknown as null,
-        sentAt: FieldValue.serverTimestamp() as unknown as null,
-      };
-      batch.set(sendRef, { id: contact.id, ...sendDoc });
-    }
-    await batch.commit();
-  }
-
-  // Fan out to QStash — one message per recipient, staggered to honor our
-  // 5/sec rate. Each callback POSTs /api/broadcasts/email/step with the
-  // broadcastId + contactId; the step route does the actual Resend call.
-  let queuedCount = 0;
-  let publishFailures = 0;
-  for (let i = 0; i < recipientsToQueue.length; i++) {
-    const contact = recipientsToQueue[i];
-    const delayMs = i * DELAY_BETWEEN_SENDS_MS;
-    const result = await publishCallback({
-      pathname: "/api/broadcasts/email/step",
-      body: { broadcastId: broadcastRef.id, contactId: contact.id },
-      // QStash delay is in seconds — round up so two adjacent sends never
-      // fire in the same second when the math floors to the same integer.
-      delaySeconds: Math.ceil(delayMs / 1000),
-      // Per-row dedup key — if the operator double-clicks Send and somehow
-      // hits this route twice, the second batch's QStash publishes are
-      // dropped at the QStash side rather than producing a duplicate send.
-      deduplicationId: `bcast_${broadcastRef.id}_${contact.id}`,
+  // Fixed dedup id: a re-publish on retry collapses into the first.
+  const startFanout = () =>
+    publishCallback({
+      retries: BROADCAST_FANOUT_RETRIES,
+      pathname: "/api/broadcasts/email/fanout",
+      body: { broadcastId: broadcastRef.id, cursor: null, slot: 0, territoryIds },
+      delaySeconds: 0,
+      deduplicationId: `bcastfan_${broadcastRef.id}_start`,
     });
-    if (result) {
-      queuedCount += 1;
-    } else {
-      publishFailures += 1;
+
+  try {
+    await broadcastRef.create({ id: broadcastRef.id, ...broadcast });
+  } catch (err) {
+    if ((err as { code?: number }).code !== ALREADY_EXISTS) throw err;
+    const existing = (await broadcastRef.get()).data() as BroadcastDoc | undefined;
+    if (
+      existing?.templateId !== templateId ||
+      JSON.stringify(existing.audienceFilter) !== JSON.stringify(audienceFilter)
+    ) {
+      return NextResponse.json(
+        { error: "This send was already submitted with different settings. Reopen the dialog and try again." },
+        { status: 409 },
+      );
     }
+    if (existing.status === "failed") {
+      return NextResponse.json(
+        { error: existing.errorMessage ?? "This broadcast failed to start.", broadcastId: broadcastRef.id },
+        { status: 502 },
+      );
+    }
+    // The first attempt may have died before its fanout publish landed.
+    if (existing.status === "queued" && existing.fanoutDone === false) {
+      await startFanout();
+    }
+    return NextResponse.json({
+      ok: true,
+      broadcastId: broadcastRef.id,
+      audienceSize: matching,
+      duplicate: true,
+    });
   }
 
-  // If every QStash publish failed (e.g. NEXT_PUBLIC_APP_URL misconfigured),
-  // mark the broadcast failed so the UI shows the error rather than a
-  // stuck-queued state. Partial-failures we tolerate: the row is queued in
-  // Firestore and an operator can retry from the detail page in v2.
-  if (queuedCount === 0 && publishFailures > 0) {
+  // Hand the audience to the fanout step, which pages through it and
+  // publishes the staggered per-recipient sends.
+  const fanout = await startFanout();
+  if (!fanout) {
     await broadcastRef.update({
       status: "failed",
-      errorMessage: "Every QStash publish failed. Check NEXT_PUBLIC_APP_URL.",
+      errorMessage: "Could not schedule the send. Check QStash and NEXT_PUBLIC_APP_URL.",
       completedAt: FieldValue.serverTimestamp(),
     });
     return NextResponse.json(
-      { error: "Failed to schedule any sends. Check QStash configuration." },
+      { error: "Failed to schedule the broadcast. Check QStash configuration." },
       { status: 502 },
     );
   }
@@ -313,8 +274,6 @@ export async function POST(request: Request) {
   return NextResponse.json({
     ok: true,
     broadcastId: broadcastRef.id,
-    queued: queuedCount,
-    skipped: audience.skipped.length,
-    publishFailures,
+    audienceSize: matching,
   });
 }

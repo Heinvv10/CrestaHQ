@@ -27,7 +27,9 @@ export type BroadcastStatus =
   /** Every row has settled (sent / skipped / failed). */
   | "completed"
   /** Hard-failed during creation (e.g. QStash misconfigured). */
-  | "failed";
+  | "failed"
+  /** Stopped by the operator; rows still queued settle as skipped. */
+  | "cancelled";
 
 /**
  * Audience filter applied at fan-out time. v1 supports three modes — full
@@ -77,6 +79,12 @@ export interface BroadcastDoc {
   completedAt: Timestamp | FieldValue | null;
   /** Populated when status === "failed". */
   errorMessage: string | null;
+  /**
+   * False while the fanout step is still paging through the audience; the
+   * broadcast cannot complete before it turns true. Absent on broadcasts
+   * created before paged fan-out — those were fully fanned out at creation.
+   */
+  fanoutDone?: boolean;
 }
 
 /** Reasons the step executor skips a recipient WITHOUT calling Resend. */
@@ -90,7 +98,13 @@ export type BroadcastSkipReason =
   /** Contact was deleted between fan-out and send. */
   | "contact_missing"
   /** Address is on the sub-account's email suppression list at send time. */
-  | "suppressed";
+  | "suppressed"
+  /** The operator cancelled the broadcast before this row sent. */
+  | "cancelled"
+  /** The sub-account's automations kill switch was on at send time. */
+  | "automations_paused"
+  /** The agency turned broadcasts off for the sub-account mid-send. */
+  | "agency_disabled";
 
 export type BroadcastSendStatus =
   | "queued"
@@ -118,4 +132,8 @@ export interface BroadcastSendDoc {
   attempts: number;
   queuedAt: Timestamp | FieldValue | null;
   sentAt: Timestamp | FieldValue | null;
+  /** Set when a step claims the row for sending — a redelivery never sends twice. */
+  claimedAt?: Timestamp | FieldValue | null;
+  /** Token of the claim holder; only that holder's settle lands. */
+  claimId?: string;
 }

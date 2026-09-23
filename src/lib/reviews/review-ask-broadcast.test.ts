@@ -61,7 +61,7 @@ beforeEach(() => {
   mem.clear();
   vi.spyOn(console, "warn").mockImplementation(() => {});
   sendEmail.mockReset().mockResolvedValue({ id: "<m1@tenant.test>" });
-  mem.seed("subAccounts/sa1", { name: "Blitz", agencyId: "ag1", googleReviewConfig: { reviewUrl: REVIEW_URL } });
+  mem.seed("subAccounts/sa1", { name: "Blitz", agencyId: "ag1", broadcastsEnabledByAgency: true, googleReviewConfig: { reviewUrl: REVIEW_URL } });
   mem.seed("agencies/ag1", {});
   for (const [id, name] of [["c1", "Thandi"], ["c2", "Sipho"]]) {
     mem.seed(`contacts/${id}`, { agencyId: "ag1", subAccountId: "sa1", name, email: `${id}@example.test` });

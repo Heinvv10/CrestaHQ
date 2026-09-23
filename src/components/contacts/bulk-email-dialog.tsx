@@ -64,6 +64,13 @@ export function BulkEmailDialog({
   const [sending, setSending] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
+  // One key per distinct submit: a retry or double-click of the same send
+  // reuses it (the server dedups on it); changing any input mints a new one.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    setIdempotencyKey(crypto.randomUUID());
+  }, [open, templateId, filterKind, filterTag, filterStage]);
+
   // Reset form when reopened.
   useEffect(() => {
     if (open) {
@@ -174,13 +181,13 @@ export function BulkEmailDialog({
           subAccountId,
           templateId,
           audienceFilter,
+          idempotencyKey,
         }),
       });
       const data = (await res.json()) as {
         ok?: boolean;
         broadcastId?: string;
-        queued?: number;
-        skipped?: number;
+        audienceSize?: number;
         error?: string;
       };
       if (!res.ok || !data.ok || !data.broadcastId) {
@@ -188,9 +195,7 @@ export function BulkEmailDialog({
         return;
       }
       toast.success(
-        `Bulk email queued — ${data.queued ?? 0} recipients${
-          data.skipped ? ` (${data.skipped} skipped)` : ""
-        }`,
+        `Bulk email queued for ${data.audienceSize ?? 0} matching contacts — opted-out and no-email contacts are skipped.`,
       );
       onOpenChange(false);
       router.push(saPath(`/broadcasts/${data.broadcastId}`));

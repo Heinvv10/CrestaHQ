@@ -21,7 +21,7 @@ vi.mock("@/lib/automations/unsubscribe-token", () => ({
 }));
 vi.mock("@/lib/reviews/review-ask", () => ({ logIfReviewAsk: async () => undefined }));
 
-const { SA, AGENCY, mem, resetSeam, suppress, wireRecipients } = await s();
+const { SA, AGENCY, SMTP_SUB, mem, resetSeam, suppress, wireRecipients } = await s();
 const { POST } = await import("./route");
 
 const step = () =>
@@ -35,6 +35,8 @@ const step = () =>
 
 beforeEach(() => {
   resetSeam();
+  // The step re-checks the agency gate at send time.
+  mem.seed(`subAccounts/${SA}`, { ...SMTP_SUB, broadcastsEnabledByAgency: true });
   mem.seed(`agencies/${AGENCY}`, {});
   mem.seed("message_templates/t1", { subject: "News", body: "Hello\n{{unsubscribeLink}}" });
   mem.seed("contacts/c1", {

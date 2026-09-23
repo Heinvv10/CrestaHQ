@@ -1,5 +1,6 @@
 import "server-only";
 
+import { FieldPath } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastAudienceFilter } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -31,7 +32,62 @@ export interface ResolvedAudience {
   }>;
 }
 
-export async function resolveAudience(
+/** Contacts read per fanout page — bounded so no request loads a whole list. */
+export const AUDIENCE_PAGE_SIZE = 200;
+
+/** The filter's contact query, unpaged — callers add a count() or a page. */
+export function audienceQuery(
+  subAccountId: string,
+  filter: BroadcastAudienceFilter,
+): FirebaseFirestore.Query {
+  let query: FirebaseFirestore.Query = getAdminDb()
+    .collection("contacts")
+    .where("subAccountId", "==", subAccountId);
+
+  if (filter.kind === "tag") {
+    query = query.where("tags", "array-contains", filter.tag);
+  } else if (filter.kind === "pipeline_stage") {
+    query = query.where("pipelineStage", "==", filter.stage);
+  }
+  return query;
+}
+
+/**
+ * How many contacts the audience covers, before opt-out / missing-email
+ * skips. Unscoped: one aggregate count(). Territory-scoped: a projected scan
+ * applying the same territory rule as the page resolver, so a scoped
+ * collaborator never sees (or is capped by) contacts outside their
+ * territories. Stops counting once past `stopAbove`.
+ */
+export async function countAudience(
+  subAccountId: string,
+  filter: BroadcastAudienceFilter,
+  territoryFilter: string[] | null,
+  stopAbove: number,
+): Promise<number> {
+  const query = audienceQuery(subAccountId, filter);
+  if (!territoryFilter) return (await query.count().get()).data().count;
+  if (territoryFilter.length === 0) return 0;
+  let count = 0;
+  let cursor: string | null = null;
+  for (;;) {
+    let page = query.select("territoryId").orderBy(FieldPath.documentId());
+    if (cursor) page = page.startAfter(cursor);
+    const snap = await page.limit(1000).get();
+    for (const d of snap.docs) {
+      const tId = d.data().territoryId as string | undefined;
+      if (tId && territoryFilter.includes(tId)) count += 1;
+    }
+    if (count > stopAbove || snap.docs.length < 1000) return count;
+    cursor = snap.docs[snap.docs.length - 1]!.id;
+  }
+}
+
+/**
+ * One page of the audience, in document-id order after `cursor` (a contact
+ * id, or null for the first page). `nextCursor` is null on the last page.
+ */
+export async function resolveAudiencePage(
   subAccountId: string,
   filter: BroadcastAudienceFilter,
   /**
@@ -43,20 +99,13 @@ export async function resolveAudience(
    * Territory-excluded contacts are dropped silently (not surfaced in
    * `skipped`) so the collaborator never learns they exist.
    */
-  territoryFilter: string[] | null = null,
-): Promise<ResolvedAudience> {
-  const db = getAdminDb();
-  let query: FirebaseFirestore.Query = db
-    .collection("contacts")
-    .where("subAccountId", "==", subAccountId);
-
-  if (filter.kind === "tag") {
-    query = query.where("tags", "array-contains", filter.tag);
-  } else if (filter.kind === "pipeline_stage") {
-    query = query.where("pipelineStage", "==", filter.stage);
-  }
-
-  const snap = await query.get();
+  territoryFilter: string[] | null,
+  cursor: string | null,
+  limit = AUDIENCE_PAGE_SIZE,
+): Promise<ResolvedAudience & { nextCursor: string | null }> {
+  let query = audienceQuery(subAccountId, filter).orderBy(FieldPath.documentId());
+  if (cursor) query = query.startAfter(cursor);
+  const snap = await query.limit(limit).get();
 
   const recipients: Contact[] = [];
   const skipped: ResolvedAudience["skipped"] = [];
@@ -80,5 +129,10 @@ export async function resolveAudience(
     recipients.push(contact);
   }
 
-  return { recipients, skipped };
+  const last = snap.docs[snap.docs.length - 1];
+  return {
+    recipients,
+    skipped,
+    nextCursor: snap.docs.length === limit && last ? last.id : null,
+  };
 }
