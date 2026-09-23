@@ -307,12 +307,17 @@ async function applySourceEffects(
     // community.member.joined / community.purchase.paid. Idempotent (returns
     // early when the purchase is paid), so a replay is a no-op; a transient
     // failure throws and the redelivery finishes it.
-    await markPurchasePaidServerSide({
+    const res = await markPurchasePaidServerSide({
       subAccountId: order.subAccountId,
       groupId: order.communityGroupId,
       purchaseId: order.purchaseId,
       grantedByUid: STRIPE_GRANTOR,
+      paidOrderId: order.id,
     });
+    const prior = res.alreadyPaid;
+    if (prior && prior.paidOrderId !== order.id && !unrecordedIsOurs(prior.paidOrderId, prior.paidAt)) {
+      return "Paid, but the community purchase was already paid (another payment, or marked paid by hand) — a refund may be owed.";
+    }
   }
   return null;
 }

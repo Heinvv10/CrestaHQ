@@ -152,13 +152,24 @@ export async function markPurchasePaidServerSide(opts: {
   groupId: string;
   purchaseId: string;
   grantedByUid: string;
-}): Promise<{ ok: boolean }> {
+  /** The Stripe order paying for it, recorded so a redelivery knows its own. */
+  paidOrderId?: string;
+}): Promise<{
+  ok: boolean;
+  /** Set when it was already paid: nothing was granted by this call. */
+  alreadyPaid?: { paidOrderId: string | null; paidAt: unknown };
+}> {
   const db = getAdminDb();
   const ref = purchasesCol(opts.subAccountId, opts.groupId).doc(opts.purchaseId);
   const snap = await ref.get();
   if (!snap.exists) throw new Error("Purchase not found");
   const purchase = { id: snap.id, ...(snap.data() as Omit<Purchase, "id">) };
-  if (purchase.status === "paid") return { ok: true };
+  if (purchase.status === "paid") {
+    return {
+      ok: true,
+      alreadyPaid: { paidOrderId: purchase.paidOrderId ?? null, paidAt: purchase.paidAt ?? null },
+    };
+  }
 
   // Grant access BEFORE flipping the purchase: the paid status is what makes
   // a retry return early above, so it must be the last write. A failure in
@@ -213,6 +224,7 @@ export async function markPurchasePaidServerSide(opts: {
     status: "paid",
     paidAt: FieldValue.serverTimestamp(),
     grantedByUid: opts.grantedByUid,
+    ...(opts.paidOrderId ? { paidOrderId: opts.paidOrderId } : {}),
   });
 
   void emitWebhookEvent({

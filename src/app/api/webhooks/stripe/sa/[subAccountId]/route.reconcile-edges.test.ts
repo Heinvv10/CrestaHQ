@@ -167,3 +167,25 @@ it("a missing token secret flags the booking deposit with a 200 instead of loopi
     process.env.AUTOMATIONS_TOKEN_SECRET = secret;
   }
 });
+
+it("a second card payment for a community purchase is flagged; the first payer's replay is not", async () => {
+  seedCommunity();
+  seedOrder("o2", { source: "community", quoteId: null, communityGroupId: "g1", purchaseId: "pu1" });
+  await deliver("checkout.session.completed", session("cs_o1"));
+  await deliver("checkout.session.completed", session("cs_o2"), "evt_2");
+  await deliver("checkout.session.completed", session("cs_o1")); // replay
+  expect(mem.read(`subAccounts/${SA}/communityGroups/g1/purchases/pu1`)).toMatchObject({ paidOrderId: "o1" });
+  expect(mem.read("orders/o2")!.attention).toMatch(/already paid/);
+  expect(mem.read("orders/o1")!.attention ?? null).toBeNull();
+  expect(mem.read(`subAccounts/${SA}/communityGroups/g1`)).toMatchObject({ memberCount: 1 });
+});
+
+it("a card payment for a community purchase already marked paid by hand is flagged", async () => {
+  seedCommunity();
+  mem.seed(`subAccounts/${SA}/communityGroups/g1/purchases/pu1`, {
+    agencyId: "ag1", memberId: "m1", status: "paid", scope: "group", targetId: "g1",
+    amountCents: 115000, currency: "ZAR", grantedByUid: "u1", paidAt: new Date("2026-09-01T10:00:00Z"),
+  });
+  expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+  expect(mem.read("orders/o1")!.attention).toMatch(/already paid/);
+});
