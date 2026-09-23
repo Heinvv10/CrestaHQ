@@ -8,7 +8,7 @@ import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
 import { dispatchWhatsappSend } from "@/lib/comms/whatsapp/send-dispatch";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
-import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
+import { isTemplateApprovedFor, templateRegistration } from "@/lib/comms/whatsapp/template-registrations";
 import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import {
   sendSmsForSubAccount,
@@ -472,6 +472,12 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     manualValues,
   });
   ctx.sent = { channel: "whatsapp", parts: [], template: tpl, templateValues: contentVariables };
+  // A blank variable is refused before any rail sees it: Twilio may send the
+  // template's SAMPLE value in its place (a stranger's name to a real
+  // customer), and Cloud would send the gap.
+  if (contentVariables.some((v) => !v.trim())) {
+    return whatsappSendFailed("error:WA_TEMPLATE_VARIABLE_EMPTY", true);
+  }
 
   try {
     // Through the provider dispatcher, not Twilio directly: a workspace on the
@@ -673,6 +679,9 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   // What goes out depends on the window, decided by the dispatcher; until it
   // answers, either could.
   ctx.sent = { channel: "whatsapp", parts: [body], template: tplDoc, templateValues };
+  const twilioContentSid = isTemplateApprovedFor(tplDoc, "twilio")
+    ? templateRegistration(tplDoc, "twilio")?.externalId ?? null
+    : null;
 
   try {
     const res = await dispatchWhatsappSend({
@@ -714,6 +723,29 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
         });
         return { ok: true, messageId: r.sid };
       },
+      // Out of window on Twilio the approved template goes by Content SID.
+      sendTemplateViaTwilio: twilioContentSid
+        ? async () => {
+            // Twilio may fill a blank variable with the template's SAMPLE
+            // value — a stranger's name to a real customer. Refused unsent.
+            if (templateValues.some((v) => !v.trim())) {
+              return {
+                ok: false,
+                error: "WA_TEMPLATE_VARIABLE_EMPTY",
+                providerOutcome: "DEFINITELY_REJECTED",
+                attempted: false,
+              };
+            }
+            const r = await sendWhatsappTemplateForSubAccount({
+              subAccountId: ctx.subAccountId,
+              subAccount: ctx.subAccount,
+              to,
+              contentSid: twilioContentSid,
+              contentVariables: templateValues,
+            });
+            return { ok: true, messageId: r.sid };
+          }
+        : undefined,
     });
     if (!res.ok) {
       ctx.sent.attempted = res.attempted === true && !res.refusedBy;
