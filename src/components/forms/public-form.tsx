@@ -12,6 +12,7 @@ import {
   readAttributionFromBrowser,
   trackLeadEvent,
 } from "@/lib/attribution";
+import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
 interface PublicFormProps {
   form: LeadForm;
@@ -101,7 +102,7 @@ export function PublicForm({ form }: PublicFormProps) {
       trackLeadEvent({
         utmCampaign: attributionRef.current?.utmCampaign ?? null,
       });
-      if (data.redirectUrl) {
+      if (data.redirectUrl && isSafeFormRedirectUrl(data.redirectUrl)) {
         window.location.href = data.redirectUrl;
         return;
       }

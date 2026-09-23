@@ -86,13 +86,21 @@ export function serializeCsv(
   return `${headerLine}\n${body}\n`;
 }
 
+// Cells starting with these characters are formulas to Excel/Sheets when the
+// CSV is opened (OWASP CSV injection). A leading apostrophe forces
+// spreadsheet apps to treat the cell as text without changing the visible
+// value. Skipped for actual numbers so negatives (e.g. -12.5) stay numeric.
+const FORMULA_TRIGGER_RE = /^[=+\-@\t\r]/;
+
 function escapeCsvCell(v: unknown): string {
   if (v === null || v === undefined) return "";
   const s = Array.isArray(v) ? v.join("; ") : String(v);
-  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-    return `"${s.replace(/"/g, '""')}"`;
+  const safe =
+    typeof v !== "number" && FORMULA_TRIGGER_RE.test(s) ? `'${s}` : s;
+  if (safe.includes(",") || safe.includes('"') || safe.includes("\n")) {
+    return `"${safe.replace(/"/g, '""')}"`;
   }
-  return s;
+  return safe;
 }
 
 export function downloadCsv(filename: string, csv: string): void {

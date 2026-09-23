@@ -58,6 +58,19 @@ service cloud.firestore {
         && request.resource.data.agencyId == resource.data.agencyId;
     }
 
+    // The public form page navigates the visitor's browser straight to
+    // `settings.redirectUrl` (src/components/forms/public-form.tsx). Forms
+    // are edited via direct client-SDK writes, so this is the only server
+    // side that can stop a sub-account admin from storing a `javascript:`
+    // URL that then runs on the CRM origin when someone test-submits the
+    // form. Absent/empty is allowed (no redirect); anything else must be
+    // an absolute http(s) URL.
+    function formRedirectUrlValid() {
+      return request.resource.data.settings.redirectUrl == null
+        || request.resource.data.settings.redirectUrl == ""
+        || request.resource.data.settings.redirectUrl.matches("^https?://.+");
+    }
+
     // `assignedToUid` (contacts / tasks "owner") may be cleared, or point at
     // an ACTIVE row in the sub-account's member subcollection — the same
     // test the server's isAssignableMember() makes. A uid outside the
@@ -1342,11 +1355,11 @@ service cloud.firestore {
       allow create: if canAdminSub(
         request.resource.data.subAccountId,
         request.resource.data.agencyId
-      );
+      ) && formRedirectUrlValid();
       allow update: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId
-      ) && tenantFieldsLockedOnUpdate();
+      ) && tenantFieldsLockedOnUpdate() && formRedirectUrlValid();
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId

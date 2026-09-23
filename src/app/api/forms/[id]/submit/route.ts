@@ -23,6 +23,7 @@ import {
 } from "@/lib/forms/spam-guard";
 import { defaultSmsConsentText } from "@/types/forms";
 import type { FormField, LeadForm } from "@/types/forms";
+import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 import type { Contact, ContactAttribution } from "@/types/contacts";
 
 type SubmitBody = {
@@ -199,7 +200,10 @@ async function handleSubmit(
       contactId: null,
       dealId: null,
       thankYouMessage: form.settings.thankYouMessage,
-      redirectUrl: form.settings.redirectUrl || null,
+      redirectUrl:
+        form.settings.redirectUrl && isSafeFormRedirectUrl(form.settings.redirectUrl)
+          ? form.settings.redirectUrl
+          : null,
     });
   }
 
@@ -562,6 +566,9 @@ async function handleSubmit(
     contactId: contactRef.id,
     dealId,
     thankYouMessage: form.settings.thankYouMessage,
-    redirectUrl: form.settings.redirectUrl || null,
+    redirectUrl:
+      form.settings.redirectUrl && isSafeFormRedirectUrl(form.settings.redirectUrl)
+        ? form.settings.redirectUrl
+        : null,
   });
 }

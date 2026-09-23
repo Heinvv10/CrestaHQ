@@ -155,7 +155,7 @@ ${fieldsHtml}
       .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
       .then(function (res) {
         if (!res.ok) throw new Error(res.body.error || "Submission failed");
-        if (res.body.redirectUrl) { window.location.href = res.body.redirectUrl; return; }
+        if (res.body.redirectUrl && /^https?:\\/\\//i.test(res.body.redirectUrl)) { window.location.href = res.body.redirectUrl; return; }
         form.reset();
         if (status) { status.textContent = res.body.thankYouMessage || "Thanks!"; }
       })
