@@ -5,9 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * pipeline. When a bot matches an existing contact it fills that contact's
  * BLANK fields from what it just heard. Drop the "is it blank?" half of any
  * condition and a hallucinated email silently overwrites a real customer's
- * verified one. Each of the three guards has a test here that fails when the
- * guard is removed. Reconciliation itself is in `capture-reconcile.test.ts`;
- * both share `src/test/capture-harness.ts`.
+ * verified one. Email/phone are never backfilled at all (every caller is
+ * public, so the matched identifier is only a claim); each guard has a test
+ * here that fails when it is removed. Reconciliation itself is in
+ * `capture-reconcile.test.ts`; both share `src/test/capture-harness.ts`.
  */
 
 vi.mock("@/lib/firebase/admin", async () => {
@@ -124,7 +125,10 @@ describe("backfill on an existing contact", () => {
     expect(updates).toHaveLength(0);
   });
 
-  it("backfills the NORMALIZED phone, not the as-typed string", async () => {
+  // Every caller is public + unauthenticated: the identifier that matched is
+  // only a claim, so the OTHER channel field must never be written onto the
+  // existing contact — even when it is blank on file.
+  it("NEVER fills a blank phone on a contact matched by email", async () => {
     existing("known", { email: "jane@example.com", phone: "" });
     await reconcile({
       capture: {
@@ -133,7 +137,22 @@ describe("backfill on an existing contact", () => {
         phone: "0412 345 678",
       },
     });
-    expect(updates[0].patch.phone).toBe("+61412345678");
+    expect(updates.some((u) => "phone" in u.patch)).toBe(false);
+    expect(contacts[0].data.phone).toBe("");
+  });
+
+  it("NEVER fills a blank email on a contact matched by phone", async () => {
+    existing("known", { phone: "+61412345678", email: "" });
+    await reconcile({
+      matchStrategy: "phone-first",
+      capture: {
+        name: null,
+        email: "someone@else.test",
+        phone: "+61412345678",
+      },
+    });
+    expect(updates.some((u) => "email" in u.patch)).toBe(false);
+    expect(contacts[0].data.email).toBe("");
   });
 
   it("swallows a write error — the capture still resolves the contact", async () => {
