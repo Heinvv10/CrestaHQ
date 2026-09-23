@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireUid } from "@/lib/comms/route-auth";
 import { pushIsConfigured } from "@/lib/push/config";
+import { validatePublicUrl } from "@/lib/webhooks/validate-url";
 
 /**
  * Device push-subscription registry — one row per browser/device at
@@ -60,6 +61,14 @@ export async function POST(request: Request) {
     authKey.length === 0 ||
     authKey.length > 512
   ) {
+    return NextResponse.json(
+      { error: "Malformed push subscription" },
+      { status: 400 },
+    );
+  }
+  // Real push services (FCM, Mozilla, Apple, WNS) are all public hosts; the
+  // endpoint is sent a POST by the server, so it must not name this box.
+  if (!(await validatePublicUrl(endpoint)).ok) {
     return NextResponse.json(
       { error: "Malformed push subscription" },
       { status: 400 },

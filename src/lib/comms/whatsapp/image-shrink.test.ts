@@ -8,7 +8,7 @@ import { jpegFilename, planDecode, shrinkImage, sniffImageType } from "./image-s
 const timeouts = vi.hoisted(() => [] as number[]);
 const decodes = vi.hoisted(() => ({ n: 0 }));
 vi.mock("sharp", async (importOriginal) => {
-  const real = (await importOriginal<{ default: typeof import("sharp") }>()).default;
+  const real = (await importOriginal<{ default: typeof sharp }>()).default;
   const wrapped = (...a: Parameters<typeof real>) => {
     const inst = real(...a);
     const timeout = inst.timeout.bind(inst);

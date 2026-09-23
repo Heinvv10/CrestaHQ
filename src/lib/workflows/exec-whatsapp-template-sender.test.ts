@@ -196,3 +196,23 @@ describe("a workspace with no sender registry is unchanged", () => {
     expect(sendWhatsappCloud).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("a blank template variable", () => {
+  it("is refused unsent on every rail — Twilio may send the SAMPLE value instead", async () => {
+    const blankTemplate = {
+      ...CLOUD_ONLY_TEMPLATE,
+      variables: [{ position: 1, label: "Company", sampleValue: "Acme", source: "merge_tag", mergeTag: "contact.company" }],
+      registrations: {
+        twilio: { externalId: "HX1", status: "approved", rejectionReason: null },
+        cloud: { externalId: "meta_1", status: "approved", rejectionReason: null },
+      },
+    };
+    for (const senderId of ["s_twilio", "s_cloud"]) {
+      templateDoc = blankTemplate;
+      const out = await execWhatsappTemplate(ctx({ templateId: "t1", senderId }));
+      expect(out).toEqual({ result: { kind: "fail" }, log: "error:WA_TEMPLATE_VARIABLE_EMPTY" });
+    }
+    expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
+    expect(sendWhatsappCloud).not.toHaveBeenCalled();
+  });
+});

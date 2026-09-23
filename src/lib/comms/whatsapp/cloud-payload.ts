@@ -31,20 +31,26 @@ function asArray(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
-/** First `value` block carrying anything we care about. */
-function firstValue(payload: unknown): Json | null {
+/** Every `value` block, across every entry and change. Meta may batch
+ *  several into one delivery, so reading only the first loses the rest. */
+function allValues(payload: unknown): Json[] {
+  const out: Json[] = [];
   const root = asObject(payload);
-  if (!root) return null;
+  if (!root) return out;
   for (const entry of asArray(root.entry)) {
     const e = asObject(entry);
     if (!e) continue;
     for (const change of asArray(e.changes)) {
-      const c = asObject(change);
-      const value = asObject(c?.value);
-      if (value) return value;
+      const value = asObject(asObject(change)?.value);
+      if (value) out.push(value);
     }
   }
-  return null;
+  return out;
+}
+
+function phoneNumberIdOf(value: Json): string {
+  const id = asObject(value.metadata)?.phone_number_id;
+  return typeof id === "string" ? id.trim() : "";
 }
 
 /**
@@ -52,12 +58,14 @@ function firstValue(payload: unknown): Json | null {
  * sub-account this webhook belongs to.
  */
 export function parseCloudPhoneNumberId(payload: unknown): string | null {
-  const meta = asObject(firstValue(payload)?.metadata);
-  const id = meta?.phone_number_id;
-  return typeof id === "string" && id.trim() ? id.trim() : null;
+  const first = allValues(payload)[0];
+  return (first && phoneNumberIdOf(first)) || null;
 }
 
 export interface CloudInbound {
+  /** The recipient number's Meta id from this message's own `value` block —
+   *  the routing key, per message, since one delivery can carry several. */
+  phoneNumberId: string;
   fromPhone: string;
   text: string;
   providerMessageId: string;
@@ -167,7 +175,8 @@ function parseMediaRef(kind: string, message: Json): CloudMediaRef | null {
 }
 
 /**
- * Pulls the first inbound customer message.
+ * Pulls EVERY inbound customer message, from every entry and change. A
+ * message whose block has no routing id, sender or message id is skipped.
  *
  * Non-text messages are kept rather than dropped: an image with a caption is a
  * real message, and even a caption-less one opens the 24-hour service window,
@@ -180,20 +189,37 @@ function parseMediaRef(kind: string, message: Json): CloudMediaRef | null {
  * (`button.text` / `button.payload`) and `type: "interactive"` for a reply to
  * an in-window interactive message (`button_reply.title` / `button_reply.id`).
  */
-export function parseCloudInbound(payload: unknown): CloudInbound | null {
-  const value = firstValue(payload);
-  if (!value) return null;
+export function parseCloudInbounds(payload: unknown): CloudInbound[] {
+  const out: CloudInbound[] = [];
+  for (const value of allValues(payload)) {
+    const phoneNumberId = phoneNumberIdOf(value);
+    if (!phoneNumberId) continue;
+    for (const raw of asArray(value.messages)) {
+      const message = asObject(raw);
+      const inbound = message && parseMessage(value, message, phoneNumberId);
+      if (inbound) out.push(inbound);
+    }
+  }
+  return out;
+}
 
-  const message = asObject(asArray(value.messages)[0]);
-  if (!message) return null;
-
+function parseMessage(
+  value: Json,
+  message: Json,
+  phoneNumberId: string,
+): CloudInbound | null {
   const fromPhone =
     typeof message.from === "string" ? message.from.trim() : "";
   const providerMessageId =
     typeof message.id === "string" ? message.id.trim() : "";
   if (!fromPhone || !providerMessageId) return null;
 
-  const profile = asObject(asObject(asArray(value.contacts)[0])?.profile);
+  // The sender's profile is the `contacts[]` entry whose wa_id is this
+  // sender; a batch from several customers carries one entry each.
+  const contacts = asArray(value.contacts).map(asObject);
+  const contact =
+    contacts.find((c) => str(c?.wa_id) === fromPhone) ?? contacts[0];
+  const profile = asObject(contact?.profile);
   const profileName =
     typeof profile?.name === "string" ? profile.name.trim() : "";
 
@@ -223,6 +249,7 @@ export function parseCloudInbound(payload: unknown): CloudInbound | null {
     kind === "location" ? parseWhatsappLocation(message.location) : null;
 
   return {
+    phoneNumberId,
     fromPhone,
     text,
     providerMessageId,
@@ -237,19 +264,38 @@ export function parseCloudInbound(payload: unknown): CloudInbound | null {
 export interface CloudStatus {
   providerMessageId: string;
   status: string;
+  /** The receiving number's Meta id from this receipt's own `value` block —
+   *  the routing key, as for inbound messages. */
+  phoneNumberId?: string;
+  /** The customer's number, bare digits as Meta sends it. */
+  recipientId?: string;
+  /** First entry of `errors` on a failed receipt (e.g. 131047). */
+  errorCode?: string;
+  errorTitle?: string;
 }
 
 /** Delivery receipts. Partial entries are dropped — a status with no message
  *  id cannot be matched to a row, and a row with no status is meaningless. */
 export function parseCloudStatuses(payload: unknown): CloudStatus[] {
-  const value = firstValue(payload);
-  if (!value) return [];
   const out: CloudStatus[] = [];
-  for (const raw of asArray(value.statuses)) {
-    const s = asObject(raw);
-    const id = typeof s?.id === "string" ? s.id.trim() : "";
-    const status = typeof s?.status === "string" ? s.status.trim() : "";
-    if (id && status) out.push({ providerMessageId: id, status });
+  for (const value of allValues(payload)) {
+    for (const raw of asArray(value.statuses)) {
+      const s = asObject(raw);
+      const id = typeof s?.id === "string" ? s.id.trim() : "";
+      const status = typeof s?.status === "string" ? s.status.trim() : "";
+      if (!id || !status) continue;
+      const err = asObject(asArray(s?.errors)[0]);
+      const code = err?.code;
+      out.push({
+        providerMessageId: id,
+        status,
+        phoneNumberId: phoneNumberIdOf(value) || undefined,
+        recipientId: str(s?.recipient_id) || undefined,
+        errorCode:
+          typeof code === "number" || typeof code === "string" ? String(code) : undefined,
+        errorTitle: str(err?.title) || undefined,
+      });
+    }
   }
   return out;
 }

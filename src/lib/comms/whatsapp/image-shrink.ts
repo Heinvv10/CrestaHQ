@@ -1,6 +1,6 @@
 import "server-only";
 
-import sharp from "sharp";
+import sharp, { type Metadata } from "sharp";
 
 import { whitelistExif, type ExifFields } from "./exif-whitelist";
 import { IMAGE_DECODE_BUDGET_BYTES, imageDecodeBudget, imageDecodeSlots } from "./media-budget";
@@ -130,7 +130,7 @@ export async function planDecode(
   input: Buffer,
   type: PhotoType,
 ): Promise<{ ok: true; reserveBytes: number; exif: ExifFields | null } | Refusal> {
-  let meta: sharp.Metadata;
+  let meta: Metadata;
   try {
     // Headers only, so no pixel limit here — sharp would throw on it before
     // saying why; the limit is checked below, and again by `open` itself.
@@ -186,7 +186,7 @@ export async function planDecode(
  */
 function decodedBytes(
   type: PhotoType,
-  meta: sharp.Metadata,
+  meta: Metadata,
   width: number,
   height: number,
   channels: number,

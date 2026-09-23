@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   parseCloudPhoneNumberId,
-  parseCloudInbound,
+  parseCloudInbounds,
   parseCloudStatuses,
 } from "./cloud-payload";
+
+/** The single-message cases below read the first parsed message. */
+const parseCloudInbound = (p: unknown) => parseCloudInbounds(p)[0] ?? null;
 
 const textMessage = {
   object: "whatsapp_business_account",
@@ -65,6 +68,7 @@ describe("parseCloudPhoneNumberId", () => {
 describe("parseCloudInbound", () => {
   it("extracts sender, body, message id and profile name", () => {
     expect(parseCloudInbound(textMessage)).toEqual({
+      phoneNumberId: "PN1",
       fromPhone: "27821234567",
       text: "Happy & connected",
       providerMessageId: "wamid.ABC",
@@ -223,6 +227,84 @@ describe("parseCloudInbound", () => {
   });
 });
 
+describe("parseCloudInbounds on a batched delivery", () => {
+  const msg = (id: string, from: string, body: string) => ({
+    from,
+    id,
+    type: "text",
+    text: { body },
+  });
+
+  it("returns every message in a change, not just the first", () => {
+    const batch = structuredClone(textMessage) as typeof textMessage;
+    const value = batch.entry[0].changes[0].value as Record<string, unknown>;
+    value.messages = [msg("wamid.1", "27821111111", "hi"), msg("wamid.2", "27822222222", "STOP")];
+    value.contacts = [
+      { profile: { name: "One" }, wa_id: "27821111111" },
+      { profile: { name: "Two" }, wa_id: "27822222222" },
+    ];
+    expect(
+      parseCloudInbounds(batch).map((m) => [m.providerMessageId, m.text, m.profileName]),
+    ).toEqual([
+      ["wamid.1", "hi", "One"],
+      ["wamid.2", "STOP", "Two"],
+    ]);
+  });
+
+  it("finds messages in a later change after a status-only change", () => {
+    // A receipt first must not make the whole delivery read as receipts.
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: "PN1" },
+                statuses: [{ id: "wamid.OUT", status: "read" }],
+              },
+            },
+            {
+              value: {
+                metadata: { phone_number_id: "PN1" },
+                messages: [msg("wamid.IN", "27821234567", "Stop!")],
+              },
+            },
+          ],
+        },
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: "PN2" },
+                messages: [msg("wamid.IN2", "27829999999", "hello")],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    expect(
+      parseCloudInbounds(payload).map((m) => [m.phoneNumberId, m.providerMessageId]),
+    ).toEqual([
+      ["PN1", "wamid.IN"],
+      ["PN2", "wamid.IN2"],
+    ]);
+    expect(parseCloudStatuses(payload)).toEqual([
+      { providerMessageId: "wamid.OUT", status: "read", phoneNumberId: "PN1" },
+    ]);
+  });
+
+  it("skips a malformed message without losing its neighbours", () => {
+    const payload = withMessages([
+      { id: "wamid.NOFROM", type: "text", text: { body: "x" } },
+      msg("wamid.OK", "27821234567", "fine"),
+    ]);
+    expect(parseCloudInbounds(payload).map((m) => m.providerMessageId)).toEqual([
+      "wamid.OK",
+    ]);
+  });
+});
+
 describe("parseCloudStatuses", () => {
   it("extracts delivery receipts", () => {
     const payload = {
@@ -243,8 +325,23 @@ describe("parseCloudStatuses", () => {
       ],
     };
     expect(parseCloudStatuses(payload)).toEqual([
-      { providerMessageId: "wamid.A", status: "delivered" },
-      { providerMessageId: "wamid.B", status: "read" },
+      { providerMessageId: "wamid.A", status: "delivered", phoneNumberId: "PN1" },
+      { providerMessageId: "wamid.B", status: "read", phoneNumberId: "PN1" },
+    ]);
+  });
+
+  it("carries the recipient and the first error of a failed receipt", () => {
+    const payload = {
+      entry: [{ changes: [{ value: { statuses: [{
+        id: "wamid.F", status: "failed", recipient_id: "27821234567",
+        errors: [{ code: 131047, title: "Re-engagement message" }],
+      }] } }] }],
+    };
+    expect(parseCloudStatuses(payload)).toEqual([
+      {
+        providerMessageId: "wamid.F", status: "failed", recipientId: "27821234567",
+        errorCode: "131047", errorTitle: "Re-engagement message",
+      },
     ]);
   });
 

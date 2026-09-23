@@ -72,6 +72,14 @@ export interface UpsertConversationInput {
   pauseBot?: boolean;
   /** The inbound message was a WhatsApp button tap (it carried a payload). */
   buttonTap?: boolean;
+  /**
+   * The inbound message is an opt-out keyword. The thread is indexed and the
+   * `message.received` webhook still fires (it drives the staff push — an
+   * opting-out customer must not go silently dark), but no workflow reacts:
+   * no waiting-run resume, no enrolment. The caller applies the opt-out after
+   * this call, so a workflow started here would race it.
+   */
+  optOut?: boolean;
 }
 
 function toMillis(v: unknown): number | null {
@@ -225,6 +233,10 @@ export async function upsertConversationForMessage(
           },
         },
       });
+      // Informational only above (staff push, outbound webhook). An opt-out
+      // stops here: resuming or enrolling a workflow would race the opt-out
+      // the caller is about to apply.
+      if (input.optOut) return;
       // A reply resolves any workflow run parked on a wait_for_reply node.
       // Self-guarded fire-and-forget — same contract as the webhook emit.
       const resumed = resumeWaitingRunsOnReply({

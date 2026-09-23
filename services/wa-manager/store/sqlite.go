@@ -149,6 +149,15 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// go-sqlite3 gives database/sql no way to share one connection across
+	// goroutines, so an unbounded pool opens a second SQLite connection per
+	// concurrent caller and lets them race each other for the file lock —
+	// past _busy_timeout, that surfaces as "database is locked" instead of
+	// queueing. One connection makes database/sql itself the serialising
+	// queue; nothing in this package holds a Rows open while issuing another
+	// query (every db.Query() result is fully drained or closed before the
+	// next call), so a single connection cannot deadlock against itself.
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
