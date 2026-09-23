@@ -4,6 +4,7 @@ import {
   resolveAnchorDay,
   type Cadence,
 } from "@/lib/recurring/cadence";
+import { recomputeNextRun } from "@/lib/recurring/next-run";
 import {
   fail,
   parseCadence,
@@ -167,13 +168,9 @@ export interface ScheduleUpdateFields {
   billedToOrganization?: string | null;
   billingAddress?: string | null;
   paymentDueDays?: number | null;
-  /**
-   * Set only when the cadence or the anchor moved: the stored `nextRunAt` was
-   * computed from the OLD cadence, so leaving it would bill the next cycle on
-   * a day the operator has just changed away from. Recomputed from today, so
-   * an edit can never pull a cycle earlier than the day it was made.
-   */
+  /** See `recomputeNextRun`; `resumeNote` becomes the schedule's `lastError`. */
   recomputeNextRunFrom?: Date;
+  resumeNote?: string;
 }
 
 export function parseScheduleUpdate(
@@ -185,6 +182,7 @@ export function parseScheduleUpdate(
     status: RecurringInvoiceStatus;
     /** The cycle the schedule is currently pointed at. */
     nextRunAt: Date | null;
+    lastRunAt?: Date | null; // an edit never lands at or before it
   },
   now: Date,
 ): ParseResult<ScheduleUpdateFields> {
@@ -226,18 +224,21 @@ export function parseScheduleUpdate(
     out.anchorDay = anchorDay;
   }
 
-  if (cadenceMoved) {
-    out.recomputeNextRunFrom = computeFirstRunAt({
-      startAt: now,
+  const resuming = out.status === "active" && current.status === "paused";
+  if (cadenceMoved || resuming) {
+    const recomputed = recomputeNextRun({
+      cadenceMoved,
+      resuming,
       cadence,
-      // `??` would let a week cadence's deliberate `null` fall through to the
-      // stale numeric anchor of the cadence being edited away from. No caller
-      // can observe the difference today — `computeFirstRunAt` ignores the
-      // anchor for week cadences — so this is guarding the next edit to that
-      // function, not a live bug.
+      // Not `??`: a week cadence's `null` must not fall back to the old anchor.
       anchorDay: "anchorDay" in out ? (out.anchorDay ?? null) : current.anchorDay,
       timezone: current.timezone,
+      nextRunAt: current.nextRunAt,
+      lastRunAt: current.lastRunAt ?? null,
+      now,
     });
+    if (recomputed) out.recomputeNextRunFrom = recomputed.next;
+    if (recomputed?.resumeNote) out.resumeNote = recomputed.resumeNote;
   }
 
   if (

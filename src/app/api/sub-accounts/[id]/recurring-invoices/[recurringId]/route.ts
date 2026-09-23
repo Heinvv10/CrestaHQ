@@ -74,6 +74,7 @@ export async function PATCH(
       timezone: schedule.timezone,
       status: schedule.status,
       nextRunAt: toDate(schedule.nextRunAt),
+      lastRunAt: toDate(schedule.lastRunAt),
     },
     new Date(),
   );
@@ -81,7 +82,7 @@ export async function PATCH(
     return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
 
-  const { recomputeNextRunFrom, endAt, ...rest } = parsed.value;
+  const { recomputeNextRunFrom, endAt, resumeNote, ...rest } = parsed.value;
   const updates: Record<string, unknown> = {
     ...rest,
     updatedAt: FieldValue.serverTimestamp(),
@@ -93,8 +94,9 @@ export async function PATCH(
     updates.nextRunAt = Timestamp.fromDate(recomputeNextRunFrom);
   }
   // Editing a schedule is the operator answering whatever the last run
-  // complained about, so the stale complaint goes with the edit.
-  if (Object.keys(rest).length > 0) updates.lastError = null;
+  // complained about, so the stale complaint goes with the edit — unless the
+  // edit itself has something to say (a resume that skipped cycles).
+  if (Object.keys(rest).length > 0) updates.lastError = resumeNote ?? null;
 
   try {
     await ref.update(updates);

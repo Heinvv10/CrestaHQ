@@ -109,6 +109,11 @@ export function computeFirstRunAt(input: {
   });
 }
 
+/** Local midnight of the day `instant` falls on, in the schedule's zone. */
+export function startOfLocalDay(instant: Date, timezone: string): Date {
+  return localMidnight(localDateInTz(instant, timezone), timezone);
+}
+
 /** Day of month a schedule anchors to, or null for week cadences. */
 export function resolveAnchorDay(
   cadence: Cadence,

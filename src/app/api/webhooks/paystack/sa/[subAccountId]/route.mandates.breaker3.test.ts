@@ -157,6 +157,8 @@ describe("round 3: schedule doc writes", () => {
 
   it("R3-6 a recurring cycle claimed in the middle of a card settle: both land, neither clobbers the other", async () => {
     seedSchedule("rec1", { nextRunAt: Timestamp.fromDate(new Date("2026-09-01T00:00:00Z")), reviewFirst: true, cyclesGenerated: 0, createdByUid: "u1", unpaidEscalationThreshold: 0 });
+    // The billed contact must exist: the claim pauses a schedule whose contact was deleted.
+    mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: SA });
     seedAttempt(REF1, { amountCents: 115000, consent: consentAt(new Date("2026-09-01T08:00:00Z")) });
     const real = mem.db.runTransaction.bind(mem.db);
     let once = false;

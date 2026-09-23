@@ -106,6 +106,8 @@ export interface RecurringInvoiceDoc {
   lastEscalatedCount: number | null;
   /** Why a run could not send, surfaced on the operator's list. */
   lastError: string | null;
+  /** When a claim last threw; the sweep skips it for the rest of that day. */
+  lastFailedAt?: Timestamp | FieldValue | null;
   /**
    * The card-on-file mandate most recently authorised for this schedule,
    * written with it by the payment reconciler. Also what serialises two

@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { sendPushForEvent } from "@/lib/push/send";
 import { issueQuoteNumber } from "@/lib/quotes/number";
 import {
   createTaskServerSide,
@@ -32,7 +33,7 @@ export function schedulesCollection() {
 export async function generateInvoice(
   schedule: RecurringInvoiceDoc,
   now: Date,
-): Promise<string> {
+): Promise<{ invoiceId: string; quoteNumber: string; territoryId: string }> {
   // Same stamp the hand-made path applies. Without it the rules read a null
   // territory and deny it to everyone but admins — so the rep who actually
   // owns the account cannot see the invoices raised for it.
@@ -71,7 +72,23 @@ export async function generateInvoice(
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  return ref.id;
+  return { invoiceId: ref.id, quoteNumber, territoryId };
+}
+
+/** Plan §1: a review-first draft nobody hears about is one nobody sends. */
+export function notifyDraftForReview(
+  schedule: RecurringInvoiceDoc,
+  invoice: { invoiceId: string; quoteNumber: string; territoryId: string },
+): void {
+  void sendPushForEvent({
+    subAccountId: schedule.subAccountId,
+    agencyId: schedule.agencyId,
+    title: "Recurring invoice ready to review",
+    body: `${schedule.name} · ${invoice.quoteNumber}`,
+    url: `/sa/${schedule.subAccountId}/quotes/${invoice.invoiceId}`,
+    tag: `quote-${invoice.invoiceId}`,
+    territoryId: invoice.territoryId,
+  });
 }
 
 /**
@@ -149,6 +166,10 @@ export async function settleAfterCycle(
     );
     updates.lastEscalatedAt = FieldValue.serverTimestamp();
     updates.lastEscalatedCount = outstanding;
+  } else if (outstanding < threshold && schedule.lastEscalatedCount) {
+    // Caught up: forget the old mark, or falling behind again stays silent
+    // until arrears pass wherever they peaked last time.
+    updates.lastEscalatedCount = null;
   }
 
   await schedulesCollection().doc(schedule.id).update(updates);
