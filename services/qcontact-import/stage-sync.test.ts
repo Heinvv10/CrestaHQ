@@ -43,6 +43,7 @@ describe("leadstackStageSyncer", () => {
     expect(init.method).toBe("PATCH");
     expect(init.headers).toMatchObject({ Authorization: "Bearer sk_test", "Content-Type": "application/json" });
     expect(JSON.parse(init.body as string)).toEqual({ stage: "assigned" });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("reports a 404 as action 'not_found', not an error", async () => {

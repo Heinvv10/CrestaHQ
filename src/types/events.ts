@@ -89,6 +89,8 @@ export interface CalendarEvent {
    * for a read-only "payment received" view — never for manage actions.
    */
   paidFromTokenHash?: string | null;
+  /** The Stripe order whose payment confirmed this booking, when one did. */
+  paidOrderId?: string | null;
   /** Auto-expire deadline for unpaid holds. Used to schedule the QStash callback. */
   paymentHoldExpiresAt?: Timestamp | FieldValue | null;
   /**

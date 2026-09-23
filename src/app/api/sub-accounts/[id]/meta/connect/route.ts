@@ -73,7 +73,7 @@ export async function GET(
   }
 
   const nonce = crypto.randomBytes(16).toString("hex");
-  const state = signMetaState(id, nonce);
+  const state = signMetaState(id, access.uid, nonce);
   return NextResponse.redirect(
     buildMetaOAuthUrl({
       redirectUri,

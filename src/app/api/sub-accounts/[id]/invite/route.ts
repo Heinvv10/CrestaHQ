@@ -18,7 +18,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * Two outcomes depending on the email:
  *   - NEW email → writes a typed `invites/{auto}` doc that the signup route
  *     consumes when the invitee creates their account, and (when Resend is
- *     configured) sends a delivery email with a /signup?email=<addr> link.
+ *     configured) sends a delivery email with a
+ *     /signup?email=<addr>&invite=<token> link (only the token's hash is
+ *     stored; signup must present the token).
  *   - EXISTING account → adds them to the sub-account directly (no pending
  *     invite, nothing to accept) and emails them an "added" notification.
  *     Returns `added: true`. This is how someone already in one sub-account
@@ -26,7 +28,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *
  * Idempotent on the (email, subAccountId) pair: if a pending invite already
  * exists, the doc is reused but the email is still re-sent so the admin can
- * use this endpoint as "resend" without revoking first.
+ * use this endpoint as "resend" without revoking first. A resend rotates the
+ * invite token, so earlier links stop working.
  *
  * Graceful degrade: if RESEND_API_KEY isn't set, the invite doc is still
  * created and `mailed: false` is returned so the UI can prompt the admin to

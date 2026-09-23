@@ -15,12 +15,13 @@
  * once it has an open deal in that pipeline (see deals.ts) — a failed deal
  * step retries next run too, same as a failed upsert.
  */
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename, unlink, open, stat } from "node:fs/promises";
 import { QContactClient, type CaseRow, type LocationDetail } from "./qcontact.ts";
 import { gpsFromLocationFields, locationPinId, mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
 import { leadstackStageSyncer, statusToStageId, type StageSyncer } from "./stage-sync.ts";
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
+import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
 
 export type Env = {
   QCONTACT_BASE_URL: string;
@@ -113,6 +114,84 @@ export async function saveState(path: string, state: State): Promise<void> {
   await rename(tmp, path);
 }
 
+/** See "Run lock" in README.md for why this exists and how staleness is decided. */
+export const LOCK_STALE_AGE_MS = 60 * 60 * 1000; // 1h
+
+export type AcquireLockResult =
+  | { ok: true; release: () => Promise<void> }
+  /** `stale: true` = the lock looks stuck (older than LOCK_STALE_AGE_MS) but its PID still
+   *  reads as alive (PID reuse after a reboot, or no permission to signal it) — refused rather
+   *  than auto-reclaimed, since that PID may genuinely belong to something else now. The
+   *  caller should log this loudly and fail non-zero so it's visible in the systemd journal,
+   *  instead of the quiet, expected "another run is active" case. */
+  | { ok: false; stale: boolean; ageMs: number };
+
+/**
+ * Exclusive run lock at `${statePath}.lock`, written via O_EXCL so two
+ * concurrent invocations can't both proceed and stomp each other's
+ * full-state overwrite. See README.md's "Run lock" section for why this
+ * exists (the timer can't overlap the same systemd unit; a manual run can)
+ * and how a leftover lock is detected.
+ */
+export async function acquireLock(lockPath: string, retried = false): Promise<AcquireLockResult> {
+  try {
+    const handle = await open(lockPath, "wx");
+    try {
+      await handle.writeFile(String(process.pid));
+    } finally {
+      await handle.close();
+    }
+    // The create (open wx) and the write aren't one atomic step: another run
+    // can see this file between them, judge it stale off its (momentarily
+    // empty) content, delete it, and recreate it with its own pid. Re-read
+    // before trusting we hold it; if it's not our pid any more, back off
+    // rather than proceeding as if we'd acquired it.
+    const holder = await readFile(lockPath, "utf8").catch(() => "");
+    if (holder !== String(process.pid)) return { ok: false, stale: false, ageMs: 0 };
+    return { ok: true, release: () => unlink(lockPath).catch((err) => logLockError(`failed to release qcontact-import lock ${lockPath}: ${err instanceof Error ? err.message : String(err)}`)) };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    const st = await stat(lockPath).catch(() => null);
+    const ageMs = st ? Date.now() - st.mtimeMs : 0;
+    const pid = await readPid(lockPath);
+    const alive = pid !== null && isProcessAlive(pid);
+    if (alive) {
+      // A validly-alive PID older than the stale cap is suspicious (reused
+      // after a reboot, or belongs to something we can't signal) rather than
+      // trusted outright — refuse instead of guessing, and flag it as such.
+      return { ok: false, stale: ageMs > LOCK_STALE_AGE_MS, ageMs };
+    }
+    if (retried) return { ok: false, stale: ageMs > LOCK_STALE_AGE_MS, ageMs }; // still contended right after clearing a stale lock
+    // No pid, an invalid pid, or a dead one — genuinely stale. Clear it and try once more.
+    await unlink(lockPath).catch(() => {});
+    return acquireLock(lockPath, true);
+  }
+}
+
+async function readPid(lockPath: string): Promise<number | null> {
+  let raw: string;
+  try {
+    raw = (await readFile(lockPath, "utf8")).trim();
+  } catch {
+    return null;
+  }
+  const pid = Number(raw);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function logLockError(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
 export type Upserter = (
   body: UpsertBody,
 ) => Promise<{ ok: true; contactId: string } | { ok: false; error: string }>;
@@ -130,6 +209,7 @@ export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Up
         "Idempotency-Key": dedupedIdempotencyKey(`qcontact-case-${body.custom_fields.qcontact_case_id}`, body),
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.ok) {
       let data: unknown;
@@ -275,6 +355,11 @@ export async function runImport(opts: {
   // why); "differs" is decided against `dealStages`, not a live GET. Never
   // touches `seen`.
   if (syncStage) {
+    // Distinct QContact statuses among stageUnmapped cases (no recorded deal
+    // id) — logged once below so it's clear this is cases missing a deal,
+    // not a gap in STATUS_TO_STAGE_ID (that's summary.skipped.unknown_status,
+    // logged per-case above).
+    const unmappedStatuses = new Set<string>();
     for (const row of rows) {
       const caseKey = String(row.id);
       if (dryRun) {
@@ -284,6 +369,7 @@ export async function runImport(opts: {
       const dealId = deals[caseKey];
       if (!dealId) {
         summary.stageUnmapped++;
+        unmappedStatuses.add(row.status ?? "null");
         continue;
       }
       const stageId = statusToStageId(row.status);
@@ -317,14 +403,60 @@ export async function runImport(opts: {
       log(`stage synced ${row.id} (${row.label})`);
       await saveState(statePath, { seen: [...seen], deals, dealStages, updatedAt: "" });
     }
+    if (summary.stageUnmapped > 0) {
+      log(`stage sync: ${summary.stageUnmapped} case(s) have no recorded deal id, so stage sync is skipped for them; statuses: ${[...unmappedStatuses].sort().join(", ")}`);
+    }
   }
 
   return summary;
 }
 
+/**
+ * How a lock refusal should be surfaced: the stale case (older than
+ * LOCK_STALE_AGE_MS but still reading as held) is not normal contention, so
+ * it's logged to stderr and made to fail the run non-zero — visible as a
+ * failed run in the systemd journal, instead of a silent no-op every 15
+ * minutes. A fresh, genuinely-active lock logs to stdout and exits 0.
+ */
+export function describeLockRefusal(lockPath: string, result: Extract<AcquireLockResult, { ok: false }>): {
+  stream: "stdout" | "stderr";
+  message: string;
+  exitCode: 0 | 1;
+} {
+  const ageSec = Math.round(result.ageMs / 1000);
+  if (result.stale) {
+    return {
+      stream: "stderr",
+      message: `qcontact-import lock ${lockPath} is ${ageSec}s old and still looks held; refusing to run — check whether it's stuck and remove it if so\n`,
+      exitCode: 1,
+    };
+  }
+  return {
+    stream: "stdout",
+    message: `another qcontact-import run is already in progress (lock ${lockPath}, ${ageSec}s old); exiting\n`,
+    exitCode: 0,
+  };
+}
+
 async function main(): Promise<void> {
   const env = readEnv(process.env);
   const dryRun = process.argv.includes("--dry-run");
+  const lockPath = `${env.QCONTACT_IMPORT_STATE}.lock`;
+  const lock = await acquireLock(lockPath);
+  if (!lock.ok) {
+    const { stream, message, exitCode } = describeLockRefusal(lockPath, lock);
+    process[stream].write(message);
+    process.exitCode = exitCode;
+    return;
+  }
+  try {
+    await runMain(env, dryRun);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function runMain(env: Env, dryRun: boolean): Promise<void> {
   const qc = new QContactClient({
     baseUrl: env.QCONTACT_BASE_URL,
     email: env.QCONTACT_IMPORT_EMAIL,

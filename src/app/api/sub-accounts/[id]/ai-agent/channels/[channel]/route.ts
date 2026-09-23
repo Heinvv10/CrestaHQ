@@ -139,7 +139,8 @@ function sanitiseVoiceBlock(raw: unknown): Partial<VoiceChannelConfig> {
   // vapiPhoneNumberId is server-managed in twilio-byoc mode but
   // operator-pasted in vapi-managed mode. Accept any non-empty string
   // here; the provisioning side-effect enforces the rule that we only
-  // honour it when mode is vapi-managed.
+  // honour it when mode is vapi-managed, and PATCH lets only the agency
+  // owner change it.
   if ("vapiPhoneNumberId" in r) {
     const raw = r.vapiPhoneNumberId;
     if (raw === null || raw === "") {
@@ -565,6 +566,19 @@ export async function PATCH(
     const numberChanged =
       incomingNumberId !== null &&
       incomingNumberId !== (existingForGate?.voice?.vapiPhoneNumberId ?? null);
+    // The id points into the deployment's ONE shared Vapi account, and saving
+    // it rebinds that line to this sub-account's assistant. Which number a
+    // sub-account gets is therefore the agency owner's call; a sub-account
+    // admin may keep (re-save, re-enable) the number the owner attached.
+    if (numberChanged && auth.subAccountRole !== "agencyOwner") {
+      return NextResponse.json(
+        {
+          error:
+            "Only your agency owner can attach a Vapi phone number to this sub-account. Ask them to set it.",
+        },
+        { status: 403 },
+      );
+    }
     if (incomingNumberId && (numberChanged || patch.enabled === true)) {
       const agencyId = subAccount?.agencyId ?? "";
       const holder = agencyId

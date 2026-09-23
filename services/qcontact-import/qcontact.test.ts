@@ -22,6 +22,17 @@ describe("QContactClient", () => {
     expect(signIns).toBe(1);
   });
 
+  it("carries an abort signal on every call, so a hung fetch can't block forever", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if ((init?.signal as AbortSignal).aborted) throw new Error("should not be pre-aborted");
+      return new Response("{}", { status: 200, headers: tokenHeaders(1) });
+    });
+    const qc = new QContactClient(cfg, fetchImpl as unknown as typeof fetch);
+    await qc.getCase(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // sign_in + the GET
+  });
+
   it("re-signs-in once on a 401 and replays the read with the new token", async () => {
     let signIns = 0;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {

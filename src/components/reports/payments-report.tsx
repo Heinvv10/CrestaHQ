@@ -375,6 +375,11 @@ export function PaymentsReport({
                             test
                           </span>
                         )}
+                        {o.attention && (
+                          <span className="mt-1 block max-w-xs text-[11px] text-amber-700 dark:text-amber-400">
+                            {o.attention}
+                          </span>
+                        )}
                       </td>
                       <td className="py-2.5 text-right whitespace-nowrap font-medium">
                         {formatCurrency(

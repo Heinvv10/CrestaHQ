@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGateForContact } from "@/lib/auth/territory-filter";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { appendMessage, isValidSessionId } from "@/lib/comms/web-chat/session";
 import {
@@ -66,6 +67,11 @@ export async function POST(request: Request) {
     pageUrl: string | null;
     referrer: string | null;
   };
+  // A session captured to a contact inherits that contact's territory scope.
+  if (session.contactId) {
+    const gate = await territoryGateForContact(access, session.contactId);
+    if (gate) return gate;
+  }
 
   let messageId: string;
   try {

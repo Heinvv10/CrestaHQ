@@ -5,6 +5,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventOccupiesSlot, eventSource, eventStatus } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
@@ -35,6 +36,18 @@ import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 interface Body {
   assignedToUid?: string | null;
   force?: boolean;
+}
+
+/** Is the linked contact in this sub-account? False on a read failure too. */
+async function contactInSubAccount(contactId: string, subAccountId: string): Promise<boolean> {
+  if (contactId.includes("/")) return false;
+  try {
+    const snap = await getAdminDb().collection("contacts").doc(contactId).get();
+    return snap.data()?.subAccountId === subAccountId;
+  } catch (err) {
+    console.warn(`[events/assign] contact lookup failed contact=${contactId}`, err);
+    return false;
+  }
 }
 
 function tsToDate(v: unknown): Date | null {
@@ -70,6 +83,8 @@ export async function POST(
 
   const access = await requireSubAccountMember(request, event.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, event.territoryId);
+  if (gate) return gate;
 
   if (eventSource(event) !== "booking_page") {
     return NextResponse.json(
@@ -207,8 +222,13 @@ export async function POST(
   // Move the Google copy: off the old host's calendar, onto the new one's.
   await pushBookingToGoogle(eventId);
 
-  // Timeline row (best-effort).
-  if (event.contactId) {
+  // Timeline row (best-effort). Only onto a contact in the event's own
+  // sub-account — a legacy event may still hold another tenant's contactId.
+  if (event.contactId && !(await contactInSubAccount(event.contactId, event.subAccountId))) {
+    console.warn(
+      `[events/assign] tenancy refusal: contact=${event.contactId} is not in sa=${event.subAccountId}; no activity written event=${eventId}`,
+    );
+  } else if (event.contactId) {
     try {
       const content = targetName
         ? `Booking "${event.title || "Meeting"}" reassigned to ${targetName}.`

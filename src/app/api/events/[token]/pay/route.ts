@@ -6,6 +6,7 @@ import Stripe from "stripe";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyEventToken } from "@/lib/booking/event-token";
 import { mapStripeSessionError } from "@/lib/stripe/session-error";
+import { stripeCanChargeCurrency, toStripeAmount } from "@/lib/stripe/amount";
 import {
   createCheckoutSessionForSubAccount,
   getSubAccountStripe,
@@ -96,9 +97,9 @@ export async function POST(
   // takes `expires_at` between 30 min and 24 h out (1-minute margin each
   // side for latency), so a hold with under 31 min left still gets 31. A
   // payment in that tail reaches a booking expire-step has cancelled:
-  // mark-paid refuses it (`bad_status`, status "cancelled") and the order is
-  // recorded as paid, but today nothing flags the booking — the operator must
-  // spot it and refund. PR #197's reconciler flags it on the order.
+  // mark-paid refuses it (`bad_status`, status "cancelled"), the booking
+  // stays cancelled, and the reconciler flags the paid order on
+  // `order.attention` for the operator to refund.
   const holdEnd = (
     event.paymentHoldExpiresAt as { toDate?: () => Date } | null | undefined
   )?.toDate?.();
@@ -137,10 +138,13 @@ export async function POST(
     throw err;
   }
 
-  // Booking amounts are stored in MAJOR units (dollars); orders and Stripe
-  // both want cents.
+  // Booking amounts are stored in MAJOR units (dollars); orders want cents.
+  // Stripe wants cents too, except for zero-decimal currencies (see below).
   const amountCents = Math.round(amount * 100);
   const currency = (event.paymentCurrency || "USD").toLowerCase();
+  if (!stripeCanChargeCurrency(currency)) {
+    return fail(`Card payment isn't available in ${currency.toUpperCase()}.`, 409);
+  }
   const label = event.title || "Booking deposit";
   const lineItems: OrderLineItem[] = [
     {
@@ -165,7 +169,7 @@ export async function POST(
             quantity: 1,
             price_data: {
               currency,
-              unit_amount: amountCents,
+              unit_amount: toStripeAmount(amount, currency),
               product_data: { name: label, description: "Deposit" },
             },
           },

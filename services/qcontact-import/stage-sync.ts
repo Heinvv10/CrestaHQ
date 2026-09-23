@@ -14,6 +14,7 @@
  * is decided by run.ts comparing against the stage it last recorded for
  * that case (also in the state file), not by fetching the deal.
  */
+import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
 
 /**
  * QContact case status → LeadStack deal stage id. QContact renders
@@ -62,6 +63,7 @@ export function leadstackStageSyncer(env: StageSyncEnv, fetchImpl: typeof fetch 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ stage }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.status === 404) return { ok: true, action: "not_found" };
     if (!res.ok) {
