@@ -22,7 +22,7 @@ import type {
  * pause auto-expires; the operator can also Resume it from the inbox. Keeps the
  * AI from jumping back into a thread a human is actively handling.
  */
-export const PAUSE_WINDOW_MS = 12 * 60 * 60 * 1000;
+const PAUSE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Server-side write for the unified-inbox index. Called right after every
@@ -301,8 +301,9 @@ export async function getConversationControls(
 ): Promise<{
   botMode: ConversationBotMode;
   botPausedUntilMs: number | null;
-  /** When a human last replied — resets the AI reply-loop guard. */
-  lastHumanReplyAtMs: number | null;
+  /** The AI reply-loop guard counts only messages after this: the later of
+   *  the last human reply and the last loop pause (lib/comms/ai/loop-guard). */
+  loopResetAtMs: number | null;
 }> {
   try {
     const snap = await getAdminDb()
@@ -310,7 +311,7 @@ export async function getConversationControls(
       .doc(conversationId)
       .get();
     if (!snap.exists) {
-      return { botMode: "auto", botPausedUntilMs: null, lastHumanReplyAtMs: null };
+      return { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
     }
     const d = snap.data() ?? {};
     const botMode = (d.botMode as ConversationBotMode) ?? "auto";
@@ -323,11 +324,14 @@ export async function getConversationControls(
     return {
       botMode,
       botPausedUntilMs,
-      lastHumanReplyAtMs: toMillis(d.lastHumanReplyAt),
+      loopResetAtMs: Math.max(
+        toMillis(d.lastHumanReplyAt) ?? 0,
+        toMillis(d.aiLoopPausedAt) ?? 0,
+      ) || null,
     };
   } catch (err) {
     console.warn("[conversations/controls] read failed", err);
-    return { botMode: "auto", botPausedUntilMs: null, lastHumanReplyAtMs: null };
+    return { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
   }
 }
 

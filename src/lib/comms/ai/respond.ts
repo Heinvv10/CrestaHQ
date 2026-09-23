@@ -6,7 +6,11 @@ import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
 import { whatsappSenderIdOnRail } from "@/lib/comms/whatsapp/resolve-sender";
 import type { WhatsAppProviderId } from "@/lib/comms/whatsapp/provider";
-import { aiReplyLoopTripped, pauseBotForReplyLoop } from "@/lib/comms/ai/loop-guard";
+import {
+  detectAiReplyLoop,
+  pauseBotForReplyLoop,
+  type AiLoopReason,
+} from "@/lib/comms/ai/loop-guard";
 import { sendMetaMessage } from "@/lib/comms/meta";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { isWithinBusinessHours } from "@/lib/comms/business-hours";
@@ -335,6 +339,13 @@ async function storeOutboundReply({
   }
 }
 
+const LOOP_LABEL: Record<AiLoopReason, string> = {
+  auto_responder:
+    "the contact answered each of the last several AI replies within seconds (likely an auto-responder)",
+  repeated_text: "the contact sent the same message several times in a row",
+  volume_cap: "too many AI replies on this conversation in 10 minutes",
+};
+
 /**
  * Main orchestrator. Webhook caller already resolved profile + channel
  * into a ResolvedAiAgent via resolveAgent() — this function just
@@ -418,12 +429,9 @@ export async function maybeRespondWithAi(
     return { kind: "skipped", reason: "quota" };
   }
 
-  // Guard: escalation keyword in the inbound text.
-  const triggered = matchEscalationKeyword(
-    incomingMessage,
-    eff.escalationKeywords,
-  );
-  if (triggered) {
+  // "Human needed" email, when the agent has an escalation address. Shared by
+  // the keyword escalation and the reply-loop guard below.
+  const notifyStaff = async (triggeredKeyword: string) => {
     if (eff.escalationNotifyEmail) {
       const appUrl =
         process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
@@ -439,11 +447,20 @@ export async function maybeRespondWithAi(
           (metaChannel ? `(via ${transport.label})` : replyTo),
         contactId: contact.id,
         subAccountId,
-        triggeredKeyword: triggered,
+        triggeredKeyword,
         incomingMessage,
         appUrl,
       });
     }
+  };
+
+  // Guard: escalation keyword in the inbound text.
+  const triggered = matchEscalationKeyword(
+    incomingMessage,
+    eff.escalationKeywords,
+  );
+  if (triggered) {
+    await notifyStaff(triggered);
     await logActivity({
       contactId: contact.id,
       agencyId: subAccount.agencyId,
@@ -485,23 +502,27 @@ export async function maybeRespondWithAi(
 
   // Guard: bot-to-bot reply loop (see loop-guard.ts). Before the LLM call, so
   // a tripped loop spends nothing. Suggest mode sends nothing, so cannot loop.
-  if (
-    !suggestOnly &&
-    (await aiReplyLoopTripped({
-      contactId: contact.id,
-      messagesCollection: transport.messagesCollection,
-      lastHumanReplyAtMs: controls.lastHumanReplyAtMs,
-    }))
-  ) {
-    await pauseBotForReplyLoop(contact.id);
+  const loop = suggestOnly
+    ? null
+    : await detectAiReplyLoop({
+        contactId: contact.id,
+        messagesCollection: transport.messagesCollection,
+        resetAtMs: controls.loopResetAtMs,
+      });
+  if (loop) {
+    const paused = await pauseBotForReplyLoop(contact.id);
+    await notifyStaff("auto-reply loop");
     await logActivity({
       contactId: contact.id,
       agencyId: subAccount.agencyId,
       subAccountId,
       type: "ai_skipped",
-      content:
-        "AI reply stopped — too many automated replies in a row with no human reply (possible auto-responder loop). Bot paused on this conversation; a human needs to pick it up.",
-      meta: { reason: "reply_loop", channel: channelId },
+      content: `AI reply stopped — ${LOOP_LABEL[loop]}. ${
+        paused
+          ? "Bot paused on this conversation for 1 hour; a human needs to pick it up."
+          : "Pausing the bot FAILED — it is not paused; a human needs to pick this up."
+      }`,
+      meta: { reason: "reply_loop", loop, paused, channel: channelId },
     });
     return { kind: "skipped", reason: "reply_loop" };
   }
