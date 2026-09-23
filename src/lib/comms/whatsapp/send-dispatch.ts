@@ -85,6 +85,8 @@ export interface WhatsappDispatchInput {
   sendButtonsViaTwilio?: () => Promise<WhatsAppSendResult>;
   /** Injected by tests and by callers that already read the window. */
   lastInboundAt?: Date | null;
+  /** The sender to send from. Absent = the workspace default. */
+  senderId?: string | null;
   /**
    * Bridge rail only. The bridge requires an idempotency key and generates one
    * per call when none is given, so a caller whose OWN retry must converge on
@@ -126,7 +128,7 @@ export async function dispatchWhatsappSend(
 > {
   // Through the sender registry, so this dispatcher and the readiness gate in
   // front of it cannot pick different rails for the same workspace.
-  const resolved = resolveWhatsappSender(input.subAccount);
+  const resolved = resolveWhatsappSender(input.subAccount, input.senderId);
   if (!resolved.ok) {
     return {
       provider: resolveWhatsAppProviderId(input.subAccount.whatsappProvider),
@@ -307,6 +309,8 @@ export async function sendWhatsappFreeFormForSubAccount(input: {
   body: string;
   /** Skips the window read for callers that already know it is open. */
   lastInboundAt?: Date | null;
+  /** The sender to reply from. Absent = the workspace default. */
+  senderId?: string | null;
 }): Promise<{ sid: string; from: string }> {
   let from = "";
   const result = await dispatchWhatsappSend({
@@ -316,6 +320,7 @@ export async function sendWhatsappFreeFormForSubAccount(input: {
     to: input.to,
     body: input.body,
     lastInboundAt: input.lastInboundAt,
+    senderId: input.senderId,
     template: null,
     sendViaTwilio: async () => {
       const r = await sendWhatsappForSubAccount({

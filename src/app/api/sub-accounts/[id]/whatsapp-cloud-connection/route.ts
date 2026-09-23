@@ -159,20 +159,17 @@ export async function POST(
     connectedByUid: auth.uid,
   };
 
-  // Secret first, and outside the transaction: if the transaction then aborts,
-  // the workspace is still on the Twilio rail and an orphaned secret is inert.
-  // The reverse order would briefly route inbound traffic at credentials that
-  // do not exist yet.
-  await db
-    .doc(whatsappCloudSecretPath(subAccountId))
-    .set({ phoneNumberId, wabaId, accessToken });
-
   // The uniqueness check and the write that satisfies it must be atomic.
   // Checked outside a transaction, two operators connecting the same number to
   // two workspaces at once both read "no clash" and both write — producing the
   // exact ambiguous routing this check exists to prevent, since the inbound
   // webhook resolves by phone_number_id and would deliver a customer's
   // messages to whichever document the query happened to return first.
+  //
+  // The secret is written in the same transaction, after the check: a refused
+  // connect must never touch the workspace's existing (working) credentials,
+  // and committing both together means the rail never points at a token that
+  // is not there yet.
   try {
     await db.runTransaction(async (tx) => {
       const clash = await tx.get(
@@ -184,6 +181,11 @@ export async function POST(
       if (clash.docs.some((d) => d.id !== subAccountId)) {
         throw new PhoneNumberInUseError();
       }
+      tx.set(db.doc(whatsappCloudSecretPath(subAccountId)), {
+        phoneNumberId,
+        wabaId,
+        accessToken,
+      });
       tx.set(
         db.doc(`subAccounts/${subAccountId}`),
         {
@@ -196,11 +198,6 @@ export async function POST(
     });
   } catch (err) {
     if (err instanceof PhoneNumberInUseError) {
-      // Roll the orphaned secret back so a refused connect leaves no trace.
-      await db
-        .doc(whatsappCloudSecretPath(subAccountId))
-        .delete()
-        .catch(() => {});
       return NextResponse.json(
         {
           error:

@@ -322,6 +322,7 @@ export async function POST(request: Request) {
             contact,
             incomingMessage: bodyRaw,
             replyTo: from,
+            inboundProvider: "twilio",
           });
         }
       }

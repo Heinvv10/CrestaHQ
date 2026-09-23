@@ -298,13 +298,21 @@ export async function upsertConversationForMessage(
  */
 export async function getConversationControls(
   conversationId: string
-): Promise<{ botMode: ConversationBotMode; botPausedUntilMs: number | null }> {
+): Promise<{
+  botMode: ConversationBotMode;
+  botPausedUntilMs: number | null;
+  /** The AI reply-loop guard counts only messages after this: the later of
+   *  the last human reply and the last loop pause (lib/comms/ai/loop-guard). */
+  loopResetAtMs: number | null;
+}> {
   try {
     const snap = await getAdminDb()
       .collection("conversations")
       .doc(conversationId)
       .get();
-    if (!snap.exists) return { botMode: "auto", botPausedUntilMs: null };
+    if (!snap.exists) {
+      return { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
+    }
     const d = snap.data() ?? {};
     const botMode = (d.botMode as ConversationBotMode) ?? "auto";
     const bp = d.botPausedUntil as
@@ -313,10 +321,17 @@ export async function getConversationControls(
       | undefined;
     const botPausedUntilMs =
       bp && typeof bp.toMillis === "function" ? bp.toMillis() : null;
-    return { botMode, botPausedUntilMs };
+    return {
+      botMode,
+      botPausedUntilMs,
+      loopResetAtMs: Math.max(
+        toMillis(d.lastHumanReplyAt) ?? 0,
+        toMillis(d.aiLoopPausedAt) ?? 0,
+      ) || null,
+    };
   } catch (err) {
     console.warn("[conversations/controls] read failed", err);
-    return { botMode: "auto", botPausedUntilMs: null };
+    return { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
   }
 }
 

@@ -680,6 +680,7 @@ async function handleInbound(
           contact,
           incomingMessage: inbound.text,
           replyTo: from,
+          inboundProvider: "cloud",
         });
       }
     } catch (err) {

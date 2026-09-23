@@ -160,6 +160,8 @@ export interface ConversationDoc {
   lateButtonTap?: { text: string; at: Timestamp | FieldValue | null } | null;
   /** When a HUMAN last replied (the operator-reply path). */
   lastHumanReplyAt?: Timestamp | FieldValue | null;
+  /** When the AI reply-loop guard last paused the bot (server-written). */
+  aiLoopPausedAt?: Timestamp | FieldValue | null;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
