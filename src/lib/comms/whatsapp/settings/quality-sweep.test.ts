@@ -165,7 +165,7 @@ describe("runWhatsappQualitySweep", () => {
     scenario("sa_a", "GREEN");
     scenario("sa_b", "RED");
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 2, alerted: 0, recovered: 0, failed: 0 });
+    expect(result).toEqual({ processed: 2, alerted: 0, recovered: 0, failed: 0, skipped: 0 });
     expect(quality("sa_a")).toEqual({ rating: "GREEN", nameStatus: "APPROVED", status: "CONNECTED", checkedAt: NOW, changedAt: NOW });
     expect(quality("sa_b")?.rating).toBe("RED");
     expect(alerts("sa_b")).toEqual([]);
@@ -190,7 +190,7 @@ describe("runWhatsappQualitySweep", () => {
     seedSub("sa_a", { quality: stored("GREEN") });
     graphMode({ sa_a: "YELLOW" });
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0 });
+    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0, skipped: 0 });
     expect(quality("sa_a")).toMatchObject({ rating: "YELLOW", checkedAt: NOW, changedAt: NOW });
     expect(alerts("sa_a")).toEqual([
       expect.objectContaining({
@@ -225,7 +225,7 @@ describe("runWhatsappQualitySweep", () => {
     seedSub("sa_a", { quality: stored("GREEN") });
     scenario("sa_a", "YELLOW");
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0 });
+    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0, skipped: 0 });
     expect(alerts("sa_a")).toHaveLength(1);
     expect(edges.sendPushForEvent).not.toHaveBeenCalled();
     expect(edges.sendEmail).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe("runWhatsappQualitySweep", () => {
     seedSub("sa_a", { quality: stored("GREEN") });
     graphMode({ sa_a: "YELLOW" });
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0 });
+    expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0, skipped: 0 });
     expect(alerts("sa_a")).toHaveLength(1);
     expect(warned.some((w) => w.includes("owner alert failed"))).toBe(true);
   });
@@ -267,7 +267,7 @@ describe("runWhatsappQualitySweep", () => {
     seedSub("sa_a", { quality: stored("YELLOW") });
     scenario("sa_a", "RED");
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0 });
+    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0, skipped: 0 });
     expect(quality("sa_a")).toMatchObject({ rating: "RED", changedAt: NOW });
     expect(alerts("sa_a")).toEqual([]);
     expect(edges.sendEmail).not.toHaveBeenCalled();
@@ -279,7 +279,7 @@ describe("runWhatsappQualitySweep", () => {
     mem.seed(`${alertsCollection("sa_a")}/al_old`, { agencyId: AGENCY, subAccountId: "sa_a", from: "GREEN", to: "RED", resolvedAt: EARLIER });
     scenario("sa_a", "GREEN");
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 1, failed: 0 });
+    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 1, failed: 0, skipped: 0 });
     expect(mem.read(`${alertsCollection("sa_a")}/al_open`)?.resolvedAt).toEqual(NOW);
     expect(mem.read(`${alertsCollection("sa_a")}/al_old`)?.resolvedAt).toEqual(EARLIER);
     expect(edges.sendEmail).not.toHaveBeenCalled();
@@ -294,7 +294,7 @@ describe("runWhatsappQualitySweep", () => {
     scenario("sa_broken", "YELLOW", { failNext: { op: "getPhoneStatus", status: 500, message: "boom" } });
     scenario("sa_c", "YELLOW");
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 2, alerted: 1, recovered: 0, failed: 1 });
+    expect(result).toEqual({ processed: 2, alerted: 1, recovered: 0, failed: 1, skipped: 0 });
     expect(quality("sa_broken")).toMatchObject({ rating: "GREEN", checkedAt: EARLIER });
     expect(alerts("sa_broken")).toEqual([]);
     expect(alerts("sa_c")).toHaveLength(1);
@@ -306,7 +306,7 @@ describe("runWhatsappQualitySweep", () => {
     seedSub("sa_a");
     scenario("sa_a", "GREEN");
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0 });
+    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0, skipped: 0 });
     expect(quality("sa_real")).toMatchObject({ rating: "GREEN", checkedAt: EARLIER });
     expect(alerts("sa_real")).toEqual([]);
   });
@@ -330,13 +330,36 @@ describe("runWhatsappQualitySweep", () => {
     });
     vi.stubGlobal("fetch", fetchSpy);
     const result = await runWhatsappQualitySweep({ now: NOW });
-    expect(result).toEqual({ processed: 2, alerted: 1, recovered: 0, failed: 1 });
+    expect(result).toEqual({ processed: 2, alerted: 1, recovered: 0, failed: 0, skipped: 1 });
     expect(quality("sa_a")?.rating).toBe("RED");
     expect(alerts("sa_a")).toHaveLength(1);
     expect(quality("sa_b")?.rating).toBe("GREEN");
-    // sa_unconnected has meta but no secret: WabaNotConfiguredError → failed, untouched.
+    // sa_unconnected has meta but no secret: WabaNotConfiguredError → skipped, untouched, not logged.
     expect(quality("sa_unconnected")).toBeUndefined();
     const auths = fetchSpy.mock.calls.map(([u, i]) => [String(u).includes("pn_sa_a"), new Headers(i?.headers).get("authorization")]);
     expect(auths).toEqual(expect.arrayContaining([[true, "Bearer tok_a"], [false, "Bearer tok_b"]]));
+  });
+
+  it("a sub-account never finished its WABA connection: skipped forever, never logged as an error", async () => {
+    delete process.env.WHATSAPP_SETTINGS_PROVIDER;
+    seedSub("sa_a", { agencyId: "ag_one", quality: stored("GREEN") });
+    seedSub("sa_unconnected", { agencyId: "ag_one" });
+    mem.seed(whatsappCloudSecretPath("sa_a"), { phoneNumberId: "pn_sa_a", wabaId: "w", accessToken: "tok_a" });
+    // sa_unconnected has whatsappCloudMeta.phoneNumberId set (so it's a
+    // candidate) but no secret doc — the exact prod state that logged
+    // WabaNotConfiguredError every hour, forever, for one tenant.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ display_phone_number: "+27 1", quality_rating: "GREEN", name_status: "APPROVED", status: "CONNECTED" }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const errorSpy = vi.spyOn(console, "error");
+    const result = await runWhatsappQualitySweep({ now: NOW });
+    expect(result).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0, skipped: 1 });
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });

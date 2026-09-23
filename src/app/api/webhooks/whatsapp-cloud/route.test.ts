@@ -112,7 +112,7 @@ describe("cloud inbound is routed by sender membership", () => {
         },
       ],
     });
-    expect(await post()).toEqual({ ok: true, statuses: 1 });
+    expect(await post()).toEqual({ ok: true, statuses: 1, recorded: 0 });
   });
 
   it("drops traffic for a workspace with no cloud sender", async () => {
@@ -133,7 +133,7 @@ describe("cloud inbound is routed by sender membership", () => {
 
   it("accepts a legacy workspace on the cloud rail, as before", async () => {
     setSub({ whatsappProvider: "cloud" });
-    expect(await post()).toEqual({ ok: true, statuses: 1 });
+    expect(await post()).toEqual({ ok: true, statuses: 1, recorded: 0 });
   });
 
   it("drops a legacy workspace that switched away from cloud, as before", async () => {

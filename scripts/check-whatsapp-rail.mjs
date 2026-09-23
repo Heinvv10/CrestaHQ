@@ -74,6 +74,10 @@ const ALLOWED_FIELD = new Map([
     "app/api/webhooks/twilio/whatsapp/inbound/route.ts",
     "Twilio's own inbound webhook — it matches the payload against the Twilio sender.",
   ],
+  [
+    "app/api/webhooks/twilio/whatsapp/status/route.ts",
+    "Twilio's own statusCallback webhook — it matches the payload against the Twilio sender.",
+  ],
 ]);
 
 const ALLOWED_HELPER = new Map([

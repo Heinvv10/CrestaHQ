@@ -35,6 +35,24 @@ import { sweepOldWatchdogRuns } from "@/lib/server/agents-watchdog-service";
 const BATCH_LIMIT = 500;
 const CONTINUATION_DELAY_SEC = 60;
 
+/**
+ * Collection groups swept via `collectionGroup(name).where("expiresAt", "<", now)`
+ * below. Each needs a COLLECTION_GROUP-scope ascending index on `expiresAt`
+ * in firestore.indexes.json — a single-field collection index is not enough
+ * for a collectionGroup query. Exported so the index-coverage test can't
+ * drift from what this route actually queries.
+ */
+export const EXPIRES_AT_COLLECTION_GROUPS = [
+  "apiRequestLogs",
+  "apiIdempotency",
+  "webhookEvents",
+] as const;
+
+// Named so the sweeps below read from this constant instead of repeating the
+// string literal — a new sweep added without a matching entry here (and thus
+// without an index) fails the coverage test instead of shipping silently.
+const [API_REQUEST_LOGS, API_IDEMPOTENCY, WEBHOOK_EVENTS] = EXPIRES_AT_COLLECTION_GROUPS;
+
 interface SweepResult {
   collection: string;
   deleted: number;
@@ -110,12 +128,12 @@ async function sweepWebhookEvents(now: Date): Promise<SweepResult> {
   // orphan the deliveries.
   const db = getAdminDb();
   const snap = await db
-    .collectionGroup("webhookEvents")
+    .collectionGroup(WEBHOOK_EVENTS)
     .where("expiresAt", "<", now)
     .limit(BATCH_LIMIT)
     .get();
   if (snap.empty) {
-    return { collection: "webhookEvents", deleted: 0, hitCap: false };
+    return { collection: WEBHOOK_EVENTS, deleted: 0, hitCap: false };
   }
   // recursiveDelete on each ref — Firestore Admin SDK throttles internally
   // to avoid hot-tablet writes. Sequential per doc keeps memory bounded;
@@ -128,7 +146,7 @@ async function sweepWebhookEvents(now: Date): Promise<SweepResult> {
     deleted += 1;
   }
   return {
-    collection: "webhookEvents",
+    collection: WEBHOOK_EVENTS,
     deleted,
     hitCap: snap.size >= BATCH_LIMIT,
   };
@@ -153,8 +171,8 @@ export async function POST(request: Request) {
   // the Firestore ops, not CPU.
   const results: SweepResult[] = [];
   try {
-    results.push(await sweepFlatCollection("apiRequestLogs", now));
-    results.push(await sweepFlatCollection("apiIdempotency", now));
+    results.push(await sweepFlatCollection(API_REQUEST_LOGS, now));
+    results.push(await sweepFlatCollection(API_IDEMPOTENCY, now));
     results.push(await sweepWebhookEvents(now));
     results.push(await scrubReviewFeedbackPii(now));
     // Watchdog run logs older than 30 days (Labs custom agent).

@@ -27,7 +27,11 @@ export type MessageStatus =
   | "queued"
   /** Twilio accepted the outbound send. Most outbound messages settle here. */
   | "sent"
-  /** Twilio reported a delivery failure; `error` is populated. */
+  /** WhatsApp only: a delivery receipt came back (Cloud webhook or Twilio
+   *  statusCallback). Receipts only move a row forward, never back. */
+  | "delivered"
+  | "read"
+  /** The provider reported a delivery failure; `error` is populated. */
   | "failed"
   /** Inbound message — set on every inbound row. */
   | "received";
