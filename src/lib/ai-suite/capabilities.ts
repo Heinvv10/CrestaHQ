@@ -103,6 +103,14 @@ import {
   type WebsiteConfig,
 } from "@/types/website";
 import type { AiSuiteLevel } from "@/types/ai-suite";
+import type { EffectiveTerritoryScope } from "@/lib/auth/territory-filter";
+import {
+  canSeeTerritory,
+  collectVisible,
+  scopedCount,
+  scopedDocs,
+  territoryScopeFor,
+} from "@/lib/ai-suite/territory-scope";
 
 /**
  * The AI Suite capability registry — the ENTIRE set of things the assistant
@@ -232,6 +240,20 @@ function rethrowStageError(err: unknown): never {
   throw err;
 }
 
+/** Refuse a model-supplied target the caller's territories don't cover —
+ *  the same rule firestore.rules applies to the UI (canSeeScopedDoc). */
+function assertInTerritory(
+  scope: EffectiveTerritoryScope,
+  territoryId: unknown,
+  what: string
+): void {
+  if (!canSeeTerritory(scope, territoryId)) {
+    throw new CapabilityUserError(
+      `${what} isn't in one of your assigned territories.`
+    );
+  }
+}
+
 function fmtMoney(value: number, currency: string): string {
   return `${currency} ${value.toLocaleString("en-US")}`;
 }
@@ -293,7 +315,8 @@ function toDate(raw: unknown): Date | null {
  */
 async function contactNamesById(
   subAccountId: string,
-  ids: (string | null | undefined)[]
+  ids: (string | null | undefined)[],
+  scope: EffectiveTerritoryScope
 ): Promise<Map<string, string>> {
   const db = getAdminDb();
   const unique = [
@@ -310,6 +333,7 @@ async function contactNamesById(
     if (
       s.exists &&
       s.data()?.subAccountId === subAccountId &&
+      canSeeTerritory(scope, s.data()?.territoryId) &&
       typeof s.data()?.name === "string"
     ) {
       names.set(s.id, s.data()!.name as string);
@@ -1371,12 +1395,15 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const q = (args.query as string).toLowerCase();
       const qDigits = q.replace(/\D/g, "");
-      const snap = await getAdminDb()
-        .collection("contacts")
-        .where("subAccountId", "==", ctx.subAccountId!)
-        .limit(500)
-        .get();
-      const matches = snap.docs
+      const scope = await territoryScopeFor(ctx);
+      const docs = await scopedDocs(
+        scope,
+        getAdminDb()
+          .collection("contacts")
+          .where("subAccountId", "==", ctx.subAccountId!)
+          .limit(500)
+      );
+      const matches = docs
         .filter((d) => {
           const data = d.data();
           const text = [data.name, data.email, data.company]
@@ -1392,7 +1419,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
       if (matches.length === 0) {
         return {
           resultText: `No contacts matched “${args.query}”${
-            snap.size === 500
+            docs.length >= 500
               ? " (searched the 500 most recently indexed contacts)"
               : ""
           }.`,
@@ -1434,43 +1461,60 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
       const db = getAdminDb();
       const said = ctx.subAccountId!;
       const now = new Date();
+      // Every figure counts only records the caller's territories cover.
+      const scope = await territoryScopeFor(ctx);
+      const upcomingQuery = db
+        .collection("events")
+        .where("subAccountId", "==", said)
+        .where("startAt", ">=", now);
 
       const [
         contactsCount,
         quotesCount,
         upcomingEvents,
-        dealsSnap,
-        openTasksSnap,
+        dealsDocs,
+        openTaskDocs,
       ] = await Promise.all([
-        db
-          .collection("contacts")
-          .where("subAccountId", "==", said)
-          .count()
-          .get(),
-        db.collection("quotes").where("subAccountId", "==", said).count().get(),
-        db
-          .collection("events")
-          .where("subAccountId", "==", said)
-          .where("startAt", ">=", now)
-          .count()
-          .get(),
-        db
-          .collection("deals")
-          .where("subAccountId", "==", said)
-          .limit(1000)
-          .get(),
-        db
-          .collection("tasks")
-          .where("subAccountId", "==", said)
-          .where("completed", "==", false)
-          .limit(500)
-          .get(),
+        scopedCount(
+          scope,
+          db.collection("contacts").where("subAccountId", "==", said)
+        ),
+        scopedCount(
+          scope,
+          db.collection("quotes").where("subAccountId", "==", said)
+        ),
+        // A range + `in` needs an index this collection lacks, so a scoped
+        // caller's upcoming events are counted by paging (capped at 1000).
+        scope.enforce
+          ? collectVisible(scope, upcomingQuery.orderBy("startAt", "asc"), {
+              want: 1000,
+              maxScan: 1000,
+            }).then((r) => ({
+              count: r.docs.length,
+              capped: r.docs.length >= 1000 || r.scanCapped,
+            }))
+          : upcomingQuery
+              .count()
+              .get()
+              .then((r) => ({ count: r.data().count, capped: false })),
+        scopedDocs(
+          scope,
+          db.collection("deals").where("subAccountId", "==", said).limit(1000)
+        ).then((d) => d.slice(0, 1000)),
+        scopedDocs(
+          scope,
+          db
+            .collection("tasks")
+            .where("subAccountId", "==", said)
+            .where("completed", "==", false)
+            .limit(500)
+        ).then((d) => d.slice(0, 500)),
       ]);
 
       // Pipeline rollup in memory (bounded by the 1000-deal cap above).
       const byStage = new Map<string, { count: number; value: number }>();
       let currency = "USD";
-      for (const d of dealsSnap.docs) {
+      for (const d of dealsDocs) {
         const data = d.data();
         const stage = (data.stageId as string) ?? "new";
         const row = byStage.get(stage) ?? { count: 0, value: 0 };
@@ -1491,7 +1535,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
       ).reduce((sum, s) => sum + (byStage.get(s.id)?.value ?? 0), 0);
 
       let overdue = 0;
-      for (const t of openTasksSnap.docs) {
+      for (const t of openTaskDocs) {
         const dueAt = t.data().dueAt;
         const due =
           dueAt && typeof dueAt.toDate === "function"
@@ -1503,14 +1547,16 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: [
           `Workspace snapshot:`,
-          `- Contacts: ${contactsCount.data().count}`,
-          `- Pipeline (${dealsSnap.size} deals${
-            dealsSnap.size === 1000 ? ", capped at 1000" : ""
+          `- Contacts: ${contactsCount}`,
+          `- Pipeline (${dealsDocs.length} deals${
+            dealsDocs.length === 1000 ? ", capped at 1000" : ""
           }, open value ${fmtMoney(openValue, currency)}):`,
           ...stageLines,
-          `- Open tasks: ${openTasksSnap.size}${overdue ? ` (${overdue} overdue)` : ""}`,
-          `- Upcoming calendar events: ${upcomingEvents.data().count}`,
-          `- Quotes: ${quotesCount.data().count}`,
+          `- Open tasks: ${openTaskDocs.length}${overdue ? ` (${overdue} overdue)` : ""}`,
+          `- Upcoming calendar events: ${upcomingEvents.count}${
+            upcomingEvents.capped ? " (capped at 1000)" : ""
+          }`,
+          `- Quotes: ${quotesCount}`,
         ].join("\n"),
       };
     },
@@ -1552,12 +1598,15 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const q = ((args.query as string) || "").toLowerCase();
       const stage = (args.stage as string) || "";
-      const snap = await getAdminDb()
-        .collection("deals")
-        .where("subAccountId", "==", ctx.subAccountId!)
-        .limit(500)
-        .get();
-      const matches = snap.docs
+      const scope = await territoryScopeFor(ctx);
+      const docs = await scopedDocs(
+        scope,
+        getAdminDb()
+          .collection("deals")
+          .where("subAccountId", "==", ctx.subAccountId!)
+          .limit(500)
+      );
+      const matches = docs
         .filter((d) => {
           const data = d.data();
           if (stage && data.stageId !== stage) return false;
@@ -1681,6 +1730,12 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That contact wasn't found in this workspace."
         );
       }
+      const contactTerritory = c.data()?.territoryId;
+      assertInTerritory(
+        await territoryScopeFor(ctx),
+        contactTerritory,
+        "That contact"
+      );
       // The service validates the stage against the default pipeline.
       const res = await createDealServerSide({
         subAccountId: ctx.subAccountId!,
@@ -1694,6 +1749,9 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         contactId: args.contactId as string,
         stageId: args.stage as PipelineStageId,
         priority: "medium" as DealPriority,
+        // The deal lives in its contact's territory, as tasks/events do.
+        territoryId:
+          typeof contactTerritory === "string" ? contactTerritory : null,
       }).catch(rethrowStageError);
       return {
         resultText: `Created the deal “${args.title}” (${fmtMoney(
@@ -1773,6 +1831,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That deal wasn't found in this workspace."
         );
       }
+      assertInTerritory(
+        await territoryScopeFor(ctx),
+        snap.data()?.territoryId,
+        "That deal"
+      );
       // The service validates the stage against the deal's OWN pipeline
       // and only keeps lostReason when landing on its Lost stage.
       const moved = await updateDealServerSide({
@@ -2671,6 +2734,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
             "The linked contact wasn't found in this workspace."
           );
         }
+        assertInTerritory(
+          await territoryScopeFor(ctx),
+          c.data()?.territoryId,
+          "The linked contact"
+        );
       }
       const dueAtStr = (args.dueAt as string) || "";
       const res = await createTaskServerSide({
@@ -2732,12 +2800,17 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const tz = await subAccountTimezone(ctx.subAccountId!);
       const today = ymdInTz(new Date(), tz);
-      const snap = await getAdminDb()
-        .collection("tasks")
-        .where("subAccountId", "==", ctx.subAccountId!)
-        .where("completed", "==", false)
-        .limit(300)
-        .get();
+      const scope = await territoryScopeFor(ctx);
+      const docs = (
+        await scopedDocs(
+          scope,
+          getAdminDb()
+            .collection("tasks")
+            .where("subAccountId", "==", ctx.subAccountId!)
+            .where("completed", "==", false)
+            .limit(300)
+        )
+      ).slice(0, 300);
 
       type Row = {
         id: string;
@@ -2745,7 +2818,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         due: string | null; // YYYY-MM-DD in the workspace tz
         contactId: string | null;
       };
-      const rows: Row[] = snap.docs.map((d) => {
+      const rows: Row[] = docs.map((d) => {
         const data = d.data();
         const dueAt = toDate(data.dueAt);
         return {
@@ -2784,7 +2857,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
       const shown = wanted.slice(0, 15);
       const names = await contactNamesById(
         ctx.subAccountId!,
-        shown.map((r) => r.contactId)
+        shown.map((r) => r.contactId),
+        scope
       );
       const line = (r: Row) =>
         `- ${r.title} — id: ${r.id}${
@@ -2870,6 +2944,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           "That task wasn't found in this workspace."
         );
       }
+      assertInTerritory(
+        await territoryScopeFor(ctx),
+        snap.data()?.territoryId,
+        "That task"
+      );
       const title =
         (snap.data()?.title as string) || (args.taskTitle as string);
       if (snap.data()?.completed === true) {
@@ -2955,17 +3034,28 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
         .where("subAccountId", "==", ctx.subAccountId!)
         .where("startAt", ">=", now);
       if (windowEnd) q = q.where("startAt", "<", windowEnd);
-      const snap = await q.orderBy("startAt", "asc").limit(50).get();
+      // Territory-filtered before the 50 cap (a range + `in` would need an
+      // index this collection lacks, so a scoped caller pages instead).
+      const scope = await territoryScopeFor(ctx);
+      const { docs, scanCapped } = await collectVisible(
+        scope,
+        q.orderBy("startAt", "asc"),
+        { want: 50, maxScan: 1000 }
+      );
 
-      const rows = snap.docs.filter((doc) => doc.data().status !== "cancelled");
+      const partial = scanCapped
+        ? "\n(Only the next 1000 calendar entries were checked — see the Calendar page for later ones.)"
+        : "";
+      const rows = docs.filter((doc) => doc.data().status !== "cancelled");
       if (rows.length === 0) {
         return {
-          resultText:
+          resultText: `${
             args.range === "today"
               ? "Nothing (left) on the calendar today."
               : args.range === "week"
                 ? "Nothing on the calendar in the next 7 days."
-                : "No upcoming calendar events.",
+                : "No upcoming calendar events."
+          }${partial}`,
         };
       }
       const shown = rows.slice(0, 15);
@@ -2975,7 +3065,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           typeof doc.data().contactId === "string"
             ? (doc.data().contactId as string)
             : null
-        )
+        ),
+        scope
       );
       const lines = shown.map((doc) => {
         const data = doc.data();
@@ -2993,7 +3084,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
           ? `\n(+${rows.length - shown.length} more — see the Calendar page)`
           : "";
       return {
-        resultText: `Upcoming events (${rows.length}, times in ${tz}):\n${lines.join("\n")}${more}`,
+        resultText: `Upcoming events (${rows.length}, times in ${tz}):\n${lines.join("\n")}${more}${partial}`,
       };
     },
   },
@@ -3099,6 +3190,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
             "The linked contact wasn't found in this workspace."
           );
         }
+        assertInTerritory(
+          await territoryScopeFor(ctx),
+          c.data()?.territoryId,
+          "The linked contact"
+        );
       }
       const tz = await subAccountTimezone(ctx.subAccountId!);
       const [y, m, d] = (args.date as string).split("-").map(Number);
