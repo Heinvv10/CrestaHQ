@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
@@ -9,6 +10,7 @@ import {
   tenantFrom,
 } from "@/lib/comms/resend";
 import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
+import { SmtpError } from "@/lib/comms/smtp";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import {
   buildEventPublicUrl,
@@ -36,9 +38,12 @@ import type { SubAccountDoc } from "@/types/tenancy";
  *      which rotates the token. The reschedule flow re-publishes its
  *      own callbacks; this stale one no-ops.
  *
- * Failures during send are logged + 200'd — one bad reminder shouldn't
- * trip QStash's retry storm, and there's no point retrying a Resend
- * 4xx anyway.
+ * QStash delivers at least once, so each reminder (offset × schedule —
+ * the token changes on every reschedule) is claimed with a create-only
+ * marker doc before it is sent; a redelivery finds the claim and skips.
+ * A send failure that a retry could fix releases the claim and answers
+ * 503 so QStash retries; a suppressed address or a refused recipient
+ * keeps the claim and answers 200 — retrying cannot help.
  */
 
 interface ReminderBody {
@@ -133,6 +138,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "email_not_configured" });
   }
 
+  const claimRef = db.doc(
+    `events/${eventId}/reminderSends/${offsetMinutes}_${hashEventToken(token).slice(0, 16)}`,
+  );
+  try {
+    await claimRef.create({
+      agencyId: event.agencyId,
+      subAccountId: event.subAccountId,
+      claimedAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === 6) {
+      return NextResponse.json({ ok: true, skipped: "already_sent" });
+    }
+    throw err;
+  }
 
   // Booking-page may have been deleted since the schedule landed. Fall
   // back to event-level defaults so the reminder still sends sensibly.
@@ -183,6 +203,13 @@ export async function POST(request: Request) {
       createdBy: "booking",
     });
     if (!suppressed) console.warn("[events/reminder] send failed", err);
+    // SmtpError below 500 is a refusal decided before sending (e.g. a bad
+    // address); anything else — provider or network — may clear on retry.
+    const permanent = suppressed || (err instanceof SmtpError && err.status < 500);
+    if (!permanent) {
+      await claimRef.delete();
+      return NextResponse.json({ error: "Send failed; retry" }, { status: 503 });
+    }
   }
 
   return NextResponse.json({ ok: true });

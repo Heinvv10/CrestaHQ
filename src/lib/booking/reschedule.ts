@@ -9,7 +9,7 @@ import {
   tenantFrom,
 } from "@/lib/comms/resend";
 import { issueEventToken } from "@/lib/booking/event-token";
-import { generateIcs } from "@/lib/booking/ics";
+import { generateIcs, nextIcsSequence } from "@/lib/booking/ics";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { renderBookingConfirmationEmail } from "@/lib/booking/email";
 import {
@@ -105,16 +105,18 @@ export async function rescheduleWithoutAvailabilityCheck(
       throw new RescheduleRejected(400, "That's already the booking's time.", "no_change");
     }
     const { token: newRawToken, hash: newHash } = issueEventToken(eventRef.id);
+    const icsSequence = nextIcsSequence(event);
     txn.update(eventRef, {
       startAt: newStart,
       endAt: newEnd,
       publicTokenHash: newHash,
+      icsSequence,
       rescheduledAt: FieldValue.serverTimestamp(),
       rescheduleCount: FieldValue.increment(1),
       updatedAt: FieldValue.serverTimestamp(),
     });
     return {
-      event: { ...event, publicTokenHash: newHash },
+      event: { ...event, publicTokenHash: newHash, icsSequence },
       newToken: newRawToken,
       page: pageSnap.data() as BookingPage,
     };
@@ -184,8 +186,8 @@ export async function runRescheduleSideEffects(args: {
     );
   }
 
-  // Visitor confirmation email + ICS (UPDATE, sequence+1 so calendar
-  // clients overwrite the existing entry).
+  // Visitor confirmation email + ICS (UPDATE, with the SEQUENCE the move
+  // stored, so calendar clients overwrite the existing entry).
   if (!event.contactId) return { emailSent: false, emailSkipReason: "no_contact" };
   let contact: Contact;
   let sub: SubAccountDoc;
@@ -240,7 +242,7 @@ export async function runRescheduleSideEffects(args: {
       location: event.location || "",
       method: "REQUEST",
       status: "CONFIRMED",
-      sequence: 1, // bump so calendar apps treat as update
+      sequence: event.icsSequence,
       attendeeEmail: contact.email,
       attendeeName: contact.name ?? undefined,
       organizerEmail: sub.replyToEmail ?? undefined,

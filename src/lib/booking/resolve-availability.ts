@@ -66,9 +66,15 @@ export class BusyQueryError extends Error {
   }
 }
 
-// Look back by the longest plausible single event so one that started
-// before the window but is still running is seen as busy.
-const BUSY_LOOKBACK_MS = MAX_SLOT_MINUTES * 60_000;
+// Look back far enough that an event which started before the window but is
+// still running is seen as busy — including a multi-day "Out of office". The
+// query can only range on `startAt`, so this is a bound: an event longer than
+// 31 days that began before it is missed. It also covers the start of the
+// window's first local date, which the day cap counts bookings on.
+const BUSY_LOOKBACK_MS = 31 * 24 * 60 * 60_000;
+// The day cap counts the page's bookings on a slot's whole local date, so
+// with a cap the read runs to the end of the window's last local date too.
+const DAY_CAP_LOOKAHEAD_MS = 26 * 60 * 60_000;
 
 export async function resolvePageAvailability(
   opts: ResolveAvailabilityOptions,
@@ -88,7 +94,9 @@ export async function resolvePageAvailability(
     (
       opts.toInstant ??
       new Date(now.getTime() + opts.page.visibleDays * 24 * 60 * 60_000)
-    ).getTime() + padMs,
+    ).getTime() +
+      padMs +
+      (opts.page.maxPerDay != null ? DAY_CAP_LOOKAHEAD_MS : 0),
   );
 
   const busy = await loadEventBusy(

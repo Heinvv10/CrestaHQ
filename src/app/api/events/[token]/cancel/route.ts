@@ -63,8 +63,9 @@ export async function POST(
       }
       const status = eventStatus(event);
       if (status === "cancelled") {
-        // Idempotent — second cancel returns success.
-        return event;
+        // Idempotent — a repeat cancel answers success and does nothing:
+        // the email, workflows and webhook ran on the first one.
+        return null;
       }
       if (status === "completed" || status === "no_show") {
         throw new BadState("This meeting has already taken place.");

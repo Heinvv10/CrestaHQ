@@ -170,7 +170,7 @@ Runtime checks R1/R2 run against production as deployed today and need no PR unl
 - **The "E2E smoke (production)" workflow fails on every `main` push.** It runs `main`'s specs against crm.crestahq.com, which served pre-SP3 code until 2026-09-14, so the new specs (e.g. `booking-widget.spec.ts`) failed there. `workflow-enrol.spec.ts` also fails there with `Invalid signature` from the step worker; that failure was not investigated.
 
 **Follow-ups (not blocking SP3):**
-- `maxPerDay` is not enforced at book-time re-verify. This existed before SP3.
+- `maxPerDay` is not enforced at book-time re-verify. This existed before SP3. *(Fixed: it now counts bookings and is enforced by the re-verify — see booking-pages.md.)*
 - The v1 events PATCH isn't atomic with a concurrent status change. This is documented.
 - Manual Calendar-page edits of booking-page title/notes/location aren't pushed to Google.
 - GBP disconnect still revokes at Google, which can drop a Calendar grant on the same Google account.

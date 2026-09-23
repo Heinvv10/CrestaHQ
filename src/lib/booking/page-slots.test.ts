@@ -195,12 +195,16 @@ describe("collective", () => {
     expect(starts(slots(p, []))).toEqual(["09:00", "09:30"]);
   });
 
-  it("applies the day cap after the intersection", () => {
+  it("the day cap counts the page's bookings, not the slots offered", () => {
     const p = page({ calendarType: "collective", hosts: [A, B], maxPerDay: 2 });
-    // Ann is busy for the first two slots; a per-host cap would have spent
-    // Bob's allowance on them and offered nothing.
+    // Ann's own busy time is not a booking on this page.
     const out = slots(p, [busy("09:00", "10:00", ["a"])]);
-    expect(starts(out)).toEqual(["10:00", "10:30"]);
+    expect(starts(out)).toEqual(["10:00", "10:30", "11:00", "11:30"]);
+    const booked = [
+      busy("09:00", "09:30", ["a", "b"], "p"),
+      busy("10:00", "10:30", ["a", "b"], "p"),
+    ];
+    expect(starts(slots(p, booked))).toEqual([]);
   });
 });
 
@@ -226,10 +230,12 @@ describe("class", () => {
     expect(starts(out)).toEqual(["09:00", "09:30", "10:30"]);
   });
 
-  it("the day cap counts offered class slots, after full ones drop", () => {
+  it("the day cap counts booked sessions: their seats stay open, no new session past it", () => {
     const p = page({ calendarType: "class", seatsPerSlot: 2, maxPerDay: 2 });
-    const full = [busy("09:00", "09:30", [], "p"), busy("09:00", "09:30", [], "p")];
-    expect(starts(slots(p, full))).toEqual(["09:30", "10:00"]);
+    const one = [busy("09:00", "09:30", [], "p")];
+    expect(starts(slots(p, one))).toEqual(["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"]);
+    const two = [...one, busy("10:00", "10:30", [], "p")];
+    expect(starts(slots(p, two))).toEqual(["09:00", "10:00"]);
   });
 });
 
@@ -345,5 +351,15 @@ describe("assignBookingHosts", () => {
 
   it("hosted page with nobody free: null (the caller's 409)", () => {
     expect(assignBookingHosts(page({ hosts: [A] }), slot([]), new Map())).toBeNull();
+  });
+});
+
+describe("day cap per host", () => {
+  it("round robin: a host at the cap drops out while another is under it", () => {
+    const p = page({ hosts: [A, B], maxPerDay: 1 });
+    const out = slots(p, [busy("09:00", "09:30", ["a"], "p")]);
+    expect(starts(out)).toHaveLength(6);
+    expect(out.every((s) => s.hostUids.join() === "b")).toBe(true);
+    expect(slots(p, [busy("09:00", "09:30", ["a"], "p"), busy("11:30", "12:00", ["b"], "p")])).toEqual([]);
   });
 });

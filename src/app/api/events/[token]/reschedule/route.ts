@@ -20,6 +20,7 @@ import {
   verifyEventToken,
 } from "@/lib/booking/event-token";
 import { runRescheduleSideEffects } from "@/lib/booking/reschedule";
+import { nextIcsSequence } from "@/lib/booking/ics";
 import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -168,10 +169,12 @@ export async function POST(
       const { token: newRawToken, hash: newHash } = issueEventToken(
         eventRef.id,
       );
+      const icsSequence = nextIcsSequence(event);
       txn.update(eventRef, {
         startAt: newStart,
         endAt: newEnd,
         publicTokenHash: newHash,
+        icsSequence,
         rescheduledAt: FieldValue.serverTimestamp(),
         rescheduleCount: FieldValue.increment(1),
         updatedAt: FieldValue.serverTimestamp(),
@@ -179,7 +182,7 @@ export async function POST(
       return {
         newToken: newRawToken,
         pageSnap: pageSnap,
-        event: { ...event, publicTokenHash: newHash } as CalendarEvent,
+        event: { ...event, publicTokenHash: newHash, icsSequence } as CalendarEvent,
         rotatedHash: newHash,
         newStart,
         newEnd,

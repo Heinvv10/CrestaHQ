@@ -43,7 +43,18 @@ export default async function PublicEventPage({ params }: PageProps) {
   const eventSnap = await db.collection("events").doc(verified.eventId).get();
   if (!eventSnap.exists) notFound();
   const event = eventSnap.data() as CalendarEvent;
-  if (event.publicTokenHash !== hashEventToken(token)) notFound();
+  const presentedHash = hashEventToken(token);
+  // Stripe returns the visitor to the token the pay button was pressed on,
+  // which confirming the payment rotated. That one token gets a read-only
+  // receipt; the live link (with reschedule/cancel) is in the confirmation
+  // email.
+  if (
+    event.publicTokenHash !== presentedHash &&
+    event.paidFromTokenHash === presentedHash
+  ) {
+    return <PaymentReceived />;
+  }
+  if (event.publicTokenHash !== presentedHash) notFound();
   if (!event.bookingPageSlug) notFound();
 
   const [subSnap, pageSnap] = await Promise.all([
@@ -102,5 +113,17 @@ export default async function PublicEventPage({ params }: PageProps) {
       }
       branding={branding}
     />
+  );
+}
+
+function PaymentReceived() {
+  return (
+    <main className="mx-auto max-w-md px-6 py-16 text-center">
+      <h1 className="text-xl font-semibold">Payment received</h1>
+      <p className="text-muted-foreground mt-2 text-sm">
+        Your booking is confirmed. We&apos;ve emailed you the confirmation
+        with a link to manage it.
+      </p>
+    </main>
   );
 }
