@@ -131,7 +131,7 @@ const ATTEMPT = {
   amountCents: 115000,
   currency: "ZAR",
   mode: "live",
-  keyFingerprint: "0123456789abcdef01234567",
+  keyFingerprint: "fp-live-key",
   state: "open",
   reason: null,
 };

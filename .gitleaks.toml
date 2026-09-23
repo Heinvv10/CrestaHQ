@@ -44,4 +44,11 @@ regexes = [
   # with. Never a credential. Replaced at the tip by a low-entropy fixture;
   # this anchor exists only so that commit's diff stops tripping the scan.
   '''^ics-route-test-secret-0123456789$''',
+  # Rules-test fixture: only exists in commit 592a3ed0's diff
+  # (src/lib/paystack/payments.firestore-rules.test.ts line 134 at that point
+  # in history) as a paymentAttempts `keyFingerprint` value. Never a
+  # credential — a hex counting sequence. Replaced at the tip by a
+  # low-entropy fixture; this anchor exists only so that commit's diff stops
+  # tripping the history scan.
+  '''^0123456789abcdef01234567$''',
 ]
