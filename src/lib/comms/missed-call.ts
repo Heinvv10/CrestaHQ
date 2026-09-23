@@ -7,6 +7,7 @@ import { reconcileContactFromCapture } from "@/lib/comms/ai/capture";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import { renderMergeTags } from "@/lib/messaging/merge-tags";
 import type { MissedCallConfig, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -78,16 +79,17 @@ export async function resolveVoiceRoute(
   if (
     sa.missedCallTextBackEnabledByAgency !== true ||
     !mctb?.enabled ||
-    !cfg?.authToken ||
     !mctb.forwardTo
   ) {
     return null;
   }
+  const authToken = await readSubAccountSecret(doc.id, "twilio", cfg);
+  if (!authToken) return null;
 
   return {
     subAccountId: doc.id,
     agencyId: sa.agencyId,
-    authToken: cfg.authToken,
+    authToken,
     subAccount: sa,
     missedCall: mctb,
   };

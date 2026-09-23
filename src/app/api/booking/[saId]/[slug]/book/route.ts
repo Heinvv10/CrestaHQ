@@ -653,6 +653,7 @@ export async function POST(
       title: created.title,
       contactId: created.contactId,
       bookingPageSlug: page.slug,
+      subAccountId: saId,
     },
     "booking_page_booked",
   );

@@ -47,7 +47,8 @@ import type { WebChatSession } from "@/types/web-chat";
  *   - Persists messages to `webChatSessions/{id}/messages/*` not to a
  *     contact's chat thread.
  *   - Anonymous-first: skips the contact-context block until the session
- *     has been linked via the [[capture …]] marker.
+ *     has been linked via the [[capture …]] marker — and for good when it
+ *     was linked to a pre-existing contact on an unverified claim.
  *   - Strips the [[capture …]] marker before storing or returning the
  *     reply, then runs contact reconciliation.
  *
@@ -361,9 +362,12 @@ export async function respondToWebChat(
     });
   }
 
-  // Load identified-contact context if the session is linked.
+  // Load identified-contact context only for a contact this session created
+  // from the visitor's own details. A session linked to a PRE-EXISTING
+  // contact got there on an unverified claimed email/phone — handing the bot
+  // that contact's deals would read them back to whoever typed the email.
   let contextBlock: string | null = null;
-  if (session.contactId) {
+  if (session.contactId && session.contactCreatedBySession === true) {
     try {
       const contactSnap = await db
         .collection("contacts")

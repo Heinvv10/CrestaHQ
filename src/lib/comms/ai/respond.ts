@@ -28,6 +28,7 @@ import {
   upsertConversationForMessage,
 } from "@/lib/server/conversations-service";
 import type { ConversationChannel } from "@/types/conversations";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 interface RespondInput {
   subAccountId: string;
@@ -157,9 +158,12 @@ function getChannelTransport(
       historyChannelFilter: platform,
       label: platform === "instagram" ? "Instagram" : "Messenger",
       isOptedOut: () => false,
-      send: async ({ subAccount, to, body }) => {
+      send: async ({ subAccountId, subAccount, to, body }) => {
         const cfg = subAccount.metaConfig;
-        if (!cfg?.connected || !cfg.pageAccessToken || !cfg.pageId) {
+        const pageAccessToken = cfg?.connected
+          ? await readSubAccountSecret(subAccountId, "meta", cfg)
+          : "";
+        if (!cfg?.connected || !pageAccessToken || !cfg.pageId) {
           throw new Error("No connected Meta Page for this sub-account.");
         }
         const messageId = await sendMetaMessage({
@@ -167,7 +171,7 @@ function getChannelTransport(
           fromNodeId: cfg.pageId,
           recipientId: to,
           text: body,
-          pageAccessToken: cfg.pageAccessToken,
+          pageAccessToken,
         });
         return { sid: messageId, from: cfg.pageId };
       },

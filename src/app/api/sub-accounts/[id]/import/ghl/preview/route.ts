@@ -11,6 +11,7 @@ import {
   validateGhlAccess,
 } from "@/lib/import/ghl/client";
 import type { GhlImportConfig } from "@/types";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 /**
  * Preview a connected GHL account before importing (Phase 4). Returns the
@@ -31,7 +32,8 @@ export async function GET(
     return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
   }
   const cfg = snap.data()?.ghlImportConfig as GhlImportConfig | null | undefined;
-  if (!cfg?.token || !cfg.locationId) {
+  const token = cfg ? await readSubAccountSecret(subAccountId, "ghl", cfg) : "";
+  if (!token || !cfg?.locationId) {
     return NextResponse.json(
       { error: "No GoHighLevel connection. Connect a token first." },
       { status: 400 },
@@ -40,10 +42,10 @@ export async function GET(
 
   try {
     const [contacts, opps, pipelines, customFields] = await Promise.all([
-      validateGhlAccess(cfg.token, cfg.locationId),
-      listOpportunitiesPage(cfg.token, cfg.locationId, null),
-      getPipelines(cfg.token, cfg.locationId),
-      getCustomFields(cfg.token, cfg.locationId),
+      validateGhlAccess(token, cfg.locationId),
+      listOpportunitiesPage(token, cfg.locationId, null),
+      getPipelines(token, cfg.locationId),
+      getCustomFields(token, cfg.locationId),
     ]);
     return NextResponse.json({
       ok: true,

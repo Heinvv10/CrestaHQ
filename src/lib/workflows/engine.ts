@@ -69,6 +69,7 @@ import type {
   WorkflowRunHistoryEntry,
   WorkflowTriggerType,
 } from "@/types/workflows";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 const STEP_PATH = "/api/workflows/step";
 /**
@@ -710,7 +711,11 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
                 templateId: cfg.templateId!,
                 template: tplDoc!,
                 accountSid: ctx.subAccount!.twilioConfig!.accountSid,
-                authToken: ctx.subAccount!.twilioConfig!.authToken,
+                authToken: await readSubAccountSecret(
+                  ctx.subAccountId,
+                  "twilio",
+                  ctx.subAccount!.twilioConfig,
+                ),
               });
               const r = await sendWhatsappTemplateForSubAccount({
                 subAccountId: ctx.subAccountId,
@@ -1241,6 +1246,12 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
 
     const contactSnap = await db.doc(`contacts/${input.contactId}`).get();
     if (!contactSnap.exists) return settle("contact_not_found");
+    if (contactSnap.data()?.subAccountId !== input.subAccountId) {
+      console.warn(
+        `[workflows] trigger ${input.type} refused: contact ${input.contactId} is not in sub-account ${input.subAccountId}`,
+      );
+      return settle("contact_not_found");
+    }
     const contact = {
       id: contactSnap.id,
       ...(contactSnap.data() as Omit<Contact, "id">),
@@ -1729,7 +1740,14 @@ export async function runStep(
   }
 
   const contactSnap = await db.doc(`contacts/${run.contactId}`).get();
-  if (!contactSnap.exists) {
+  const foreign =
+    contactSnap.exists && contactSnap.data()?.subAccountId !== run.subAccountId;
+  if (foreign) {
+    console.warn(
+      `[workflows] run ${runId} failed: contact ${run.contactId} is not in sub-account ${run.subAccountId}`,
+    );
+  }
+  if (!contactSnap.exists || foreign) {
     await runRef.update({
       status: "failed",
       updatedAt: FieldValue.serverTimestamp(),

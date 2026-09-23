@@ -441,6 +441,8 @@ export async function ensureVapiAssistant(input: {
 export async function ensureVapiPhoneNumber(input: {
   subAccountId: string;
   twilioConfig: TwilioConfig;
+  /** From `private/twilioCredentials` — not on `twilioConfig`. */
+  authToken: string;
   assistantId: string;
   existingPhoneNumberId: string | null;
 }): Promise<{ phoneNumberId: string }> {
@@ -469,7 +471,7 @@ export async function ensureVapiPhoneNumber(input: {
         provider: "twilio",
         number: input.twilioConfig.fromNumber,
         twilioAccountSid: input.twilioConfig.accountSid,
-        twilioAuthToken: input.twilioConfig.authToken,
+        twilioAuthToken: input.authToken,
         assistantId: input.assistantId,
         // Same 40-char clamp as the assistant for symmetry.
         name: `LeadStack sa:${input.subAccountId}`.slice(0, 40),

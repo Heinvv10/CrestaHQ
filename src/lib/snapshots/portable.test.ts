@@ -103,13 +103,26 @@ describe("toPortablePayload — form ids", () => {
     });
     const db = {
       collection,
+      doc: (path: string) => ({
+        id: path.split("/").pop()!,
+        path,
+        get: async () => ({ exists: false, data: () => undefined }),
+        set: async (data: Record<string, unknown>) => void written.push({ path, data }),
+      }),
+      // Nothing pre-exists at any deterministic id in this test.
+      getAll: async (...refs: { path: string }[]) =>
+        refs.map((ref) => ({ ref, exists: false, data: () => undefined })),
       batch: () => ({
         set: (ref: { path: string }, data: Record<string, unknown>) => void written.push({ path: ref.path, data }),
         commit: async () => undefined,
       }),
     } as unknown as Firestore;
 
-    const result = await applySnapshot(db, scrubbed(), "sa_dst", { agencyId: "ag_dst", createdByUid: "u_dst" });
+    const result = await applySnapshot(db, scrubbed(), "sa_dst", {
+      agencyId: "ag_dst",
+      createdByUid: "u_dst",
+      snapshotId: "snap_dst",
+    });
 
     const form = written.find((w) => w.path.startsWith("forms/"))!;
     const workflow = written.find((w) => w.path.startsWith("workflows/"))!;

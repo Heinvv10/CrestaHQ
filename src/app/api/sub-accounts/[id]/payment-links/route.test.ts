@@ -95,6 +95,29 @@ describe("POST — create", () => {
     expect(mem.list("paymentLinks")).toHaveLength(1);
   });
 
+  it("replaces an open invoice link whose amount no longer matches the edited invoice", async () => {
+    seedInvoice();
+    const a = await (await create({ invoiceId: "inv1" })).json();
+    seedInvoice("inv1", { globalTaxPercent: null }); // edited: R1,150 → R1,000
+    const b = await (await create({ invoiceId: "inv1" })).json();
+    expect(b.id).not.toBe(a.id);
+    expect(mem.read(`paymentLinks/${a.id}`)).toMatchObject({ active: false });
+    expect(mem.read(`paymentLinks/${b.id}`)).toMatchObject({ amountCents: 100000, active: true, status: "open" });
+  });
+
+  it("two concurrent clicks after an invoice edit supersede the stale link once, not twice", async () => {
+    seedInvoice();
+    const a = await (await create({ invoiceId: "inv1" })).json();
+    seedInvoice("inv1", { globalTaxPercent: null });
+    const [b, c] = await Promise.all([create({ invoiceId: "inv1" }), create({ invoiceId: "inv1" })]);
+    const [bj, cj] = [await b.json(), await c.json()];
+    expect(bj.id).toBe(cj.id);
+    expect(bj.id).not.toBe(a.id);
+    const live = mem.list("paymentLinks").filter((l) => l.active);
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ amountCents: 100000 });
+  });
+
   it("makes a new invoice link once the old one is deactivated", async () => {
     seedInvoice();
     const a = await (await create({ invoiceId: "inv1" })).json();

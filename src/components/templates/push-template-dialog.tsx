@@ -36,6 +36,11 @@ function describeCreated(c: TemplatePushResult["created"]): string {
   return parts.join(", ") || "nothing";
 }
 
+/** Total items a re-push found already present (and left untouched). */
+function totalSkipped(s: TemplatePushResult["skipped"]): number {
+  return s.workflows + s.forms + s.messageTemplates;
+}
+
 /**
  * Pick target sub-accounts, push, then show the per-target outcome in place
  * so a partial failure is visible rather than buried in a toast.
@@ -106,7 +111,9 @@ export function PushTemplateDialog({
           <DialogTitle>Push &ldquo;{template?.name}&rdquo;</DialogTitle>
           <DialogDescription>
             Creates a copy in each selected sub-account. Nothing there is
-            overwritten; workflows arrive as drafts.
+            ever overwritten — workflows arrive as drafts, and re-pushing
+            the same template skips anything already present instead of
+            touching it.
             {template?.includesTriggerForm &&
               " Its trigger form is pushed alongside and re-linked."}
           </DialogDescription>
@@ -130,7 +137,12 @@ export function PushTemplateDialog({
                       : "shrink-0 text-xs text-destructive"
                   }
                 >
-                  {r.ok ? `Created ${describeCreated(r.created)}` : r.error}
+                  {r.ok
+                    ? `Created ${describeCreated(r.created)}` +
+                      (totalSkipped(r.skipped) > 0
+                        ? ` · ${totalSkipped(r.skipped)} already present, skipped`
+                        : "")
+                    : r.error}
                 </span>
               </li>
             ))}

@@ -40,7 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   sendEmail.mockResolvedValue(undefined);
   seedSub(); // Payments on, Paystack connected, no PayPal, no Stripe.
-  mem.seed("contacts/c1", { email: "payer@example.com", name: "Pat" });
+  mem.seed("contacts/c1", { subAccountId: SA, email: "payer@example.com", name: "Pat" });
   seedInvoice("inv1", { status: "draft", createdByUid: "u7", recurringInvoiceId: null });
   vi.spyOn(console, "error").mockImplementation(() => {});
 });

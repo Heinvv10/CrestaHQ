@@ -7,6 +7,7 @@ import { segmentInfo } from "@/lib/comms/sms-segments";
 import { checkQuota, recordUsage } from "@/lib/server/usage-meter";
 import { sendSmsVia } from "@/lib/comms/sms/select";
 import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import type { SubAccountDoc, TwilioConfig } from "@/types";
 
 /**
@@ -73,10 +74,17 @@ export function smsIsConfigured(): boolean {
   );
 }
 
+// The token itself lives in the server-only `private/twilioCredentials` doc;
+// `authTokenSet` is its non-secret marker. `authToken` covers a doc written
+// before the move and not yet migrated.
+function hasAuthToken(cfg: TwilioConfig): boolean {
+  return cfg.authTokenSet === true || !!cfg.authToken;
+}
+
 export function subAccountTwilioIsConfigured(
   cfg: TwilioConfig | null | undefined,
 ): boolean {
-  return !!cfg?.enabled && !!cfg.accountSid && !!cfg.authToken && !!cfg.fromNumber;
+  return !!cfg?.enabled && !!cfg.accountSid && hasAuthToken(cfg) && !!cfg.fromNumber;
 }
 
 /**
@@ -92,7 +100,7 @@ export function subAccountWhatsappIsConfigured(
   return (
     !!cfg?.enabled &&
     !!cfg.accountSid &&
-    !!cfg.authToken &&
+    hasAuthToken(cfg) &&
     !!cfg.whatsappFromNumber
   );
 }
@@ -177,16 +185,17 @@ export async function getTwilioForSubAccount(
   }
 
   if (subAccountTwilioIsConfigured(cfg) && cfg) {
+    const authToken = await readSubAccountSecret(subAccountId, "twilio", cfg);
     let client = _saClientCache.get(subAccountId);
     if (!client) {
-      client = twilio(cfg.accountSid, cfg.authToken);
+      client = twilio(cfg.accountSid, authToken);
       _saClientCache.set(subAccountId, client);
     }
     return {
       client,
       fromNumber: cfg.fromNumber,
       mode: "dedicated",
-      authToken: cfg.authToken,
+      authToken,
       accountSid: cfg.accountSid,
     };
   }

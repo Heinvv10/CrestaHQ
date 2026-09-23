@@ -1,20 +1,23 @@
 import "server-only";
 
-import { randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
-import { issuePaymentLinkToken, verifyPaymentLinkToken } from "@/lib/billing/token";
+import { issuePaymentLinkToken } from "@/lib/billing/token";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
-import { loadActiveSchedule, mandateTerms, termsStillHold } from "@/lib/server/payment-mandates";
-import { cardChargeUnsettled, computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
-import type { PaymentAttempt, PaymentMode } from "@/types/payment-attempts";
+import { loadActiveSchedule, mandateTerms } from "@/lib/server/payment-mandates";
+import type { PaymentAttempt } from "@/types/payment-attempts";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import type { MandateTerms } from "@/types/payment-mandates";
 import type { Quote } from "@/types/quotes";
+
+import { loadPayableLink, RETIRED } from "./payment-link-load";
+import { fail, invoicePayable, invoiceTotalCents, paymentLinkReference, type ServiceResult } from "./payment-link-rules";
+
+export { invoiceTotalCents, parsePaymentLinkReference, paymentLinkReference } from "./payment-link-rules";
 
 /**
  * Paystack payment links: create, deactivate, and open a checkout.
@@ -23,29 +26,12 @@ import type { Quote } from "@/types/quotes";
  * `lib/paystack/payment-link-reconciler.ts`, from a verified webhook.
  */
 
-export type ServiceResult<T> =
-  | ({ ok: true } & T)
-  | { ok: false; status: number; error: string };
-
-const fail = (status: number, error: string) => ({ ok: false as const, status, error });
+export type { ServiceResult } from "./payment-link-rules";
+export { loadPayableLink } from "./payment-link-load";
 
 /** R1,000,000. A typo guard, not a business rule. */
 const MAX_AMOUNT_CENTS = 100_000_000;
 const MAX_DESCRIPTION = 200;
-
-/** Invoice totals are stored in whole units; links are in cents. */
-export function invoiceTotalCents(quote: Quote): number {
-  return Math.round(computeQuoteTotals(quote).total * 100);
-}
-
-/** Same rule as the Stripe invoice pay route: sent or viewed, not expired. */
-function invoicePayable(quote: Quote): boolean {
-  return (
-    quote.kind === "invoice" &&
-    (quote.status === "sent" || quote.status === "viewed") &&
-    effectiveQuoteStatus(quote) !== "expired"
-  );
-}
 
 export async function createPaymentLink(input: {
   subAccountId: string;
@@ -113,30 +99,6 @@ export async function createPaymentLink(input: {
       }
       recurringInvoiceId = schedule.id;
     }
-    // One live link per invoice: a second click hands back the open one, so
-    // the customer can't be sent two links and pay both. A deactivated or
-    // paid link doesn't count. An open link issued in the OTHER mode can no
-    // longer be paid (see `loadPayableLink`), and one of the other kind
-    // (card-on-file vs plain) is not what was asked for: both are withdrawn
-    // and replaced.
-    const existing = await db
-      .collection("paymentLinks")
-      .where("subAccountId", "==", input.subAccountId)
-      .where("invoiceId", "==", input.invoiceId)
-      .get();
-    const openLinks = existing.docs.filter((d) => {
-      const l = d.data() as PaymentLink;
-      return l.active && l.status === "open";
-    });
-    const open = openLinks.find((d) => {
-      const l = d.data() as PaymentLink;
-      // …and only for what the invoice totals now: a link for an edited-away amount can't be paid.
-      return l.mode === mode && !!l.mandate === !!input.mandate && l.amountCents === amountCents && l.currency === PAYMENT_LINK_CURRENCY;
-    });
-    if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
-    for (const stale of openLinks) {
-      await stale.ref.update({ active: false, updatedAt: FieldValue.serverTimestamp() });
-    }
     invoiceId = input.invoiceId;
     contactId = quote.contactId ?? null;
     description = `Invoice ${quote.quoteNumber}`;
@@ -174,8 +136,39 @@ export async function createPaymentLink(input: {
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
-  await ref.set(data);
-  return { ok: true, link: { id: ref.id, ...data } };
+  if (!invoiceId) {
+    await ref.set(data);
+    return { ok: true, link: { id: ref.id, ...data } };
+  }
+  // One live link per invoice: a second click hands back the open one, so
+  // the customer can't be sent two links and pay both. A deactivated or paid
+  // link doesn't count. An open link that can no longer be paid — issued in
+  // the OTHER mode, or for a total the invoice no longer has (see
+  // `loadPayableLink`) — or of the other kind (card-on-file vs plain) is withdrawn and replaced. In one transaction, so two
+  // clicks racing to replace the same stale link both write it and the loser
+  // retries, finding the winner's link instead of making a second.
+  const linksForInvoice = db
+    .collection("paymentLinks")
+    .where("subAccountId", "==", input.subAccountId)
+    .where("invoiceId", "==", invoiceId);
+  return db.runTransaction(async (t) => {
+    const existing = await t.get(linksForInvoice);
+    const openLinks = existing.docs.filter((d) => {
+      const l = d.data() as PaymentLink;
+      return l.active && l.status === "open";
+    });
+    const open = openLinks.find((d) => {
+      const l = d.data() as PaymentLink;
+      return l.mode === mode && l.amountCents === amountCents && l.currency === PAYMENT_LINK_CURRENCY &&
+        !!l.mandate === !!input.mandate;
+    });
+    if (open) return { ok: true as const, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
+    for (const stale of openLinks) {
+      t.update(stale.ref, { active: false, updatedAt: FieldValue.serverTimestamp() });
+    }
+    t.set(ref, data);
+    return { ok: true as const, link: { id: ref.id, ...data } };
+  });
 }
 
 export async function deactivatePaymentLink(input: {
@@ -189,80 +182,6 @@ export async function deactivatePaymentLink(input: {
   }
   await ref.update({ active: false, updatedAt: FieldValue.serverTimestamp() });
   return { ok: true };
-}
-
-/**
- * The link behind a public token, or why it can't be paid. Shared by the pay
- * page's GET (show it) and POST (start checkout) so both refuse the same links.
- */
-export async function loadPayableLink(
-  token: string,
-  opts: { returning?: boolean } = {},
-): Promise<ServiceResult<{ link: PaymentLink; mode: PaymentMode | null }>> {
-  const linkId = verifyPaymentLinkToken(token);
-  if (!linkId) return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
-  const snap = await getAdminDb().doc(`paymentLinks/${linkId}`).get();
-  const data = snap.data() as Omit<PaymentLink, "id"> | undefined;
-  if (!data || data.token !== token) {
-    return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
-  }
-  const link = { id: linkId, ...data };
-  if (link.status === "paid") return fail(410, "This has already been paid — nothing more to pay.");
-  if (!link.active) return fail(410, "This payment link has been withdrawn. Contact the sender if you think that's a mistake.");
-  // Re-checked at pay time, like the Stripe invoice pay route: the agency may
-  // have switched Payments off since the link went out. The webhook does NOT
-  // check this — a payment already taken is recorded regardless.
-  const sub = (await getAdminDb().doc(`subAccounts/${link.subAccountId}`).get()).data();
-  if (sub?.paymentsEnabledByAgency !== true) {
-    return fail(409, "Online payment isn't available for this link. Please contact the sender.");
-  }
-
-  if (link.invoiceId) {
-    // The link's amount was fixed when it was made. An invoice edited since,
-    // or paid another way, must not be charged the stale figure.
-    const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
-    if (quote?.status === "paid") return fail(410, "This invoice has already been paid — nothing more to pay.");
-    if (cardChargeUnsettled(quote)) return fail(409, "A card payment for this invoice is still being confirmed. Please contact the sender.");
-    if (quote && effectiveQuoteStatus(quote) === "expired") {
-      return fail(410, "This invoice has expired. Ask the sender for a new one.");
-    }
-    if (!quote || !invoicePayable(quote) || invoiceTotalCents(quote) !== link.amountCents) {
-      return fail(410, "This invoice has changed since the link was sent. Ask the sender for a new payment link.");
-    }
-  }
-  // A payer back from Paystack is only told their payment is being confirmed:
-  // telling them the link is dead could prompt a second payment.
-  if (opts.returning) return { ok: true, link, mode: null };
-  // A card-on-file link's terms were fixed when it was made. A schedule since
-  // paused, re-priced or re-timed would make them false.
-  if (link.mandate && !termsStillHold(link.mandate, await loadActiveSchedule(link.subAccountId, link.recurringInvoiceId))) {
-    return fail(410, "The terms of this card link have changed. Ask the sender for a fresh link.");
-  }
-  const conn = await readPaystackConnectionSecret(link.subAccountId);
-  if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
-  // A link is paid in the mode it was issued in. Switching the workspace
-  // between test and live retires open links rather than silently changing
-  // what they charge — so the banner the payer sees, the key checkout uses,
-  // and the attempt the webhook checks all agree. (A link with no `mode`
-  // predates the rule and is retired too.)
-  const mode = paystackKeyMode(conn.secretKey);
-  if (link.mode !== mode) return fail(410, RETIRED);
-  return { ok: true, link, mode };
-}
-
-const RETIRED = "This payment link is no longer valid. Ask the sender for a fresh payment link.";
-
-/**
- * `pl-{linkId}-{nonce}`. A fresh reference per checkout, because Paystack
- * refuses a reference it has already seen and a customer may open the link
- * twice. The link id inside it is how the reconciler finds the doc.
- */
-export function paymentLinkReference(linkId: string): string {
-  return `pl-${linkId}-${randomBytes(8).toString("hex")}`;
-}
-
-export function parsePaymentLinkReference(reference: string): string | null {
-  return /^pl-([A-Za-z0-9]+)-[0-9a-f]{16}$/.exec(reference)?.[1] ?? null;
 }
 
 /**
@@ -290,6 +209,9 @@ export async function startPaymentLinkCheckout(input: {
   const reference = paymentLinkReference(link.id);
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
   const opened = await db.runTransaction(async (t) => {
+    // Re-read: a withdraw or payment landing after `loadPayableLink` must win.
+    const now = (await t.get(db.doc(`paymentLinks/${link.id}`))).data() as PaymentLink | undefined;
+    if (!now?.active || now.status !== "open") return fail(410, RETIRED);
     const conn = await readPaystackConnectionSecret(link.subAccountId, t);
     if (!conn) return fail(503, "Online payment is unavailable right now. Please contact the sender.");
     const mode = paystackKeyMode(conn.secretKey);

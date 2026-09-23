@@ -68,4 +68,7 @@ export interface TemplatePushResult {
   ok: boolean;
   error?: string;
   created: { forms: number; messageTemplates: number; workflows: number };
+  /** Already present from a prior push of this same template — left
+   *  untouched, not re-created (see applySnapshot's deterministic ids). */
+  skipped: { forms: number; messageTemplates: number; workflows: number };
 }

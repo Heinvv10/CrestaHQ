@@ -16,6 +16,11 @@ import {
   validateCredentials,
 } from "@/lib/comms/twilio-config";
 import type { TwilioConfig } from "@/types";
+import {
+  readSubAccountSecret,
+  subAccountSecretDoc,
+  subAccountSecretPath,
+} from "@/lib/server/sub-account-secrets";
 
 /**
  * Manage the per-sub-account Twilio config.
@@ -38,7 +43,8 @@ import type { TwilioConfig } from "@/types";
  *        the new creds without a server restart.
  *
  * DELETE — turn off the dedicated config (sets enabled: false but keeps the
- *   creds on the doc, so toggling back on is a one-click affair). The
+ *   creds — SID on the doc, token in private/twilioCredentials — so toggling
+ *   back on is a one-click affair). The
  *   inbound webhook on the Twilio side is left alone — gracefully degrades:
  *   if the operator re-enables, the webhook URL is still pointed at us.
  */
@@ -91,7 +97,9 @@ export async function POST(
       ?.twilioConfig ?? null;
 
   const submittedToken = body.authToken?.trim() ?? "";
-  const authToken = submittedToken || existingCfg?.authToken || "";
+  const authToken =
+    submittedToken ||
+    (existingCfg ? await readSubAccountSecret(subAccountId, "twilio", existingCfg) : "");
 
   if (!accountSid || !fromNumber) {
     return NextResponse.json(
@@ -163,25 +171,33 @@ export async function POST(
       "NEXT_PUBLIC_APP_URL is not set on this deployment — webhook URL must be configured manually.";
   }
 
-  // Step 4: persist.
+  // Step 4: persist. The token goes to the server-only private doc; the
+  // member-readable sub-account doc keeps only non-secret status, and any
+  // pre-migration copy of the token on it is deleted in the same batch.
   const cfg: TwilioConfig = {
     enabled: true,
     accountSid,
-    authToken,
     fromNumber,
+    authTokenSet: true,
     inboundWebhookConfigured: webhookResult.ok,
     lastValidatedAt: new Date(),
     inboundWebhookSecret: null,
   };
-  await getAdminDb()
-    .doc(`subAccounts/${subAccountId}`)
-    .set(
-      {
-        twilioConfig: cfg,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
+  const db = getAdminDb();
+  const batch = db.batch();
+  batch.set(
+    db.doc(subAccountSecretPath(subAccountId, "twilio")),
+    subAccountSecretDoc("twilio", authToken),
+  );
+  batch.set(
+    db.doc(`subAccounts/${subAccountId}`),
+    {
+      twilioConfig: { ...cfg, authToken: FieldValue.delete() },
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+  await batch.commit();
 
   invalidateSubAccountTwilioCache(subAccountId);
 
@@ -213,7 +229,8 @@ export async function DELETE(
   const access = await requireAgencyOwner(request, agencyId);
   if (access instanceof NextResponse) return access;
 
-  // Disable the dedicated config but keep the creds on the doc — toggling
+  // Disable the dedicated config but keep the creds (token stays in the
+  // private doc) — toggling
   // back on is a one-click affair from the settings UI. Use update() so the
   // dot-notation key is a nested field path; set({merge:true}) would take
   // "twilioConfig.enabled" literally and never flip the real nested field.

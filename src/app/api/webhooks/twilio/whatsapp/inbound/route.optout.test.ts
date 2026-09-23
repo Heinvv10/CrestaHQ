@@ -98,6 +98,9 @@ vi.mock("@/lib/firebase/admin", () => ({
       };
       return q;
     },
+    // Private secret doc absent → readSubAccountSecret falls back to the
+    // legacy twilioConfig.authToken above.
+    doc: () => ({ get: async () => ({ exists: false, data: () => undefined }) }),
     batch: () => ({
       update: (_ref: unknown, data: Record<string, unknown>) => {
         m.updates.push(data);

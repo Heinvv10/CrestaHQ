@@ -336,21 +336,29 @@ async function handleSubmit(
   const existingContact = await findExistingContact();
   let contactRef: FirebaseFirestore.DocumentReference;
   let contactCreated: boolean;
+  // Channel values submitted for a reused contact that differ from what is
+  // on file — shown on the activity row, never written to the contact.
+  const unverified: string[] = [];
 
   if (existingContact) {
-    // Reuse + enrich: fill only BLANK identity fields and merge new tags
-    // so we never clobber operator-curated data. First-touch attribution
-    // is preserved — a later submission only sets it when the contact had
+    // Reuse + enrich: fill only BLANK name/company and merge new tags so
+    // we never clobber operator-curated data. Channel fields (phone /
+    // email) are NEVER written onto an existing contact from this public,
+    // unauthenticated route: anyone can type a customer's email, and a
+    // backfilled phone would route that customer's future SMS/WhatsApp to
+    // the submitter. The submitted values stay on the submission record and
+    // the activity row below, where staff can verify them. First-touch
+    // attribution is preserved — a later submission only sets it when the contact had
     // none. SMS consent + opt-out flags are intentionally left untouched
     // on an existing contact (flipping them from a form would be a
     // compliance footgun); consent is only stamped at create time.
     contactRef = existingContact.ref;
     contactCreated = false;
     const data = existingContact.data() as Partial<Contact>;
+    if (matchEmail && matchEmail !== data.email) unverified.push(`email ${matchEmail}`);
+    if (matchPhone && matchPhone !== data.phone) unverified.push(`phone ${matchPhone}`);
     const patch: Record<string, unknown> = {};
     if (mapped.name && !data.name) patch.name = mapped.name;
-    if (mapped.phone && !data.phone) patch.phone = mapped.phone;
-    if (matchEmail && !data.email) patch.email = matchEmail;
     if (mapped.company && !data.company) patch.company = mapped.company;
     const newTags = form.settings.autoTags ?? [];
     if (newTags.length > 0) {
@@ -497,7 +505,11 @@ async function handleSubmit(
     .collection("activities")
     .add({
       type: "form_submitted",
-      content: `Submitted form "${form.name}"`,
+      content:
+        `Submitted form "${form.name}"` +
+        (unverified.length > 0
+          ? ` — unverified ${unverified.join(", ")} (not saved to contact)`
+          : ""),
       createdBy: submissionCreatedBy,
       meta: { formId: id, dealId },
       createdAt: FieldValue.serverTimestamp(),

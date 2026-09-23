@@ -212,7 +212,7 @@ export async function callJson(
 export function resetHarness(): void {
   vi.clearAllMocks();
   state.quoteDoc = baseQuote();
-  state.contactDoc = { email: "recipient@example.com", name: "Jane Doe" };
+  state.contactDoc = { email: "recipient@example.com", name: "Jane Doe", subAccountId: SUB_ID };
   state.subDoc = {
     name: "Acme Plumbing",
     logoUrl: "https://cdn.example.com/logo.png",

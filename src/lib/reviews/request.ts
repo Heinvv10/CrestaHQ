@@ -131,7 +131,10 @@ export async function maybeSendReviewRequest(
     }
 
     const contactSnap = await db.doc(`contacts/${input.contactId}`).get();
-    if (!contactSnap.exists) return { sent: false, reason: "no_contact" };
+    // A linked id from a legacy doc may name another tenant's contact.
+    if (!contactSnap.exists || contactSnap.data()?.subAccountId !== input.subAccountId) {
+      return { sent: false, reason: "no_contact" };
+    }
     const contact = {
       id: contactSnap.id,
       ...(contactSnap.data() as Omit<Contact, "id">),

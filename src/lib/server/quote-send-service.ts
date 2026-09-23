@@ -129,8 +129,10 @@ export async function sendQuoteServerSide(input: {
   }
 
   // 4. Load contact + email check
+  // A quote can be written client-side naming any contact id, so the
+  // recipient must be re-checked against the quote's own sub-account.
   const contactSnap = await db.doc(`contacts/${quote.contactId}`).get();
-  if (!contactSnap.exists) {
+  if (!contactSnap.exists || contactSnap.data()?.subAccountId !== subAccountId) {
     return fail("contact_not_found", 404, "Recipient contact no longer exists");
   }
   const contact = contactSnap.data() as { email?: string; name?: string };

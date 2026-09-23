@@ -65,7 +65,7 @@ export async function POST(
       workflows: payload.workflows ?? [],
     },
     targetSubAccountId,
-    { agencyId, createdByUid: uid },
+    { agencyId, createdByUid: uid, snapshotId },
   );
 
   return NextResponse.json({ result });

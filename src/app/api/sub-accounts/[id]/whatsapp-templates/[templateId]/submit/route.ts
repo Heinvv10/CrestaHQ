@@ -22,6 +22,7 @@ import {
 } from "@/lib/comms/whatsapp/cloud-templates";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -141,9 +142,10 @@ export async function POST(
       });
       externalId = created.id;
     } else {
+      const authToken = await readSubAccountSecret(subAccountId, "twilio", sub.twilioConfig);
       const created = await createContentTemplate({
         accountSid: sub.twilioConfig!.accountSid,
-        authToken: sub.twilioConfig!.authToken,
+        authToken,
         friendlyName: name,
         language: tpl.language,
         body: tpl.body,
@@ -153,7 +155,7 @@ export async function POST(
       externalId = created.contentSid;
       await submitForWhatsappApproval({
         accountSid: sub.twilioConfig!.accountSid,
-        authToken: sub.twilioConfig!.authToken,
+        authToken,
         contentSid: externalId,
         name,
         category: tpl.category,

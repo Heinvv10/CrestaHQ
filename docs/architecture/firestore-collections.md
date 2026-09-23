@@ -51,6 +51,7 @@
 | `subAccounts/{id}/emailSuppressions/{sha256(email)}` | server-only | Email suppression list: `email` (trimmed, lower-case), `reason` (`hard_bounce` / `complaint` / `manual`), `note` + tenancy keys. The doc id is the sha256 of the address, so `sendEmail` checks with one `get()`. Admin-only access via `/api/sub-accounts/[id]/email-suppressions`. Covered by the default-deny rule; no index. Spec: [w4-email-tracking](../programme/w4-email-tracking.md) |
 | `subAccounts/{id}/workflowFolders/{folderId}` | server-only | Workflow-list folder: `name`, `order`, tenancy keys. A workflow points at one via optional `workflows.folderId` (absent/null = Unfiled; the engine never reads it). All access through the member-gated `/api/sub-accounts/[id]/workflow-folders` routes; delete unfiles its workflows in the same transaction. Does not travel in snapshots or template pushes — capture strips `folderId`, so applied workflows land Unfiled. |
 | `subAccounts/{id}/whatsappTemplates/{id}` | members read; server-only write | WhatsApp message templates (v2). Carries the body + positional variables, Twilio `contentSid`, and the Meta approval `status`. Written by the `whatsapp-templates/*` Admin-SDK routes; status synced live by the QStash approval poll. |
+| `subAccounts/{id}/snapshotApplies/{snapshotId}` | server-only | Forensic record of one `applySnapshot` run into this sub-account — `status` (`started`/`completed`/`failed`), `startedAt`/`completedAt`/`failedAt`, `error`. Doc id is the snapshot id (or, for a template push, the template id) so a retry overwrites the same record. Written by `applySnapshot` itself (best-effort — a failure writing it never masks the apply's real error); not read by any route or UI, Firestore-console only. |
 | `broadcasts/{id}` | sub-account read; server-only write | Bulk-email batch metadata (template, audience filter, totals, status). One per "Send bulk email" action. |
 | `broadcasts/{id}/sends/{contactId}` | sub-account read; server-only write | Per-recipient delivery row. Doc id = contactId for natural dedup. Status: queued/sent/skipped/failed. Carries Resend message id + error string. |
 | `subAccounts/{id}/aiAgent/profile` | sub-account read; server-only write | Shared AI Agent identity. `systemPrompt`, `businessName`, `hoursStart/End`, `timezone`, `escalationKeywords`, `escalationNotifyEmail`, plus optional `websiteUrl` + `websiteKb` (Firecrawl snapshot, ≤6000 chars) + `websiteKbFetchedAt`. One per sub-account. |
@@ -175,6 +176,17 @@ password, From email/name and verifiedAt. Admin SDK only; existing
 The parent has `emailProvider` and password-free `smtpConfig` display metadata.
 Admin settings routes verify TLS/auth before atomically switching credentials
 and provider. Disconnect atomically deletes the secret and selects Resend.
+
+### Twilio, Meta and GHL-import credentials
+`subAccounts/{id}/private/twilioCredentials {authToken}`,
+`private/metaCredentials {pageAccessToken}` and
+`private/ghlImportCredentials {token}` hold the three integration secrets
+(paths in `src/types/sub-account-secrets.ts`). Admin SDK only under the
+`private/{docId}` deny rule. The parent keeps only non-secret status in
+`twilioConfig` / `metaConfig` / `ghlImportConfig`. Readers use
+`readSubAccountSecret`, which falls back to the legacy field on the parent for
+docs written before the move; `scripts/migrate-private-credentials.ts` copies
+those into the private docs and deletes the legacy fields.
 
 ### Workspace mailbox and email conversations
 

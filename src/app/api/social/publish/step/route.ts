@@ -15,6 +15,7 @@ import type {
   SocialPostTargetResult,
   SubAccountDoc,
 } from "@/types";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export const dynamic = "force-dynamic";
 // Instagram publishing polls the media container until Meta finishes its async
@@ -105,6 +106,9 @@ export async function POST(request: Request) {
   const subSnap = await db.doc(`subAccounts/${post.subAccountId}`).get();
   const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
   const meta = (sub?.metaConfig as MetaConfig | null | undefined) ?? null;
+  const pageAccessToken = meta
+    ? await readSubAccountSecret(post.subAccountId, "meta", meta)
+    : "";
 
   const results: SocialPostTargetResult[] = [];
   for (const platform of post.targets) {
@@ -122,7 +126,7 @@ export async function POST(request: Request) {
       if (platform === "facebook") {
         const { id } = await publishToFacebookPage({
           pageId: meta.pageId,
-          pageAccessToken: meta.pageAccessToken,
+          pageAccessToken,
           message: post.caption,
           imageUrl: post.imageUrl,
         });
@@ -139,7 +143,7 @@ export async function POST(request: Request) {
         }
         const { id } = await publishToInstagram({
           igUserId: meta.instagramBusinessAccountId,
-          pageAccessToken: meta.pageAccessToken,
+          pageAccessToken,
           caption: post.caption,
           imageUrl: post.imageUrl,
         });

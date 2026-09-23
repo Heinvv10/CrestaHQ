@@ -78,7 +78,7 @@ beforeEach(() => {
   m.emailIsConfigured.mockReturnValue(false);
   m.renderBookingConfirmationEmail.mockReturnValue({ subject: "Confirmed: x", text: "", html: "" });
   pageDoc = { name: "Intro call", remindersEnabled: false };
-  contactDoc = { name: "Visitor", email: "visitor@example.com" };
+  contactDoc = { name: "Visitor", email: "visitor@example.com", subAccountId: "sa1" };
   subDoc = { name: "Biz" };
   eventDoc = {
     id: "evt1",
@@ -268,8 +268,8 @@ describe("runRescheduleSideEffects", () => {
 
     it.each([
       ["email_not_configured", () => m.emailIsConfigured.mockReturnValue(false)],
-      ["no_contact_email", () => { contactDoc = { name: "Visitor", email: "" }; }],
-      ["contact_opted_out", () => { contactDoc = { name: "V", email: "v@example.com", emailOptedOut: true }; }],
+      ["no_contact_email", () => { contactDoc = { name: "Visitor", email: "", subAccountId: "sa1" }; }],
+      ["contact_opted_out", () => { contactDoc = { name: "V", email: "v@example.com", emailOptedOut: true, subAccountId: "sa1" }; }],
       ["missing_records", () => { contactDoc = undefined; }],
       ["send_failed", () => m.sendEmail.mockRejectedValueOnce(new Error("smtp down"))],
     ] as const)("reports %s", async (reason, arrange) => {

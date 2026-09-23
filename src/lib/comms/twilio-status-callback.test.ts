@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("twilio", () => ({ default: () => ({ messages: { create: m.create } }) }));
-vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: vi.fn() }));
+// Private credentials doc absent → the secret reader falls back to the
+// legacy twilioConfig.authToken below.
+vi.mock("@/lib/firebase/admin", () => ({
+  getAdminDb: () => ({ doc: () => ({ get: async () => ({ exists: false, data: () => undefined }) }) }),
+}));
 vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: vi.fn(), checkQuota: async () => ({ allowed: true }) }));
 vi.mock("@/lib/agency/policy", () => ({ agencyAllowsSharedSms: async () => false }));
 

@@ -5,6 +5,10 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { GhlApiError, validateGhlAccess } from "@/lib/import/ghl/client";
+import {
+  subAccountSecretDoc,
+  subAccountSecretPath,
+} from "@/lib/server/sub-account-secrets";
 
 /**
  * Connect / disconnect a GoHighLevel source for migration (Phase 4).
@@ -63,9 +67,12 @@ export async function POST(
   if (!(await ref.get()).exists) {
     return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
   }
-  await ref.update({
+  // Token → server-only private doc; update() replaces the whole map, so a
+  // pre-migration token on the member-readable doc goes too.
+  const batch = db.batch();
+  batch.set(db.doc(subAccountSecretPath(subAccountId, "ghl")), subAccountSecretDoc("ghl", token));
+  batch.update(ref, {
     ghlImportConfig: {
-      token,
       locationId,
       connectedByUid: access.uid,
       connectedAt: FieldValue.serverTimestamp(),
@@ -73,6 +80,7 @@ export async function POST(
     },
     updatedAt: FieldValue.serverTimestamp(),
   });
+  await batch.commit();
 
   return NextResponse.json({ ok: true, contactTotal });
 }
@@ -90,9 +98,12 @@ export async function DELETE(
   if (!(await ref.get()).exists) {
     return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
   }
-  await ref.update({
+  const batch = db.batch();
+  batch.update(ref, {
     ghlImportConfig: FieldValue.delete(),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  batch.delete(db.doc(subAccountSecretPath(subAccountId, "ghl")));
+  await batch.commit();
   return NextResponse.json({ ok: true });
 }

@@ -48,7 +48,12 @@ export function ImportContactsDialog({
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{
     created: number;
-    skipped: number;
+    /** Rows that already existed — matched an existing contact by phone or
+     *  email, or a row earlier in this same file — and were left alone. */
+    duplicates: number;
+    /** Rows that failed outright: no name/phone/email, or the write itself
+     *  errored. Distinct from `duplicates`, which is not a failure. */
+    failed: number;
     errors: string[];
   } | null>(null);
 
@@ -99,7 +104,8 @@ export function ImportContactsDialog({
     setImporting(true);
     const errors: string[] = [];
     let created = 0;
-    let skipped = 0;
+    let duplicates = 0;
+    let failed = 0;
 
     // Map + validate every row locally first; rows without a valid email are
     // skipped client-side (same as before). Valid rows go to the server in
@@ -134,7 +140,7 @@ export function ImportContactsDialog({
         }
       }
       if (!data.email || !isValidEmail(data.email)) {
-        skipped++;
+        failed++;
         if (errors.length < 5) {
           errors.push(`Row ${idx + 2}: missing or invalid email`);
         }
@@ -155,7 +161,7 @@ export function ImportContactsDialog({
           const payload = (await res.json().catch(() => ({}))) as {
             error?: string;
           };
-          skipped += chunk.length;
+          failed += chunk.length;
           if (errors.length < 5) {
             errors.push(payload.error ?? "A batch was rejected by the server");
           }
@@ -163,22 +169,25 @@ export function ImportContactsDialog({
         }
         const payload = (await res.json()) as {
           created: number;
-          errors: { index: number; message: string }[];
+          skipped: number;
+          errors: { index: number; message: string; duplicate?: true }[];
         };
         created += payload.created ?? 0;
-        const failed = payload.errors ?? [];
-        skipped += failed.length;
-        for (const e of failed) {
+        duplicates += payload.skipped ?? 0;
+        // Duplicates already count toward `duplicates` above — only a
+        // genuine per-row failure belongs in `failed` / the error list.
+        for (const e of payload.errors ?? []) {
+          if (e.duplicate) continue;
+          failed++;
           if (errors.length < 5) errors.push(`A row failed: ${e.message}`);
         }
       }
-      setResult({ created, skipped, errors });
-      if (created > 0) {
-        toast.success(
-          `Imported ${created} contact${created === 1 ? "" : "s"}${
-            skipped ? ` · ${skipped} skipped` : ""
-          }`,
-        );
+      setResult({ created, duplicates, failed, errors });
+      if (created > 0 || duplicates > 0) {
+        const parts = [`${created} created`];
+        if (duplicates) parts.push(`${duplicates} already existed`);
+        if (failed) parts.push(`${failed} failed`);
+        toast.success(`Import finished · ${parts.join(" · ")}`);
       } else {
         toast.error("No contacts imported — check the errors below.");
       }
@@ -312,7 +321,10 @@ export function ImportContactsDialog({
                 <div className="space-y-2 rounded-lg border bg-card p-3 text-sm">
                   <p className="flex items-center gap-2 font-medium">
                     <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                    Import finished · {result.created} created · {result.skipped} skipped
+                    Import finished · {result.created} created
+                    {result.duplicates > 0 &&
+                      ` · ${result.duplicates} already existed`}
+                    {result.failed > 0 && ` · ${result.failed} failed`}
                   </p>
                   {result.errors.length > 0 && (
                     <ul className="ml-6 list-disc space-y-0.5 text-xs text-muted-foreground">

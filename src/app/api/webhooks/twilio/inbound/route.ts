@@ -12,6 +12,7 @@ import { upsertConversationForMessage } from "@/lib/server/conversations-service
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import {
   optKeyword,
   WHATSAPP_START_WORDS,
@@ -89,10 +90,15 @@ async function resolveRoute(
     .get();
   if (!dedicated.empty) {
     const sa = dedicated.docs[0].data() as SubAccountDoc;
-    if (sa.twilioConfig?.authToken) {
+    const authToken = await readSubAccountSecret(
+      dedicated.docs[0].id,
+      "twilio",
+      sa.twilioConfig,
+    );
+    if (authToken) {
       return {
         mode: "dedicated",
-        authToken: sa.twilioConfig.authToken,
+        authToken,
         subAccountId: dedicated.docs[0].id,
         agencyId: sa.agencyId,
       };
