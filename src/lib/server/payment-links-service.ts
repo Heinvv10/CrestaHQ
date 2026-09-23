@@ -97,7 +97,14 @@ export async function createPaymentLink(input: {
       // pay page. They must describe this invoice's amount too.
       const schedule = await loadActiveSchedule(input.subAccountId, quote.recurringInvoiceId);
       if (!schedule) return fail(409, "A card-on-file link needs an invoice from an active recurring schedule.");
-      mandate = mandateTerms(typeof sub.name === "string" && sub.name ? sub.name : "the sender", schedule);
+      // The customer authorises a named business, never "the sender".
+      if (typeof sub.name !== "string" || !sub.name.trim()) {
+        return fail(409, "Set this workspace's business name first: the customer authorises it by name.");
+      }
+      mandate = mandateTerms(sub.name.trim(), schedule);
+      if (mandate.currency !== PAYMENT_LINK_CURRENCY) {
+        return fail(409, "Card-on-file links are ZAR only. This recurring schedule is in another currency.");
+      }
       if (mandate.amountCents !== amountCents) {
         return fail(409, "This invoice's amount differs from its recurring schedule's. Fix one of them first.");
       }

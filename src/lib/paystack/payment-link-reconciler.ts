@@ -10,7 +10,7 @@ import {
 } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
-import { planMandate, writeMandate } from "@/lib/server/payment-mandates";
+import { planMandate, prepareMandate } from "@/lib/server/payment-mandates";
 import {
   invoiceTotalCents,
   parsePaymentLinkReference,
@@ -172,6 +172,7 @@ export async function reconcilePaystackCharge(input: {
     const { outcome, current } = await db.runTransaction(async (t) => {
       const fresh = (await t.get(ref)).data() as PaymentLink | undefined;
       const attemptState = (await t.get(attemptRef)).data()?.state;
+      const saveCard = card && fresh?.status !== "paid" ? await prepareMandate(t, card, fresh?.active ?? false) : null;
       // The money is recorded below, so the attempt is settled. One that was
       // flagged as possibly lost (its key was reconnected since) says so.
       const settleAttempt = (linkAttention: string | null | undefined) => {
@@ -191,7 +192,7 @@ export async function reconcilePaystackCharge(input: {
           // `attention` is deliberately NOT cleared: it records a real
           // mismatched payment the operator may still need to refund.
           ...settleAttempt(fresh?.attention),
-          ...(card ? writeMandate(t, card) : {}),
+          ...(saveCard ? saveCard() : {}),
           updatedAt: FieldValue.serverTimestamp(),
         });
         return { outcome: "paid" as const, current: fresh ?? link };

@@ -9,6 +9,7 @@ import {
   seedAttempt,
   seedInvoice,
   seedLink,
+  seedSchedule,
   seedSub,
   stubPaystack,
   verified,
@@ -74,6 +75,7 @@ beforeEach(() => {
   mem.clear();
   vi.clearAllMocks();
   seedSub();
+  seedSchedule();
   seedInvoice("inv1", { recurringInvoiceId: "rec1" });
   seedLink("link1", {
     invoiceId: "inv1",
@@ -170,6 +172,7 @@ describe("card-on-file link paid via the verified webhook", () => {
 
     mem.clear();
     seedSub();
+    seedSchedule();
     seedInvoice("inv1", { recurringInvoiceId: "rec1" });
     seedLink("link1", { invoiceId: "inv1", contactId: "c1", amountCents: 115000, recurringInvoiceId: "rec1", mandate: TERMS });
     seedAttempt(REF, { amountCents: 115000, consent: CONSENT });

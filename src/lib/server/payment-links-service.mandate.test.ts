@@ -70,6 +70,11 @@ describe("createPaymentLink with mandate", () => {
     expect(await create()).toMatchObject({ ok: false, status: 409 });
   });
 
+  it("refuses when the workspace has no business name to authorise", async () => {
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, name: "" });
+    expect(await create()).toMatchObject({ ok: false, status: 409 });
+  });
+
   it("refuses an ad-hoc amount", async () => {
     expect(await create({ invoiceId: undefined, amountCents: 100, description: "x" })).toMatchObject({ ok: false, status: 400 });
   });

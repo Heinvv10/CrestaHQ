@@ -4,12 +4,14 @@ import { FieldValue, type Transaction } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { formatCurrency } from "@/lib/format";
+import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
+import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import type { PaystackVerifiedTransaction } from "@/lib/paystack/billing-api";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import type { Cadence } from "@/lib/recurring/cadence";
 import type { ServiceResult } from "@/lib/server/payment-links-service";
 import type { PaymentAttempt } from "@/types/payment-attempts";
-import type { PaymentLink } from "@/types/payment-links";
+import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import {
   paymentMandateSecretPath,
   type MandateTerms,
@@ -36,13 +38,15 @@ function scheduleTotalCents(schedule: RecurringInvoiceDoc): number {
   return Math.round(computeQuoteTotals(schedule).total * 100);
 }
 
-/** An active schedule of this sub-account, or null. */
+/** An active schedule of this sub-account, or null. Pass `t` to read it in a transaction. */
 export async function loadActiveSchedule(
   subAccountId: string,
   recurringInvoiceId: string | null | undefined,
+  t?: Transaction,
 ): Promise<RecurringInvoiceDoc | null> {
   if (!recurringInvoiceId) return null;
-  const data = (await getAdminDb().doc(`recurringInvoices/${recurringInvoiceId}`).get()).data();
+  const ref = getAdminDb().doc(`recurringInvoices/${recurringInvoiceId}`);
+  const data = (t ? await t.get(ref) : await ref.get()).data();
   if (!data || data.subAccountId !== subAccountId || data.status !== "active") return null;
   return { ...(data as Omit<RecurringInvoiceDoc, "id">), id: recurringInvoiceId };
 }
@@ -64,10 +68,11 @@ export function mandateTerms(business: string, schedule: RecurringInvoiceDoc): M
   };
 }
 
-/** Do a link's terms still describe its schedule? */
+/** Do a link's terms still describe its schedule? Charges are in ZAR only. */
 export function termsStillHold(terms: MandateTerms, schedule: RecurringInvoiceDoc | null): boolean {
   return (
     !!schedule &&
+    (schedule.currency || "").toUpperCase() === PAYMENT_LINK_CURRENCY &&
     scheduleTotalCents(schedule) === terms.amountCents &&
     cadenceFrequency(schedule.cadence) === terms.frequency
   );
@@ -101,11 +106,7 @@ export function planMandate(
         : !code || !customerCode || !email
           ? "Paystack returned no usable authorization"
           : null;
-  if (why || !link.mandate || !link.recurringInvoiceId) {
-    return {
-      reason: `Paid, but the card was not saved for future charges: ${why ?? "the link carries no terms"}. Send a new card-on-file link, or bill this customer by invoice.`,
-    };
-  }
+  if (why || !link.mandate || !link.recurringInvoiceId) return { reason: notSaved(why ?? "the link carries no terms") };
   return {
     mandate: {
       agencyId: link.agencyId,
@@ -134,18 +135,67 @@ export function planMandate(
   };
 }
 
+const notSaved = (why: string) =>
+  `Paid, but the card was not saved for future charges: ${why}. Send a new card-on-file link, or bill this customer by invoice.`;
+
+type MandateOutcome = Pick<PaymentLink, "mandateId" | "mandateAttention">;
+
 /**
- * Inside the transaction that marks the link paid: store the plan's mandate
- * (id = the payment's reference, so it is written once), and return the
- * link fields that record the outcome.
+ * Inside the transaction that marks the link paid, BEFORE its writes
+ * (Firestore reads first): re-check what the consent depends on, from the
+ * transaction's own reads — the link is still live, the schedule still
+ * matches the terms agreed to, and the connection still holds the key the
+ * card was taken under. A pause, re-price, withdrawal or key change that
+ * commits meanwhile is either seen here or retries the transaction, so it
+ * can never leave an active mandate behind (a key change's own flag pass
+ * runs after its commit and so sees any mandate committed before it).
+ *
+ * Returns the writer, called with the link update: it stores the mandate
+ * (id = the payment's reference, so written once) and revokes the
+ * schedule's older mandates — a newer card replaces the older, so a
+ * schedule never has two to charge.
  */
-export function writeMandate(t: Transaction, plan: MandatePlan): Pick<PaymentLink, "mandateId" | "mandateAttention"> {
-  if ("reason" in plan) return { mandateId: null, mandateAttention: plan.reason };
+export async function prepareMandate(
+  t: Transaction,
+  plan: MandatePlan,
+  linkActive: boolean,
+): Promise<() => MandateOutcome> {
+  if ("reason" in plan) return () => ({ mandateId: null, mandateAttention: plan.reason });
+  const { mandate, secret } = plan;
   const db = getAdminDb();
-  const id = plan.mandate.reference;
-  t.set(db.doc(`paymentMandates/${id}`), plan.mandate);
-  t.set(db.doc(paymentMandateSecretPath(id)), plan.secret);
-  return { mandateId: id, mandateAttention: null };
+  const schedule = await loadActiveSchedule(mandate.subAccountId, mandate.recurringInvoiceId, t);
+  const conn = await readPaystackConnectionSecret(mandate.subAccountId, t);
+  const older = await t.get(
+    db.collection("paymentMandates")
+      .where("subAccountId", "==", mandate.subAccountId)
+      .where("recurringInvoiceId", "==", mandate.recurringInvoiceId),
+  );
+  const why = !linkActive
+    ? "the link was withdrawn before the payment completed"
+    : !termsStillHold(mandate.terms, schedule)
+      ? "the recurring schedule changed or stopped after the customer agreed to its terms"
+      : !conn || paystackKeyFingerprint(conn.secretKey) !== mandate.keyFingerprint
+        ? "the Paystack connection changed while the payment was being confirmed"
+        : null;
+  if (why) return () => ({ mandateId: null, mandateAttention: notSaved(why) });
+
+  const id = mandate.reference;
+  return () => {
+    for (const doc of older.docs) {
+      if ((doc.data() as PaymentMandate).status === "revoked") continue;
+      t.update(doc.ref, {
+        status: "revoked",
+        attention: `Replaced by the card saved with payment ${id}.`,
+        revokedAt: FieldValue.serverTimestamp(),
+        revokedByUid: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      t.delete(db.doc(paymentMandateSecretPath(doc.id)));
+    }
+    t.set(db.doc(`paymentMandates/${id}`), mandate);
+    t.set(db.doc(paymentMandateSecretPath(id)), secret);
+    return { mandateId: id, mandateAttention: null };
+  };
 }
 
 /**

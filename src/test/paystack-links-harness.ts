@@ -28,6 +28,7 @@ export const LIVE_KEY = "sk_live_k3";
 export function seedSub(subAccountId = SA, secretKey = KEY) {
   mem.seed(`subAccounts/${subAccountId}`, {
     agencyId: AGENCY,
+    name: "Acme Fibre",
     paymentsEnabledByAgency: true,
     paystackConnectionMeta: { webhookSeenAt: null, livemode: secretKey.startsWith("sk_live_") },
   });
