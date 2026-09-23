@@ -24,7 +24,15 @@ LeadStack is a **GHL-style multi-tenant CRM**: an agency operator owns one or mo
 
 ## First signup → agency owner
 
-`/api/auth/signup` runs a transaction on `appConfig/main`. If it doesn't exist, the signing-up user (gated by `BOOTSTRAP_ADMIN_EMAIL`) becomes the agency owner; the route mints an agency, a default "Main" sub-account, owner+admin memberships, and the user's claims. Subsequent signups must match an unrevoked, unaccepted `invites/{auto}` doc that names a specific sub-account + role.
+`/api/auth/signup` runs a transaction on `appConfig/main`. If it doesn't exist, the signing-up user (gated by `BOOTSTRAP_ADMIN_EMAIL`) becomes the agency owner; the route mints an agency, a default "Main" sub-account, owner+admin memberships, and the user's claims. Subsequent signups must match an unrevoked, unaccepted `invites/{auto}` doc that names a specific sub-account + role **and** present that invite's token.
+
+## Invite tokens
+
+Knowing an invitee's email is not proof of receiving the invite (client-side Firebase email/password signup lets anyone create an unverified user with any address). So:
+
+- Each invite link is `/signup?email=…&invite=<token>`; the doc stores only `tokenHash` (SHA-256). Every re-send — including the members page's "Copy link" — rotates the token, so earlier links stop working. Invites created before tokens existed have no `tokenHash` and must be re-sent.
+- `/api/auth/signup` claims only an invite whose `tokenHash` matches, and creates the user with `emailVerified: true` (the token proved inbox access).
+- `/api/auth/claim-pending-invites` (existing accounts) attaches pending invites only when the Firebase Auth record's `emailVerified` is true.
 
 ## Tenancy keys on every doc
 

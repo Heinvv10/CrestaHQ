@@ -4,12 +4,15 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { seedDefaultTemplates } from "@/lib/automations/seed-templates";
+import { inviteTokenMatches } from "@/lib/server/invite-token";
 import { GLOBAL_TERRITORY_ID, type Role } from "@/types";
 
 interface SignupBody {
   email?: string;
   password?: string;
   displayName?: string;
+  /** Raw token from the invite link (`?invite=`). Required for invitees. */
+  inviteToken?: string;
 }
 
 type Decision =
@@ -35,6 +38,8 @@ export async function POST(request: Request) {
   const email = body.email?.trim().toLowerCase();
   const password = body.password;
   const displayName = body.displayName?.trim() || email?.split("@")[0] || "";
+  const inviteToken =
+    typeof body.inviteToken === "string" ? body.inviteToken : undefined;
 
   if (!email || !password) {
     return NextResponse.json(
@@ -73,23 +78,30 @@ export async function POST(request: Request) {
       if (!adminUid) {
         throw new Error("Workspace is misconfigured (missing adminUid).");
       }
-      // Find an unrevoked, unaccepted typed invite for this email. Typed
-      // invites name a specific sub-account + role; that's the membership
-      // we'll mint.
+      // Find an unrevoked, unaccepted typed invite for this email whose
+      // token matches the one from the invite link. Matching the email
+      // alone is not proof the caller received the invite. Typed invites
+      // name a specific sub-account + role; that's the membership we'll mint.
       const inviteQuery = await tx.get(
         db
           .collection("invites")
           .where("email", "==", email)
           .where("acceptedByUid", "==", null)
           .where("revokedAt", "==", null)
-          .limit(1)
       );
       if (inviteQuery.empty) {
         throw new Error(
           "This email is not invited. Ask the agency to invite you."
         );
       }
-      const inviteDoc = inviteQuery.docs[0];
+      const inviteDoc = inviteQuery.docs.find((d) =>
+        inviteTokenMatches(inviteToken, d.data().tokenHash)
+      );
+      if (!inviteDoc) {
+        throw new Error(
+          "This invite link is invalid or has expired. Open the latest invite email, or ask the agency to re-send your invite."
+        );
+      }
       const invite = inviteDoc.data();
       const agencyId = invite.agencyId as string | undefined;
       const subAccountId = invite.subAccountId as string | null | undefined;
@@ -132,7 +144,15 @@ export async function POST(request: Request) {
   // never leave orphan auth users when the gate rejects.
   let userRecord;
   try {
-    userRecord = await auth.createUser({ email, password, displayName });
+    // An invitee proved inbox access by presenting the emailed token, so
+    // the address is verified — later invites to other sub-accounts can
+    // then attach via /api/auth/claim-pending-invites.
+    userRecord = await auth.createUser({
+      email,
+      password,
+      displayName,
+      ...(decision.kind === "subAccountMember" ? { emailVerified: true } : {}),
+    });
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === "auth/email-already-exists") {

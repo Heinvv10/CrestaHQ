@@ -21,7 +21,9 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
  * Auth: caller must be signed in. We read uid from the x-user-uid header
  * (set by middleware) and pull the email straight off the Firebase Auth
  * record (not the header) so a stale/missing header can't spoof which
- * invites get claimed.
+ * invites get claimed. The address must also be VERIFIED on that record:
+ * anyone can create a Firebase user with an arbitrary, unverified email,
+ * so an unverified match proves nothing and claims nothing.
  *
  * Returns: `{ attached: [{ subAccountId, name }] }` — the list of
  * memberships newly attached this call. Empty array when nothing was
@@ -49,6 +51,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: "User account has no email" },
       { status: 400 },
     );
+  }
+
+  if (userRecord.emailVerified !== true) {
+    return NextResponse.json({ attached: [] });
   }
 
   const db = getAdminDb();
