@@ -51,6 +51,8 @@ export interface InboundMessageActivityInput {
   messageId: string | null;
   agencyId: string;
   subAccountId: string;
+  /** Appended to the row's text, e.g. an "unverified" marker. */
+  note?: string;
 }
 
 /**
@@ -78,7 +80,9 @@ export async function writeInboundMessageActivity(
     await ref.set(
       {
         type: RECEIVED_TYPE[input.channel],
-        content: `${CHANNEL_LABEL[input.channel]} received: ${preview || "(no text)"}`,
+        content:
+          `${CHANNEL_LABEL[input.channel]} received: ${preview || "(no text)"}` +
+          (input.note ? ` — ${input.note}` : ""),
         createdBy: `${input.channel}_inbound`,
         agencyId: input.agencyId,
         subAccountId: input.subAccountId,

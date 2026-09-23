@@ -201,15 +201,26 @@ export async function reconcileContactFromCapture(
     );
   }
 
+  // Emails are stored lower-cased (forms + booking do the same), so
+  // "Jane@X.com" and "jane@x.com" are one contact. The as-typed form is
+  // still tried second so a legacy mixed-case contact keeps matching.
+  const typedEmail = input.capture.email;
+  const email = typedEmail ? typedEmail.trim().toLowerCase() : typedEmail;
+
   const tryEmailMatch =
     async (): Promise<QueryDocumentSnapshot | null> => {
-      if (!input.capture.email) return null;
-      const snap = await contactsCol
-        .where("subAccountId", "==", input.subAccountId)
-        .where("email", "==", input.capture.email)
-        .limit(1)
-        .get();
-      return snap.empty ? null : snap.docs[0];
+      if (!email) return null;
+      const candidates =
+        typedEmail && typedEmail !== email ? [email, typedEmail] : [email];
+      for (const candidate of candidates) {
+        const snap = await contactsCol
+          .where("subAccountId", "==", input.subAccountId)
+          .where("email", "==", candidate)
+          .limit(1)
+          .get();
+        if (!snap.empty) return snap.docs[0];
+      }
+      return null;
     };
 
   const tryPhoneMatch =
@@ -236,14 +247,14 @@ export async function reconcileContactFromCapture(
   for (const lookup of matchOrder) {
     const hit = await lookup();
     if (hit) {
-      await backfillContactFromCapture(hit, { ...input.capture, phone });
+      await backfillContactFromCapture(hit, { ...input.capture, email, phone });
       return { contactId: hit.id, created: false };
     }
   }
 
   const contactRef = await contactsCol.add({
     name: input.capture.name ?? "",
-    email: input.capture.email ?? "",
+    email: email ?? "",
     phone: phone ?? "",
     company: "",
     address: "",

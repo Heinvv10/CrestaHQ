@@ -235,3 +235,29 @@ describe("reconcileContactFromCapture — creating a contact", () => {
     });
   });
 });
+
+// ---- email case ----
+
+describe("reconcileContactFromCapture — email case", () => {
+  it("matches an existing lower-case email when the visitor typed mixed case", async () => {
+    existing("jane", { email: "jane@example.com" });
+    const res = await reconcile({
+      capture: { name: null, email: "Jane@Example.COM", phone: null },
+    });
+    expect(res).toEqual({ contactId: "jane", created: false });
+    expect(adds).toHaveLength(0);
+  });
+
+  it("stores a new contact's email lower-cased", async () => {
+    await reconcile({ capture: { name: null, email: "New@Example.com", phone: null } });
+    expect(adds[0].email).toBe("new@example.com");
+  });
+
+  it("still matches a legacy contact stored with the as-typed case", async () => {
+    existing("legacy", { email: "Old@Example.com" });
+    const res = await reconcile({
+      capture: { name: null, email: "Old@Example.com", phone: null },
+    });
+    expect(res).toEqual({ contactId: "legacy", created: false });
+  });
+});

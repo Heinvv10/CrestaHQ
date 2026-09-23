@@ -205,20 +205,30 @@ const execSendEmail: NodeExecutor = async (ctx) => {
   }
 
   const unsubscribeLink = buildUnsubscribeUrl(contact.id);
+  // A workflow email is marketing as often as not (steps carry no
+  // transactional flag), so like a broadcast it must carry an unsubscribe
+  // link. Broadcasts refuse a template without one up front; a step in a live
+  // automation appends it instead of failing a customer's sequence mid-run.
+  const rawBody = cfg.body ?? "";
+  const body = /\{\{\s*unsubscribeLink\s*\}\}/.test(rawBody)
+    ? rawBody
+    : `${rawBody}\n\n{{unsubscribeLink}}`;
   const subject = resolveMergeTags(
     cfg.subject ?? "",
     mergeSubject(ctx, unsubscribeLink)
   );
-  const text = resolveMergeTags(
-    cfg.body ?? "",
-    mergeSubject(ctx, unsubscribeLink)
-  );
+  const text = resolveMergeTags(body, mergeSubject(ctx, unsubscribeLink));
   // HTML render: substituted values are escaped (a contact's name or a
   // custom field set over the public API is untrusted free text), but the
   // unsubscribe anchor we supply ourselves must stay real markup.
   const htmlInner = resolveMergeTags(
-    cfg.body ?? "",
-    mergeSubject(ctx, `<a href="${unsubscribeLink}">Unsubscribe</a>`),
+    body,
+    // No app URL configured → no link: omit the anchor rather than ship an
+    // empty href (same as the broadcast step).
+    mergeSubject(
+      ctx,
+      unsubscribeLink ? `<a href="${unsubscribeLink}">Unsubscribe</a>` : ""
+    ),
     { escape: "html", safeTags: ["unsubscribeLink"] }
   ).replace(/\r?\n/g, "<br>");
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;

@@ -15,7 +15,7 @@ import { upsertConversationForMessage } from "@/lib/server/conversations-service
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import { webChatConversationId } from "@/types/conversations";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
-import { ipFromRequest } from "@/lib/contacts/location";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import type { SubAccountDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
 
   // Rate-limit shares the same buckets as /message — a malicious actor
   // can't pivot from one endpoint to the other to bypass caps.
-  const ip = ipFromRequest(request) ?? "unknown";
+  const ip = clientIpFrom(request);
   const rl = checkAndCount(ip, sessionId);
   if (!rl.ok) {
     return NextResponse.json(
@@ -230,6 +230,9 @@ export async function POST(request: Request) {
     });
     contactId = reconciled?.contactId ?? null;
     // The submission is the first web-chat turn that belongs to a contact.
+    // A match to a contact that already existed rests only on the email/phone
+    // the visitor typed, which anyone can type — flag it, as forms do.
+    const claimedMatch = !!reconciled && !reconciled.created && !session.contactId;
     if (contactId) {
       await writeInboundMessageActivity(db, {
         contactId,
@@ -238,6 +241,9 @@ export async function POST(request: Request) {
         messageId: submissionMessageId,
         agencyId: sa.agencyId,
         subAccountId,
+        ...(claimedMatch
+          ? { note: "unverified: matched an existing contact on details the visitor typed" }
+          : {}),
       });
     }
   } catch (err) {
