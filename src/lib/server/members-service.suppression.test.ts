@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const s = () => import("@/test/email-suppression-seam");
-const m = vi.hoisted(() => ({ send: vi.fn(), existing: null as null | { uid: string; email: string } }));
+const m = vi.hoisted(() => ({ send: vi.fn(), existing: null as null | { uid: string; email: string; emailVerified: boolean } }));
 vi.mock("resend", () => ({
   Resend: class {
     emails = { send: m.send };
@@ -74,7 +74,7 @@ describe("new-person invite", () => {
 
 describe("existing user added directly", () => {
   beforeEach(() => {
-    m.existing = { uid: "u2", email: "known@example.com" };
+    m.existing = { uid: "u2", email: "known@example.com", emailVerified: true };
   });
 
   it("emails an address that is not suppressed", async () => {

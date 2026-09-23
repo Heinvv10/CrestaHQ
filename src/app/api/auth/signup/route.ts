@@ -147,12 +147,44 @@ export async function POST(request: Request) {
     // An invitee proved inbox access by presenting the emailed token, so
     // the address is verified — later invites to other sub-accounts can
     // then attach via /api/auth/claim-pending-invites.
-    userRecord = await auth.createUser({
+    const props = {
       email,
       password,
       displayName,
       ...(decision.kind === "subAccountMember" ? { emailVerified: true } : {}),
-    });
+    };
+    try {
+      userRecord = await auth.createUser(props);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (
+        code !== "auth/email-already-exists" ||
+        decision.kind !== "subAccountMember"
+      ) {
+        throw err;
+      }
+      // A token-proven invitee whose address already has an Auth account
+      // (the invite service only direct-adds VERIFIED accounts, so an
+      // unverified one gets a pending invite instead). Two cases:
+      //   - It has a users/{uid} profile → it came through this signup
+      //     route, i.e. it's the invitee's own account. Mark the address
+      //     verified and send them to sign in; claim-pending-invites then
+      //     attaches the invite. Their password is untouched.
+      //   - No profile → created outside the app (client-side Firebase
+      //     signup), holding no app data. Whoever made it may still hold a
+      //     session for that uid, so it is deleted rather than adopted and
+      //     the invitee gets a fresh account.
+      const existing = await auth.getUserByEmail(email);
+      const profile = await db.doc(`users/${existing.uid}`).get();
+      if (profile.exists) {
+        if (!existing.emailVerified) {
+          await auth.updateUser(existing.uid, { emailVerified: true });
+        }
+        throw err;
+      }
+      await auth.deleteUser(existing.uid);
+      userRecord = await auth.createUser(props);
+    }
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === "auth/email-already-exists") {

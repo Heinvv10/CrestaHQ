@@ -126,7 +126,20 @@ export async function createInviteServerSide(
     if (code !== "auth/user-not-found") throw err;
   }
 
-  if (existingUser) {
+  // Direct-add only a VERIFIED account (or one already active here, where
+  // re-inviting just updates the role). Anyone can create an unverified
+  // Firebase user with any address, so an unverified match falls through to
+  // the token invite below; signup then resolves it (see /api/auth/signup).
+  const directAdd =
+    existingUser !== null &&
+    (existingUser.emailVerified ||
+      (
+        await db
+          .doc(`subAccounts/${subAccountId}/subAccountMembers/${existingUser.uid}`)
+          .get()
+      ).data()?.status === "active");
+
+  if (existingUser && directAdd) {
     return addExistingUserAsMember({
       db,
       existingUser,

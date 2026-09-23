@@ -9,6 +9,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const created: Array<Record<string, unknown>> = [];
+/** Auth accounts that already exist, by email. */
+const accounts = new Map<string, { uid: string; emailVerified: boolean }>();
+const deleted: string[] = [];
+const updated: Array<[string, Record<string, unknown>]> = [];
 
 vi.mock("@/lib/firebase/admin", async () => {
   const base = (await import("@/test/gbp-sync-store")).adminMock();
@@ -16,13 +20,24 @@ vi.mock("@/lib/firebase/admin", async () => {
     ...base,
     getAdminAuth: () => ({
       createUser: async (props: Record<string, unknown>) => {
+        if (accounts.has(props.email as string)) {
+          throw Object.assign(new Error("exists"), { code: "auth/email-already-exists" });
+        }
         created.push(props);
         return { uid: `uid_${created.length}` };
       },
       setCustomUserClaims: async () => undefined,
-      deleteUser: async () => undefined,
-      getUserByEmail: async () => {
-        throw Object.assign(new Error("no user"), { code: "auth/user-not-found" });
+      deleteUser: async (uid: string) => {
+        deleted.push(uid);
+        for (const [e, a] of accounts) if (a.uid === uid) accounts.delete(e);
+      },
+      updateUser: async (uid: string, props: Record<string, unknown>) => {
+        updated.push([uid, props]);
+      },
+      getUserByEmail: async (email: string) => {
+        const a = accounts.get(email);
+        if (!a) throw Object.assign(new Error("no user"), { code: "auth/user-not-found" });
+        return { ...a, email, disabled: false, customClaims: {} };
       },
     }),
   };
@@ -74,6 +89,9 @@ const member = (uid: string) => mem.read(`subAccounts/${SA}/subAccountMembers/${
 beforeEach(() => {
   mem.clear();
   created.length = 0;
+  deleted.length = 0;
+  updated.length = 0;
+  accounts.clear();
   mem.seed("appConfig/main", { adminUid: "uid_admin" });
   mem.seed(`subAccounts/${SA}`, { agencyId: "ag_1", name: "Fixture" });
 });
@@ -130,6 +148,29 @@ describe("signup against a pending invite", () => {
     expect(await signup({})).toBe(200);
     expect(created).toEqual([expect.not.objectContaining({ emailVerified: true })]);
     expect(mem.read("appConfig/main")?.adminUid).toBe("uid_1");
+  });
+
+  it("replaces an out-of-app account on the invitee's email with a fresh one, never adopting its uid", async () => {
+    accounts.set(EMAIL, { uid: "uid_squatter", emailVerified: false });
+    seedInvite("inv_1");
+    expect(await signup({})).toBe(403);
+    expect(deleted).toEqual([]);
+    expect(await signup({ inviteToken: TOKEN })).toBe(200);
+    expect(deleted).toEqual(["uid_squatter"]);
+    expect(created).toEqual([expect.objectContaining({ email: EMAIL, emailVerified: true })]);
+    expect(member("uid_1")).toMatchObject({ role: "admin" });
+    expect(member("uid_squatter")).toBeUndefined();
+  });
+
+  it("sends an in-app account holder to sign in, verified, leaving the invite for the claim route", async () => {
+    accounts.set(EMAIL, { uid: "uid_legacy", emailVerified: false });
+    mem.seed("users/uid_legacy", { uid: "uid_legacy", status: "active" });
+    seedInvite("inv_1");
+    expect(await signup({ inviteToken: TOKEN })).toBe(409);
+    expect(updated).toEqual([["uid_legacy", { emailVerified: true }]]);
+    expect(deleted).toEqual([]);
+    expect(created).toHaveLength(0);
+    expect(mem.read("invites/inv_1")?.acceptedByUid).toBeNull();
   });
 
   it("accepts the token from a link minted by the invite service, and a resend rotates it", async () => {
