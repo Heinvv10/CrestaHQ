@@ -13,6 +13,7 @@ import {
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { PublicServicePicker } from "@/components/booking/public-service-picker";
 import type { BookingPage, IntakeField } from "@/types/booking";
+import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
 /**
  * Visitor-facing booking surface. Self-contained client component:
@@ -704,6 +705,25 @@ function IntakeFormSection({
 // this page to fire, short enough to feel like a hand-off.
 const REDIRECT_COUNTDOWN_SECONDS = 3;
 
+/**
+ * The seam `ConfirmationPanel` navigates through — exported so the guard
+ * against a `javascript:`/`data:` `redirectUrl` is tested against the code
+ * this component actually runs. `redirectUrl` reaches here from the book
+ * route's response; the route already sanitises it, but a booking page's
+ * settings can outlive the code that wrote them, so this is
+ * defense-in-depth, not the only check.
+ */
+export function shouldRedirectAfterBooking(confirmation: {
+  status: "scheduled" | "awaiting_payment";
+  redirectUrl: string | null;
+}): boolean {
+  return (
+    confirmation.status !== "awaiting_payment" &&
+    !!confirmation.redirectUrl &&
+    isSafeFormRedirectUrl(confirmation.redirectUrl)
+  );
+}
+
 function ConfirmationPanel({
   confirmation,
   page,
@@ -734,7 +754,7 @@ function ConfirmationPanel({
   // redirect URL. Pending/paid holds never redirect (defense-in-depth on
   // top of the server already nulling redirectUrl for them) so the
   // PayPal CTA stays put.
-  const willRedirect = !pending && !!confirmation.redirectUrl;
+  const willRedirect = shouldRedirectAfterBooking(confirmation);
   const autoRedirect = willRedirect && !embedded;
   const [secondsLeft, setSecondsLeft] = useState(REDIRECT_COUNTDOWN_SECONDS);
 

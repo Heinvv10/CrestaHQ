@@ -13,6 +13,7 @@ import {
 import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
 import { buildPaypalAmountUrl } from "@/lib/paypal/payment-link";
 import { isSlotAvailable, type SlotCandidate } from "@/lib/booking/availability";
+import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 import {
   bookedEventLabel,
   pageCalendarType,
@@ -692,7 +693,11 @@ export async function POST(
   // conversions + fire pixel Advanced Matching. A malformed stored URL
   // never breaks a successful booking — it just falls back to no redirect.
   let redirectUrl: string | null = null;
-  if (!paymentRequired && page.redirectUrl) {
+  if (
+    !paymentRequired &&
+    page.redirectUrl &&
+    isSafeFormRedirectUrl(page.redirectUrl)
+  ) {
     try {
       const u = new URL(page.redirectUrl);
       // Append tracking params unless the operator opted out (legacy docs
