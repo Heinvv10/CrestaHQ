@@ -12,7 +12,11 @@ import { resolveMergeTags } from "@/lib/automations/merge-tags";
 import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { logIfReviewAsk } from "@/lib/reviews/review-ask";
 import { claimSend } from "@/lib/broadcasts/claim-send";
-import { releaseClaim, settleSend } from "@/lib/broadcasts/settle-send";
+import {
+  releaseClaim,
+  settleSend,
+  type ClaimedRow,
+} from "@/lib/broadcasts/settle-send";
 import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
 import type {
   AgencyDoc,
@@ -110,14 +114,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, ignored: claim.outcome });
   }
 
+  const row: ClaimedRow = { sendRef, broadcastRef, claimId: claim.claimId };
   const progress = { providerReached: false };
   try {
-    return await deliver(db, broadcastRef, sendRef, claim.broadcast, contactId, progress);
+    return await deliver(db, row, claim.broadcast, contactId, progress);
   } catch (err) {
     console.error("[broadcasts/step] failed after claim", broadcastId, contactId, err);
     if (!progress.providerReached) {
       // Nothing was sent — release the claim so QStash's retry re-runs the row.
-      await releaseClaim(sendRef).catch((e) =>
+      await releaseClaim(row).catch((e) =>
         console.error("[broadcasts/step] claim release failed", e),
       );
     }
@@ -130,13 +135,13 @@ export async function POST(request: Request) {
 
 async function deliver(
   db: FirebaseFirestore.Firestore,
-  broadcastRef: FirebaseFirestore.DocumentReference,
-  sendRef: FirebaseFirestore.DocumentReference,
+  row: ClaimedRow,
   broadcast: BroadcastDoc,
   contactId: string,
   /** Set just before the provider call: from then on the claim is never released. */
   progress: { providerReached: boolean },
 ): Promise<Response> {
+  const { broadcastRef } = row;
   const broadcastId = broadcastRef.id;
   // Load the contact (live read — opt-out may have flipped since fan-out)
   // along with the template, sub-account, and agency for merge-tag context.
@@ -158,8 +163,7 @@ async function deliver(
   // retry a few times and leave the row queued forever.
   if (subAccount?.broadcastsEnabledByAgency !== true || subAccount.automationsPaused === true) {
     await markSkipped(
-      sendRef,
-      broadcastRef,
+      row,
       subAccount?.automationsPaused === true ? "automations_paused" : "agency_disabled",
     );
     await maybeMarkBroadcastCompleted(broadcastRef);
@@ -167,8 +171,7 @@ async function deliver(
   }
   if (!emailIsConfigured(subAccount)) {
     await markFailed(
-      sendRef,
-      broadcastRef,
+      row,
       "Email is not configured for this sub-account (disconnected mid-broadcast). Reconnect it and send again.",
     );
     await maybeMarkBroadcastCompleted(broadcastRef);
@@ -176,7 +179,7 @@ async function deliver(
   }
 
   if (!contactSnap.exists) {
-    await markSkipped(sendRef, broadcastRef, "contact_missing");
+    await markSkipped(row, "contact_missing");
     await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, status: "skipped" });
   }
@@ -189,20 +192,19 @@ async function deliver(
   // who unsubscribed mid-batch via the {{unsubscribeLink}} on a prior
   // broadcast or a manual flip in the contact profile.
   if (contact.emailOptedOut) {
-    await markSkipped(sendRef, broadcastRef, "opt_out");
+    await markSkipped(row, "opt_out");
     await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, status: "skipped" });
   }
   if (!contact.email) {
-    await markSkipped(sendRef, broadcastRef, "no_email");
+    await markSkipped(row, "no_email");
     await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, status: "skipped" });
   }
 
   if (!templateSnap.exists) {
     await markFailed(
-      sendRef,
-      broadcastRef,
+      row,
       `Template ${broadcast.templateId} not found`,
     );
     await maybeMarkBroadcastCompleted(broadcastRef);
@@ -271,7 +273,7 @@ async function deliver(
     subAccount,
   });
   if (!quota.allowed && quota.error) {
-    await markFailed(sendRef, broadcastRef, quota.error.message);
+    await markFailed(row, quota.error.message);
     await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, status: "failed" });
   }
@@ -295,7 +297,7 @@ async function deliver(
     resendMessageId = result.id;
   } catch (err) {
     if (isEmailSuppressedError(err)) {
-      await markSkipped(sendRef, broadcastRef, "suppressed");
+      await markSkipped(row, "suppressed");
       await maybeMarkBroadcastCompleted(broadcastRef);
       return NextResponse.json({ ok: true, status: "skipped" });
     }
@@ -304,8 +306,7 @@ async function deliver(
   }
   if (resendMessageId) {
     await settleSend(
-      sendRef,
-      broadcastRef,
+      row,
       { status: "sent", resendMessageId, sentAt: FieldValue.serverTimestamp() },
       "totals.sent",
     );
@@ -328,8 +329,7 @@ async function deliver(
       );
   } else {
     await settleSend(
-      sendRef,
-      broadcastRef,
+      row,
       { status: "failed", error: error ?? "unknown", sentAt: Timestamp.now() },
       "totals.failed",
     );
@@ -357,26 +357,22 @@ async function deliver(
 }
 
 function markSkipped(
-  sendRef: FirebaseFirestore.DocumentReference,
-  broadcastRef: FirebaseFirestore.DocumentReference,
+  row: ClaimedRow,
   reason: BroadcastSkipReason,
-): Promise<void> {
+): Promise<boolean> {
   return settleSend(
-    sendRef,
-    broadcastRef,
+    row,
     { status: "skipped", skippedReason: reason, sentAt: FieldValue.serverTimestamp() },
     "totals.skipped",
   );
 }
 
 function markFailed(
-  sendRef: FirebaseFirestore.DocumentReference,
-  broadcastRef: FirebaseFirestore.DocumentReference,
+  row: ClaimedRow,
   errorMessage: string,
-): Promise<void> {
+): Promise<boolean> {
   return settleSend(
-    sendRef,
-    broadcastRef,
+    row,
     { status: "failed", error: errorMessage, sentAt: FieldValue.serverTimestamp() },
     "totals.failed",
   );

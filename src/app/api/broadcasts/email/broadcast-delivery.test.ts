@@ -92,7 +92,7 @@ describe("step failing after its claim", () => {
 
   it("a settle-write blip after a successful send is retried in-process", async () => {
     const msg = await queuedStep();
-    h.failCommits = 1;
+    h.failSettles = 1;
     expect((await call(msg.pathname, msg.body)).status).toBe(200);
     expect(h.sent).toHaveLength(1);
     expect(row()).toMatchObject({ status: "sent" });
@@ -101,7 +101,7 @@ describe("step failing after its claim", () => {
 
   it("a failure after the email went out keeps the claim, so a retry never re-sends", async () => {
     const msg = await queuedStep();
-    h.failCommits = 3; // every in-process settle attempt fails
+    h.failSettles = 3; // every in-process settle attempt fails
     expect((await call(msg.pathname, msg.body)).status).toBe(500);
     expect(h.sent).toHaveLength(1);
     expect(row().claimedAt).toBeDefined();
@@ -119,6 +119,24 @@ describe("step failing after its claim", () => {
     expect((await call(msg.pathname, msg.body)).status).toBe(200);
     expect(h.sent).toHaveLength(1);
     expect(broadcasts()[0]).toMatchObject({ status: "completed", totals: { sent: 1, queued: 0 } });
+  });
+
+  it("a late original never overwrites a row a retry already failed as stale", async () => {
+    const msg = await queuedStep();
+    const path = `broadcasts/${broadcasts()[0]!.id}/sends/c0000`;
+    h.duringSend = async () => {
+      h.duringSend = async () => {};
+      // The original stalls past the stale window; a retry settles the row.
+      h.mem.seed(path, { ...h.mem.read(path), claimedAt: Timestamp.fromMillis(Date.now() - 11 * 60_000) });
+      expect((await call(msg.pathname, msg.body)).status).toBe(200);
+    };
+    await call(msg.pathname, msg.body);
+
+    expect(row()).toMatchObject({ status: "failed" });
+    expect(broadcasts()[0]).toMatchObject({
+      status: "completed",
+      totals: { queued: 0, failed: 1, sent: 0 },
+    });
   });
 
   it("a delivery finding a fresh claim answers 503 so QStash keeps retrying", async () => {
@@ -175,16 +193,49 @@ describe("fan-out delivery", () => {
     });
   });
 
-  it("a page failing on its final retry fails the broadcast visibly", async () => {
+  it("a page failing on its final retry ends the fan-out; the broadcast stays cancellable", async () => {
+    seedTenant(450);
+    const { broadcastId } = (await (await sendBroadcast()).json()) as { broadcastId: string };
+    const page1 = firstFanout();
+    await call(page1.pathname, page1.body); // page 1: 200 steps published
+    const page2 = firstFanout();
+    h.failPublish = isFanout; // page 2's next-page publish keeps failing
+    expect((await call(page2.pathname, page2.body, { "upstash-retried": "1" })).status).toBe(500);
+    expect((await call(page2.pathname, page2.body, { "upstash-retried": "3" })).status).toBe(200);
+
+    const b = broadcasts()[0]!;
+    expect(b.status).not.toBe("failed");
+    expect(b.fanoutDone).toBe(true);
+    expect(String(b.errorMessage)).toMatch(/fan-out stopped after 400 contacts/i);
+
+    // Some sends go out, then the operator stops the rest.
+    for (let i = 0; i < 10; i++) {
+      const j = h.queue.findIndex(isStep);
+      const [m] = h.queue.splice(j, 1);
+      await call(m!.pathname, m!.body);
+    }
+    const res = await call("/api/broadcasts/email/cancel", { broadcastId, subAccountId: "sa1" });
+    expect(await res.json()).toEqual({ ok: true });
+    await drain();
+    expect(h.sent).toHaveLength(10);
+    expect(broadcasts()[0]).toMatchObject({
+      status: "cancelled",
+      totals: { audienceSize: 400, sent: 10, skipped: 390, queued: 0 },
+    });
+  });
+
+  it("without a cancel, a stopped-short broadcast completes with what was queued", async () => {
     seedTenant(450);
     await sendBroadcast();
-    const page = firstFanout();
+    const page1 = firstFanout();
+    await call(page1.pathname, page1.body);
+    const page2 = firstFanout();
     h.failPublish = isFanout;
-    expect((await call(page.pathname, page.body, { "upstash-retried": "1" })).status).toBe(500);
-    expect(broadcasts()[0]!.status).not.toBe("failed");
-    expect((await call(page.pathname, page.body, { "upstash-retried": "3" })).status).toBe(200);
-    expect(broadcasts()[0]).toMatchObject({ status: "failed" });
-    expect(String(broadcasts()[0]!.errorMessage)).toMatch(/fan-out/i);
+    await call(page2.pathname, page2.body, { "upstash-retried": "3" });
+    h.failPublish = () => false;
+    await drain();
+    expect(h.sent).toHaveLength(400);
+    expect(broadcasts()[0]).toMatchObject({ status: "completed", totals: { sent: 400, queued: 0 } });
   });
 });
 

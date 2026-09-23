@@ -30,27 +30,41 @@ export const h = {
   /** Return true to make that publish THROW (the process died mid-request). */
   throwPublish: (_m: Published): boolean => false,
   smtpConnected: true,
+  /** Awaited inside sendEmail, after the provider accepted the message. */
+  duringSend: async () => {},
   /** checkQuota throws while > 0 (a read blip before the provider call). */
   quotaThrows: 0,
-  /** The next N batch commits fail (a write blip). */
-  failCommits: 0,
+  /** The next N settle transactions (ones moving totals.queued) fail. */
+  failSettles: 0,
   member: true,
   scope: { enforce: false, ids: null } as { enforce: boolean; ids: string[] | null },
 };
 
-/** The in-memory db, with `failCommits` injected into batch commits. */
+type Tx = Parameters<Parameters<ReturnType<typeof createMemoryFirestore>["db"]["runTransaction"]>[0]>[0];
+
+/** The in-memory db, with `failSettles` injected into settle transactions. */
 export function harnessDb() {
   const db = h.mem.db;
   return {
     ...db,
-    batch: () => {
-      const b = db.batch();
-      const commit = b.commit;
-      return Object.assign(b, {
-        commit: () =>
-          h.failCommits-- > 0 ? Promise.reject(new Error("commit blip")) : commit(),
-      });
-    },
+    runTransaction: <T>(fn: (tx: Tx) => Promise<T>) =>
+      db.runTransaction(async (tx) => {
+        let settles = false;
+        const wrapped: Tx = {
+          ...tx,
+          update: (ref, data) => {
+            if ("totals.queued" in data) settles = true;
+            tx.update(ref, data);
+            return wrapped;
+          },
+        };
+        const result = await fn(wrapped);
+        if (settles && h.failSettles > 0) {
+          h.failSettles -= 1;
+          throw new Error("settle blip");
+        }
+        return result;
+      }),
   };
 }
 
@@ -62,8 +76,9 @@ export function resetHarness(): void {
   h.failPublish = () => false;
   h.throwPublish = () => false;
   h.smtpConnected = true;
+  h.duringSend = async () => {};
   h.quotaThrows = 0;
-  h.failCommits = 0;
+  h.failSettles = 0;
   h.member = true;
   h.scope = { enforce: false, ids: null };
 }
@@ -85,6 +100,7 @@ export const resendMock = () => ({
   tenantFrom: () => "sender@tenant.test",
   sendEmail: async (args: { contactId: string; to: string }) => {
     h.sent.push({ contactId: args.contactId, to: args.to });
+    await h.duringSend();
     return { id: `msg${h.sent.length}` };
   },
 });

@@ -134,4 +134,6 @@ export interface BroadcastSendDoc {
   sentAt: Timestamp | FieldValue | null;
   /** Set when a step claims the row for sending — a redelivery never sends twice. */
   claimedAt?: Timestamp | FieldValue | null;
+  /** Token of the claim holder; only that holder's settle lands. */
+  claimId?: string;
 }

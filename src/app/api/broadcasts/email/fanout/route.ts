@@ -29,7 +29,8 @@ export const dynamic = "force-dynamic";
  * marks its row failed, so the broadcast still completes. Redelivery is safe:
  * rows are created (never overwritten), rows already queued are re-published
  * under their original dedup id, settled rows are left alone. Returning 500
- * makes QStash retry the same page; the final retry fails the broadcast.
+ * makes QStash retry the same page; after the final retry the broadcast
+ * completes with what was queued, errorMessage saying where it stopped.
  */
 
 /**
@@ -87,14 +88,20 @@ export async function POST(request: Request) {
     if (retried < BROADCAST_FANOUT_RETRIES) {
       return NextResponse.json({ error: msg }, { status: 500 });
     }
-    // Last delivery: nothing will run this page again. Fail the broadcast
-    // visibly rather than leave it queued / sending with fanoutDone false.
-    await broadcastRef.update({
-      status: "failed",
-      errorMessage: `Audience fan-out stopped after repeated failures: ${msg}`,
-      completedAt: FieldValue.serverTimestamp(),
+    // Last delivery: nothing will run the rest of the audience. Don't fail
+    // the broadcast — steps already published keep sending, and it must stay
+    // cancellable. Record why it stopped short and let it complete with
+    // what was queued.
+    await db.runTransaction(async (tx) => {
+      const current = (await tx.get(broadcastRef)).data() as BroadcastDoc | undefined;
+      if (current?.status !== "queued" && current?.status !== "sending") return;
+      tx.update(broadcastRef, {
+        fanoutDone: true,
+        errorMessage: `Audience fan-out stopped after ${current.totals?.audienceSize ?? 0} contacts: ${msg}`,
+      });
     });
-    return NextResponse.json({ ok: false, broadcastFailed: true });
+    await maybeMarkBroadcastCompleted(broadcastRef);
+    return NextResponse.json({ ok: false, fanoutStopped: true });
   }
 }
 
@@ -192,6 +199,8 @@ async function runPage(
     const results = await Promise.all(
       chunk.map((contactId, j) =>
         publishCallback({
+          // Explicit, so the stale-claim timeline doesn't hang on QStash defaults.
+          retries: BROADCAST_FANOUT_RETRIES,
           pathname: "/api/broadcasts/email/step",
           body: { broadcastId, contactId },
           delaySeconds: Math.ceil((slot + i + j) / SEND_RATE_PER_SECOND),

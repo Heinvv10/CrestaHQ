@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastDoc, BroadcastSendDoc } from "@/types";
@@ -12,7 +13,7 @@ import type { BroadcastDoc, BroadcastSendDoc } from "@/types";
 const CLAIM_STALE_MS = 10 * 60 * 1000;
 
 export type SendClaim =
-  | { outcome: "claimed"; broadcast: BroadcastDoc; send: BroadcastSendDoc }
+  | { outcome: "claimed"; broadcast: BroadcastDoc; send: BroadcastSendDoc; claimId: string }
   /** Row settled by this call (cancelled / interrupted) — re-check completion. */
   | { outcome: "settled_now"; reason: "cancelled" | "interrupted" }
   | { outcome: "missing" | "already_settled" | "in_flight" };
@@ -64,13 +65,14 @@ export async function claimSend(
       return { outcome: "settled_now", reason: "cancelled" };
     }
 
-    tx.update(sendRef, { claimedAt: Timestamp.now() });
+    const claimId = randomUUID();
+    tx.update(sendRef, { claimedAt: Timestamp.now(), claimId });
     if (broadcast.status === "queued") {
       tx.update(broadcastRef, {
         status: "sending",
         startedAt: FieldValue.serverTimestamp(),
       });
     }
-    return { outcome: "claimed", broadcast, send };
+    return { outcome: "claimed", broadcast, send, claimId };
   });
 }

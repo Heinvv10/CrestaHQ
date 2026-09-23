@@ -4,7 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastDoc } from "@/types";
 
-/** QStash retries for a fanout page; the last delivery fails the broadcast. */
+/** QStash retries for fanout pages and step messages. */
 export const BROADCAST_FANOUT_RETRIES = 3;
 
 /**
