@@ -15,6 +15,10 @@ import {
 } from "@/lib/comms/meta";
 import { deriveMetaCapabilities } from "@/lib/comms/meta-capabilities";
 import type { SubAccountDoc } from "@/types";
+import {
+  subAccountSecretDoc,
+  subAccountSecretPath,
+} from "@/lib/server/sub-account-secrets";
 
 /**
  * Single shared OAuth callback for the Facebook/Instagram connect flow.
@@ -128,12 +132,19 @@ export async function GET(request: Request) {
       );
     }
 
-    await db.doc(`subAccounts/${id}`).update({
+    // Token → server-only private doc; the member-readable sub-account doc
+    // gets only display/status fields (update() replaces the whole map, so a
+    // pre-migration token on it goes too).
+    const batch = db.batch();
+    batch.set(
+      db.doc(subAccountSecretPath(id, "meta")),
+      subAccountSecretDoc("meta", page.accessToken),
+    );
+    batch.update(db.doc(`subAccounts/${id}`), {
       metaConfig: {
         connected: true,
         pageId: page.id,
         pageName: page.name,
-        pageAccessToken: page.accessToken,
         instagramBusinessAccountId: page.instagramBusinessAccountId,
         instagramUsername: page.instagramUsername,
         capabilities,
@@ -142,6 +153,7 @@ export async function GET(request: Request) {
       },
       updatedAt: FieldValue.serverTimestamp(),
     });
+    await batch.commit();
 
     return finish(subscribed ? "connected" : "connected_no_sub");
   } catch (err) {

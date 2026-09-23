@@ -68,6 +68,7 @@ import type {
   WorkflowRunHistoryEntry,
   WorkflowTriggerType,
 } from "@/types/workflows";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 const STEP_PATH = "/api/workflows/step";
 
@@ -692,7 +693,11 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
                 templateId: cfg.templateId!,
                 template: tplDoc!,
                 accountSid: ctx.subAccount!.twilioConfig!.accountSid,
-                authToken: ctx.subAccount!.twilioConfig!.authToken,
+                authToken: await readSubAccountSecret(
+                  ctx.subAccountId,
+                  "twilio",
+                  ctx.subAccount!.twilioConfig,
+                ),
               });
               const r = await sendWhatsappTemplateForSubAccount({
                 subAccountId: ctx.subAccountId,

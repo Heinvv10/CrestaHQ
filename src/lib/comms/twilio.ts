@@ -7,6 +7,7 @@ import { segmentInfo } from "@/lib/comms/sms-segments";
 import { checkQuota, recordUsage } from "@/lib/server/usage-meter";
 import { sendSmsVia } from "@/lib/comms/sms/select";
 import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import type { SubAccountDoc, TwilioConfig } from "@/types";
 
 /**
@@ -73,10 +74,13 @@ export function smsIsConfigured(): boolean {
   );
 }
 
+// No auth-token check here or below: the token lives in the server-only
+// `private/twilioCredentials` doc, not on the config these read, and the save
+// route only sets `enabled` after Twilio accepted the token.
 export function subAccountTwilioIsConfigured(
   cfg: TwilioConfig | null | undefined,
 ): boolean {
-  return !!cfg?.enabled && !!cfg.accountSid && !!cfg.authToken && !!cfg.fromNumber;
+  return !!cfg?.enabled && !!cfg.accountSid && !!cfg.fromNumber;
 }
 
 /**
@@ -92,7 +96,6 @@ export function subAccountWhatsappIsConfigured(
   return (
     !!cfg?.enabled &&
     !!cfg.accountSid &&
-    !!cfg.authToken &&
     !!cfg.whatsappFromNumber
   );
 }
@@ -177,16 +180,17 @@ export async function getTwilioForSubAccount(
   }
 
   if (subAccountTwilioIsConfigured(cfg) && cfg) {
+    const authToken = await readSubAccountSecret(subAccountId, "twilio", cfg);
     let client = _saClientCache.get(subAccountId);
     if (!client) {
-      client = twilio(cfg.accountSid, cfg.authToken);
+      client = twilio(cfg.accountSid, authToken);
       _saClientCache.set(subAccountId, client);
     }
     return {
       client,
       fromNumber: cfg.fromNumber,
       mode: "dedicated",
-      authToken: cfg.authToken,
+      authToken,
       accountSid: cfg.accountSid,
     };
   }

@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { unsubscribePageFromWebhook } from "@/lib/comms/meta";
 import type { SubAccountDoc } from "@/types";
+import { readSubAccountSecret, subAccountSecretPath } from "@/lib/server/sub-account-secrets";
 
 /**
  * Disconnect the BETA Facebook/Instagram inbox for a sub-account.
@@ -30,18 +31,22 @@ export async function DELETE(
   const sa = snap.exists ? (snap.data() as SubAccountDoc) : null;
   const cfg = sa?.metaConfig ?? null;
 
-  if (cfg?.pageId && cfg.pageAccessToken) {
+  const pageAccessToken = cfg ? await readSubAccountSecret(id, "meta", cfg) : "";
+  if (cfg?.pageId && pageAccessToken) {
     try {
-      await unsubscribePageFromWebhook(cfg.pageId, cfg.pageAccessToken);
+      await unsubscribePageFromWebhook(cfg.pageId, pageAccessToken);
     } catch (err) {
       console.warn(`[meta/disconnect] unsubscribe failed sa=${id}`, err);
     }
   }
 
-  await db.doc(`subAccounts/${id}`).update({
+  const batch = db.batch();
+  batch.update(db.doc(`subAccounts/${id}`), {
     metaConfig: null,
     updatedAt: FieldValue.serverTimestamp(),
   });
+  batch.delete(db.doc(subAccountSecretPath(id, "meta")));
+  await batch.commit();
 
   return NextResponse.json({ ok: true });
 }

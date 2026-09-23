@@ -19,6 +19,7 @@ import {
   WHATSAPP_START_WORDS,
   WHATSAPP_STOP_WORDS,
 } from "@/lib/comms/whatsapp/opt-keywords";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -96,10 +97,11 @@ async function resolveRoute(toNumber: string): Promise<ResolvedRoute | null> {
     );
     return null;
   }
-  if (!sa.twilioConfig?.authToken) return null;
+  const authToken = await readSubAccountSecret(snap.docs[0].id, "twilio", sa.twilioConfig);
+  if (!authToken) return null;
 
   return {
-    authToken: sa.twilioConfig.authToken,
+    authToken,
     subAccountId: snap.docs[0].id,
     agencyId: sa.agencyId,
   };

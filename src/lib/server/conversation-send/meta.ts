@@ -14,6 +14,7 @@ import {
   type SendOutcome,
   type SendRefusal,
 } from "./types";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export type MetaChannel = "messenger" | "instagram";
 
@@ -57,7 +58,10 @@ export async function prepareMetaSend(
   }
 
   const cfg = subAccount?.metaConfig ?? null;
-  if (!cfg?.connected || !cfg.pageAccessToken) {
+  const pageAccessToken = cfg?.connected
+    ? await readSubAccountSecret(contact.subAccountId, "meta", cfg)
+    : "";
+  if (!cfg?.connected || !pageAccessToken) {
     return refuse(
       503,
       "No Facebook Page is connected. Connect one under Settings → Messaging."
@@ -87,7 +91,7 @@ export async function prepareMetaSend(
     ok: true,
     recipientId: contact.metaUserId,
     fromNodeId,
-    pageAccessToken: cfg.pageAccessToken,
+    pageAccessToken,
   };
 }
 

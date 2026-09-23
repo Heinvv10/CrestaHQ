@@ -657,9 +657,8 @@ export interface SubAccountDoc {
    */
   pipelineStages?: import("./deals").PipelineStageOverride[];
   /**
-   * GHL migration connection (Phase 4). Holds the Private Integration Token +
-   * location id used to pull the account's data. The token is a secret stored
-   * like `twilioConfig.authToken` — server-only, never returned to the client.
+   * GHL migration connection (Phase 4). Holds the location id used to pull
+   * the account's data; the token itself is in `private/ghlImportCredentials`.
    * Null until connected; cleared on disconnect.
    */
   ghlImportConfig?: GhlImportConfig | null;
@@ -675,8 +674,13 @@ export interface SubAccountDoc {
 }
 
 export interface GhlImportConfig {
-  /** GHL Private Integration Token (pit-...). Server-only — never sent to the browser. */
-  token: string;
+  /**
+   * LEGACY — the GHL Private Integration Token now lives in the server-only
+   * `private/ghlImportCredentials` doc; this field survives only on docs
+   * written before that move. Never write it; read via
+   * `readSubAccountSecret(id, "ghl", cfg)`.
+   */
+  token?: string;
   /** The GHL sub-account (location) id this token is scoped to. */
   locationId: string;
   connectedByUid: string | null;
@@ -701,7 +705,12 @@ export interface TwilioConfig {
    */
   enabled: boolean;
   accountSid: string;
-  authToken: string;
+  /**
+   * LEGACY — present only on docs written before the token moved to the
+   * server-only `private/twilioCredentials` doc (this doc is member-readable).
+   * Never write it; read the token via `readSubAccountSecret(id, "twilio", cfg)`.
+   */
+  authToken?: string;
   /** E.164 (e.g. "+15551234567"). The number this sub-account sends from. */
   fromNumber: string;
   /**
@@ -795,11 +804,12 @@ export interface MetaConfig {
   /** Page display name, shown in the settings card. */
   pageName: string;
   /**
-   * Long-lived Page access token used to send/receive on Messenger + IG DM and
-   * to (un)subscribe the page to our webhook. Stored in Firestore like
-   * `TwilioConfig.authToken`; never displayed back to the operator.
+   * LEGACY — the long-lived Page access token now lives in the server-only
+   * `private/metaCredentials` doc; this field survives only on docs written
+   * before that move. Never write it; read via
+   * `readSubAccountSecret(id, "meta", cfg)`.
    */
-  pageAccessToken: string;
+  pageAccessToken?: string;
   /** Linked Instagram business account id — inbound IG events route by this. Null if the Page has no IG account. */
   instagramBusinessAccountId: string | null;
   /** Linked IG @handle, shown in the settings card. Null when no IG account. */

@@ -27,6 +27,7 @@ import type {
   WhatsappTemplateDoc,
   WhatsappTemplateStatus,
 } from "@/types/whatsapp-templates";
+import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
 export const dynamic = "force-dynamic";
 
@@ -181,7 +182,8 @@ export async function POST(
       result = { status: cloud.status, rejectionReason: cloud.reason };
     } else {
       const cfg = sub?.twilioConfig ?? null;
-      if (!cfg?.accountSid || !cfg.authToken) {
+      const authToken = cfg ? await readSubAccountSecret(subAccountId, "twilio", cfg) : "";
+      if (!cfg?.accountSid || !authToken) {
         // Creds disappeared — stop chasing.
         await ref.update({
           status: "failed",
@@ -193,7 +195,7 @@ export async function POST(
       }
       const twilio = await fetchApprovalStatus({
         accountSid: cfg.accountSid,
-        authToken: cfg.authToken,
+        authToken,
         contentSid: payload.contentSid,
       });
       result = {
