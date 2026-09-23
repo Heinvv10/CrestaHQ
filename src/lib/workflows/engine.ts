@@ -43,6 +43,7 @@ import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask"
 import { providerAttempted } from "@/lib/comms/provider-attempt";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
+import { publicFetch } from "@/lib/webhooks/public-fetch";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc, WhatsappTemplateButton } from "@/types/whatsapp-templates";
@@ -1036,7 +1037,7 @@ const execNotify: NodeExecutor = async (ctx) => {
   }
 };
 
-const execWebhook: NodeExecutor = async (ctx) => {
+export const execWebhook: NodeExecutor = async (ctx) => {
   const url = ((ctx.node.config as unknown as WebhookConfig).url ?? "").trim();
   if (!/^https?:\/\//i.test(url)) {
     return { result: { kind: "next" }, log: "skipped:bad_url" };
@@ -1051,7 +1052,9 @@ const execWebhook: NodeExecutor = async (ctx) => {
       ? (tc.formData as Record<string, unknown>)
       : {};
   try {
-    await fetch(url, {
+    // publicFetch: the URL is tenant-authored, so no internal addresses and
+    // no redirects.
+    await publicFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
