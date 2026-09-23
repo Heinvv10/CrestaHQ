@@ -1,3 +1,8 @@
+import { lookup } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
+import type { LookupFunction } from "node:net";
+import ipaddr from "ipaddr.js";
+
 /**
  * Which automation tool a webhook destination URL belongs to, when it's
  * recognizable. Powers tool-specific advice — most importantly n8n's
@@ -46,7 +51,8 @@ export function n8nProductionUrl(testUrl: string): string {
  * the management API route and the AI Suite's create_webhook capability so
  * both enforce identical rules:
  *   - http/https only (https required in production, except localhost)
- *   - private / loopback hostnames rejected in production (SSRF guard)
+ *   - private / loopback hostnames and IP literals rejected in production
+ *     (SSRF guard; string-level only — `validatePublicUrl` also resolves DNS)
  */
 export function validateWebhookUrl(
   raw: string,
@@ -65,23 +71,109 @@ export function validateWebhookUrl(
       return { ok: false, error: "Production URLs must use https." };
     }
     // Block private + loopback hosts in production to prevent SSRF.
-    if (process.env.NODE_ENV === "production") {
-      const h = url.hostname;
-      if (
-        h === "localhost" ||
-        h === "0.0.0.0" ||
-        h.endsWith(".localhost") ||
-        /^127\./.test(h) ||
-        /^10\./.test(h) ||
-        /^192\.168\./.test(h) ||
-        /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h) ||
-        /^169\.254\./.test(h)
-      ) {
-        return { ok: false, error: "Private / loopback hostnames are not allowed." };
-      }
+    if (ssrfGuardEnabled() && isBlockedHostname(url.hostname)) {
+      return { ok: false, error: "Private / loopback hostnames are not allowed." };
     }
     return { ok: true, url: url.toString() };
   } catch {
     return { ok: false, error: "Invalid URL." };
+  }
+}
+
+/**
+ * The SSRF guard is production-only, like the https rule above: local dev
+ * points webhooks at localhost receivers on purpose.
+ */
+export function ssrfGuardEnabled(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+/**
+ * True for any IP address outside public unicast space: loopback, private,
+ * link-local, CGNAT 100.64/10 (Tailscale), unspecified, multicast, broadcast,
+ * reserved, and every IPv6 form that embeds an IPv4 address (mapped, NAT64,
+ * 6to4, Teredo) — those are refused outright rather than unwrapped.
+ * Unparseable input counts as non-public.
+ */
+export function isNonPublicAddress(ip: string): boolean {
+  if (!ipaddr.isValid(ip)) return true;
+  return ipaddr.parse(ip).range() !== "unicast";
+}
+
+/**
+ * String-level check on a URL hostname (as `new URL` yields it, so decimal /
+ * octal / hex IPv4 forms have already been normalised to dotted quads and
+ * IPv6 literals carry brackets). Names are NOT resolved here — see
+ * `resolvePublicAddresses` for that.
+ */
+function isBlockedHostname(hostname: string): boolean {
+  // One trailing dot is the fully-qualified spelling of the same name.
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  return ipaddr.isValid(h) && isNonPublicAddress(h);
+}
+
+export class NonPublicUrlError extends Error {
+  constructor(hostname: string) {
+    super(`Refused: ${hostname} is not a public internet address.`);
+    this.name = "NonPublicUrlError";
+  }
+}
+
+/**
+ * Resolve `hostname` and return its addresses only when EVERY one is public.
+ * Throws `NonPublicUrlError` otherwise (a single private answer among public
+ * ones is enough to refuse — the connection could land on either).
+ */
+export async function resolvePublicAddresses(
+  hostname: string,
+): Promise<LookupAddress[]> {
+  const h = hostname.replace(/^\[|\]$/g, "");
+  if (isBlockedHostname(h)) throw new NonPublicUrlError(h);
+  const addresses = ipaddr.isValid(h)
+    ? [{ address: h, family: h.includes(":") ? 6 : 4 }]
+    : await lookup(h, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some((a) => isNonPublicAddress(a.address))) {
+    throw new NonPublicUrlError(h);
+  }
+  return addresses;
+}
+
+/**
+ * `lookup` for `http(s).request` / an `https.Agent`: the guard runs on the
+ * addresses the socket actually connects to, so a name that answered public
+ * at save time and private now (DNS rebinding) is still refused.
+ */
+export const publicLookup: LookupFunction = (hostname, options, callback) => {
+  resolvePublicAddresses(hostname).then(
+    (list) => {
+      if (options.all) callback(null, list);
+      else callback(null, list[0]!.address, list[0]!.family);
+    },
+    (err: NodeJS.ErrnoException) => callback(err, "", 4),
+  );
+};
+
+/**
+ * Save-time form of the guard: `validateWebhookUrl` plus, in production, a
+ * DNS resolution that must yield only public addresses. Callers that fetch
+ * the URL later must still go through `publicFetch` — resolution can change.
+ */
+export async function validatePublicUrl(
+  raw: string,
+): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const check = validateWebhookUrl(raw);
+  if (!check.ok || !ssrfGuardEnabled()) return check;
+  try {
+    await resolvePublicAddresses(new URL(check.url).hostname);
+    return check;
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof NonPublicUrlError
+          ? "That URL points at a private or internal address."
+          : "That URL's hostname could not be resolved.",
+    };
   }
 }
