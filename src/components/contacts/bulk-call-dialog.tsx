@@ -75,6 +75,23 @@ export function BulkCallDialog({
   const [excludeTag, setExcludeTag] = useState("");
   const [pastCampaigns, setPastCampaigns] = useState<VoiceCampaignDoc[]>([]);
 
+  // One key per distinct submit: a retry or double-click of the same launch
+  // reuses it (the server dedups on it); changing any input mints a new one.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    setIdempotencyKey(crypto.randomUUID());
+  }, [
+    open,
+    filterKind,
+    filterTag,
+    filterStage,
+    campaignName,
+    suppressRecent,
+    recentDays,
+    excludeCampaignId,
+    excludeTag,
+  ]);
+
   useEffect(() => {
     if (open) {
       setFilterKind("all");
@@ -225,6 +242,7 @@ export function BulkCallDialog({
           audienceFilter,
           consentAck: true,
           name: campaignName.trim() || undefined,
+          idempotencyKey,
           suppression: {
             recentDays: suppressRecent && recentDays > 0 ? recentDays : null,
             excludeCampaignId: excludeCampaignId || null,

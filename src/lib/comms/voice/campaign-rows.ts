@@ -15,6 +15,9 @@ import type {
  * or a step and its own redelivery) count it exactly once.
  */
 
+/** QStash retries for a fanout page; the last delivery fails the campaign. */
+export const FANOUT_RETRIES = 3;
+
 type Settle =
   | { status: "skipped"; skippedReason: VoiceCampaignSkipReason }
   | { status: "failed"; error: string };
@@ -85,6 +88,31 @@ export async function claimDial(
         : {}),
     });
     return "dial";
+  });
+}
+
+/**
+ * After Vapi accepted the call: store its ids and re-read the campaign in
+ * one transaction. Returns true when a cancel landed while the call was
+ * being dialled (claimDial had already moved the row out of "queued", so
+ * the cancel sweep skipped it and "stop all" had no control URL to end) —
+ * the caller must hang the call up. The row records it as ended by cancel.
+ */
+export async function recordDialled(
+  recRef: FirebaseFirestore.DocumentReference,
+  campaignRef: FirebaseFirestore.DocumentReference,
+  callId: string,
+  callControlUrl: string | null,
+): Promise<boolean> {
+  return getAdminDb().runTransaction(async (tx) => {
+    const campaign = (await tx.get(campaignRef)).data() as VoiceCampaignDoc | undefined;
+    const cancelled = campaign?.status === "cancelled";
+    tx.update(recRef, {
+      callId,
+      callControlUrl,
+      ...(cancelled ? { endedByCancel: true } : {}),
+    });
+    return cancelled;
   });
 }
 

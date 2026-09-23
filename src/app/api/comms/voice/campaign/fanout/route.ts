@@ -1,7 +1,8 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldPath, FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   publishCallback,
@@ -10,11 +11,11 @@ import {
 } from "@/lib/automations/qstash";
 import { resolveVoiceAudiencePage } from "@/lib/comms/voice/audience";
 import {
+  FANOUT_RETRIES,
   maybeCompleteCampaign,
   settleQueuedRecipient,
 } from "@/lib/comms/voice/campaign-rows";
 import type { VoiceCampaignDoc, VoiceCampaignRecipientDoc } from "@/types";
-import type { Contact } from "@/types/contacts";
 
 export const dynamic = "force-dynamic";
 
@@ -29,11 +30,13 @@ export const dynamic = "force-dynamic";
  * fails settles its row as failed, so the campaign still completes.
  * Redelivery is safe: rows are created (never overwritten), rows already
  * queued are re-published under their original dedup id. Returning 500
- * makes QStash retry the same page.
+ * makes QStash retry the same page; the final retry fails the campaign.
  */
 
 /** Publishes in flight at once within a page. */
 const PUBLISH_CONCURRENCY = 20;
+/** Upper bound on this page's already-written rows read on redelivery. */
+const EXISTING_SCAN_LIMIT = 1000;
 
 interface FanoutBody {
   campaignId?: string;
@@ -74,6 +77,37 @@ export async function POST(request: Request) {
 
   const db = getAdminDb();
   const campaignRef = db.collection("voiceCampaigns").doc(campaignId);
+  try {
+    return await runPage(db, campaignRef, { cursor, slot, spacingSec, territoryIds });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "fan-out failed";
+    console.error("[voice/campaign/fanout] page failed", campaignId, err);
+    const retried = Number(request.headers.get("upstash-retried") ?? "0");
+    if (retried < FANOUT_RETRIES) {
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+    // Last delivery: nothing will run this page again. Fail the campaign
+    // visibly rather than leave it queued / calling with fanoutDone false.
+    await campaignRef.update({
+      status: "failed",
+      errorMessage: `Audience fan-out stopped after repeated failures: ${msg}`,
+      completedAt: FieldValue.serverTimestamp(),
+    });
+    return NextResponse.json({ ok: false, campaignFailed: true });
+  }
+}
+
+async function runPage(
+  db: FirebaseFirestore.Firestore,
+  campaignRef: FirebaseFirestore.DocumentReference,
+  { cursor, slot, spacingSec, territoryIds }: {
+    cursor: string | null;
+    slot: number;
+    spacingSec: number;
+    territoryIds: string[] | null;
+  },
+): Promise<Response> {
+  const campaignId = campaignRef.id;
   const snap = await campaignRef.get();
   if (!snap.exists) return NextResponse.json({ ok: true, ignored: "missing" });
   const campaign = snap.data() as VoiceCampaignDoc;
@@ -95,26 +129,31 @@ export async function POST(request: Request) {
     ...page.recipients.map((contact) => ({ contact, reason: null })),
     ...page.skipped,
   ];
-  const existing = pageContacts.length
-    ? await db.getAll(...pageContacts.map(({ contact }) => recCol.doc(contact.id)))
-    : [];
-  const existingStatus = new Map(
-    existing
-      .filter((s) => s.exists)
-      .map((s) => [s.id, (s.data() as VoiceCampaignRecipientDoc).status]),
+  // Rows a previous delivery of this page already wrote: rows are keyed by
+  // contact id and pages are id-ordered, so they are exactly the rows in
+  // (cursor, page end] — including any whose contact has since been deleted
+  // or re-filtered out of the page.
+  let existingQuery = recCol.orderBy(FieldPath.documentId());
+  if (cursor) existingQuery = existingQuery.startAfter(cursor);
+  const existing = (await existingQuery.limit(EXISTING_SCAN_LIMIT).get()).docs.filter(
+    (d) => page.nextCursor === null || d.id <= page.nextCursor,
   );
+  const existingStatus = new Map(
+    existing.map((d) => [d.id, (d.data() as VoiceCampaignRecipientDoc).status]),
+  );
+  // Every still-queued row of this page is (re-)published; the step
+  // re-checks the contact, so one that has since opted out or vanished is
+  // settled there rather than stranded here.
+  const toPublish: string[] = [...existingStatus]
+    .filter(([, status]) => status === "queued")
+    .map(([id]) => id);
 
   // New rows + their totals in one atomic batch (≤ page size + 1 writes).
   const batch = db.batch();
   let newQueued = 0;
   let newSkipped = 0;
-  const toPublish: Contact[] = [];
   for (const { contact, reason } of pageContacts) {
-    const status = existingStatus.get(contact.id);
-    if (status !== undefined) {
-      if (status === "queued" && !reason) toPublish.push(contact);
-      continue;
-    }
+    if (existingStatus.has(contact.id)) continue;
     const row: Omit<VoiceCampaignRecipientDoc, "id"> = {
       campaignId,
       agencyId: campaign.agencyId,
@@ -141,7 +180,7 @@ export async function POST(request: Request) {
       newSkipped += 1;
     } else {
       newQueued += 1;
-      toPublish.push(contact);
+      toPublish.push(contact.id);
     }
   }
   if (newQueued + newSkipped > 0) {
@@ -157,17 +196,17 @@ export async function POST(request: Request) {
   for (let i = 0; i < toPublish.length; i += PUBLISH_CONCURRENCY) {
     const chunk = toPublish.slice(i, i + PUBLISH_CONCURRENCY);
     const results = await Promise.all(
-      chunk.map((contact, j) =>
+      chunk.map((contactId, j) =>
         publishCallback({
           pathname: "/api/comms/voice/campaign/step",
-          body: { campaignId, contactId: contact.id },
+          body: { campaignId, contactId },
           delaySeconds: Math.ceil((slot + i + j) * spacingSec),
-          deduplicationId: `vcamp_${campaignId}_${contact.id}`,
+          deduplicationId: `vcamp_${campaignId}_${contactId}`,
         }),
       ),
     );
     results.forEach((r, j) => {
-      if (!r) failedIds.push(chunk[j]!.id);
+      if (!r) failedIds.push(chunk[j]!);
     });
   }
   // Nothing will ever run these rows — settle them so the campaign can
@@ -182,6 +221,7 @@ export async function POST(request: Request) {
 
   if (page.nextCursor) {
     const next = await publishCallback({
+      retries: FANOUT_RETRIES,
       pathname: "/api/comms/voice/campaign/fanout",
       body: {
         campaignId,
@@ -191,11 +231,11 @@ export async function POST(request: Request) {
         territoryIds,
       },
       delaySeconds: 0,
-      deduplicationId: `vcampfan_${campaignId}_${page.nextCursor.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      deduplicationId: `vcampfan_${campaignId}_${createHash("sha256").update(page.nextCursor).digest("hex").slice(0, 32)}`,
     });
     if (!next) {
       // Retry this page; its rows are already written and re-publish safely.
-      return NextResponse.json({ error: "Failed to schedule the next page" }, { status: 500 });
+      throw new Error("Failed to schedule the next fan-out page");
     }
     return NextResponse.json({ ok: true, queued: toPublish.length, next: page.nextCursor });
   }

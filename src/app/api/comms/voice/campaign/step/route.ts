@@ -9,7 +9,11 @@ import {
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
 import { getAgentProfile, getChannelConfig } from "@/lib/comms/ai/agent";
-import { createOutboundCall, vapiIsConfigured } from "@/lib/comms/voice/vapi";
+import {
+  createOutboundCall,
+  endCallViaControl,
+  vapiIsConfigured,
+} from "@/lib/comms/voice/vapi";
 import {
   checkOutboundCompliance,
   type OutboundComplianceCode,
@@ -17,6 +21,7 @@ import {
 import {
   claimDial,
   maybeCompleteCampaign,
+  recordDialled,
   settleQueuedRecipient,
 } from "@/lib/comms/voice/campaign-rows";
 import type {
@@ -241,6 +246,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, status: "failed" });
   }
 
+  // A cancel that landed while Vapi was dialling found nothing to sweep or
+  // end — hang the call up now.
+  if (await recordDialled(recRef, campaignRef, callId, callControlUrl)) {
+    if (callControlUrl) {
+      await endCallViaControl(callControlUrl).catch((err) =>
+        console.warn("[voice/campaign/step] hang-up after cancel failed", err),
+      );
+    } else {
+      console.warn("[voice/campaign/step] cancelled mid-dial but no control URL to end", callId);
+    }
+  }
+
   // voiceCalls placeholder (counts toward the gate's caps + shows in the
   // operator console). Mirrors the single-call route's placeholder.
   try {
@@ -280,7 +297,6 @@ export async function POST(request: Request) {
     console.warn("[voice/campaign/step] voiceCalls placeholder failed", err);
   }
 
-  await recRef.update({ callId, callControlUrl });
 
   // Stamp the contact for cross-campaign "don't re-call recently contacted"
   // suppression (read by the audience resolver on future campaigns).

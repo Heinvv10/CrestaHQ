@@ -168,4 +168,7 @@ export interface VoiceCampaignRecipientDoc {
   attempts: number;
   queuedAt: Timestamp | FieldValue | null;
   settledAt: Timestamp | FieldValue | null;
+  /** The campaign was cancelled while this call was being dialled; the
+   *  step hung it up as soon as Vapi returned. */
+  endedByCancel?: boolean;
 }

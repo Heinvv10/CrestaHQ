@@ -23,7 +23,9 @@ type Body = { campaignId?: string; mode?: "scheduled" | "all" };
  * QStash messages already scheduled still fire, but the step route sees the
  * cancelled status / already-settled rows and no-ops. The status flips
  * before the sweep, and each step re-reads it in a transaction just before
- * dialling, so no call is placed after this route has flipped it.
+ * dialling, so no NEW call starts after the flip. A call already being
+ * dialled when the flip lands is hung up by its step as soon as Vapi
+ * returns (in either mode) — it may ring briefly, but does not continue.
  *
  * A call can only be ended within its max duration, so for "all" we only
  * look at recipients dialled in the last 15 minutes — that's a small set

@@ -6,10 +6,11 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
-import { voiceAudienceQuery } from "@/lib/comms/voice/audience";
+import { countVoiceAudience } from "@/lib/comms/voice/audience";
 import { issueVoiceCampaignCode } from "@/lib/comms/voice/campaign-number";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { vapiIsConfigured } from "@/lib/comms/voice/vapi";
+import { FANOUT_RETRIES } from "@/lib/comms/voice/campaign-rows";
 import type {
   BroadcastAudienceFilter,
   SubAccountDoc,
@@ -27,10 +28,17 @@ interface SendBody {
   name?: string;
   /** Optional cross-campaign suppression. */
   suppression?: Partial<VoiceCampaignSuppression>;
+  /** Client-generated per submit; a retry with the same key is a no-op. */
+  idempotencyKey?: string;
 }
 
 /** Hard cap on per-campaign audience size. */
 const MAX_AUDIENCE_SIZE = 25_000;
+
+/** gRPC ALREADY_EXISTS — create() on a doc that is already there. */
+const ALREADY_EXISTS = 6;
+
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,64}$/;
 
 /**
  * Kick off a bulk outbound AI voice campaign. Sizes the audience, creates
@@ -77,6 +85,13 @@ export async function POST(request: Request) {
   ) {
     return NextResponse.json(
       { error: "audienceFilter.kind must be 'all', 'tag', or 'pipeline_stage'" },
+      { status: 400 },
+    );
+  }
+  const idempotencyKey = payload.idempotencyKey;
+  if (typeof idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
+    return NextResponse.json(
+      { error: "idempotencyKey (8-64 chars of A-Z, a-z, 0-9, _ or -) is required" },
       { status: 400 },
     );
   }
@@ -143,13 +158,22 @@ export async function POST(request: Request) {
         : null,
   };
 
-  // Size the audience with an aggregate count — the contacts themselves are
-  // read page by page in the fanout step, never whole inside this request.
-  // The count is pre-skip (opted-out / no-phone / suppressed included), so
-  // the cap errs on the side of refusing.
-  const matching = (
-    await voiceAudienceQuery(subAccountId, audienceFilter).count().get()
-  ).data().count;
+  // The caller's territory scope, carried to the fanout step in the
+  // (signed) QStash body and applied before counting, so a scoped
+  // collaborator only ever sees their own territories' contacts.
+  const scope = await loadEffectiveTerritoryScope(access);
+  const territoryIds = scope.enforce ? (scope.ids ?? []) : null;
+
+  // Size the audience without reading it — the contacts themselves are read
+  // page by page in the fanout step, never whole inside this request. The
+  // count is pre-skip (opted-out / no-phone / suppressed included), so the
+  // cap errs on the side of refusing.
+  const matching = await countVoiceAudience(
+    subAccountId,
+    audienceFilter,
+    territoryIds,
+    MAX_AUDIENCE_SIZE,
+  );
   if (matching === 0) {
     return NextResponse.json(
       { error: "Audience is empty — no contacts match this filter." },
@@ -159,16 +183,11 @@ export async function POST(request: Request) {
   if (matching > MAX_AUDIENCE_SIZE) {
     return NextResponse.json(
       {
-        error: `Audience size ${matching} exceeds the cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter.`,
+        error: `Audience size exceeds the cap of ${MAX_AUDIENCE_SIZE}. Narrow the filter.`,
       },
       { status: 400 },
     );
   }
-
-  // The caller's territory scope, carried to the fanout step in the
-  // (signed) QStash body.
-  const scope = await loadEffectiveTerritoryScope(access);
-  const territoryIds = scope.enforce ? (scope.ids ?? []) : null;
 
   // Trigger-user display name snapshot.
   let createdByName = access.email;
@@ -180,15 +199,62 @@ export async function POST(request: Request) {
   }
 
   const agencyId = subAccount.agencyId;
-  const campaignRef = db.collection("voiceCampaigns").doc();
+  const name =
+    typeof payload.name === "string" ? payload.name.trim().slice(0, 120) : "";
+  // The idempotency key names the doc, so a retried or double-clicked submit
+  // lands on the same campaign instead of calling everyone a second time.
+  const campaignRef = db
+    .collection("voiceCampaigns")
+    .doc(`${subAccountId}_${idempotencyKey}`);
+  const perMinute = Math.max(1, voice.outboundPerMinuteCap);
+  const startFanout = () =>
+    publishCallback({
+      retries: FANOUT_RETRIES,
+      pathname: "/api/comms/voice/campaign/fanout",
+      body: {
+        campaignId: campaignRef.id,
+        cursor: null,
+        slot: 0,
+        spacingSec: 60 / perMinute,
+        territoryIds,
+      },
+      delaySeconds: 0,
+      // Fixed id: a re-publish on retry collapses into the first.
+      deduplicationId: `vcampfan_${campaignRef.id}_start`,
+    });
+  const duplicate = async (existing: VoiceCampaignDoc) => {
+    if (
+      JSON.stringify(existing.audienceFilter) !== JSON.stringify(audienceFilter) ||
+      JSON.stringify(existing.suppression) !== JSON.stringify(suppression) ||
+      existing.name !== name
+    ) {
+      return NextResponse.json(
+        { error: "This campaign was already submitted with different settings. Reopen the dialog and try again." },
+        { status: 409 },
+      );
+    }
+    if (existing.status === "failed") {
+      return NextResponse.json(
+        { error: existing.errorMessage ?? "This campaign failed to start.", campaignId: campaignRef.id },
+        { status: 502 },
+      );
+    }
+    // The first attempt may have died before its fanout publish landed.
+    if (existing.status === "queued" && existing.fanoutDone === false) {
+      await startFanout();
+    }
+    return NextResponse.json({ ok: true, campaignId: campaignRef.id, audienceSize: matching, duplicate: true });
+  };
+  const prior = await campaignRef.get();
+  if (prior.exists) return duplicate(prior.data() as VoiceCampaignDoc);
+
   const code = await issueVoiceCampaignCode(subAccountId);
 
   const campaign: Omit<VoiceCampaignDoc, "id"> = {
     agencyId,
     subAccountId,
     code,
-    name:
-      typeof payload.name === "string" ? payload.name.trim().slice(0, 120) : "",
+    name,
     suppression,
     audienceFilter,
     openerPreview: voice.outboundFirstMessage.slice(0, 200),
@@ -211,24 +277,17 @@ export async function POST(request: Request) {
     errorMessage: null,
     fanoutDone: false,
   };
-  await campaignRef.set({ id: campaignRef.id, ...campaign });
+  try {
+    await campaignRef.create({ id: campaignRef.id, ...campaign });
+  } catch (err) {
+    if ((err as { code?: number }).code !== ALREADY_EXISTS) throw err;
+    return duplicate((await campaignRef.get()).data() as VoiceCampaignDoc);
+  }
 
   // Hand the audience to the fanout step, which pages through it and
   // publishes the paced per-recipient steps — stagger at the per-minute cap
   // so calls are paced and the burst limiter never trips.
-  const perMinute = Math.max(1, voice.outboundPerMinuteCap);
-  const fanout = await publishCallback({
-    pathname: "/api/comms/voice/campaign/fanout",
-    body: {
-      campaignId: campaignRef.id,
-      cursor: null,
-      slot: 0,
-      spacingSec: 60 / perMinute,
-      territoryIds,
-    },
-    delaySeconds: 0,
-    deduplicationId: `vcampfan_${campaignRef.id}_start`,
-  });
+  const fanout = await startFanout();
   if (!fanout) {
     await campaignRef.update({
       status: "failed",
