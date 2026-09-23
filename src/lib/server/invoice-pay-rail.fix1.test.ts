@@ -77,11 +77,19 @@ describe("R1: a re-send after an edit emails a payable link", () => {
 describe("R2: a pending or unconfirmed card charge gets no pay link", () => {
   const charge = (state: string) => ({ reference: "ra-sch1-c1", mandateId: "m1", state, reason: null });
 
-  it.each(["pending", "unknown", "paid", "needs_attention"])("refuses to send when the charge is %s", async (state) => {
+  it.each([
+    ["pending", "Re-check card charge"],
+    ["unknown", "Re-check card charge"],
+    ["paid", "already paid by its saved card"],
+    ["needs_attention", "needs attention"],
+  ])("refuses to send when the charge is %s, and says so accurately", async (state, says) => {
     edit({ status: "sent", autoCharge: charge(state) });
     const res = await send();
     expect(res).toMatchObject({ ok: false, failure: { code: "card_charge_unsettled", status: 409 } });
-    if (!res.ok) expect(res.failure.error).toContain("mark the invoice paid, instead of sending a pay link");
+    if (!res.ok) expect(res.failure.error).toContain(says);
+    if (!res.ok && (state === "paid" || state === "needs_attention")) {
+      expect(res.failure.error).not.toMatch(/pending|unconfirmed|being confirmed|no clear outcome/);
+    }
     expect(links()).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();
   });

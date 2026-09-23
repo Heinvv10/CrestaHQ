@@ -5,7 +5,6 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendPushForEvent } from "@/lib/push/send";
 import { issueQuoteNumber } from "@/lib/quotes/number";
-import { alertCardLinkFallback } from "@/lib/server/auto-charge-alerts";
 import {
   createTaskServerSide,
   territoryForContact,
@@ -99,12 +98,14 @@ export function notifyDraftForReview(
  * customer replying to an automated invoice has to reach a human. A send
  * failure does not fail the cycle — the invoice exists and the operator can
  * send it by hand — but it is recorded on the schedule, after any card `chargeNote`.
+ * `cardLinkFallback`: a card-mode invoice went without its card-on-file link
+ * (see `chooseInvoicePayRail`); the card cycle folds it into its one Task.
  */
 export async function sendGeneratedInvoice(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
   chargeNote?: string,
-): Promise<boolean> {
+): Promise<{ sent: boolean; cardLinkFallback: string | null }> {
   const replyTo = await accountContactEmail(schedule.subAccountId);
   const result = await sendQuoteServerSide({
     subAccountId: schedule.subAccountId,
@@ -124,11 +125,9 @@ export async function sendGeneratedInvoice(
         updatedAt: FieldValue.serverTimestamp(),
       })
       .catch(() => {});
-    return false;
+    return { sent: false, cardLinkFallback: null };
   }
-  // Sent, but not with the card-on-file link, so no card will be saved.
-  if (result.cardLinkFallback) await alertCardLinkFallback(schedule, result.cardLinkFallback);
-  return true;
+  return { sent: true, cardLinkFallback: result.cardLinkFallback ?? null };
 }
 
 /**

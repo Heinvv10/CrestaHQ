@@ -15,19 +15,19 @@ import type { SubAccountDoc } from "@/types";
  * How an invoice being sent can be paid — step 5a of `sendQuoteServerSide`.
  * An invoice is never emailed with no way to pay it. In order:
  *
- *   a. from an active card-mode recurring schedule, Paystack ready → a
+ *   a. from an active card-mode recurring schedule → a
  *      card-on-file link: paying it settles this invoice and saves the card.
- *      If it can't be made, the reason is returned (`cardLinkFallback`) and
- *      the send falls through to the next rail;
+ *      If it can't be made — or Paystack isn't ready — the reason is returned
+ *      (`cardLinkFallback`) and the send falls through to the next rail;
  *   b. PayPal configured → a paypal.me URL, rebuilt on every send;
  *   c. Stripe ready → nothing to mint: /q/[token] renders the card button;
  *   d. Paystack ready → a plain Paystack payment link;
  *   e. none → `no_payment_rail`.
  *
  * Existing PayPal and Stripe tenants are therefore untouched by Paystack,
- * except for a card-mode schedule's invoice. An invoice whose recurring card
- * charge is pending or unconfirmed gets no way to pay at all: that could
- * charge the customer twice.
+ * except for a card-mode schedule's invoice. An invoice with a recurring card
+ * charge that wasn't declined (pending, unconfirmed, paid, needs attention)
+ * gets no way to pay at all: that could charge the customer twice.
  *
  * "Paystack ready" = Payments enabled by the agency, a Paystack connection,
  * and a ZAR invoice. A Paystack link is minted while the invoice may still be
@@ -55,28 +55,26 @@ export type InvoicePayRail =
   | { ok: false; code: string; status: number; error: string };
 
 export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | null): Promise<InvoicePayRail> {
-  if (cardChargeUnsettled(quote)) {
-    return fail(
-      "card_charge_unsettled",
-      409,
-      "This cycle's card charge is pending or unconfirmed. Check Paystack, then mark the invoice paid, instead of sending a pay link.",
-    );
-  }
+  if (cardChargeUnsettled(quote)) return fail("card_charge_unsettled", 409, UNSETTLED[quote.autoCharge!.state]);
   const paypal = sub?.paypalConfig ?? null;
   const stripeReady = sub?.paymentsEnabledByAgency === true && sub?.stripeConnectionMeta?.ready === true;
-  const paystackReady =
-    sub?.paymentsEnabledByAgency === true &&
-    (quote.currency || "").toUpperCase() === PAYMENT_LINK_CURRENCY &&
-    (await readPaystackConnectionSecret(quote.subAccountId)) !== null;
+  // Why Paystack can't take this invoice, or null when it can.
+  const paystackBlocker =
+    sub?.paymentsEnabledByAgency !== true
+      ? "Payments is off for this workspace"
+      : (quote.currency || "").toUpperCase() !== PAYMENT_LINK_CURRENCY
+        ? "the invoice is not in ZAR"
+        : (await readPaystackConnectionSecret(quote.subAccountId)) === null
+          ? "Paystack is not connected"
+          : null;
+  const paystackReady = paystackBlocker === null;
 
   let cardLinkError: string | null = null;
-  if (paystackReady) {
-    const schedule = await loadActiveSchedule(quote.subAccountId, quote.recurringInvoiceId);
-    if (schedule?.chargeMode === "card") {
-      const mandate = await paystackLink(quote, true);
-      if (mandate.ok) return mandate;
-      cardLinkError = mandate.error;
-    }
+  const schedule = await loadActiveSchedule(quote.subAccountId, quote.recurringInvoiceId);
+  if (schedule?.chargeMode === "card") {
+    const mandate = paystackReady ? await paystackLink(quote, true) : null;
+    if (mandate?.ok) return mandate;
+    cardLinkError = mandate ? mandate.error : paystackBlocker;
   }
   const fellBack = (rail: Extract<InvoicePayRail, { ok: true }>, name: string): InvoicePayRail => ({
     ...rail,
@@ -114,6 +112,17 @@ export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | nu
     "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.",
   );
 }
+
+/** Why an invoice with a live card charge gets no way to pay, by the charge's state. */
+const UNSETTLED: Record<string, string> = {
+  pending:
+    'This invoice\'s card charge is still being confirmed. Use "Re-check card charge" to ask Paystack, instead of sending a pay link.',
+  unknown:
+    'This invoice\'s card charge has no clear outcome yet. Use "Re-check card charge" to ask Paystack, instead of sending a pay link.',
+  paid: "This invoice was already paid by its saved card. There is nothing to send a pay link for.",
+  needs_attention:
+    "The saved card was charged for this invoice, but the payment needs attention: see its Task and your Paystack dashboard. Don't send a pay link — it would charge the customer twice.",
+};
 
 const fail = (code: string, status: number, error: string) => ({ ok: false as const, code, status, error });
 

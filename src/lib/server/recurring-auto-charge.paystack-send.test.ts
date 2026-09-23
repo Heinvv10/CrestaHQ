@@ -95,6 +95,37 @@ describe("first card cycle whose card-on-file link can't be made", () => {
   });
 });
 
+describe("N2 + N3: one Task per cycle, naming the real cause", () => {
+  it("a revoked card AND a card-on-file link that can't be made: ONE Task carrying both", async () => {
+    seedCardSchedule();
+    seedMandate({ status: "revoked" });
+    sub({ name: "" });
+    stubAutoCharge();
+    await runOneSchedule(SCHEDULE, NOW);
+    const tasks = mem.list("tasks");
+    expect(tasks).toHaveLength(1);
+    expect(`${tasks[0].title} ${tasks[0].notes}`).toContain("the saved card was removed");
+    expect(`${tasks[0].title} ${tasks[0].notes}`).toContain("business name");
+  });
+
+  it.each([
+    ["Paystack is not connected", () => mem.seed(`subAccounts/${SA}/private/paystackConnection`, {})],
+    ["Payments is off", () => sub({ paymentsEnabledByAgency: false })],
+    ["not in ZAR", () => mem.seed(`recurringInvoices/${SCHEDULE}`, { ...mem.read(`recurringInvoices/${SCHEDULE}`)!, currency: "USD" })],
+  ])("first cycle, Paystack not ready (%s), sent by PayPal: a Task and lastError name it", async (cause, breakIt) => {
+    seedCardSchedule({ cardMandateId: null, cyclesGenerated: 0 });
+    sub({ paypalConfig: { username: "acme" } });
+    breakIt();
+    stubAutoCharge();
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: true });
+    expect(raised().paymentLinkUrl).toMatch(/^https:\/\/paypal\.me\//);
+    const tasks = mem.list("tasks");
+    expect(tasks).toHaveLength(1);
+    expect(`${tasks[0].title} ${tasks[0].notes}`).toContain(cause);
+    expect(lastError()).toContain(cause);
+  });
+});
+
 describe("a later cycle that can't charge", () => {
   it("revoked card: emails the invoice with a card-on-file link AND raises a Task", async () => {
     seedCardSchedule();

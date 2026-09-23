@@ -274,3 +274,26 @@ export async function revokePaymentMandate(input: {
     return { ok: true as const };
   });
 }
+
+/** One more decline in a row; at the schedule's threshold the card needs attention. */
+export async function countDecline(mandateId: string, reason: string, threshold: number): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`paymentMandates/${mandateId}`);
+  await db.runTransaction(async (t) => {
+    const mandate = (await t.get(ref)).data() as PaymentMandate | undefined;
+    if (!mandate) return;
+    const declines = (mandate.consecutiveDeclines ?? 0) + 1;
+    const escalate = threshold > 0 && declines >= threshold && mandate.status === "active";
+    t.update(ref, {
+      consecutiveDeclines: declines,
+      lastDeclineReason: reason,
+      ...(escalate
+        ? {
+            status: "attention",
+            attention: `Declined ${declines} times in a row (last: ${reason}). Invoices are emailed instead until the customer saves a new card.`,
+          }
+        : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+}
