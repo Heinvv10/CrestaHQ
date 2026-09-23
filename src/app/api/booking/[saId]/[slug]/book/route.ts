@@ -366,6 +366,7 @@ export async function POST(
         phone,
         phoneCountry: sub.defaultPhoneCountry ?? null,
         defaultTerritoryId: page.defaultTerritoryId,
+        txn,
       });
 
       const territoryId =
