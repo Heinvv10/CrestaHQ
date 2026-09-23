@@ -1,6 +1,10 @@
 import "server-only";
 
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import {
+  FieldValue,
+  Timestamp,
+  type QueryDocumentSnapshot,
+} from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { computeNextRunAt } from "@/lib/recurring/cadence";
@@ -8,6 +12,7 @@ import {
   generateInvoice,
   isAlreadyFinished,
   isFinalCycle,
+  notifyDraftForReview,
   schedulesCollection,
   sendGeneratedInvoice,
   settleAfterCycle,
@@ -46,6 +51,9 @@ export const MAX_CATCHUP_DAYS = 31;
 /** How many schedules one cron invocation will process before continuing. */
 export const RECURRING_BATCH_SIZE = 25;
 
+/** Due schedules read per query page while looking for ones not yet run. */
+const SCAN_PAGE_SIZE = 100;
+
 export interface SweepResult {
   processed: number;
   generated: number;
@@ -64,34 +72,58 @@ export interface SweepResult {
 export async function runRecurringInvoiceSweep(
   now: Date = new Date(),
 ): Promise<SweepResult> {
-  const due = await schedulesCollection()
+  const due = schedulesCollection()
     .where("status", "==", "active")
     .where("nextRunAt", "<=", Timestamp.fromDate(now))
-    .orderBy("nextRunAt")
-    .limit(RECURRING_BATCH_SIZE + 1)
-    .get();
-
-  const batch = due.docs.slice(0, RECURRING_BATCH_SIZE);
+    .orderBy("nextRunAt");
   const result: SweepResult = {
     processed: 0,
     generated: 0,
     skipped: 0,
     failed: 0,
-    hasMore: due.size > RECURRING_BATCH_SIZE,
+    hasMore: false,
   };
 
-  for (const doc of batch) {
-    // Sequential on purpose: each cycle issues a per-sub-account invoice
-    // number in a transaction, and running them concurrently would put those
-    // transactions into avoidable contention for no wall-clock gain at this
-    // batch size.
-    const outcome = await runOneSchedule(doc.id, now);
-    result.processed += 1;
-    if (outcome.kind === "generated") result.generated += 1;
-    else if (outcome.kind === "skipped") result.skipped += 1;
-    else result.failed += 1;
+  let cursor: QueryDocumentSnapshot | undefined;
+  for (;;) {
+    const page = await (cursor ? due.startAfter(cursor) : due)
+      .limit(SCAN_PAGE_SIZE)
+      .get();
+    for (const doc of page.docs) {
+      // Already handled today — billed, or its claim failed. Passed over
+      // BEFORE the batch cap: a schedule still behind after today's cycle
+      // stays due and sorts first, so counting it would have every
+      // continuation re-read the same batch and never reach the rest.
+      if (handledToday(doc.data(), now)) continue;
+      if (result.processed >= RECURRING_BATCH_SIZE) {
+        result.hasMore = true;
+        return result;
+      }
+      // Sequential on purpose: each cycle issues a per-sub-account invoice
+      // number in a transaction, and running them concurrently would put
+      // those transactions into avoidable contention for no wall-clock gain
+      // at this batch size.
+      const outcome = await runOneSchedule(doc.id, now);
+      result.processed += 1;
+      if (outcome.kind === "generated") result.generated += 1;
+      else if (outcome.kind === "skipped") result.skipped += 1;
+      else result.failed += 1;
+    }
+    if (page.docs.length < SCAN_PAGE_SIZE) return result;
+    cursor = page.docs[page.docs.length - 1];
   }
-  return result;
+}
+
+/** Same UTC calendar day: the sweep runs once a day, at 05:00 UTC. */
+function sameUtcDay(a: Date, b: Date): boolean {
+  return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+}
+
+function handledToday(data: Record<string, unknown>, now: Date): boolean {
+  return [data.lastRunAt, data.lastFailedAt].some((value) => {
+    const at = toDate(value);
+    return !!at && sameUtcDay(at, now);
+  });
 }
 
 /**
@@ -102,15 +134,39 @@ export async function runOneSchedule(
   scheduleId: string,
   now: Date = new Date(),
 ): Promise<RecurringCycleOutcome> {
-  const claim = await claimCycle(scheduleId, now);
+  let claim: Awaited<ReturnType<typeof claimCycle>>;
+  try {
+    claim = await claimCycle(scheduleId, now);
+  } catch (err) {
+    // Bad stored data (a timezone or cadence the arithmetic rejects) throws
+    // here on every sweep. Failing the whole sweep would block every schedule
+    // after this one, daily — so it fails alone, visibly on the operator's
+    // list, and `lastFailedAt` keeps today's continuations off it.
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`[recurring] claim failed for ${scheduleId}: ${reason}`);
+    await schedulesCollection()
+      .doc(scheduleId)
+      .update({
+        lastError: `This schedule could not run: ${reason}`.slice(0, 500),
+        lastFailedAt: Timestamp.fromDate(now),
+        updatedAt: FieldValue.serverTimestamp(),
+      })
+      .catch((writeErr) =>
+        console.error(`[recurring] could not record failure for ${scheduleId}`, writeErr),
+      );
+    return { kind: "failed", reason };
+  }
   if (!claim.ok) return { kind: "skipped", reason: claim.reason };
   const schedule = claim.schedule;
 
   try {
-    const invoiceId = await generateInvoice(schedule, now);
+    const invoice = await generateInvoice(schedule, now);
+    const { invoiceId } = invoice;
     let sent = false;
     if (!schedule.reviewFirst) {
       sent = await sendGeneratedInvoice(schedule, invoiceId);
+    } else {
+      notifyDraftForReview(schedule, invoice);
     }
     await settleAfterCycle(schedule, invoiceId);
     return { kind: "generated", invoiceId, sent };
@@ -158,6 +214,29 @@ async function claimCycle(
     const dueAt = toDate(schedule.nextRunAt);
     if (!dueAt || dueAt.getTime() > now.getTime()) {
       return { ok: false as const, reason: "not_due" };
+    }
+    // At most one cycle per schedule per day. One still behind after this
+    // claim stays due, so a continuation or a retry of today's sweep would
+    // otherwise bill its next cycle minutes later.
+    const lastRunAt = toDate(schedule.lastRunAt);
+    if (lastRunAt && sameUtcDay(lastRunAt, now)) {
+      return { ok: false as const, reason: "ran_today" };
+    }
+
+    // Contacts are hard-deleted. Invoicing one that is gone raises an invoice
+    // nobody can receive, every cycle, so the schedule stops and says why.
+    const contact = await tx.get(
+      getAdminDb().doc(`contacts/${schedule.contactId}`),
+    );
+    if (!contact.exists) {
+      tx.update(ref, {
+        status: "paused",
+        lastError:
+          "Paused: the contact this schedule bills was deleted. Cancel it, " +
+          "or set up a new schedule for another contact.",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return { ok: false as const, reason: "contact_gone" };
     }
 
     // The schedule is already over — its last cycle ran but never got marked,

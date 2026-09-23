@@ -74,6 +74,7 @@ export async function PATCH(
       timezone: schedule.timezone,
       status: schedule.status,
       nextRunAt: toDate(schedule.nextRunAt),
+      lastRunAt: toDate(schedule.lastRunAt),
     },
     new Date(),
   );

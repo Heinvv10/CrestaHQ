@@ -109,6 +109,26 @@ export function computeFirstRunAt(input: {
   });
 }
 
+/**
+ * The first cycle strictly after `after`, stepping whole cadences forward from
+ * `from`. For a run that may already be behind: a resumed schedule must not
+ * bill the cycles it slept through, and an edit must not land on a cycle the
+ * schedule has already billed.
+ */
+export function firstRunAfter(input: {
+  from: Date;
+  after: Date;
+  cadence: Cadence;
+  anchorDay: number | null;
+  timezone: string;
+}): Date {
+  let next = input.from;
+  while (next.getTime() <= input.after.getTime()) {
+    next = computeNextRunAt({ ...input, previous: next });
+  }
+  return next;
+}
+
 /** Day of month a schedule anchors to, or null for week cadences. */
 export function resolveAnchorDay(
   cadence: Cadence,

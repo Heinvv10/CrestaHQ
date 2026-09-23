@@ -271,3 +271,112 @@ describe("blank templates and dead-on-arrival edits", () => {
     ).toBe("2026-06-10");
   });
 });
+
+describe("an edit never re-bills a cycle already billed", () => {
+  // Monthly on the 15th (JHB). Today's cycle was billed by the 05:00Z sweep;
+  // the operator edits at 08:00Z the same day.
+  const BILLED_TODAY = {
+    ...CURRENT,
+    lastRunAt: new Date("2026-06-15T05:00:00Z"),
+    nextRunAt: new Date("2026-07-14T22:00:00Z"),
+  };
+  const EDITED_AT = new Date("2026-06-15T08:00:00Z");
+
+  it("moves to the NEXT anchored cycle when the cadence changes on a billed day", () => {
+    const result = parseScheduleUpdate(
+      { cadence: { unit: "quarter", interval: 1 } },
+      BILLED_TODAY,
+      EDITED_AT,
+    );
+    if (!result.ok) throw new Error(result.error);
+    const next = result.value.recomputeNextRunFrom!;
+    // Today's midnight is already past and already billed — pointing the
+    // schedule at it would have tomorrow's sweep bill the 15th a second time.
+    expect(next.getTime()).toBeGreaterThan(BILLED_TODAY.lastRunAt.getTime());
+    expect(localDate(next)).toBe("2026-09-15");
+  });
+
+  it("does the same for a switch to weekly", () => {
+    const result = parseScheduleUpdate(
+      { cadence: { unit: "week", interval: 1 } },
+      BILLED_TODAY,
+      EDITED_AT,
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-06-22");
+  });
+
+  it("still bills today when nothing has been billed today", () => {
+    const result = parseScheduleUpdate(
+      { cadence: { unit: "quarter", interval: 1 } },
+      { ...BILLED_TODAY, lastRunAt: new Date("2026-05-15T05:00:00Z") },
+      EDITED_AT,
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-06-15");
+  });
+});
+
+describe("resuming a paused schedule", () => {
+  const PAUSED = {
+    ...CURRENT,
+    status: "paused" as RecurringInvoiceStatus,
+    // Paused since March: the stored next run is three cycles stale.
+    nextRunAt: new Date("2026-03-14T22:00:00Z"),
+    lastRunAt: new Date("2026-02-15T05:00:00Z"),
+  };
+
+  it("bills from the next cycle after the resume, not the missed ones", () => {
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      PAUSED,
+      new Date("2026-06-20T12:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-07-15");
+  });
+
+  it("skips a cycle that fell due earlier on the day of the resume", () => {
+    const now = new Date("2026-06-15T08:00:00Z");
+    const result = parseScheduleUpdate({ status: "active" }, PAUSED, now);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.recomputeNextRunFrom!.getTime()).toBeGreaterThan(now.getTime());
+    expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-07-15");
+  });
+
+  it("keeps a weekly schedule on its weekday", () => {
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      {
+        ...PAUSED,
+        cadence: { unit: "week", interval: 1 } as const,
+        anchorDay: null,
+        // Monday 1 June, local midnight.
+        nextRunAt: new Date("2026-05-31T22:00:00Z"),
+      },
+      new Date("2026-06-20T12:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(localDate(result.value.recomputeNextRunFrom!)).toBe("2026-06-22");
+  });
+
+  it("leaves a next run that is still ahead alone", () => {
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      { ...PAUSED, nextRunAt: new Date("2026-06-14T22:00:00Z") },
+      new Date("2026-06-10T12:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.recomputeNextRunFrom).toBeUndefined();
+  });
+
+  it("does not touch the next run when an active schedule is re-sent as active", () => {
+    const result = parseScheduleUpdate(
+      { status: "active" },
+      { ...PAUSED, status: "active" },
+      new Date("2026-06-20T12:00:00Z"),
+    );
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.recomputeNextRunFrom).toBeUndefined();
+  });
+});
