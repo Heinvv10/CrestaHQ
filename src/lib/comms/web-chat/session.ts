@@ -200,6 +200,9 @@ export async function linkSessionToContact(input: {
   capturedName: string | null;
   capturedEmail: string | null;
   capturedPhone: string | null;
+  /** Omitted on a re-link of an already-linked session so the flag set at
+   *  first link is never lost. */
+  contactCreatedBySession?: boolean;
 }): Promise<void> {
   await getAdminDb()
     .doc(sessionDocPath(input.subAccountId, input.sessionId))
@@ -208,6 +211,9 @@ export async function linkSessionToContact(input: {
       capturedName: input.capturedName,
       capturedEmail: input.capturedEmail,
       capturedPhone: input.capturedPhone,
+      ...(input.contactCreatedBySession === undefined
+        ? {}
+        : { contactCreatedBySession: input.contactCreatedBySession }),
       updatedAt: FieldValue.serverTimestamp(),
     });
 }
