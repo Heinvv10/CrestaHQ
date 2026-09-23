@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   SCHEDULE,
+  TERMS,
   chargeCalls,
   raised,
   seedCardSchedule,
@@ -76,7 +77,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("a cycle due too soon after the last card charge", () => {
+describe("a cycle due too soon after the previous cycle", () => {
   it("R5: anchor moved to the 5th the day after a charge → 5 Mar is emailed, 5 Apr is charged", async () => {
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
@@ -88,8 +89,11 @@ describe("a cycle due too soon after the last card charge", () => {
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(raised().id).toBe(sendQuoteServerSide.mock.calls[0][0].quoteId);
     const [task] = tasksAbout("too soon");
-    expect(task.notes).toMatch(/charged on 1 March 2026/);
-    expect(mem.read(`recurringInvoices/${SCHEDULE}`)!.lastError).toMatch(/too soon/);
+    expect(task.notes).toBe(
+      "This cycle is due 5 March 2026, only 4 days after the previous cycle (1 March 2026) — usually because the billing day " +
+        "or frequency was changed — so the card was not charged and the invoice was emailed instead.",
+    );
+    expect(mem.read(`recurringInvoices/${SCHEDULE}`)!.lastError).toMatch(/only 4 days after the previous cycle/);
     expect(mem.read(`paymentMandates/m1`)!.consecutiveDeclines).toBeUndefined();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
 
@@ -132,6 +136,53 @@ describe("an edit never skips a month", () => {
   });
 });
 
+describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 3)", () => {
+  it("G2: weekly, one sweep a day late → next week is still charged", async () => {
+    seedCardSchedule({ cadence: { unit: "week", interval: 1 }, anchorDay: null, nextRunAt: midnight("2026-03-02") });
+    seedMandate({ terms: { ...TERMS, frequency: "every week" } });
+    const calls = stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-03-03"));
+    await runOneSchedule(SCHEDULE, at("2026-03-09"));
+    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
+  });
+
+  it("G3: paused over the due date, resumed, caught up 19 Mar → 1 Apr is still charged", async () => {
+    const calls = stubAutoCharge();
+    await edit("2026-02-25", { status: "paused" });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped" });
+    await edit("2026-03-18", { status: "active" });
+    await runOneSchedule(SCHEDULE, at("2026-03-19"));
+    await runOneSchedule(SCHEDULE, at("2026-04-01"));
+    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
+  });
+
+  it("a late sweep does not launder a too-close due date (1 Mar charged, moved to the 20th, swept 30 Mar)", async () => {
+    const calls = stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-03-01"));
+    await edit("2026-03-02", { anchorDay: 20 });
+    await runOneSchedule(SCHEDULE, at("2026-03-30"));
+    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`]);
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
+  });
+
+  it("G4: first cycle paid through the card-on-file link, anchor 1→5 → 5 Mar is emailed, not charged", async () => {
+    // No saved card yet: the 1 Mar cycle is emailed, and the customer pays
+    // it through the card-on-file link, which saves the card.
+    seedCardSchedule({ cardMandateId: null });
+    const calls = stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-03-01"));
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
+    const current = mem.read(`recurringInvoices/${SCHEDULE}`)!;
+    mem.seed(`recurringInvoices/${SCHEDULE}`, { ...current, cardMandateId: "m1" });
+
+    await edit("2026-03-02", { anchorDay: 5 });
+    await runOneSchedule(SCHEDULE, at("2026-03-05"));
+    expect(refs(calls)).toEqual([]);
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(2);
+    expect(tasksAbout("too soon")).toHaveLength(1);
+  });
+});
+
 describe("normal cycles are still charged", () => {
   it("monthly, including 31 Jan → 28 Feb", async () => {
     seedCardSchedule({ anchorDay: 31, nextRunAt: midnight("2026-01-31") });
@@ -143,10 +194,23 @@ describe("normal cycles are still charged", () => {
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
   });
 
-  it("stores when the card was last charged on the schedule", async () => {
+  const lastDue = () => (mem.read(`recurringInvoices/${SCHEDULE}`)!.lastDueAt as Timestamp | undefined)?.toDate().toISOString();
+
+  it("the claim records each billed cycle's due date — not the sweep time — in either mode", async () => {
     stubAutoCharge();
+    await runOneSchedule(SCHEDULE, at("2026-03-03"));
+    expect(lastDue()).toBe("2026-02-28T22:00:00.000Z");
+    seedCardSchedule({ chargeMode: "invoice" });
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
-    const last = mem.read(`recurringInvoices/${SCHEDULE}`)!.lastCardChargeAt as Timestamp;
-    expect(last.toDate()).toEqual(at("2026-03-01"));
+    expect(lastDue()).toBe("2026-02-28T22:00:00.000Z");
+  });
+
+  it("a too-stale fast-forward or an already-finished close records nothing", async () => {
+    seedCardSchedule({ nextRunAt: midnight("2026-01-01") });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped", reason: "too_stale" });
+    expect(lastDue()).toBeUndefined();
+    seedCardSchedule({ endMode: "after_count", maxCycles: 3 });
+    expect(await runOneSchedule(SCHEDULE, at("2026-03-01"))).toMatchObject({ kind: "skipped", reason: "already_finished" });
+    expect(lastDue()).toBeUndefined();
   });
 });

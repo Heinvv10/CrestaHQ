@@ -120,11 +120,12 @@ export interface RecurringInvoiceDoc {
    */
   chargeMode?: RecurringChargeMode;
   /**
-   * When the saved card was last charged (an attempt made), written with the
-   * attempt. A card cycle due sooner than the cadence allows after it is
-   * emailed instead — so no schedule edit can charge twice in one period.
+   * The due date of the last cycle actually billed (any charge mode), written
+   * by the claim. A card cycle due sooner than its cadence allows after it is
+   * emailed instead of charged — so no edit can charge twice in one period.
+   * Absent on schedules last billed before it existed.
    */
-  lastCardChargeAt?: Timestamp | FieldValue | null;
+  lastDueAt?: Timestamp | FieldValue | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;

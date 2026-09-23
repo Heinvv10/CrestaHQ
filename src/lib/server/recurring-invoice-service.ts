@@ -115,7 +115,7 @@ export async function runOneSchedule(
       // cannot or the card is declined.
       sent =
         schedule.chargeMode === "card"
-          ? await chargeCycle(schedule, invoiceId, claim.cycle, now)
+          ? await chargeCycle(schedule, invoiceId, claim.cycle, claim.dueAt)
           : await sendGeneratedInvoice(schedule, invoiceId);
     }
     await settleAfterCycle(schedule, invoiceId);
@@ -148,7 +148,7 @@ async function claimCycle(
   scheduleId: string,
   now: Date,
 ): Promise<
-  | { ok: true; schedule: RecurringInvoiceDoc; cycle: number }
+  | { ok: true; schedule: RecurringInvoiceDoc; cycle: number; dueAt: Date }
   | { ok: false; reason: string }
 > {
   const ref = schedulesCollection().doc(scheduleId);
@@ -212,11 +212,16 @@ async function claimCycle(
       nextRunAt: Timestamp.fromDate(nextRunAt),
       cyclesGenerated,
       lastRunAt: Timestamp.fromDate(now),
+      // The card guard compares due dates (recurring-auto-charge.ts). Written
+      // only here, for a cycle actually billed — never by a stale skip.
+      lastDueAt: Timestamp.fromDate(dueAt),
       lastError: null,
       ...(finished ? { status: "completed" } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
     // `cycle` numbers the auto-charge reference: one charge per cycle.
-    return { ok: true as const, schedule, cycle: cyclesGenerated };
+    // `schedule` is the pre-claim snapshot, so its `lastDueAt` is the
+    // PREVIOUS cycle's due date.
+    return { ok: true as const, schedule, cycle: cyclesGenerated, dueAt };
   });
 }

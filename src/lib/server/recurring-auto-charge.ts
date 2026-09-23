@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -32,7 +32,7 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  *   not chargeable → the invoice is emailed, and the schedule says why;
  *   declined       → recorded on the attempt, invoice and mandate, the invoice
  *                    is emailed (it carries a pay link), `invoice.charge_failed`;
- *   too soon after the last charge (an edit moved the run) → emailed; a Task;
+ *   due too soon after the previous cycle (an edit moved it) → emailed; a Task;
  *   key refused    → emailed and a Task; not counted against the card, no trigger;
  *   no clear answer → NOT emailed — the card may have been charged — and a
  *                    Task names the reference to check.
@@ -56,14 +56,15 @@ type Opened =
   | { ok: true; secretKey: string; secret: PaymentMandateSecret; mandateId: string; amountCents: number; currency: string }
   | { ok: false; reason: string }
   | { ok: false; alreadyCharged: true }
-  | { ok: false; tooSoonAfter: Date };
+  | { ok: false; tooSoon: { dueAt: Date; previousDueAt: Date } };
 
 /** Returns whether the invoice was emailed. */
 export async function chargeCycle(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
   cycle: number,
-  now: Date,
+  /** This cycle's due date, from the claim. */
+  dueAt: Date,
 ): Promise<boolean> {
   const db = getAdminDb();
   const reference = autoChargeReference(schedule.id, cycle);
@@ -81,17 +82,19 @@ export async function chargeCycle(
   const alert = (title: string, notes: string) =>
     raiseChargeTask(schedule, title, notes).catch((err: unknown) => console.error(`${tag} task not raised: ${title}`, err));
 
-  const opened = await openAttempt(schedule, invoiceId, invoice, reference, now);
+  const opened = await openAttempt(schedule, invoiceId, invoice, reference, dueAt);
   if ("alreadyCharged" in opened) {
     console.error(`${tag} cycle already has a charge attempt; not charging again`);
     await note(`Card not charged for invoice ${label}: cycle ${cycle} was already charged (Paystack reference ${reference}). Check for a duplicate invoice.`);
     return false;
   }
-  if ("tooSoonAfter" in opened) {
-    const day = new Intl.DateTimeFormat("en-GB", { timeZone: schedule.timezone, dateStyle: "long" }).format(opened.tooSoonAfter);
-    const why = `the card was charged on ${day} and this cycle came due too soon after it, probably because of a schedule edit — so invoice ${label} was emailed instead, with a payment link.`;
-    await note(`Card not charged for invoice ${label}: ${why}`);
-    await alert(`Card not charged: invoice ${label} came due too soon after the last charge`, `Not charged again: ${why}`);
+  if ("tooSoon" in opened) {
+    const day = new Intl.DateTimeFormat("en-GB", { timeZone: schedule.timezone, dateStyle: "long" }).format;
+    const { dueAt: due, previousDueAt: prev } = opened.tooSoon;
+    const days = Math.round((due.getTime() - prev.getTime()) / 86_400_000);
+    const why = `This cycle is due ${day(due)}, only ${days} days after the previous cycle (${day(prev)}) — usually because the billing day or frequency was changed — so the card was not charged and the invoice was emailed instead.`;
+    await note(`Card not charged for invoice ${label}. ${why}`);
+    await alert(`Card not charged: invoice ${label} came due too soon after the previous cycle`, why);
     return sendGeneratedInvoice(schedule, invoiceId);
   }
   if (!opened.ok) {
@@ -160,20 +163,20 @@ export async function chargeCycle(
  * seen; one landing after finds this attempt open and flags it.
  * `cardMandateId` is only a pointer — the mandate's own status decides.
  *
- * Also where "never twice in one period" is enforced: the schedule's
- * `lastCardChargeAt` is read and written here, with the attempt, so no edit
- * that moves the next run can charge the card again too soon.
+ * Also where "never twice in one period" is enforced, on cycle DUE DATES —
+ * this one vs `lastDueAt`, however that cycle was paid (card, link, by hand).
+ * Late sweeps and pauses move neither; only a billing-day/frequency edit can.
  */
 async function openAttempt(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
   invoice: Quote | undefined,
   reference: string,
-  now: Date,
+  dueAt: Date,
 ): Promise<Opened> {
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
-  const scheduleRef = schedulesCollection().doc(schedule.id);
+  const previousDueAt = toDate(schedule.lastDueAt); // pre-claim: the PREVIOUS cycle's; absent (billed before the field existed) = unguarded
   return db.runTransaction(async (t): Promise<Opened> => {
     if ((await t.get(attemptRef)).exists) return { ok: false, alreadyCharged: true };
     const no = (reason: string) => ({ ok: false as const, reason });
@@ -182,7 +185,6 @@ async function openAttempt(
     const mandate = (await t.get(db.doc(`paymentMandates/${mandateId}`))).data() as PaymentMandate | undefined;
     const conn = await readPaystackConnectionSecret(schedule.subAccountId, t);
     const secret = (await t.get(db.doc(paymentMandateSecretPath(mandateId)))).data() as PaymentMandateSecret | undefined;
-    const lastCharge = toDate(((await t.get(scheduleRef)).data() as RecurringInvoiceDoc | undefined)?.lastCardChargeAt);
     if (!mandate || mandate.subAccountId !== schedule.subAccountId || mandate.recurringInvoiceId !== schedule.id) {
       return no("the saved card could not be found");
     }
@@ -202,8 +204,8 @@ async function openAttempt(
     ) {
       return no("the invoice no longer matches the amount the customer authorised");
     }
-    if (lastCharge && now.getTime() - lastCharge.getTime() < minCardChargeGapMs(schedule.cadence)) {
-      return { ok: false, tooSoonAfter: lastCharge };
+    if (previousDueAt && dueAt.getTime() - previousDueAt.getTime() < minCardChargeGapMs(schedule.cadence)) {
+      return { ok: false, tooSoon: { dueAt, previousDueAt } };
     }
     const attempt: Omit<PaymentAttempt, "id"> = {
       agencyId: schedule.agencyId,
@@ -223,7 +225,6 @@ async function openAttempt(
       updatedAt: FieldValue.serverTimestamp(),
     };
     t.create(attemptRef, attempt);
-    t.update(scheduleRef, { lastCardChargeAt: Timestamp.fromDate(now) });
     return { ok: true, secretKey: conn.secretKey, secret, mandateId, amountCents, currency: attempt.currency };
   });
 }
