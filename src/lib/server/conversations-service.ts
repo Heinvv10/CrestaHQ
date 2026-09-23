@@ -73,10 +73,11 @@ export interface UpsertConversationInput {
   /** The inbound message was a WhatsApp button tap (it carried a payload). */
   buttonTap?: boolean;
   /**
-   * The inbound message is an opt-out keyword. The thread is still indexed,
-   * but nothing automated reacts to it: no `message.received` webhook, no
-   * waiting-run resume, no workflow enrolment. The caller applies the opt-out
-   * after this call, so anything fired here would race it.
+   * The inbound message is an opt-out keyword. The thread is indexed and the
+   * `message.received` webhook still fires (it drives the staff push — an
+   * opting-out customer must not go silently dark), but no workflow reacts:
+   * no waiting-run resume, no enrolment. The caller applies the opt-out after
+   * this call, so a workflow started here would race it.
    */
   optOut?: boolean;
 }
@@ -215,7 +216,7 @@ export async function upsertConversationForMessage(
     // contactId — at which point later messages fire them normally.
     // For every other channel contactId is always set, so this guard is
     // a no-op and existing behavior is byte-for-byte unchanged.
-    if (input.direction === "inbound" && input.contactId && !input.optOut) {
+    if (input.direction === "inbound" && input.contactId) {
       const contactId = input.contactId;
       void emitWebhookEvent({
         subAccountId: input.subAccountId,
@@ -232,6 +233,10 @@ export async function upsertConversationForMessage(
           },
         },
       });
+      // Informational only above (staff push, outbound webhook). An opt-out
+      // stops here: resuming or enrolling a workflow would race the opt-out
+      // the caller is about to apply.
+      if (input.optOut) return;
       // A reply resolves any workflow run parked on a wait_for_reply node.
       // Self-guarded fire-and-forget — same contract as the webhook emit.
       const resumed = resumeWaitingRunsOnReply({

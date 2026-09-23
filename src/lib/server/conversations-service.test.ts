@@ -107,10 +107,11 @@ it("an anonymous web-chat row starts with an empty mirror", async () => {
     expect.anything()
   );
 });
-// An opt-out keyword is applied by the caller AFTER this call, so anything
-// automated fired here would race it — a message.received workflow could text
-// someone whose message was STOP.
-it("an inbound opt-out keyword indexes the thread but fires no automation", async () => {
+// An opt-out keyword is applied by the caller AFTER this call, so a workflow
+// started here would race it — a message.received workflow could text someone
+// whose message was STOP. The webhook still fires: it drives the staff push,
+// and an opting-out customer must not go silently dark.
+it("an inbound opt-out keyword notifies staff but starts no workflow", async () => {
   await upsertConversationForMessage({
     ...input,
     direction: "inbound",
@@ -118,7 +119,9 @@ it("an inbound opt-out keyword indexes the thread but fires no automation", asyn
     optOut: true,
   });
   expect(m.writes).toHaveBeenCalled();
-  expect(emitWebhookEvent).not.toHaveBeenCalled();
+  expect(emitWebhookEvent).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "message.received" })
+  );
   expect(resumeWaitingRunsOnReply).not.toHaveBeenCalled();
   expect(fireWorkflowTrigger).not.toHaveBeenCalled();
 });
