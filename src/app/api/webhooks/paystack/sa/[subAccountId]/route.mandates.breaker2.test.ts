@@ -128,6 +128,9 @@ describe("round 2: concurrent settles on one schedule (memory-Firestore query ph
     seedAttempt(REF2, { amountCents: 115000, consent: consentAt("2026-09-01T08:01:00Z") });
     await Promise.all([deliver(REF1), deliver(REF2)]);
     expect(active()).toHaveLength(1);
+    // Whichever commits first, the later consent is the card kept.
+    expect(active()[0].id).toBe(REF2);
+    expect(mem.read("recurringInvoices/rec1")).toMatchObject({ cardMandateId: REF2 });
   });
 });
 
