@@ -106,6 +106,14 @@ describe("switchSubscriptionPlan", () => {
     expect(call(2).body).toMatchObject({ code: "SUB_1", token: "tok_1" });
   });
 
+  it("refuses to switch again after a switch that died before storing its new code", async () => {
+    // SUB_2 was opened and SUB_1 disabled, then the process died: the
+    // workspace still stores SUB_1. A new switch must not open a third.
+    paystack({ "GET /subscription/SUB_1": () => ({ ...live, status: "cancelled" }) });
+    await expect(switchPlan()).rejects.toThrow(/before re-assigning/i);
+    expect(paths()).toEqual(["GET /subscription/SUB_1"]);
+  });
+
   it("leaves the old subscription running when the new one cannot be scheduled", async () => {
     paystack({ "GET /subscription/SUB_1": () => ({ ...live, next_payment_date: null }) });
     await expect(switchPlan()).rejects.toBeInstanceOf(BillingError);

@@ -567,7 +567,7 @@ export async function assignPlanToSubAccount(input: {
             isRetiring(fresh, fresh.retiringSubscriptionId))
         ) {
           throw new BillingError(
-            "A plan switch for this workspace is already in progress — give it a minute, then check the plan before trying again.",
+            "A plan switch for this workspace is already in progress — it can take up to 10 minutes to clear. Check the plan before trying again.",
             409,
           );
         }

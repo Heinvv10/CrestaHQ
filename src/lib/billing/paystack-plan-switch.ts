@@ -37,6 +37,15 @@ export async function switchPaystackSubscriptionPlan(
     );
   }
   const sub = await readPaystackSubscription(input.subscriptionId);
+  // The stored subscription must still be the one billing. If it is not, an
+  // earlier switch may have opened a replacement and died before storing it —
+  // switching again would open a third while that one bills untracked.
+  if (sub.status !== "active" && sub.status !== "attention") {
+    throw new BillingError(
+      `This workspace's Paystack subscription ${sub.subscription_code} is no longer active (${sub.status ?? "unknown"}). Check customer ${sub.customer?.customer_code ?? "(unknown)"} in the Paystack dashboard before re-assigning — an earlier switch may already have started a new subscription.`,
+      409,
+    );
+  }
   const authorizationCode = sub.authorization?.authorization_code;
   const customerCode = sub.customer?.customer_code;
   if (!authorizationCode || !customerCode || !sub.next_payment_date) {
