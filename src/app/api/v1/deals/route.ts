@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue, type Query } from "firebase-admin/firestore";
+import { FieldPath, FieldValue, type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
@@ -36,7 +36,8 @@ const MAX_LIMIT = 100;
  * only) must be an ACTIVE member of the key's sub-account.
  *
  * Both filters are AND-ed. Cursor pagination orders by `stageChangedAt`
- * desc (matches the dashboard's Kanban "most recently moved first").
+ * desc (matches the dashboard's Kanban "most recently moved first"), then
+ * doc id desc to tiebreak deals sharing a `stageChangedAt`.
  */
 
 export const GET = withApiAuth(async ({ request, ctx }) => {
@@ -57,7 +58,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
 
   if (stage) q = q.where("stageId", "==", stage);
   if (contactId) q = q.where("contactId", "==", contactId);
-  q = q.orderBy("stageChangedAt", "desc");
+  q = q
+    .orderBy("stageChangedAt", "desc")
+    .orderBy(FieldPath.documentId(), "desc");
 
   if (startingAfter) {
     const cursorSnap = await db.doc(`deals/${startingAfter}`).get();
@@ -78,7 +81,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
         "Cursor belongs to a different sub-account or mode.",
       );
     }
-    q = q.startAfter(cursor.stageChangedAt ?? cursor.createdAt);
+    // Doc id tiebreaks docs sharing a stageChangedAt (bulk import writes
+    // many deals in one batch with a single serverTimestamp).
+    q = q.startAfter(cursor.stageChangedAt, startingAfter);
   }
 
   const snap = await q.limit(limit + 1).get();

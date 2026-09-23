@@ -1,6 +1,6 @@
 import "server-only";
 
-import { type Query } from "firebase-admin/firestore";
+import { FieldPath, type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
@@ -30,8 +30,11 @@ import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
  * Admin SDK).
  *
  * Pagination: `starting_after` is a contact id. The route reads that doc's
- * `createdAt` and uses it as the Firestore cursor. Default limit 20, max
- * 100. Returns `has_more: true` when the next page would have results.
+ * `createdAt` and uses it, plus the id itself, as the Firestore cursor —
+ * ordering ties on `createdAt` desc, then doc id desc, so a page boundary
+ * landing on a tie neither skips nor repeats a doc (bulk import can write
+ * hundreds of contacts sharing one `serverTimestamp`). Default limit 20,
+ * max 100. Returns `has_more: true` when the next page would have results.
  *
  * Writes go through `createContactServerSide` — the same chokepoint the
  * dashboard uses — so an API create fires `contact.created` (webhook AND
@@ -55,7 +58,8 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
     .collection("contacts")
     .where("subAccountId", "==", ctx.subAccountId)
     .where("mode", "==", ctx.mode)
-    .orderBy("createdAt", "desc");
+    .orderBy("createdAt", "desc")
+    .orderBy(FieldPath.documentId(), "desc");
 
   if (startingAfter) {
     const cursorSnap = await db.doc(`contacts/${startingAfter}`).get();
@@ -76,7 +80,10 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
         "Cursor belongs to a different sub-account or mode.",
       );
     }
-    q = q.startAfter(cursor.createdAt);
+    // Doc id tiebreaks docs sharing a createdAt (bulk imports write many
+    // contacts in one batch with a single serverTimestamp), so a page
+    // boundary landing mid-tie neither skips nor repeats a doc.
+    q = q.startAfter(cursor.createdAt, startingAfter);
   }
 
   // Fetch limit + 1 to know if there's another page without a second query.
