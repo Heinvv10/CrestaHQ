@@ -1,20 +1,26 @@
 /**
- * WhatsApp opt-out / opt-in keywords, read from the FIRST word of an inbound
- * message (uppercased). One list for every WhatsApp inbound route, and for the
- * template builder: a quick-reply button's text arrives as the message body,
- * so a button labelled with a stop word would opt out whoever taps it.
+ * Opt-out / opt-in keywords, matched against the WHOLE inbound message — one
+ * rule for every WhatsApp inbound route, the SMS route, and the template
+ * builder (a quick-reply button's text arrives as the message body, so a
+ * button labelled with a stop keyword would opt out whoever taps it).
+ *
+ * Whole-message, not first-word: "Cancel my installation tomorrow" is a
+ * customer talking, not an opt-out, and "Yes I'll be there" is not an opt-in.
  */
 export const WHATSAPP_STOP_WORDS = new Set([
   "STOP",
   "STOPALL",
+  "STOP ALL",
   "UNSUBSCRIBE",
-  "CANCEL",
-  "END",
-  "QUIT",
+  "OPT OUT",
 ]);
-export const WHATSAPP_START_WORDS = new Set(["START", "UNSTOP", "YES"]);
+export const WHATSAPP_START_WORDS = new Set(["START", "UNSTOP"]);
 
-/** The keyword the routes read: the message's first word, uppercased. */
-export function firstKeyword(text: string): string {
-  return text.trim().toUpperCase().split(/\s+/)[0] ?? "";
+/** The message as the keyword sets see it: trimmed, uppercased, surrounding
+ *  punctuation/emoji stripped, internal whitespace collapsed to one space. */
+export function optKeyword(text: string): string {
+  return text
+    .toUpperCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+    .replace(/\s+/g, " ");
 }

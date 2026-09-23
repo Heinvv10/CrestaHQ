@@ -472,11 +472,20 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId]", () => {
     expect(messageWrites[0].contactId).toBe("c_new");
   });
 
-  it("does not mint a contact for a never-seen number whose first word is STOP", async () => {
+  it("records a never-seen number's STOP: new contact, message row, and the opt-out", async () => {
+    // Dropping it would lose the opt-out: a later bulk send to this number
+    // would find no opted-out contact and message them anyway.
     contactRows = [];
-    const res = await post(inbound({ text: "STOP" }));
-    expect(createContactServerSide).not.toHaveBeenCalled();
-    expect(await res.json()).toMatchObject({ persisted: false });
+    createContactServerSide.mockImplementation(async () => {
+      contactRows = [{ id: "c_new", data: { phone: "+27821234567" } }];
+      return { id: "c_new" };
+    });
+    const res = await post(inbound({ text: "Stop!" }));
+    expect(createContactServerSide).toHaveBeenCalledTimes(1);
+    expect(messageWrites.map((w) => [w.contactId, w.data.body])).toEqual([["c_new", "Stop!"]]);
+    expect(conversationUpserts).toHaveLength(1);
+    expect(contactUpdates).toEqual([expect.objectContaining({ whatsappOptedOut: true })]);
+    expect(await res.json()).toMatchObject({ persisted: true, optedOut: true });
   });
 
   it("writes the message row BEFORE handling an opt-out", async () => {

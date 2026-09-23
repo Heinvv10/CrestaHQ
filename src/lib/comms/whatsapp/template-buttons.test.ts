@@ -115,7 +115,8 @@ describe("saving buttons", () => {
 
   it.each([
     ["more than three", [YES, NO, { type: "quick_reply", text: "Maybe" }, { type: "quick_reply", text: "Later" }]],
-    ["a label that starts with an opt-out word", [{ type: "quick_reply", text: "Cancel my booking" }]],
+    ["a label that is an opt-out keyword", [{ type: "quick_reply", text: "Stop!" }]],
+    ["a label that is a two-word opt-out keyword", [{ type: "quick_reply", text: "Opt out" }]],
     ["two buttons with the same text", [YES, { type: "quick_reply", text: "yes, all good" }]],
     ["a link without https", [{ type: "url", text: "Review", url: "http://g.page/x" }]],
     ["text of 26 characters", [{ type: "quick_reply", text: "Yes, everything is fine!!!" }]],
@@ -128,6 +129,13 @@ describe("saving buttons", () => {
     expect(status).toBe(400);
     expect(stored()).toHaveLength(0);
   });
+});
+
+it("accepts a label that merely starts with a word that used to opt out", async () => {
+  // Opt-out is whole-message: tapping "Cancel my booking" sends that phrase,
+  // which no longer unsubscribes anyone, so the builder must not refuse it.
+  const { status } = await saveTemplate([{ type: "quick_reply", text: "Cancel my booking" }]);
+  expect(status).toBeLessThan(300);
 });
 
 it("accepts text of exactly 25 characters", async () => {
