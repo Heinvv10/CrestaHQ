@@ -77,6 +77,9 @@ export async function recordWhatsappDeliveryStatus(opts: {
       const row = snap.data() as
         | { subAccountId?: string; direction?: string; status?: string }
         | undefined;
+      // A receipt that beats its row (the row is written just after the
+      // provider call returns) is dropped: receipts never create rows. Rare,
+      // and by design — a ghost row would have no body or direction.
       if (!snap.exists || !row) return false;
       if (row.subAccountId !== opts.subAccountId) return false;
       if (row.direction !== "outbound") return false;

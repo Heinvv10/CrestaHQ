@@ -471,6 +471,12 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
     manualValues,
   });
   ctx.sent = { channel: "whatsapp", parts: [], template: tpl, templateValues: contentVariables };
+  // A blank variable is refused before any rail sees it: Twilio may send the
+  // template's SAMPLE value in its place (a stranger's name to a real
+  // customer), and Cloud would send the gap.
+  if (contentVariables.some((v) => !v.trim())) {
+    return whatsappSendFailed("error:WA_TEMPLATE_VARIABLE_EMPTY", true);
+  }
 
   try {
     // Through the provider dispatcher, not Twilio directly: a workspace on the
@@ -719,6 +725,16 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       // Out of window on Twilio the approved template goes by Content SID.
       sendTemplateViaTwilio: twilioContentSid
         ? async () => {
+            // Twilio may fill a blank variable with the template's SAMPLE
+            // value — a stranger's name to a real customer. Refused unsent.
+            if (templateValues.some((v) => !v.trim())) {
+              return {
+                ok: false,
+                error: "WA_TEMPLATE_VARIABLE_EMPTY",
+                providerOutcome: "DEFINITELY_REJECTED",
+                attempted: false,
+              };
+            }
             const r = await sendWhatsappTemplateForSubAccount({
               subAccountId: ctx.subAccountId,
               subAccount: ctx.subAccount,

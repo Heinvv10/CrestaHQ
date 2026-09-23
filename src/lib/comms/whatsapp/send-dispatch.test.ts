@@ -377,6 +377,14 @@ describe("the window decision is made once, for every rail", () => {
       expect(input.sendViaTwilio).not.toHaveBeenCalled();
     });
 
+    it("keeps a template sender's own attempted:false refusal", async () => {
+      const sendTemplateViaTwilio = vi.fn().mockResolvedValue({
+        ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY", providerOutcome: "DEFINITELY_REJECTED", attempted: false,
+      });
+      const r = await dispatchWhatsappSend(baseInput({ lastInboundAt: shut, template: approved, sendTemplateViaTwilio }));
+      expect(r).toMatchObject({ ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY", attempted: false });
+    });
+
     it("refuses with the window reason when no Twilio template sender was given", async () => {
       const input = baseInput({ lastInboundAt: shut, template: approved });
       const r = await dispatchWhatsappSend(input);

@@ -284,7 +284,9 @@ export async function dispatchWhatsappSend(
       };
     }
     const r = await input.sendTemplateViaTwilio();
-    return { ...r, provider, sentAs: "template", attempted: true };
+    // The sender may refuse before calling Twilio (a blank variable) and say
+    // so with `attempted: false`; otherwise Twilio was reached.
+    return { attempted: true, ...r, provider, sentAs: "template" };
   }
 
   const r = await input.sendViaTwilio();

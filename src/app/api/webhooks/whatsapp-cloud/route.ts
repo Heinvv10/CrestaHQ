@@ -261,14 +261,17 @@ async function attachInboundMedia(opts: {
 async function recordStatuses(
   statuses: CloudStatus[],
   routeFor: (phoneNumberId: string) => Promise<ResolvedRoute | null>,
-): Promise<number> {
+): Promise<{ routed: number; recorded: number }> {
+  let routed = 0;
   let recorded = 0;
   for (const s of statuses) {
-    const status = normalizeDeliveryStatus(s.status);
-    if (!status || !s.phoneNumberId) continue;
+    if (!s.phoneNumberId) continue;
     try {
       const route = await routeFor(s.phoneNumberId);
       if (!route) continue;
+      routed++;
+      const status = normalizeDeliveryStatus(s.status);
+      if (!status) continue;
       const r = await recordWhatsappDeliveryStatus({
         db: getAdminDb(),
         subAccountId: route.subAccountId,
@@ -280,10 +283,10 @@ async function recordStatuses(
       });
       recorded += r.updated;
     } catch (err) {
-      console.warn(`[whatsapp-cloud] status ${status} not recorded`, err);
+      console.warn(`[whatsapp-cloud] status ${s.status} not recorded`, err);
     }
   }
-  return recorded;
+  return { routed, recorded };
 }
 
 export async function POST(request: Request) {
@@ -324,20 +327,22 @@ export async function POST(request: Request) {
   // only the first would drop the rest, a STOP among them.
   const inbounds = parseCloudInbounds(payload);
   if (inbounds.length === 0) {
-    const phoneNumberId = parseCloudPhoneNumberId(payload);
-    if (!phoneNumberId) return ok({ ok: true, ignored: "no_phone_number_id" });
-
-    const route = await routeFor(phoneNumberId);
-    if (!route) return ok({ ok: true, ignored: "unrouted" });
-
     // Delivery receipts share this endpoint. The parser reads messages from
     // `messages[]` alone, so a receipt can never be written into the thread
-    // as a customer message.
+    // as a customer message. Each receipt routes by its own block, so an
+    // unknown number in the first block does not drop the rest.
     const statuses = parseCloudStatuses(payload);
     if (statuses.length > 0) {
-      const recorded = await recordStatuses(statuses, routeFor);
-      return ok({ ok: true, statuses: statuses.length, recorded });
+      const { routed, recorded } = await recordStatuses(statuses, routeFor);
+      return routed > 0
+        ? ok({ ok: true, statuses: statuses.length, recorded })
+        : ok({ ok: true, ignored: "unrouted" });
     }
+
+    const phoneNumberId = parseCloudPhoneNumberId(payload);
+    if (!phoneNumberId) return ok({ ok: true, ignored: "no_phone_number_id" });
+    const route = await routeFor(phoneNumberId);
+    if (!route) return ok({ ok: true, ignored: "unrouted" });
     return ok({ ok: true, persisted: false });
   }
 

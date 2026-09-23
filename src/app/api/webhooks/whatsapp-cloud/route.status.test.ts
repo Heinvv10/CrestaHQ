@@ -89,6 +89,17 @@ describe("whatsapp-cloud delivery receipts", () => {
     expect(mem.read(ROW)?.status).toBe("failed");
   });
 
+  it("a receipts-only delivery whose first block is an unknown number still records the rest", async () => {
+    const payload = {
+      entry: [
+        { changes: [{ value: { metadata: { phone_number_id: "pn_unknown" }, statuses: [{ id: "wamid.x", status: "read", recipient_id: "27800000000" }] } }] },
+        { changes: [{ value: { metadata: { phone_number_id: "pn_1" }, statuses: [failed] } }] },
+      ],
+    };
+    expect(await post(payload)).toMatchObject({ statuses: 2, recorded: 1 });
+    expect(mem.read(ROW)?.status).toBe("failed");
+  });
+
   it("records a receipt batched beside an inbound message", async () => {
     const payload = {
       entry: [{ changes: [{ value: {

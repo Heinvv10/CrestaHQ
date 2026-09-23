@@ -44,14 +44,14 @@ function seedTemplate(over: Record<string, unknown>) {
   });
 }
 
-const run = (templateId: string | null) =>
+const run = (templateId: string | null, contactName = "Thandi Mokoena") =>
   execSendWhatsapp({
     node: {
       id: "n1", type: "send_whatsapp",
       config: { body: "Free-form follow up", templateId },
     } as unknown as WorkflowNode,
     contact: {
-      id: "c1", name: "Thandi Mokoena", phone: "+27821234567", whatsappOptedOut: false,
+      id: "c1", name: contactName, phone: "+27821234567", whatsappOptedOut: false,
     } as unknown as Contact,
     subAccount: TWILIO,
     owner: { displayName: "Hein", email: "h@example.com" },
@@ -84,6 +84,16 @@ describe("send_whatsapp on Twilio, window shut", () => {
     );
     // The thread shows what the customer was actually sent.
     expect(mem.read("contacts/c1/whatsappMessages/SMtpl")?.body).toBe("Hi Thandi, just checking in.");
+  });
+
+  it("refuses unsent when a template variable is blank — Twilio may send the SAMPLE value", async () => {
+    seedTemplate({ status: "approved", contentSid: "HXapproved" });
+
+    const out = await run("follow_up", "");
+
+    expect(out.log).toBe("error:WA_TEMPLATE_VARIABLE_EMPTY");
+    expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
+    expect(sendWhatsappForSubAccount).not.toHaveBeenCalled();
   });
 
   it("refuses visibly when the template is not approved on Twilio", async () => {
