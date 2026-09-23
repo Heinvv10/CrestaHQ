@@ -288,6 +288,10 @@ export interface PaystackVerifiedTransaction {
   requested_amount?: number;
   currency: string;
   customer?: { email?: string | null; customer_code?: string | null } | null;
+  /** Paystack's transaction id. */
+  id?: number | string;
+  /** Echoed checkout metadata — object, JSON string, or empty. */
+  metadata?: unknown;
   /**
    * The card (or other instrument) that paid. `reusable` is Paystack saying
    * `/transaction/charge_authorization` may charge `authorization_code` again.
@@ -308,11 +312,12 @@ export interface PaystackVerifiedTransaction {
 /**
  * Ask Paystack what actually happened to a transaction, with the key of the
  * account it was made on. A webhook body is only a claim; this is the answer
- * the payment-link reconciler acts on.
+ * the payment-link reconciler acts on. Omit `secretKey` for the agency's own
+ * account (`PAYSTACK_SECRET_KEY`), as Client Billing does.
  */
 export function verifyPaystackTransaction(
   reference: string,
-  secretKey: string,
+  secretKey?: string,
 ): Promise<PaystackVerifiedTransaction> {
   return paystackRequest<PaystackVerifiedTransaction>(
     "GET",

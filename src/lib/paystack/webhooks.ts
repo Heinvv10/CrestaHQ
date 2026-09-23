@@ -5,9 +5,11 @@ import {
   SUB_ACCOUNT_PLAN_KIND,
 } from "@/lib/billing/kinds";
 import {
-  activateSubAccountPlan,
+  readMetadata,
+  settleClientBillingPayment,
+} from "@/lib/paystack/client-billing-payment";
+import {
   applySubAccountSubscriptionStatus,
-  markSubAccountChargePaid,
   recordSubAccountSubscriptionId,
 } from "@/lib/server/billing-service";
 
@@ -70,38 +72,16 @@ export async function handlePaystackEvent(event: PaystackEvent): Promise<void> {
  * carries none of ours).
  */
 async function handleChargeSuccess(data: PaystackEventData): Promise<void> {
-  const metadata = readMetadata(data);
+  const metadata = readMetadata(data.metadata);
   const customerId = data.customer?.customer_code ?? null;
 
-  if (metadata.kind === SUB_ACCOUNT_PLAN_KIND) {
-    if (!metadata.subAccountId || !metadata.planId) {
-      console.error(
-        "[paystack] plan charge succeeded without subAccountId/planId metadata",
-      );
-      return;
-    }
-    await activateSubAccountPlan({
-      subAccountId: metadata.subAccountId,
-      planId: metadata.planId,
-      customerId,
-      // Paystack creates the subscription asynchronously; `subscription.create`
-      // fills this in. Null here must not clear an id already stored.
-      subscriptionId: null,
-    });
-    return;
-  }
-
-  if (metadata.kind === SUB_ACCOUNT_CHARGE_KIND) {
-    if (!metadata.chargeId) {
-      console.error("[paystack] charge succeeded without chargeId metadata");
-      return;
-    }
-    await markSubAccountChargePaid({
-      chargeId: metadata.chargeId,
-      checkoutSessionId: data.reference ?? null,
-      // Paystack's transaction id is the payment; there is no separate intent.
-      paymentId: data.id != null ? String(data.id) : null,
-    });
+  // Ours — but the body is only a claim, so it is settled on Paystack's
+  // verified record of the payment, never on these fields.
+  if (
+    metadata.kind === SUB_ACCOUNT_PLAN_KIND ||
+    metadata.kind === SUB_ACCOUNT_CHARGE_KIND
+  ) {
+    await settleClientBillingPayment(data.reference);
     return;
   }
 
@@ -191,40 +171,6 @@ async function handleSubscriptionEnded(
     customerIdHint: customerId,
     providerStatus: "subscription.disable",
   });
-}
-
-/**
- * Paystack echoes back whatever metadata we sent, but as JSON it re-parsed —
- * so it can come back as an object, as a string, or not at all. Only strings
- * are read out of it; nothing here trusts its shape.
- */
-function readMetadata(data: PaystackEventData): {
-  kind?: string;
-  subAccountId?: string;
-  planId?: string;
-  chargeId?: string;
-} {
-  const raw = data.metadata;
-  let parsed: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      // Paystack sometimes returns the empty string for "no metadata". That is
-      // a renewal, not an error, so it falls through to an empty object.
-      parsed = null;
-    }
-  }
-  if (!parsed || typeof parsed !== "object") return {};
-  const obj = parsed as Record<string, unknown>;
-  const str = (key: string) =>
-    typeof obj[key] === "string" ? (obj[key] as string) : undefined;
-  return {
-    kind: str("kind"),
-    subAccountId: str("subAccountId"),
-    planId: str("planId"),
-    chargeId: str("chargeId"),
-  };
 }
 
 export interface PaystackEvent {
