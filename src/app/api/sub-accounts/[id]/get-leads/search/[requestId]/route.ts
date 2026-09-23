@@ -50,6 +50,18 @@ export async function GET(
     );
   }
 
+  // Only ids this sub-account submitted (recorded by the search POST).
+  const owned =
+    !requestId.includes("/") &&
+    (
+      await getAdminDb()
+        .doc(`subAccounts/${subAccountId}/getLeadsSearches/${requestId}`)
+        .get()
+    ).exists;
+  if (!owned) {
+    return NextResponse.json({ error: "Search not found" }, { status: 404 });
+  }
+
   const url = new URL(request.url);
   const lat = Number(url.searchParams.get("lat"));
   const lng = Number(url.searchParams.get("lng"));

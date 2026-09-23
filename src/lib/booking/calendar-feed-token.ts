@@ -3,21 +3,25 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
- * HMAC-derived token that gates the per-sub-account calendar.ics feed.
+ * HMAC-derived tokens that gate the per-sub-account calendar.ics feeds.
  *
- *   token = base64url( HMAC-SHA256( AUTOMATIONS_TOKEN_SECRET, "calfeed:" + subAccountId ) )
+ *   all bookings: token = base64url( HMAC-SHA256( AUTOMATIONS_TOKEN_SECRET,
+ *                   "calfeedu:" + subAccountId + ":" + uid ) )
  *
- * Deterministic per sub-account → the URL the operator pastes into
- * Google Calendar is stable. To "rotate" the URL (e.g. if it leaks),
- * rotate `AUTOMATIONS_TOKEN_SECRET` — every existing feed URL becomes
- * invalid and the operator pastes the new one.
+ * Minted per MEMBER (the feed URL carries `?u=<uid>`), so the route can check
+ * at every poll that the uid is still an active member — a removed
+ * collaborator's copied URL stops returning data. Deterministic per
+ * (sub-account, uid) → the URL a member pastes into Google Calendar is stable.
+ * The earlier shared per-sub-account token (`calfeed:` + subAccountId) is no
+ * longer accepted: it named no user, so it could not be revoked per person.
+ * To rotate every URL at once, rotate `AUTOMATIONS_TOKEN_SECRET`.
  *
- * Domain-separated with the literal `calfeed:` prefix so this can't be
- * confused with any other HMAC token derived from the same secret
- * (event tokens, quote tokens, unsubscribe tokens).
+ * Domain-separated with literal prefixes so these can't be confused with any
+ * other HMAC token derived from the same secret (event tokens, quote tokens,
+ * unsubscribe tokens) or with each other.
  */
 
-const DOMAIN_PREFIX = "calfeed:";
+const DOMAIN_PREFIX = "calfeedu:";
 // Distinct prefix for the per-host ("just my bookings") feed so a sub-account
 // token can never be used as a host token, or vice-versa.
 const HOST_DOMAIN_PREFIX = "calfeedhost:";
@@ -40,10 +44,13 @@ function toBase64Url(buf: Buffer): string {
     .replace(/=+$/, "");
 }
 
-/** Generate the stable token for a sub-account's calendar feed URL. */
-export function generateCalendarFeedToken(subAccountId: string): string {
+/** The stable token for one member's all-bookings feed URL. */
+export function generateCalendarFeedToken(
+  subAccountId: string,
+  uid: string,
+): string {
   const mac = createHmac("sha256", getSecret())
-    .update(`${DOMAIN_PREFIX}${subAccountId}`, "utf8")
+    .update(`${DOMAIN_PREFIX}${subAccountId}:${uid}`, "utf8")
     .digest();
   return toBase64Url(mac);
 }
@@ -55,12 +62,14 @@ export function generateCalendarFeedToken(subAccountId: string): string {
  */
 export function verifyCalendarFeedToken(
   subAccountId: string,
+  uid: string,
   presented: string,
 ): boolean {
   if (!presented || typeof presented !== "string") return false;
+  if (!uid || typeof uid !== "string") return false;
   let expected: string;
   try {
-    expected = generateCalendarFeedToken(subAccountId);
+    expected = generateCalendarFeedToken(subAccountId, uid);
   } catch {
     return false;
   }
@@ -72,15 +81,15 @@ export function verifyCalendarFeedToken(
 }
 
 /**
- * Build the public feed URL. Operator copies this from the settings UI
- * and pastes into Google Calendar / Apple Calendar / Outlook as a
- * subscribed calendar.
+ * Build a member's all-bookings feed URL. Operator copies this from the
+ * settings UI and pastes into Google Calendar / Apple Calendar / Outlook as
+ * a subscribed calendar.
  */
-export function buildCalendarFeedUrl(subAccountId: string): string {
+export function buildCalendarFeedUrl(subAccountId: string, uid: string): string {
   const base =
     process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
-  const token = generateCalendarFeedToken(subAccountId);
-  return `${base}/api/sub-accounts/${subAccountId}/calendar.ics?t=${token}`;
+  const token = generateCalendarFeedToken(subAccountId, uid);
+  return `${base}/api/sub-accounts/${subAccountId}/calendar.ics?u=${encodeURIComponent(uid)}&t=${token}`;
 }
 
 /**

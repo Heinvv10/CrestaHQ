@@ -130,7 +130,9 @@ function call(
       method: handler === POST ? "POST" : "DELETE",
       headers: {
         "content-type": "application/json",
-        "x-user-uid": opts.uid ?? "uid_admin",
+        // Connecting is agency-owner only (the base URL is a server-side
+        // fetch target); disconnecting stays open to sub-account admins.
+        "x-user-uid": opts.uid ?? (handler === POST ? "uid_owner" : "uid_admin"),
       },
       ...(handler === POST ? { body: raw } : {}),
     }),
@@ -162,6 +164,7 @@ beforeEach(() => {
     ],
   ]);
   claims = new Map<string, Record<string, unknown>>([
+    ["uid_owner", { status: "active", agencyId: "ag_1", agencyRole: "owner" }],
     ["uid_admin", { status: "active", agencyId: "ag_1", agencyRole: null }],
     ["uid_member", { status: "active", agencyId: "ag_1", agencyRole: null }],
     ["uid_other_admin", { status: "active", agencyId: "ag_1", agencyRole: null }],
@@ -190,6 +193,15 @@ describe("auth", () => {
     );
     expect(status).toBe(403);
     expect(body.error).toBe("Not a member");
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses a sub-account admin — the bridge URL is fetched server-side, so only the agency owner may set it", async () => {
+    const { status, body } = await json(await call(POST, { uid: "uid_admin" }));
+    expect(status).toBe(403);
+    expect(body.error).toBe(
+      "Only your agency owner can connect a bridge by URL. Pair a number from WhatsApp settings instead.",
+    );
     expect(writes).toEqual([]);
   });
 
@@ -323,7 +335,7 @@ describe("connect", () => {
       whatsappBridgeMeta: {
         displayPhoneNumber: `+${NUMBER}`,
         connectedAt: "SERVER_TS",
-        connectedByUid: "uid_admin",
+        connectedByUid: "uid_owner",
       },
       whatsappProvider: "bridge",
       updatedAt: "SERVER_TS",
