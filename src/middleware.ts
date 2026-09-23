@@ -89,11 +89,11 @@ const PUBLIC_PATHS = [
   // lock per session on top.
   "/api/github",
   // Vapi voice-agent webhooks — public from the Vapi cloud. Security:
-  //   - Authorization: Bearer ${VAPI_WEBHOOK_SECRET} header check inside
-  //     each route (custom header configured per-assistant in the Vapi
-  //     dashboard / via our provisioning code).
-  //   - Routes scoped by [subAccountId] path param so a leaked secret
-  //     can only impersonate one sub-account at worst.
+  //   - `?s=${VAPI_WEBHOOK_SECRET}` query param, compared in constant time
+  //     inside each route (lib/comms/voice/webhook-auth.ts). Our provisioning
+  //     code bakes it into each assistant's server URL.
+  //   - ONE deployment-wide secret: the [subAccountId] path param is routing
+  //     only, so a leaked secret can impersonate Vapi for EVERY sub-account.
   "/api/webhooks/vapi",
   // Web Chat widget — public from-the-browser API. Security:
   //  - Origin header validated against per-sub-account allowedDomains
@@ -166,7 +166,6 @@ const PUBLIC_PATHS = [
   // Upstash-Signature header verification inside the route.
   "/api/events/reminder",
   "/api/events/payment",
-  "/api/dev-only/danger-wipe-everything",
   "/setup.html",
   // SEO conventions — Next.js serves these as virtual routes from
   // src/app/robots.ts and src/app/sitemap.ts respectively. Both must
@@ -431,6 +430,8 @@ function funnelSubdomainFrom(request: NextRequest): string | null {
   return null;
 }
 
+const STATIC_IMAGE_PATH = /\.(?:svg|png|jpg|jpeg|gif|webp)$/;
+
 export default function middleware(request: NextRequest) {
   // Vanity funnel hosts: rewrite ONLY the root path to the resolver. Every
   // other path (checkout /co, /api, /_next assets) is host-agnostic and works
@@ -442,12 +443,22 @@ export default function middleware(request: NextRequest) {
     }
   }
 
-  // Skip auth middleware if Firebase is not configured
+  // Static images (excluded from session verification — they need no
+  // identity) still pass through here so a caller-sent x-user-* header is
+  // stripped before any route with an image-looking path can read it.
+  if (STATIC_IMAGE_PATH.test(request.nextUrl.pathname)) {
+    return withoutIdentityHeaders(request);
+  }
+
+  // Firebase not configured: nothing can be verified, so fail closed — no
+  // caller-sent identity reaches a route, and protected paths go to /login.
   if (
     !process.env.NEXT_PUBLIC_FIREBASE_API_KEY ||
     !process.env.FIREBASE_ADMIN_PROJECT_ID
   ) {
-    return NextResponse.next();
+    const pathname = request.nextUrl.pathname;
+    if (isPublicPath(pathname)) return withoutIdentityHeaders(request);
+    return NextResponse.redirect(loginRedirectUrl(request, pathname));
   }
 
   return authMiddleware(request, {
@@ -508,7 +519,9 @@ export default function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Image paths are NOT excluded here: they must still have x-user-*
+    // stripped (see STATIC_IMAGE_PATH above), they just skip verification.
+    "/((?!_next/static|_next/image|favicon.ico).*)",
     "/api/login",
     "/api/logout",
   ],

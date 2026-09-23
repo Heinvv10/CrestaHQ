@@ -45,7 +45,8 @@ function post(fields: Record<string, string>) {
   return POST(
     new Request(`https://crm.example.com/pay/link/${token}`, {
       method: "POST",
-      headers: { "x-forwarded-for": `10.0.1.${++ip}, 172.16.0.1` },
+      // Right-most hop = the address our proxy appended (see clientIpFrom).
+      headers: { "x-forwarded-for": `172.16.0.1, 10.0.1.${++ip}` },
       body: new URLSearchParams(fields),
     }),
     { params: Promise.resolve({ token }) },

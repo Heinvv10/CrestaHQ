@@ -66,7 +66,14 @@ export async function POST(request: Request) {
       if (!cfgSnap.exists) {
         const bootstrap =
           process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
-        if (bootstrap && bootstrap !== email) {
+        // Unset must refuse, not open the slot: on a fresh deploy the first
+        // stranger to reach /signup would otherwise own the whole agency.
+        if (!bootstrap) {
+          throw new Error(
+            "This workspace hasn't been claimed yet, and BOOTSTRAP_ADMIN_EMAIL isn't set. Set it to the owner's email in the deployment's environment, redeploy, then sign up with that email."
+          );
+        }
+        if (bootstrap !== email) {
           throw new Error(
             "Only the configured bootstrap admin email may claim this agency."
           );

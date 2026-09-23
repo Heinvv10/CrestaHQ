@@ -30,17 +30,18 @@ describe("feedClientKey", () => {
 
   it("ignores cf-connecting-ip unless TRUST_CF_CONNECTING_IP=1 (a client could send its own)", () => {
     delete process.env.TRUST_CF_CONNECTING_IP;
-    expect(feedClientKey(req(all))).toBe("10.0.0.1");
-    expect(feedClientKey(req({ "cf-connecting-ip": "203.0.113.1", "x-forwarded-for": "6.6.6.6, 7.7.7.7" }))).toBe("6.6.6.6");
+    expect(feedClientKey(req(all))).toBe("6.6.6.6");
+    expect(feedClientKey(req({ "cf-connecting-ip": "203.0.113.1", "x-forwarded-for": "6.6.6.6, 7.7.7.7" }))).toBe("7.7.7.7");
     process.env.TRUST_CF_CONNECTING_IP = "true";
-    expect(feedClientKey(req(all))).toBe("10.0.0.1");
+    expect(feedClientKey(req(all))).toBe("6.6.6.6");
   });
 
-  it("with TRUST_CF_CONNECTING_IP=1 prefers cf-connecting-ip, then x-real-ip, then X-Forwarded-For", () => {
+  it("with TRUST_CF_CONNECTING_IP=1 prefers cf-connecting-ip, then the right-most X-Forwarded-For hop, then x-real-ip", () => {
     process.env.TRUST_CF_CONNECTING_IP = "1";
     expect(feedClientKey(req(all))).toBe("203.0.113.1");
-    expect(feedClientKey(req({ "x-real-ip": "10.0.0.1", "x-forwarded-for": "6.6.6.6" }))).toBe("10.0.0.1");
-    expect(feedClientKey(req({ "x-forwarded-for": "6.6.6.6, 7.7.7.7" }))).toBe("6.6.6.6");
+    expect(feedClientKey(req({ "x-real-ip": "10.0.0.1", "x-forwarded-for": "6.6.6.6" }))).toBe("6.6.6.6");
+    expect(feedClientKey(req({ "x-forwarded-for": "6.6.6.6, 7.7.7.7" }))).toBe("7.7.7.7");
+    expect(feedClientKey(req({ "x-real-ip": "10.0.0.1" }))).toBe("10.0.0.1");
     expect(feedClientKey(req({}))).toBe("unknown");
   });
 });

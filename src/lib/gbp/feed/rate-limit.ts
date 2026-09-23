@@ -38,16 +38,9 @@ let sweeps = 0;
 /** For the cost test: how many full-table sweeps this instance has run. */
 export const limiterStats = () => ({ sweeps });
 
-/**
- * The client. `cf-connecting-ip` is trusted ONLY when the deployment sets
- * `TRUST_CF_CONNECTING_IP=1` — true on velo, which is reachable only through
- * the cloudflared tunnel; elsewhere (a buyer's Vercel copy) a caller could
- * send its own. Otherwise `x-real-ip`, else the shared helper's left-most
- * X-Forwarded-For.
- */
+/** The client — the shared helper's answer (see `clientIpFrom`). */
 export function feedClientKey(request: Request): string {
-  const cf = process.env.TRUST_CF_CONNECTING_IP === "1" ? request.headers.get("cf-connecting-ip") : null;
-  return cf ?? request.headers.get("x-real-ip") ?? clientIpFrom(request);
+  return clientIpFrom(request);
 }
 
 /**

@@ -265,7 +265,7 @@ function bootstrapEmailDetail(
 ): string | undefined {
   if (!value) {
     return state.kind === "orphaned" || state.kind === "unclaimed"
-      ? "Not set — this workspace is unclaimed, so the next signup would claim it."
+      ? "Not set — this workspace is unclaimed, and signup is refused until this is set."
       : undefined;
   }
   if (state.kind === "claimed") {

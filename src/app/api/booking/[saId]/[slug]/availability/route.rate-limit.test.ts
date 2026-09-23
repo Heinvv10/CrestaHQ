@@ -55,3 +55,11 @@ describe("availability rate limit", () => {
     expect((await call("rl-c", "9.9.9.4")).status).toBe(429);
   });
 });
+
+describe("availability rate limit — client IP", () => {
+  it("a caller rotating the left-most X-Forwarded-For entry does not get a fresh budget", async () => {
+    seedPage("rl-xff");
+    for (let i = 0; i < CAP; i++) await call("rl-xff", `10.1.${i >> 8}.${i & 255}, 9.9.9.5`);
+    expect((await call("rl-xff", "10.200.0.1, 9.9.9.5")).status).toBe(429);
+  });
+});

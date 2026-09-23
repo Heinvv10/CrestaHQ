@@ -63,9 +63,28 @@ export function checkCheckoutRateLimit(ip: string): CheckoutRateLimitResult {
   return { ok: true, retryAfterSec: 0 };
 }
 
-/** Best-effort client IP from the proxy headers Vercel/Railway set. */
+/**
+ * The client IP every per-IP limiter keys on — the ONE place this is decided.
+ *
+ *  1. `cf-connecting-ip`, only when `TRUST_CF_CONNECTING_IP=1` — set where the
+ *     app is reachable solely through the Cloudflare tunnel (velo binds
+ *     127.0.0.1), so Cloudflare, not the caller, wrote it. The app can't see
+ *     the socket peer to check that itself: Next only fills X-Forwarded-For
+ *     from the socket when the header is absent.
+ *  2. The RIGHT-most X-Forwarded-For hop — the address our proxy appended.
+ *     Everything to its left is whatever the caller sent, so the left-most
+ *     entry would hand anyone a fresh budget per request.
+ *  3. `x-real-ip`, else a shared sentinel (unconfigured envs still limit).
+ */
 export function clientIpFrom(request: Request): string {
-  const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0]!.trim();
+  if (process.env.TRUST_CF_CONNECTING_IP === "1") {
+    const cf = request.headers.get("cf-connecting-ip")?.trim();
+    if (cf) return cf;
+  }
+  const hops = (request.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean);
+  if (hops.length > 0) return hops[hops.length - 1]!;
   return request.headers.get("x-real-ip") ?? "unknown";
 }
