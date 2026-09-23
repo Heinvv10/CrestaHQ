@@ -95,6 +95,12 @@ export interface VoiceCampaignDoc {
   startedAt: Timestamp | FieldValue | null;
   completedAt: Timestamp | FieldValue | null;
   errorMessage: string | null;
+  /**
+   * False while the fanout step is still paging through the audience; the
+   * campaign cannot complete before it turns true. Absent on campaigns
+   * created before paged fan-out — those were fully fanned out at creation.
+   */
+  fanoutDone?: boolean;
 }
 
 /**
@@ -114,6 +120,8 @@ export type VoiceCampaignSkipReason =
   | "contact_missing"
   /** Operator stopped the campaign before this contact was dialled. */
   | "cancelled"
+  /** The campaign failed (e.g. its fan-out gave up) before this contact was dialled. */
+  | "campaign_failed"
   /** Suppressed at fan-out: called too recently by another campaign. */
   | "recently_called"
   /** Suppressed at fan-out: carries the operator's excluded tag. */
@@ -162,4 +170,7 @@ export interface VoiceCampaignRecipientDoc {
   attempts: number;
   queuedAt: Timestamp | FieldValue | null;
   settledAt: Timestamp | FieldValue | null;
+  /** The campaign was cancelled while this call was being dialled; the
+   *  step hung it up as soon as Vapi returned. */
+  endedByCancel?: boolean;
 }

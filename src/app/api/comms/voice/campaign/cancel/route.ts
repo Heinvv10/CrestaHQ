@@ -21,7 +21,11 @@ type Body = { campaignId?: string; mode?: "scheduled" | "all" };
  *     placed by POSTing end-call to each stored control URL.
  *
  * QStash messages already scheduled still fire, but the step route sees the
- * cancelled status / already-settled rows and no-ops.
+ * cancelled status / already-settled rows and no-ops. The status flips
+ * before the sweep, and each step re-reads it in a transaction just before
+ * dialling, so no NEW call starts after the flip. A call already being
+ * dialled when the flip lands is hung up by its step as soon as Vapi
+ * returns (in either mode) — it may ring briefly, but does not continue.
  *
  * A call can only be ended within its max duration, so for "all" we only
  * look at recipients dialled in the last 15 minutes — that's a small set
@@ -57,11 +61,22 @@ export async function POST(request: Request) {
   const access = await requireSubAccountMember(request, campaign.subAccountId);
   if (access instanceof NextResponse) return access;
 
-  const alreadyStopped =
-    campaign.status === "completed" || campaign.status === "cancelled";
+  // Flip the campaign FIRST: from here on every step's pre-dial claim
+  // (a transaction reading this status) skips instead of dialling.
+  const priorStatus = await db.runTransaction(async (tx) => {
+    const current = (await tx.get(campaignRef)).data() as VoiceCampaignDoc;
+    if (current.status === "completed" || current.status === "cancelled") {
+      return current.status;
+    }
+    tx.update(campaignRef, {
+      status: "cancelled",
+      completedAt: FieldValue.serverTimestamp(),
+    });
+    return null;
+  });
 
-  // End live calls FIRST (only meaningful for "all"). Even if the campaign
-  // was already cancelled (scheduled-stop earlier), an operator can hit
+  // End live calls (only meaningful for "all"). Even if the campaign was
+  // already cancelled (scheduled-stop earlier), an operator can hit
   // "stop all" to also kill calls still ringing from that first stop.
   let endedLive = 0;
   if (mode === "all") {
@@ -81,45 +96,46 @@ export async function POST(request: Request) {
     endedLive = results.filter((r) => r.status === "fulfilled").length;
   }
 
-  if (alreadyStopped) {
+  if (priorStatus) {
     return NextResponse.json({
       ok: true,
-      alreadyStopped: campaign.status,
+      alreadyStopped: priorStatus,
       endedLive,
     });
   }
 
-  // Skip every still-queued recipient in batches, then flip the campaign.
+  // Skip every still-queued recipient. Each chunk is a transaction that
+  // re-reads its rows, so a row a step claimed meanwhile is left alone and
+  // nothing is counted twice.
   const queuedSnap = await campaignRef
     .collection("recipients")
     .where("status", "==", "queued")
     .get();
 
   let stopped = 0;
-  const docs = queuedSnap.docs;
-  for (let i = 0; i < docs.length; i += 400) {
-    const batch = db.batch();
-    for (const d of docs.slice(i, i + 400)) {
-      batch.update(d.ref, {
-        status: "skipped",
-        skippedReason: "cancelled",
-        settledAt: FieldValue.serverTimestamp(),
-      });
-      stopped += 1;
-    }
-    await batch.commit();
+  const refs = queuedSnap.docs.map((d) => d.ref);
+  for (let i = 0; i < refs.length; i += 100) {
+    stopped += await db.runTransaction(async (tx) => {
+      const snaps = await tx.getAll(...refs.slice(i, i + 100));
+      const queued = snaps.filter(
+        (s) => (s.data() as VoiceCampaignRecipientDoc | undefined)?.status === "queued",
+      );
+      for (const s of queued) {
+        tx.update(s.ref, {
+          status: "skipped",
+          skippedReason: "cancelled",
+          settledAt: FieldValue.serverTimestamp(),
+        });
+      }
+      if (queued.length > 0) {
+        tx.update(campaignRef, {
+          "totals.skipped": FieldValue.increment(queued.length),
+          "totals.queued": FieldValue.increment(-queued.length),
+        });
+      }
+      return queued.length;
+    });
   }
-
-  await campaignRef.update({
-    status: "cancelled",
-    completedAt: FieldValue.serverTimestamp(),
-    ...(stopped > 0
-      ? {
-          "totals.skipped": FieldValue.increment(stopped),
-          "totals.queued": FieldValue.increment(-stopped),
-        }
-      : {}),
-  });
 
   return NextResponse.json({ ok: true, stopped, endedLive });
 }
