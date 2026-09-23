@@ -2,9 +2,11 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { reconcilePaystackCharge } from "@/lib/paystack/payment-link-reconciler";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { verifyPaystackSignature } from "@/lib/paystack/webhook-signature";
+import { flagIfStaleAttempt } from "@/lib/server/payment-attempts";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +31,14 @@ export const dynamic = "force-dynamic";
  * step, and what the settings card reads (`paystackConnectionMeta.webhookSeenAt`).
  * Then `charge.success` goes to the payment-link reconciler, which re-verifies
  * the transaction with Paystack before marking anything paid.
+ *
+ * WHEN THE KEY IS GONE OR CHANGED: a payment started under a key this
+ * workspace no longer holds cannot be verified, so it cannot be recorded —
+ * but it must not vanish either. If the (unverified) body names one of our
+ * checkout attempts made with another key, that attempt is flagged for the
+ * operator and the answer is 200: redelivering a body no key here can verify
+ * would only fail again. Nothing about the body is trusted; the flag is built
+ * from our own attempt record.
  */
 
 export async function POST(
@@ -44,11 +54,12 @@ export async function POST(
   const conn = await readPaystackConnectionSecret(subAccountId);
   if (!conn) {
     // Disconnected but Paystack is still delivering. Nothing can be verified
-    // without the key, so nothing may be acted on — and 200 rather than an
-    // error so the operator's endpoint is not disabled by retries while they
-    // are mid-reconnect.
+    // without the key, so nothing is recorded — an open attempt it names is
+    // flagged instead — and 200 rather than an error so the operator's
+    // endpoint is not disabled by retries while they are mid-reconnect.
+    const flagged = await flagIfStaleAttempt(subAccountId, chargeSuccessReference(rawBody), null);
     console.warn(
-      `[webhooks/paystack/sa] no connection sa=${subAccountId} — dropping event`,
+      `[webhooks/paystack/sa] no connection sa=${subAccountId} — ${flagged ? "attempt flagged" : "dropping event"}`,
     );
     return NextResponse.json({ received: true, ignored: "not_connected" });
   }
@@ -60,7 +71,18 @@ export async function POST(
       conn.secretKey,
     )
   ) {
-    // The ONE case that must be non-200: an unverified body is not Paystack.
+    // An unverified body is not Paystack — unless it names an attempt opened
+    // with a key this workspace has since replaced (see the header).
+    if (
+      await flagIfStaleAttempt(
+        subAccountId,
+        chargeSuccessReference(rawBody),
+        paystackKeyFingerprint(conn.secretKey),
+      )
+    ) {
+      console.warn(`[webhooks/paystack/sa] event for a replaced key sa=${subAccountId} — attempt flagged`);
+      return NextResponse.json({ received: true, ignored: "stale_key" });
+    }
     console.error(
       `[webhooks/paystack/sa] signature verification failed sa=${subAccountId}`,
     );

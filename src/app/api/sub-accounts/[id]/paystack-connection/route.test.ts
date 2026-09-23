@@ -58,6 +58,11 @@ let batchCommits = 0;
 
 const fakeDb = {
   doc: docRef,
+  // No checkout attempts exist in these tests; the flag step finds none.
+  collection: () => {
+    const q = { where: () => q, get: async () => ({ docs: [] }) };
+    return q;
+  },
   batch: () => {
     const staged: Write[] = [];
     return {

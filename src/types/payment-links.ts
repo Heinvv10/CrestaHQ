@@ -1,5 +1,7 @@
 import type { FieldValue, Timestamp } from "firebase/firestore";
 
+import type { PaymentMode } from "@/types/payment-attempts";
+
 /**
  * Paystack payment links — `paymentLinks/{id}`.
  *
@@ -49,11 +51,14 @@ export interface PaymentLink {
   currency: typeof PAYMENT_LINK_CURRENCY;
 
   /**
-   * Paystack's `domain` ("test" | "live") on the verified transaction. There
-   * is no per-link mode: the pay page, checkout and reconciler all use the
-   * connection's CURRENT mode, so a link made under a test key and paid after
-   * the live key is connected is labelled, charged and recorded as live.
+   * The mode of the key the link was issued under. A guard only: the pay page
+   * refuses the link once the connection is in the other mode, so a link sent
+   * to a real customer can never become a test checkout (or the reverse).
+   * What a payment was actually charged in lives on its `paymentAttempts`
+   * doc. Absent on links made before the rule; those are refused too.
    */
+  mode?: PaymentMode;
+  /** Paystack's `domain` ("test" | "live") on the verified transaction. */
   paystackDomain?: string | null;
   /**
    * Set when the invoice step reached an end state — marked paid (by this
@@ -79,9 +84,10 @@ export interface PaymentLink {
    */
   extraPayments?: PaymentLinkExtraPayment[];
   /**
-   * PRE-payment problem: Paystack verified a payment for this link that does
-   * not match it (amount, currency, test vs live) and it was NOT recorded.
-   * Cleared by the paid transition.
+   * PRE-payment problem: a payment that may exist and was NOT recorded — a
+   * verified payment that does not match its attempt (amount, currency, test
+   * vs live, key), or a checkout left open when the connection changed. One
+   * sentence per flagged attempt, newest last. Kept by the paid transition.
    */
   attention?: string | null;
   /**

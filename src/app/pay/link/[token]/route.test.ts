@@ -160,13 +160,31 @@ describe("the payer returning from Paystack", () => {
     expect(await (await get()).text()).toContain("TEST MODE");
   });
 
-  it("drops the banner and charges live once the connection goes live after the link was made", async () => {
-    // Ported from the round-4 breaker repro: link made under a test key, then
-    // the operator connected the live key.
+  it("shows no banner on a live link and charges it with the live key", async () => {
     seedSub("sa1", LIVE_KEY);
+    seedLink("link1", { token, mode: "live" });
     expect(await (await get()).text()).not.toContain("TEST MODE");
     expect((await post({ email: "payer@example.com" })).status).toBe(303);
     expect(calls[0]).toMatchObject({ path: "/transaction/initialize", auth: `Bearer ${LIVE_KEY}` });
+  });
+
+  it("retires a test link once the connection goes live: no page, no checkout", async () => {
+    // Round-4 breaker repro: link made under a test key, then the operator
+    // connected the live key. The page must never say "no real money" over
+    // a live charge — now it offers no checkout at all.
+    seedSub("sa1", LIVE_KEY);
+    const page = await get();
+    expect(page.status).toBe(410);
+    expect(await page.text()).not.toContain("TEST MODE");
+    expect((await post({ email: "payer@example.com" })).status).toBe(410);
+    expect(calls).toEqual([]);
+  });
+
+  it("retires a link made before links carried a mode", async () => {
+    seedLink("link1", { token, mode: undefined });
+    expect((await get()).status).toBe(410);
+    expect((await post({ email: "payer@example.com" })).status).toBe(410);
+    expect(calls).toEqual([]);
   });
 
   it("shows the amount from the doc on the pay page", async () => {

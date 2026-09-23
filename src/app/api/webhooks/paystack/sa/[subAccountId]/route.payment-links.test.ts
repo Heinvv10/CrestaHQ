@@ -9,6 +9,7 @@ import {
   SA,
   mem,
   refused,
+  seedAttempt,
   seedInvoice,
   seedLink,
   seedSub,
@@ -66,6 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   seedSub();
   seedLink();
+  seedAttempt(REF);
   verifyAnswer = () => verified({ reference: REF });
   calls = stubPaystack((c) => verifyAnswer(c));
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -281,18 +283,11 @@ describe("charge.success → payment link paid", () => {
   });
 });
 
-describe("test mode vs live mode — judged by the CURRENT connection", () => {
-  it("records a test-mode payment on a test connection, with Paystack's domain", async () => {
-    await deliver();
-    expect(link()).toMatchObject({ status: "paid", paystackDomain: "test" });
-  });
-
-  it("records a live payment once the connection has gone live, whatever it was at link creation", async () => {
-    seedSub(SA, LIVE_KEY);
-    verifyAnswer = () => verified({ reference: REF, domain: "live" });
+describe("test mode vs live mode — judged by the checkout ATTEMPT", () => {
+  function deliverLive() {
     const body = event();
     const signature = createHmac("sha512", LIVE_KEY).update(body).digest("hex");
-    const res = await POST(
+    return POST(
       new Request(`http://app.local/api/webhooks/paystack/sa/${SA}`, {
         method: "POST",
         headers: { "x-paystack-signature": signature },
@@ -300,33 +295,68 @@ describe("test mode vs live mode — judged by the CURRENT connection", () => {
       }),
       { params: Promise.resolve({ subAccountId: SA }) },
     );
-    expect(res.status).toBe(200);
+  }
+
+  it("records a test-mode payment for a test attempt, with Paystack's domain", async () => {
+    await deliver();
+    expect(link()).toMatchObject({ status: "paid", paystackDomain: "test" });
+    expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "settled" });
+  });
+
+  it("records a live payment for a live attempt", async () => {
+    seedSub(SA, LIVE_KEY);
+    seedAttempt(REF, { secretKey: LIVE_KEY });
+    verifyAnswer = () => verified({ reference: REF, domain: "live" });
+    expect((await deliverLive()).status).toBe(200);
     expect(link()).toMatchObject({ status: "paid", paystackDomain: "live" });
   });
 
-  it("refuses a test-mode transaction on a live connection — flagged, never paid, 200", async () => {
+  it("refuses a test-mode transaction for a live attempt — flagged, never paid, 200", async () => {
     seedSub(SA, LIVE_KEY);
+    seedAttempt(REF, { secretKey: LIVE_KEY });
     verifyAnswer = () => verified({ reference: REF, domain: "test" });
-    const body = event();
-    const signature = createHmac("sha512", LIVE_KEY).update(body).digest("hex");
-    const res = await POST(
-      new Request(`http://app.local/api/webhooks/paystack/sa/${SA}`, {
-        method: "POST",
-        headers: { "x-paystack-signature": signature },
-        body,
-      }),
-      { params: Promise.resolve({ subAccountId: SA }) },
-    );
-    expect(res.status).toBe(200);
+    expect((await deliverLive()).status).toBe(200);
     expect(link().status).toBe("open");
-    expect(link().attention).toMatch(/test/i);
+    expect(link().attention).toMatch(/test-mode payment/i);
+    expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "flagged" });
   });
 
-  it("refuses a live transaction on a test connection", async () => {
+  it("refuses a live transaction for a test attempt", async () => {
     verifyAnswer = () => verified({ reference: REF, domain: "live" });
     await deliver();
     expect(link().status).toBe("open");
-    expect(link().attention).toBeTruthy();
+    expect(link().attention).toMatch(/live-mode payment/i);
+  });
+
+  it("refuses, without asking Paystack, when the verifying key is not the attempt's key", async () => {
+    seedAttempt(REF, { secretKey: OTHER_KEY }); // opened under another test key
+    expect((await deliver()).status).toBe(200);
+    expect(link().status).toBe("open");
+    expect(calls).toEqual([]);
+    expect(link().attention).toMatch(/different key/i);
+    expect(mem.read(`paymentAttempts/${REF}`)).toMatchObject({ state: "flagged" });
+  });
+
+  it("flags, never pays, a verified payment for a checkout with no attempt — once per reference", async () => {
+    await mem.db.doc(`paymentAttempts/${REF}`).delete();
+    expect((await deliver()).status).toBe(200);
+    await deliver();
+    expect(link().status).toBe("open");
+    expect(String(link().attention).match(new RegExp(REF, "g"))).toHaveLength(1);
+  });
+
+  it("refuses an attempt recorded for another link", async () => {
+    seedAttempt(REF, { paymentLinkId: "link9" });
+    await deliver();
+    expect(link().status).toBe("open");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses an attempt recorded for another sub-account", async () => {
+    seedAttempt(REF, { subAccountId: OTHER_SA });
+    await deliver();
+    expect(link().status).toBe("open");
+    expect(calls).toEqual([]);
   });
 });
 
