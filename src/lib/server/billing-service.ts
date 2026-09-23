@@ -548,17 +548,37 @@ export async function assignPlanToSubAccount(input: {
     // at all and applies the new price at renewal. Choosing on the caller's
     // behalf would misprice on whichever provider it guessed wrong.
     const provider = getBillingProvider();
-    const { subscriptionId } = await provider.switchSubscriptionPlan({
-      subscriptionId: billing.stripeSubscriptionId as string,
-      priceId: stripePriceId,
-      timing: provider.planSwitchTiming,
-      metadata: {
-        kind: SUB_ACCOUNT_PLAN_KIND,
-        agencyId: input.agencyId,
-        subAccountId: input.subAccountId,
-        planId: plan.id,
-      },
-    });
+    // Paystack replaces the subscription: the old one is disabled before this
+    // call returns and the new code is stored, and its disable webhook can
+    // land in between. Marked so that webhook cannot cancel a paying client.
+    // (Stripe keeps the same subscription, so there is nothing to mark.)
+    const replaces = provider.id === "paystack";
+    if (replaces) {
+      await ref.update({
+        "billing.retiringSubscriptionId": billing.stripeSubscriptionId,
+        "billing.retiringSince": FieldValue.serverTimestamp(),
+      });
+    }
+    let subscriptionId: string;
+    try {
+      ({ subscriptionId } = await provider.switchSubscriptionPlan({
+        subscriptionId: billing.stripeSubscriptionId as string,
+        priceId: stripePriceId,
+        timing: provider.planSwitchTiming,
+        metadata: {
+          kind: SUB_ACCOUNT_PLAN_KIND,
+          agencyId: input.agencyId,
+          subAccountId: input.subAccountId,
+          planId: plan.id,
+        },
+      }));
+    } catch (err) {
+      // The old subscription is still the live one: its events count again.
+      if (replaces) {
+        await ref.update({ "billing.retiringSubscriptionId": null, "billing.retiringSince": null });
+      }
+      throw err;
+    }
 
     await ref.update({
       "billing.planId": plan.id,
@@ -573,6 +593,10 @@ export async function assignPlanToSubAccount(input: {
       // later cancel silently disable a dead subscription while the live one
       // kept charging the client.
       "billing.stripeSubscriptionId": subscriptionId,
+      // The old code is superseded now; the stored-id check ignores it.
+      ...(replaces
+        ? { "billing.retiringSubscriptionId": null, "billing.retiringSince": null }
+        : {}),
       "billing.updatedAt": FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });

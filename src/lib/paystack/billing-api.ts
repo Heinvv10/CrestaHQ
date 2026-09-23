@@ -171,6 +171,47 @@ export async function createPaystackSubscription(input: {
 export async function findLivePaystackSubscription(
   customerCode: string,
 ): Promise<string> {
+  const live = await findLiveSubscription(customerCode, () => true);
+  if (live) return live;
+  throw new BillingError(
+    "There's no active Paystack subscription to manage for this workspace.",
+    404,
+  );
+}
+
+/**
+ * The customer's active subscription on `planCode`, other than `excludeCode`
+ * and not created before `createdSince`, or null. How a plan switch finds out
+ * whether the subscription it asked for exists — after a timeout, "failed"
+ * and "slow" look the same from the caller's side.
+ */
+export function findLivePaystackSubscriptionOnPlan(
+  customerCode: string,
+  planCode: string,
+  opts: { excludeCode: string; createdSince: number },
+): Promise<string | null> {
+  return findLiveSubscription(
+    customerCode,
+    (s) =>
+      s.subscription_code !== opts.excludeCode &&
+      s.plan?.plan_code === planCode &&
+      // A shared customer can hold an older subscription on the same plan for
+      // another workspace; only one created by this attempt counts.
+      !(s.createdAt && Date.parse(s.createdAt) < opts.createdSince),
+  );
+}
+
+interface PaystackSubscriptionListItem {
+  subscription_code: string;
+  status: string;
+  plan?: { plan_code?: string } | null;
+  createdAt?: string;
+}
+
+async function findLiveSubscription(
+  customerCode: string,
+  matches: (s: PaystackSubscriptionListItem) => boolean,
+): Promise<string | null> {
   const customer = await paystackRequest<{ id: number }>(
     "GET",
     `/customer/${encodeURIComponent(customerCode)}`,
@@ -180,23 +221,18 @@ export async function findLivePaystackSubscription(
   // the history runs out.
   const perPage = 100;
   for (let page = 1; page <= MAX_SUBSCRIPTION_PAGES; page += 1) {
-    const subs = await paystackRequest<
-      { subscription_code: string; status: string }[]
-    >(
+    const subs = await paystackRequest<PaystackSubscriptionListItem[]>(
       "GET",
       `/subscription?customer=${customer.id}&perPage=${perPage}&page=${page}`,
     );
-    const live = subs.find((s) => s.status === "active");
+    const live = subs.find((s) => s.status === "active" && matches(s));
     // Deliberately no "else take the first one": handing back a cancelled
     // subscription gives the client a manage page where they update a card
     // that bills nothing, and a success screen that means nothing.
     if (live) return live.subscription_code;
     if (subs.length < perPage) break;
   }
-  throw new BillingError(
-    "There's no active Paystack subscription to manage for this workspace.",
-    404,
-  );
+  return null;
 }
 
 /** 500 subscriptions is far past any real client; a bound beats an open loop. */

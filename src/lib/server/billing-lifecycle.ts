@@ -6,6 +6,11 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
+  activationLedgerRef,
+  flagBillingPayment,
+  type BillingPaymentProvider,
+} from "@/lib/server/billing-payment-ledger";
+import {
   BILLING_GRACE_DAYS,
   PLAN_GATE_KEYS,
   type BillingChargeDoc,
@@ -84,6 +89,16 @@ export function readBilling(
  * arrive here, so activation, the gate bundle, the audit row and the outbound
  * webhook cannot drift between the two rails.
  *
+ * An activation is tied to the payment that made it (`reference`: Stripe's
+ * checkout session, Paystack's transaction). Providers redeliver for days, so:
+ *   - a reference that already activated is a replay and changes nothing —
+ *     not after a cancellation, not after a re-assignment of the same plan;
+ *   - a NEW payment for a workspace that is comped, on another plan, or
+ *     already active is real money that activates nothing: it is flagged
+ *     for the agency to refund, not applied.
+ * The ledger row and the activation commit together, so a crash between
+ * them cannot leave a paid workspace walled or a replay unrecognised.
+ *
  * `subscriptionId` is null when the provider has not told us the subscription
  * yet — Paystack sends the payment and the subscription as separate events, in
  * no guaranteed order, so it is filled in by whichever arrives second.
@@ -93,48 +108,89 @@ export async function activateSubAccountPlan(input: {
   planId: string;
   customerId: string | null;
   subscriptionId: string | null;
+  provider: BillingPaymentProvider;
+  reference: string;
+  /** For a flag row: what the provider says was paid. */
+  amountCents: number | null;
+  currency: string | null;
 }): Promise<void> {
   const { subAccountId, planId } = input;
 
   const db = getAdminDb();
   const ref = db.doc(`subAccounts/${subAccountId}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
+  const ledgerRef = activationLedgerRef(input.provider, input.reference);
+
+  const outcome = await db.runTransaction(async (tx) => {
+    const [ledger, snap] = [await tx.get(ledgerRef), await tx.get(ref)];
+    if (ledger.exists) return { kind: "replay" as const };
+    if (!snap.exists) return { kind: "missing" as const };
+    const data = snap.data() as Record<string, unknown>;
+    const billing = readBilling(data);
+    const agencyId = String(data.agencyId ?? "");
+
+    // Activated before the ledger existed: the stored reference / subscription
+    // is the only record that this payment was already spent.
+    if (
+      billing?.paystackReference === input.reference ||
+      (billing?.status === "active" &&
+        !!input.subscriptionId &&
+        billing.stripeSubscriptionId === input.subscriptionId)
+    ) {
+      return { kind: "replay" as const };
+    }
+
+    const reason =
+      !billing || billing.status === "comped"
+        ? "workspace is comped"
+        : billing.planId !== planId
+          ? `plan=${planId} assigned=${billing.planId ?? null}`
+          : billing.status === "active"
+            ? "plan already active — paid twice"
+            : null;
+    if (reason) return { kind: "flag" as const, reason, agencyId };
+
+    tx.create(ledgerRef, {
+      agencyId,
+      subAccountId,
+      planId,
+      provider: input.provider,
+      reference: input.reference,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    tx.update(ref, {
+      "billing.status": "active" satisfies SubAccountBillingStatus,
+      "billing.stripeCustomerId":
+        input.customerId ?? billing!.stripeCustomerId ?? null,
+      "billing.stripeSubscriptionId":
+        input.subscriptionId ?? billing!.stripeSubscriptionId ?? null,
+      "billing.checkoutTokenHash": null,
+      "billing.graceUntil": null,
+      "billing.activatedAt": FieldValue.serverTimestamp(),
+      "billing.updatedAt": FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { kind: "activated" as const, agencyId, billing: billing! };
+  });
+
+  if (outcome.kind === "missing") {
     console.error(`[billing] checkout completed for missing sub-account ${subAccountId}`);
     return;
   }
-  const data = snap.data() as Record<string, unknown>;
-  const agencyId = String(data.agencyId ?? "");
-  const billing = readBilling(data);
-
-  // A provider can redeliver a payment event days later — and this endpoint
-  // deliberately 500s on failure to force retries, so redelivery is routine.
-  // If the workspace is already active on a DIFFERENT plan, this event is
-  // stale: re-applying its gate bundle would silently restore the old plan's
-  // features onto the plan the client actually has now.
-  if (
-    billing?.status === "active" &&
-    billing.planId &&
-    billing.planId !== planId
-  ) {
-    console.warn(
-      `[billing] ignoring a stale activation for plan ${planId}; ${subAccountId} is active on ${billing.planId}`,
-    );
+  if (outcome.kind === "replay") return;
+  if (outcome.kind === "flag") {
+    await flagBillingPayment({
+      provider: input.provider,
+      reference: input.reference,
+      agencyId: outcome.agencyId,
+      subAccountId,
+      kind: "plan",
+      reason: outcome.reason,
+      amountCents: input.amountCents,
+      currency: input.currency,
+    });
     return;
   }
-
-  await ref.update({
-    "billing.status": "active" satisfies SubAccountBillingStatus,
-    "billing.stripeCustomerId":
-      input.customerId ?? billing?.stripeCustomerId ?? null,
-    "billing.stripeSubscriptionId":
-      input.subscriptionId ?? billing?.stripeSubscriptionId ?? null,
-    "billing.checkoutTokenHash": null,
-    "billing.graceUntil": null,
-    "billing.activatedAt": FieldValue.serverTimestamp(),
-    "billing.updatedAt": FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  const { agencyId, billing } = outcome;
 
   // Apply the plan's gate bundle now that payment landed. Look the plan up
   // fresh so a gate edit between assignment and payment still applies.
@@ -165,9 +221,11 @@ export async function activateSubAccountPlan(input: {
     event: "activated",
     detail: {
       planId,
-      planName: billing?.planName ?? null,
-      priceCents: billing?.priceCents ?? null,
+      planName: billing.planName ?? null,
+      priceCents: billing.priceCents ?? null,
       stripeSubscriptionId: input.subscriptionId,
+      provider: input.provider,
+      reference: input.reference,
     },
   });
   void emitWebhookEvent({
@@ -178,9 +236,9 @@ export async function activateSubAccountPlan(input: {
     payload: {
       subAccountId,
       planId,
-      planName: billing?.planName ?? null,
-      priceCents: billing?.priceCents ?? null,
-      currency: billing?.currency ?? null,
+      planName: billing.planName ?? null,
+      priceCents: billing.priceCents ?? null,
+      currency: billing.currency ?? null,
     },
   });
 }
@@ -209,6 +267,10 @@ export async function handleSubAccountPlanCheckoutCompleted(
     planId,
     customerId: (session.customer as string | null) ?? null,
     subscriptionId: (session.subscription as string | null) ?? null,
+    provider: "stripe",
+    reference: session.id,
+    amountCents: session.amount_total ?? null,
+    currency: session.currency ?? null,
   });
 }
 
@@ -294,11 +356,24 @@ export async function applySubAccountSubscriptionStatus(input: {
   // Only checkable when the event named a subscription. An unnamed event was
   // matched by customer, and the workspace has exactly one billing record, so
   // there is no second subscription for it to be confused with.
+  //
+  // A cancelled or pending workspace with NO stored subscription has none of
+  // its own: a named event is for one that already ended (a late `.updated`
+  // behind its `.deleted`) or one whose payment has not landed. Neither may
+  // move it — activation comes only from the payment, and a deleted
+  // subscription is never revived by the provider.
   if (
     subscriptionId &&
-    billing.stripeSubscriptionId &&
-    billing.stripeSubscriptionId !== subscriptionId
+    billing.stripeSubscriptionId !== subscriptionId &&
+    (billing.stripeSubscriptionId ||
+      billing.status === "canceled" ||
+      billing.status === "pending")
   ) {
+    return;
+  }
+  // Mid plan switch: the subscription being replaced is disabled before the
+  // new code is stored, and its disable webhook can land in that gap.
+  if (subscriptionId && isRetiring(billing, subscriptionId)) {
     return;
   }
 
@@ -389,35 +464,87 @@ export async function applySubAccountSubscriptionStatus(input: {
  * would unlock the workspace at whatever gates it held while pending, fire a
  * duplicate `billing.activated`, and leave its checkout link live. Activation
  * has exactly one source — the payment event, via `activateSubAccountPlan`.
+ *
+ * Paystack's `subscription.create` names only the customer and the plan, and
+ * one Paystack customer can back several workspaces (Paystack keys customers
+ * on email, and two workspaces can share an account contact). So the customer
+ * alone decides nothing when it is shared: the workspace must also be on the
+ * event's plan, and if that still leaves more than one, nothing is written and
+ * the event is flagged — storing it on the wrong one would point that
+ * workspace's cancel at another client's subscription.
  */
 export async function recordSubAccountSubscriptionId(input: {
   customerId: string;
   subscriptionId: string;
+  /** The plan the new subscription is on, when the event names it. */
+  planCode?: string | null;
 }): Promise<void> {
-  const subAccountId = await findSubAccountByBillingField(
-    "billing.stripeCustomerId",
-    input.customerId,
-  );
-  if (!subAccountId) {
-    console.error(
-      `[billing] no sub-account for customer ${input.customerId} on subscription ${input.subscriptionId}`,
-    );
+  const db = getAdminDb();
+  // Already stored (the plan switch writes its own code): nothing to decide.
+  if (await findSubAccountByBillingField("billing.stripeSubscriptionId", input.subscriptionId)) {
     return;
   }
-  const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
-  const snap = await ref.get();
-  if (!snap.exists) return;
-  const billing = readBilling(snap.data() as Record<string, unknown>);
-  // A comped workspace is not billed at all, and one already pointing at this
-  // subscription needs no write.
-  if (!billing || billing.status === "comped") return;
-  if (billing.stripeSubscriptionId === input.subscriptionId) return;
-
+  const byCustomer = await db
+    .collection("subAccounts")
+    .where("billing.stripeCustomerId", "==", input.customerId)
+    .get();
+  const billed = byCustomer.docs.filter((d) => {
+    const billing = readBilling(d.data());
+    // A comped workspace is not billed at all.
+    return !!billing && billing.status !== "comped";
+  });
+  const candidates =
+    billed.length > 1 && input.planCode
+      ? billed.filter((d) => readBilling(d.data())?.stripePriceId === input.planCode)
+      : billed;
+  if (candidates.length !== 1) {
+    console.error(
+      `[billing] subscription ${input.subscriptionId} for customer ${input.customerId} matches ${candidates.length} workspaces — not stored`,
+    );
+    if (billed.length > 1) {
+      await db
+        .collection("billingEvents")
+        .doc(`subscription-flag-${encodeURIComponent(input.subscriptionId)}`)
+        .set({
+          agencyId: String(billed[0].data().agencyId ?? ""),
+          subAccountId: null,
+          event: "subscription.flagged",
+          detail: {
+            subscriptionId: input.subscriptionId,
+            customerId: input.customerId,
+            planCode: input.planCode ?? null,
+            candidates: (candidates.length > 0 ? candidates : billed).map((d) => d.id),
+          },
+          createdAt: FieldValue.serverTimestamp(),
+        });
+    }
+    return;
+  }
+  const ref = candidates[0].ref;
   await ref.update({
     "billing.stripeSubscriptionId": input.subscriptionId,
     "billing.updatedAt": FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
+}
+
+/** How long a plan switch's mark on the subscription it replaces is honoured. */
+const RETIRING_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Whether `subscriptionId` is the one a plan switch is replacing right now.
+ * Bounded in time so a switch that crashed before clearing its mark cannot
+ * mute that subscription's events forever.
+ */
+function isRetiring(billing: SubAccountBilling, subscriptionId: string): boolean {
+  const since = billing.retiringSince as { toMillis?: () => number } | Date | null | undefined;
+  const sinceMs =
+    since instanceof Date ? since.getTime() : typeof since?.toMillis === "function" ? since.toMillis() : null;
+  return (
+    billing.retiringSubscriptionId === subscriptionId &&
+    sinceMs !== null &&
+    Date.now() - sinceMs < RETIRING_TTL_MS
+  );
 }
 
 /** Single-field equality query — no composite index, no collection group. */

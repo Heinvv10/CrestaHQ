@@ -207,10 +207,18 @@ export interface SubAccountBilling {
    */
   checkoutTokenHash: string | null;
   /**
-   * The Paystack transaction that activated the current plan, so a
-   * redelivery of it is told apart from a second payment. Absent for Stripe.
+   * Legacy: the Paystack transaction that activated the plan, written before
+   * the `billingActivations` ledger existed. Still read, so a redelivery of a
+   * pre-ledger payment stays a replay; no longer written.
    */
   paystackReference?: string | null;
+  /**
+   * Set while a plan switch replaces this subscription (Paystack disables the
+   * old one and opens another): events for it are ignored until the new code
+   * is stored, or `retiringSince` is more than a few minutes old.
+   */
+  retiringSubscriptionId?: string | null;
+  retiringSince?: Timestamp | FieldValue | Date | null;
   /**
    * End of the dunning grace window, stamped when the subscription first
    * goes past_due. Checked at request/render time (no cron): past_due +
