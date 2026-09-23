@@ -740,10 +740,13 @@ service cloud.firestore {
 
     // ---------- users ----------
     // Slim profile doc. Self-read + self-update (display name, photo URL).
-    // Role/agency fields are server-only.
+    // Role/status/agency/billing fields are server-only: /api/auth/refresh-claims
+    // mints custom claims from role, status and primaryAgencyId.
     match /users/{userId} {
       allow read: if isAuthed() && request.auth.uid == userId;
-      allow update: if isAuthed() && request.auth.uid == userId;
+      allow update: if isAuthed() && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(["displayName", "photoURL", "updatedAt"]);
       allow create, delete: if false;
 
       // Push-notification device registry (PWA). Created/updated only by
