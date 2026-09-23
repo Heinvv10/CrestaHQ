@@ -264,7 +264,7 @@ export function NewDealDialog({
                   onChange={(e) => setCurrency(e.target.value)}
                   className="flex h-8 w-24 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
                 >
-                  {["USD", "AUD", "EUR", "GBP", "CAD"].map((c) => (
+                  {["USD", "AUD", "EUR", "GBP", "CAD", "ZAR"].map((c) => (
                     <option key={c} value={c} className="bg-background text-foreground">
                       {c}
                     </option>
