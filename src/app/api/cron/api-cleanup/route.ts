@@ -209,7 +209,12 @@ export async function POST(request: Request) {
   // a continuation so we keep draining without a long-running invocation.
   // The daily schedule will pick up tomorrow's work; this short-window
   // re-run is only for catching up after a spike.
-  if (anyHitCap) {
+  // Only when every sweep succeeded: this run answers 500 on a failure, so
+  // QStash retries it — in later minutes the dedup id doesn't collapse — and
+  // each retry would schedule another continuation, fanning out for as long
+  // as the failure persists. Tomorrow's scheduled run picks the backlog up.
+  const continuationScheduled = anyHitCap && failures.length === 0;
+  if (continuationScheduled) {
     await publishCallback({
       pathname: "/api/cron/api-cleanup",
       body: {},
@@ -227,7 +232,7 @@ export async function POST(request: Request) {
       ...(failures.length > 0 ? { error: "sweep_failed", failures } : {}),
       durationMs: Date.now() - startedAt,
       results,
-      continuationScheduled: anyHitCap,
+      continuationScheduled,
     },
     { status: failures.length > 0 ? 500 : 200 },
   );

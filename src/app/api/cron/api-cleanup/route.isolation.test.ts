@@ -7,10 +7,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * surfaces as a 500 naming the sweep.
  */
 
+const publishCallback = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@/lib/automations/qstash", () => ({
   verifyQStashSignature: async () => true,
-  publishCallback: vi.fn(async () => {}),
+  publishCallback,
 }));
+/** Which sweeps fail / come back full (500 docs = hit the per-run cap). */
+const setup = vi.hoisted(() => ({ failing: new Set<string>(), capped: new Set<string>() }));
 const sweepOldWatchdogRuns = vi.hoisted(() => vi.fn(async () => 2));
 vi.mock("@/lib/server/agents-watchdog-service", () => ({ sweepOldWatchdogRuns }));
 
@@ -19,7 +22,7 @@ const emptyQuery = { where: () => emptyQuery, limit: () => emptyQuery, get: asyn
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
     collectionGroup: (name: string) => {
-      if (name === "apiRequestLogs") {
+      if (setup.failing.has(name)) {
         const failing = {
           where: () => failing,
           limit: () => failing,
@@ -28,6 +31,11 @@ vi.mock("@/lib/firebase/admin", () => ({
           },
         };
         return failing;
+      }
+      if (setup.capped.has(name)) {
+        const docs = Array.from({ length: 500 }, (_, i) => ({ ref: { id: `d${i}` } }));
+        const full = { where: () => full, limit: () => full, get: async () => ({ empty: false, docs, size: 500 }) };
+        return full;
       }
       return emptyQuery;
     },
@@ -49,7 +57,17 @@ vi.mock("@/lib/firebase/admin", () => ({
 
 const { POST } = await import("./route");
 
+const run = () =>
+  POST(new Request("https://app.test/api/cron/api-cleanup", {
+    method: "POST",
+    headers: { "upstash-signature": "sig" },
+    body: "{}",
+  }));
+
 beforeEach(() => {
+  setup.failing = new Set(["apiRequestLogs"]);
+  setup.capped = new Set();
+  publishCallback.mockClear();
   scrubbed.length = 0;
   sweepOldWatchdogRuns.mockClear();
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -57,11 +75,7 @@ beforeEach(() => {
 
 describe("POST /api/cron/api-cleanup — sweep isolation", () => {
   it("a sweep failing FAILED_PRECONDITION still lets the PII scrub and the watchdog sweep run, and reports the failure", async () => {
-    const res = await POST(new Request("https://app.test/api/cron/api-cleanup", {
-      method: "POST",
-      headers: { "upstash-signature": "sig" },
-      body: "{}",
-    }));
+    const res = await run();
     expect(scrubbed).toEqual([{ submittedFromIp: null, submittedUserAgent: null, piiExpiresAt: null }]);
     expect(sweepOldWatchdogRuns).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(500);
@@ -71,5 +85,21 @@ describe("POST /api/cron/api-cleanup — sweep isolation", () => {
     expect(body.results.map((r) => r.collection)).toEqual(
       expect.arrayContaining(["apiIdempotency", "webhookEvents", "communityMagicLinkUses", "reviewFeedback/pii", "customAgents/runs"]),
     );
+  });
+
+  it("does not schedule a continuation on a partial failure, even when another sweep hit the cap", async () => {
+    setup.capped = new Set(["apiIdempotency"]);
+    const res = await run();
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { continuationScheduled: boolean }).continuationScheduled).toBe(false);
+    expect(publishCallback).not.toHaveBeenCalled();
+  });
+
+  it("still schedules one when every sweep succeeded and one hit the cap", async () => {
+    setup.failing = new Set();
+    setup.capped = new Set(["apiIdempotency"]);
+    const res = await run();
+    expect(res.status).toBe(200);
+    expect(publishCallback).toHaveBeenCalledTimes(1);
   });
 });
