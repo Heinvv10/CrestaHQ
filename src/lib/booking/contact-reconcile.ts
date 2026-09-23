@@ -47,6 +47,12 @@ interface ReconcileInput {
    * the contact exists).
    */
   defaultTerritoryId?: string | null;
+  /**
+   * The booking transaction this runs inside. The unverified-phone note is
+   * written through it, so it commits with the booking: once, even when the
+   * transaction retries, and not at all when it aborts.
+   */
+  txn?: FirebaseFirestore.Transaction;
 }
 
 export interface ReconciledContact {
@@ -92,14 +98,19 @@ export async function reconcileBookingContact(
       }
     }
     if (phone && phone !== data.phone) {
-      try {
-        await doc.ref.collection("notes").add({
-          content: `Booking page: visitor entered phone ${phone} — not saved to the contact (unverified).`,
-          createdBy: "booking-page",
-          createdAt: FieldValue.serverTimestamp(),
-        });
-      } catch {
-        // Non-fatal — the host notification email also carries the phone.
+      const note = {
+        content: `Booking page: visitor entered phone ${phone} — not saved to the contact (unverified).`,
+        createdBy: "booking-page",
+        createdAt: FieldValue.serverTimestamp(),
+      };
+      if (input.txn) {
+        input.txn.set(doc.ref.collection("notes").doc(), note);
+      } else {
+        try {
+          await doc.ref.collection("notes").add(note);
+        } catch {
+          // Non-fatal — the host notification email also carries the phone.
+        }
       }
     }
     return { id: doc.id, created: false };
