@@ -33,6 +33,9 @@ export interface RenderQuoteEmailInput {
   recipientName: string;
   /** Fully-qualified public URL: `${NEXT_PUBLIC_APP_URL}/q/${token}`. */
   publicUrl: string;
+  /** Invoice only: a direct Paystack pay URL (`/pay/link/{token}`), shown
+   *  beside the /q link. Omitted for PayPal and Stripe, which pay from /q. */
+  payUrl?: string | null;
   /** Optional cover note from the operator. v2 surface; v1 callers
    *  always pass undefined. Plumbed through so adding it later doesn't
    *  ripple. */
@@ -54,6 +57,7 @@ export function renderQuoteEmail(
     businessLogoUrl,
     recipientName,
     publicUrl,
+    payUrl,
     coverNote,
   } = input;
   const safeLogoUrl =
@@ -108,6 +112,9 @@ export function renderQuoteEmail(
       ? "View and pay the invoice here:"
       : "View, accept, or decline the quote here:",
     publicUrl,
+    payUrl ? "" : null,
+    payUrl ? "Or pay now:" : null,
+    payUrl ?? null,
     "",
     "Reply to this email if you have any questions.",
     "",
@@ -179,6 +186,11 @@ export function renderQuoteEmail(
                 Or open this link in your browser:<br />
                 <a href="${escapeHtml(publicUrl)}" style="color:${isInvoice ? "#0a8a55" : "#5b5bd6"};word-break:break-all;">${escapeHtml(publicUrl)}</a>
               </p>
+              ${
+                payUrl
+                  ? `<p style="margin:10px 0 0 0;font-size:12px;color:#6b6b75;">Or pay now:<br /><a href="${escapeHtml(payUrl)}" style="color:#0a8a55;word-break:break-all;">${escapeHtml(payUrl)}</a></p>`
+                  : ""
+              }
             </td>
           </tr>
           <tr>

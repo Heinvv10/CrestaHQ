@@ -15,7 +15,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { canTakePayment } from "@/lib/payments/can-take-payment";
+import { canPayInvoice } from "@/lib/payments/can-take-payment";
 import { subscribeToContacts } from "@/lib/firestore/contacts";
 import { subscribeToProducts } from "@/lib/firestore/products";
 import type { Contact } from "@/types/contacts";
@@ -31,7 +31,7 @@ export default function NewRecurringInvoicePage() {
   const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
   const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
-  const paymentReady = canTakePayment(subAccount);
+  const paymentReady = canPayInvoice(subAccount);
 
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -125,8 +125,8 @@ export default function NewRecurringInvoicePage() {
               No payment method is connected for this workspace.
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Every cycle will raise an invoice it cannot send until Stripe or
-              PayPal is connected.{" "}
+              Every cycle will raise an invoice it cannot send until Paystack,
+              Stripe or PayPal is connected.{" "}
               <Link
                 href={saPath("/dashboard/settings")}
                 className="font-medium text-amber-700 underline-offset-4 hover:underline dark:text-amber-400"

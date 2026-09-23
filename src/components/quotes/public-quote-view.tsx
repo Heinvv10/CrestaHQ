@@ -75,6 +75,8 @@ export function PublicQuoteView({
   cardPayEnabled = false,
 }: PublicQuoteViewProps) {
   const isInvoice = quote.kind === "invoice";
+  // The emailed link is Paystack's own pay page when it isn't paypal.me.
+  const linkRail = quote.paymentLinkUrl?.includes("/pay/link/") ? "Paystack" : "PayPal";
   const docLabel = isInvoice ? "Invoice" : "Quote";
   const totals = computeQuoteTotals(quote);
   const [busy, setBusy] = useState<null | "accept" | "decline" | "pay">(null);
@@ -347,7 +349,7 @@ export function PublicQuoteView({
               <p className="text-sm text-muted-foreground">
                 {cardPayEnabled
                   ? "Pay securely by card. You'll receive a receipt by email once payment clears."
-                  : "Pay securely via PayPal. You'll receive a receipt by email once payment clears."}
+                  : `Pay securely via ${linkRail}. You'll receive a receipt by email once payment clears.`}
               </p>
               <div className="flex flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center">
                 {/* PayPal stays exactly as it was — it's the fallback when
@@ -365,7 +367,7 @@ export function PublicQuoteView({
                   >
                     <CreditCard className="h-4 w-4" />
                     {cardPayEnabled
-                      ? "Pay with PayPal"
+                      ? `Pay with ${linkRail}`
                       : `Pay ${formatCurrency(totals.total, quote.currency)}`}
                   </a>
                 )}

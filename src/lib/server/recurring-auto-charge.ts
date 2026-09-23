@@ -29,7 +29,7 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  * the charge call is not proof, and only the verified webhook
  * (`auto-charge-reconciler.ts`) records a payment.
  *
- *   not chargeable → the invoice is emailed, and the schedule says why;
+ *   not chargeable → emailed, and a Task — except a first cycle with no card yet (its email saves one);
  *   declined       → recorded on the attempt, invoice and mandate, the invoice
  *                    is emailed (it carries a pay link), `invoice.charge_failed`;
  *   due too soon after the previous cycle (an edit moved it) → emailed; a Task;
@@ -81,6 +81,7 @@ export async function chargeCycle(
   // the `lastError` written beside it still tells the operator.
   const alert = (title: string, notes: string) =>
     raiseChargeTask(schedule, title, notes).catch((err: unknown) => console.error(`${tag} task not raised: ${title}`, err));
+  const emailInstead = (chargeNote: string) => note(chargeNote).then(() => sendGeneratedInvoice(schedule, invoiceId, chargeNote));
 
   const opened = await openAttempt(schedule, invoiceId, invoice, reference, dueAt);
   if ("alreadyCharged" in opened) {
@@ -93,13 +94,12 @@ export async function chargeCycle(
     const { dueAt: due, previousDueAt: prev } = opened.tooSoon;
     const days = Math.round((due.getTime() - prev.getTime()) / 86_400_000);
     const why = `This cycle is due ${day(due)}, only ${days} days after the previous cycle (${day(prev)}) — usually because the billing day or frequency was changed — so the card was not charged and the invoice was emailed instead.`;
-    await note(`Card not charged for invoice ${label}. ${why}`);
     await alert(`Card not charged: invoice ${label} came due too soon after the previous cycle`, why);
-    return sendGeneratedInvoice(schedule, invoiceId);
+    return emailInstead(`Card not charged for invoice ${label}. ${why}`);
   }
   if (!opened.ok) {
-    await note(`Card not charged for invoice ${label}: ${opened.reason} — invoice emailed instead.`);
-    return sendGeneratedInvoice(schedule, invoiceId);
+    if (schedule.cardMandateId || cycle !== 1) await alert(`Card not charged for invoice ${label}: ${opened.reason}`, "The invoice was emailed instead.");
+    return emailInstead(`Card not charged for invoice ${label}: ${opened.reason} — invoice emailed instead.`);
   }
 
   const setInvoice = (autoCharge: QuoteAutoCharge) =>
@@ -138,8 +138,9 @@ export async function chargeCycle(
     (err: unknown) => console.error(`${tag} attempt not refused`, err),
   );
   await setInvoice({ ...base, state: "declined", reason: answer.reason });
+  let chargeNote = `Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`;
   if (keyRefused) {
-    await note(`Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`);
+    chargeNote = `Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`;
     await alert(
       `Paystack refused the key: invoice ${label} was not charged`,
       `Charging the saved card for invoice ${label} (Paystack reference ${reference}) failed because Paystack refused this workspace's key: ${answer.reason}. ` +
@@ -149,9 +150,8 @@ export async function chargeCycle(
     await countDecline(opened.mandateId, answer.reason, schedule.unpaidEscalationThreshold).catch((err: unknown) =>
       console.error(`${tag} decline not counted on the mandate`, err),
     );
-    await note(`Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`);
   }
-  const sent = await sendGeneratedInvoice(schedule, invoiceId);
+  const sent = await emailInstead(chargeNote);
   // A refused key is the workspace's problem; the customer's card did not fail.
   if (!keyRefused) await fireChargeTrigger(schedule, "invoice.charge_failed");
   return sent;
