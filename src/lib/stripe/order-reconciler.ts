@@ -14,7 +14,12 @@ import {
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
 import { markBookingPaidServerSide } from "@/lib/server/bookings-service";
 import { markPurchasePaidServerSide } from "@/lib/server/community-purchase-service";
-import { stripeAmountToCents, toStripeAmount } from "@/lib/stripe/amount";
+import {
+  centsToStripeAmount,
+  stripeAmountToCents,
+  stripeCanChargeCurrency,
+} from "@/lib/stripe/amount";
+import { getAdminDb } from "@/lib/firebase/admin";
 import type { Order } from "@/types/orders";
 
 /**
@@ -39,6 +44,11 @@ import type { Order } from "@/types/orders";
  * which the route turns into a 5xx so Stripe redelivers. Everything else —
  * ignored types, foreign sessions, replays — resolves normally and gets a 200.
  * A redelivery is safe: every step recognises its own earlier success.
+ *
+ * Deterministic outcomes never throw, or a redelivery would fail the same way
+ * for days: a missing order / invoice / booking / purchase, a wrong tenant, a
+ * status that cannot take the payment, a changed amount — each resolves, and
+ * the ones where money arrived for nothing are flagged on `order.attention`.
  */
 
 /** Audit stamp for access granted by a confirmed Stripe payment rather than
@@ -148,10 +158,15 @@ async function handleCheckoutCompleted(
   // earlier delivery may have paid the order and then failed here, and
   // Stripe's retry is what finishes the job. Each branch recognises its own
   // earlier success, so a plain replay changes nothing.
-  const problem = await applySourceEffects(updated, session);
+  const problem = await applySourceEffects(updated, session, changed);
   if (problem) {
     console.warn(`[order-reconciler] order ${updated.id} needs attention: ${problem}`);
-    await flagOrderAttention(updated.id, problem);
+    await flagOrderAttention(updated.id, problem).catch((err: unknown) => {
+      // NOT_FOUND = the order was deleted after we paid it; a retry cannot
+      // help, so log it rather than loop 5xx. Anything else is transient.
+      if ((err as { code?: unknown })?.code !== 5) throw err;
+      console.error(`[order-reconciler] order ${updated.id} vanished before its flag: ${problem}`);
+    });
   }
 
   return {
@@ -180,15 +195,29 @@ const INVOICE_CHANGED =
 async function applySourceEffects(
   order: Order,
   session: Stripe.Checkout.Session,
+  /** True when THIS delivery moved the order to paid; false on a redelivery. */
+  orderJustPaid: boolean,
 ): Promise<string | null> {
+  // An "already paid" surface with no payer recorded, seen on a REDELIVERY, is
+  // this same payment: settled before payers were recorded, or marked paid by
+  // hand while Stripe was retrying. Only a payment that is new in this
+  // delivery can be a second one.
+  const unrecordedIsOurs = (payer: unknown) => payer == null && !orderJustPaid;
+
   if (order.source === "quote" && order.quoteId) {
     // The invoice is settled only for the amount this session collected,
-    // which must be the amount the order was opened for.
+    // which must be the amount the order was opened for. Adaptive Pricing
+    // sessions created before 2025-03-31 report the buyer's converted amount
+    // on the session and the integration amount under `currency_conversion`;
+    // newer ones keep the integration amount on the session itself.
+    const paidAmount = session.currency_conversion?.amount_total ?? session.amount_total;
+    const paidCurrency = (session.currency_conversion?.source_currency ?? session.currency ?? "").toLowerCase();
     if (
-      session.amount_total !== toStripeAmount(order.totalCents / 100, order.currency) ||
-      (session.currency ?? "").toLowerCase() !== order.currency.toLowerCase()
+      paidCurrency !== order.currency.toLowerCase() ||
+      !stripeCanChargeCurrency(paidCurrency) ||
+      paidAmount !== centsToStripeAmount(order.totalCents, order.currency)
     ) {
-      return `Paid ${session.amount_total ?? "?"} ${(session.currency ?? "").toUpperCase()} (Stripe units), which differs from this order — the invoice was not marked paid. Check it by hand.`;
+      return `Paid ${paidAmount ?? "?"} ${paidCurrency.toUpperCase()} (Stripe units), which differs from this order — the invoice was not marked paid. Check it by hand.`;
     }
     // Routes through the SAME service the operator's "Mark as paid" button
     // uses, so the activity row, `quote.paid` workflow trigger, outbound
@@ -206,7 +235,8 @@ async function applySourceEffects(
     if (res.ok) return null;
     if (res.code === "already_paid") {
       // Our own earlier success (a redelivery) is not a second payment.
-      return res.paidVia?.rail === "stripe_order" && res.paidVia.orderId === order.id
+      return (res.paidVia?.rail === "stripe_order" && res.paidVia.orderId === order.id) ||
+        unrecordedIsOurs(res.paidVia)
         ? null
         : PAID_ANOTHER_WAY;
     }
@@ -230,7 +260,8 @@ async function applySourceEffects(
       throw new Error(`booking ${order.eventId} confirm write failed`);
     }
     if (res.code === "bad_status") {
-      return res.paidOrderId === order.id
+      return res.paidOrderId === order.id ||
+        (res.status === "scheduled" && unrecordedIsOurs(res.paidOrderId))
         ? null
         : `Paid, but the booking was no longer awaiting payment (${res.status ?? "unknown"}) — confirm it by hand or refund the deposit.`;
     }
@@ -242,23 +273,24 @@ async function applySourceEffects(
     order.communityGroupId &&
     order.purchaseId
   ) {
-    try {
-      // Same service a staff admin's manual "mark paid" uses: flips the
-      // purchase, grants group membership or unlocks the course, and fires
-      // community.member.joined / community.purchase.paid. Already idempotent
-      // (returns early when the purchase is paid), so a replay is a no-op.
-      await markPurchasePaidServerSide({
-        subAccountId: order.subAccountId,
-        groupId: order.communityGroupId,
-        purchaseId: order.purchaseId,
-        grantedByUid: STRIPE_GRANTOR,
-      });
-    } catch (err) {
-      console.error(
-        `[order-reconciler] source effects failed order=${order.id} source=${order.source}`,
-        err,
-      );
+    // A deleted purchase is permanent — flag it rather than retry for days.
+    const purchase = await getAdminDb()
+      .doc(`subAccounts/${order.subAccountId}/communityGroups/${order.communityGroupId}/purchases/${order.purchaseId}`)
+      .get();
+    if (!purchase.exists) {
+      return "Paid, but the community purchase no longer exists — grant access by hand or refund.";
     }
+    // Same service a staff admin's manual "mark paid" uses: grants group
+    // membership or unlocks the course, flips the purchase, and fires
+    // community.member.joined / community.purchase.paid. Idempotent (returns
+    // early when the purchase is paid), so a replay is a no-op; a transient
+    // failure throws and the redelivery finishes it.
+    await markPurchasePaidServerSide({
+      subAccountId: order.subAccountId,
+      groupId: order.communityGroupId,
+      purchaseId: order.purchaseId,
+      grantedByUid: STRIPE_GRANTOR,
+    });
   }
   return null;
 }

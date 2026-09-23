@@ -160,13 +160,10 @@ export async function markPurchasePaidServerSide(opts: {
   const purchase = { id: snap.id, ...(snap.data() as Omit<Purchase, "id">) };
   if (purchase.status === "paid") return { ok: true };
 
-  await ref.update({
-    status: "paid",
-    paidAt: FieldValue.serverTimestamp(),
-    grantedByUid: opts.grantedByUid,
-  });
-
-  // Grant access.
+  // Grant access BEFORE flipping the purchase: the paid status is what makes
+  // a retry return early above, so it must be the last write. A failure in
+  // between then leaves the purchase pending and a retry finishes the grant
+  // (the membership write is a merge, and the member count moves with it).
   if (purchase.scope === "group") {
     const groupRef = db.doc(
       `subAccounts/${opts.subAccountId}/communityGroups/${opts.groupId}`,
@@ -175,7 +172,11 @@ export async function markPurchasePaidServerSide(opts: {
     const existing = await memRef.get();
     const wasActive =
       existing.exists && existing.data()!.status === "active";
-    await memRef.set(
+    // One batch, so the member count moves exactly when the membership turns
+    // active — a retry after a failure here sees neither, or both.
+    const batch = db.batch();
+    batch.set(
+      memRef,
       {
         subAccountId: opts.subAccountId,
         agencyId: purchase.agencyId,
@@ -189,8 +190,9 @@ export async function markPurchasePaidServerSide(opts: {
       },
       { merge: true },
     );
+    if (!wasActive) batch.update(groupRef, { memberCount: FieldValue.increment(1) });
+    await batch.commit();
     if (!wasActive) {
-      await groupRef.update({ memberCount: FieldValue.increment(1) });
       void emitWebhookEvent({
         subAccountId: opts.subAccountId,
         agencyId: purchase.agencyId,
@@ -206,6 +208,12 @@ export async function markPurchasePaidServerSide(opts: {
   }
   // scope "course": access is read live from this paid purchase — no extra
   // write needed.
+
+  await ref.update({
+    status: "paid",
+    paidAt: FieldValue.serverTimestamp(),
+    grantedByUid: opts.grantedByUid,
+  });
 
   void emitWebhookEvent({
     subAccountId: opts.subAccountId,

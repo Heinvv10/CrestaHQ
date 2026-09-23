@@ -510,31 +510,46 @@ export async function markSubAccountChargePaid(input: {
 }): Promise<void> {
   const { chargeId } = input;
   const ref = chargesCollection().doc(chargeId);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    console.error(`[billing] checkout completed for missing charge ${chargeId}`);
-    return;
-  }
-  const charge = snap.data() as BillingChargeDoc;
-  if (charge.status === "paid") {
-    // A redelivery carries the checkout that paid it — idempotent. A DIFFERENT
-    // checkout is a second payment (the link paid from two tabs): record it so
-    // the agency sees it and can refund, rather than dropping real money.
-    if (
-      input.checkoutSessionId &&
-      charge.stripeCheckoutSessionId &&
-      input.checkoutSessionId !== charge.stripeCheckoutSessionId
-    ) {
-      console.warn(
-        `[billing] charge ${chargeId} paid again by ${input.checkoutSessionId} — a refund is owed`,
-      );
-      await ref.update({
-        extraPaymentRefs: FieldValue.arrayUnion(input.checkoutSessionId),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+
+  // Compare-and-set: two deliveries (a redelivery, or the link paid from two
+  // tabs) can race, and only the one whose write commits may emit charge.paid.
+  const charge = await getAdminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      console.error(`[billing] checkout completed for missing charge ${chargeId}`);
+      return null;
     }
-    return;
-  }
+    const current = snap.data() as BillingChargeDoc;
+    if (current.status === "paid") {
+      // A redelivery carries the checkout that paid it — idempotent. A
+      // DIFFERENT checkout is a second payment: record it so the agency sees
+      // it and can refund, rather than dropping real money.
+      if (
+        input.checkoutSessionId &&
+        current.stripeCheckoutSessionId &&
+        input.checkoutSessionId !== current.stripeCheckoutSessionId
+      ) {
+        console.warn(
+          `[billing] charge ${chargeId} paid again by ${input.checkoutSessionId} — a refund is owed`,
+        );
+        tx.update(ref, {
+          extraPaymentRefs: FieldValue.arrayUnion(input.checkoutSessionId),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return null;
+    }
+    tx.update(ref, {
+      status: "paid" satisfies BillingChargeStatus,
+      tokenHash: null,
+      stripeCheckoutSessionId: input.checkoutSessionId,
+      stripePaymentIntentId: input.paymentId,
+      paidAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return current;
+  });
+  if (!charge) return;
 
   // The agency cancelled this charge, but the payer completed an already-open
   // payment page. The money is real, so it is recorded rather than dropped —
@@ -546,15 +561,6 @@ export async function markSubAccountChargePaid(input: {
       `[billing] charge ${chargeId} was canceled but has been paid — refund it or reinstate it`,
     );
   }
-
-  await ref.update({
-    status: "paid" satisfies BillingChargeStatus,
-    tokenHash: null,
-    stripeCheckoutSessionId: input.checkoutSessionId,
-    stripePaymentIntentId: input.paymentId,
-    paidAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
 
   recordBillingEvent({
     agencyId: charge.agencyId,

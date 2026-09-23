@@ -11,7 +11,8 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 const mem = vi.hoisted(() => ({ db: null as unknown as ReturnType<typeof createMemoryFirestore> }));
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db.db }));
-vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
+const dispatch = vi.hoisted(() => ({ emitWebhookEvent: vi.fn(async (_: { type: string }) => {}) }));
+vi.mock("@/lib/api/webhooks/dispatch", () => dispatch);
 vi.mock("@/lib/server/feature-gates-service", () => ({
   applyFeatureGates: vi.fn(async () => ({ skippedMetaGates: [] })),
 }));
@@ -53,6 +54,7 @@ const planSession = (payment_status: string) => ({
 
 beforeEach(() => {
   mem.db.clear();
+  vi.clearAllMocks();
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   mem.db.seed("billingCharges/ch1", {
@@ -105,4 +107,17 @@ it("a second payment of an already-paid charge is recorded; a redelivery of the 
     stripeCheckoutSessionId: "cs_a",
     extraPaymentRefs: ["cs_b"],
   });
+});
+
+it("two payments racing for one charge: one marks it paid, the other is recorded, charge.paid fires once", async () => {
+  await Promise.all([
+    deliver("checkout.session.completed", chargeSession("cs_a")),
+    deliver("checkout.session.completed", chargeSession("cs_b")),
+  ]);
+  const charge = mem.db.read("billingCharges/ch1")!;
+  expect(charge.status).toBe("paid");
+  expect(charge.extraPaymentRefs).toHaveLength(1);
+  expect([charge.stripeCheckoutSessionId, ...(charge.extraPaymentRefs as string[])].sort()).toEqual(["cs_a", "cs_b"]);
+  const paidEvents = dispatch.emitWebhookEvent.mock.calls.filter(([e]) => e.type === "billing.charge.paid");
+  expect(paidEvents).toHaveLength(1);
 });
