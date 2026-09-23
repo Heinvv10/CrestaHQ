@@ -110,11 +110,12 @@ export function buildMetaOAuthUrl(opts: {
 // CSRF state — HMAC-signed with the existing AUTOMATIONS_TOKEN_SECRET so the
 // callback can trust `state` came from our connect route (and names the right
 // sub-account) without persisting anything. Bound to the admin who started
-// the connect and valid for 10 minutes, so a captured state can't be finished
-// later, or by someone else.
+// the connect and valid for 20 minutes, so a captured state can't be finished
+// later, or by someone else. 20 minutes: long enough for a Facebook login plus
+// a Page picker, short enough that a leaked state goes stale.
 // ---------------------------------------------------------------------------
 
-const META_STATE_TTL_MS = 10 * 60 * 1000;
+const META_STATE_TTL_MS = 20 * 60 * 1000;
 
 function stateSecret(): string {
   return process.env.AUTOMATIONS_TOKEN_SECRET ?? "";
@@ -159,6 +160,25 @@ export function verifyMetaState(
     if (typeof data.sa !== "string" || typeof data.exp !== "number") return null;
     if (data.u !== uid || Date.now() > data.exp) return null;
     return { subAccountId: data.sa };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The sub-account a state NAMES, without verifying it — only for choosing
+ * where to send the user back after `verifyMetaState` refused (an expired
+ * state, or a different signed-in user). It authorizes nothing: the page it
+ * points at is session-gated like any other. Null when it doesn't parse.
+ */
+export function metaStateSubAccountHint(state: string): string | null {
+  try {
+    const data = JSON.parse(
+      Buffer.from(state.split(".")[0] ?? "", "base64url").toString("utf8"),
+    ) as { sa?: unknown };
+    return typeof data.sa === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(data.sa)
+      ? data.sa
+      : null;
   } catch {
     return null;
   }

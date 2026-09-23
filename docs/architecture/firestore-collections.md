@@ -17,7 +17,7 @@
 | `subAccounts/{subAccountId}` | members + agency owner | Workspace metadata; reserved fields for Workflow-Recipes Twilio/Resend/booking/sendWindow |
 | `subAccounts/{subAccountId}/subAccountMembers/{uid}` | admins | Per-sub-account membership rows |
 | `subAccounts/{subAccountId}/getLeadsSearches/{requestId}` | server-only | One row per Get Leads search this sub-account submitted (Outscraper request id as doc id) + tenancy keys. The poll route answers only for ids recorded here |
-| `communityMagicLinkUses/{sha256}` | server-only | `{subAccountId, usedAt}` — one per consumed community magic link, created atomically at verify so each link signs in once |
+| `communityMagicLinkUses/{sha256}` | server-only | `{subAccountId, usedAt, expiresAt}` — one per consumed community magic link, created atomically at the verify POST so each link signs in once; deleted by the `api-cleanup` sweep once `expiresAt` passes |
 | `userMemberships/{uid}/subAccounts/{saId}` | self-read | Denormalized index powering the sub-account switcher |
 | `userMemberships/{uid}/agencies/{agencyId}` | self-read | Denormalized index for agency-level access |
 | `users/{uid}` | self only | Slim profile (display name, photoURL, primaryAgencyId) |

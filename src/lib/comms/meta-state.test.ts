@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signMetaState, verifyMetaState } from "./meta";
+import { metaStateSubAccountHint, signMetaState, verifyMetaState } from "./meta";
 
 /**
  * The Meta OAuth `state` must expire and be bound to the admin who started
@@ -25,13 +25,22 @@ describe("Meta OAuth state", () => {
     expect(verifyMetaState(state, null)).toBeNull();
   });
 
-  it("expires after ten minutes", () => {
+  it("expires after twenty minutes", () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-09-23T10:00:00Z") });
     const state = signMetaState("sa1", "uid-a", "nonce1");
-    vi.setSystemTime(new Date("2026-09-23T10:09:59Z"));
+    vi.setSystemTime(new Date("2026-09-23T10:19:59Z"));
     expect(verifyMetaState(state, "uid-a")).not.toBeNull();
-    vi.setSystemTime(new Date("2026-09-23T10:10:01Z"));
+    vi.setSystemTime(new Date("2026-09-23T10:20:01Z"));
     expect(verifyMetaState(state, "uid-a")).toBeNull();
+  });
+
+  it("still names its sub-account after a refusal, so the user can be sent back there", () => {
+    const state = signMetaState("sa1", "uid-a", "nonce1");
+    expect(verifyMetaState(state, "uid-b")).toBeNull();
+    expect(metaStateSubAccountHint(state)).toBe("sa1");
+    expect(metaStateSubAccountHint("garbage")).toBeNull();
+    const pathy = Buffer.from(JSON.stringify({ sa: "../agency" })).toString("base64url");
+    expect(metaStateSubAccountHint(`${pathy}.sig`)).toBeNull();
   });
 
   it("refuses a tampered sub-account or a state signed under another secret", () => {

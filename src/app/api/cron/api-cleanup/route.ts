@@ -46,12 +46,15 @@ export const EXPIRES_AT_COLLECTION_GROUPS = [
   "apiRequestLogs",
   "apiIdempotency",
   "webhookEvents",
+  // Consumed community magic links (one row per sign-in; dead after 15 min).
+  "communityMagicLinkUses",
 ] as const;
 
 // Named so the sweeps below read from this constant instead of repeating the
 // string literal — a new sweep added without a matching entry here (and thus
 // without an index) fails the coverage test instead of shipping silently.
-const [API_REQUEST_LOGS, API_IDEMPOTENCY, WEBHOOK_EVENTS] = EXPIRES_AT_COLLECTION_GROUPS;
+const [API_REQUEST_LOGS, API_IDEMPOTENCY, WEBHOOK_EVENTS, COMMUNITY_MAGIC_LINK_USES] =
+  EXPIRES_AT_COLLECTION_GROUPS;
 
 interface SweepResult {
   collection: string;
@@ -174,6 +177,7 @@ export async function POST(request: Request) {
     results.push(await sweepFlatCollection(API_REQUEST_LOGS, now));
     results.push(await sweepFlatCollection(API_IDEMPOTENCY, now));
     results.push(await sweepWebhookEvents(now));
+    results.push(await sweepFlatCollection(COMMUNITY_MAGIC_LINK_USES, now));
     results.push(await scrubReviewFeedbackPii(now));
     // Watchdog run logs older than 30 days (Labs custom agent).
     const watchdogDeleted = await sweepOldWatchdogRuns();

@@ -64,3 +64,13 @@ describe("reassign — timeline row", () => {
     expect(mem.list("contacts/theirs/activities")).toEqual([]);
   });
 });
+
+describe("reassign — refusal is logged as tenancy", () => {
+  it("names the tenancy refusal, not a failed write", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    seedEvent("theirs");
+    await reassign("ev");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("tenancy refusal"));
+    warn.mockRestore();
+  });
+});

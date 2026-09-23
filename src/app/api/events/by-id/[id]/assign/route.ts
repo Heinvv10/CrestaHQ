@@ -38,6 +38,18 @@ interface Body {
   force?: boolean;
 }
 
+/** Is the linked contact in this sub-account? False on a read failure too. */
+async function contactInSubAccount(contactId: string, subAccountId: string): Promise<boolean> {
+  if (contactId.includes("/")) return false;
+  try {
+    const snap = await getAdminDb().collection("contacts").doc(contactId).get();
+    return snap.data()?.subAccountId === subAccountId;
+  } catch (err) {
+    console.warn(`[events/assign] contact lookup failed contact=${contactId}`, err);
+    return false;
+  }
+}
+
 function tsToDate(v: unknown): Date | null {
   const d = (v as { toDate?: () => Date } | null)?.toDate?.();
   return d instanceof Date ? d : null;
@@ -212,12 +224,12 @@ export async function POST(
 
   // Timeline row (best-effort). Only onto a contact in the event's own
   // sub-account — a legacy event may still hold another tenant's contactId.
-  if (event.contactId && !event.contactId.includes("/")) {
+  if (event.contactId && !(await contactInSubAccount(event.contactId, event.subAccountId))) {
+    console.warn(
+      `[events/assign] tenancy refusal: contact=${event.contactId} is not in sa=${event.subAccountId}; no activity written event=${eventId}`,
+    );
+  } else if (event.contactId) {
     try {
-      const contactSnap = await db.collection("contacts").doc(event.contactId).get();
-      if (contactSnap.data()?.subAccountId !== event.subAccountId) {
-        throw new Error("linked contact is not in the event's sub-account");
-      }
       const content = targetName
         ? `Booking "${event.title || "Meeting"}" reassigned to ${targetName}.`
         : `Booking "${event.title || "Meeting"}" host cleared.`;

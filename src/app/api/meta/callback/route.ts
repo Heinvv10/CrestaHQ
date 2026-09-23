@@ -10,6 +10,7 @@ import {
   listMetaPages,
   metaAppConfigured,
   metaRedirectUri,
+  metaStateSubAccountHint,
   subscribePageToWebhook,
   verifyMetaState,
 } from "@/lib/comms/meta";
@@ -47,21 +48,22 @@ export async function GET(request: Request) {
   const state = url.searchParams.get("state");
   const declined = url.searchParams.get("error");
 
-  // The sub-account identity lives in `state`. Without a valid one we can't
-  // even tell whose settings page to return to, so bail to a safe landing.
-  if (!state) {
-    return NextResponse.redirect(
-      new URL("/agency/sub-accounts?meta=bad_state", appBase(request)),
-    );
-  }
-  // Bound to the admin who started the connect (and 10-minute expiry): a
+  // The sub-account identity lives in `state`. A refused state (expired, or a
+  // different signed-in user) still NAMES a sub-account, so send the user back
+  // to that settings page — reachable for its admins, unlike /agency/*. An
+  // unparseable one goes to /dashboard, which routes any signed-in user home.
+  const badState = () => {
+    const sa = state ? metaStateSubAccountHint(state) : null;
+    const path = sa
+      ? `/sa/${sa}/dashboard/settings?meta=bad_state`
+      : "/dashboard?meta=bad_state";
+    return NextResponse.redirect(new URL(path, appBase(request)));
+  };
+  if (!state) return badState();
+  // Bound to the admin who started the connect (and 20-minute expiry): a
   // captured state is useless to anyone else, or later.
   const verified = verifyMetaState(state, request.headers.get("x-user-uid"));
-  if (!verified) {
-    return NextResponse.redirect(
-      new URL("/agency/sub-accounts?meta=bad_state", appBase(request)),
-    );
-  }
+  if (!verified) return badState();
   const id = verified.subAccountId;
 
   // Now that we trust the sub-account id (HMAC-authenticated), gate on the

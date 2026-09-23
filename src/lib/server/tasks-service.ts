@@ -162,17 +162,27 @@ export async function setTaskCompletedServerSide(opts: {
   );
 
   const justCompleted = opts.completed && !wasCompleted;
-  if (justCompleted && existing.contactId) {
+  // Only onto a contact in the task's own sub-account — a legacy task may
+  // still hold another tenant's contactId.
+  const contactId = justCompleted ? (existing.contactId as string | undefined) : undefined;
+  let contactOk = false;
+  if (contactId) {
     try {
-      // Only onto a contact in the task's own sub-account — a legacy task may
-      // still hold another tenant's contactId.
-      const contactSnap = await db
-        .collection("contacts")
-        .doc(existing.contactId as string)
-        .get();
-      if (contactSnap.data()?.subAccountId !== existing.subAccountId) {
-        throw new Error("linked contact is not in the task's sub-account");
+      contactOk =
+        !contactId.includes("/") &&
+        (await db.collection("contacts").doc(contactId).get()).data()?.subAccountId ===
+          existing.subAccountId;
+      if (!contactOk) {
+        console.warn(
+          `[tasks-service] tenancy refusal: contact=${contactId} is not in sa=${existing.subAccountId}; no task_completed activity task=${opts.taskId}`,
+        );
       }
+    } catch (err) {
+      console.warn("[tasks-service] task_completed contact lookup failed", err);
+    }
+  }
+  if (contactOk) {
+    try {
       await db
         .collection("contacts")
         .doc(existing.contactId as string)

@@ -37,3 +37,13 @@ describe("setTaskCompletedServerSide — task_completed row", () => {
     expect(mem.list("contacts/theirs/activities")).toEqual([]);
   });
 });
+
+describe("setTaskCompletedServerSide — refusal is logged as tenancy", () => {
+  it("names the tenancy refusal, not a failed write", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    seedTask("theirs");
+    await setTaskCompletedServerSide({ taskId: "t1", completed: true, userId: "u1" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("tenancy refusal"));
+    warn.mockRestore();
+  });
+});
