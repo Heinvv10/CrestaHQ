@@ -3,6 +3,10 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import {
+  territoryGate,
+  territoryGateForContact,
+} from "@/lib/auth/territory-filter";
 import { createDealServerSide } from "@/lib/server/deals-service";
 import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
@@ -72,6 +76,15 @@ export async function POST(request: Request) {
       ? body.currency.toUpperCase()
       : "USD";
 
+  // A territory-scoped collaborator creates deals only on their own
+  // contacts, inside their own territories (admins/owners unaffected).
+  const territoryId =
+    typeof body.territoryId === "string" ? body.territoryId : null;
+  const gate =
+    (await territoryGateForContact(access, contactId)) ??
+    (await territoryGate(access, territoryId));
+  if (gate) return gate;
+
   const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const agencyId = (subSnap.data()?.agencyId as string) ?? access.agencyId ?? "";
 
@@ -106,7 +119,7 @@ export async function POST(request: Request) {
     stageId,
     pipelineId: pipeline.id,
     priority,
-    territoryId: typeof body.territoryId === "string" ? body.territoryId : null,
+    territoryId,
     assignedToUid: assignedToUid ?? null,
     customFields: cf.value,
   });

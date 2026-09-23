@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGateForContact } from "@/lib/auth/territory-filter";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
 
@@ -37,6 +38,11 @@ export async function POST(request: Request) {
 
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
+  // A territory-scoped collaborator may link only a contact they can see.
+  if (typeof body.contactId === "string" && body.contactId) {
+    const gate = await territoryGateForContact(access, body.contactId);
+    if (gate) return gate;
+  }
 
   const title = str(body.title, 200);
   if (!title) {

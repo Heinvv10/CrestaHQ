@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { territoryGate } from "@/lib/auth/territory-filter";
 import { setTaskCompletedServerSide } from "@/lib/server/tasks-service";
 
 /**
@@ -24,6 +25,8 @@ export async function POST(
 
   const access = await requireSubAccountMember(request, data.subAccountId);
   if (access instanceof NextResponse) return access;
+  const gate = await territoryGate(access, data.territoryId as string | null);
+  if (gate) return gate;
 
   let body: Record<string, unknown>;
   try {
