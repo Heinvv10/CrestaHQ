@@ -154,9 +154,10 @@ export interface MemoryQuery {
   /** A non-string field (FieldPath.documentId()) orders by document id. */
   orderBy: (field: string | object, dir?: "asc" | "desc") => MemoryQuery;
   limit: (n: number) => MemoryQuery;
-  /** Continue after this document in the query's order. A string is the
-   *  value overload, supported only for document-id order (a cursor id). */
-  startAfter: (snap: MemoryDocSnapshot | string) => MemoryQuery;
+  /** Continue after this document/cursor in the query's order. A string is
+   *  the value overload for a single document-id order field. Multiple
+   *  args are the value overload for a compound orderBy, one per field. */
+  startAfter: (...args: [MemoryDocSnapshot | string] | unknown[]) => MemoryQuery;
   /** Projection is ignored — full docs come back, which is a superset. */
   select: (...fields: string[]) => MemoryQuery;
   get: () => Promise<{ empty: boolean; size: number; docs: MemoryDocSnapshot[] }>;
@@ -231,17 +232,31 @@ export function createMemoryFirestore() {
   function query(
     inScope: (parentPath: string) => boolean,
     filters: Array<[string, WhereOp, unknown]>,
-    order: [string, "asc" | "desc"] | null,
+    order: Array<[string, "asc" | "desc"]>,
     max: number | null,
-    after: string | { id: string } | null = null,
+    // A doc snapshot cursor (plain path string) is position-based. A value
+    // cursor is one value per orderBy field, in order — as Firestore's
+    // startAfter(...fieldValues) does; `{ id }` is its single-field,
+    // document-id-order special case (the string overload).
+    after: string | { id: string } | unknown[] | null = null,
   ): MemoryQuery {
     return {
       where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max, after),
       orderBy: (f, dir = "asc") =>
-        query(inScope, filters, [typeof f === "string" ? f : ID_ORDER, dir], max, after),
+        query(inScope, filters, [...order, [typeof f === "string" ? f : ID_ORDER, dir]], max, after),
       limit: (n) => query(inScope, filters, order, n, after),
-      startAfter: (snap) =>
-        query(inScope, filters, order, max, typeof snap === "string" ? { id: snap } : snap.ref.path),
+      startAfter: (...args) =>
+        query(
+          inScope,
+          filters,
+          order,
+          max,
+          args.length === 1 && typeof args[0] === "object" && args[0] !== null && "ref" in (args[0] as object)
+            ? (args[0] as MemoryDocSnapshot).ref.path
+            : args.length === 1 && typeof args[0] === "string"
+              ? { id: args[0] }
+              : args,
+        ),
       select: () => query(inScope, filters, order, max, after),
       // Reads observe the store when ISSUED and resolve a tick later, so two
       // concurrent transactions can both read before either commits.
@@ -251,18 +266,37 @@ export function createMemoryFirestore() {
           const data = store.get(p)!;
           return filters.every(([f, op, v]) => matches(data, f, op, v));
         });
-        if (order) {
-          const [f, dir] = order;
-          const key = (p: string, v = f === ID_ORDER ? p.split("/").pop() : getPath(store.get(p)!, f)): number | string =>
-            v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : (v as number | string);
-          paths.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-          if (dir === "desc") paths.reverse();
+        const normalize = (v: unknown): number | string =>
+          v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : (v as number | string);
+        const keyOf = (f: string, p: string): number | string =>
+          normalize(f === ID_ORDER ? p.split("/").pop() : getPath(store.get(p)!, f));
+        if (order.length > 0) {
+          paths.sort((a, b) => {
+            for (const [f, dir] of order) {
+              const [ka, kb] = [keyOf(f, a), keyOf(f, b)];
+              if (ka === kb) continue;
+              const cmp = ka < kb ? -1 : 1;
+              return dir === "desc" ? -cmp : cmp;
+            }
+            return 0;
+          });
         }
         // By position: rows up to and including the cursor doc are skipped. Unlike
         // Firestore, the cursor doc must itself be in this query's result — a
         // cursor that is not throws rather than silently returning every row.
-        if (typeof after === "object" && after !== null) {
-          if (order?.[0] !== ID_ORDER) return Promise.reject(new Error("memory-firestore: a value cursor needs document-id order"));
+        if (Array.isArray(after)) {
+          if (after.length !== order.length) return Promise.reject(new Error("memory-firestore: startAfter must supply one value per orderBy field"));
+          paths = paths.filter((p) => {
+            for (let i = 0; i < order.length; i += 1) {
+              const [f, dir] = order[i]!;
+              const [pk, ak] = [keyOf(f, p), normalize(after[i])];
+              if (pk === ak) continue;
+              return dir === "desc" ? pk < ak : pk > ak;
+            }
+            return false;
+          });
+        } else if (after !== null && typeof after === "object") {
+          if (order[0]?.[0] !== ID_ORDER) return Promise.reject(new Error("memory-firestore: a value cursor needs document-id order"));
           paths = paths.filter((p) => p.split("/").pop()! > after.id);
         } else if (after !== null) {
           const at = paths.indexOf(after);
@@ -281,7 +315,7 @@ export function createMemoryFirestore() {
 
   function collectionRef(path: string) {
     const doc = (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`);
-    return Object.assign(query((parent) => parent === path, [], null, null), {
+    return Object.assign(query((parent) => parent === path, [], [], null), {
       doc,
       add: async (data: Data) => {
         const ref = doc();
@@ -323,7 +357,7 @@ export function createMemoryFirestore() {
     },
     collection: (path: string) => collectionRef(path),
     collectionGroup: (name: string) =>
-      query((parent) => parent.split("/").pop() === name, [], null, null),
+      query((parent) => parent.split("/").pop() === name, [], [], null),
     runTransaction: async <T>(fn: (tx: MemoryTx) => Promise<T>): Promise<T> => {
       for (let attempt = 1; ; attempt++) {
         const reads = new Map<string, number>();

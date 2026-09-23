@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Clock, User, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
@@ -18,11 +18,13 @@ export interface TaskItemProps {
   onClick?: (task: Task) => void;
 }
 
-function formatDueLabel(d: Date): {
+function formatDueLabel(
+  d: Date,
+  now: Date,
+): {
   label: string;
   tone: "overdue" | "today" | "soon" | "later";
 } {
-  const now = new Date();
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
@@ -63,6 +65,16 @@ function formatDueLabel(d: Date): {
 export function TaskItem({ task, contact, onClick }: TaskItemProps) {
   const { saPath } = useSubAccount();
   const [toggling, setToggling] = useState(false);
+  // Read "now" after mount, not during render: the server and the client's
+  // first paint must agree, and only a hydrated client actually knows the
+  // current time. Refreshed every minute so a long-lived tab still flips
+  // Today → Overdue without a remount.
+  const [now, setNow] = useState<Date | null>(null);
+  useEffect(() => {
+    setNow(new Date());
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   async function toggleComplete() {
     if (toggling) return;
@@ -84,7 +96,7 @@ export function TaskItem({ task, contact, onClick }: TaskItemProps) {
   }
 
   const due = toDate(task.dueAt);
-  const dueMeta = due ? formatDueLabel(due) : null;
+  const dueMeta = due && now ? formatDueLabel(due, now) : null;
 
   return (
     <div

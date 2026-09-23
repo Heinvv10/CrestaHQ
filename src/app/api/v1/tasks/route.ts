@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue, type Query } from "firebase-admin/firestore";
+import { FieldPath, FieldValue, type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk } from "@/lib/api/responses";
@@ -34,7 +34,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
   if (completedParam === "true") q = q.where("completed", "==", true);
   else if (completedParam === "false") q = q.where("completed", "==", false);
   if (contactId) q = q.where("contactId", "==", contactId);
-  q = q.orderBy("createdAt", "desc");
+  q = q
+    .orderBy("createdAt", "desc")
+    .orderBy(FieldPath.documentId(), "desc");
 
   if (startingAfter) {
     const cursorSnap = await db.doc(`tasks/${startingAfter}`).get();
@@ -55,7 +57,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
         "Cursor belongs to a different sub-account or mode.",
       );
     }
-    q = q.startAfter(cursor.createdAt);
+    // Doc id tiebreaks docs sharing a createdAt (bulk import writes many
+    // tasks in one batch with a single serverTimestamp).
+    q = q.startAfter(cursor.createdAt, startingAfter);
   }
 
   const snap = await q.limit(limit + 1).get();
