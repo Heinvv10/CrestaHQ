@@ -74,11 +74,20 @@ export async function flagStaleAttempts(
     .where("state", "==", "open")
     .get();
   const reason = lostPaymentReason(currentFingerprint ? "switched" : "disconnected");
+  // One failed write must not leave the attempts after it unflagged. Every
+  // attempt is tried, then the call fails if any write did, so the operator
+  // sees an error and a retry (which re-runs this) finishes the job.
+  const failed: string[] = [];
   for (const doc of open.docs) {
-    if ((doc.data() as PaymentAttempt).keyFingerprint !== currentFingerprint) {
+    if ((doc.data() as PaymentAttempt).keyFingerprint === currentFingerprint) continue;
+    try {
       await flagPaymentAttempt(doc.id, reason);
+    } catch (err) {
+      console.error(`[payment-attempts] sa=${subAccountId} ref=${doc.id} could not be flagged`, err);
+      failed.push(doc.id);
     }
   }
+  if (failed.length) throw new Error(`Could not flag ${failed.length} open payment attempt(s): ${failed.join(", ")}`);
 }
 
 /**

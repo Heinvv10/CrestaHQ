@@ -647,3 +647,28 @@ describe("review round 3 — a failing sweep never skips the flag step", () => {
   });
 });
 
+describe("review round 4 — one failed flag write never leaves the others unflagged", () => {
+  it("H1: a Firestore error flagging one attempt still flags the rest, errors the request, and a retry heals it", async () => {
+    seedSub(SA, LIVE_KEY);
+    const link = await issueInvoiceLink();
+    for (let i = 0; i < 3; i++) await checkout(link.token);
+    const realTx = mem.db.runTransaction;
+    let failed = false;
+    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
+      if (!failed) {
+        failed = true;
+        return Promise.reject(Object.assign(new Error("10 ABORTED: contention"), { code: 10 }));
+      }
+      return realTx(fn);
+    });
+    await expect(disconnect()).rejects.toThrow();
+    spy.mockRestore();
+    const states = started.map((r) => attempt(r).state);
+    expect(states.filter((st) => st === "flagged")).toHaveLength(2);
+    expect(states.filter((st) => st === "open")).toHaveLength(1);
+
+    expect((await disconnect()).status).toBe(200);
+    expect(started.map((r) => attempt(r).state)).toEqual(["flagged", "flagged", "flagged"]);
+  });
+});
+
