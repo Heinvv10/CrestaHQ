@@ -32,3 +32,19 @@ export async function raiseChargeTask(
     mode: "live",
   });
 }
+
+/**
+ * A card-mode invoice was sent without its card-on-file link (`message` says
+ * why, and which rail was used instead), so no card will be saved. Nothing
+ * re-runs the send, so a Task that fails to create is logged, not thrown.
+ */
+export async function alertCardLinkFallback(
+  schedule: Parameters<typeof raiseChargeTask>[0] & { id: string },
+  message: string,
+): Promise<void> {
+  await raiseChargeTask(
+    schedule,
+    message,
+    "Until a card is saved, each cycle emails its invoice instead of charging a card. Fix the reason above so the next invoice carries the card-on-file link.",
+  ).catch((err: unknown) => console.error(`[recurring] schedule ${schedule.id}: task not raised: ${message}`, err));
+}

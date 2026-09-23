@@ -124,8 +124,8 @@ export async function chargeCycle(
     await alert(
       `Check Paystack: card charge for invoice ${label} has no clear outcome`,
       `The saved-card charge for invoice ${label} (Paystack reference ${reference}) got no clear answer: ${answer.reason}. ` +
-        `The invoice was not emailed: check Paystack before sending this invoice — the card may already have been charged. ` +
-        `If the charge went through, it is recorded here automatically.`,
+        `The invoice was not emailed — the card may already have been charged. Check Paystack: if the charge went through, wait for it to be recorded here automatically, or mark the invoice paid. ` +
+        `Do not send a pay link: it would charge the customer twice.`,
     );
     return false;
   }

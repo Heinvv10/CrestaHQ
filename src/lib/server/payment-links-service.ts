@@ -10,7 +10,7 @@ import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { loadActiveSchedule, mandateTerms, termsStillHold } from "@/lib/server/payment-mandates";
-import { computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
+import { cardChargeUnsettled, computeQuoteTotals, effectiveQuoteStatus } from "@/lib/quotes/calc";
 import type { PaymentAttempt, PaymentMode } from "@/types/payment-attempts";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import type { MandateTerms } from "@/types/payment-mandates";
@@ -130,7 +130,8 @@ export async function createPaymentLink(input: {
     });
     const open = openLinks.find((d) => {
       const l = d.data() as PaymentLink;
-      return l.mode === mode && !!l.mandate === !!input.mandate;
+      // …and only for what the invoice totals now: a link for an edited-away amount can't be paid.
+      return l.mode === mode && !!l.mandate === !!input.mandate && l.amountCents === amountCents && l.currency === PAYMENT_LINK_CURRENCY;
     });
     if (open) return { ok: true, link: { id: open.id, ...(open.data() as Omit<PaymentLink, "id">) } };
     for (const stale of openLinks) {
@@ -221,6 +222,7 @@ export async function loadPayableLink(
     // or paid another way, must not be charged the stale figure.
     const quote = (await getAdminDb().doc(`quotes/${link.invoiceId}`).get()).data() as Quote | undefined;
     if (quote?.status === "paid") return fail(410, "This invoice has already been paid — nothing more to pay.");
+    if (cardChargeUnsettled(quote)) return fail(409, "A card payment for this invoice is still being confirmed. Please contact the sender.");
     if (quote && effectiveQuoteStatus(quote) === "expired") {
       return fail(410, "This invoice has expired. Ask the sender for a new one.");
     }

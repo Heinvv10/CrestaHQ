@@ -80,6 +80,9 @@ export type SendQuoteResult =
       sentTo: string;
       paymentLinkUrl: string | null;
       wasResend: boolean;
+      /** Set when a card-mode invoice's card-on-file link couldn't be made
+       *  and another rail was used: why, and which. */
+      cardLinkFallback: string | null;
     }
   | { ok: false; failure: SendQuoteFailure };
 
@@ -158,11 +161,14 @@ export async function sendQuoteServerSide(input: {
   // 5a. Invoice path — how the recipient pays. See `chooseInvoicePayRail`.
   let paymentLinkUpdate: PaymentLinkUpdate | null = null;
   let emailPayUrl: string | null = null;
+  let cardLinkFallback: string | null = null;
   if (quote.kind === "invoice") {
     const rail = await chooseInvoicePayRail(quote, sub);
     if (!rail.ok) return fail(rail.code, rail.status, rail.error);
     paymentLinkUpdate = rail.update;
     emailPayUrl = rail.emailPayUrl;
+    cardLinkFallback = rail.cardLinkFallback;
+    if (cardLinkFallback) console.warn(`[quotes/send] ${quoteId}: ${cardLinkFallback}`);
     if (paymentLinkUpdate) {
       // Reflect locally so the email + activity see the fresh URL.
       quote.paymentLinkUrl = paymentLinkUpdate.paymentLinkUrl;
@@ -251,5 +257,6 @@ export async function sendQuoteServerSide(input: {
     paymentLinkUrl:
       paymentLinkUpdate?.paymentLinkUrl ?? quote.paymentLinkUrl ?? null,
     wasResend,
+    cardLinkFallback,
   };
 }

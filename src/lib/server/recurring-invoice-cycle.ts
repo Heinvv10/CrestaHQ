@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendPushForEvent } from "@/lib/push/send";
 import { issueQuoteNumber } from "@/lib/quotes/number";
+import { alertCardLinkFallback } from "@/lib/server/auto-charge-alerts";
 import {
   createTaskServerSide,
   territoryForContact,
@@ -109,10 +110,7 @@ export async function sendGeneratedInvoice(
     subAccountId: schedule.subAccountId,
     quoteId: invoiceId,
     replyTo,
-    actor: {
-      kind: "system",
-      reason: `recurring invoice schedule ${schedule.id}`,
-    },
+    actor: { kind: "system", reason: `recurring invoice schedule ${schedule.id}` },
   });
   if (!result.ok) {
     console.error(
@@ -128,6 +126,8 @@ export async function sendGeneratedInvoice(
       .catch(() => {});
     return false;
   }
+  // Sent, but not with the card-on-file link, so no card will be saved.
+  if (result.cardLinkFallback) await alertCardLinkFallback(schedule, result.cardLinkFallback);
   return true;
 }
 

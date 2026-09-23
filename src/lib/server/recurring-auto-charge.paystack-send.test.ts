@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   NOW,
+  chargeAnswer,
   SCHEDULE,
   chargeCalls,
   raised,
@@ -10,7 +11,7 @@ import {
   stubAutoCharge,
   tasksAbout,
 } from "@/test/auto-charge-harness";
-import { mem, seedSub } from "@/test/paystack-links-harness";
+import { SA, mem, seedSub } from "@/test/paystack-links-harness";
 
 /**
  * Seam test: a card-mode schedule on a Paystack-only workspace, through the
@@ -46,6 +47,7 @@ process.env.NEXT_PUBLIC_APP_URL = "https://app.example.com";
 const { runOneSchedule } = await import("./recurring-invoice-service");
 
 const emailText = () => (sendEmail.mock.calls.at(-1)![0] as { text: string }).text;
+const sub = (over: Record<string, unknown>) => mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, ...over });
 const lastError = () => mem.read(`recurringInvoices/${SCHEDULE}`)!.lastError as string;
 
 beforeEach(() => {
@@ -78,6 +80,21 @@ describe("first card cycle, no card saved yet", () => {
   });
 });
 
+describe("first card cycle whose card-on-file link can't be made", () => {
+  it("falls through to a plain Paystack link and raises a Task naming why", async () => {
+    seedCardSchedule({ cardMandateId: null, cyclesGenerated: 0 });
+    sub({ name: "" });
+    stubAutoCharge();
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: true });
+    const [link] = mem.list("paymentLinks");
+    expect(link.mandate).toBeUndefined();
+    expect(emailText()).toContain(`/pay/link/${link.token}`);
+    const tasks = tasksAbout("Card-on-file link could not be made");
+    expect(tasks).toHaveLength(1);
+    expect(`${tasks[0].title} ${tasks[0].notes}`).toContain("business name");
+  });
+});
+
 describe("a later cycle that can't charge", () => {
   it("revoked card: emails the invoice with a card-on-file link AND raises a Task", async () => {
     seedCardSchedule();
@@ -88,6 +105,15 @@ describe("a later cycle that can't charge", () => {
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(mem.list("paymentLinks")[0].mandate).toBeTruthy();
     expect(tasksAbout("the saved card was removed")).toHaveLength(1);
+  });
+
+  it("a declined card: the invoice (autoCharge declined) is still emailed with a pay link", async () => {
+    seedCardSchedule();
+    seedMandate();
+    stubAutoCharge({ charge: () => chargeAnswer("failed", "Insufficient Funds") });
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: true });
+    expect(raised().autoCharge).toMatchObject({ state: "declined" });
+    expect(emailText()).toContain(`/pay/link/${mem.list("paymentLinks")[0].token}`);
   });
 
   it("a first cycle that still points at a card is not the expected start: a Task", async () => {

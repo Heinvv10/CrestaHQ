@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { buildPaypalInvoiceUrl } from "@/lib/paypal/payment-link";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
+import { cardChargeUnsettled } from "@/lib/quotes/calc";
 import { createPaymentLink } from "@/lib/server/payment-links-service";
 import { loadActiveSchedule } from "@/lib/server/payment-mandates";
 import { PAYMENT_LINK_CURRENCY } from "@/types/payment-links";
@@ -15,11 +16,18 @@ import type { SubAccountDoc } from "@/types";
  * An invoice is never emailed with no way to pay it. In order:
  *
  *   a. from an active card-mode recurring schedule, Paystack ready → a
- *      card-on-file link: paying it settles this invoice and saves the card;
+ *      card-on-file link: paying it settles this invoice and saves the card.
+ *      If it can't be made, the reason is returned (`cardLinkFallback`) and
+ *      the send falls through to the next rail;
  *   b. PayPal configured → a paypal.me URL, rebuilt on every send;
- *   c. Paystack ready → a plain Paystack payment link;
- *   d. Stripe ready → nothing to mint: /q/[token] renders the card button;
+ *   c. Stripe ready → nothing to mint: /q/[token] renders the card button;
+ *   d. Paystack ready → a plain Paystack payment link;
  *   e. none → `no_payment_rail`.
+ *
+ * Existing PayPal and Stripe tenants are therefore untouched by Paystack,
+ * except for a card-mode schedule's invoice. An invoice whose recurring card
+ * charge is pending or unconfirmed gets no way to pay at all: that could
+ * charge the customer twice.
  *
  * "Paystack ready" = Payments enabled by the agency, a Paystack connection,
  * and a ZAR invoice. A Paystack link is minted while the invoice may still be
@@ -41,10 +49,19 @@ export type InvoicePayRail =
       update: PaymentLinkUpdate | null;
       /** A Paystack pay URL to put in the email itself; null otherwise. */
       emailPayUrl: string | null;
+      /** Why the card-on-file link wasn't made, and which rail was used instead. */
+      cardLinkFallback: string | null;
     }
   | { ok: false; code: string; status: number; error: string };
 
 export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | null): Promise<InvoicePayRail> {
+  if (cardChargeUnsettled(quote)) {
+    return fail(
+      "card_charge_unsettled",
+      409,
+      "This cycle's card charge is pending or unconfirmed. Check Paystack, then mark the invoice paid, instead of sending a pay link.",
+    );
+  }
   const paypal = sub?.paypalConfig ?? null;
   const stripeReady = sub?.paymentsEnabledByAgency === true && sub?.stripeConnectionMeta?.ready === true;
   const paystackReady =
@@ -52,55 +69,73 @@ export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | nu
     (quote.currency || "").toUpperCase() === PAYMENT_LINK_CURRENCY &&
     (await readPaystackConnectionSecret(quote.subAccountId)) !== null;
 
+  let cardLinkError: string | null = null;
   if (paystackReady) {
     const schedule = await loadActiveSchedule(quote.subAccountId, quote.recurringInvoiceId);
-    if (schedule?.chargeMode === "card") return paystackLink(quote, true);
+    if (schedule?.chargeMode === "card") {
+      const mandate = await paystackLink(quote, true);
+      if (mandate.ok) return mandate;
+      cardLinkError = mandate.error;
+    }
   }
+  const fellBack = (rail: Extract<InvoicePayRail, { ok: true }>, name: string): InvoicePayRail => ({
+    ...rail,
+    cardLinkFallback: cardLinkError
+      ? `Card-on-file link could not be made for invoice ${quote.quoteNumber}: ${cardLinkError} — invoice sent with ${name} instead.`
+      : null,
+  });
+
   if (paypal?.username) {
     try {
       const url = buildPaypalInvoiceUrl({ paypal, invoice: quote });
-      return {
-        ok: true,
-        update: { paymentLinkUrl: url, paymentLinkId: null, paymentLinkMintedAt: FieldValue.serverTimestamp() },
-        emailPayUrl: null,
-      };
+      return fellBack(
+        { ok: true, update: minted(url, null), emailPayUrl: null, cardLinkFallback: null },
+        "a PayPal link",
+      );
     } catch (err) {
       console.error("[quotes/send] paypal link build failed", err);
-      return {
-        ok: false,
-        code: "paypal_link_failed",
-        status: 500,
-        error: `Failed to build PayPal link: ${err instanceof Error ? err.message : "unknown error"}`,
-      };
+      return fail(
+        "paypal_link_failed",
+        500,
+        `Failed to build PayPal link: ${err instanceof Error ? err.message : "unknown error"}`,
+      );
     }
   }
-  if (paystackReady) return paystackLink(quote, false);
-  if (stripeReady) return { ok: true, update: null, emailPayUrl: null };
-  return {
-    ok: false,
-    code: "no_payment_rail",
-    status: 503,
-    error: "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.",
-  };
+  if (stripeReady) {
+    return fellBack({ ok: true, update: null, emailPayUrl: null, cardLinkFallback: null }, "Stripe card payment");
+  }
+  if (paystackReady) {
+    const plain = await paystackLink(quote, false);
+    return plain.ok ? fellBack(plain, "a Paystack payment link") : plain;
+  }
+  return fail(
+    "no_payment_rail",
+    503,
+    "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.",
+  );
 }
 
+const fail = (code: string, status: number, error: string) => ({ ok: false as const, code, status, error });
+
+const minted = (url: string, id: string | null): PaymentLinkUpdate => ({
+  paymentLinkUrl: url,
+  paymentLinkId: id,
+  paymentLinkMintedAt: FieldValue.serverTimestamp(),
+});
+
 async function paystackLink(quote: Quote, mandate: boolean): Promise<InvoicePayRail> {
-  const minted = await createPaymentLink({
+  const link = await createPaymentLink({
     subAccountId: quote.subAccountId,
     uid: quote.createdByUid,
     invoiceId: quote.id,
     mandate,
     allowDraftForSend: true,
   });
-  if (!minted.ok) {
-    return { ok: false, code: "paystack_link_failed", status: minted.status, error: minted.error };
+  if (!link.ok) {
+    return fail("paystack_link_failed", link.status, link.error);
   }
   // Same base as the Paystack checkout's callback URL.
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
-  const url = `${base}/pay/link/${minted.link.token}`;
-  return {
-    ok: true,
-    update: { paymentLinkUrl: url, paymentLinkId: minted.link.id, paymentLinkMintedAt: FieldValue.serverTimestamp() },
-    emailPayUrl: url,
-  };
+  const url = `${base}/pay/link/${link.link.token}`;
+  return { ok: true, update: minted(url, link.link.id), emailPayUrl: url, cardLinkFallback: null };
 }

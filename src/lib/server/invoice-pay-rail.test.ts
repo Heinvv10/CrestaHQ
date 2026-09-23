@@ -121,14 +121,16 @@ describe("card-mode recurring invoice", () => {
     expect(quote().paymentLinkUrl).toBe(`https://app.example.com/pay/link/${link.token}`);
   });
 
-  it("fails the send, emailing nothing, when the link can't be made", async () => {
+  it("falls through to a plain Paystack link, and says why, when the card-on-file link can't be made", async () => {
     // The invoice was edited away from the schedule's amount.
     seedInvoice("inv1", { status: "draft", recurringInvoiceId: "rec1", globalTaxPercent: 0 });
     const res = await send();
-    expect(res).toMatchObject({ ok: false, failure: { code: "paystack_link_failed", status: 409 } });
-    if (!res.ok) expect(res.failure.error).toContain("differs from its recurring schedule");
-    expect(sendEmail).not.toHaveBeenCalled();
-    expect(quote().status).toBe("draft");
+    expect(res).toMatchObject({ ok: true });
+    if (res.ok) expect(res.cardLinkFallback).toContain("differs from its recurring schedule");
+    const [link] = links();
+    expect(link.mandate).toBeUndefined();
+    expect(link.amountCents).toBe(100000);
+    expect(emailText()).toContain(`/pay/link/${link.token}`);
   });
 });
 
