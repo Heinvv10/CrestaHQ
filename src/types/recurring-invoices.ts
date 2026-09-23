@@ -114,6 +114,20 @@ export interface RecurringInvoiceDoc {
    * card payments for one schedule. Its status still decides chargeability.
    */
   cardMandateId?: string | null;
+  /**
+   * How each cycle asks for the money. Absent/"invoice": email the invoice.
+   * "card": charge the saved card (`cardMandateId`) instead, and email only
+   * when the card cannot be charged or is declined. ZAR only, and never with
+   * `reviewFirst` — an unattended charge cannot wait for a review.
+   */
+  chargeMode?: RecurringChargeMode;
+  /**
+   * The due date of the last cycle actually billed (any charge mode), written
+   * by the claim. A card cycle due sooner than its cadence allows after it is
+   * emailed instead of charged — so no edit can charge twice in one period.
+   * Absent on older schedules (the guard then uses `lastRunAt`); restored if no invoice was raised.
+   */
+  lastDueAt?: Timestamp | FieldValue | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;
@@ -126,6 +140,8 @@ export type RecurringInvoiceStatus =
   | "cancelled";
 
 export type RecurringInvoiceEndMode = "never" | "on_date" | "after_count";
+
+export type RecurringChargeMode = "invoice" | "card";
 
 /** What one schedule's cycle did, for the run summary and the tests. */
 export type RecurringCycleOutcome =

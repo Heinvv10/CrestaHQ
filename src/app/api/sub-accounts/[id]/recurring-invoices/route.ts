@@ -122,6 +122,7 @@ export async function POST(
     endAt: fields.endAt ? Timestamp.fromDate(fields.endAt) : null,
     maxCycles: fields.maxCycles,
     reviewFirst: fields.reviewFirst,
+    chargeMode: fields.chargeMode,
     unpaidEscalationThreshold: fields.unpaidEscalationThreshold,
     cyclesGenerated: RECURRING_INVOICE_DEFAULTS.cyclesGenerated,
     lastRunAt: null,

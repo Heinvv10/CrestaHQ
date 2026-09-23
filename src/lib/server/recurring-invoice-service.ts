@@ -18,6 +18,7 @@ import {
   settleAfterCycle,
   toDate,
 } from "@/lib/server/recurring-invoice-cycle";
+import { chargeCycle } from "@/lib/server/recurring-auto-charge";
 import { recordClaimFailure } from "@/lib/server/recurring-claim-failure";
 import type {
   RecurringCycleOutcome,
@@ -128,8 +129,8 @@ function handledToday(data: Record<string, unknown>, now: Date): boolean {
 }
 
 /**
- * One schedule's cycle: claim it, generate the invoice, send it, then update
- * arrears and completion.
+ * One schedule's cycle: claim it, generate the invoice, send it (or charge
+ * the saved card), then update arrears and completion.
  */
 export async function runOneSchedule(
   scheduleId: string,
@@ -147,14 +148,20 @@ export async function runOneSchedule(
   }
   if (!claim.ok) return { kind: "skipped", reason: claim.reason };
   const schedule = claim.schedule;
+  let invoiceId: string | null = null;
 
   try {
     const invoice = await generateInvoice(schedule, now);
-    const { invoiceId } = invoice;
+    invoiceId = invoice.invoiceId;
     let sent = false;
     if (!schedule.reviewFirst) {
-      sent = await sendGeneratedInvoice(schedule, invoiceId);
+      // A card cycle charges the saved card; it emails only when it cannot.
+      sent =
+        schedule.chargeMode === "card"
+          ? await chargeCycle(schedule, invoiceId, claim.cycle, claim.dueAt)
+          : await sendGeneratedInvoice(schedule, invoiceId);
     } else {
+      // Review wins over card: nothing is charged, the draft waits for a human.
       notifyDraftForReview(schedule, invoice);
     }
     await settleAfterCycle(schedule, invoiceId);
@@ -169,6 +176,9 @@ export async function runOneSchedule(
       .doc(scheduleId)
       .update({
         lastError: reason.slice(0, 500),
+        // Nothing was raised, so this period was not billed: the card guard
+        // must not count it (it would refuse a legitimate re-raise).
+        ...(invoiceId ? {} : { lastDueAt: schedule.lastDueAt ?? null }),
         updatedAt: FieldValue.serverTimestamp(),
       })
       .catch(() => {});
@@ -187,7 +197,8 @@ async function claimCycle(
   scheduleId: string,
   now: Date,
 ): Promise<
-  { ok: true; schedule: RecurringInvoiceDoc } | { ok: false; reason: string }
+  | { ok: true; schedule: RecurringInvoiceDoc; cycle: number; dueAt: Date }
+  | { ok: false; reason: string }
 > {
   const ref = schedulesCollection().doc(scheduleId);
   return getAdminDb().runTransaction(async (tx) => {
@@ -276,10 +287,14 @@ async function claimCycle(
       nextRunAt: Timestamp.fromDate(nextRunAt),
       cyclesGenerated,
       lastRunAt: Timestamp.fromDate(now),
+      // Card guard input (recurring-auto-charge.ts): billed cycles only; undone if no invoice is raised.
+      lastDueAt: Timestamp.fromDate(dueAt),
       lastError: null,
       ...(finished ? { status: "completed" } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { ok: true as const, schedule };
+    // `cycle` numbers the auto-charge reference: one charge per cycle. `schedule`
+    // is the pre-claim snapshot, so its `lastDueAt` is the PREVIOUS cycle's.
+    return { ok: true as const, schedule, cycle: cyclesGenerated, dueAt };
   });
 }

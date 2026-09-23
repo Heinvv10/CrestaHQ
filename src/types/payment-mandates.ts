@@ -68,6 +68,13 @@ export interface PaymentMandate {
 
   status: PaymentMandateStatus;
   attention: string | null;
+  /**
+   * Recurring charges declined in a row, and the last gateway reason. At the
+   * schedule's `unpaidEscalationThreshold` the mandate goes to `attention`;
+   * a recorded successful charge resets the count.
+   */
+  consecutiveDeclines?: number;
+  lastDeclineReason?: string | null;
   revokedAt: Timestamp | FieldValue | null;
   revokedByUid: string | null;
 

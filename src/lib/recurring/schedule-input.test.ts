@@ -272,6 +272,35 @@ describe("blank templates and dead-on-arrival edits", () => {
   });
 });
 
+describe("chargeMode", () => {
+  const refusal = (r: { ok: boolean; error?: string }) => (r.ok ? null : r.error);
+
+  it("defaults to invoice, and accepts card on a ZAR schedule", () => {
+    expect(created().chargeMode).toBe("invoice");
+    expect(created({ chargeMode: "card" }).chargeMode).toBe("card");
+  });
+
+  it("refuses card together with review-first — an unattended charge cannot wait", () => {
+    expect(refusal(parseScheduleCreate(createBody({ chargeMode: "card", reviewFirst: true }), "UTC"))).toMatch(/review/i);
+    // …whichever half the PATCH changes.
+    const card = { ...CURRENT, currency: "ZAR", reviewFirst: false, chargeMode: "card" as const };
+    expect(refusal(parseScheduleUpdate({ reviewFirst: true }, card, new Date()))).toMatch(/review/i);
+    const review = { ...CURRENT, currency: "ZAR", reviewFirst: true };
+    expect(refusal(parseScheduleUpdate({ chargeMode: "card" }, review, new Date()))).toMatch(/review/i);
+  });
+
+  it("refuses card on a non-ZAR schedule, on create and on a currency change", () => {
+    expect(refusal(parseScheduleCreate(createBody({ chargeMode: "card", currency: "USD" }), "UTC"))).toMatch(/ZAR/);
+    const card = { ...CURRENT, currency: "ZAR", reviewFirst: false, chargeMode: "card" as const };
+    expect(refusal(parseScheduleUpdate({ currency: "USD" }, card, new Date()))).toMatch(/ZAR/);
+    expect(parseScheduleUpdate({ chargeMode: "invoice", currency: "USD" }, card, new Date()).ok).toBe(true);
+  });
+
+  it("refuses an unknown mode", () => {
+    expect(parseScheduleCreate(createBody({ chargeMode: "direct_debit" }), "UTC").ok).toBe(false);
+  });
+});
+
 describe("an edit never re-bills a cycle already billed", () => {
   // Monthly on the 15th (JHB). Today's cycle was billed by the 05:00Z sweep;
   // the operator edits at 08:00Z the same day.

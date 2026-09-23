@@ -153,6 +153,7 @@ export function RecurringInvoiceList({
                   {formatCurrency(totals.total, schedule.currency)} every{" "}
                   {cadenceLabel(schedule)}
                   {schedule.reviewFirst && " · review first"}
+                  {schedule.chargeMode === "card" && " · charges saved card"}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {schedule.status === "active"

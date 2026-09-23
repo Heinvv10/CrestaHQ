@@ -199,6 +199,7 @@ function toFormValues(schedule: RecurringInvoiceDoc): ScheduleFormValues {
       : "",
     maxCycles: schedule.maxCycles ?? 12,
     reviewFirst: schedule.reviewFirst,
+    chargeMode: schedule.chargeMode ?? "invoice",
     unpaidEscalationThreshold: schedule.unpaidEscalationThreshold,
   };
 }

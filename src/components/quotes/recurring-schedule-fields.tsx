@@ -12,7 +12,10 @@ import {
   previewFirstRun,
   type ScheduleFormValues,
 } from "@/lib/recurring/schedule-form";
-import type { RecurringInvoiceEndMode } from "@/types/recurring-invoices";
+import type {
+  RecurringChargeMode,
+  RecurringInvoiceEndMode,
+} from "@/types/recurring-invoices";
 
 /**
  * The schedule half of a recurring invoice: how often, from when, until when,
@@ -199,6 +202,28 @@ export function RecurringScheduleFields({
           </span>
         </span>
       </label>
+
+      <div className="space-y-2">
+        <Label htmlFor="schedule-charge">Each cycle</Label>
+        <select
+          id="schedule-charge"
+          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+          value={values.chargeMode}
+          onChange={(e) =>
+            set("chargeMode", e.target.value as RecurringChargeMode)
+          }
+        >
+          <option value="invoice">Email the invoice</option>
+          <option value="card">Charge the saved card (ZAR)</option>
+        </select>
+        {values.chargeMode === "card" && (
+          <p className="text-xs text-muted-foreground">
+            Charges the card the customer saved through a card-on-file link.
+            With no usable card, or a declined one, the invoice is emailed
+            instead. Cannot be combined with review.
+          </p>
+        )}
+      </div>
 
       <div className="space-y-2">
         <Label htmlFor="schedule-escalation">

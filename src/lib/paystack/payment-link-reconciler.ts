@@ -8,6 +8,7 @@ import {
   verifyPaystackTransaction,
   type PaystackVerifiedTransaction,
 } from "@/lib/paystack/billing-api";
+import { reconcileAutoCharge } from "@/lib/paystack/auto-charge-reconciler";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
 import { planMandate, prepareMandate } from "@/lib/server/payment-mandates";
@@ -16,6 +17,7 @@ import {
   parsePaymentLinkReference,
 } from "@/lib/server/payment-links-service";
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
+import { parseAutoChargeReference } from "@/lib/server/recurring-auto-charge";
 import type { PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
 
@@ -79,6 +81,7 @@ export async function reconcilePaystackCharge(input: {
   const { subAccountId, secretKey, reference } = input;
   const tag = `[paystack/payment-links] sa=${subAccountId} ref=${reference}`;
 
+  if (parseAutoChargeReference(reference)) return reconcileAutoCharge(input);
   const linkId = parsePaymentLinkReference(reference);
   // Another integration on the same Paystack account. Not ours to judge.
   if (!linkId) return { handled: false, detail: "not a payment-link reference" };
