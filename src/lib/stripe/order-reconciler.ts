@@ -20,6 +20,7 @@ import {
   stripeCanChargeCurrency,
 } from "@/lib/stripe/amount";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { eventTokenSecretConfigured } from "@/lib/booking/event-token";
 import type { Order } from "@/types/orders";
 
 /**
@@ -158,7 +159,7 @@ async function handleCheckoutCompleted(
   // earlier delivery may have paid the order and then failed here, and
   // Stripe's retry is what finishes the job. Each branch recognises its own
   // earlier success, so a plain replay changes nothing.
-  const problem = await applySourceEffects(updated, session, changed);
+  const problem = await applySourceEffects(updated, session, changed ? null : updated.paidAt);
   if (problem) {
     console.warn(`[order-reconciler] order ${updated.id} needs attention: ${problem}`);
     await flagOrderAttention(updated.id, problem).catch((err: unknown) => {
@@ -192,17 +193,29 @@ const INVOICE_CHANGED =
  * is flagged for the operator), or null. Throws on a transient failure so the
  * route answers 5xx and Stripe redelivers.
  */
+/** Firestore Timestamp / Date → ms; null when absent. */
+function millis(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  const ts = v as { toMillis?: () => number } | null;
+  return typeof ts?.toMillis === "function" ? ts.toMillis() : null;
+}
+
 async function applySourceEffects(
   order: Order,
   session: Stripe.Checkout.Session,
-  /** True when THIS delivery moved the order to paid; false on a redelivery. */
-  orderJustPaid: boolean,
+  /** When the order was paid, on a redelivery; null when THIS delivery paid it. */
+  orderPaidAt: unknown,
 ): Promise<string | null> {
-  // An "already paid" surface with no payer recorded, seen on a REDELIVERY, is
-  // this same payment: settled before payers were recorded, or marked paid by
-  // hand while Stripe was retrying. Only a payment that is new in this
-  // delivery can be a second one.
-  const unrecordedIsOurs = (payer: unknown) => payer == null && !orderJustPaid;
+  // An "already paid" surface with no payer recorded is this same payment
+  // only if it was marked paid AFTER the order was: settled before payers
+  // were recorded, or marked by hand while Stripe was retrying. Marked paid
+  // before the order was paid means a second payment. Decided from stored
+  // times, not from which delivery this is, so a retry after a failed flag
+  // write reaches the same answer. Unknown times flag — the safe side.
+  const unrecordedIsOurs = (payer: unknown, surfacePaidAt: unknown) => {
+    const [surface, ours] = [millis(surfacePaidAt), millis(orderPaidAt)];
+    return payer == null && surface !== null && ours !== null && surface >= ours;
+  };
 
   if (order.source === "quote" && order.quoteId) {
     // The invoice is settled only for the amount this session collected,
@@ -236,7 +249,7 @@ async function applySourceEffects(
     if (res.code === "already_paid") {
       // Our own earlier success (a redelivery) is not a second payment.
       return (res.paidVia?.rail === "stripe_order" && res.paidVia.orderId === order.id) ||
-        unrecordedIsOurs(res.paidVia)
+        unrecordedIsOurs(res.paidVia, res.paidAt)
         ? null
         : PAID_ANOTHER_WAY;
     }
@@ -245,6 +258,12 @@ async function applySourceEffects(
   }
 
   if (order.source === "booking_deposit" && order.eventId) {
+    // Confirming rotates the booking's signed link. Without the secret that
+    // throws on every delivery — a config fault a retry cannot fix.
+    if (!eventTokenSecretConfigured()) {
+      console.error("[order-reconciler] AUTOMATIONS_TOKEN_SECRET missing — cannot confirm a paid booking");
+      return "Paid, but the booking could not be confirmed (server misconfigured) — confirm it by hand.";
+    }
     // Same service the operator's "Mark as paid" button uses: rotates the
     // public token, clears the hold, schedules reminders, and sends the ICS
     // confirmation. Its own awaiting_payment guard makes a replayed Stripe
@@ -261,7 +280,7 @@ async function applySourceEffects(
     }
     if (res.code === "bad_status") {
       return res.paidOrderId === order.id ||
-        (res.status === "scheduled" && unrecordedIsOurs(res.paidOrderId))
+        (res.status === "scheduled" && unrecordedIsOurs(res.paidOrderId, res.paidAt))
         ? null
         : `Paid, but the booking was no longer awaiting payment (${res.status ?? "unknown"}) — confirm it by hand or refund the deposit.`;
     }
@@ -277,8 +296,11 @@ async function applySourceEffects(
     const purchase = await getAdminDb()
       .doc(`subAccounts/${order.subAccountId}/communityGroups/${order.communityGroupId}/purchases/${order.purchaseId}`)
       .get();
-    if (!purchase.exists) {
-      return "Paid, but the community purchase no longer exists — grant access by hand or refund.";
+    const group = await getAdminDb()
+      .doc(`subAccounts/${order.subAccountId}/communityGroups/${order.communityGroupId}`)
+      .get();
+    if (!purchase.exists || !group.exists) {
+      return "Paid, but the community purchase or its group no longer exists — grant access by hand or refund.";
     }
     // Same service a staff admin's manual "mark paid" uses: grants group
     // membership or unlocks the course, flips the purchase, and fires

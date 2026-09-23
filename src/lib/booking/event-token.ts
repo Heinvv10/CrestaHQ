@@ -37,6 +37,16 @@ function getSecret(): string {
   return s;
 }
 
+/** False when the signing secret is missing — issuing a token would throw. */
+export function eventTokenSecretConfigured(): boolean {
+  try {
+    getSecret();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Issue a fresh public token for an event. Caller persists `hash`. */
 export function issueEventToken(eventId: string): {
   token: string;

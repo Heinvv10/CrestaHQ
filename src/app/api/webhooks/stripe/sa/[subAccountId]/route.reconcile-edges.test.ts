@@ -101,8 +101,9 @@ it("a deleted community purchase is flagged with a 200, not retried", async () =
 });
 
 it("a redelivered event for an invoice paid before payers were recorded is not a second payment", async () => {
-  seedInvoice({ status: "paid", paidVia: null });
-  seedOrder("o1", { status: "paid" }); // this same payment, settled by the old code
+  // The old code paid the order, then the invoice, in the same delivery.
+  seedOrder("o1", { status: "paid", paidAt: new Date("2026-09-01T10:00:00Z") });
+  seedInvoice({ status: "paid", paidVia: null, paidAt: new Date("2026-09-01T10:00:01Z") });
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
   expect(mem.read("orders/o1")!.attention ?? null).toBeNull();
 });
@@ -122,4 +123,47 @@ it("an order deleted before its flag is written answers 200 instead of looping",
   // `update` on an order is the flag.
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
   restore();
+});
+
+it("a second payment's flag survives a failed flag write: the retry still flags it", async () => {
+  seedInvoice({ status: "paid", paidVia: null, paidAt: new Date("2026-09-01T10:00:00Z") }); // by hand
+  seedOrder("o1");
+  const restore = failFirst("orders", "update");
+  expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBeGreaterThanOrEqual(500);
+  restore();
+  expect(mem.read("orders/o1")).toMatchObject({ status: "paid" });
+  expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+  expect(mem.read("orders/o1")!.attention).toMatch(/already paid/);
+});
+
+it("the same holds for a booking confirmed by hand before the deposit landed", async () => {
+  mem.seed("events/ev1", {
+    subAccountId: SA, agencyId: "ag1", status: "scheduled", paidByUid: "u1", paidAt: new Date("2026-09-01T10:00:00Z"),
+  });
+  seedOrder("o1", { source: "booking_deposit", quoteId: null, eventId: "ev1" });
+  const restore = failFirst("orders", "update");
+  expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBeGreaterThanOrEqual(500);
+  restore();
+  expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+  expect(mem.read("orders/o1")!.attention).toMatch(/booking/);
+});
+
+it("a deleted community GROUP is flagged with a 200, not retried", async () => {
+  seedCommunity();
+  await mem.db.doc(`subAccounts/${SA}/communityGroups/g1`).delete();
+  expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+  expect(mem.read("orders/o1")!.attention).toMatch(/no longer exists/);
+});
+
+it("a missing token secret flags the booking deposit with a 200 instead of looping", async () => {
+  const secret = process.env.AUTOMATIONS_TOKEN_SECRET;
+  delete process.env.AUTOMATIONS_TOKEN_SECRET;
+  try {
+    mem.seed("events/ev1", { subAccountId: SA, agencyId: "ag1", status: "awaiting_payment", contactId: null });
+    seedOrder("o1", { source: "booking_deposit", quoteId: null, eventId: "ev1" });
+    expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+    expect(mem.read("orders/o1")!.attention).toMatch(/misconfigured/);
+  } finally {
+    process.env.AUTOMATIONS_TOKEN_SECRET = secret;
+  }
 });

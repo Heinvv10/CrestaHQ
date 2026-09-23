@@ -51,6 +51,8 @@ export type MarkBookingPaidOutcome =
       status?: string;
       /** On `bad_status`: the Stripe order that confirmed it, if one did. */
       paidOrderId?: string | null;
+      /** On `bad_status`: when it was marked paid, if it was. */
+      paidAt?: unknown;
     };
 
 export async function markBookingPaidServerSide(input: {
@@ -88,6 +90,7 @@ export async function markBookingPaidServerSide(input: {
       message: "Only events awaiting payment can be marked paid.",
       status: eventStatus(event),
       paidOrderId: event.paidOrderId ?? null,
+      paidAt: event.paidAt ?? null,
     };
   }
 
