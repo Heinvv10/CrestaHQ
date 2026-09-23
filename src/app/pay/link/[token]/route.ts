@@ -53,7 +53,7 @@ export async function GET(
   const { token } = await ctx.params;
   const reference = new URL(request.url).searchParams.get("reference");
   const returning = reference !== null;
-  const loaded = await loadPayableLink(token, { returning });
+  const loaded = await loadPayableLink(token, { reference });
   if (!loaded.ok) return deadLink(loaded.error, loaded.status);
   const { link, mode } = loaded;
   const amount = formatCurrency(link.amountCents / 100, link.currency);

@@ -97,7 +97,8 @@ Mode belongs to the **checkout attempt** (W5 PR1, see
    nothing. It says "Payment received" when the webhook has already recorded that same
    reference on the link, and "confirming" for any other paid or still-open link, even if the
    invoice has changed or been paid since. A withdrawn link, or Payments switched off, is still
-   refused. Checkout re-reads the link inside the attempt transaction, so a withdraw that lands
+   refused, unless the reference is a checkout attempt recorded on that same link (withdrawn or
+   switched off while the payer was on Paystack): then it says "confirming". Checkout re-reads the link inside the attempt transaction, so a withdraw that lands
    after the page check still stops it.
 4. **Reconcile** — `/api/webhooks/paystack/sa/[subAccountId]`, after its existing signature
    check, hands `charge.success` to

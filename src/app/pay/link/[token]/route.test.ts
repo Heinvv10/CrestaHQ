@@ -4,6 +4,7 @@ import {
   KEY,
   LIVE_KEY,
   mem,
+  seedAttempt,
   seedInvoice,
   seedLink,
   seedSub,
@@ -208,6 +209,31 @@ describe("the payer returning from Paystack", () => {
     const html = await res.text();
     expect(html).not.toContain("Call-out fee");
     expect(html).not.toMatch(/450/);
+  });
+
+  it("tells a payer whose checkout was on a since-withdrawn link that it is being confirmed", async () => {
+    const ref = "pl-link1-0123456789abcdef";
+    seedAttempt(ref);
+    seedLink("link1", { token, active: false });
+    const res = await get(`?reference=${ref}`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Confirming your payment");
+  });
+
+  it("does not honour another link's checkout reference on a withdrawn link", async () => {
+    const ref = "pl-link2-0123456789abcdef";
+    seedAttempt(ref);
+    seedLink("link1", { token, active: false });
+    expect((await get(`?reference=${ref}`)).status).toBe(410);
+  });
+
+  it("tells a payer whose checkout predates Payments being switched off that it is being confirmed", async () => {
+    const ref = "pl-link1-0123456789abcdef";
+    seedAttempt(ref);
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", paymentsEnabledByAgency: false });
+    const res = await get(`?reference=${ref}`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Confirming your payment");
   });
 
   it("keeps refusing a link once Payments is off, whatever reference the query names", async () => {

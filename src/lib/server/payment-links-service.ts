@@ -13,7 +13,8 @@ import type { PaymentAttempt, PaymentMode } from "@/types/payment-attempts";
 import { PAYMENT_LINK_CURRENCY, type PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
 
-import { invoicePayable, invoiceTotalCents, paymentLinkReference } from "./payment-link-rules";
+import { loadPaymentAttempt } from "./payment-attempts";
+import { invoicePayable, invoiceTotalCents, parsePaymentLinkReference, paymentLinkReference } from "./payment-link-rules";
 
 export { invoiceTotalCents, parsePaymentLinkReference, paymentLinkReference } from "./payment-link-rules";
 
@@ -161,7 +162,7 @@ export async function deactivatePaymentLink(input: {
  */
 export async function loadPayableLink(
   token: string,
-  opts: { returning?: boolean } = {},
+  opts: { reference?: string | null } = {},
 ): Promise<ServiceResult<{ link: PaymentLink; mode: PaymentMode | null }>> {
   const linkId = verifyPaymentLinkToken(token);
   if (!linkId) return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
@@ -171,9 +172,13 @@ export async function loadPayableLink(
     return fail(404, "The link may be incomplete. Ask for a fresh payment link.");
   }
   const link = { id: linkId, ...data };
-  // A payer back from Paystack whose payment the webhook already recorded is
-  // shown it, not "already paid" — that could prompt a second payment.
-  if (opts.returning && link.status === "paid") return { ok: true, link, mode: null };
+  const reference = opts.reference ?? null;
+  // A payer back from Paystack is never shown a dead link (it could prompt a
+  // second payment) once the link is paid, or the reference is one of THIS
+  // link's checkouts — withdrawn or Payments-off mid-checkout. Junk gets neither.
+  if (reference !== null && (link.status === "paid" || (await isOwnCheckout(reference, link.id)))) {
+    return { ok: true, link, mode: null };
+  }
   if (link.status === "paid") return fail(410, "This has already been paid — nothing more to pay.");
   if (!link.active) return fail(410, "This payment link has been withdrawn. Contact the sender if you think that's a mistake.");
   // Re-checked at pay time, like the Stripe invoice pay route: the agency may
@@ -185,7 +190,7 @@ export async function loadPayableLink(
   }
   // Still open: a returning payer is told their payment is being confirmed,
   // never that the invoice changed or was paid (possibly by them).
-  if (opts.returning) return { ok: true, link, mode: null };
+  if (reference !== null) return { ok: true, link, mode: null };
 
   if (link.invoiceId) {
     // The link's amount was fixed when it was made. An invoice edited since,
@@ -210,6 +215,10 @@ export async function loadPayableLink(
   if (link.mode !== mode) return fail(410, RETIRED);
   return { ok: true, link, mode };
 }
+
+/** A checkout attempt was recorded for this reference, on this link. */
+const isOwnCheckout = async (reference: string, linkId: string) =>
+  parsePaymentLinkReference(reference) === linkId && (await loadPaymentAttempt(reference))?.paymentLinkId === linkId;
 
 const RETIRED = "This payment link is no longer valid. Ask the sender for a fresh payment link.";
 
