@@ -170,3 +170,27 @@ it("drops a pending answer when something else changed the invoice mid-flight", 
   await act(async () => respond(new Response(JSON.stringify({ outcome: "pending" }), { status: 200 })));
   expect(container.textContent).not.toContain("no final answer yet");
 });
+
+it("keeps a declined answer when an unrelated status change arrives with the charge write", async () => {
+  answer({ outcome: "declined" });
+  await click();
+  // One snapshot carries the customer opening the invoice and the decline.
+  await render(invoice("declined", "viewed"));
+  expect(container.textContent).toContain("did not go through");
+});
+
+it("keeps a failed-but-paid answer on the hand-paid invoice", async () => {
+  answer({ outcome: "failed_but_paid" });
+  await click();
+  await render(invoice("unknown", "paid"));
+  await render(invoice("declined", "paid"));
+  expect(container.textContent).toContain("already marked paid by hand");
+});
+
+it("drops a pending answer when the daily sweep later declines the charge", async () => {
+  answer({ outcome: "pending" });
+  await click();
+  expect(container.textContent).toContain("no final answer yet");
+  await render(invoice("declined"));
+  expect(container.textContent).not.toContain("no final answer yet");
+});

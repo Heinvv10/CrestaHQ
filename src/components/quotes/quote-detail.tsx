@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Timestamp } from "firebase/firestore";
 import { ArrowRight, CheckCircle2, Download, Loader2, Send, Trash2 } from "lucide-react";
@@ -43,6 +43,22 @@ import type { TenantScope } from "@/types";
  * enforce server-side too).
  */
 
+interface RecheckKeep {
+  /** Card-charge states the answer still describes. */
+  charge: string[];
+  /** Whether the answer still holds once the invoice is paid. */
+  invoicePaid: boolean;
+}
+const CHARGE_OPEN = ["pending", "unknown"];
+/** An answer that changed nothing, or a refusal. */
+const RECHECK_UNCHANGED: RecheckKeep = { charge: CHARGE_OPEN, invoicePaid: false };
+const RECHECK_KEEP: Record<string, RecheckKeep> = {
+  paid: { charge: [...CHARGE_OPEN, "paid"], invoicePaid: true },
+  declined: { charge: [...CHARGE_OPEN, "declined"], invoicePaid: false },
+  failed_but_paid: { charge: [...CHARGE_OPEN, "declined"], invoicePaid: true },
+  needs_attention: { charge: [...CHARGE_OPEN, "needs_attention"], invoicePaid: true },
+};
+
 interface QuoteDetailProps {
   quote: Quote;
   scope: TenantScope;
@@ -81,35 +97,19 @@ export function QuoteDetail({
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
-  // A re-check's answer, shown only while the invoice is still where that
-  // answer left it: its own write (before or after the response lands) keeps
-  // it, any later change (a webhook, another operator) hides it.
-  const chargeView = `${quote.status}|${quote.autoCharge?.state ?? ""}`;
-  const chargeViewRef = useRef(chargeView);
-  useEffect(() => {
-    chargeViewRef.current = chargeView;
-  }, [chargeView]);
-  const [recheck, setRecheck] = useState<{ text: string; isError: boolean; views: string[] } | null>(null);
-  const showRecheck = recheck && recheck.views.includes(chargeView) ? recheck : null;
-  // Bound per render, so `chargeView` here is the view when the button was
-  // clicked, and the ref the view when the answer arrived.
-  const onRecheck = (text: string, isError: boolean, outcome?: string) => {
-    const clicked = chargeView;
-    const now = chargeViewRef.current;
-    const [status, charge] = now.split("|");
-    // What the server writes for each outcome (auto-charge-recheck.ts and
-    // the reconciler). A paid charge lands in two writes: status, then charge.
-    const after: Record<string, string[]> = {
-      paid: [`paid|${charge}`, "paid|paid"],
-      declined: [`${status}|declined`],
-      failed_but_paid: ["paid|declined"],
-      needs_attention: [`${status}|needs_attention`, "paid|needs_attention"],
-    };
-    const own = outcome ? after[outcome] : undefined;
-    // An answer that writes nothing only holds if nothing else wrote meanwhile.
-    if (!own && clicked !== now) return setRecheck(null);
-    setRecheck({ text, isError, views: [now, ...(own ?? [])] });
-  };
+  // A re-check's answer stays while the card charge is still unconfirmed or
+  // where the answer says it went, and hides on any other move (a webhook,
+  // another operator). Only the answers that allow it survive the invoice
+  // being paid. Matching states, not write order, keeps it race-free.
+  const [recheck, setRecheck] = useState<{ text: string; isError: boolean; keep: RecheckKeep } | null>(null);
+  const showRecheck =
+    recheck &&
+    recheck.keep.charge.includes(quote.autoCharge?.state ?? "") &&
+    (recheck.keep.invoicePaid || quote.status !== "paid")
+      ? recheck
+      : null;
+  const onRecheck = (text: string, isError: boolean, outcome?: string) =>
+    setRecheck({ text, isError, keep: (outcome && RECHECK_KEEP[outcome]) || RECHECK_UNCHANGED });
 
   const effStatus = effectiveQuoteStatus(quote);
   const totals = computeQuoteTotals(quote);
