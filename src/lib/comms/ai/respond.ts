@@ -37,6 +37,8 @@ import {
 } from "@/lib/server/conversations-service";
 import type { ConversationChannel } from "@/types/conversations";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
+import { isQuietHoursDeferred } from "@/lib/comms/quiet-hours";
+import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
 
 interface RespondInput {
   subAccountId: string;
@@ -81,6 +83,8 @@ type RespondOutcome =
   | { kind: "replied"; replyText: string; tokens: number }
   | { kind: "escalated"; keyword: string }
   | { kind: "drafted"; replyText: string; tokens: number }
+  /** Generated inside the workspace's quiet hours: held until they end. */
+  | { kind: "held"; replyText: string; tokens: number }
   | { kind: "skipped"; reason: AiSkipReason };
 
 /**
@@ -618,6 +622,31 @@ export async function maybeRespondWithAi(
       contactId: contact.id,
     });
   } catch (err) {
+    // Quiet hours (SMS / WhatsApp seams): nothing went out. The reply is held
+    // and sent when they end, after its opt-out and bot-state checks re-run.
+    if (isQuietHoursDeferred(err) && (channelId === "sms" || channelId === "whatsapp")) {
+      await holdForQuietHours({
+        agencyId: subAccount.agencyId,
+        subAccountId,
+        payload: {
+          kind: "message",
+          message: {
+            channel: channelId,
+            contactId: contact.id,
+            to: replyTo,
+            body: completion.text,
+            senderId:
+              channelId === "whatsapp" && inboundProvider
+                ? whatsappSenderIdOnRail(subAccount, inboundProvider)
+                : null,
+            source: "ai_reply",
+          },
+        },
+        hold: err.hold,
+      });
+      void incrementChannelTokens(subAccountId, channelId, completion.totalTokens);
+      return { kind: "held", replyText: completion.text, tokens: completion.totalTokens };
+    }
     const msg = err instanceof Error ? err.message : "Unknown error";
     console.error(
       `[ai/respond] ${transport.label} send failed for sa=${subAccountId}: ${msg}`,

@@ -58,6 +58,7 @@ export const ACTIVITY_CHIP = {
   voice_call_initiated: "messages",
   voice_call_completed: "messages",
   missed_call: "messages",
+  quiet_hours_held: "messages",
   quote_sent: "other",
   quote_viewed: "other",
   quote_accepted: "other",

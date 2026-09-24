@@ -30,6 +30,7 @@ import {
   Star,
   MonitorPlay,
   MousePointerClick,
+  Moon,
 } from "lucide-react";
 import type { ActivityType } from "@/types/contacts";
 
@@ -104,6 +105,11 @@ export function activityVisuals(type: ActivityType): {
       return {
         icon: <PhoneMissed className="h-3 w-3 text-rose-500" />,
         label: "Missed call",
+      };
+    case "quiet_hours_held":
+      return {
+        icon: <Moon className="h-3 w-3 text-indigo-500" />,
+        label: "Held for quiet hours",
       };
     case "automation_started":
       return {

@@ -25,6 +25,7 @@ const m = vi.hoisted(() => ({
   sendError: null as Error | null,
   sendCalls: [] as { to: string; body: string }[],
   upsertCalls: [] as Record<string, unknown>[],
+  holds: [] as Record<string, unknown>[],
   /** Backs the `subAccounts` collection query resolveVoiceRoute() issues. */
   subAccountDoc: null as { id: string; data: Record<string, unknown> } | null,
 }));
@@ -48,6 +49,13 @@ vi.mock("@/lib/comms/twilio", () => ({
     m.sendCalls.push({ to: args.to, body: args.body });
     if (m.sendError) throw m.sendError;
     return m.sendResult;
+  }),
+}));
+
+vi.mock("@/lib/comms/quiet-hours-hold", () => ({
+  holdForQuietHours: vi.fn(async (h: Record<string, unknown>) => {
+    m.holds.push(h);
+    return true;
   }),
 }));
 
@@ -124,6 +132,7 @@ import {
   renderMissedCallMessage,
   resolveVoiceRoute,
 } from "./missed-call";
+import { QuietHoursDeferredError } from "./quiet-hours";
 
 function baseTwilioConfig(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -274,6 +283,7 @@ describe("handleMissedCall", () => {
     m.messages.length = 0;
     m.upsertCalls.length = 0;
     m.sendCalls.length = 0;
+    m.holds.length = 0;
     m.sendError = null;
     m.reconcileResult = { contactId: "contact_1", created: false };
     m.contactData = { name: "Jane Doe", phone: "+27821234567" };
@@ -335,6 +345,28 @@ describe("handleMissedCall", () => {
     const result = await handleMissedCall({ route, from: "+27821112222", callSid: "CA3" });
     expect(result.contactId).toBe("contact_new");
     expect(m.sendCalls).toHaveLength(1);
+  });
+
+  it("a text-back in quiet hours is held for the window's end, not sent or dropped", async () => {
+    const hold = { retryAfterSec: 3600, until: new Date("2026-09-25T06:00:00Z") };
+    m.sendError = new QuietHoursDeferredError(hold);
+    const result = await handleMissedCall({ route, from: "+27821234567", callSid: "CA5" });
+    expect(result).toEqual({ handled: true, reason: "quiet_hours_held", contactId: "contact_1" });
+    expect(m.messages).toHaveLength(0);
+    expect(m.holds).toEqual([
+      {
+        agencyId: "ag_1",
+        subAccountId: "sa_1",
+        payload: {
+          kind: "message",
+          message: {
+            channel: "sms", contactId: "contact_1", to: "+27821234567",
+            body: "Sorry we missed your call Jane from E2E Fixture Primary!", source: "missed_call",
+          },
+        },
+        hold,
+      },
+    ]);
   });
 
   it("a send failure is recorded (activity + result), not swallowed", async () => {

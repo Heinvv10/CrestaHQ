@@ -41,6 +41,7 @@ import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask";
 import { providerAttempted } from "@/lib/comms/provider-attempt";
+import { isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
@@ -87,7 +88,9 @@ export type StepResult =
   | { kind: "branch"; value: boolean }
   | { kind: "end" }
   /** The step definitely did not do its job; the run stops as `failed`. */
-  | { kind: "fail" };
+  | { kind: "fail" }
+  /** Nothing was sent — quiet hours. Run THIS step again in `seconds`. */
+  | { kind: "defer"; seconds: number };
 
 interface NodeContext {
   node: WorkflowNode;
@@ -108,6 +111,10 @@ interface NodeContext {
    * Webhook step can forward the form fields downstream.
    */
   triggerContext: Record<string, unknown>;
+  /** When the customer made the booking this run confirms — set only for a
+   *  booking-confirmation run of a customer's own booking-page booking (the
+   *  quiet-hours exemption, lib/comms/quiet-hours.ts). */
+  selfTriggeredBookingAt?: Date | null;
   /**
    * Set by a send executor once its outbound content is rendered, and its
    * provider id once sent (SP5 d1). runStep logs the step as a review ask
@@ -163,6 +170,15 @@ export function definitelyNotSent(res: {
     Boolean(res.refusedBy) ||
     res.providerOutcome === "DEFINITELY_REJECTED"
   );
+}
+
+/** An SMS/WhatsApp step held by quiet hours: the step runs again when they
+ *  end, re-reading the contact (opt-out) like any step. */
+function deferForQuietHours(hold: QuietHoursHold): { result: StepResult; log: string } {
+  return {
+    result: { kind: "defer", seconds: hold.retryAfterSec },
+    log: `deferred:quiet_hours_until_${hold.until.toISOString()}`,
+  };
 }
 
 function mergeSubject(
@@ -307,6 +323,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
       subAccount: ctx.subAccount,
       to,
       body,
+      selfTriggeredBookingAt: ctx.selfTriggeredBookingAt,
     });
     ctx.sent.messageSid = sent.sid;
     // Trace on the contact + unified inbox, mirroring the manual send
@@ -383,6 +400,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
     }
     return { result: { kind: "next" }, log: "ok" };
   } catch (err) {
+    if (isQuietHoursDeferred(err)) return deferForQuietHours(err.hold);
     if (err instanceof UsageQuotaExceededError) {
       return { result: { kind: "next" }, log: "skipped:quota" };
     }
@@ -507,6 +525,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
       template: tpl,
       values: contentVariables,
       senderId: cfg.senderId,
+      selfTriggeredBookingAt: ctx.selfTriggeredBookingAt,
       sendViaTwilio: async (contentSid) => {
         const r = await sendWhatsappTemplateForSubAccount({
           subAccountId: ctx.subAccountId,
@@ -518,6 +537,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
         return { ok: true, messageId: r.sid };
       },
     });
+    if (res.quietHours) return deferForQuietHours(res.quietHours);
     if (!res.ok) {
       ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return whatsappSendFailed(`error:${res.error ?? "send_failed"}`, definitelyNotSent(res));
@@ -711,6 +731,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
       inWindowButtons,
       // Bridge rail: a redelivery converges on this send instead of repeating it.
       idempotencyKey: `wf_${ctx.runId}_${ctx.node.id}`,
+      selfTriggeredBookingAt: ctx.selfTriggeredBookingAt,
       // Twilio sends in-session buttons only by ContentSid: an unapproved
       // Content resource per template, cached on the doc.
       sendButtonsViaTwilio:
@@ -770,6 +791,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
           }
         : undefined,
     });
+    if (res.quietHours) return deferForQuietHours(res.quietHours);
     if (!res.ok) {
       ctx.sent.attempted = res.attempted === true && !res.refusedBy;
       return {
@@ -1190,6 +1212,30 @@ const BOOKING_TRIGGERS = new Set<WorkflowTriggerType>([
   "booking.no_show",
 ]);
 
+/** The booking triggers a customer's own booking-page booking produces. */
+const SELF_BOOKING_CONFIRMATION_TRIGGERS = new Set<WorkflowTriggerType>([
+  "booking.created",
+  "booking.confirmed",
+  "booking.rescheduled",
+]);
+
+/**
+ * The quiet-hours exemption's first condition, mirroring the bridge's "human
+ * reply": this run confirms a booking the customer made themselves on a
+ * public booking page (only those carry a `bookingPageSlug`; an operator's
+ * calendar entry does not). The second — that it happened minutes ago — is
+ * `quietHoursHold`'s: enrolment time stands in for the booking, so a step
+ * behind a wait is long past it.
+ */
+function selfTriggeredBookingAt(wf: WorkflowDoc, run: WorkflowRunDoc): Date | null {
+  const type = wf.trigger?.type;
+  if (!type || !SELF_BOOKING_CONFIRMATION_TRIGGERS.has(type)) return null;
+  const slug = run.context?.bookingPageSlug;
+  if (typeof slug !== "string" || !slug) return null;
+  const at = run.enrolledAt as { toDate?: () => Date } | null;
+  return typeof at?.toDate === "function" ? at.toDate() : null;
+}
+
 interface FireInput {
   subAccountId: string;
   agencyId: string;
@@ -1497,7 +1543,8 @@ async function scheduleNode(
   nodeId: string,
   delaySeconds: number,
   run: RunActivityRun,
-  wf: WorkflowDoc | null
+  wf: WorkflowDoc | null,
+  deduplicationId = `wf_${runRef.id}_${nodeId}`
 ): Promise<boolean> {
   // State BEFORE the publish: an immediate step can be delivered and finish
   // before publishCallback returns, and a write after it would drag a run that
@@ -1520,7 +1567,7 @@ async function scheduleNode(
     pathname: STEP_PATH,
     body: { runId: runRef.id, nodeId },
     delaySeconds,
-    deduplicationId: `wf_${runRef.id}_${nodeId}`,
+    deduplicationId,
     retries: WORKFLOW_STEP_RETRIES,
   });
   if (!res) {
@@ -1799,6 +1846,7 @@ export async function runStep(
     workflowId: run.workflowId,
     runId,
     triggerContext: run.context ?? {},
+    selfTriggeredBookingAt: selfTriggeredBookingAt(wf, run),
   };
   let executed: Awaited<ReturnType<NodeExecutor>>;
   try {
@@ -1815,6 +1863,15 @@ export async function runStep(
     throw err;
   }
   const { result, log } = executed;
+
+  // Quiet hours: nothing was sent, so no history entry (that would mark the
+  // step done). Release the claim and run this same step again when they end.
+  if (result.kind === "defer") {
+    if (atMostOnce) await runRef.update({ stepClaim: null });
+    const at = Date.now() + result.seconds * 1000;
+    await scheduleNode(runRef, nodeId, result.seconds, run, wf, `wf_${runId}_${nodeId}_qh_${at}`);
+    return;
+  }
 
   // Where control goes next, decided now and kept on the history entry, so a
   // redelivery that finds this step done can re-drive a next step that was
