@@ -107,7 +107,17 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
   const db = getAdminDb();
   const keyRef = db.doc(`subAccounts/${input.subAccountId}/apiKeys/${input.keyId}`);
   return db.runTransaction(async (tx) => {
-    const [snap, keySnap] = await Promise.all([tx.get(ref), tx.get(keyRef)]);
+    // A contact target's territory is read HERE, inside the transaction: a
+    // re-tag committing meanwhile makes this transaction retry and store the
+    // current territory (the re-tag's own cascade may already have run).
+    const contactRef = input.target.contactId
+      ? db.doc(`contacts/${input.target.contactId}`)
+      : null;
+    const [snap, keySnap, contactSnap] = await Promise.all([
+      tx.get(ref),
+      tx.get(keyRef),
+      contactRef ? tx.get(contactRef) : null,
+    ]);
     if (!keySnap.exists || keySnap.data()?.revokedAt) {
       return { ok: false, code: "key_revoked", id };
     }
@@ -137,7 +147,9 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       preview: input.preview,
       pinned: input.pinned,
       contactId: input.target.contactId,
-      territoryId: input.target.territoryId,
+      territoryId: contactSnap
+        ? ((contactSnap.data()?.territoryId as string | undefined) ?? null)
+        : input.target.territoryId,
       targetScoped: input.target.scoped,
       // Sticky: once an attempt is known to have sent, it never clears.
       priorAttemptSent: cur?.priorAttemptSent ?? null,

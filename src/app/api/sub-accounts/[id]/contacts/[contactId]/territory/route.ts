@@ -129,8 +129,10 @@ export async function PATCH(
     return conversations.docs.length;
   });
   counts.conversations = movedConversations;
-  // Agent proposals are read AFTER the contact commit, so one proposed in
-  // between (it read the old territory) is still caught. Only rows whose
+  // Agent proposals are read AFTER the contact commit, so a row written
+  // before it commits is caught here; one whose write lands after this read
+  // re-reads the contact inside createProposal's transaction (which retries
+  // on this commit), so it stores the new territory itself. Only rows whose
   // target is this contact are re-synced; proposals targeting a deal or task
   // by its own territory are not re-synced in v1.
   const proposals = await db

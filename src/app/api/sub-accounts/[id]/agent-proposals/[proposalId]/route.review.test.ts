@@ -127,6 +127,46 @@ describe("general review — PR #259", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it("a row without targetScoped is treated as scoped (fail closed): a scoped collaborator gets 403", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
+    mem.seed("agentProposals/p_legacy", {
+      agencyId: "ag1", subAccountId: "sa1", capability: "__test_outbound", approval: "outbound",
+      args: { body: "hi" }, summary: "s", keyId: "key1", status: "pending", rev: "r1",
+    });
+    caller.role = "collaborator";
+    expect((await decide("p_legacy", "approve")).status).toBe(403);
+    expect((await decide("p_legacy", "reject")).status).toBe(403);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("a re-tag committing while createProposal's transaction runs → the row still lands the NEW territory", async () => {
+    mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });
+    mem.seed("subAccounts/sa1/territories/north", { status: "active", name: "North" });
+    outbound.approvalTarget = contactTarget("recipientId");
+    const { PATCH } = await import("@/app/api/sub-accounts/[id]/contacts/[contactId]/territory/route");
+    const original = mem.db.runTransaction.bind(mem.db);
+    let retagged = false;
+    // createProposal's transaction reads, then the re-tag commits + runs its
+    // cascade query (the row does not exist yet), then createProposal commits.
+    vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) =>
+      original(async (tx) => {
+        const result = await (fn as (t: typeof tx) => Promise<unknown>)(tx);
+        if (!retagged) {
+          retagged = true;
+          await PATCH(
+            new Request("https://crm.test", { method: "PATCH", body: JSON.stringify({ territoryId: "north" }) }),
+            { params: Promise.resolve({ id: "sa1", contactId: "c1" }) }
+          );
+        }
+        return result;
+      })
+    );
+    const id = await proposeId({ body: "x", recipientId: "c1" });
+    expect(retagged).toBe(true);
+    expect(row(id)).toMatchObject({ contactId: "c1", territoryId: "north" });
+  });
+
   it("F10/H4: the row stores what approvalTarget resolved (under the neutral preview ctx)", async () => {
     const seen: string[] = [];
     outbound.approvalTarget = async (ctx, args) => {
