@@ -17,6 +17,8 @@ import {
   type UpdateContactPatch,
 } from "@/lib/server/contacts-service";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
+import { prospectingEnabled } from "@/lib/prospecting/gate";
+import type { SubAccountDoc } from "@/types";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 
 /**
@@ -76,6 +78,23 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   const existing = snap.data()!;
   if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
     return apiError(ctx, "not_found", "contact_not_found", "Contact not found.");
+  }
+
+  // The prospecting map needs the agency's Prospecting gate, and a list_id
+  // must name one of this key's lists — another sub-account's list 404s
+  // exactly like a missing one.
+  if (patch.prospecting !== undefined) {
+    const db = getAdminDb();
+    const sub = (await db.doc(`subAccounts/${ctx.subAccountId}`).get()).data();
+    if (!sub || !prospectingEnabled(sub as SubAccountDoc)) {
+      return apiError(ctx, "permission_error", "gate_off", "Prospecting is locked by your agency.");
+    }
+    if (patch.prospecting.listId !== undefined) {
+      const list = await db.doc(`prospectLists/${patch.prospecting.listId}`).get();
+      if (!list.exists || list.data()?.subAccountId !== ctx.subAccountId) {
+        return apiError(ctx, "not_found", "list_not_found", "List not found.");
+      }
+    }
   }
 
   // custom_fields is a full replacement of the value map when provided.

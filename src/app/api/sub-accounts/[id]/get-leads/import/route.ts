@@ -121,7 +121,8 @@ export async function POST(
   let listId: string | null = null;
   if (body.listId !== undefined) {
     if (!prospectingEnabled(sub)) return prospectingGateOff();
-    if (typeof body.listId !== "string" || !body.listId.trim()) {
+    // A `/` would make db.doc() address a sub-path and throw (a 500).
+    if (typeof body.listId !== "string" || !body.listId.trim() || body.listId.includes("/")) {
       return NextResponse.json({ error: "listId must be a list id." }, { status: 400 });
     }
     const listSnap = await db.doc(`prospectLists/${body.listId.trim()}`).get();

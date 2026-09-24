@@ -230,7 +230,10 @@ export interface UpdateContactPatch {
   assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue>;
-  /** Full replacement of the prospect map (validated by the public API parser). */
+  /**
+   * Prospect facts (validated by the public API parser), merged field by
+   * field: each key is written as `prospecting.<key>`, keys not sent are kept.
+   */
   prospecting?: ContactProspecting;
 }
 
@@ -274,8 +277,12 @@ export async function updateContactServerSide(opts: {
 
   const existing = snap.data()!;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
+  const { prospecting, ...fields } = opts.patch;
   const patch = {
-    ...opts.patch,
+    ...fields,
+    ...Object.fromEntries(
+      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
+    ),
     ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
     // A writer that changes the free-text `company` without saying which
     // company (the public API, which has no companyId field) breaks the

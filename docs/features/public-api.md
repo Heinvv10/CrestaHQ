@@ -30,12 +30,25 @@ All under `src/lib/api/`:
 
 Every contact object carries `prospecting` — `null`, or `{ list_id, place_id,
 website, rating, reviews_count, category, approached_at, last_report_id }`
-(missing keys as `null`). `PATCH /v1/contacts/:id` accepts it and replaces
-the stored map wholesale. Validation is strict: only those eight keys (any
-other key is a 400 `invalid_body`), `list_id` / `place_id` / `category`
-strings ≤ 200, `website` ≤ 300, `rating` a number 0–5, `reviews_count` a
-non-negative integer, and `approached_at` / `last_report_id` only `null` —
-LeadStack sets them. See [prospecting.md](prospecting.md).
+(missing keys as `null`). `PATCH /v1/contacts/:id` accepts it and **merges**
+it into the stored map field by field — keys you don't send are kept, so a
+PATCH of only `website` leaves `list_id` and the rest alone.
+
+- **Gate:** any `prospecting` in the body needs the sub-account's Prospecting
+  gate; while it is off the PATCH answers 403 `permission_error` / `gate_off`
+  and writes nothing.
+- **Validation** is strict: only the eight keys (any other key is a 400
+  `invalid_body`), `list_id` / `place_id` / `category` strings ≤ 200,
+  `website` ≤ 300, `rating` a number 0–5, `reviews_count` a non-negative
+  integer.
+- **`list_id`** must be non-empty and contain no `/` (else 400), and must name
+  a saved list of the key's own sub-account — a missing list and another
+  sub-account's list both answer the same 404 `list_not_found`.
+- **Read-only:** `approached_at` and `last_report_id` are set by LeadStack.
+  Sending either key at all — `null` included — is a 400; they are still
+  returned on every read.
+
+See [prospecting.md](prospecting.md).
 
 ## Workflow triggers + the enrolment cap
 

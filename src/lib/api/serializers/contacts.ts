@@ -342,8 +342,9 @@ const PROSPECTING_KEYS = new Set([
 
 /**
  * The `prospecting` map (snake_case on the wire). Only the eight known keys;
- * `approached_at` / `last_report_id` are server-owned, so only null is
- * accepted for them. Replaces the stored map wholesale.
+ * `approached_at` / `last_report_id` are server-owned and refused when sent
+ * at all (null included). Merged into the stored map field by field; the
+ * route checks the gate and that `list_id` names one of the key's lists.
  */
 function parseProspecting(v: unknown): ParseResult<ContactProspecting> {
   if (!v || typeof v !== "object" || Array.isArray(v)) {
@@ -362,6 +363,9 @@ function parseProspecting(v: unknown): ParseResult<ContactProspecting> {
     }
     out[field] = p[key] as string;
   }
+  if (out.listId !== undefined && (!out.listId.trim() || out.listId.includes("/"))) {
+    return { ok: false, error: "`prospecting.list_id` must be a list id." };
+  }
   if (p.rating !== undefined) {
     if (typeof p.rating !== "number" || !(p.rating >= 0 && p.rating <= 5)) {
       return { ok: false, error: "`prospecting.rating` must be a number from 0 to 5." };
@@ -374,12 +378,10 @@ function parseProspecting(v: unknown): ParseResult<ContactProspecting> {
     }
     out.reviewsCount = p.reviews_count as number;
   }
-  for (const [key, field] of [["approached_at", "approachedAt"], ["last_report_id", "lastReportId"]] as const) {
-    if (p[key] === undefined) continue;
-    if (p[key] !== null) {
-      return { ok: false, error: `\`prospecting.${key}\` is set by LeadStack; send null or omit it.` };
+  for (const key of ["approached_at", "last_report_id"]) {
+    if (key in p) {
+      return { ok: false, error: `\`prospecting.${key}\` is set by LeadStack and cannot be written.` };
     }
-    out[field] = null;
   }
   return { ok: true, value: out };
 }

@@ -139,6 +139,17 @@ describe("listId guards", () => {
     expect(contacts()).toEqual([]);
   });
 
+  it("400s a listId with a slash before any list lookup (db.doc would throw on it)", async () => {
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const docSpy = vi.spyOn(storeDb, "doc");
+    for (const listId of ["a/b", "list1/x", "/", "  "]) {
+      expect((await post({ businesses: [ROW_A], listId })).status).toBe(400);
+    }
+    expect(docSpy.mock.calls.filter(([p]) => String(p).startsWith("prospectLists"))).toEqual([]);
+    docSpy.mockRestore();
+    expect(contacts()).toEqual([]);
+  });
+
   it("still needs the Get Leads gate", async () => {
     mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
     expect((await post({ businesses: [ROW_A], listId: "list1" })).status).toBe(403);
