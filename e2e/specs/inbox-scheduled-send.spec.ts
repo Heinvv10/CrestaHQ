@@ -4,6 +4,7 @@ import { adminDb } from "../lib/admin";
 import { baseURL, FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
 import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
 import { signQStashBody } from "../lib/qstash";
+import { seedTwilioToken } from "../lib/twilio-secret";
 
 /**
  * SP2 T5 — "Send · Send later" from the conversation composer, end to end on
@@ -35,10 +36,11 @@ test.skip(
 // Dedicated Twilio on the fixture (fake creds — the send goes through the
 // fenced fake SMS provider, SMS_PROVIDER=fake), so the composer offers SMS and
 // a send writes a thread row. Same shape as inbox-assign-notes.spec.ts.
+const FIXTURE_TWILIO_TOKEN = "e2e-twilio-auth-token";
 const FIXTURE_TWILIO = {
   enabled: true,
   accountSid: "ACe2e00000000000000000000000000000",
-  authToken: "e2e-twilio-auth-token",
+  authTokenSet: true,
   fromNumber: "+27100000001",
 };
 const PUBLISH_REFUSED = /did not accept this message/;
@@ -83,6 +85,7 @@ test("send later from the thread: book, cancel one, fire one through the signed 
   // Captured before the try so `finally` knows what to restore; every WRITE
   // happens inside the try, so a failure part-way through still restores.
   const previousTwilio = (await saRef.get()).data()?.twilioConfig ?? null;
+  let restoreToken: (() => Promise<void>) | undefined;
   const contactRef = db.collection("contacts").doc();
   const contactId = contactRef.id;
   const contactDoc = {
@@ -168,6 +171,7 @@ test("send later from the thread: book, cancel one, fire one through the signed 
 
   try {
     await saRef.update({ twilioConfig: FIXTURE_TWILIO });
+    restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
     await contactRef.set(contactDoc);
     await page.goto(`/sa/${sa}/conversations/${contactId}`);
     await expect(page.getByTestId("thread-header").getByRole("heading", { name })).toBeVisible({
@@ -328,6 +332,7 @@ test("send later from the thread: book, cancel one, fire one through the signed 
     expect((await lateRef.get()).data()?.status).toBe("failed");
   } finally {
     await saRef.update({ twilioConfig: previousTwilio });
+    await restoreToken?.();
     // deleteScoped re-reads and asserts fixture scope; a contact that was
     // never written is a no-op.
     await deleteScoped(db.doc(`conversations/${contactId}`));
