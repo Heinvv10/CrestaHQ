@@ -91,10 +91,20 @@ die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 # shellcheck source=scripts/deploy-velo-bluegreen.sh
 . "$(dirname "$0")/deploy-velo-bluegreen.sh"
 
+# What this run is executing, so it can tell once `git reset` below has put a
+# different deploy script on disk. bash keeps executing the copy it started
+# with, so without this the first deploy of a script change runs the OLD logic
+# against the NEW tree (a stale pre-blue/green script restarting the retired
+# single service is exactly how that goes wrong).
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+script_hash() { cat "$1/deploy-velo.sh" "$1/deploy-velo-bluegreen.sh" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+SELF_HASH="$(script_hash "$(dirname "$SELF")")"
+
 # ── Lock ────────────────────────────────────────────────────────────────────
 if [ -f "$LOCK" ]; then
   pid=$(cat "$LOCK" 2>/dev/null || echo "")
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  # Our own pid: this run re-executed itself after `git reset` (see below).
+  if [ "$pid" != "$$" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     die "another deploy is running (pid $pid). Wait for it to finish."
   fi
   echo "clearing stale lock (pid ${pid:-none} is gone)"
@@ -121,16 +131,31 @@ case "$active" in
   "$BLUE_PORT"|"$GREEN_PORT") ;;
   *) die "no live colour in $PROXY_DIR/upstream.conf — the zero-downtime layout is not set up. Do the one-time migration in RUNBOOK.md (\"Zero-downtime deploys\") first." ;;
 esac
+# Never act on what the file says alone: if nginx routes somewhere else (a
+# hand edit, a reload that never happened), the "idle" colour could be the one
+# production is on, and this deploy would stop it.
+routed="$(routed_port || true)"
+[ "$routed" = "$active" ] \
+  || die "$PROXY_DIR/upstream.conf says $active but $PROXY_SERVICE actually routes to '${routed:-nothing}' (check port $CHECK_PORT). Refusing: resolve the mismatch by hand first."
 idle="$(other_port "$active")"
 idle_prev_link=""
-echo "live colour: $SERVICE@$active; idle colour: $SERVICE@$idle"
+idle_started=0
+echo "live colour: $SERVICE@$active (proven on :$CHECK_PORT); idle colour: $SERVICE@$idle"
+
+# Written by a successful --rollback: the release it rolled AWAY from, which
+# is now what the idle colour holds. A second --rollback would put it back.
+ROLLED_BACK_FROM="$RELEASES_DIR/.rolled-back-from"
 
 if [ "$ROLLBACK" -eq 1 ]; then
   prev="$(readlink "$RELEASES_DIR/$idle" || true)"
   [ -n "$prev" ] && [ -d "$prev" ] \
     || die "nothing to roll back to: $RELEASES_DIR/$idle does not point at a release"
+  [ "$(cat "$ROLLED_BACK_FROM" 2>/dev/null || true)" != "$(basename "$prev")" ] \
+    || die "$SERVICE@$idle holds $(basename "$prev"), the release the last --rollback rolled AWAY from. A second --rollback would restore it. Deploy a fix instead."
+  leaving="$(basename "$(readlink "$RELEASES_DIR/$active" || echo unknown)")"
   say "Rolling back to $(basename "$prev") on $SERVICE@$idle"
   activate_idle "$prev"
+  echo "$leaving" > "$ROLLED_BACK_FROM"
   say "Rolled back: $SERVICE@$idle serves $(basename "$prev")"
   exit 0
 fi
@@ -151,10 +176,20 @@ fi
 
 say "Fetching origin/$BRANCH"
 git fetch --quiet origin "$BRANCH"
-before=$(git rev-parse --short HEAD)
+before="${DEPLOY_VELO_BEFORE:-$(git rev-parse --short HEAD)}"
 git checkout --quiet "$BRANCH"
 git reset --hard --quiet "origin/$BRANCH"
 after=$(git rev-parse --short HEAD)
+
+# The tree's deploy script is not the one running: re-exec it (same pid, so
+# the lock stays ours), once. A second mismatch means something rewrites the
+# checkout under us — refuse rather than loop.
+if [ "$(script_hash "$DEPLOY_DIR/scripts")" != "$SELF_HASH" ]; then
+  [ -z "${DEPLOY_VELO_REEXEC:-}" ] \
+    || die "the deploy script still differs from $DEPLOY_DIR/scripts after re-executing it — refusing."
+  echo "deploy script changed in $after — re-executing the new one"
+  DEPLOY_VELO_REEXEC=1 DEPLOY_VELO_BEFORE="$before" exec bash "$DEPLOY_DIR/scripts/deploy-velo.sh" "$@"
+fi
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
 
@@ -231,4 +266,5 @@ ln -s "$NODE_BIN/node" "$release/.runtime/node"
 echo "staged $release"
 
 activate_idle "$release"
+rm -f "$ROLLED_BACK_FROM"
 say "Deployed $after to $SERVICE@$idle behind $PROXY_SERVICE on port $PORT"

@@ -272,13 +272,37 @@ connections while Next restarts:
   Only the new colour cold-starts, so only it runs `instrumentation.ts`. That
   registration is an upsert on stable QStash `scheduleId`s, so nothing
   doubles. QStash calls the public URL, so each cron fires once, on
-  whichever colour the proxy routes to.
+  whichever colour the proxy routes to. If a deploy aborts after the new
+  colour has cold-started, its registration may already have run. The
+  script then cold-starts the live release on the idle port, with no
+  traffic, so the live build's registration runs last.
+- **Safety checks.** A deploy refuses to start if `upstream.conf` names a
+  different colour from the one nginx reports on 4309. No colour is stopped
+  until 4309 has proven that traffic is on the other one. If a switch-back
+  cannot be proven, the script stops nothing, leaves both colours up, and
+  exits with `CRITICAL`. A second `--rollback` in a row is refused, because
+  the idle colour then holds the release the first one rolled away from.
+- **Script changes deploy themselves.** bash keeps executing the copy of the
+  script it started with. So when `git reset` brings in a changed deploy
+  script, the run re-executes the new copy once.
 
 ### One-time migration (owner, after 17:00 SAST or at the weekend)
 
-Run as velo (`sudo -u velo -i`) once this change is on `origin/main`. Until
-then, `deploy-velo.sh` refuses to deploy and points here. The only outage
-is step 3: a single blip of under a second.
+Run as velo (`sudo -u velo -i`) once this change is on `origin/main`. The
+only outage is step 3: a single blip of under a second.
+
+**0. Deploy the merge once, the old way, BEFORE migrating.** The deploy
+checkout still holds the previous script. That old copy does not know about
+blue/green and restarts `crestahq.service` directly, and it cannot re-execute
+itself. Run it once now, while that is still correct:
+
+```bash
+cd ~/crestahq && bash scripts/deploy-velo.sh
+```
+
+This run is the old single-process deploy (the usual ~15 s restart). It
+leaves the new script on disk, and step 2 copies the build it just made.
+From here on, `deploy-velo.sh` refuses to deploy until step 3 is done.
 
 **1. Install the units and the proxy config.** This does not touch the
 running app or the deploy checkout.
@@ -328,9 +352,18 @@ cloudflared retries on its own, so leave it alone.)
 
 **4. Survive a reboot.**
 
+The old unit file is moved aside and then masked, so nothing can start it
+again and take 4300 back from nginx (it would crash-loop on `EADDRINUSE`
+every 5 s and could win the port during a proxy restart). `mask` refuses
+while a real unit file is in place, which is why it is moved first.
+
 ```bash
 systemctl --user enable crestahq-proxy crestahq@4301
 systemctl --user disable crestahq
+mkdir -p ~/crestahq-legacy-unit
+mv ~/.config/systemd/user/crestahq.service ~/.config/systemd/user/crestahq.service.d ~/crestahq-legacy-unit/
+systemctl --user daemon-reload
+systemctl --user mask crestahq
 ```
 
 **5. Prove it with the first blue/green deploy.** Keep a poller running in a
@@ -344,20 +377,26 @@ Then run `bash scripts/deploy-velo.sh`. It should end with
 `Deployed <sha> to crestahq@4302`, and the poller should print nothing.
 
 **6. Tidy up, once step 5 has passed.** Delete the old rollback snapshot:
-`rm -rf ~/.cache/crestahq-prev ~/.cache/crestahq-prev.commit`. Keep the old
-`crestahq.service` (and its `crestahq.service.d/` drop-ins) for a week as the
-undo path, then delete them. `MALLOC_ARENA_MAX=2` now lives in the template,
+`rm -rf ~/.cache/crestahq-prev ~/.cache/crestahq-prev.commit`. Keep
+`~/crestahq-legacy-unit/` for a week as the undo path, then delete it. `MALLOC_ARENA_MAX=2` now lives in the template,
 and the Node version comes from each release's `.runtime/node`.
 
-**Undo** (back to one process on 4300):
-`systemctl --user stop crestahq-proxy && systemctl --user start crestahq`.
-The old unit serves `~/crestahq/.next/standalone`, which is the last build
-made in the deploy checkout. Then run
-`systemctl --user disable crestahq-proxy crestahq@4301 crestahq@4302`,
-`systemctl --user stop crestahq@4301 crestahq@4302` and
-`systemctl --user enable crestahq`. Revert this change before the next
-deploy, because the script deploys blue/green whenever `upstream.conf`
-exists.
+**Undo** (back to one process on 4300). The old unit serves
+`~/crestahq/.next/standalone`, which is the last build made in the deploy
+checkout.
+
+```bash
+systemctl --user unmask crestahq
+mv ~/crestahq-legacy-unit/crestahq.service ~/crestahq-legacy-unit/crestahq.service.d ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user stop crestahq-proxy && systemctl --user start crestahq
+systemctl --user disable crestahq-proxy crestahq@4301 crestahq@4302
+systemctl --user stop crestahq@4301 crestahq@4302
+systemctl --user enable crestahq
+```
+
+Then revert this change on `main` before the next deploy. While it is on
+`main`, the script refuses to deploy unless the proxy is answering.
 
 ---
 

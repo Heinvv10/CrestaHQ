@@ -5,14 +5,28 @@
 # Not runnable on its own: uses deploy-velo.sh's config (SERVICE, PORT,
 # BLUE_PORT, GREEN_PORT, CHECK_PORT, PROXY_*, NGINX, RELEASES_DIR,
 # DRAIN_TIMEOUT, HEALTH_TRIES, SYSTEMCTL), its say/die, and the globals
-# active / idle / idle_prev_link it sets once the layout is found.
+# active / idle / idle_prev_link / idle_started it sets once the layout is found.
 # =============================================================================
 
 # ── Blue/green helpers ──────────────────────────────────────────────────────
-# Colour = port. The proxy's upstream.conf is the one source of truth for
-# which colour is live, because it is what traffic actually follows.
+# Colour = port. upstream.conf says which colour the proxy SHOULD route to;
+# routed_port says which one it actually does (nginx's own upstream header on
+# the loopback check port). The deploy refuses to start unless they agree, and
+# never stops a colour until routed_port has proven traffic is elsewhere.
 active_port() {
   sed -n 's/^[[:space:]]*server 127\.0\.0\.1:\([0-9][0-9]*\);.*$/\1/p' "$PROXY_DIR/upstream.conf" 2>/dev/null | head -1
+}
+routed_port() {
+  curl -s -o /dev/null -D - --max-time 5 "http://127.0.0.1:$CHECK_PORT/login" 2>/dev/null \
+    | tr -d '\r' | awk -F': ' 'tolower($1) == "x-crestahq-upstream" { sub(/.*:/, "", $2); print $2; exit }'
+}
+wait_routed() {  # wait_routed <port>: up to 10s for the proxy to prove it routes to <port>
+  local i
+  for i in $(seq 1 10); do
+    [ "$(routed_port || true)" = "$1" ] && return 0
+    sleep 1
+  done
+  return 1
 }
 other_port() { if [ "$1" = "$BLUE_PORT" ]; then echo "$GREEN_PORT"; else echo "$BLUE_PORT"; fi; }
 
@@ -62,14 +76,10 @@ switch_proxy() {
     return 1
   fi
   if $SYSTEMCTL reload "$PROXY_SERVICE"; then
-    for i in $(seq 1 10); do
-      if curl -s -o /dev/null -D - --max-time 5 "http://127.0.0.1:$CHECK_PORT/login" \
-          | tr -d '\r' | grep -qix "x-crestahq-upstream: 127\.0\.0\.1:$port"; then
-        echo "$PROXY_SERVICE now routes to $port (proven on :$CHECK_PORT after ${i}s)"
-        return 0
-      fi
-      sleep 1
-    done
+    if wait_routed "$port"; then
+      echo "$PROXY_SERVICE now routes to $port (proven on :$CHECK_PORT)"
+      return 0
+    fi
     echo "$PROXY_SERVICE never reported upstream $port on :$CHECK_PORT" >&2
   fi
   restore_proxy_files
@@ -112,15 +122,48 @@ point_colour() {  # point_colour <port> <release-dir>, atomically
   ln -sfn "$2" "$RELEASES_DIR/$1.new" && mv -Tf "$RELEASES_DIR/$1.new" "$RELEASES_DIR/$1"
 }
 
+# The failed colour's cold start ran ITS instrumentation.ts, which may have
+# re-registered the QStash schedules (and the Firestore marker) to match code
+# that is not serving. Registration only runs on a cold start, so re-run it
+# from the build that IS serving: cold-start the live release on the idle
+# port (no traffic reaches it), wait for register() to log, stop it. Same
+# release, same code, so the schedules end up matching what production runs.
+reconcile_schedules() {
+  local live started_at
+  live="$(readlink "$RELEASES_DIR/$active" || true)"
+  if [ -z "$live" ] || [ ! -d "$live" ]; then
+    echo "WARNING: no live release behind $RELEASES_DIR/$active — QStash schedules may match the FAILED build. Fix: $SYSTEMCTL restart $SERVICE@$active after hours." >&2
+    return 0
+  fi
+  say "Re-registering schedules from the live build ($(basename "$live"))"
+  point_colour "$idle" "$live" || return 0
+  started_at="$(date +%s)"
+  if $SYSTEMCTL start "$SERVICE@$idle" && wait_healthy "http://127.0.0.1:$idle/login" \
+      && instrumentation_ran "$SERVICE@$idle" "$started_at"; then
+    echo "schedules re-registered by the live build $(basename "$live")"
+  else
+    echo "WARNING: could not re-run registration from the live build — QStash schedules may match the FAILED build. Fix: $SYSTEMCTL restart $SERVICE@$active after hours." >&2
+  fi
+  $SYSTEMCTL stop "$SERVICE@$idle" || true
+}
+
 # Every failure before traffic has moved (or after it has been moved back):
-# stop the idle colour, point it back at the release it had, and exit 1. The
-# live colour was never stopped, so there is nothing to roll back. The failed
-# release dir is kept for inspection; the next good deploy prunes it.
+# prove the proxy routes to the live colour, stop the idle colour, undo its
+# instrumentation side effects, point it back at the release it had, exit 1.
+# If the proxy cannot be proven to route to the live colour, NOTHING is
+# stopped: both colours stay up and the operator decides. The failed release
+# dir is kept for inspection; the next good deploy prunes it.
 abort_idle() {
   printf '\n\033[31mFAILED: %s\033[0m\n' "$1" >&2
   echo "--- last 40 log lines of $SERVICE@$idle ---" >&2
   journalctl --user -u "$SERVICE@$idle" -n 40 --no-pager >&2 2>/dev/null || true
+  if ! wait_routed "$active"; then
+    printf '\n\033[31mCRITICAL: cannot prove %s routes to %s (check port reports "%s"). BOTH colours left running; nothing stopped. Inspect %s/upstream.conf and curl -sI http://127.0.0.1:%s/login before touching either colour.\033[0m\n' \
+      "$PROXY_SERVICE" "$active" "$(routed_port || true)" "$PROXY_DIR" "$CHECK_PORT" >&2
+    exit 1
+  fi
   $SYSTEMCTL stop "$SERVICE@$idle" || true
+  [ "$idle_started" -eq 1 ] && reconcile_schedules
   if [ -n "$idle_prev_link" ]; then point_colour "$idle" "$idle_prev_link" || true
   else rm -f "$RELEASES_DIR/$idle"
   fi
@@ -139,6 +182,7 @@ activate_idle() {
   # Whatever a failed earlier run left on the idle colour takes no traffic.
   $SYSTEMCTL stop "$SERVICE@$idle" 2>/dev/null || true
   started_at="$(date +%s)"
+  idle_started=1
   $SYSTEMCTL start "$SERVICE@$idle" || abort_idle "start $SERVICE@$idle"
 
   say "Health check ($SERVICE@$idle, direct)"
