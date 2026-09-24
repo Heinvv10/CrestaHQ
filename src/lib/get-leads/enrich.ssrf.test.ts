@@ -12,13 +12,12 @@ import type { GetLeadsBusiness } from "@/types/get-leads";
  */
 
 const dns = new Map<string, string>();
-vi.mock("node:dns/promises", () => ({
-  lookup: vi.fn(async (host: string) => {
-    const address = dns.get(host);
-    if (!address) throw Object.assign(new Error(`ENOTFOUND ${host}`), { code: "ENOTFOUND" });
-    return [{ address, family: 4 }];
+vi.mock("node:dns/promises", async () =>
+  (await import("@/test/fake-resolver")).fakeDnsModule((host, family) => {
+    const address = family === 4 ? dns.get(host) : undefined;
+    return address ? [address] : undefined;
   }),
-}));
+);
 
 // Only the first hop of the redirect case is faked (a public site answering
 // 302 → internal); every other call goes through the real publicFetch.

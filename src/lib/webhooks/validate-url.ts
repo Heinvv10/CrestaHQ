@@ -1,4 +1,4 @@
-import { lookup } from "node:dns/promises";
+import { Resolver } from "node:dns/promises";
 import type { LookupAddress } from "node:dns";
 import type { LookupFunction } from "node:net";
 import ipaddr from "ipaddr.js";
@@ -121,6 +121,40 @@ export class NonPublicUrlError extends Error {
 }
 
 /**
+ * Names resolve through c-ares, not `dns.lookup`: on velo-server glibc's
+ * getaddrinfo (A+AAAA via the systemd-resolved stub, on the libuv threadpool)
+ * stalls 5–20 s under concurrent lookups, while direct queries answer in ms.
+ * c-ares skips /etc/hosts — stricter for SSRF, and `localhost`-style names are
+ * already refused by `isBlockedHostname`. Uses the system's configured servers.
+ */
+const resolver = new Resolver({ timeout: 2000, tries: 2 });
+
+/** A then AAAA answers, IPv4 first (this host has no IPv6 route). */
+async function resolveName(h: string): Promise<LookupAddress[]> {
+  const [v4, v6] = await Promise.allSettled([resolver.resolve4(h), resolver.resolve6(h)]);
+  // A transient A-record failure (ETIMEOUT, ESERVFAIL, ECONNREFUSED, ...) is
+  // not "no such record" (ENODATA / ENOTFOUND) — a v6-only answer under a
+  // transient v4 failure must not stand in for a real v4 lookup, since this
+  // host has no IPv6 route and would connect to an address it never checked.
+  if (
+    v4.status === "rejected" &&
+    !["ENODATA", "ENOTFOUND"].includes((v4.reason as NodeJS.ErrnoException)?.code ?? "")
+  ) {
+    throw v4.reason;
+  }
+  const addresses: LookupAddress[] = [
+    ...(v4.status === "fulfilled" ? v4.value.map((address) => ({ address, family: 4 })) : []),
+    ...(v6.status === "fulfilled" ? v6.value.map((address) => ({ address, family: 6 })) : []),
+  ];
+  if (!addresses.length) {
+    if (v4.status === "rejected") throw v4.reason;
+    if (v6.status === "rejected") throw v6.reason;
+    throw Object.assign(new Error(`ENOTFOUND ${h}`), { code: "ENOTFOUND" });
+  }
+  return addresses;
+}
+
+/**
  * Resolve `hostname` and return its addresses only when EVERY one is public.
  * Throws `NonPublicUrlError` otherwise (a single private answer among public
  * ones is enough to refuse — the connection could land on either).
@@ -132,7 +166,7 @@ export async function resolvePublicAddresses(
   if (isBlockedHostname(h)) throw new NonPublicUrlError(h);
   const addresses = ipaddr.isValid(h)
     ? [{ address: h, family: h.includes(":") ? 6 : 4 }]
-    : await lookup(h, { all: true, verbatim: true });
+    : await resolveName(h);
   if (!addresses.length || addresses.some((a) => isNonPublicAddress(a.address))) {
     throw new NonPublicUrlError(h);
   }
