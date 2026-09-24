@@ -1,7 +1,9 @@
 # W5 — Paystack auto-charge (card on file) for recurring invoices
 
-**Status:** planned 2026-09-23, not started. Grilled with Hein; the rulings below are settled
-and are not to be re-opened by the lane.
+**Status:** SHIPPED 2026-09-23 — PR1 #190, PR2 #207, PR3 #220, plus #221 (ZAR in the
+builders) and #225 (Paystack invoice send rail), all deployed. See [As built](#as-built) for
+what changed from this plan and what is still open. The rulings below were settled with Hein
+and are not to be re-opened.
 
 A sub-account bills its own customers on a cadence. Today every cycle emails an invoice and
 waits. This wave adds the second arm the 2026-09-04 recurring-invoicing grill locked but could
@@ -105,6 +107,34 @@ On #1000, in test mode:
    the arrears Task at the threshold.
 4. A replayed webhook and a re-run cycle produce no second charge and no second trigger.
 5. Switching the connection to a different mode mid-cycle flags, and never marks paid.
+
+### Validation results (#1000, test mode, 2026-09-23)
+
+| # | Result |
+|---|---|
+| 1 | ✅ Mandate captured through the card-on-file link; wording, time and IP stored. |
+| 2 | ✅ Two consecutive cycles charged and settled by the webhook with `paidVia.rail = "paystack_auto"`. There is no daily cadence (weekly is the minimum), so the week between cycles was simulated by moving the test schedule's dates and triggering the sweep through QStash. |
+| 3 | ⚠️ Not walked live: Paystack's test checkout cannot produce a card that authorises and then declines. Covered by seam tests. |
+| 4 | ✅ A re-triggered sweep and two replayed signed webhooks changed nothing. |
+| 5 | ⚠️ Not walked live, to avoid switching #1000's connection. Covered by seam tests. |
+| + | ✅ The period guard refused a cycle due minutes after the last one (no charge, Task raised). |
+| + | ✅ After #225, a card schedule's first cycle on a Paystack-only workspace sent its invoice on its own with a card-on-file link. |
+
+## As built
+
+What changed from the plan above, and why:
+
+- **The period guard.** An edit to a card schedule (billing day, frequency, or a switch through invoice mode) must not charge twice in one period. A guard at edit time kept leaking, so it moved to the charge: each billed cycle records `lastDueAt`, and a card charge is refused when this cycle's due date is less than one cadence period (with tolerance, `charge-gap.ts`) after the previous cycle's, however that cycle was paid. Legacy schedules fall back to `lastRunAt`. A refused cycle is emailed and raises a Task.
+- **Charge outcomes.** Only Paystack `success` counts as accepted. `failed` or a 4xx decline is a decline. A 401 or 403 means our key was refused, which is not the card's fault, so the invoice is emailed, a Task is raised, and no decline is counted. Anything else, including pending and OTP states, 5xx, timeouts and duplicate references, is "unknown": nothing is emailed, a Task names the reference, and the operator's **Re-check card charge** button asks Paystack again and settles or declines from its answer.
+- **Operator Tasks, not `lastError`.** `lastError` is cleared by the next cycle and by any edit, so everything that needs a human raises a Task.
+- **Sending.** Before #225 a workspace with only Paystack could not send any invoice, so card mode could never get its first card-on-file link to the customer. Sending now picks a rail: a card-mode invoice gets a card-on-file link; otherwise PayPal, then Stripe, then a plain Paystack link. No pay link is sent while a card charge for the invoice is unsettled.
+
+## Known gaps (accepted)
+
+- A pending charge that later fails at Paystack is recorded only when the operator re-checks it; there is no `charge.failed` handler.
+- For a schedule created before PR3, if its last pre-deploy bill was swept late, its first card cycle may be refused and emailed. This happens once per schedule.
+- Moving the billing day 26 or more days later straight after a charge can put two charges in one calendar month. That is within the documented tolerance.
+- If the operator marks an invoice paid by hand while a card charge is pending, a later webhook raises a "check a hand-marked invoice" Task rather than deciding which payment it was.
 
 ## Out of scope
 
