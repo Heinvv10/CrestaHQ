@@ -392,6 +392,14 @@ export function QuoteDetail({
         )}
       </div>
 
+      {!showRecheck &&
+        isInvoice &&
+        (quote.autoCharge?.state === "declined" || quote.autoCharge?.state === "needs_attention") && (
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+            Card charge {quote.autoCharge.state === "declined" ? "declined" : "needs attention"}
+            {quote.autoCharge.reason ? `: ${quote.autoCharge.reason}` : "."}
+          </p>
+        )}
       {showRecheck && (
         <p
           className={cn(

@@ -11,7 +11,8 @@ const OUTCOME: Record<string, string> = {
   failed_but_paid:
     "Paystack says the card charge failed, but this invoice was already marked paid by hand. Confirm the payment you recorded.",
   pending: "Paystack has no final answer yet. Nothing was changed — check again later.",
-  needs_attention: "Paystack reports a payment that couldn't be recorded against this invoice. See the Task it raised.",
+  needs_attention:
+    "Paystack's answer couldn't be recorded against this invoice. Check your Paystack dashboard and your Tasks.",
 };
 
 /**

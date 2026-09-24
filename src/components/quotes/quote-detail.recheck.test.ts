@@ -27,6 +27,7 @@ let root: Root;
 const invoice = (
   state: "unknown" | "pending" | "declined" | "paid" | "needs_attention",
   status: "sent" | "viewed" | "paid" = "sent",
+  reason: string | null = null,
 ): Quote =>
   ({
     id: "inv1",
@@ -44,7 +45,7 @@ const invoice = (
     paymentDueDays: 7,
     createdAt: null,
     updatedAt: null,
-    autoCharge: { reference: "ra-s1-c1", mandateId: null, state, reason: null },
+    autoCharge: { reference: "ra-s1-c1", mandateId: null, state, reason },
   }) as unknown as Quote;
 
 const render = (quote: Quote) =>
@@ -87,6 +88,12 @@ it("keeps a declined answer on screen after its own write unmounts the button", 
   // The live subscription delivers the declined charge after the response.
   await render(invoice("declined"));
   expect(recheckButton()).toBeUndefined();
+  expect(container.textContent).toContain("did not go through");
+});
+
+it("shows a declined answer before its own write reaches the view", async () => {
+  answer({ outcome: "declined" });
+  await click();
   expect(container.textContent).toContain("did not go through");
 });
 
@@ -139,7 +146,7 @@ it("keeps a needs-attention answer after its own write unmounts the button", asy
   await click();
   await render(invoice("needs_attention"));
   expect(recheckButton()).toBeUndefined();
-  expect(container.textContent).toContain("See the Task it raised");
+  expect(container.textContent).toContain("couldn't be recorded against this invoice");
 });
 
 it("keeps a pending answer while nothing changes, and drops it when the charge settles", async () => {
@@ -193,4 +200,30 @@ it("drops a pending answer when the daily sweep later declines the charge", asyn
   expect(container.textContent).toContain("no final answer yet");
   await render(invoice("declined"));
   expect(container.textContent).not.toContain("no final answer yet");
+});
+
+it("keeps a needs-attention answer on an invoice marked paid by hand mid-flight", async () => {
+  answer({ outcome: "needs_attention" });
+  await click();
+  await render(invoice("needs_attention", "paid"));
+  expect(container.textContent).toContain("couldn't be recorded against this invoice");
+});
+
+it("says why a card charge was declined once the re-check answer is gone", async () => {
+  await render(invoice("declined", "sent", "Paystack reports the charge failed"));
+  expect(recheckButton()).toBeUndefined();
+  expect(container.textContent).toContain("Card charge declined: Paystack reports the charge failed");
+});
+
+it("tells another operator the charge was declined when their own re-check is refused", async () => {
+  answer({ error: "This card charge changed while it was being re-checked. Reload and check again." }, 409);
+  await click();
+  await render(invoice("declined", "sent", "Paystack has no record of this charge"));
+  expect(container.textContent).not.toContain("Reload and check again");
+  expect(container.textContent).toContain("Card charge declined: Paystack has no record of this charge");
+});
+
+it("shows a needs-attention charge's reason", async () => {
+  await render(invoice("needs_attention", "sent", "Paystack later reported this charge as paid"));
+  expect(container.textContent).toContain("Card charge needs attention: Paystack later reported this charge as paid");
 });

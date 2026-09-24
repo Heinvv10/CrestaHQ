@@ -208,11 +208,19 @@ describe("what the webhook refuses to record", () => {
     expect(raised().status).toBe("paid");
   });
 
-  it("a charge recorded as declined that later succeeds is not settled; the attempt says so", async () => {
+  it("a charge recorded as declined that later succeeds is not settled; the attempt and invoice say so", async () => {
     stubAutoCharge({ charge: () => chargeAnswer("failed", "Declined") });
     await runOneSchedule(SCHEDULE, NOW);
+    expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined" });
     await deliver();
     expect(attempt()).toMatchObject({ state: "refused", reason: expect.stringMatching(/later reported this charge/) });
+    // The invoice no longer reads "declined", which offers a pay link.
+    expect(raised().autoCharge).toMatchObject({
+      reference: REF,
+      state: "needs_attention",
+      reason: expect.stringMatching(/later reported this charge/),
+    });
+    expect(raised().status).not.toBe("paid");
     expect(succeeded()).toHaveLength(0);
   });
 });
