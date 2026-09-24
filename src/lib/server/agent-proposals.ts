@@ -226,6 +226,21 @@ export async function claimProposal(
   return moved === "ok" ? { claimId } : moved;
 }
 
+/**
+ * True when an earlier generation's claim settled `executed` in `history`
+ * after the current generation was created: the action this row repeats has
+ * already happened, so approving it would do it twice.
+ */
+export async function previousAttemptSent(id: string, createdAtMs: number): Promise<boolean> {
+  const snap = await proposalRef(id)
+    .collection("history")
+    .where("lateSettle", "==", true)
+    .where("status", "==", "executed")
+    .get();
+  // `>=`: a settle in the same millisecond as the re-proposal still counts.
+  return snap.docs.some((d) => (millis(d.data().settledAt) ?? 0) >= createdAtMs);
+}
+
 /** Store a freshly computed preview under a new `rev` (pending generation
  *  `rev` only). Returns the new rev, or null when the row moved on. */
 export async function refreshPreview(
@@ -271,15 +286,22 @@ export async function settleProposal(
     const snap = await tx.get(ref);
     const cur = snap.data();
     const ours = cur?.claimId === claimId;
+    // A person who marked OUR unsettled claim "not sent" guessed; the real
+    // outcome beats the guess (else a re-propose could send it twice).
+    const overridesHuman =
+      ours && cur?.status === "rejected" && cur?.reason === "not_sent_confirmed";
     const v =
       ours && cur?.status === "executing"
         ? "settled"
-        : ours && cur?.status === "unsettled"
+        : (ours && cur?.status === "unsettled") || overridesHuman
           ? "resolved_late"
           : "late";
     if (v === "settled") tx.update(ref, fields);
-    else if (v === "resolved_late") tx.update(ref, { ...fields, settledLate: true });
-    else tx.set(historyRef(id), { lateSettle: true, claimId, ...fields });
+    else if (v === "resolved_late") {
+      tx.update(ref, { ...fields, settledLate: true, ...(overridesHuman ? { overrodeHuman: true } : {}) });
+    } else {
+      tx.set(historyRef(id), { lateSettle: true, claimId, settledAt: new Date(), ...fields });
+    }
     tx.set(db.collection("aiSuiteActions").doc(), {
       level: "sub-account",
       ...audit,

@@ -14,6 +14,7 @@ import {
   canonical,
   claimProposal,
   millis,
+  previousAttemptSent,
   refreshPreview,
   settleProposal,
   transitionIf,
@@ -180,6 +181,20 @@ export async function POST(
     );
     return moved === "ok"
       ? NextResponse.json({ error: "expired" }, { status: 409 })
+      : refused(moved);
+  }
+
+  // An earlier generation's approval may have sent after all (its settle
+  // landed after a person marked it "not sent" and it was re-proposed).
+  if (await previousAttemptSent(proposalId, millis(proposal.createdAt) ?? 0)) {
+    const moved = await transitionIf(
+      proposalId,
+      "pending",
+      { status: "rejected", reason: "previous_attempt_sent", decidedAt: new Date() },
+      { rev },
+    );
+    return moved === "ok"
+      ? NextResponse.json({ error: "previous_attempt_sent" }, { status: 409 })
       : refused(moved);
   }
 

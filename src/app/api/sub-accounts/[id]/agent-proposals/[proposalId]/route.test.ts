@@ -564,3 +564,58 @@ describe("general review — PR #259", () => {
     expect(history(id)).toEqual([expect.objectContaining({ status: "expired", rev: oldRev })]);
   });
 });
+
+describe("a late executed settle after a person's mark_not_sent", () => {
+  function hangNextExecute(): () => void {
+    let finish!: () => void;
+    execute.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve({ resultText: "sent", ref: { kind: "message", id: "m1" } })))
+    );
+    return () => finish();
+  }
+  async function markedNotSentWhileInFlight(id: string) {
+    const finish = hangNextExecute();
+    const approving = decide(id, "approve");
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    await sweepAgentProposals(later(11 * 60_000));
+    expect((await decide(id, "mark_not_sent")).status).toBe(200);
+    return async () => {
+      finish();
+      await approving;
+    };
+  }
+
+  it("(a) settle lands before any re-propose → the real outcome overrides the guess", async () => {
+    const id = await proposeId();
+    const settle = await markedNotSentWhileInFlight(id);
+    await settle();
+    expect(row(id)).toMatchObject({ status: "executed", settledLate: true, overrodeHuman: true });
+    expect(history(id)).toEqual([]);
+  });
+
+  it("(b) settle lands after a re-propose → history; approving the new generation → 409 previous_attempt_sent", async () => {
+    const id = await proposeId();
+    const settle = await markedNotSentWhileInFlight(id);
+    await proposeId();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await settle();
+    expect(row(id).status).toBe("pending");
+    expect(history(id)).toContainEqual(expect.objectContaining({ lateSettle: true, status: "executed" }));
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "previous_attempt_sent" });
+    expect(row(id)).toMatchObject({ status: "rejected", reason: "previous_attempt_sent" });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("an executed late settle from BEFORE the current generation does not block it", async () => {
+    const id = await proposeId();
+    mem.seed(`agentProposals/${id}/history/old`, {
+      lateSettle: true,
+      status: "executed",
+      settledAt: new Date(millis(row(id).createdAt)! - 60_000),
+    });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
