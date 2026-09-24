@@ -16,6 +16,7 @@ import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ModelOverrideSelect } from "@/components/ai-agents/model-override-select";
 import type {
   AiAgentProfile,
   AiChannelConfig,
@@ -661,12 +662,12 @@ export function VoiceChannelSection() {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="voice-model">Model (advanced — blank for default)</Label>
-            <Input
+            <Label htmlFor="voice-model">Model (advanced)</Label>
+            <ModelOverrideSelect
               id="voice-model"
+              subAccountId={subAccountId}
               value={modelOverride}
-              onChange={(e) => setModelOverride(e.target.value)}
-              placeholder="anthropic/claude-haiku-4-5"
+              onChange={setModelOverride}
             />
             <p className="text-[11px] text-muted-foreground">
               Default: Claude Haiku 4.5 — fast enough for sub-1s voice

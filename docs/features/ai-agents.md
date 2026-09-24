@@ -17,6 +17,16 @@ The pre-refactor layout had one combined doc per channel. The current model spli
 
 [src/lib/comms/ai/openrouter.ts](../../src/lib/comms/ai/openrouter.ts) `callAi()` POSTs to OpenRouter's OpenAI-compatible chat endpoint. One key (`OPENROUTER_API_KEY`) covers every model the gateway exposes — Anthropic, OpenAI, Google, etc. Default is `anthropic/claude-haiku-4-5` (~$0.005-0.02 per SMS exchange); per-channel override lets premium tiers point at Opus 4.7. Returns `{ text, promptTokens, completionTokens, totalTokens, model }`. The deployment-wide default is `AI_REPLIES_DEFAULT_MODEL` (optional env var, falls back to Haiku).
 
+### Model allow-list
+
+Models retire and appear on OpenRouter constantly, so a channel's `modelOverride` is picked from a list, never typed.
+
+- **Catalog** — [model-catalog.ts](../../src/lib/comms/ai/model-catalog.ts) caches OpenRouter's public `GET /api/v1/models` (id, name, per-1M prices) in `appConfig/aiModels`, refreshed at most daily. A failed fetch keeps the last good copy and retries after an hour. No catalog yet = every model is "unknown", never "retired".
+- **Policy** — `agencies/{id}.aiModelPolicy` `{allowedModels, maxPromptPerM, maxCompletionPerM}`, set by the agency owner under **Agency → Settings → Allowed AI models** (`/api/agency/ai-models`, owner-only). Until first saved, the policy is "every model already in use on any channel + the app default", so deploying changes nothing. The app default (`defaultAiModel()`) is always allowed — it is what a blank override means and what every fallback lands on.
+- **Save** — the channel PATCH refuses a *changed* `modelOverride` that is retired, not ticked, or over the price ceiling (400). Re-sending the unchanged stored value is allowed, so a config whose model has since retired can still save its other settings; the picker shows it as "(unavailable)" with a warning.
+- **Request time** — [model-policy.ts](../../src/lib/comms/ai/model-policy.ts) `resolveRuntimeModel()` runs inside `resolveAgent()` (every live reply path) and the `ai-agent/test` dry-run: a retired or disallowed stored model resolves to the app default with a `[ai-models]` warning in the log instead of failing the reply. At request time an *unsaved* policy only applies the retired check.
+- The AI Suite's Opus/Sonnet choice is a fixed two-option enum and is not covered by the allow-list.
+
 ## System prompt — channel-aware safety rails + KB
 
 [src/lib/comms/ai/prompt.ts](../../src/lib/comms/ai/prompt.ts) `buildSystemPrompt()` is the single source of truth for the LLM system message. It composes 4 sections: persona (from profile) → channel-specific safety rails → website KB block (when populated) → contact context block (when a contact is identified). Both SMS and Web Chat orchestrators AND the "Test this persona" dry-run endpoint use it, so what you preview matches what the bot actually receives.

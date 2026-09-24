@@ -3,7 +3,7 @@
 *Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [docs/features](../features/README.md).*
 | Collection | Scope | Notes |
 |---|---|---|
-| `agencies/{agencyId}` | agency-read | Agency profile + Stripe billing (one per deployment in v1) |
+| `agencies/{agencyId}` | agency-read | Agency profile + Stripe billing (one per deployment in v1). `aiModelPolicy` = the AI model allow-list + price ceiling |
 | `agencies/{agencyId}/agencyMembers/{uid}` | agency-read | Owner / staff list |
 | `agencies/{agencyId}/plans/{planId}` | server-only | Client Billing v1 plan docs (monthly price + feature-gate bundle + Stripe product/price ids). All access via the owner-only `/api/agency/plans` routes |
 | `agencies/{agencyId}/snapshots/{snapshotId}` | server-only | Agency config template — forms/workflows/templates/products/custom-fields/AI-persona payload captured from one sub-account, applied to another. Carries no customer data and no credentials. All access via the owner-only `/api/agency/snapshots` + apply routes. An imported copy carries `importedFrom: { importedAt, via?: "file" }` (no source ids), `sourceSubAccountId: null`, re-minted `sourceId`s, and cleared workflow destinations |
@@ -23,6 +23,7 @@
 | `userMemberships/{uid}/agencies/{agencyId}` | self-read | Denormalized index for agency-level access |
 | `users/{uid}` | self only | Slim profile (display name, photoURL, primaryAgencyId) |
 | `appConfig/main` | active members | Bootstrap singleton: `firstAgencyId`, `firstAgencyOwnerUid` |
+| `appConfig/aiModels` | active members read; server-only write | Cached OpenRouter model list `{models: [{id, name, promptPerM, completionPerM}], fetchedAt, lastAttemptAt}` — refreshed at most daily, last good copy kept on failure (see [ai-agents.md](../features/ai-agents.md#model-allow-list)) |
 | `system/heartbeat` | server-only | Instance id + last-heartbeat timestamp (gitpage status checks) |
 | `system/gitpageStatus` | active members read | Cached gitpage subscription state; drives the activate-banner UI |
 | `invites/{auto}` | agency owner / sub-account admin | Typed invites (carry `subAccountId` + `subAccountRole`) |

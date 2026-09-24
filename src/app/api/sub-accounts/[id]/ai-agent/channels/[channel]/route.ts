@@ -37,6 +37,7 @@ import {
   VapiError,
 } from "@/lib/comms/voice/vapi";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
+import { checkModelForSave } from "@/lib/comms/ai/model-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -404,6 +405,23 @@ export async function PATCH(
       { error: "No valid fields in patch" },
       { status: 400 },
     );
+  }
+
+  // Model pick must be on the agency allow-list, under its price ceiling and
+  // still offered by OpenRouter. Null (= app default) is always fine, and so
+  // is re-sending the unchanged stored pick — an existing config whose model
+  // has since retired keeps saving its other settings (the UI warns, and live
+  // replies fall back to the default at request time).
+  if (
+    patch.modelOverride &&
+    patch.modelOverride !== (await getChannelConfig(id, channel))?.modelOverride
+  ) {
+    const saSnap = await getAdminDb().doc(`subAccounts/${id}`).get();
+    const agencyId = (saSnap.data() as SubAccountDoc | undefined)?.agencyId;
+    const error = agencyId
+      ? await checkModelForSave(agencyId, patch.modelOverride)
+      : "Sub-account not found.";
+    if (error) return NextResponse.json({ error }, { status: 400 });
   }
 
   // Enabling a channel without a profile prompt = bot would call the LLM

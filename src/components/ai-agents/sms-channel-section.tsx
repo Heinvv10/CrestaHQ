@@ -14,6 +14,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ModelOverrideSelect } from "@/components/ai-agents/model-override-select";
 import type { AiAgentProfile, AiChannelConfig } from "@/types/ai";
 
 /**
@@ -237,19 +238,18 @@ export function SmsChannelSection() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="sms-model">Model (advanced — blank for default)</Label>
-              <Input
+              <Label htmlFor="sms-model">Model (advanced)</Label>
+              <ModelOverrideSelect
                 id="sms-model"
+                subAccountId={subAccountId}
                 value={modelOverride}
-                onChange={(e) => setModelOverride(e.target.value)}
-                placeholder="anthropic/claude-haiku-4-5"
+                onChange={setModelOverride}
               />
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Default model: Claude Haiku 4.5. Override with{" "}
-            <code>anthropic/claude-opus-4-7</code> for premium quality at
-            ~50× the cost. Any OpenRouter model id works.
+            Only models your agency allows are listed. Premium models cost
+            far more per reply than the default.
           </p>
 
           <div className="space-y-2 rounded-lg border bg-muted/20 p-3">

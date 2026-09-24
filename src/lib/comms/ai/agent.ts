@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { recordUsage } from "@/lib/server/usage-meter";
+import { resolveRuntimeModel } from "@/lib/comms/ai/model-policy";
 import {
   DEFAULT_AI_AGENT_PROFILE,
   DEFAULT_AI_CHANNEL_CONFIG,
@@ -274,7 +275,12 @@ export async function resolveAgent(
       escalationNotifyEmail:
         channel.escalationNotifyEmailOverride ?? profile.escalationNotifyEmail,
       contextMessageCount: channel.contextMessageCount,
-      modelOverride: channel.modelOverride,
+      // A retired / no-longer-allowed pick falls back to the app default
+      // here, the one seam every live reply path reads the model through.
+      modelOverride: await resolveRuntimeModel(
+        subAccountId,
+        channel.modelOverride,
+      ),
       websiteKb: profile.websiteKb ?? null,
     },
   };
