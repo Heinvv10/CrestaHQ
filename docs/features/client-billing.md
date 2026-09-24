@@ -40,6 +40,10 @@ Gate application was extracted to [src/lib/server/feature-gates-service.ts](../.
 
 Append-only `billingEvents` collection (server-only, mirrors `aiSuiteActions`): plan.assigned / plan.switched / comped / activated / status.changed. Outbound webhook events: `billing.plan.assigned`, `billing.activated`, `billing.past_due`, `billing.canceled`.
 
+## Flagged payments (Attention)
+
+Money that arrived but settled nothing — `payment.flagged` / `subscription.flagged` rows in `billingEvents` — is listed in an **Attention** section at the top of Agency → Client billing (sub-account, reason, amount, reference, date) with **Mark resolved** (`GET/POST /api/agency/billing-attention`, owner-only; records who and when). Each new flag emails the agency owner once through the shared platform sender (`sendEmail`, needs `RESEND_API_KEY` + `EMAIL_FROM`); the claim in `billingAttention/{flagId}` is written before sending, so a webhook redelivery re-writing the same flag sends nothing. Order flags (`order.attention`) get the same treatment on Reports → Payments — see [products-invoices.md](products-invoices.md). Code: [billing-attention.ts](../../src/lib/server/billing-attention.ts). No rules or index deploy: all reads go through server routes.
+
 ## Enforcement scope (v1 limitation)
 
 The paywall is a UI-level block (the GHL behavior — data preserved, workspace inaccessible). API routes are NOT individually billing-gated in v1: a lapsed client's API keys keep working until the agency flips the API gate off. Usage metering / prepaid-wallet rebilling (email/SMS/AI markup) is the locked v2 direction — see the plan memory.

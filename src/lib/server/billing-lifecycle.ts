@@ -4,6 +4,11 @@ import type Stripe from "stripe";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
+import {
+  billingEventFlagId,
+  notifyAgencyOwnerOfFlag,
+  subscriptionFlagReason,
+} from "@/lib/server/billing-attention";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
   activationLedgerRef,
@@ -512,11 +517,13 @@ export async function recordSubAccountSubscriptionId(input: {
       `[billing] subscription ${input.subscriptionId} for customer ${input.customerId} matches ${candidates.length} workspaces — not stored`,
     );
     if (billed.length > 1) {
+      const eventId = `subscription-flag-${encodeURIComponent(input.subscriptionId)}`;
+      const agencyId = String(billed[0].data().agencyId ?? "");
       await db
         .collection("billingEvents")
-        .doc(`subscription-flag-${encodeURIComponent(input.subscriptionId)}`)
+        .doc(eventId)
         .set({
-          agencyId: String(billed[0].data().agencyId ?? ""),
+          agencyId,
           subAccountId: null,
           event: "subscription.flagged",
           detail: {
@@ -527,6 +534,15 @@ export async function recordSubAccountSubscriptionId(input: {
           },
           createdAt: FieldValue.serverTimestamp(),
         });
+      await notifyAgencyOwnerOfFlag({
+        flagId: billingEventFlagId(eventId),
+        agencyId,
+        subAccountId: null,
+        reason: subscriptionFlagReason((candidates.length > 0 ? candidates : billed).length),
+        amountCents: null,
+        currency: null,
+        reference: input.subscriptionId,
+      });
     }
     return;
   }

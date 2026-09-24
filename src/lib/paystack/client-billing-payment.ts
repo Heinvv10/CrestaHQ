@@ -38,8 +38,8 @@ import type { BillingChargeDoc } from "@/types/billing";
  * answers 500 and Paystack redelivers. A mismatch is final — nothing is
  * activated or marked paid, the money (which did arrive on the agency's
  * account) is recorded as a `payment.flagged` row in `billingEvents` plus a
- * console.error, and the route answers 200. Nothing reads `billingEvents` in
- * the UI yet; surfacing these flags to the agency is a follow-up.
+ * console.error, and the route answers 200. The flag is listed under Client
+ * billing → Attention and emailed to the agency owner (billing-attention.ts).
  */
 export async function settleClientBillingPayment(
   reference: string | undefined,

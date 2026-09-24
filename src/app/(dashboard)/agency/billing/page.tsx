@@ -13,6 +13,7 @@ import { BillingStatusBadge } from "@/components/agency/billing-status-badge";
 import { UsageQuotaBadge } from "@/components/agency/usage-quota-badge";
 import { SubAccountManageDialog } from "@/components/agency/sub-account-manage-dialog";
 import { ResellingTable } from "@/components/agency/reselling-table";
+import { AttentionList } from "@/components/billing/attention-list";
 import {
   effectiveBillingState,
   formatBillingPrice,
@@ -195,6 +196,12 @@ export default function AgencyBillingPage() {
           account.
         </div>
       )}
+
+      <AttentionList
+        endpoint="/api/agency/billing-attention"
+        title="Payments needing attention"
+        nameFor={(id) => subs.find((s) => s.id === id)?.name ?? id}
+      />
 
       {/* Plans */}
       <section className="space-y-3">

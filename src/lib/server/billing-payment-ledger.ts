@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { billingEventFlagId, notifyAgencyOwnerOfFlag } from "@/lib/server/billing-attention";
 
 /**
  * The ledger row that marks one provider payment as having activated a plan.
@@ -19,10 +20,10 @@ export type BillingPaymentProvider = "stripe" | "paystack";
 
 /**
  * Money arrived that does not settle what it claims to. Recorded as a
- * `billingEvents` row (not yet shown in any UI) plus a console.error, keyed by
- * provider + reference so a redelivery does not add a second row. Awaited: a
- * flag that silently failed to write would leave a real payment unaccounted
- * for.
+ * `billingEvents` row (listed under Client billing → Attention, and emailed to
+ * the agency owner once) plus a console.error, keyed by provider + reference
+ * so a redelivery does not add a second row. Awaited: a flag that silently
+ * failed to write would leave a real payment unaccounted for.
  */
 export async function flagBillingPayment(input: {
   provider: BillingPaymentProvider;
@@ -37,9 +38,10 @@ export async function flagBillingPayment(input: {
   console.error(
     `[billing] ${input.provider} ref=${input.reference} not settling ${input.kind}: ${input.reason}`,
   );
+  const eventId = `${input.provider}-flag-${encodeURIComponent(input.reference)}`;
   await getAdminDb()
     .collection("billingEvents")
-    .doc(`${input.provider}-flag-${encodeURIComponent(input.reference)}`)
+    .doc(eventId)
     .set({
       agencyId: input.agencyId,
       subAccountId: input.subAccountId,
@@ -54,4 +56,13 @@ export async function flagBillingPayment(input: {
       },
       createdAt: FieldValue.serverTimestamp(),
     });
+  await notifyAgencyOwnerOfFlag({
+    flagId: billingEventFlagId(eventId),
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    reason: input.reason,
+    amountCents: input.amountCents,
+    currency: input.currency,
+    reference: input.reference,
+  });
 }

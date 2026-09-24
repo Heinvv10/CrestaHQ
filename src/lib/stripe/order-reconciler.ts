@@ -162,7 +162,7 @@ async function handleCheckoutCompleted(
   const problem = await applySourceEffects(updated, session, changed ? null : updated.paidAt);
   if (problem) {
     console.warn(`[order-reconciler] order ${updated.id} needs attention: ${problem}`);
-    await flagOrderAttention(updated.id, problem).catch((err: unknown) => {
+    await flagOrderAttention(updated, problem).catch((err: unknown) => {
       // NOT_FOUND = the order was deleted after we paid it; a retry cannot
       // help, so log it rather than loop 5xx. Anything else is transient.
       if ((err as { code?: unknown })?.code !== 5) throw err;

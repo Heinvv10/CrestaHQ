@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { notifyAgencyOwnerOfFlag, orderFlagId } from "@/lib/server/billing-attention";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import {
@@ -250,10 +251,20 @@ export async function markOrderPaid(input: {
  * could not be settled with it. Overwrites with the same note on a replay, so
  * a redelivered event never stacks duplicates.
  */
-export async function flagOrderAttention(orderId: string, note: string): Promise<void> {
-  await getAdminDb().doc(`orders/${orderId}`).update({
+export async function flagOrderAttention(order: Order, note: string): Promise<void> {
+  await getAdminDb().doc(`orders/${order.id}`).update({
     attention: note,
     updatedAt: FieldValue.serverTimestamp(),
+  });
+  // Once per (order, note) — a replay's identical note finds its notice claimed.
+  await notifyAgencyOwnerOfFlag({
+    flagId: orderFlagId(order.id, note),
+    agencyId: order.agencyId,
+    subAccountId: order.subAccountId,
+    reason: note,
+    amountCents: order.totalCents,
+    currency: order.currency,
+    reference: order.stripePaymentIntentId ?? order.stripeCheckoutSessionId,
   });
 }
 
