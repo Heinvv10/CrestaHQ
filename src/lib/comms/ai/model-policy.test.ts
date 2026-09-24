@@ -73,6 +73,20 @@ describe("evaluateModel", () => {
     expect(evaluateModel("a/one:nitro", { catalog, policy: { ...policy, allowedModels: ["a/one"] }, defaultModel: DEFAULT }))
       .toEqual({ ok: true });
   });
+  it("judges only :nitro/:floor/:free as their base; :online and unknown suffixes need the full id ticked", () => {
+    const allowOne = { ...policy, allowedModels: ["a/one"] };
+    for (const v of ["a/one:nitro", "a/one:floor", "a/one:free"]) {
+      expect(evaluateModel(v, { catalog, policy: allowOne, defaultModel: DEFAULT })).toEqual({ ok: true });
+      expect(evaluateModelForReply(v, { catalog, savedPolicy: allowOne, defaultModel: DEFAULT })).toEqual({ ok: true });
+    }
+    for (const v of ["a/one:online", "a/one:thinking"]) {
+      expect(evaluateModel(v, { catalog, policy: allowOne, defaultModel: DEFAULT })).toEqual({ ok: false, reason: "retired" });
+      expect(evaluateModelForReply(v, { catalog, savedPolicy: allowOne, defaultModel: DEFAULT }))
+        .toEqual({ ok: false, reason: "not_allowed" });
+    }
+    const ticked = { ...policy, allowedModels: ["a/one:online"] };
+    expect(evaluateModelForReply("a/one:online", { catalog, savedPolicy: ticked, defaultModel: DEFAULT })).toEqual({ ok: true });
+  });
   it("reply-time: absence from the catalog never swaps; only the saved policy does", () => {
     const ctx = { catalog, defaultModel: DEFAULT };
     expect(evaluateModelForReply("gone/model", { ...ctx, savedPolicy: null })).toEqual({ ok: true });

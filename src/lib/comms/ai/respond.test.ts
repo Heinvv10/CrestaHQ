@@ -32,9 +32,17 @@ const s = vi.hoisted(() => ({
   llmCalls: 0,
   cloudSends: 0,
   bridgeSends: 0,
+  /** Route callAi through the REAL OpenRouter client (fetch is stubbed). */
+  realLlm: false,
+  docSets: [] as Array<{ path: string; data: Record<string, unknown> }>,
 }));
 
 const fakeDb = {
+  doc: (path: string) => ({
+    set: async (data: Record<string, unknown>) => {
+      s.docSets.push({ path, data });
+    },
+  }),
   collection: (name: string) => ({
     doc: (id: string) => ({
       update: async (data: Record<string, unknown>) => {
@@ -83,12 +91,17 @@ vi.mock("@/lib/server/conversations-service", () => ({
   setConversationDraft: async () => {},
   upsertConversationForMessage: async () => {},
 }));
-vi.mock("@/lib/comms/ai/openrouter", () => ({
-  callAi: async () => {
-    s.llmCalls++;
-    return { text: "reply", model: "m", totalTokens: 10, promptTokens: 5, completionTokens: 5 };
-  },
-}));
+vi.mock("@/lib/comms/ai/openrouter", async (orig) => {
+  const real = await orig<typeof import("./openrouter")>();
+  return {
+    ...real,
+    callAi: async (opts: Parameters<typeof real.callAi>[0]) => {
+      s.llmCalls++;
+      if (s.realLlm) return real.callAi(opts);
+      return { text: "reply", model: "m", totalTokens: 10, promptTokens: 5, completionTokens: 5 };
+    },
+  };
+});
 vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed: true }) }));
 vi.mock("@/lib/comms/ai/agent", () => ({ incrementChannelTokens: async () => {} }));
 vi.mock("@/lib/comms/ai/context", () => ({ buildContactContextBlock: async () => null }));
@@ -171,11 +184,11 @@ const subAccount = {
   ],
 } as unknown as SubAccountDoc;
 
-function respond(inboundProvider?: WhatsAppProviderId) {
+function respond(inboundProvider?: WhatsAppProviderId, withAgent: ResolvedAiAgent = agent) {
   return maybeRespondWithAi({
     subAccountId: "sa",
     subAccount,
-    agent,
+    agent: withAgent,
     channelId: "whatsapp",
     contact: { id: "c1", name: "Cust" } as Contact,
     incomingMessage: "hello",
@@ -213,6 +226,8 @@ beforeEach(() => {
   s.cloudSends = 0;
   s.bridgeSends = 0;
   s.twilioSends = 0;
+  s.realLlm = false;
+  s.docSets = [];
 });
 
 const AUTO_REPLY = "Thanks for your message! We are closed right now and will reply soon."; // 60+ chars
@@ -315,5 +330,33 @@ describe("AI reply rail", () => {
     await respond("twilio");
     expect(s.twilioSends).toBe(1);
     expect(s.cloudSends + s.bridgeSends).toBe(0);
+  });
+});
+
+describe("model refused by OpenRouter (live reply seam)", () => {
+  it("retries once on the app default, still replies, and flags the channel", async () => {
+    s.realLlm = true;
+    process.env.OPENROUTER_API_KEY = "sk-test";
+    delete process.env.AI_REPLIES_DEFAULT_MODEL;
+    const models: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const model = (JSON.parse(String(init?.body)) as { model: string }).model;
+      models.push(model);
+      if (model === "gone/model") return new Response('{"error":{"message":"not found"}}', { status: 404 });
+      return Response.json({ choices: [{ message: { content: "hi there" } }], usage: { total_tokens: 3 }, model });
+    }));
+    try {
+      const withOverride = { effective: { ...agent.effective, modelOverride: "gone/model" } } as unknown as ResolvedAiAgent;
+      expect((await respond("cloud", withOverride)).kind).toBe("replied");
+      expect(models).toEqual(["gone/model", "anthropic/claude-haiku-4-5"]);
+      await vi.waitFor(() =>
+        expect(s.docSets).toContainEqual({
+          path: "subAccounts/sa/aiAgent/whatsapp",
+          data: { modelRejected: { model: "gone/model", at: expect.any(Number) } },
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

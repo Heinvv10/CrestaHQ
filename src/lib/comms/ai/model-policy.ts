@@ -3,7 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { defaultAiModel } from "@/lib/comms/ai/openrouter";
 import {
-  baseModelId,
+  equivalentBaseId,
   findCatalogModel,
   getModelCatalog,
   readModelCatalogForReply,
@@ -21,7 +21,7 @@ import type { AgencyDoc, AiModelPolicy } from "@/types";
  *     and under the ceiling — else 400.
  *   - REPLY (resolveAgent / dry-run): only a model the SAVED policy disallows
  *     or prices out is swapped for the app default. A model merely missing
- *     from the catalog (retired, alias, `:nitro`-style variant) is kept; if
+ *     from the catalog (retired, alias) is kept; if
  *     OpenRouter then refuses it, callAi retries once on the app default and
  *     the channel is flagged (`modelRejected`) for the UI.
  *
@@ -37,9 +37,10 @@ export type ModelRejection = "retired" | "not_allowed" | "over_price";
 export type ModelVerdict = { ok: true } | { ok: false; reason: ModelRejection };
 
 function isAllowed(model: string, policy: AiModelPolicy): boolean {
+  const base = equivalentBaseId(model);
   return (
     policy.allowedModels.includes(model) ||
-    policy.allowedModels.includes(baseModelId(model))
+    (base !== null && policy.allowedModels.includes(base))
   );
 }
 

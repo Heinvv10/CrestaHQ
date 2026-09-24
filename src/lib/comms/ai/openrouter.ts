@@ -58,6 +58,17 @@ interface OpenRouterResponse {
  * caller can decide how to handle (typically: log + skip the AI reply,
  * never break the inbound webhook contract).
  */
+/**
+ * Did OpenRouter refuse the MODEL (vs. the request)? A 404, or a 400 whose
+ * error names an invalid / unavailable model. Other 400s — context overflow,
+ * a bad parameter — are the request's fault and must not blame the model.
+ */
+const MODEL_REFUSAL_400 =
+  /not a valid model|invalid model|model[^"]{0,80}(not found|unavailable|does not exist|is not available)|no endpoints found/i;
+export function isModelRefusal(status: number, body: string): boolean {
+  return status === 404 || (status === 400 && MODEL_REFUSAL_400.test(body));
+}
+
 export interface CallAiOptions {
   model?: string;
   messages: AiChatMessage[];
@@ -78,8 +89,8 @@ export interface CallAiOptions {
    *  armed through the body read, so aborting it really ends the call.
    *  Omitted → behaviour unchanged. An aborted call may still be billed. */
   signal?: AbortSignal;
-  /** When OpenRouter refuses the chosen model (400/404 — retired, renamed,
-   *  unknown variant), retry ONCE on the app default (`defaultAiModel()`)
+  /** When OpenRouter refuses the chosen model (see `isModelRefusal` —
+   *  retired, renamed, unknown variant), retry ONCE on the app default (`defaultAiModel()`)
    *  instead of failing the reply. No-op when the default was the choice. */
   fallbackToDefault?: boolean;
   /** Told which model was refused, when the fallback kicked in. */
@@ -147,7 +158,7 @@ export async function callAi(opts: CallAiOptions): Promise<AiCompletionResult> {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     const retryOn = fallbackToDefault ? defaultAiModel() : null;
-    if ((res.status === 400 || res.status === 404) && retryOn && retryOn !== chosenModel) {
+    if (isModelRefusal(res.status, body) && retryOn && retryOn !== chosenModel) {
       console.warn(
         `[openrouter] model ${chosenModel} refused (${res.status}: ${body.slice(0, 200)}); retrying once on ${retryOn}`,
       );

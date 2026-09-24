@@ -50,22 +50,31 @@ interface OpenRouterModelsResponse {
   }>;
 }
 
-/** Routing variants (`:nitro`, `:floor`, `:online`, …) share the base id. */
-export function baseModelId(id: string): string {
+/**
+ * Routing variants that only change WHICH provider serves the same model
+ * (`:nitro` fastest, `:floor` cheapest, `:free`) are judged as their base id.
+ * Any other suffix — notably `:online`, which adds a per-request web-search
+ * charge the price ceiling can't see — must be listed / ticked by its full id.
+ */
+const BASE_EQUIVALENT_SUFFIXES = new Set(["nitro", "floor", "free"]);
+
+/** The base id a variant may be judged as, or null when it must match exactly. */
+export function equivalentBaseId(id: string): string | null {
   const i = id.indexOf(":");
-  return i === -1 ? id : id.slice(0, i);
+  if (i === -1) return null;
+  return BASE_EQUIVALENT_SUFFIXES.has(id.slice(i + 1)) ? id.slice(0, i) : null;
 }
 
-/** Exact id first, then the suffix-stripped base id. */
+/** Exact id first, then (for provider-routing variants only) the base id. */
 export function findCatalogModel(
   catalog: ModelCatalog | null,
   id: string,
 ): CatalogModel | undefined {
   if (!catalog) return undefined;
-  const base = baseModelId(id);
+  const base = equivalentBaseId(id);
   return (
     catalog.models.find((m) => m.id === id) ??
-    catalog.models.find((m) => m.id === base)
+    (base ? catalog.models.find((m) => m.id === base) : undefined)
   );
 }
 

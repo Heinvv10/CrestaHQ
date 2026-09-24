@@ -54,9 +54,10 @@ describe("parsing + lookup", () => {
     expect(() => parseModelsResponse({})).toThrow();
   });
 
-  it("finds a :variant by its base id", () => {
+  it("finds a provider-routing :variant by its base id, never :online", () => {
     const catalog = { models: parseModelsResponse(orBody(["a/b"])), fetchedAt: 0 };
     expect(findCatalogModel(catalog, "a/b:nitro")?.id).toBe("a/b");
+    expect(findCatalogModel(catalog, "a/b:online")).toBeUndefined();
     expect(findCatalogModel(catalog, "a/c")).toBeUndefined();
   });
 });
@@ -109,6 +110,14 @@ describe("refresh (settings / cron path)", () => {
     fetchMock.mockResolvedValue(ok(orBody(ids("a", 60))));
     await Promise.all([getModelCatalog(NOW), getModelCatalog(NOW), refreshModelCatalog({ now: NOW })]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a first-ever list under 50 models (no cache to compare against)", async () => {
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("a", 49))));
+    expect(await refreshModelCatalog({ force: true, now: NOW })).toBeNull();
+    expect(mem.read(CATALOG_DOC)?.models).toBeUndefined();
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("a", 50))));
+    expect((await refreshModelCatalog({ force: true, now: NOW + 1 }))?.models).toHaveLength(50);
   });
 
   it("single-flight holds even for forced refreshes, which skip the Firestore claim", async () => {
