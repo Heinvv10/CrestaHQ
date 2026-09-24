@@ -1,0 +1,74 @@
+import "server-only";
+
+import { getAdminDb } from "@/lib/firebase/admin";
+import { STALE_CLAIM_MS, transitionIf } from "@/lib/server/agent-proposals";
+
+/**
+ * Sweeps over the agent approval queue: the key-revoke hook's and the daily
+ * api-cleanup's. Every move is the same status-precondition transition the
+ * decide route uses, so a sweep never clobbers a row another path moved.
+ */
+
+const SWEEP_LIMIT = 500;
+
+/** Revoking a key rejects its still-pending rows (never an executing one). */
+export async function sweepRevokedKeyProposals(input: {
+  subAccountId: string;
+  keyId: string;
+}): Promise<number> {
+  const snap = await getAdminDb()
+    .collection("agentProposals")
+    .where("keyId", "==", input.keyId)
+    .where("status", "==", "pending")
+    .get();
+  let rejected = 0;
+  for (const doc of snap.docs) {
+    if (doc.data().subAccountId !== input.subAccountId) continue;
+    const moved = await transitionIf(doc.id, "pending", {
+      status: "rejected",
+      reason: "key_revoked",
+      decidedAt: new Date(),
+    });
+    if (moved === "ok") rejected++;
+  }
+  return rejected;
+}
+
+/**
+ * Daily (api-cleanup): expire `pending` rows past `expiresAt`, and flip
+ * `executing` rows claimed over STALE_CLAIM_MS ago to `unsettled`.
+ */
+export async function sweepAgentProposals(
+  now: Date
+): Promise<{ collection: string; deleted: number; hitCap: boolean }> {
+  const db = getAdminDb();
+  const [expiring, stale] = await Promise.all([
+    db.collection("agentProposals")
+      .where("status", "==", "pending")
+      .where("expiresAt", "<", now)
+      .limit(SWEEP_LIMIT)
+      .get(),
+    db.collection("agentProposals")
+      .where("status", "==", "executing")
+      .where("claimedAt", "<", new Date(now.getTime() - STALE_CLAIM_MS))
+      .limit(SWEEP_LIMIT)
+      .get(),
+  ]);
+  let moved = 0;
+  for (const doc of expiring.docs) {
+    if ((await transitionIf(doc.id, "pending", { status: "expired", decidedAt: now })) === "ok") {
+      moved++;
+    }
+  }
+  for (const doc of stale.docs) {
+    const claimId = doc.data().claimId as string;
+    if ((await transitionIf(doc.id, "executing", { status: "unsettled" }, { claimId })) === "ok") {
+      moved++;
+    }
+  }
+  return {
+    collection: "agentProposals",
+    deleted: moved,
+    hitCap: expiring.size >= SWEEP_LIMIT || stale.size >= SWEEP_LIMIT,
+  };
+}

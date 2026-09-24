@@ -1505,6 +1505,34 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- agent API approval queue (AGENT_API_V1_PLAN.md) ----------
+    // Actions an API agent proposed that a person must approve. Members read
+    // (the approvals page), territory-scoped like the record the row targets
+    // (`territoryId` from the capability's approvalTarget at propose time);
+    // only a row whose target is tenant-wide (`targetScoped == false`) is
+    // visible to every member. Absent flag = scoped (fail closed). Every
+    // write is the server's — the dispatch that queues a row, and the decide
+    // route / sweeps that move it.
+    function canSeeProposal(p) {
+      return (p.get("targetScoped", true) == false
+          && canAccessSub(p.subAccountId, p.agencyId))
+        || (p.get("targetScoped", true) != false
+          && canSeeScopedDoc(p.subAccountId, p.agencyId, p.get("territoryId", null)));
+    }
+    match /agentProposals/{proposalId} {
+      allow read: if canSeeProposal(resource.data);
+      allow write: if false;
+
+      // Superseded versions of the row (re-proposal, late settle). Reads
+      // follow the parent row via get().
+      match /history/{historyId} {
+        allow read: if canSeeProposal(
+          get(/databases/$(database)/documents/agentProposals/$(proposalId)).data
+        );
+        allow write: if false;
+      }
+    }
+
     // ---------- broadcasts (bulk email) ----------
     // Top-level send batches. Created + mutated server-side only by the
     // /api/broadcasts/email/* routes (Admin SDK bypasses these rules).

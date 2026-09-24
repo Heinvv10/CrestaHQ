@@ -18,6 +18,9 @@ vi.mock("@/lib/automations/qstash", () => ({
 const setup = vi.hoisted(() => ({ failing: new Set<string>(), capped: new Set<string>() }));
 const sweepOldWatchdogRuns = vi.hoisted(() => vi.fn(async () => 2));
 vi.mock("@/lib/server/agents-watchdog-service", () => ({ sweepOldWatchdogRuns }));
+vi.mock("@/lib/server/agent-proposals-sweeps", () => ({
+  sweepAgentProposals: async () => ({ collection: "agentProposals", deleted: 0, hitCap: false }),
+}));
 
 const scrubbed: Array<Record<string, unknown>> = [];
 const emptyQuery = { where: () => emptyQuery, limit: () => emptyQuery, get: async () => ({ empty: true, docs: [], size: 0 }) };
@@ -85,7 +88,7 @@ describe("POST /api/cron/api-cleanup — sweep isolation", () => {
     expect(body.ok).toBe(false);
     expect(body.failures.map((f) => f.collection)).toEqual(["apiRequestLogs"]);
     expect(body.results.map((r) => r.collection)).toEqual(
-      expect.arrayContaining(["apiIdempotency", "webhookEvents", "communityMagicLinkUses", "reviewFeedback/pii", "customAgents/runs"]),
+      expect.arrayContaining(["apiIdempotency", "webhookEvents", "communityMagicLinkUses", "reviewFeedback/pii", "customAgents/runs", "agentProposals"]),
     );
   });
 

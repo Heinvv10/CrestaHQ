@@ -29,6 +29,13 @@ export interface AiSuiteActionContext {
   agencyId: string;
   subAccountId?: string;
   subAccountRole?: string;
+  /** Approve path only: what the approver reviewed. An outbound capability
+   *  sends to `approved.pinned` values and refuses when the live target
+   *  differs, never to a target nobody reviewed. */
+  approved?: { pinned: Record<string, unknown> | null };
+  /** Aborted when the approve path's execute deadline passes; provider calls
+   *  should honour it. */
+  signal?: AbortSignal;
   /** Set only on the agent surface: the API key the call arrived on. */
   apiKey?: Pick<
     ApiAuthContext,
@@ -98,9 +105,33 @@ export interface AiSuiteCapability {
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;
-  /** Label/value rows the approvals UI renders verbatim for a proposal. */
+  /**
+   * REQUIRED when `approval` is set: the record the action targets, for the
+   * read rule and the approver's territory gate. Resolved at propose time
+   * under the neutral preview ctx. `scoped: true` gates on `territoryId`
+   * (null denies territory-scoped collaborators, as for contacts);
+   * `scoped: false` only for a genuinely tenant-wide target. When
+   * `contactId` is set, the contact's live territory (read inside
+   * createProposal's transaction) is stored instead of `territoryId`.
+   */
+  approvalTarget?: (
+    ctx: AiSuiteActionContext,
+    args: Record<string, unknown>
+  ) => Promise<{ contactId: string | null; territoryId: string | null; scoped: boolean }>;
+  /**
+   * Label/value rows the approvals UI renders verbatim for a proposal, plus
+   * optional `pinned` values (e.g. the resolved recipient) that execute
+   * receives as `ctx.approved.pinned` and must act on. Required when
+   * `approval` is set. MUST be a pure function of the tenant, the args and
+   * stored data — never of `ctx.uid` / `email` / role, never of the clock —
+   * because approve recomputes it (with a neutral ctx) and refuses on any
+   * difference; an impure preview would never be approvable.
+   */
   preview?: (
     ctx: AiSuiteActionContext,
     args: Record<string, unknown>
-  ) => Promise<Array<{ label: string; value: string }>>;
+  ) => Promise<
+    | Array<{ label: string; value: string }>
+    | { rows: Array<{ label: string; value: string }>; pinned?: Record<string, unknown> }
+  >;
 }

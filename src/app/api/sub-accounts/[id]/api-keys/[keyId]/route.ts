@@ -3,6 +3,8 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getApiKey, revokeApiKey } from "@/lib/firestore/api-keys";
+// Registers the revoke hook that rejects this key's pending agent proposals.
+import "@/lib/server/agent-proposals-revoke-hook";
 
 /**
  * Revoke an API key. Idempotent — revoking an already-revoked key is a

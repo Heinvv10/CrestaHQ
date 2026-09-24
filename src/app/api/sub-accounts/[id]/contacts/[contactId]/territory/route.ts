@@ -8,7 +8,8 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
 
 /**
  * Re-tag a contact's territory and fan the change out to everything the
- * account owns — its deals, quotes, tasks, and events. Territory is an
+ * account owns — its deals, quotes, tasks, events, and the agent proposals
+ * that target it (their read rule is scoped by the copied territoryId). Territory is an
  * attribute of the contact (the account); child records inherit it, so
  * moving the contact moves the whole account to whoever covers the new
  * territory.
@@ -73,8 +74,8 @@ export async function PATCH(
     toTerritoryName = (tSnap.data()?.name as string | undefined) ?? "Unnamed";
   }
 
-  // Gather the account's child records across the four collections that
-  // carry a denormalised territoryId.
+  // Gather the account's child records across the collections that carry a
+  // denormalised territoryId.
   const childCollections = ["deals", "quotes", "tasks", "events"] as const;
   const childSnaps = await Promise.all(
     childCollections.map((col) =>
@@ -128,6 +129,19 @@ export async function PATCH(
     return conversations.docs.length;
   });
   counts.conversations = movedConversations;
+  // Agent proposals are read AFTER the contact commit, so a row written
+  // before it commits is caught here; one whose write lands after this read
+  // re-reads the contact inside createProposal's transaction (which retries
+  // on this commit), so it stores the new territory itself. Only rows whose
+  // target is this contact are re-synced; proposals targeting a deal or task
+  // by its own territory are not re-synced in v1.
+  const proposals = await db
+    .collection("agentProposals")
+    .where("subAccountId", "==", subAccountId)
+    .where("contactId", "==", contactId)
+    .get();
+  for (const d of proposals.docs) refs.push(d.ref);
+  counts.agentProposals = proposals.size;
   for (let i = 0; i < refs.length; i += 500) {
     const batch = db.batch();
     for (const ref of refs.slice(i, i + 500)) {
