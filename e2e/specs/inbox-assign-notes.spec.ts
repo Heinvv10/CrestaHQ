@@ -3,6 +3,7 @@ import { expect, test, type Request } from "@playwright/test";
 import twilio from "twilio";
 import { adminDb } from "../lib/admin";
 import { baseURL, readEnv } from "../lib/env";
+import { seedTwilioToken } from "../lib/twilio-secret";
 
 /**
  * SP2 (b): conversation owner + internal notes, end to end on the fixture
@@ -20,10 +21,11 @@ import { baseURL, readEnv } from "../lib/env";
  *       timeline, and NOTHING is sent: no message row, no /api/comms call.
  */
 
+const FIXTURE_TWILIO_TOKEN = "e2e-twilio-auth-token";
 const FIXTURE_TWILIO = {
   enabled: true,
   accountSid: "ACe2e00000000000000000000000000000",
-  authToken: "e2e-twilio-auth-token",
+  authTokenSet: true,
   fromNumber: "+27100000001",
 };
 const MESSAGE_SUBCOLLECTIONS = [
@@ -52,6 +54,7 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
   const saRef = db.doc(`subAccounts/${sa}`);
   const previousTwilio = (await saRef.get()).data()?.twilioConfig ?? null;
   await saRef.update({ twilioConfig: FIXTURE_TWILIO });
+  const restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
 
   const contactRef = await db.collection("contacts").add({
     name,
@@ -105,7 +108,7 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
       form,
       headers: {
         "x-twilio-signature": twilio.getExpectedTwilioSignature(
-          FIXTURE_TWILIO.authToken,
+          FIXTURE_TWILIO_TOKEN,
           url,
           form
         ),
@@ -218,6 +221,7 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
   } finally {
     page.off("request", onRequest);
     await saRef.update({ twilioConfig: previousTwilio });
+    await restoreToken();
     // Global teardown purges fixture contacts (with subcollections) and
     // conversations; nothing else was written.
   }

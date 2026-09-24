@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import twilio from "twilio";
 import { adminDb } from "../lib/admin";
 import { baseURL, readEnv } from "../lib/env";
+import { seedTwilioToken } from "../lib/twilio-secret";
 
 /**
  * The Activity tab shows both halves of a conversation and every task. An
@@ -12,10 +13,11 @@ import { baseURL, readEnv } from "../lib/env";
  * timeline — with the filter chips hiding and showing them.
  */
 
+const FIXTURE_TWILIO_TOKEN = "e2e-twilio-auth-token";
 const FIXTURE_TWILIO = {
   enabled: true,
   accountSid: "ACe2e00000000000000000000000000000",
-  authToken: "e2e-twilio-auth-token",
+  authTokenSet: true,
   fromNumber: "+27100000001",
 };
 
@@ -36,6 +38,7 @@ test("inbound SMS and a new task both land in the Activity timeline", async ({
   const saRef = db.doc(`subAccounts/${sa}`);
   const previousTwilio = (await saRef.get()).data()?.twilioConfig ?? null;
   await saRef.update({ twilioConfig: FIXTURE_TWILIO });
+  const restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
 
   const contactRef = await db.collection("contacts").add({
     name: `E2E Timeline ${stamp}`,
@@ -70,7 +73,7 @@ test("inbound SMS and a new task both land in the Activity timeline", async ({
       form,
       headers: {
         "x-twilio-signature": twilio.getExpectedTwilioSignature(
-          FIXTURE_TWILIO.authToken,
+          FIXTURE_TWILIO_TOKEN,
           url,
           form,
         ),
@@ -126,6 +129,7 @@ test("inbound SMS and a new task both land in the Activity timeline", async ({
     await expect(taskRow).toBeVisible();
   } finally {
     await saRef.update({ twilioConfig: previousTwilio });
+    await restoreToken();
     // Teardown purges contacts (with subcollections) but not tasks.
     const tasks = await db
       .collection("tasks")

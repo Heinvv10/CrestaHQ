@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import { adminDb } from "../lib/admin";
 import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
 import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
+import { seedTwilioToken } from "../lib/twilio-secret";
 
 /**
  * SP2 (f), fixture sub-account only.
@@ -60,7 +61,7 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
     twilioConfig: {
       enabled: true,
       accountSid: "ACe2e00000000000000000000000000000",
-      authToken: "e2e-twilio-auth-token",
+      authTokenSet: true,
       fromNumber: "+27100000001",
     },
     emailProvider: "smtp",
@@ -93,6 +94,7 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
       capabilities: { inbox: true, publish: false, instagramDm: false },
     },
   });
+  const restoreToken = await seedTwilioToken(sa, "e2e-twilio-auth-token");
 
   const name = `Switcher ${stamp}`;
   const contactRef = await db.collection("contacts").add({
@@ -355,6 +357,7 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
         FIELDS.map((f) => [f, before[f] === undefined ? FieldValue.delete() : before[f]]),
       ),
     );
+    await restoreToken();
     for (const id of [cloudTplId, twilioTplId]) {
       await deleteScoped(db.doc(`subAccounts/${sa}/whatsappTemplates/${id}`));
     }

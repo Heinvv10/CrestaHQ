@@ -3,6 +3,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
 import { E2E_PORT, FIXTURE_PRIMARY_NAME, appUrl, readEnv } from "./env";
 import { assertFixtureSubAccount, deleteScoped } from "./guard";
+import { seedTwilioToken } from "./twilio-secret";
 
 /**
  * SP2 row C5 — Missed Call Text Back fixtures for the E2E spec, fixture
@@ -35,15 +36,6 @@ export const FAKE_FORWARD_TO = "+15551234567";
 
 export const primaryId = () => readEnv().E2E_SUBACCOUNT_ID;
 export const primaryRef = () => adminDb().doc(`subAccounts/${primaryId()}`);
-/**
- * Since #198 the Twilio auth token lives in this server-only doc, and the
- * webhooks' dual-read PREFERS it over a legacy `twilioConfig.authToken`. The
- * fixture must seed the token here: after the private-credentials migration
- * this doc held another spec's token, which silently outranked the legacy
- * field the fixture wrote, so every signed request got 403.
- */
-const twilioSecretRef = () =>
-  adminDb().doc(`subAccounts/${primaryId()}/private/twilioCredentials`);
 const guard = () => assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
 
 const restoreValue = (v: unknown) => (v === undefined ? FieldValue.delete() : v);
@@ -58,16 +50,16 @@ export function missedCallLifecycle(test: {
   beforeAll: (fn: () => Promise<void>) => void;
   afterAll: (fn: () => Promise<void>) => void;
 }) {
-  let prior: { twilioConfig: unknown; gate: unknown; secret: Record<string, unknown> | undefined };
+  let prior: { twilioConfig: unknown; gate: unknown };
+  let restoreToken: (() => Promise<void>) | undefined;
   test.beforeAll(async () => {
     await guard();
     const data = (await primaryRef().get()).data() ?? {};
     prior = {
       twilioConfig: data.twilioConfig,
       gate: data.missedCallTextBackEnabledByAgency,
-      secret: (await twilioSecretRef().get()).data(),
     };
-    await twilioSecretRef().set({ authToken: FAKE_AUTH_TOKEN });
+    restoreToken = await seedTwilioToken(primaryId(), FAKE_AUTH_TOKEN);
     await primaryRef().update({
       twilioConfig: {
         enabled: true,
@@ -91,8 +83,7 @@ export function missedCallLifecycle(test: {
       twilioConfig: restoreValue(prior.twilioConfig),
       missedCallTextBackEnabledByAgency: restoreValue(prior.gate),
     });
-    if (prior.secret) await twilioSecretRef().set(prior.secret);
-    else await twilioSecretRef().delete();
+    await restoreToken?.();
   });
 }
 
