@@ -33,6 +33,11 @@ beforeAll(async () => {
       res.end();
       return;
     }
+    if (req.url === "/big") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("x".repeat(2_000));
+      return;
+    }
     res.writeHead(201, { "X-Echo": req.method ?? "", "Content-Type": "text/plain" });
     req.pipe(res);
   });
@@ -81,6 +86,14 @@ describe("publicFetch — behaves like fetch otherwise", () => {
     expect(res.status).toBe(201);
     expect(res.headers.get("x-echo")).toBe("POST");
     expect(await res.text()).toBe('{"a":1}');
+  });
+
+  it("rejects a body larger than maxBytes, and accepts one within it", async () => {
+    await expect(publicFetch(`http://127.0.0.1:${port}/big`, { maxBytes: 1_000 })).rejects.toThrow(
+      /too large/,
+    );
+    const ok = await publicFetch(`http://127.0.0.1:${port}/big`, { maxBytes: 2_000 });
+    expect((await ok.text()).length).toBe(2_000);
   });
 
   it("does not follow redirects", async () => {

@@ -19,7 +19,8 @@ import {
  *   - Redirects are never followed; a 3xx comes back as the response. A
  *     public URL redirecting to an internal one is the classic bypass of a
  *     check made only on the first URL.
- *   - The response body is capped at `MAX_RESPONSE_BYTES`.
+ *   - The response body is capped at `MAX_RESPONSE_BYTES` (or a smaller
+ *     `maxBytes`); a larger body rejects.
  *
  * Throws `NonPublicUrlError` (via the lookup, or directly for IP literals,
  * which never reach a lookup) when the destination is refused.
@@ -33,6 +34,8 @@ export interface PublicFetchInit {
   headers?: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
+  /** Tighter body cap than the default `MAX_RESPONSE_BYTES`. */
+  maxBytes?: number;
 }
 
 export async function publicFetch(
@@ -43,6 +46,7 @@ export async function publicFetch(
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new NonPublicUrlError(url.hostname || input);
   }
+  const maxBytes = Math.min(init.maxBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES);
   const guard = ssrfGuardEnabled();
   // IP literals skip the socket lookup entirely, so check them (and
   // `localhost`-style names) up front.
@@ -68,8 +72,12 @@ export async function publicFetch(
         let size = 0;
         res.on("data", (chunk: Buffer) => {
           size += chunk.length;
-          if (size > MAX_RESPONSE_BYTES) {
-            req.destroy(new Error("Response body too large."));
+          if (size > maxBytes) {
+            // Reject directly: when the whole body is already buffered,
+            // destroying the finished request emits no error, and "end"
+            // would otherwise resolve it (a later resolve is a no-op).
+            reject(new Error("Response body too large."));
+            req.destroy();
             return;
           }
           chunks.push(chunk);
