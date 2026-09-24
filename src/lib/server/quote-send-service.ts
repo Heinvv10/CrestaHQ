@@ -84,7 +84,8 @@ export type SendQuoteResult =
        *  and another rail was used: why, and which. */
       cardLinkFallback: string | null;
     }
-  | { ok: false; failure: SendQuoteFailure };
+  // `cardLinkFallback` too when the send failed after the rail was chosen.
+  | { ok: false; failure: SendQuoteFailure; cardLinkFallback?: string | null };
 
 function fail(
   code: string,
@@ -178,6 +179,9 @@ export async function sendQuoteServerSide(input: {
     }
   }
 
+  // From here a failure still reports why the card-on-file link wasn't made.
+  const failAfterRail = (code: string, status: number, error: string) => ({ ...fail(code, status, error), cardLinkFallback });
+
   // 6. Issue token (server-only, HMAC + nonce; raw token never persisted)
   let token: string;
   let hash: string;
@@ -185,7 +189,7 @@ export async function sendQuoteServerSide(input: {
     ({ token, hash } = issueQuoteToken(quoteId));
   } catch (err) {
     console.error("[quotes/send] issueQuoteToken failed", err);
-    return fail(
+    return failAfterRail(
       "token_mint_failed",
       500,
       "Failed to mint quote token. Check AUTOMATIONS_TOKEN_SECRET is configured.",
@@ -193,7 +197,7 @@ export async function sendQuoteServerSide(input: {
   }
   const publicUrl = buildQuoteUrl(token);
   if (!publicUrl) {
-    return fail(
+    return failAfterRail(
       "app_url_not_configured",
       503,
       "NEXT_PUBLIC_APP_URL isn't configured — set it so quote links resolve.",
@@ -223,11 +227,11 @@ export async function sendQuoteServerSide(input: {
       meter: { subAccountId },
     });
   } catch (err) {
-    if (isEmailSuppressedError(err)) return fail(err.code, 422, err.message);
+    if (isEmailSuppressedError(err)) return failAfterRail(err.code, 422, err.message);
     console.error("[quotes/send] Resend send failed", err);
     const message =
       err instanceof Error ? err.message : "Email provider rejected the send";
-    return fail("send_failed", 502, `Send failed: ${message}`);
+    return failAfterRail("send_failed", 502, `Send failed: ${message}`);
   }
 
   // 8. Persist lifecycle update. Use viewedAt = null to RESET on re-send

@@ -79,7 +79,7 @@ export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | nu
   const fellBack = (rail: Extract<InvoicePayRail, { ok: true }>, name: string): InvoicePayRail => ({
     ...rail,
     cardLinkFallback: cardLinkError
-      ? `Card-on-file link could not be made for invoice ${quote.quoteNumber}: ${cardLinkError} — invoice sent with ${name} instead.`
+      ? `Card-on-file link could not be made for invoice ${quote.quoteNumber}: ${cardLinkError} — ${name} was used instead.`
       : null,
   });
 

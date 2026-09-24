@@ -39,6 +39,8 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  *                    Task names the reference to check.
  */
 
+const EMAILED = "The invoice was emailed instead.";
+
 export const autoChargeReference = (scheduleId: string, cycle: number) => `ra-${scheduleId}-c${cycle}`;
 
 /** The schedule id of an auto-charge reference, else null. */
@@ -83,18 +85,20 @@ export async function chargeCycle(
   const alert = (title: string, notes: string) =>
     raiseChargeTask(schedule, title, notes).catch((err: unknown) => console.error(`${tag} task not raised: ${title}`, err));
   type TaskText = { title: string; notes: string };
-  // One Task per cycle: a card-on-file link the email couldn't carry joins it (or is it).
-  const emailInstead = async (chargeNote: string, task?: TaskText) => {
-    await note(chargeNote);
-    let fallback: string | null = null;
+  // "emailed" only once sent. ONE Task carries every reason; a failed send always raises one.
+  const emailInstead = async (why: string, task?: TaskText) => {
+    await note(why);
+    let res: Awaited<ReturnType<typeof sendGeneratedInvoice>> | undefined;
     try {
-      const res = await sendGeneratedInvoice(schedule, invoiceId, chargeNote);
-      fallback = res.cardLinkFallback;
-      if (fallback) await note(`${chargeNote} ${fallback}`);
+      res = await sendGeneratedInvoice(schedule, invoiceId, why);
+      if (res.sent) await note([why, EMAILED, res.cardLinkFallback].filter(Boolean).join(" "));
       return res.sent;
     } finally {
-      if (task) await alert(task.title, fallback ? `${task.notes} ${fallback}` : task.notes);
-      else if (fallback) await alert(fallback, "Until a card is saved, each cycle emails its invoice instead of charging a card.");
+      const failure = res?.sent ? null : (res?.error ?? "the send failed unexpectedly");
+      const extra = [failure ? `Invoice not sent: ${failure}` : EMAILED, res?.cardLinkFallback].filter(Boolean).join(" ");
+      if (task) await alert(task.title, `${task.notes} ${extra}`.trim());
+      else if (failure) await alert(`Invoice ${label} was not sent: ${failure}`, `${why} ${extra}`);
+      else if (res?.cardLinkFallback) await alert(res.cardLinkFallback, "Until a card is saved, each cycle emails its invoice instead of charging a card.");
     }
   };
 
@@ -108,15 +112,15 @@ export async function chargeCycle(
     const day = new Intl.DateTimeFormat("en-GB", { timeZone: schedule.timezone, dateStyle: "long" }).format;
     const { dueAt: due, previousDueAt: prev } = opened.tooSoon;
     const days = Math.round((due.getTime() - prev.getTime()) / 86_400_000);
-    const why = `This cycle is due ${day(due)}, only ${days} days after the previous cycle (${day(prev)}) — usually because the billing day or frequency was changed — so the card was not charged and the invoice was emailed instead.`;
+    const why = `This cycle is due ${day(due)}, only ${days} days after the previous cycle (${day(prev)}) — usually because the billing day or frequency was changed — so the card was not charged.`;
     const title = `Card not charged: invoice ${label} came due too soon after the previous cycle`;
     return emailInstead(`Card not charged for invoice ${label}. ${why}`, { title, notes: why });
   }
   if (!opened.ok) {
     // Except the expected start: a first cycle with no card yet, whose email carries the card-on-file link.
     const expected = !schedule.cardMandateId && cycle === 1;
-    const task = { title: `Card not charged for invoice ${label}: ${opened.reason}`, notes: "The invoice was emailed instead." };
-    return emailInstead(`Card not charged for invoice ${label}: ${opened.reason} — invoice emailed instead.`, expected ? undefined : task);
+    const task = { title: `Card not charged for invoice ${label}: ${opened.reason}`, notes: "" };
+    return emailInstead(`Card not charged for invoice ${label}: ${opened.reason}.`, expected ? undefined : task);
   }
 
   const setInvoice = (autoCharge: QuoteAutoCharge) =>
@@ -155,15 +159,15 @@ export async function chargeCycle(
     (err: unknown) => console.error(`${tag} attempt not refused`, err),
   );
   await setInvoice({ ...base, state: "declined", reason: answer.reason });
-  let chargeNote = `Card declined for invoice ${label} (${answer.reason}) — invoice emailed with a payment link instead.`;
+  let chargeNote = `Card declined for invoice ${label} (${answer.reason}).`;
   let task: TaskText | undefined;
   if (keyRefused) {
-    chargeNote = `Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}) — invoice emailed instead.`;
+    chargeNote = `Card not charged for invoice ${label}: Paystack refused this workspace's key (${answer.reason}).`;
     task = {
       title: `Paystack refused the key: invoice ${label} was not charged`,
       notes:
         `Charging the saved card for invoice ${label} (Paystack reference ${reference}) failed because Paystack refused this workspace's key: ${answer.reason}. ` +
-        `The invoice was emailed instead. Check the Paystack connection before the next cycle.`,
+        `Check the Paystack connection before the next cycle.`,
     };
   } else {
     await countDecline(opened.mandateId, answer.reason, schedule.unpaidEscalationThreshold).catch((err: unknown) =>
