@@ -111,6 +111,7 @@ describe("fallbackToDefault: OpenRouter refuses the chosen model", () => {
     for (const text of [
       '{"error":{"message":"This endpoint\'s maximum context length is 200000 tokens"}}',
       '{"error":{"message":"temperature: must be between 0 and 2"}}',
+      '{"error":{"message":"Prompt too long for this model; tool use unavailable"}}',
     ]) {
       fetchMock.mockReset();
       const onModelRejected = vi.fn();
@@ -120,6 +121,20 @@ describe("fallbackToDefault: OpenRouter refuses the chosen model", () => {
       ).rejects.toThrow("OpenRouter 400");
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(onModelRejected).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a 400 naming the requested model id is a refusal", async () => {
+    fetchMock.mockResolvedValueOnce(refused(400, '{"error":{"message":"x/renamed-model is deprecated"}}'))
+      .mockResolvedValueOnce(okResponse("fine"));
+    await expect(callAi({ model: "x/renamed-model", fallbackToDefault: true, messages: [] })).resolves.toMatchObject({ text: "fine" });
+  });
+
+  it("recognises 'not a valid model' / 'no endpoints found' even without the id in the message", async () => {
+    for (const text of ['{"error":{"message":"That is not a valid model ID"}}', '{"error":{"message":"No endpoints found."}}']) {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(refused(400, text)).mockResolvedValueOnce(okResponse("fine"));
+      await expect(callAi({ model: "a/one", fallbackToDefault: true, messages: [] })).resolves.toMatchObject({ text: "fine" });
     }
   });
 

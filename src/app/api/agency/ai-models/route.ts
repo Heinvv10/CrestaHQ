@@ -6,7 +6,10 @@ import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { defaultAiModel } from "@/lib/comms/ai/openrouter";
 import { getModelCatalog } from "@/lib/comms/ai/model-catalog";
-import { getEffectiveModelPolicy } from "@/lib/comms/ai/model-policy";
+import {
+  getEffectiveModelPolicy,
+  listModelsInUse,
+} from "@/lib/comms/ai/model-policy";
 import type { AiModelPolicy } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -22,9 +25,10 @@ export async function GET(request: Request) {
   const auth = await requireAgencyOwnerAny(request);
   if (auth instanceof NextResponse) return auth;
 
-  const [catalog, { policy, saved }] = await Promise.all([
+  const [catalog, { policy, saved }, inUse] = await Promise.all([
     getModelCatalog(),
     getEffectiveModelPolicy(auth.agencyId!),
+    listModelsInUse(auth.agencyId!),
   ]);
   return NextResponse.json({
     defaultModel: defaultAiModel(),
@@ -32,6 +36,9 @@ export async function GET(request: Request) {
     fetchedAt: catalog?.fetchedAt ?? null,
     policy,
     saved,
+    /** Ids a channel uses right now — kept allowable even when OpenRouter
+     *  doesn't list them (`:online` variants, aliases, retired ids). */
+    inUse,
   });
 }
 
@@ -82,7 +89,12 @@ export async function PUT(request: Request) {
       { status: 503 },
     );
   }
-  const known = new Set(catalog.models.map((m) => m.id));
+  // Ticking an id a channel already uses is always accepted, listed or not —
+  // refusing it would silently move those live replies to the default.
+  const known = new Set([
+    ...catalog.models.map((m) => m.id),
+    ...(await listModelsInUse(auth.agencyId!)),
+  ]);
   const defaultModel = defaultAiModel();
   const unknown = ids.filter((id) => !known.has(id) && id !== defaultModel);
   if (unknown.length > 0) {

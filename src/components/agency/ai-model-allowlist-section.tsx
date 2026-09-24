@@ -24,6 +24,8 @@ interface AllowlistData {
     maxCompletionPerM: number | null;
   };
   saved: boolean;
+  /** Ids a channel uses right now, listed by OpenRouter or not. */
+  inUse: string[];
 }
 
 const MAX_SHOWN = 100;
@@ -72,9 +74,16 @@ export function AiModelAllowlistSection() {
     () => new Set(data?.catalog.map((m) => m.id) ?? []),
     [data],
   );
-  // Allowed ids OpenRouter no longer lists — shown so the owner sees them.
-  const retired = [...allowed].filter(
-    (id) => data && id !== data.defaultModel && !catalogIds.has(id),
+  const inUse = useMemo(() => new Set(data?.inUse ?? []), [data]);
+  // In-use ids OpenRouter doesn't list (`:online` variants, aliases, retired
+  // ids): kept as their own rows so saving never silently drops them.
+  const unlisted = (data?.inUse ?? []).filter(
+    (id) => id !== data?.defaultModel && !catalogIds.has(id),
+  );
+  // Allowed ids neither listed nor in use — nothing needs them any more.
+  const stale = [...allowed].filter(
+    (id) =>
+      data && id !== data.defaultModel && !catalogIds.has(id) && !inUse.has(id),
   );
   const shown = useMemo(() => {
     if (!data) return [];
@@ -104,7 +113,9 @@ export function AiModelAllowlistSection() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          allowedModels: [...allowed].filter((id) => catalogIds.has(id)),
+          allowedModels: [...allowed].filter(
+            (id) => catalogIds.has(id) || inUse.has(id),
+          ),
           maxPromptPerM: maxPrompt.trim() === "" ? null : Number(maxPrompt),
           maxCompletionPerM:
             maxCompletion.trim() === "" ? null : Number(maxCompletion),
@@ -179,10 +190,10 @@ export function AiModelAllowlistSection() {
             </div>
           </div>
 
-          {retired.length > 0 && (
+          {stale.length > 0 && (
             <p className="text-[11px] text-amber-600 dark:text-amber-400">
-              No longer offered by OpenRouter (dropped on save):{" "}
-              {retired.join(", ")}
+              Not offered by OpenRouter and not in use (dropped on save):{" "}
+              {stale.join(", ")}
             </p>
           )}
 
@@ -192,6 +203,23 @@ export function AiModelAllowlistSection() {
             placeholder={`Search ${data.catalog.length} models…`}
           />
           <div className="max-h-80 divide-y overflow-y-auto rounded-xl border bg-background">
+            {unlisted.map((id) => (
+              <label key={id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5"
+                  checked={allowed.has(id)}
+                  onChange={(e) => toggle(id, e.target.checked)}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono">{id}</span>
+                  <span className="block truncate text-amber-600 dark:text-amber-400">
+                    In use — not in OpenRouter&rsquo;s list
+                  </span>
+                </span>
+                <span className="shrink-0 text-muted-foreground">price unknown</span>
+              </label>
+            ))}
             {shown.map((m) => {
               const isDefault = m.id === data.defaultModel;
               return (

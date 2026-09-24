@@ -85,6 +85,8 @@ describe("evaluateModel", () => {
         .toEqual({ ok: false, reason: "not_allowed" });
     }
     const ticked = { ...policy, allowedModels: ["a/one:online"] };
+    // Exactly allow-listed: stands at save time too, though OpenRouter doesn't list it.
+    expect(evaluateModel("a/one:online", { catalog, policy: ticked, defaultModel: DEFAULT })).toEqual({ ok: true });
     expect(evaluateModelForReply("a/one:online", { catalog, savedPolicy: ticked, defaultModel: DEFAULT })).toEqual({ ok: true });
   });
   it("reply-time: absence from the catalog never swaps; only the saved policy does", () => {

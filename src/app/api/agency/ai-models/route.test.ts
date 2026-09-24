@@ -9,6 +9,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 const { mem, claims } = await import("@/test/gbp-sync-store");
 const { GET, PUT } = await import("./route");
+const { resolveRuntimeModel, checkModelForSave, listPickableModels } = await import("@/lib/comms/ai/model-policy");
 
 const DEFAULT = "anthropic/claude-haiku-4-5";
 const model = (m: string) => ({ id: m, name: m, promptPerM: 1, completionPerM: 5 });
@@ -18,7 +19,7 @@ const req = (uid: string, body?: unknown) =>
     headers: { "x-user-uid": uid, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-const policy = () => mem.read("agencies/ag1")?.aiModelPolicy;
+const policy = () => mem.read("agencies/ag1")?.aiModelPolicy as { allowedModels: string[] } | undefined;
 
 beforeEach(() => {
   mem.clear();
@@ -52,6 +53,25 @@ describe("agency ai-models settings", () => {
     const res = await PUT(req("owner", { allowedModels: ["a/one"], maxPromptPerM: 3, maxCompletionPerM: "" }));
     expect(res.status).toBe(200);
     expect(policy()).toEqual({ allowedModels: [DEFAULT, "a/one"], maxPromptPerM: 3, maxCompletionPerM: null });
+  });
+
+  it("an in-use id OpenRouter doesn't list (:online) survives the owner's first save and keeps replying", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1" });
+    mem.seed("subAccounts/sa1/aiAgent/sms", { enabled: true, modelOverride: "a/one:online" });
+    const shown = (await (await GET(req("owner"))).json()) as {
+      policy: { allowedModels: string[]; maxPromptPerM: number | null; maxCompletionPerM: number | null };
+      inUse: string[];
+    };
+    expect(shown.inUse).toEqual(["a/one:online"]);
+    expect(shown.policy.allowedModels).toContain("a/one:online");
+
+    // Save exactly what the page showed.
+    const res = await PUT(req("owner", shown.policy));
+    expect(res.status).toBe(200);
+    expect(policy()?.allowedModels).toContain("a/one:online");
+    expect(await resolveRuntimeModel("sa1", "a/one:online")).toBe("a/one:online");
+    expect(await checkModelForSave("ag1", "a/one:online")).toBeNull();
+    expect((await listPickableModels("ag1")).models.map((m) => m.id)).toContain("a/one:online");
   });
 
   it("rejects ids OpenRouter doesn't list and a negative ceiling", async () => {

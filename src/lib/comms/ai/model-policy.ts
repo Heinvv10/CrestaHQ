@@ -68,10 +68,15 @@ export function evaluateModel(
   },
 ): ModelVerdict {
   if (model === ctx.defaultModel) return { ok: true };
-  // No catalog yet = unknown, never "retired".
+  // No catalog yet = unknown, never "retired". An id the policy lists
+  // EXACTLY is the owner's explicit choice (an in-use `:online` variant, an
+  // alias) and stands even though OpenRouter doesn't list it.
   const entry = findCatalogModel(ctx.catalog, model);
-  if (ctx.catalog && !entry) return { ok: false, reason: "retired" };
   const policy = ctx.policy;
+  const exactlyAllowed = !!policy?.allowedModels.includes(model);
+  if (ctx.catalog && !entry && !exactlyAllowed) {
+    return { ok: false, reason: "retired" };
+  }
   if (!policy) return { ok: true };
   if (!isAllowed(model, policy)) return { ok: false, reason: "not_allowed" };
   if (overCeiling(entry, policy)) return { ok: false, reason: "over_price" };
@@ -190,14 +195,15 @@ export async function listPickableModels(
     getEffectiveModelPolicy(agencyId),
     getModelCatalog(),
   ]);
-  const candidates: CatalogModel[] = catalog
-    ? catalog.models
-    : policy.allowedModels.map((id) => ({
-        id,
-        name: id,
-        promptPerM: null,
-        completionPerM: null,
-      }));
+  // Catalog models plus allowed ids OpenRouter doesn't list (see
+  // evaluateModel), so an in-use `:online` pick stays pickable.
+  const listed = new Set(catalog?.models.map((m) => m.id) ?? []);
+  const candidates: CatalogModel[] = [
+    ...(catalog?.models ?? []),
+    ...policy.allowedModels
+      .filter((id) => !listed.has(id))
+      .map((id) => ({ id, name: id, promptPerM: null, completionPerM: null })),
+  ];
   const models = candidates.filter(
     (m) =>
       m.id !== defaultModel &&
