@@ -3,7 +3,11 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import type { UserRecord } from "firebase-admin/auth";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
-import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
+import {
+  noPlatformSender,
+  resolvePlatformSender,
+  sendPlatformEmail,
+} from "@/lib/comms/platform-email";
 import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
@@ -204,47 +208,47 @@ export async function createInviteServerSide(
   let mailed = false;
   let mailSuppressed = false;
   let mailError: string | null = null;
-  if (emailIsConfigured()) {
-    try {
-      const inviterSnap = await db.doc(`users/${invitedByUid}`).get();
-      const inviterData = inviterSnap.data() ?? {};
-      const inviterName =
-        (inviterData.displayName as string) ||
-        (inviterData.email as string) ||
-        "A teammate";
-      const roleLabel = role === "admin" ? "Admin" : "Collaborator";
-      const brandName = await resolveBrandName();
+  try {
+    const sender = await resolvePlatformSender(subAccountId);
+    if (!sender) throw noPlatformSender("[invite]", subAccountId);
+    const inviterSnap = await db.doc(`users/${invitedByUid}`).get();
+    const inviterData = inviterSnap.data() ?? {};
+    const inviterName =
+      (inviterData.displayName as string) ||
+      (inviterData.email as string) ||
+      "A teammate";
+    const roleLabel = role === "admin" ? "Admin" : "Collaborator";
+    const brandName = await resolveBrandName();
 
-      await sendEmail({
-        suppressionSubAccountId: subAccountId,
-        to: email,
-        // "Who is this?" replies go to the person who sent the invite.
-        replyTo: (inviterData.email as string) || undefined,
-        subject: `${inviterName} invited you to ${subAccountName} on ${brandName}`,
-        text: renderInviteText({
-          inviterName,
-          subAccountName,
-          roleLabel,
-          inviteUrl,
-          brandName,
-        }),
-        html: renderInviteHtml({
-          inviterName,
-          subAccountName,
-          roleLabel,
-          inviteUrl,
-          brandName,
-        }),
-      });
-      mailed = true;
-    } catch (err) {
-      mailSuppressed = isEmailSuppressedError(err);
-      mailError = err instanceof Error ? err.message : String(err);
-      console.warn(
-        "[invite] sendEmail failed — invite still created",
-        mailError,
-      );
-    }
+    await sendPlatformEmail(sender, {
+      suppressionSubAccountId: subAccountId,
+      to: email,
+      // "Who is this?" replies go to the person who sent the invite.
+      replyTo: (inviterData.email as string) || undefined,
+      subject: `${inviterName} invited you to ${subAccountName} on ${brandName}`,
+      text: renderInviteText({
+        inviterName,
+        subAccountName,
+        roleLabel,
+        inviteUrl,
+        brandName,
+      }),
+      html: renderInviteHtml({
+        inviterName,
+        subAccountName,
+        roleLabel,
+        inviteUrl,
+        brandName,
+      }),
+    });
+    mailed = true;
+  } catch (err) {
+    mailSuppressed = isEmailSuppressedError(err);
+    mailError = err instanceof Error ? err.message : String(err);
+    console.warn(
+      "[invite] sendEmail failed — invite still created",
+      mailError,
+    );
   }
 
   // Public-API webhook event so subscribers (e.g. an HR / onboarding
@@ -451,8 +455,10 @@ async function addExistingUserAsMember(params: {
   let mailSuppressed = false;
   let mailError: string | null = null;
   const recipient = existingUser.email ?? "";
-  if (!alreadyMember && recipient && emailIsConfigured()) {
+  if (!alreadyMember && recipient) {
     try {
+      const sender = await resolvePlatformSender(subAccountId);
+      if (!sender) throw noPlatformSender("[invite]", subAccountId);
       const inviterName = await resolveInviterName(db, invitedByUid);
       const inviterEmail =
         ((await db.doc(`users/${invitedByUid}`).get()).data()?.email as
@@ -461,7 +467,7 @@ async function addExistingUserAsMember(params: {
       const roleLabel = role === "admin" ? "Admin" : "Collaborator";
       const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
       const brandName = await resolveBrandName();
-      await sendEmail({
+      await sendPlatformEmail(sender, {
         suppressionSubAccountId: subAccountId,
         to: recipient,
         // "Who added me?" replies go to the admin who did.

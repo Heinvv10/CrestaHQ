@@ -3,7 +3,12 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
+import {
+  noPlatformSender,
+  resolvePlatformSender,
+  sendPlatformEmail,
+  type PlatformSender,
+} from "@/lib/comms/platform-email";
 import { formatBillingPriceWithInterval } from "@/lib/billing/status";
 import type { BillingInterval } from "@/types/billing";
 import {
@@ -40,6 +45,7 @@ interface PatchBody {
 }
 
 async function emailCheckoutLink(opts: {
+  sender: PlatformSender;
   to: string;
   subAccountName: string;
   planName: string | null;
@@ -74,7 +80,7 @@ async function emailCheckoutLink(opts: {
       </p>
       <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. Your card is charged ${opts.cadenceWord} and you can update it anytime from your workspace settings.</p>
     </div>`;
-  await sendEmail({ to: opts.to, subject, text, html });
+  await sendPlatformEmail(opts.sender, { to: opts.to, subject, text, html });
 }
 
 export async function PATCH(
@@ -177,8 +183,12 @@ async function maybeEmailLink(
   to: string,
   url: string,
 ): Promise<boolean> {
-  if (!emailIsConfigured()) return false;
   try {
+    const sender = await resolvePlatformSender(subAccountId);
+    if (!sender) {
+      noPlatformSender("[billing] checkout-link", subAccountId);
+      return false;
+    }
     const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
     const data = snap.data() ?? {};
     const billing = (data.billing ?? {}) as {
@@ -188,6 +198,7 @@ async function maybeEmailLink(
       billingInterval?: BillingInterval | null;
     };
     await emailCheckoutLink({
+      sender,
       to,
       subAccountName: String(data.name ?? "your workspace"),
       planName: billing.planName ?? null,

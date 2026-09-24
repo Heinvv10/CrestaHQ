@@ -103,6 +103,7 @@ export async function sendEmail({
   subAccount,
   attachments,
   meter,
+  smtpSubAccountId,
   suppressionSubAccountId,
   archive = true,
   contactId,
@@ -152,6 +153,12 @@ export async function sendEmail({
    */
   meter?: { subAccountId: string } | null;
   /**
+   * The SMTP mailbox for an UNMETERED send through `subAccount`'s SMTP —
+   * platform mail about that sub-account when the deployment has no shared
+   * sender (see `platform-email.ts`). Metered sends use `meter.subAccountId`.
+   */
+  smtpSubAccountId?: string;
+  /**
    * Suppression list to check for an UNMETERED send that is still addressed
    * on a sub-account's behalf (member invites). Metered sends are checked
    * against `meter.subAccountId` without it.
@@ -172,10 +179,11 @@ export async function sendEmail({
   if (suppressionScope) await assertNotSuppressed(suppressionScope, to);
   const preferredReplyTo = replyTo?.trim() || subAccount?.replyToEmail?.trim();
   if (subAccount?.emailProvider === "smtp") {
-    if (!meter?.subAccountId) {
+    const smtpId = meter?.subAccountId ?? smtpSubAccountId;
+    if (!smtpId) {
       throw new Error("SMTP sending requires an explicit sub-account.");
     }
-    const connection = await getSmtpConnection(meter.subAccountId);
+    const connection = await getSmtpConnection(smtpId);
     const result = await sendSmtpEmail(connection, {
       to,
       subject,
@@ -187,15 +195,17 @@ export async function sendEmail({
       references,
       archive,
     });
-    void recordUsage({
-      subAccountId: meter.subAccountId,
-      unit: "emailsSent",
-      qty: 1,
-    });
+    if (meter?.subAccountId) {
+      void recordUsage({
+        subAccountId: meter.subAccountId,
+        unit: "emailsSent",
+        qty: 1,
+      });
+    }
     if (!archive) return result;
     try {
       await recordEmailMessage({
-        subAccountId: meter.subAccountId,
+        subAccountId: smtpId,
         contactId,
         sentByUid,
         direction: "outbound",
@@ -219,7 +229,7 @@ export async function sendEmail({
       // SMTP acceptance is irreversible. Returning success prevents callers/queues retrying delivery.
       console.warn(
         "[email/send] SMTP accepted; conversation persistence failed",
-        { subAccountId: meter.subAccountId, messageId: result.id }
+        { subAccountId: smtpId, messageId: result.id }
       );
       return {
         ...result,

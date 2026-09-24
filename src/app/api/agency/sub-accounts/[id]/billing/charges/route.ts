@@ -3,7 +3,11 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
+import {
+  noPlatformSender,
+  resolvePlatformSender,
+  sendPlatformEmail,
+} from "@/lib/comms/platform-email";
 import { formatBillingPrice } from "@/lib/billing/status";
 import {
   BillingError,
@@ -133,8 +137,12 @@ async function maybeEmailChargeLink(opts: {
   priceLabel: string;
   url: string;
 }): Promise<boolean> {
-  if (!emailIsConfigured()) return false;
   try {
+    const sender = await resolvePlatformSender(opts.subAccountId);
+    if (!sender) {
+      noPlatformSender("[billing/charges] charge-link", opts.subAccountId);
+      return false;
+    }
     const snap = await getAdminDb().doc(`subAccounts/${opts.subAccountId}`).get();
     const workspaceName = String(snap.data()?.name ?? "your workspace");
     const subject = `Payment request: ${opts.description}`;
@@ -155,7 +163,7 @@ async function maybeEmailChargeLink(opts: {
         </p>
         <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. This is a one-time charge — no subscription is created.</p>
       </div>`;
-    await sendEmail({ to: opts.to, subject, text, html });
+    await sendPlatformEmail(sender, { to: opts.to, subject, text, html });
     return true;
   } catch (err) {
     // The link was still created/returned — email is best-effort.
