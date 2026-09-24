@@ -83,7 +83,8 @@ describe("Paystack-only workspace", () => {
 
   it("the draft allowance is for drafts only: a paid invoice gets no link and no email", async () => {
     seedInvoice("inv1", { status: "paid" });
-    expect(await send()).toMatchObject({ ok: false, failure: { code: "paystack_link_failed", status: 409 } });
+    // Refused before any rail is chosen (sendQuoteServerSide's paid guard).
+    expect(await send()).toMatchObject({ ok: false, failure: { code: "already_paid", status: 409 } });
     expect(links()).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();
   });

@@ -34,6 +34,7 @@ vi.mock("@/lib/auth/require-tenancy", () => ({
 const { runOneSchedule } = await import("./recurring-invoice-service");
 const { PATCH } = await import("@/app/api/sub-accounts/[id]/recurring-invoices/[recurringId]/route");
 const { commitWithProration, raiseProrationGaps, raisePendingProrations } = await import("./recurring-prorate");
+const { recheckStaleAutoCharges } = await import("./auto-charge-stale-sweep");
 
 /** 07:00 SAST on a date. */
 const at = (day: string) => new Date(`${day}T05:00:00.000Z`);
@@ -408,5 +409,15 @@ describe("overlap: 20th → 15th", () => {
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     const [task] = tasksAbout("deliberate pro-rated credit");
     expect(`${task.title} ${task.notes}`).not.toMatch(/fix one/i);
+
+    // W5's stale-charge re-check (#237) works from open card attempts. The
+    // credited cycle never opened one, so the re-check cannot charge it or
+    // turn it into a card payment later.
+    expect(mem.list("paymentAttempts").map((a) => a.id)).toEqual([`ra-${SCHEDULE}-c4`]);
+    await recheckStaleAutoCharges(at("2026-07-25"));
+    expect(chargeCalls(calls)).toHaveLength(1);
+    expect(mem.list("paymentAttempts").map((a) => a.id)).toEqual([`ra-${SCHEDULE}-c4`]);
+    expect(quotes()[1]).toMatchObject({ prorated: "credit" });
+    expect(quotes()[1].autoCharge ?? null).toBeNull();
   });
 });

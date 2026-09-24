@@ -6,6 +6,7 @@ import {
   publishCallback,
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
+import { recheckStaleAutoCharges } from "@/lib/server/auto-charge-stale-sweep";
 import { runRecurringInvoiceSweep } from "@/lib/server/recurring-invoice-service";
 import { raisePendingProrations } from "@/lib/server/recurring-prorate";
 
@@ -58,8 +59,13 @@ export async function POST(request: Request) {
     );
   }
 
+  // publishCallback never throws: null is its "not queued" (no QStash, no
+  // app URL, or the publish failed — e.g. the daily cap). A dropped
+  // continuation delays the remaining schedules to tomorrow's sweep; it must
+  // not fail the invoices already raised this run.
+  let continued = false;
   if (result.hasMore) {
-    await publishCallback({
+    continued = (await publishCallback({
       pathname: "/api/cron/recurring-invoices",
       body: {},
       delaySeconds: CONTINUATION_DELAY_SEC,
@@ -68,17 +74,26 @@ export async function POST(request: Request) {
       deduplicationId: `recurring-invoices_continuation_${Math.floor(
         Date.now() / 1000 / 60,
       )}`,
-    }).catch((err) =>
-      // A dropped continuation delays the remaining schedules to tomorrow's
-      // sweep; it must not fail the invoices already raised this run.
-      console.error("[cron/recurring-invoices] continuation failed", err),
-    );
+    })) !== null;
+    if (!continued) console.error("[cron/recurring-invoices] continuation not queued");
+  }
+
+  // Card charges still unconfirmed: once, on the final page (or this one,
+  // if no continuation could be queued), and never failing the sweep.
+  let staleCharges = null;
+  if (!continued) {
+    try {
+      staleCharges = await recheckStaleAutoCharges(new Date());
+    } catch (err) {
+      console.error("[cron/recurring-invoices] stale card-charge re-check failed", err);
+    }
   }
 
   return NextResponse.json({
     ok: true,
     durationMs: Date.now() - startedAt,
     ...result,
-    continuationScheduled: result.hasMore,
+    continuationScheduled: continued,
+    staleCharges,
   });
 }
