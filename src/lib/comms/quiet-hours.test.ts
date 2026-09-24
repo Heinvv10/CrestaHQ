@@ -17,7 +17,12 @@ const nextOpen = new Date("2026-09-25T06:00:00Z"); // 08:00 SAST
 describe("quietHoursHold", () => {
   it("holds an automated send at 23:00 SAST until the window opens at 08:00", () => {
     const hold = quietHoursHold({ subAccount: sub, now: at2300Sast });
-    expect(hold).toEqual({ retryAfterSec: 9 * 3600, until: nextOpen });
+    expect(hold).toEqual({ retryAfterSec: 9 * 3600, until: nextOpen, timezone: "Africa/Johannesburg" });
+  });
+
+  it("ends exactly at the window's start however far into the second it is asked", () => {
+    const hold = quietHoursHold({ subAccount: sub, now: new Date(at2300Sast.getTime() + 12_345) });
+    expect(hold?.until).toEqual(nextOpen);
   });
 
   it("treats a caller that does not say as automated", () => {

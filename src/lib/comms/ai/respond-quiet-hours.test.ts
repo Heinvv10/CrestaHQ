@@ -95,7 +95,7 @@ describe("AI auto-reply in quiet hours", () => {
           kind: "message",
           message: { channel: "whatsapp", contactId: "c1", to: "+27820000000", body: "reply", senderId: "s-cloud", source: "ai_reply" },
         },
-        hold: { retryAfterSec: 9 * 3600, until: new Date("2026-09-25T06:00:00Z") },
+        hold: { retryAfterSec: 9 * 3600, until: new Date("2026-09-25T06:00:00Z"), timezone: "Africa/Johannesburg" },
       },
     ]);
   });

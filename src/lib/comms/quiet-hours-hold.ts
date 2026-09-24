@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { publishCallback } from "@/lib/automations/qstash";
-import type { QuietHoursHold } from "@/lib/comms/quiet-hours";
+import { formatHoldUntil, type QuietHoursHold } from "@/lib/comms/quiet-hours";
 import type { SendReviewInput } from "@/lib/reviews/request";
 import type { ActivityType } from "@/types/contacts";
 
@@ -44,14 +44,38 @@ export interface HoldDoc {
   subAccountId: string;
   contactId: string;
   payload: HoldPayload;
-  status: "pending" | "releasing" | "released" | "skipped" | "failed";
+  status: "pending" | "releasing" | "released" | "skipped" | "failed" | "superseded";
   releaseAt: Date;
+  /** When it was held — a thread message after this makes a held AI reply stale. */
+  heldAt: Date;
   outcome?: string | null;
 }
 
 function holdLabel(p: HoldPayload): string {
   if (p.kind === "review_request") return "Review request";
   return p.message.source === "ai_reply" ? "AI reply" : "Missed-call text-back";
+}
+
+/**
+ * An AI reply answers the conversation as it stood. Five messages at 23:00
+ * would otherwise park five replies that all go out at 08:00 together, each
+ * answering a stale moment — so a new held AI reply supersedes the contact's
+ * older pending ones (they never send). Single-field query, filtered here.
+ */
+async function supersedeOlderAiReplyHolds(subAccountId: string, contactId: string): Promise<void> {
+  const db = getAdminDb();
+  const snap = await db
+    .collection(`subAccounts/${subAccountId}/quietHoursHolds`)
+    .where("contactId", "==", contactId)
+    .get();
+  await Promise.all(
+    snap.docs
+      .filter((d) => {
+        const h = d.data() as HoldDoc;
+        return h.status === "pending" && h.payload?.kind === "message" && h.payload.message.source === "ai_reply";
+      })
+      .map((d) => d.ref.update({ status: "superseded", outcome: "newer_ai_reply" })),
+  );
 }
 
 /**
@@ -71,6 +95,9 @@ export async function holdForQuietHours(input: {
     payload.kind === "message" ? payload.message.contactId : payload.request.contactId;
   const db = getAdminDb();
   try {
+    if (payload.kind === "message" && payload.message.source === "ai_reply") {
+      await supersedeOlderAiReplyHolds(subAccountId, contactId);
+    }
     const ref = db.collection(`subAccounts/${subAccountId}/quietHoursHolds`).doc();
     const doc: HoldDoc = {
       agencyId,
@@ -79,6 +106,7 @@ export async function holdForQuietHours(input: {
       payload,
       status: "pending",
       releaseAt: hold.until,
+      heldAt: new Date(),
       outcome: null,
     };
     await ref.set({ ...doc, createdAt: FieldValue.serverTimestamp() });
@@ -93,8 +121,9 @@ export async function holdForQuietHours(input: {
     await writeHoldActivity(
       contactId,
       ok
-        ? `${holdLabel(payload)} held for quiet hours; it goes out at ${hold.until.toISOString()}.`
+        ? `${holdLabel(payload)} held for quiet hours; it goes out at ${formatHoldUntil(hold)}.`
         : `${holdLabel(payload)} held for quiet hours, but its release could not be scheduled, so it will NOT be sent.`,
+      `qh_${ref.id}`,
     );
     return ok;
   } catch (err) {
@@ -107,14 +136,18 @@ export async function holdForQuietHours(input: {
   }
 }
 
-export async function writeHoldActivity(contactId: string, content: string): Promise<void> {
+/** One timeline row. With `id`, a retried write lands on the same row. */
+export async function writeHoldActivity(contactId: string, content: string, id?: string): Promise<void> {
   try {
-    await getAdminDb().collection(`contacts/${contactId}/activities`).add({
+    const coll = getAdminDb().collection(`contacts/${contactId}/activities`);
+    const row = {
       type: "quiet_hours_held" satisfies ActivityType,
       content,
       createdBy: "quiet_hours",
       createdAt: FieldValue.serverTimestamp(),
-    });
+    };
+    if (id) await coll.doc(id).set(row);
+    else await coll.add(row);
   } catch (err) {
     console.warn("[quiet-hours] activity write failed", err);
   }

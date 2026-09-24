@@ -37,7 +37,7 @@ import { AG, C, SA, resetHarness, sendSms, writes } from "@/test/reviews-request
 import { QuietHoursDeferredError } from "@/lib/comms/quiet-hours";
 import { maybeSendReviewRequest } from "./request";
 
-const HOLD = { retryAfterSec: 3600, until: new Date("2026-09-25T06:00:00Z") };
+const HOLD = { retryAfterSec: 3600, until: new Date("2026-09-25T06:00:00Z"), timezone: "UTC" };
 const input = (trigger: "manual" | "deal_completed") => ({ subAccountId: SA, agencyId: AG, contactId: C, trigger });
 
 beforeEach(() => {

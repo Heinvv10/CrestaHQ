@@ -41,7 +41,8 @@ import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask";
 import { providerAttempted } from "@/lib/comms/provider-attempt";
-import { isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
+import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
+import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
@@ -89,8 +90,8 @@ export type StepResult =
   | { kind: "end" }
   /** The step definitely did not do its job; the run stops as `failed`. */
   | { kind: "fail" }
-  /** Nothing was sent — quiet hours. Run THIS step again in `seconds`. */
-  | { kind: "defer"; seconds: number };
+  /** Nothing was sent — quiet hours. Run THIS step again when they end. */
+  | { kind: "defer"; hold: QuietHoursHold };
 
 interface NodeContext {
   node: WorkflowNode;
@@ -176,7 +177,7 @@ export function definitelyNotSent(res: {
  *  end, re-reading the contact (opt-out) like any step. */
 function deferForQuietHours(hold: QuietHoursHold): { result: StepResult; log: string } {
   return {
-    result: { kind: "defer", seconds: hold.retryAfterSec },
+    result: { kind: "defer", hold },
     log: `deferred:quiet_hours_until_${hold.until.toISOString()}`,
   };
 }
@@ -1866,10 +1867,18 @@ export async function runStep(
 
   // Quiet hours: nothing was sent, so no history entry (that would mark the
   // step done). Release the claim and run this same step again when they end.
+  // Keyed on the window's end, so a redelivery of this defer is one publish
+  // and one timeline row, not one per delivery.
   if (result.kind === "defer") {
+    const { hold } = result;
+    const key = `${runId}_${nodeId}_qh_${hold.until.getTime()}`;
     if (atMostOnce) await runRef.update({ stepClaim: null });
-    const at = Date.now() + result.seconds * 1000;
-    await scheduleNode(runRef, nodeId, result.seconds, run, wf, `wf_${runId}_${nodeId}_qh_${at}`);
+    await writeHoldActivity(
+      contact.id,
+      `Workflow step (${node.type}) held for quiet hours; it goes out at ${formatHoldUntil(hold)}.`,
+      `qh_${key}`,
+    );
+    await scheduleNode(runRef, nodeId, hold.retryAfterSec, run, wf, `wf_${key}`);
     return;
   }
 

@@ -348,7 +348,7 @@ describe("handleMissedCall", () => {
   });
 
   it("a text-back in quiet hours is held for the window's end, not sent or dropped", async () => {
-    const hold = { retryAfterSec: 3600, until: new Date("2026-09-25T06:00:00Z") };
+    const hold = { retryAfterSec: 3600, until: new Date("2026-09-25T06:00:00Z"), timezone: "Africa/Johannesburg" };
     m.sendError = new QuietHoursDeferredError(hold);
     const result = await handleMissedCall({ route, from: "+27821234567", callSid: "CA5" });
     expect(result).toEqual({ handled: true, reason: "quiet_hours_held", contactId: "contact_1" });

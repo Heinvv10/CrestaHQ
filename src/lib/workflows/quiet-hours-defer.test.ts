@@ -99,6 +99,20 @@ describe("workflow steps in quiet hours", () => {
     expect(run?.status).toBe("waiting");
   });
 
+  it("a redelivery of the deferral is one timeline row naming the local release time, and the same publish id", async () => {
+    seedWorkflow("send_whatsapp");
+    const runId = await enrolled();
+    publishCallback.mockClear();
+    await runStep(runId, "n1");
+    vi.setSystemTime(new Date(NIGHT.getTime() + 30_500)); // QStash redelivers 30.5s later
+    await runStep(runId, "n1");
+    const ids = stepPublishes().map((p) => p.deduplicationId);
+    expect(new Set(ids)).toEqual(new Set([`wf_${runId}_n1_qh_${OPEN.getTime()}`]));
+    const rows = mem.list("contacts/c1/activities").filter((a) => a.type === "quiet_hours_held");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toMatch(/08:00 \(Africa\/Johannesburg\)/);
+  });
+
   it("sends when the deferred step runs after the window opens", async () => {
     seedWorkflow("send_whatsapp");
     const runId = await enrolled();

@@ -17,6 +17,9 @@ import {
   getConversationControls,
   upsertConversationForMessage,
 } from "@/lib/server/conversations-service";
+import { resolveAgent } from "@/lib/comms/ai/agent";
+import { aiChannelGateOn } from "@/lib/comms/ai/gates";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 
@@ -64,12 +67,31 @@ export async function releaseQuietHoursHold(
   };
 
   const { payload } = claimed;
-  if (payload.kind === "review_request") {
-    // Held again inside, if it must be: the dispatcher parks its own re-hold.
-    const res = await maybeSendReviewRequest(payload.request);
-    return settle(res.sent ? { outcome: "released" } : { outcome: "skipped", reason: res.reason ?? "not_sent" });
+  let result: ReleaseResult;
+  try {
+    if (payload.kind === "review_request") {
+      // Held again inside, if it must be: the dispatcher parks its own re-hold.
+      const res = await maybeSendReviewRequest(payload.request);
+      result = res.sent ? { outcome: "released" } : { outcome: "skipped", reason: res.reason ?? "not_sent" };
+    } else {
+      result = await releaseMessage(claimed, payload.message);
+    }
+  } catch (err) {
+    // Every throw in there comes before the provider call (the send's own
+    // failures are caught and settled below it), so nothing went out: hand
+    // the claim back and let QStash retry, rather than leave the hold
+    // "releasing" forever with nobody the wiser.
+    await ref
+      .update({ status: "pending", updatedAt: FieldValue.serverTimestamp() })
+      .catch((e: unknown) => console.error("[quiet-hours] claim release failed", e));
+    await writeHoldActivity(
+      claimed.contactId,
+      "A message held for quiet hours could not be released just now; it will be retried.",
+      `qh_${holdId}_retry`,
+    );
+    throw err;
   }
-  return settle(await releaseMessage(claimed, payload.message));
+  return settle(result);
 }
 
 async function releaseMessage(hold: HoldDoc, m: HeldMessage): Promise<ReleaseResult> {
@@ -85,37 +107,67 @@ async function releaseMessage(hold: HoldDoc, m: HeldMessage): Promise<ReleaseRes
   }
   const contact = { id: contactSnap.id, ...(contactSnap.data() as Omit<Contact, "id">) };
   const label = m.source === "ai_reply" ? "AI reply" : "Missed-call text-back";
+  const notSent = async (reason: string, why: string): Promise<ReleaseResult> => {
+    await writeHoldActivity(contact.id, `${label} held for quiet hours was not sent — ${why}.`);
+    return { outcome: "skipped", reason };
+  };
+
+  // The switches the original sender checked, as they stand now.
+  if (m.source === "ai_reply") {
+    const agent = await resolveAgent(hold.subAccountId, m.channel);
+    if (!aiChannelGateOn(subAccount, m.channel) || !agent?.effective.enabled) {
+      return notSent("ai_disabled", "the AI agent was switched off meanwhile");
+    }
+  } else if (
+    subAccount.missedCallTextBackEnabledByAgency !== true ||
+    !subAccount.twilioConfig?.missedCall?.enabled
+  ) {
+    return notSent("mctb_disabled", "missed-call text-back was switched off meanwhile");
+  }
+  if (m.channel === "sms" && normalizePhoneE164(contact.phone ?? "") !== normalizePhoneE164(m.to)) {
+    return notSent("number_changed", "the contact's number changed meanwhile");
+  }
 
   const optedOut =
     m.channel === "sms" ? smsSendBlock(contact) !== null : contact.whatsappOptedOut === true;
-  if (optedOut) {
-    await writeHoldActivity(contact.id, `${label} held for quiet hours was not sent — the contact opted out meanwhile.`);
-    return { outcome: "skipped", reason: "opted_out" };
-  }
+  if (optedOut) return notSent("opted_out", "the contact opted out meanwhile");
   if (m.source === "ai_reply") {
     const controls = await getConversationControls(contact.id);
     if ((controls.botPausedUntilMs ?? 0) > Date.now() || controls.botMode !== "auto") {
-      await writeHoldActivity(contact.id, `${label} held for quiet hours was not sent — the bot was paused or switched off on this conversation meanwhile.`);
-      return { outcome: "skipped", reason: "bot_off" };
+      return notSent("bot_off", "the bot was paused or switched off on this conversation meanwhile");
+    }
+    // The contact wrote again after this reply was held: that message got
+    // (or is holding) its own, newer reply, and this one answers a stale turn.
+    const lastInbound = await lastInboundMs(contact.id, m.channel);
+    const heldAtMs = toMs(hold.heldAt);
+    if (lastInbound !== null && heldAtMs !== null && lastInbound > heldAtMs) {
+      return notSent("newer_inbound", "the contact wrote again after it was held");
     }
   }
 
   let sid: string;
   let from: string;
+  // Shared-sender SMS writes no thread (the inbound webhook could never
+  // attribute a reply) — the same rule the workflow and review senders keep.
+  let writeThread = true;
   try {
-    const r =
-      m.channel === "sms"
-        ? await sendSmsForSubAccount({ subAccountId: hold.subAccountId, subAccount, to: m.to, body: m.body })
-        : await sendWhatsappFreeFormForSubAccount({
-            subAccountId: hold.subAccountId,
-            subAccount,
-            contactId: contact.id,
-            to: m.to,
-            body: m.body,
-            senderId: m.senderId ?? null,
-          });
-    sid = r.sid;
-    from = r.from;
+    if (m.channel === "sms") {
+      const r = await sendSmsForSubAccount({ subAccountId: hold.subAccountId, subAccount, to: m.to, body: m.body });
+      sid = r.sid;
+      from = r.from;
+      writeThread = r.mode === "dedicated";
+    } else {
+      const r = await sendWhatsappFreeFormForSubAccount({
+        subAccountId: hold.subAccountId,
+        subAccount,
+        contactId: contact.id,
+        to: m.to,
+        body: m.body,
+        senderId: m.senderId ?? null,
+      });
+      sid = r.sid;
+      from = r.from;
+    }
   } catch (err) {
     if (isQuietHoursDeferred(err)) {
       const held = await holdForQuietHours({
@@ -132,7 +184,7 @@ async function releaseMessage(hold: HoldDoc, m: HeldMessage): Promise<ReleaseRes
   }
 
   // The thread row + inbox index the original sender would have written.
-  try {
+  if (writeThread) try {
     await db
       .doc(`contacts/${contact.id}/${m.channel === "sms" ? "messages" : "whatsappMessages"}/${sid || db.collection("contacts").doc().id}`)
       .set(
@@ -169,4 +221,24 @@ async function releaseMessage(hold: HoldDoc, m: HeldMessage): Promise<ReleaseRes
   }
   await writeHoldActivity(contact.id, `${label} held for quiet hours was sent.`);
   return { outcome: "released" };
+}
+
+function toMs(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  const t = v as { toMillis?: () => number } | null | undefined;
+  return t && typeof t.toMillis === "function" ? t.toMillis() : null;
+}
+
+/** When the contact last wrote on this channel's thread. */
+async function lastInboundMs(contactId: string, channel: "sms" | "whatsapp"): Promise<number | null> {
+  const snap = await getAdminDb()
+    .collection(`contacts/${contactId}/${channel === "sms" ? "messages" : "whatsappMessages"}`)
+    .orderBy("createdAt", "desc")
+    .limit(20)
+    .get();
+  for (const d of snap.docs) {
+    const row = d.data() as { direction?: string; createdAt?: unknown };
+    if (row.direction === "inbound") return toMs(row.createdAt);
+  }
+  return null;
 }

@@ -55,7 +55,7 @@ beforeEach(() => {
 
 describe("a reminder in quiet hours", () => {
   it("is sent as automated, then rescheduled — same attempt, at the window's end", async () => {
-    sendSms.mockRejectedValueOnce(new QuietHoursDeferredError({ retryAfterSec: 5 * 3600, until: UNTIL }));
+    sendSms.mockRejectedValueOnce(new QuietHoursDeferredError({ retryAfterSec: 5 * 3600, until: UNTIL, timezone: "UTC" }));
     expect(await run()).toEqual({ outcome: "skipped", reason: "quiet_hours" });
     expect((sendSms.mock.calls[0] as [{ origin?: string }])[0].origin).toBe("automated");
     const r = (mem.read(REQ) as { reminder: Record<string, unknown> }).reminder;
@@ -69,7 +69,7 @@ describe("a reminder in quiet hours", () => {
   });
 
   it("goes out when the rescheduled attempt fires after the window opens", async () => {
-    sendSms.mockRejectedValueOnce(new QuietHoursDeferredError({ retryAfterSec: 5 * 3600, until: UNTIL }));
+    sendSms.mockRejectedValueOnce(new QuietHoursDeferredError({ retryAfterSec: 5 * 3600, until: UNTIL, timezone: "UTC" }));
     await run();
     expect(await run()).toEqual({ outcome: "sent" });
     expect(sendSms).toHaveBeenCalledTimes(2);

@@ -46,6 +46,8 @@ export interface QuietHoursHold {
   retryAfterSec: number;
   /** When the quiet window ends. */
   until: Date;
+  /** The workspace's send-window timezone, for showing `until` to people. */
+  timezone: string;
 }
 
 export function quietHoursHold(input: {
@@ -58,17 +60,39 @@ export function quietHoursHold(input: {
 }): QuietHoursHold | null {
   if (input.origin === "manual") return null;
   const now = input.now ?? new Date();
-  const retryAfterSec = computeWindowDeferralSeconds(
-    input.subAccount?.sendWindow ?? null,
-    now,
-  );
+  const window = input.subAccount?.sendWindow ?? null;
+  const retryAfterSec = computeWindowDeferralSeconds(window, now);
   if (retryAfterSec <= 0) return null;
   const at = input.selfTriggeredBookingAt;
   if (at) {
     const age = now.getTime() - at.getTime();
     if (age >= 0 && age <= SELF_TRIGGERED_EXEMPT_MS) return null;
   }
-  return { retryAfterSec, until: new Date(now.getTime() + retryAfterSec * 1000) };
+  return {
+    retryAfterSec,
+    // The window's exact start: the deferral is counted from the wall-clock
+    // SECOND, so sub-second jitter must not move `until` — it keys dedup ids.
+    until: new Date(Math.floor(now.getTime() / 1000) * 1000 + retryAfterSec * 1000),
+    timezone: window?.timezone ?? "UTC",
+  };
+}
+
+/** `until` as the workspace reads it, e.g. "Fri 25 Sep, 08:00 (Africa/Johannesburg)". */
+export function formatHoldUntil(hold: QuietHoursHold): string {
+  try {
+    const s = new Intl.DateTimeFormat("en-GB", {
+      timeZone: hold.timezone,
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(hold.until);
+    return `${s} (${hold.timezone})`;
+  } catch {
+    return hold.until.toISOString();
+  }
 }
 
 /** Thrown by the throwing send helpers (SMS, free-form WhatsApp) when an
