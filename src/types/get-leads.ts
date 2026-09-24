@@ -7,6 +7,8 @@
 export interface GetLeadsBusiness {
   /** Outscraper place_id (or a synthesized fallback) — stable row key for selection. */
   placeId: string;
+  /** Outscraper's Google `place_id` when the row carried one; null when `placeId` is synthesized. */
+  googlePlaceId: string | null;
   name: string;
   category: string | null;
   fullAddress: string | null;

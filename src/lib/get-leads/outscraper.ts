@@ -160,6 +160,7 @@ function normalizeBusiness(raw: Record<string, unknown>): GetLeadsBusiness {
       str(raw.place_id) ??
       str(raw.google_id) ??
       `${name}:${num(raw.latitude) ?? ""},${num(raw.longitude) ?? ""}`,
+    googlePlaceId: str(raw.place_id),
     name,
     category: str(raw.category) ?? str(raw.type),
     fullAddress: str(raw.full_address) ?? str(raw.address),

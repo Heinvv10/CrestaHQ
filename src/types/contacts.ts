@@ -1,5 +1,6 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
 import type { ConditionGroup } from "@/types/workflows";
+import type { ContactProspecting } from "@/types/prospecting";
 
 /**
  * How a Contact entered the CRM. Stored as a free-form string on the doc
@@ -15,6 +16,9 @@ import type { ConditionGroup } from "@/types/workflows";
  *   - "facebook" / "instagram"  Auto-set when a contact is created from a
  *                     BETA Facebook Messenger / Instagram DM inbound. Not
  *                     manual-create options — the Meta webhook stamps them.
+ *   - "get-leads"     Legacy Get Leads import (before Prospecting).
+ *   - "prospecting"   Imported from a Get Leads search since Prospecting
+ *                     shipped; carries the `prospecting` map.
  *   - ""              Unknown — no badge rendered.
  */
 export type ContactSource =
@@ -23,6 +27,7 @@ export type ContactSource =
   | "booking-page"
   | "community"
   | "get-leads"
+  | "prospecting"
   | "website"
   | "referral"
   | "ads"
@@ -177,6 +182,11 @@ export interface Contact {
    * treated as Global. Ignored when `territoryScopingEnabled` is not true.
    */
   territoryId?: string | null;
+  /**
+   * Prospect facts — written by the Get Leads import (and the public API's
+   * `prospecting` field). Absent on every other contact.
+   */
+  prospecting?: ContactProspecting;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
