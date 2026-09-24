@@ -57,164 +57,165 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
   const cloudTplId = `e2e-cloud-${stamp}`;
   const twilioTplId = `e2e-twilio-${stamp}`;
 
-  await saRef.update({
-    twilioConfig: {
-      enabled: true,
-      accountSid: "ACe2e00000000000000000000000000000",
-      authTokenSet: true,
-      fromNumber: "+27100000001",
-    },
-    emailProvider: "smtp",
-    smtpConfig: {
-      host: "smtp.e2e.invalid",
-      port: 587,
-      secure: false,
-      username: "e2e",
-      fromEmail: "desk@e2e.invalid",
-      fromName: "E2E Desk",
-      verifiedAt: new Date().toISOString(),
-    },
-    whatsappEnabledByAgency: true,
-    whatsappProvider: "cloud",
-    whatsappCloudMeta: {
-      phoneNumberId: "e2e-fake-phone",
-      displayPhoneNumber: "+27 60 000 0000",
-      verifiedName: "E2E Fixture Fibre",
-      connectedAt: new Date(),
-      connectedByUid: "e2e",
-    },
-    // No registry: the rail comes from whatsappProvider, as on #1000.
-    whatsappSenders: FieldValue.delete(),
-    metaInboxEnabledByAgency: true,
-    metaConfig: {
-      connected: true,
-      pageId: "e2e-fake-page",
-      pageName: "E2E Fake Page",
-      pageAccessToken: "e2e-invalid-token",
-      capabilities: { inbox: true, publish: false, instagramDm: false },
-    },
-  });
-  const restoreToken = await seedTwilioToken(sa, "e2e-twilio-auth-token");
+  let restoreToken: (() => Promise<void>) | undefined;
+  try {
+    await saRef.update({
+      twilioConfig: {
+        enabled: true,
+        accountSid: "ACe2e00000000000000000000000000000",
+        authTokenSet: true,
+        fromNumber: "+27100000001",
+      },
+      emailProvider: "smtp",
+      smtpConfig: {
+        host: "smtp.e2e.invalid",
+        port: 587,
+        secure: false,
+        username: "e2e",
+        fromEmail: "desk@e2e.invalid",
+        fromName: "E2E Desk",
+        verifiedAt: new Date().toISOString(),
+      },
+      whatsappEnabledByAgency: true,
+      whatsappProvider: "cloud",
+      whatsappCloudMeta: {
+        phoneNumberId: "e2e-fake-phone",
+        displayPhoneNumber: "+27 60 000 0000",
+        verifiedName: "E2E Fixture Fibre",
+        connectedAt: new Date(),
+        connectedByUid: "e2e",
+      },
+      // No registry: the rail comes from whatsappProvider, as on #1000.
+      whatsappSenders: FieldValue.delete(),
+      metaInboxEnabledByAgency: true,
+      metaConfig: {
+        connected: true,
+        pageId: "e2e-fake-page",
+        pageName: "E2E Fake Page",
+        pageAccessToken: "e2e-invalid-token",
+        capabilities: { inbox: true, publish: false, instagramDm: false },
+      },
+    });
+    restoreToken = await seedTwilioToken(sa, "e2e-twilio-auth-token");
 
-  const name = `Switcher ${stamp}`;
-  const contactRef = await db.collection("contacts").add({
-    ...tenant,
-    name,
-    email: "",
-    phone: `+2786${String(stamp).slice(-7)}`,
-    company: "",
-    address: "",
-    source: "e2e-fixture",
-    tags: ["e2e-inbox-channel-switcher"],
-    pipelineStage: null,
-    attribution: null,
-    createdByUid: owner,
-    emailOptedOut: false,
-    smsOptedOut: true,
-    whatsappOptedOut: false,
-    metaUserId: `e2e-psid-${stamp}`,
-    territoryId: "global",
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  const inboundAt = new Date(stamp - (20 * H + 48 * 60_000));
-  const inboundRef = contactRef.collection("whatsappMessages").doc(`e2e-in-${stamp}`);
-  await inboundRef.set({
-    ...tenant,
-    contactId: contactRef.id,
-    direction: "inbound",
-    status: "received",
-    body: "Hi, is my line active yet?",
-    from: "whatsapp:+27860000000",
-    to: "+27600000000",
-    readAt: null,
-    createdAt: Timestamp.fromDate(inboundAt),
-  });
-  // A newer OUTBOUND row must not reopen or extend the window.
-  await contactRef.collection("whatsappMessages").doc(`e2e-out-${stamp}`).set({
-    ...tenant,
-    contactId: contactRef.id,
-    direction: "outbound",
-    status: "sent",
-    body: "Checking now.",
-    from: "+27600000000",
-    to: "whatsapp:+27860000000",
-    readAt: null,
-    createdAt: Timestamp.fromDate(new Date(stamp - H)),
-  });
-  const at = Timestamp.fromDate(inboundAt);
-  await db.doc(`conversations/${contactRef.id}`).set({
-    ...tenant,
-    contactId: contactRef.id,
-    createdByUid: owner,
-    territoryId: "global",
-    contactName: name,
-    contactPhone: null,
-    channelsSeen: ["whatsapp", "messenger"],
-    status: "open",
-    assigneeUid: null,
-    botMode: "off",
-    botPausedUntil: null,
-    pendingDraft: null,
-    unreadCount: 0,
-    lastChannel: "whatsapp",
-    lastDirection: "inbound",
-    lastMessagePreview: "Hi, is my line active yet?",
-    lastMessageAt: at,
-    createdAt: at,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
-  const tpl = (id: string, displayName: string, approval: Record<string, unknown>) =>
-    db.doc(`subAccounts/${sa}/whatsappTemplates/${id}`).set({
+    const name = `Switcher ${stamp}`;
+    const contactRef = await db.collection("contacts").add({
       ...tenant,
+      name,
+      email: "",
+      phone: `+2786${String(stamp).slice(-7)}`,
+      company: "",
+      address: "",
+      source: "e2e-fixture",
+      tags: ["e2e-inbox-channel-switcher"],
+      pipelineStage: null,
+      attribution: null,
       createdByUid: owner,
-      name: id.replace(/-/g, "_"),
-      displayName,
-      category: "UTILITY",
-      language: "en",
-      body: "Hi {{1}}, following up on your installation.",
-      variables: [
-        { position: 1, label: "First name", sampleValue: "Thandi", source: "merge_tag", mergeTag: "contact.firstName" },
-      ],
-      rejectionReason: null,
-      pollAttempts: 0,
-      lastSyncedAt: null,
-      approvedAt: null,
+      emailOptedOut: false,
+      smsOptedOut: true,
+      whatsappOptedOut: false,
+      metaUserId: `e2e-psid-${stamp}`,
+      territoryId: "global",
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-      ...approval,
     });
-  const cloudTplName = `E2E Cloud follow-up ${stamp}`;
-  const twilioTplName = `E2E Twilio-only ${stamp}`;
-  await tpl(cloudTplId, cloudTplName, {
-    status: "approved",
-    contentSid: null,
-    registrations: {
-      cloud: { externalId: "e2e-meta-template", status: "approved", rejectionReason: null },
-    },
-  });
-  // Approved on Twilio only — not sendable on this Cloud workspace.
-  await tpl(twilioTplId, twilioTplName, { status: "approved", contentSid: "HXe2e0000" });
+    const inboundAt = new Date(stamp - (20 * H + 48 * 60_000));
+    const inboundRef = contactRef.collection("whatsappMessages").doc(`e2e-in-${stamp}`);
+    await inboundRef.set({
+      ...tenant,
+      contactId: contactRef.id,
+      direction: "inbound",
+      status: "received",
+      body: "Hi, is my line active yet?",
+      from: "whatsapp:+27860000000",
+      to: "+27600000000",
+      readAt: null,
+      createdAt: Timestamp.fromDate(inboundAt),
+    });
+    // A newer OUTBOUND row must not reopen or extend the window.
+    await contactRef.collection("whatsappMessages").doc(`e2e-out-${stamp}`).set({
+      ...tenant,
+      contactId: contactRef.id,
+      direction: "outbound",
+      status: "sent",
+      body: "Checking now.",
+      from: "+27600000000",
+      to: "whatsapp:+27860000000",
+      readAt: null,
+      createdAt: Timestamp.fromDate(new Date(stamp - H)),
+    });
+    const at = Timestamp.fromDate(inboundAt);
+    await db.doc(`conversations/${contactRef.id}`).set({
+      ...tenant,
+      contactId: contactRef.id,
+      createdByUid: owner,
+      territoryId: "global",
+      contactName: name,
+      contactPhone: null,
+      channelsSeen: ["whatsapp", "messenger"],
+      status: "open",
+      assigneeUid: null,
+      botMode: "off",
+      botPausedUntil: null,
+      pendingDraft: null,
+      unreadCount: 0,
+      lastChannel: "whatsapp",
+      lastDirection: "inbound",
+      lastMessagePreview: "Hi, is my line active yet?",
+      lastMessageAt: at,
+      createdAt: at,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-  const sends: Array<{ url: string; body: Record<string, unknown> }> = [];
-  await page.route("**/api/comms/**", async (route) => {
-    // Only a POST is a send; the picker's capability GET goes through.
-    if (route.request().method() !== "POST") return route.fallback();
-    sends.push({ url: route.request().url(), body: route.request().postDataJSON() });
-    await route.abort();
-  });
+    const tpl = (id: string, displayName: string, approval: Record<string, unknown>) =>
+      db.doc(`subAccounts/${sa}/whatsappTemplates/${id}`).set({
+        ...tenant,
+        createdByUid: owner,
+        name: id.replace(/-/g, "_"),
+        displayName,
+        category: "UTILITY",
+        language: "en",
+        body: "Hi {{1}}, following up on your installation.",
+        variables: [
+          { position: 1, label: "First name", sampleValue: "Thandi", source: "merge_tag", mergeTag: "contact.firstName" },
+        ],
+        rejectionReason: null,
+        pollAttempts: 0,
+        lastSyncedAt: null,
+        approvedAt: null,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        ...approval,
+      });
+    const cloudTplName = `E2E Cloud follow-up ${stamp}`;
+    const twilioTplName = `E2E Twilio-only ${stamp}`;
+    await tpl(cloudTplId, cloudTplName, {
+      status: "approved",
+      contentSid: null,
+      registrations: {
+        cloud: { externalId: "e2e-meta-template", status: "approved", rejectionReason: null },
+      },
+    });
+    // Approved on Twilio only — not sendable on this Cloud workspace.
+    await tpl(twilioTplId, twilioTplName, { status: "approved", contentSid: "HXe2e0000" });
 
-  const composer = page.locator("form").filter({ has: page.locator("textarea") });
-  const textarea = composer.locator("textarea");
-  const option = (ch: string) => page.getByTestId(`channel-option-${ch}`);
-  const windowState = page.getByTestId("wa-window-state");
-  const picker = page.getByTestId("wa-template-picker");
-  const shot = async (file: string) => {
-    if (process.env.SP2_EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/${file}` });
-  };
+    const sends: Array<{ url: string; body: Record<string, unknown> }> = [];
+    await page.route("**/api/comms/**", async (route) => {
+      // Only a POST is a send; the picker's capability GET goes through.
+      if (route.request().method() !== "POST") return route.fallback();
+      sends.push({ url: route.request().url(), body: route.request().postDataJSON() });
+      await route.abort();
+    });
 
-  try {
+    const composer = page.locator("form").filter({ has: page.locator("textarea") });
+    const textarea = composer.locator("textarea");
+    const option = (ch: string) => page.getByTestId(`channel-option-${ch}`);
+    const windowState = page.getByTestId("wa-window-state");
+    const picker = page.getByTestId("wa-template-picker");
+    const shot = async (file: string) => {
+      if (process.env.SP2_EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/${file}` });
+    };
+
     await page.goto(`/sa/${sa}/conversations/${contactRef.id}`);
     await expect(
       page.getByTestId("thread-header").getByRole("heading", { name }),
@@ -357,7 +358,7 @@ test("channel switcher: reasons, WhatsApp window, template fallback", async ({
         FIELDS.map((f) => [f, before[f] === undefined ? FieldValue.delete() : before[f]]),
       ),
     );
-    await restoreToken();
+    await restoreToken?.();
     for (const id of [cloudTplId, twilioTplId]) {
       await deleteScoped(db.doc(`subAccounts/${sa}/whatsappTemplates/${id}`));
     }

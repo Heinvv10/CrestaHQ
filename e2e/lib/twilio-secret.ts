@@ -12,8 +12,9 @@ import { fixtureSubAccountIds } from "./guard";
  * the missed-call spec went red after the private-credentials migration.
  *
  * Returns the restore: puts back the private doc exactly as it was, or
- * deletes it if there was none. Specs share one fixture doc; that is safe
- * only because playwright.config.ts runs one worker, not fully parallel.
+ * deletes it if there was none. Idempotent: a second call is a no-op.
+ * Specs share one fixture doc; that is safe only because
+ * playwright.config.ts runs one worker, not fully parallel.
  */
 export async function seedTwilioToken(
   subAccountId: string,
@@ -29,7 +30,10 @@ export async function seedTwilioToken(
   const ref = adminDb().doc(subAccountSecretPath(subAccountId, "twilio"));
   const prior = (await ref.get()).data();
   await ref.set(subAccountSecretDoc("twilio", token));
+  let restored = false;
   return async () => {
+    if (restored) return;
+    restored = true;
     if (prior) await ref.set(prior);
     else await ref.delete();
   };

@@ -37,30 +37,31 @@ test("inbound SMS and a new task both land in the Activity timeline", async ({
 
   const saRef = db.doc(`subAccounts/${sa}`);
   const previousTwilio = (await saRef.get()).data()?.twilioConfig ?? null;
-  await saRef.update({ twilioConfig: FIXTURE_TWILIO });
-  const restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
-
-  const contactRef = await db.collection("contacts").add({
-    name: `E2E Timeline ${stamp}`,
-    email: "",
-    phone,
-    company: "",
-    address: "",
-    source: "e2e-fixture",
-    tags: ["e2e-timeline"],
-    pipelineStage: null,
-    attribution: null,
-    agencyId: env.E2E_AGENCY_ID,
-    subAccountId: sa,
-    createdByUid: owner,
-    emailOptedOut: false,
-    smsOptedOut: false,
-    territoryId: "global",
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
+  let restoreToken: (() => Promise<void>) | undefined;
   try {
+    await saRef.update({ twilioConfig: FIXTURE_TWILIO });
+    restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
+
+    const contactRef = await db.collection("contacts").add({
+      name: `E2E Timeline ${stamp}`,
+      email: "",
+      phone,
+      company: "",
+      address: "",
+      source: "e2e-fixture",
+      tags: ["e2e-timeline"],
+      pipelineStage: null,
+      attribution: null,
+      agencyId: env.E2E_AGENCY_ID,
+      subAccountId: sa,
+      createdByUid: owner,
+      emailOptedOut: false,
+      smsOptedOut: false,
+      territoryId: "global",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
     // --- inbound SMS through the real webhook -------------------------
     const url = `${baseURL()}/api/webhooks/twilio/inbound`;
     const form = {
@@ -129,7 +130,7 @@ test("inbound SMS and a new task both land in the Activity timeline", async ({
     await expect(taskRow).toBeVisible();
   } finally {
     await saRef.update({ twilioConfig: previousTwilio });
-    await restoreToken();
+    await restoreToken?.();
     // Teardown purges contacts (with subcollections) but not tasks.
     const tasks = await db
       .collection("tasks")

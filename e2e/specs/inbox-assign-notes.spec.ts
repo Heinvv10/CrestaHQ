@@ -53,35 +53,6 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
 
   const saRef = db.doc(`subAccounts/${sa}`);
   const previousTwilio = (await saRef.get()).data()?.twilioConfig ?? null;
-  await saRef.update({ twilioConfig: FIXTURE_TWILIO });
-  const restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
-
-  const contactRef = await db.collection("contacts").add({
-    name,
-    email,
-    phone,
-    company: "",
-    address: "",
-    source: "e2e-fixture",
-    tags: ["e2e-inbox-owner"],
-    pipelineStage: null,
-    attribution: null,
-    agencyId: env.E2E_AGENCY_ID,
-    subAccountId: sa,
-    createdByUid: ownerUid,
-    assignedToUid: null,
-    emailOptedOut: false,
-    smsOptedOut: false,
-    territoryId: "global",
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  const convoRef = db.doc(`conversations/${contactRef.id}`);
-  const contactOwner = async () =>
-    (await contactRef.get()).data()?.assignedToUid ?? null;
-  const convoOwner = async () =>
-    (await convoRef.get()).data()?.assigneeUid ?? null;
-
   // Every browser request to a send route, for the "nothing is sent" check.
   const sends: string[] = [];
   const onRequest = (r: Request) => {
@@ -89,13 +60,43 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
     if (r.method() === "POST" && new URL(r.url()).pathname.startsWith("/api/comms/")) sends.push(r.url());
   };
 
-  const list = page.getByTestId("inbox-list");
-  const scope = list.getByRole("combobox", { name: "Inbox" });
-  const row = list.getByTestId("conversation-row").filter({ hasText: name });
-  const header = page.getByTestId("thread-header");
-  const owner = page.locator("#thread-owner");
-
+  let restoreToken: (() => Promise<void>) | undefined;
   try {
+    await saRef.update({ twilioConfig: FIXTURE_TWILIO });
+    restoreToken = await seedTwilioToken(sa, FIXTURE_TWILIO_TOKEN);
+
+    const contactRef = await db.collection("contacts").add({
+      name,
+      email,
+      phone,
+      company: "",
+      address: "",
+      source: "e2e-fixture",
+      tags: ["e2e-inbox-owner"],
+      pipelineStage: null,
+      attribution: null,
+      agencyId: env.E2E_AGENCY_ID,
+      subAccountId: sa,
+      createdByUid: ownerUid,
+      assignedToUid: null,
+      emailOptedOut: false,
+      smsOptedOut: false,
+      territoryId: "global",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    const convoRef = db.doc(`conversations/${contactRef.id}`);
+    const contactOwner = async () =>
+      (await contactRef.get()).data()?.assignedToUid ?? null;
+    const convoOwner = async () =>
+      (await convoRef.get()).data()?.assigneeUid ?? null;
+
+    const list = page.getByTestId("inbox-list");
+    const scope = list.getByRole("combobox", { name: "Inbox" });
+    const row = list.getByTestId("conversation-row").filter({ hasText: name });
+    const header = page.getByTestId("thread-header");
+    const owner = page.locator("#thread-owner");
+
     // --- inbound SMS through the real webhook creates the conversation ------
     const url = `${baseURL()}/api/webhooks/twilio/inbound`;
     const form = {
@@ -221,7 +222,7 @@ test("owner from the thread drives inbox scope; internal notes never send", asyn
   } finally {
     page.off("request", onRequest);
     await saRef.update({ twilioConfig: previousTwilio });
-    await restoreToken();
+    await restoreToken?.();
     // Global teardown purges fixture contacts (with subcollections) and
     // conversations; nothing else was written.
   }
