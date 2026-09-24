@@ -283,6 +283,75 @@ describe("enrichBusinesses — bounded deadline", () => {
     expect(peak).toBe(ENRICH_CONCURRENCY);
   });
 
+  it("a slot handed over right as the deadline fires is released unused, never fetched", async () => {
+    // Targets the check at the top of withFetchSlot's post-wait branch: a
+    // waiter can be handed a slot (via releaseSlot -> entry()) in the same
+    // microtask turn its deadline fires, so the code re-checks
+    // deadline.aborted *after* acquiring the slot, not just before waiting.
+    // That window is a single microtask wide, so real timers can't land in
+    // it reliably (the deadline either fires well before release — already
+    // covered by the "queued waiter leaves the queue" test above — or well
+    // after). We drive it deterministically instead: hold 6 "big search"
+    // fetches open on manually-resolved promises, queue a 7th ("small
+    // search") site behind them, then resolve one big fetch and abort the
+    // small search's own signal exactly 7 microtask ticks later — the tick
+    // at which this codebase's release chain (fetchHomepage's await chain
+    // + withFetchSlot's finally) hands the small waiter its slot but hasn't
+    // yet re-checked the deadline.
+    function microtask(n: number): Promise<void> {
+      return new Promise((resolve) => {
+        let remaining = n;
+        const step = () => (remaining-- <= 0 ? resolve() : queueMicrotask(step));
+        queueMicrotask(step);
+      });
+    }
+
+    const bigResolvers: (() => void)[] = [];
+    let smallFetchCalled = false;
+    publicFetch.mockImplementation((url: string) => {
+      if (url.includes("small")) {
+        smallFetchCalled = true;
+        return html("");
+      }
+      return new Promise((resolve) => bigResolvers.push(() => resolve(html(""))));
+    });
+
+    const bigSearch = enrichBusinesses(
+      Array.from({ length: 6 }, (_, i) => biz(i, `https://big${i}.example`)),
+      undefined,
+      999_000,
+    );
+    const controller = new AbortController();
+    const smallSearch = enrichBusinesses([biz(999, "https://small.example")], controller.signal, 999_000);
+
+    await microtask(4); // let both calls finish their synchronous setup
+    bigResolvers[0]!(); // free one of the 6 slots
+    await microtask(7); // land right after the small waiter gets that slot
+    controller.abort(); // ...and its deadline fires before it re-checks
+
+    const [small] = await smallSearch;
+    expect(small!.email).toBeNull();
+    expect(smallFetchCalled).toBe(false);
+
+    bigResolvers.slice(1).forEach((resolve) => resolve());
+    await bigSearch;
+
+    // The freed slot went back to the pool correctly (no leak): a fresh
+    // call still reaches the full concurrency limit.
+    publicFetch.mockReset();
+    let inFlight = 0;
+    let peak = 0;
+    publicFetch.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return html("");
+    });
+    await enrichBusinesses(Array.from({ length: 6 }, (_, i) => biz(i, `https://c${i}.example`)));
+    expect(peak).toBe(ENRICH_CONCURRENCY);
+  });
+
   it("an aborted caller signal stops the call promptly, well inside the default deadline", async () => {
     expect(ENRICH_DEADLINE_MS).toBe(30_000);
 
