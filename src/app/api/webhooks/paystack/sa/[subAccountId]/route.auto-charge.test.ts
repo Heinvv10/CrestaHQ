@@ -15,6 +15,8 @@ import {
 } from "@/test/auto-charge-harness";
 import { KEY, OTHER_KEY, SA, mem, refused, seedAttempt, seedInvoice, seedSub, stubPaystack } from "@/test/paystack-links-harness";
 import { fireQuoteTrigger } from "@/lib/quotes/lifecycle";
+import { sendQuoteServerSide } from "@/lib/server/quote-send-service";
+import { createTaskServerSide } from "@/lib/server/tasks-service";
 
 /**
  * Seam test: a REAL card cycle (`runOneSchedule`) charges, then the REAL
@@ -63,6 +65,8 @@ function deliver(key = KEY, reference = REF) {
 }
 
 const attempt = () => mem.read(`paymentAttempts/${REF}`)!;
+const tasksCreated = (title: RegExp) =>
+  vi.mocked(createTaskServerSide).mock.calls.filter(([input]) => title.test(String((input as { title?: string }).title))).length;
 const succeeded = () => fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_succeeded");
 const verifies = (calls: { path: string }[]) => calls.filter((c) => c.path.startsWith("/transaction/verify/"));
 
@@ -138,6 +142,85 @@ describe("a card cycle's charge recorded by the verified webhook", () => {
   });
 });
 
+describe("a success settled before the decline answer was recorded", () => {
+  it("is not treated as a decline: no email, no decline counted, no charge_failed", async () => {
+    stubAutoCharge({
+      charge: () => {
+        // The success webhook wins the race while charge_authorization answers "failed".
+        mem.seed(`paymentAttempts/${REF}`, { ...mem.read(`paymentAttempts/${REF}`)!, state: "settled" });
+        return chargeAnswer("failed", "Declined");
+      },
+    });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(attempt()).toMatchObject({ state: "settled" });
+    expect((raised().autoCharge as { state?: string } | undefined)?.state).not.toBe("declined");
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
+    expect(mem.read(`paymentMandates/${MANDATE}`)).toMatchObject({ consecutiveDeclines: 1 });
+  });
+});
+
+describe("recording a decline", () => {
+  it("a refused key reads as the workspace's key, not the card", async () => {
+    stubAutoCharge({ charge: () => refused(401, "Invalid key") });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(raised().autoCharge).toMatchObject({ state: "declined", reason: "Paystack refused this workspace's key (Paystack: Invalid key)" });
+  });
+
+  it("if the combined write fails, the invoice still reads declined", async () => {
+    let charged = false;
+    stubAutoCharge({
+      charge: () => {
+        charged = true;
+        return chargeAnswer("failed", "Declined");
+      },
+    });
+    const run = mem.db.runTransaction.bind(mem.db);
+    let failed = false;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      if (charged && !failed) {
+        failed = true;
+        throw new Error("10 ABORTED: contention");
+      }
+      return run(fn as never);
+    });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(failed).toBe(true);
+    expect(attempt()).toMatchObject({ state: "open" });
+    expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined", reason: "Declined" });
+  });
+
+  it("a fallback after a commit that threw never writes declined over a late success", async () => {
+    let charged = false;
+    stubAutoCharge({
+      charge: () => {
+        charged = true;
+        return chargeAnswer("failed", "Declined");
+      },
+    });
+    const run = mem.db.runTransaction.bind(mem.db);
+    let thrown = false;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      if (charged && !thrown) {
+        // The combined write commits, then reports failure (an ambiguous commit)…
+        thrown = true;
+        await run(fn as never);
+        // …and a late success lands before the fallback runs.
+        const inv = raised();
+        mem.seed(`quotes/${inv.id}`, { ...inv, autoCharge: { reference: REF, mandateId: MANDATE, state: "needs_attention", reason: "late" } });
+        throw new Error("4 DEADLINE_EXCEEDED");
+      }
+      return run(fn as never);
+    });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(thrown).toBe(true);
+    expect(attempt()).toMatchObject({ state: "refused" });
+    expect(raised().autoCharge).toMatchObject({ state: "needs_attention", reason: "late" });
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
+  });
+});
+
 describe("what the webhook refuses to record", () => {
   it("a key other than the attempt's: flagged, never verified, not paid", async () => {
     const calls = await chargedCycle();
@@ -208,12 +291,93 @@ describe("what the webhook refuses to record", () => {
     expect(raised().status).toBe("paid");
   });
 
-  it("a charge recorded as declined that later succeeds is not settled; the attempt says so", async () => {
+  it("a charge recorded as declined that later succeeds is not settled; the attempt and invoice say so", async () => {
     stubAutoCharge({ charge: () => chargeAnswer("failed", "Declined") });
     await runOneSchedule(SCHEDULE, NOW);
+    expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined" });
     await deliver();
     expect(attempt()).toMatchObject({ state: "refused", reason: expect.stringMatching(/later reported this charge/) });
+    // The invoice no longer reads "declined", which offers a pay link.
+    expect(raised().autoCharge).toMatchObject({
+      reference: REF,
+      state: "needs_attention",
+      reason: expect.stringMatching(/later reported this card charge/),
+    });
+    expect(raised().status).not.toBe("paid");
     expect(succeeded()).toHaveLength(0);
+  });
+});
+
+describe("a success after a recorded decline, on the invoice", () => {
+  async function declinedCycle() {
+    stubAutoCharge({ charge: () => chargeAnswer("failed", "Declined") });
+    await runOneSchedule(SCHEDULE, NOW);
+    return raised();
+  }
+
+  it("leaves an invoice whose charge no longer reads that decline alone", async () => {
+    const inv = await declinedCycle();
+    for (const autoCharge of [
+      { reference: "ra-other-c9", mandateId: null, state: "declined", reason: "another cycle" },
+      { reference: REF, mandateId: null, state: "needs_attention", reason: "already flagged" },
+    ]) {
+      mem.seed(`quotes/${inv.id}`, { ...inv, autoCharge });
+      await deliver();
+      expect(raised().autoCharge).toEqual(autoCharge);
+    }
+  });
+
+  it("the invoice reads declined before the attempt is refused", async () => {
+    // A success landing between the two writes must find either an open
+    // attempt (settles normally) or a declined invoice (needs_attention).
+    // The invoice's charge state at each transaction that leaves the attempt refused.
+    const seen: unknown[] = [];
+    const run = mem.db.runTransaction.bind(mem.db);
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      const out = await run(fn as never);
+      if (mem.read(`paymentAttempts/${REF}`)?.state === "refused") {
+        seen.push((raised().autoCharge as { state?: string } | undefined)?.state);
+      }
+      return out;
+    });
+    await declinedCycle();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toBe("declined");
+  });
+
+  const reasonAfter = async (patch: Record<string, unknown>) => {
+    const inv = await declinedCycle();
+    mem.seed(`quotes/${inv.id}`, { ...inv, ...patch });
+    await deliver();
+    expect(raised().autoCharge).toMatchObject({ state: "needs_attention" });
+    return (raised().autoCharge as { reason: string }).reason;
+  };
+
+  it("unpaid: says to record the payment, not to send a pay link — still true once recorded", async () => {
+    const reason = await reasonAfter({});
+    expect(reason).toMatch(/Record it as this invoice's payment rather than sending a pay link/);
+    // Still true once the operator has done so.
+    expect(reason).not.toMatch(/mark (the invoice|it) paid by hand/i);
+  });
+
+  it("marked paid by hand: a refund MAY be owed", async () => {
+    const reason = await reasonAfter({ status: "paid" });
+    expect(reason).toMatch(/marked paid by hand/);
+    expect(reason).toMatch(/may be owed/);
+  });
+
+  it("paid by the pay link: the customer paid twice and a refund IS owed", async () => {
+    const reason = await reasonAfter({ status: "paid", paidVia: { rail: "paystack_link", reference: "pl-x" } });
+    expect(reason).toMatch(/also paid by a payment link, Paystack reference pl-x/);
+    expect(reason).toMatch(/a refund is owed/);
+  });
+
+  it("one Task however the invoice changes between redeliveries", async () => {
+    const inv = await declinedCycle();
+    await deliver();
+    mem.seed(`quotes/${inv.id}`, { ...raised(), status: "paid", paidVia: { rail: "paystack_link", reference: "pl-x" } });
+    await deliver();
+    expect(tasksCreated(/Card charged after its decline/)).toBe(1);
   });
 });
 

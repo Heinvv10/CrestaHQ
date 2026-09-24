@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -128,10 +128,26 @@ export async function chargeCycle(
   // on this reference. A refused key says nothing about the card, so it is
   // not counted against the mandate — the operator has a connection to fix.
   const keyRefused = answer.kind === "key";
-  await refuseAttempt(reference, `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`).catch(
-    (err: unknown) => console.error(`${tag} attempt not refused`, err),
-  );
-  await setInvoice({ ...base, state: "declined", reason: answer.reason });
+  const declined: QuoteAutoCharge = {
+    ...base,
+    state: "declined",
+    reason: keyRefused ? `Paystack refused this workspace's key (${answer.reason})` : answer.reason,
+  };
+  const attemptReason = `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`;
+  const recorded = await recordDecline(reference, invoiceRef, attemptReason, declined).catch(async (err: unknown) => {
+    // The attempt stays open (the daily sweep re-checks it); the invoice at
+    // least reads declined, so no pay link is minted against an open charge.
+    console.error(`${tag} decline not recorded; writing the invoice alone`, err);
+    return recordDecline(reference, invoiceRef, attemptReason, declined, { refuse: false }).catch((err2: unknown) => {
+      console.error(`${tag} invoice decline not written`, err2);
+      return "recorded" as const;
+    });
+  });
+  if (recorded === "overtaken") {
+    // Overtaken by a success: settled first, or recorded as a late success.
+    console.error(`${tag} declined answer overtaken by a success for this charge; not treated as a decline`);
+    return false;
+  }
   let chargeNote = `Card declined for invoice ${label} (${answer.reason}).`;
   let task: TaskText | undefined;
   if (keyRefused) {
@@ -264,12 +280,30 @@ async function charge(opened: Extract<Opened, { ok: true }>, reference: string):
   }
 }
 
-async function refuseAttempt(reference: string, reason: string): Promise<void> {
+/**
+ * Refuse the attempt (open → refused, never over a settle or a flag) and mark
+ * the invoice's charge declined in ONE transaction, so a success webhook sees
+ * both or neither. Overtaken — the attempt settled, or the invoice already
+ * records a late success on this charge (needs_attention: a first try that
+ * committed but threw, then the success webhook) — writes nothing.
+ * `refuse: false` writes the invoice alone, under the same guard.
+ */
+async function recordDecline(
+  reference: string,
+  invoiceRef: DocumentReference,
+  reason: string,
+  autoCharge: QuoteAutoCharge,
+  { refuse = true }: { refuse?: boolean } = {},
+): Promise<"recorded" | "overtaken"> {
   const db = getAdminDb();
   const ref = db.doc(`paymentAttempts/${reference}`);
-  await db.runTransaction(async (t) => {
-    // Only open → refused: never over a settle or a flag.
-    if ((await t.get(ref)).data()?.state !== "open") return;
-    t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+  return db.runTransaction(async (t) => {
+    const state = (await t.get(ref)).data()?.state;
+    const live = ((await t.get(invoiceRef)).data() as Quote | undefined)?.autoCharge;
+    const lateSuccess = live?.reference === reference && live.state === "needs_attention";
+    if (state === "settled" || lateSuccess) return "overtaken";
+    if (refuse && state === "open") t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+    t.update(invoiceRef, { autoCharge, updatedAt: FieldValue.serverTimestamp() });
+    return "recorded";
   });
 }

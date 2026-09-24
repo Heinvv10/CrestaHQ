@@ -43,6 +43,22 @@ import type { TenantScope } from "@/types";
  * enforce server-side too).
  */
 
+interface RecheckKeep {
+  /** Card-charge states the answer still describes. */
+  charge: string[];
+  /** Whether the answer still holds once the invoice is paid. */
+  invoicePaid: boolean;
+}
+const CHARGE_OPEN = ["pending", "unknown"];
+/** An answer that changed nothing, or a refusal. */
+const RECHECK_UNCHANGED: RecheckKeep = { charge: CHARGE_OPEN, invoicePaid: false };
+const RECHECK_KEEP: Record<string, RecheckKeep> = {
+  paid: { charge: [...CHARGE_OPEN, "paid"], invoicePaid: true },
+  declined: { charge: [...CHARGE_OPEN, "declined"], invoicePaid: false },
+  failed_but_paid: { charge: [...CHARGE_OPEN, "declined"], invoicePaid: true },
+  needs_attention: { charge: [...CHARGE_OPEN, "needs_attention"], invoicePaid: true },
+};
+
 interface QuoteDetailProps {
   quote: Quote;
   scope: TenantScope;
@@ -81,6 +97,19 @@ export function QuoteDetail({
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  // A re-check's answer stays while the card charge is still unconfirmed or
+  // where the answer says it went, and hides on any other move (a webhook,
+  // another operator). Only the answers that allow it survive the invoice
+  // being paid. Matching states, not write order, keeps it race-free.
+  const [recheck, setRecheck] = useState<{ text: string; isError: boolean; keep: RecheckKeep } | null>(null);
+  const showRecheck =
+    recheck &&
+    recheck.keep.charge.includes(quote.autoCharge?.state ?? "") &&
+    (recheck.keep.invoicePaid || quote.status !== "paid")
+      ? recheck
+      : null;
+  const onRecheck = (text: string, isError: boolean, outcome?: string) =>
+    setRecheck({ text, isError, keep: (outcome && RECHECK_KEEP[outcome]) || RECHECK_UNCHANGED });
 
   const effStatus = effectiveQuoteStatus(quote);
   const totals = computeQuoteTotals(quote);
@@ -312,7 +341,12 @@ export function QuoteDetail({
               <PaystackInvoiceLinkButton invoiceId={quote.id} recurring={!!quote.recurringInvoiceId} />
             )}
             {isInvoice && quote.status !== "paid" && (quote.autoCharge?.state === "pending" || quote.autoCharge?.state === "unknown") && (
-              <RecheckCardChargeButton subAccountId={scope.subAccountId} invoiceId={quote.id} />
+              <RecheckCardChargeButton
+                subAccountId={scope.subAccountId}
+                invoiceId={quote.id}
+                onMessage={(m, outcome) => onRecheck(m, false, outcome)}
+                onError={(e) => onRecheck(e, true)}
+              />
             )}
             {(canMarkPaid || canMarkCardDraftPaid) && (
               <Button
@@ -358,6 +392,29 @@ export function QuoteDetail({
         )}
       </div>
 
+      {!showRecheck &&
+        isInvoice &&
+        // Unpaid only: recording the payment is what resolves it. On a paid
+        // invoice any refund owed is the Task's, which can be completed.
+        quote.status !== "paid" &&
+        (quote.autoCharge?.state === "declined" || quote.autoCharge?.state === "needs_attention") && (
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+            {quote.autoCharge.state === "declined" ? "Card charge failed" : "Card charge needs attention"}
+            {quote.autoCharge.reason ? `: ${quote.autoCharge.reason}` : "."}
+          </p>
+        )}
+      {showRecheck && (
+        <p
+          className={cn(
+            "rounded-md border px-3 py-2 text-xs",
+            showRecheck.isError
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+          )}
+        >
+          {showRecheck.text}
+        </p>
+      )}
       {flash && (
         <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
           {flash}
