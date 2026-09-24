@@ -42,6 +42,17 @@ export function millis(v: unknown): number | null {
 export type PreviewRows = Array<{ label: string; value: string }>;
 
 /** A capability's preview result, in the one shape the row stores. */
+/** An outbound action must pin what it will send to (see AiSuiteCapability.preview). */
+export function assertPinnedWhenOutbound(
+  capability: string,
+  approval: string,
+  preview: { pinned: Record<string, unknown> | null }
+): void {
+  if (approval === "outbound" && Object.keys(preview.pinned ?? {}).length === 0) {
+    throw new Error(`${capability} is outbound but its preview pins nothing`);
+  }
+}
+
 export function normalizePreview(
   p: PreviewRows | { rows: PreviewRows; pinned?: Record<string, unknown> }
 ): { rows: PreviewRows; pinned: Record<string, unknown> | null } {

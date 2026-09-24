@@ -97,7 +97,7 @@ describe("what the approver reviewed", () => {
   const setPhone = (p: string) => mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone: p });
   beforeEach(() => {
     mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", name: "Ann", phone: "+27 11 111 1111" });
-    outbound.preview = async () => [{ label: "To", value: phone() }];
+    outbound.preview = async () => ({ rows: [{ label: "To", value: phone() }], pinned: { to: phone() } });
     execute.mockImplementation(async () => ({ resultText: `sent to ${phone()}`, ref: { kind: "message", id: "m1" } }));
   });
 
@@ -132,9 +132,12 @@ describe("what the approver reviewed", () => {
   });
 
   it("F2/F3: preview runs under the same neutral ctx at propose and approve, so the approver cannot change it", async () => {
-    outbound.preview = async (ctx) => [{ label: "Seen by", value: `${ctx.uid}|${ctx.email}|${ctx.subAccountRole ?? "-"}` }];
+    outbound.preview = async (ctx) => ({
+      rows: [{ label: "Seen by", value: `${ctx.uid}|${ctx.email}|${ctx.subAccountRole ?? "-"}` }],
+      pinned: { to: "x" },
+    });
     const id = await proposeId();
-    expect(row(id).preview).toEqual([{ label: "Seen by", value: "preview||-" }]);
+    expect(row(id).preview).toEqual([{ label: "Seen by", value: "preview||admin" }]);
     expect((await decide(id, "approve")).status).toBe(200);
   });
 
@@ -155,6 +158,16 @@ describe("what the approver reviewed", () => {
     expect(crash.status).toBe(500);
     expect(JSON.stringify(await crash.json())).not.toContain("secret detail");
     expect(logged).toHaveBeenCalled();
+    expect(row(id).status).toBe("pending");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("G6: an outbound preview that stops pinning at approve → 500 logged, row pending, execute 0", async () => {
+    const id = await proposeId();
+    outbound.preview = async () => [{ label: "To", value: phone() }];
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await decide(id, "approve")).status).toBe(500);
+    expect(logged).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: expect.stringContaining("pins nothing") }));
     expect(row(id).status).toBe("pending");
     expect(execute).not.toHaveBeenCalled();
   });

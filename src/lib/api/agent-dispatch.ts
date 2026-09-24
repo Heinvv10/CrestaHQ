@@ -14,7 +14,10 @@ import {
   OUTCOME_UNKNOWN_MESSAGE,
   type ProposalStatus,
 } from "@/lib/server/agent-proposals";
-import { normalizePreview } from "@/lib/server/agent-proposals-encoding";
+import {
+  assertPinnedWhenOutbound,
+  normalizePreview,
+} from "@/lib/server/agent-proposals-encoding";
 
 export type AgentDispatchResult =
   | { ok: true; resultText: string; ref?: { kind: string; id: string } }
@@ -132,6 +135,7 @@ async function dispatch(
     const reviewed = normalizePreview(
       await cap.preview(buildPreviewContext(auth.agencyId, auth.subAccountId), validated.args)
     );
+    assertPinnedWhenOutbound(cap.name, cap.approval, reviewed);
     const created = await createProposal({
       agencyId: auth.agencyId,
       subAccountId: auth.subAccountId,

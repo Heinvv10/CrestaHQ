@@ -109,6 +109,24 @@ describe("general review — PR #259", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("G4: a preview that uses the territory helpers works in a scoped sub-account", async () => {
+    const { canSeeTerritory, territoryScopeFor } = await import("@/lib/ai-suite/territory-scope");
+    const { CapabilityUserError } = await import("@/lib/ai-suite/capabilities");
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
+    mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south", phone: "+27 1" });
+    outbound.approvalContactId = (args) => String(args.recipientId);
+    outbound.preview = async (ctx, args) => {
+      const contact = mem.read(`contacts/${String(args.recipientId)}`);
+      if (!canSeeTerritory(await territoryScopeFor(ctx), contact?.territoryId)) {
+        throw new CapabilityUserError("That contact isn't in one of your assigned territories.");
+      }
+      return { rows: [{ label: "To", value: String(contact?.phone) }], pinned: { to: contact?.phone } };
+    };
+    const id = await proposeId({ body: "x", recipientId: "c_south" });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("F10: the row carries its contact's territoryId (null without one), for firestore.rules", async () => {
     outbound.approvalContactId = (args) => (typeof args.recipientId === "string" ? args.recipientId : null);
     mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });

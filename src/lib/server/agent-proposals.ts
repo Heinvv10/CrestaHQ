@@ -1,7 +1,6 @@
 import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
 import {
@@ -141,6 +140,8 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       pinned: input.pinned,
       contactId: input.contactId,
       territoryId: contactSnap?.data()?.territoryId ?? null,
+      // Sticky: once an attempt is known to have sent, it never clears.
+      priorAttemptSent: cur?.priorAttemptSent ?? null,
       workflowId: input.workflowId ?? null,
       status: "pending",
       rev,
@@ -219,80 +220,4 @@ export async function refreshPreview(
   return (await transitionIf(id, "pending", patch, { rev })) === "ok"
     ? next
     : null;
-}
-
-/**
- * Settle a claimed row and write its `aiSuiteActions` row in one
- * transaction. If OUR claim was flipped to `unsettled`, or a person marked
- * it (`mark_sent` / `mark_not_sent` are guesses), the outcome is now known,
- * so the row resolves to it (`settledLate`, plus `overrodeHuman`). Otherwise the outcome goes to `history`, logged — and an
- * `executed` outcome rejects a newer `pending` generation in the same
- * transaction, since approving it would do the action twice.
- */
-export async function settleProposal(
-  id: string,
-  claimId: string,
-  outcome:
-    | { status: "executed"; result: { resultText: string; ref: { kind: string; id: string } | null } }
-    | { status: "failed"; error: string },
-  audit: {
-    agencyId: string;
-    subAccountId: string;
-    capability: string;
-    args: Record<string, unknown>;
-    summary: string;
-    confirmedByUid: string;
-    confirmedByEmail: string;
-  }
-): Promise<"settled" | "resolved_late" | "late"> {
-  const db = getAdminDb();
-  const ref = proposalRef(id);
-  const fields =
-    outcome.status === "executed"
-      ? { status: outcome.status, result: outcome.result }
-      : { status: outcome.status, error: outcome.error };
-  const verdict = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const cur = snap.data();
-    const ours = cur?.claimId === claimId;
-    // Any late settle on OUR claim overrides a person's mark_*: they guessed,
-    // this is the real outcome.
-    const overridesHuman =
-      ours &&
-      ((cur?.status === "rejected" && cur?.reason === "not_sent_confirmed") ||
-        (cur?.status === "executed" && cur?.settledBy === "human"));
-    const v =
-      ours && cur?.status === "executing"
-        ? "settled"
-        : (ours && cur?.status === "unsettled") || overridesHuman
-          ? "resolved_late"
-          : "late";
-    if (v === "settled") tx.update(ref, fields);
-    else if (v === "resolved_late") {
-      tx.update(ref, { ...fields, settledLate: true, ...(overridesHuman ? { overrodeHuman: true } : {}) });
-    } else {
-      tx.set(historyRef(id), { lateSettle: true, claimId, settledAt: new Date(), ...fields });
-      if (cur?.status === "pending" && outcome.status === "executed") {
-        tx.update(ref, {
-          status: "rejected",
-          reason: "previous_attempt_sent",
-          decidedAt: new Date(),
-        });
-      }
-    }
-    tx.set(db.collection("aiSuiteActions").doc(), {
-      level: "sub-account",
-      ...audit,
-      status: outcome.status,
-      resultRef: outcome.status === "executed" ? outcome.result.ref : null,
-      error: outcome.status === "failed" ? outcome.error : null,
-      agentProposalId: id,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    return v;
-  });
-  if (verdict === "late") {
-    console.error(`[agent-proposals] late settle of ${id} (${outcome.status}) recorded in history`);
-  }
-  return verdict;
 }

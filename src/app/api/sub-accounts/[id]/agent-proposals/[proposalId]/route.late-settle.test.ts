@@ -191,3 +191,65 @@ describe("F5: an execute that may still be running", () => {
     expect(unhandled).not.toHaveBeenCalled();
   });
 });
+
+describe("G1: a late executed settle after the next generation was already decided", () => {
+  // gen 1's execute hangs → unsettled → a person says "not sent" → gen 2 is
+  // re-proposed and then rejected (G1) or expired (G1b) BEFORE gen 1's
+  // execute finally succeeds. Only history learns of it — unless the row
+  // carries priorAttemptSent into gen 3.
+  async function gen3AfterLateSend(gen2End: "reject" | "expire") {
+    const id = await proposeId();
+    const a = await approveHangingThenUnsettle(id);
+    await ageClaim(id);
+    expect((await decide(id, "mark_not_sent")).status).toBe(200);
+    await proposeId();
+    if (gen2End === "reject") expect((await decide(id, "reject")).status).toBe(200);
+    else {
+      mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
+      expect((await decide(id, "approve")).status).toBe(409);
+      expect(row(id).status).toBe("expired");
+    }
+    quiet();
+    a.finish();
+    await a.approving;
+    expect(row(id).priorAttemptSent).toMatchObject({ claimId: expect.any(String) });
+    await proposeId();
+    expect(row(id)).toMatchObject({ status: "pending", priorAttemptSent: expect.any(Object) });
+    return id;
+  }
+
+  it.each(["reject", "expire"] as const)("gen 2 %s → approving gen 3 is 409 previous_attempt_sent; execute stays 1", async (end) => {
+    const id = await gen3AfterLateSend(end);
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "previous_attempt_sent" });
+    expect(row(id).status).toBe("pending");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["reject", "expire"] as const)("gen 2 %s → acknowledgePriorAttempt re-sends deliberately; execute 2", async (end) => {
+    const id = await gen3AfterLateSend(end);
+    const res = await decide(id, "approve", "sa1", row(id).rev, { acknowledgePriorAttempt: true });
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(2);
+    // Sticky: the next generation still warns.
+    await proposeId();
+    expect(row(id).priorAttemptSent).toBeTruthy();
+  });
+
+  it("F6's rejected pending generation also carries the flag into the next one", async () => {
+    const id = await proposeId();
+    const a = await approveHangingThenUnsettle(id);
+    await ageClaim(id);
+    await decide(id, "mark_not_sent");
+    await proposeId();
+    quiet();
+    a.finish();
+    await a.approving;
+    expect(row(id)).toMatchObject({ status: "rejected", reason: "previous_attempt_sent", priorAttemptSent: expect.any(Object) });
+    await proposeId();
+    expect((await decide(id, "approve")).status).toBe(409);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
+

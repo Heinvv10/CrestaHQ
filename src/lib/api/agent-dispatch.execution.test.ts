@@ -20,7 +20,7 @@ describe("approval capabilities", () => {
     const cap = await inject({
       name: "__fixture_outbound",
       approval: "outbound",
-      preview: async () => preview,
+      preview: async () => ({ rows: preview, pinned: { to: "a@x.io" } }),
     });
     const r = await dispatchAgentTool(auth, "__fixture_outbound", { body: "hi" });
     expect(r).toMatchObject({
@@ -42,6 +42,28 @@ describe("approval capabilities", () => {
     expect(await dispatchAgentTool(auth, "__fixture_outbound", { body: "hi" })).toEqual(r);
     expect(mem.list("agentProposals")).toHaveLength(1);
     expect(cap.execute).not.toHaveBeenCalled();
+  });
+
+  it("G6: an outbound capability whose preview pins nothing → internal_error 500, logged, nothing queued", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const cap = await inject({
+      name: "__fixture_unpinned",
+      approval: "outbound",
+      preview: async () => [{ label: "To", value: "Ann" }],
+    });
+    expect(await dispatchAgentTool(auth, "__fixture_unpinned", {})).toMatchObject({ code: "internal_error", httpStatus: 500 });
+    expect(logged).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ message: "__fixture_unpinned is outbound but its preview pins nothing" })
+    );
+    expect(mem.list("agentProposals")).toEqual([]);
+    expect(cap.execute).not.toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it("a non-outbound approval (hard_delete) needs no pinned values", async () => {
+    await inject({ name: "__fixture_delete", approval: "hard_delete", preview: async () => [{ label: "Delete", value: "Ann" }] });
+    expect(await dispatchAgentTool(auth, "__fixture_delete", {})).toMatchObject({ ok: true, proposal: { status: "pending" } });
   });
 
   it("an approval capability without a preview → internal_error 500, nothing queued", async () => {

@@ -19,7 +19,7 @@ const list = (query = "") =>
 
 beforeEach(() => {
   mem.clear();
-  mem.seed("agentProposals/p1", { subAccountId: "sa1", status: "pending", rev: "r1", createdAt: new Date(1) });
+  mem.seed("agentProposals/p1", { subAccountId: "sa1", status: "pending", rev: "r1", priorAttemptSent: { claimId: "c" }, createdAt: new Date(1) });
   mem.seed("agentProposals/p2", { subAccountId: "sa1", status: "rejected", createdAt: new Date(2) });
   mem.seed("agentProposals/p3", { subAccountId: "sa2", status: "pending", createdAt: new Date(3) });
 });
@@ -32,6 +32,8 @@ it("lists only this sub-account's proposals, newest first, optionally by status"
   // The approvals page must send back the generation it rendered.
   const [p1] = ((await (await list("?status=pending")).json()) as { proposals: { rev: string }[] }).proposals;
   expect(p1!.rev).toBe("r1");
+  // …and the prior-attempt warning it must show before a re-send.
+  expect(p1).toMatchObject({ priorAttemptSent: { claimId: "c" } });
   expect((await list("?status=bogus")).status).toBe(400);
 });
 

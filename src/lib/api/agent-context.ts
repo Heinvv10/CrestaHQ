@@ -27,12 +27,21 @@ export function buildAgentContext(auth: ApiAuthContext): AiSuiteActionContext {
 }
 
 /**
- * The ctx every `preview` runs under, at propose AND approve time: tenant
- * fields only, so a preview cannot depend on who is looking.
+ * The ctx every `preview` runs under, at propose AND approve time: identical
+ * for every viewer, so a preview cannot depend on who is looking. It reads as
+ * a sub-account admin so territory helpers see the whole tenant; the
+ * approver's own territory gate is applied separately by the decide route.
  */
 export function buildPreviewContext(
   agencyId: string,
   subAccountId: string
 ): AiSuiteActionContext {
-  return { uid: "preview", email: "", displayName: "", agencyId, subAccountId };
+  return {
+    uid: "preview",
+    email: "",
+    displayName: "",
+    agencyId,
+    subAccountId,
+    subAccountRole: "admin",
+  };
 }

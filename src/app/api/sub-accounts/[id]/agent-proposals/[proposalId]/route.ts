@@ -11,16 +11,20 @@ import {
 } from "@/lib/ai-suite/capabilities";
 import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import { buildPreviewContext } from "@/lib/api/agent-context";
-import { canonical, millis, normalizePreview } from "@/lib/server/agent-proposals-encoding";
+import {
+  assertPinnedWhenOutbound,
+  canonical,
+  millis,
+  normalizePreview,
+} from "@/lib/server/agent-proposals-encoding";
 import {
   claimProposal,
-  EXECUTE_DEADLINE_MS,
   MARK_MIN_AGE_MS,
   refreshPreview,
-  settleProposal,
   transitionIf,
   type TransitionResult,
 } from "@/lib/server/agent-proposals";
+import { executeAndSettle } from "@/lib/server/agent-proposals-settle";
 import { replayHeldEnrolment } from "@/lib/server/agent-enrolment-replay";
 
 const DECISIONS = ["approve", "reject", "mark_sent", "mark_not_sent"] as const;
@@ -48,7 +52,7 @@ export async function POST(
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
-  let body: { decision?: Decision; rev?: unknown };
+  let body: { decision?: Decision; rev?: unknown; acknowledgePriorAttempt?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -208,6 +212,12 @@ export async function POST(
       console.error(`[agent-proposals] preview for ${proposalId} failed:`, err);
       return NextResponse.json({ error: "The preview could not be built." }, { status: 500 });
     }
+    try {
+      assertPinnedWhenOutbound(proposal.capability as string, proposal.approval as string, fresh);
+    } catch (err) {
+      console.error(`[agent-proposals] ${proposalId}:`, err);
+      return NextResponse.json({ error: "The preview could not be built." }, { status: 500 });
+    }
     const stored = { rows: proposal.preview, pinned };
     if (canonical(fresh) !== canonical(stored)) {
       const nextRev = await refreshPreview(proposalId, rev, fresh);
@@ -221,38 +231,29 @@ export async function POST(
     pinned = fresh.pinned;
   }
 
+  // An earlier generation of this exact action did go out (its late settle
+  // said so). Approving again is a deliberate re-send, so it must be said.
+  if (proposal.priorAttemptSent && body.acknowledgePriorAttempt !== true) {
+    return NextResponse.json(
+      { error: "previous_attempt_sent", priorAttemptSent: proposal.priorAttemptSent },
+      { status: 409 },
+    );
+  }
+
   const claim = await claimProposal(proposalId, access, rev);
   if (typeof claim === "string") return refused(claim);
   const { claimId } = claim;
 
-  // Run and settle under a hard deadline, well inside the sweep's stale-claim
-  // window: past it, this process marks the row `unsettled` itself and the
-  // real outcome, whenever it lands, arrives through the late-settle path.
-  const abort = new AbortController();
-  const execCtx = { ...actionCtx, approved: { pinned }, signal: abort.signal };
-  const run = (async () => {
-    let outcome: Parameters<typeof settleProposal>[2];
-    try {
-      const result = enrolment
-        ? await replayHeldEnrolment({ id: proposalId, ...proposal }, execCtx)
-        : await cap!.execute(execCtx, args);
-      outcome = {
-        status: "executed",
-        result: { resultText: result.resultText, ref: result.ref ?? null },
-      };
-    } catch (err) {
-      if (!(err instanceof CapabilityUserError)) {
-        console.error(`[agent-proposals] approve ${proposalId} failed:`, err);
-      }
-      outcome = {
-        status: "failed",
-        error:
-          err instanceof CapabilityUserError
-            ? err.message
-            : "The action failed to run.",
-      };
-    }
-    await settleProposal(proposalId, claimId, outcome, {
+  const outcome = await executeAndSettle({
+    id: proposalId,
+    claimId,
+    execute: (signal) => {
+      const execCtx = { ...actionCtx, approved: { pinned }, signal };
+      return enrolment
+        ? replayHeldEnrolment({ id: proposalId, ...proposal }, execCtx)
+        : cap!.execute(execCtx, args);
+    },
+    audit: {
       agencyId: proposal.agencyId as string,
       subAccountId,
       capability: proposal.capability as string,
@@ -260,20 +261,9 @@ export async function POST(
       summary: proposal.summary as string,
       confirmedByUid: access.uid,
       confirmedByEmail: access.email,
-    });
-    return outcome;
-  })();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<"deadline">((resolve) => {
-    timer = setTimeout(() => resolve("deadline"), EXECUTE_DEADLINE_MS);
+    },
   });
-  const outcome = await Promise.race([run, deadline]);
-  clearTimeout(timer);
   if (outcome === "deadline") {
-    // `run` still settles in the background; its failure must be seen.
-    run.catch((err) => console.error("[agent-proposals] post-deadline settle failed", err));
-    abort.abort();
-    await transitionIf(proposalId, "executing", { status: "unsettled" }, { claimId });
     return NextResponse.json({ status: "unsettled" }, { status: 202 });
   }
   return outcome.status === "executed"

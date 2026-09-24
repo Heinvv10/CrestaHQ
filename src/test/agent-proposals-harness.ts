@@ -52,9 +52,11 @@ const validateAny: AiSuiteCapability["validate"] = (raw) => ({
   ok: true,
   args: (raw ?? {}) as Record<string, unknown>,
 });
-const previewBody: NonNullable<AiSuiteCapability["preview"]> = async (_ctx, args) => [
-  { label: "Body", value: String(args.body) },
-];
+// An outbound preview must pin what it sends; the fixture pins its body.
+const previewBody: NonNullable<AiSuiteCapability["preview"]> = async (_ctx, args) => ({
+  rows: [{ label: "Body", value: String(args.body) }],
+  pinned: { body: String(args.body) },
+});
 const sent = () => ({ resultText: "sent", ref: { kind: "message", id: "m1" } });
 export const execute = vi.fn(async (..._a: Parameters<AiSuiteCapability["execute"]>) => sent());
 export const outbound: AiSuiteCapability = {
@@ -88,10 +90,16 @@ export const history = (id: string) => mem.list(`agentProposals/${id}/history`);
 export const later = (ms: number) => new Date(Date.now() + ms);
 
 /** Decide as an approver whose page shows generation `rev` (default: the current one). */
-export async function decide(id: string, decision: string, subAccountId = "sa1", rev = mem.read(`agentProposals/${id}`)?.rev) {
+export async function decide(
+  id: string,
+  decision: string,
+  subAccountId = "sa1",
+  rev = mem.read(`agentProposals/${id}`)?.rev,
+  extra: Record<string, unknown> = {}
+) {
   const { POST } = await decideRoute();
   return POST(
-    new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ decision, rev }) }),
+    new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ decision, rev, ...extra }) }),
     { params: Promise.resolve({ id: subAccountId, proposalId: id }) }
   );
 }
