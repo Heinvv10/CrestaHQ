@@ -2,6 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { escapeHtml } from "@/lib/comms/ai/loop-guard";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -65,10 +66,10 @@ ${link}
   const html = `<!DOCTYPE html>
 <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:32px auto;padding:0 16px;color:#1a1a22;line-height:1.6;">
   <h1 style="font-size:18px;font-weight:600;margin:0 0 16px;">AI escalation needs you</h1>
-  <p style="margin:0 0 16px;">A lead at <strong>${params.businessName}</strong> just triggered the keyword <strong>&ldquo;${params.triggeredKeyword}&rdquo;</strong>. The AI stayed silent and is waiting for you to pick up.</p>
+  <p style="margin:0 0 16px;">A lead at <strong>${escapeHtml(params.businessName)}</strong> just triggered the keyword <strong>&ldquo;${escapeHtml(params.triggeredKeyword)}&rdquo;</strong>. The AI stayed silent and is waiting for you to pick up.</p>
   <div style="background:#f6f7f9;border-radius:8px;padding:14px 16px;margin:16px 0;font-size:14px;">
-    <p style="margin:0 0 4px;"><strong>${params.contactName || "(unnamed lead)"}</strong> &middot; ${params.contactPhone}</p>
-    <p style="margin:0;color:#3a3a44;font-style:italic;">&ldquo;${params.incomingMessage}&rdquo;</p>
+    <p style="margin:0 0 4px;"><strong>${escapeHtml(params.contactName) || "(unnamed lead)"}</strong> &middot; ${escapeHtml(params.contactPhone)}</p>
+    <p style="margin:0;color:#3a3a44;font-style:italic;">&ldquo;${escapeHtml(params.incomingMessage)}&rdquo;</p>
   </div>
   <p style="margin:24px 0;">
     <a href="${link}" style="display:inline-block;background:#5b5bd6;color:#ffffff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:500;">Open the conversation &rarr;</a>

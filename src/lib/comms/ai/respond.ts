@@ -508,7 +508,7 @@ export async function maybeRespondWithAi(
         resetAtMs: controls.loopResetAtMs,
       });
   if (loop) {
-    const paused = await pauseBotForReplyLoop(contact.id);
+    const { paused, turnedOff } = await pauseBotForReplyLoop(contact.id);
     if (eff.escalationNotifyEmail) {
       await sendReplyLoopNotification({
         to: eff.escalationNotifyEmail,
@@ -517,21 +517,23 @@ export async function maybeRespondWithAi(
         contactId: contact.id,
         contactName: contact.name ?? "",
         paused,
+        turnedOff,
         appUrl:
           process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev",
       });
     }
+    const loopOutcome = turnedOff
+      ? "This is the second loop within 24 hours; the bot is now turned OFF for this conversation until a human turns it back on."
+      : paused
+        ? "Bot paused on this conversation for 1 hour; a human needs to pick it up."
+        : "Pausing the bot FAILED — it is not paused; a human needs to pick this up.";
     await logActivity({
       contactId: contact.id,
       agencyId: subAccount.agencyId,
       subAccountId,
       type: "ai_skipped",
-      content: `AI reply stopped — ${LOOP_LABEL[loop]}. ${
-        paused
-          ? "Bot paused on this conversation for 1 hour; a human needs to pick it up."
-          : "Pausing the bot FAILED — it is not paused; a human needs to pick this up."
-      }`,
-      meta: { reason: "reply_loop", loop, paused, channel: channelId },
+      content: `AI reply stopped — ${LOOP_LABEL[loop]}. ${loopOutcome}`,
+      meta: { reason: "reply_loop", loop, paused, turnedOff, channel: channelId },
     });
     return { kind: "skipped", reason: "reply_loop" };
   }

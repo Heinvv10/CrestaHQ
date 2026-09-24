@@ -24,6 +24,8 @@ const s = vi.hoisted(() => ({
   },
   threadReadThrows: false,
   pauseThrows: false,
+  /** The conversation doc's stored aiLoopPausedAt from a prior trip, if any. */
+  priorLoopPausedAtMs: null as number | null,
   escalations: [] as string[],
   loopEmails: [] as Array<{ to: string; subject: string }>,
   twilioSends: 0,
@@ -37,9 +39,19 @@ const s = vi.hoisted(() => ({
 const fakeDb = {
   collection: (name: string) => ({
     doc: (id: string) => ({
+      get: async () => ({
+        data: () =>
+          name === "conversations" && s.priorLoopPausedAtMs !== null
+            ? { aiLoopPausedAt: { toMillis: () => s.priorLoopPausedAtMs } }
+            : {},
+      }),
       update: async (data: Record<string, unknown>) => {
         if (name === "conversations" && s.pauseThrows) throw new Error("write failed");
-        if (name === "conversations") s.conversationUpdates.push({ id, ...data });
+        if (name === "conversations") {
+          s.conversationUpdates.push({ id, ...data });
+          const at = data.aiLoopPausedAt;
+          if (at instanceof Date) s.priorLoopPausedAtMs = at.getTime();
+        }
       },
       collection: (sub: string) => ({
         add: async (data: Record<string, unknown>) => {
@@ -205,6 +217,7 @@ beforeEach(() => {
   s.controls = { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
   s.threadReadThrows = false;
   s.pauseThrows = false;
+  s.priorLoopPausedAtMs = null;
   s.escalations = [];
   s.loopEmails = [];
   s.conversationUpdates = [];
@@ -294,6 +307,57 @@ describe("AI reply-loop guard", () => {
     expect(act.meta.paused).toBe(false);
     expect(act.content).not.toContain("Bot paused");
     expect(s.loopEmails[0].subject).toContain("pausing the bot FAILED");
+  });
+
+  it("trips on an auto-reply that varies only by ticket number / timestamp", async () => {
+    const varying = (i: number) =>
+      `We're away right now — ticket #482${i} logged at 10:1${i}am, we'll reply once we're back.`;
+    seedExchanges(2, 2_000, varying);
+    s.thread[0].body = varying(9);
+    const out = await respond("cloud");
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.activities.at(-1)).toMatchObject({ meta: { loop: "repeated_text" } });
+  });
+
+  it("a human sending short numeric texts does not trip", async () => {
+    const orders = ["order 123", "order 456", "order 789"];
+    seedExchanges(2, 20_000, (i) => orders[i + 1]);
+    s.thread[0].body = orders[0];
+    expect((await respond("cloud")).kind).toBe("replied");
+    expect(s.conversationUpdates).toHaveLength(0);
+  });
+
+  it("a second loop trip within 24h turns the bot off instead of re-pausing", async () => {
+    s.priorLoopPausedAtMs = Date.now() - 1_000; // an earlier trip, well within 24h
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    const out = await respond("cloud");
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.conversationUpdates.at(-1)).toMatchObject({
+      botMode: "off",
+      botPausedUntil: null,
+    });
+    expect(s.loopEmails.at(-1)).toEqual(
+      expect.objectContaining({ subject: "AI auto-reply loop suspected — bot turned OFF on Cust" }),
+    );
+    expect(s.activities.at(-1)).toMatchObject({
+      meta: { reason: "reply_loop", paused: true, turnedOff: true },
+    });
+  });
+
+  it("resuming after a turn-off answers normally again", async () => {
+    s.priorLoopPausedAtMs = Date.now() - 1_000;
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    expect(await respond("cloud")).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.conversationUpdates.at(-1)).toMatchObject({ botMode: "off" });
+
+    // Operator turns the bot back on for this conversation.
+    s.controls.botMode = "auto";
+    s.controls.loopResetAtMs = s.priorLoopPausedAtMs;
+    s.thread = [];
+    seedExchanges(1, 2_000, () => "a normal one-off follow-up message");
+    expect((await respond("cloud")).kind).toBe("replied");
   });
 });
 
