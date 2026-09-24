@@ -6,7 +6,6 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { callAi, type AiChatMessage } from "@/lib/comms/ai/openrouter";
 import { replyModelFallback } from "@/lib/comms/ai/model-policy";
 import { incrementChannelTokens, resolveAgent } from "@/lib/comms/ai/agent";
-import { buildContactContextBlock } from "@/lib/comms/ai/context";
 import { buildSystemPrompt } from "@/lib/comms/ai/prompt";
 import {
   bookVoiceSlot,
@@ -89,6 +88,24 @@ async function findContactByPhone(
   if (snap.empty) return null;
   const doc = snap.docs[0];
   return { id: doc.id, ...(doc.data() as Omit<Contact, "id">) };
+}
+
+/**
+ * Voice-only, minimal contact context. Caller ID is trivially spoofable
+ * (inbound) and an outbound call can be answered by anyone who picks up
+ * the dialed handset — neither case is a verified identity. So unlike
+ * SMS / web-chat's buildContactContextBlock(), the voice agent is NEVER
+ * handed company name, deals, account status, or any other account
+ * detail from the matched contact — only a first name, explicitly
+ * flagged as unconfirmed, for a natural greeting. Anything else about
+ * the account requires the caller to state it themselves, or must wait
+ * for the operator's own verification step.
+ */
+function buildVoiceCallerNameBlock(contact: Contact | null): string | null {
+  const firstName = contact?.name?.trim().split(/\s+/)[0];
+  if (!firstName) return null;
+  return `## Caller (from caller ID — a name match only, NOT a verified identity)
+Their name may be ${firstName}. You may use this to greet them naturally (e.g. "Hi, is this ${firstName}?"). Do NOT mention their company, deals, account status, bookings, or any other detail about their account — you have no way to confirm this caller is who the phone number suggests. Only discuss account-specific details the caller themselves states on the call, or after a human has verified their identity.`;
 }
 
 function openAiCompletion(text: string, model: string): unknown {
@@ -250,9 +267,7 @@ export async function POST(
     ? await findContactByPhone(subAccountId, callerPhone).catch(() => null)
     : null;
 
-  const contextBlock = contact
-    ? await buildContactContextBlock(contact).catch(() => null)
-    : null;
+  const contextBlock = buildVoiceCallerNameBlock(contact);
 
   // Outbound calls run a different persona than inbound (the AI is calling
   // the contact about an offer, not answering a query). We stamp
