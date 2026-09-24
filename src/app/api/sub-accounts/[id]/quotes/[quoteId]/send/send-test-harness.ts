@@ -104,9 +104,18 @@ function docRef(path: string) {
   };
 }
 
+type Ref = ReturnType<typeof docRef>;
+
 export const fakeDb = {
   collection: (name: string) => ({ doc: (id: string) => docRef(`${name}/${id}`) }),
   doc: (path: string) => docRef(path),
+  /** Reads through `get`; writes land via `update` once the callback returns, as a commit. */
+  runTransaction: async <T>(fn: (t: { get: (r: Ref) => ReturnType<Ref["get"]>; update: (r: Ref, d: Record<string, unknown>) => void }) => Promise<T>) => {
+    const writes: [Ref, Record<string, unknown>][] = [];
+    const result = await fn({ get: (r) => r.get(), update: (r, d) => void writes.push([r, d]) });
+    for (const [r, d] of writes) await r.update(d);
+    return result;
+  },
 };
 
 // ── Mock factories ────────────────────────────────────────────────────────

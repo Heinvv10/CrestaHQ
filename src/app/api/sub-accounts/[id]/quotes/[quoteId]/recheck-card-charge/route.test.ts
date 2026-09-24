@@ -127,6 +127,8 @@ describe("Paystack says it was not paid", () => {
     expect(mem.read(`paymentAttempts/${REF}`)!.state).toBe("refused");
     expect(mem.read(`paymentMandates/${MANDATE}`)!.consecutiveDeclines).toBe(1);
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
+    // The button records; it never emails on its own (the stale sweep does).
+    expect(sendEmail).not.toHaveBeenCalled();
     expect(await send()).toMatchObject({ ok: true });
     expect((sendEmail.mock.calls.at(-1)![0] as { text: string }).text).toContain("/pay/link/");
   });
