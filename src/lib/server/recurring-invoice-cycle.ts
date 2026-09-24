@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendPushForEvent } from "@/lib/push/send";
 import { issueQuoteNumber } from "@/lib/quotes/number";
+import { readProration, withProratedCredit } from "@/lib/recurring/prorate";
 import {
   createTaskServerSide,
   territoryForContact,
@@ -29,10 +30,11 @@ export function schedulesCollection() {
   return getAdminDb().collection("recurringInvoices");
 }
 
-/** Mint an ordinary invoice from the schedule's snapshotted template. */
+/** Mint an invoice from the schedule's template, plus any credit owed on the cycle due `dueAt`. */
 export async function generateInvoice(
   schedule: RecurringInvoiceDoc,
   now: Date,
+  dueAt: Date | null = null,
 ): Promise<{ invoiceId: string; quoteNumber: string; territoryId: string }> {
   // Same stamp the hand-made path applies. Without it the rules read a null
   // territory and deny it to everyone but admins — so the rep who actually
@@ -56,9 +58,7 @@ export async function generateInvoice(
     contactId: schedule.contactId,
     quoteNumber,
     currency: schedule.currency,
-    lineItems: schedule.lineItems,
-    globalDiscount: schedule.globalDiscount,
-    globalTaxPercent: schedule.globalTaxPercent,
+    ...withProratedCredit(schedule, readProration(schedule.proration), dueAt, schedule.currency),
     termsAndNotes: schedule.termsAndNotes,
     billedToOrganization: schedule.billedToOrganization,
     billingAddress: schedule.billingAddress,

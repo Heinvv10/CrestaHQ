@@ -219,6 +219,11 @@ async function openAttempt(
       return no("the Paystack key changed since the card was saved");
     }
     if (!secret) return no("the saved card's authorization is missing");
+    // Before the amount check: a billing-day change both moves the cycle and
+    // pro-rates its invoice, and the operator is told the cause, not the symptom.
+    if (previousDueAt && dueAt.getTime() - previousDueAt.getTime() < minCardChargeGapMs(schedule.cadence)) {
+      return { ok: false, tooSoon: { dueAt, previousDueAt } };
+    }
     const amountCents = invoice ? invoiceTotalCents(invoice) : NaN;
     if (
       !invoice ||
@@ -227,9 +232,6 @@ async function openAttempt(
       !termsStillHold(mandate.terms, schedule)
     ) {
       return no("the invoice no longer matches the amount the customer authorised");
-    }
-    if (previousDueAt && dueAt.getTime() - previousDueAt.getTime() < minCardChargeGapMs(schedule.cadence)) {
-      return { ok: false, tooSoon: { dueAt, previousDueAt } };
     }
     const attempt: Omit<PaymentAttempt, "id"> = {
       agencyId: schedule.agencyId,

@@ -121,13 +121,20 @@ describe("a cycle due too soon after the previous cycle", () => {
 describe("an edit never skips a month", () => {
   beforeEach(() => seedCardSchedule({ anchorDay: 5, nextRunAt: midnight("2026-03-05") }));
 
-  it("N6: anchor moved earlier (5th → 1st) → 1 Apr, and 1 Apr is charged", async () => {
+  it("N6: anchor moved earlier (5th → 1st) → 1 Apr is billed, with the 1–5 Apr overlap credited, and 1 May is charged", async () => {
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-03-05"));
     await edit("2026-03-06", { anchorDay: 1 });
     expect(nextRun()).toBe("2026-03-31T22:00:00.000Z");
     await runOneSchedule(SCHEDULE, at("2026-04-01"));
-    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
+    // Pro-rated (prorate.ts): the credited invoice is not the amount the
+    // customer authorised, so it is emailed, never charged.
+    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`]);
+    // R1000 × 4 days ÷ 30 (1 Apr – 1 May), before tax.
+    expect(raised().globalDiscount).toEqual({ type: "flat", value: 133.33 });
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
+    await runOneSchedule(SCHEDULE, at("2026-05-01"));
+    expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c6`]);
   });
 
   it("N6: a new date too close to the charge is emailed, not skipped", async () => {

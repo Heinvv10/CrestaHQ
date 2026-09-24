@@ -7,6 +7,7 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { parseScheduleUpdate } from "@/lib/recurring/schedule-input";
 import { toDate } from "@/lib/server/recurring-invoice-cycle";
+import { alertProration, commitWithProration, prorationForEdit, raiseGapInvoice } from "@/lib/server/recurring-prorate";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
 
 export const dynamic = "force-dynamic";
@@ -101,8 +102,17 @@ export async function PATCH(
   // edit itself has something to say (a resume that skipped cycles).
   if (Object.keys(rest).length > 0) updates.lastError = resumeNote ?? null;
 
+  // A billing-day change on a schedule that has billed is pro-rated
+  // (`prorate.ts`): committed against the state it was computed from.
+  const proration = prorationForEdit(schedule, parsed.value);
   try {
-    await ref.update(updates);
+    if (!proration) await ref.update(updates);
+    else if (!(await commitWithProration(ref, schedule, updates, proration))) {
+      return NextResponse.json(
+        { error: "The schedule changed while you were editing it. Reload it and try again." },
+        { status: 409 },
+      );
+    }
   } catch (err) {
     console.error("[recurring-invoices/patch] write failed", err);
     return NextResponse.json(
@@ -111,5 +121,7 @@ export async function PATCH(
     );
   }
 
+  if (proration?.note) await alertProration(schedule, proration.note);
+  if (proration?.record?.gap) await raiseGapInvoice(ref, new Date());
   return NextResponse.json({ ok: true });
 }

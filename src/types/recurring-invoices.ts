@@ -128,6 +128,12 @@ export interface RecurringInvoiceDoc {
    * Absent on older schedules (the guard then uses `lastRunAt`); restored if no invoice was raised.
    */
   lastDueAt?: Timestamp | FieldValue | null;
+  /**
+   * What a billing-day change pro-rated since the last billed cycle: how far
+   * the customer is paid, a credit owed on the next invoice, the gap invoiced.
+   * Shape: `ProrationRecord` in `lib/recurring/prorate.ts`, dates as Timestamps.
+   */
+  proration?: Record<string, unknown> | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;

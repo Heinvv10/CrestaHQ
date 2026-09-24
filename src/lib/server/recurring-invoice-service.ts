@@ -151,7 +151,7 @@ export async function runOneSchedule(
   let invoiceId: string | null = null;
 
   try {
-    const invoice = await generateInvoice(schedule, now);
+    const invoice = await generateInvoice(schedule, now, claim.dueAt);
     invoiceId = invoice.invoiceId;
     let sent = false;
     if (!schedule.reviewFirst) {
