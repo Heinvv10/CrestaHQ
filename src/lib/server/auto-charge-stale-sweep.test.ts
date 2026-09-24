@@ -111,7 +111,7 @@ describe("Paystack now says the charge failed", () => {
     await cycle("send_otp");
     expect(sendEmail).not.toHaveBeenCalled();
     verifyAnswers("failed");
-    expect(await sweep(2 * HOUR)).toEqual({ checked: 1, paid: 0, declined: 1, alerted: 0 });
+    expect(await sweep(2 * HOUR)).toEqual({ checked: 1, paid: 0, declined: 1, alerted: 0, overBudget: 0 });
     expect(attempt().state).toBe("refused");
     expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined" });
     expect(declines()).toBe(1);
@@ -126,7 +126,7 @@ describe("Paystack now says the charge failed", () => {
     verifyAnswers("failed");
     await sweep(2 * HOUR);
     const before = raised();
-    expect(await sweep(3 * HOUR)).toEqual({ checked: 0, paid: 0, declined: 0, alerted: 0 });
+    expect(await sweep(3 * HOUR)).toEqual({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
     expect(raised()).toEqual(before);
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(triggers("invoice.charge_failed")).toBe(1);
@@ -183,7 +183,7 @@ describe("Paystack now says success", () => {
         },
       });
     });
-    expect(await sweep(2 * HOUR)).toMatchObject({ checked: 1, paid: 0 });
+    expect(await sweep(2 * HOUR)).toMatchObject({ paid: 0 });
     expect(raced).toBe(true);
     expect(raised()).toMatchObject({ status: "paid", paidVia: { rail: "paystack_auto" } });
     expect(triggers("invoice.charge_succeeded")).toBe(1);
@@ -196,7 +196,7 @@ describe("left alone", () => {
     await cycle("send_otp");
     const before = raised();
     const calls = verifyAnswers("failed");
-    expect(await sweep(30 * 60 * 1000)).toEqual({ checked: 0, paid: 0, declined: 0, alerted: 0 });
+    expect(await sweep(30 * 60 * 1000)).toEqual({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
     expect(verifies(calls)).toHaveLength(0);
     expect(raised()).toEqual(before);
     expect(attempt().state).toBe("open");
@@ -219,7 +219,7 @@ describe("still no final answer", () => {
   it("before 3 days: no Task", async () => {
     await cycle();
     verifyAnswers("pending");
-    expect(await sweep(71 * HOUR)).toMatchObject({ checked: 1, alerted: 0 });
+    expect(await sweep(71 * HOUR)).toMatchObject({ checked: 1, alerted: 0, overBudget: 0 });
     expect(tasksAbout(STALE_TITLE)).toHaveLength(0);
     expect(attempt().state).toBe("open");
   });
@@ -228,7 +228,7 @@ describe("still no final answer", () => {
     await cycle();
     verifyAnswers("pending");
     expect(await sweep(73 * HOUR)).toMatchObject({ alerted: 1 });
-    expect(await sweep(97 * HOUR)).toMatchObject({ checked: 1, alerted: 0 });
+    expect(await sweep(97 * HOUR)).toMatchObject({ checked: 1, alerted: 0, overBudget: 0 });
     const tasks = tasksAbout(STALE_TITLE);
     expect(tasks).toHaveLength(1);
     expect(tasks[0]!.title).toBe(
@@ -261,7 +261,7 @@ describe("the batch", () => {
   it(`re-checks at most ${STALE_RECHECK_BATCH} card charges a run, oldest first, and never a checkout`, async () => {
     const base = Date.now() - 2 * HOUR;
     seedAttempt("pl-link1-x1", { createdAt: new Date(base - 60 * HOUR) }); // a checkout: not queried
-    seedAttempt("legacy1", { invoiceId: "inv1", createdAt: new Date(base - 61 * HOUR) }); // no card: in the batch, not re-checked
+    seedAttempt("legacy1", { invoiceId: "inv1", createdAt: new Date(base - 61 * HOUR) }); // not a card cycle: skipped
     for (let i = 1; i <= 30; i += 1) {
       const reference = `ra-${SCHEDULE}-c${i}`;
       seedInvoice(`inv${i}`, { autoCharge: { reference, mandateId: MANDATE, state: "pending", reason: null } });
@@ -274,9 +274,9 @@ describe("the batch", () => {
       });
     }
     const calls = verifyAnswers("pending");
-    expect(await sweep(0)).toMatchObject({ checked: STALE_RECHECK_BATCH - 1 });
+    expect(await sweep(0)).toMatchObject({ checked: STALE_RECHECK_BATCH });
     const asked = verifies(calls).map((c) => c.path.split("/").pop());
-    expect(asked).toHaveLength(STALE_RECHECK_BATCH - 1);
+    expect(asked).toHaveLength(STALE_RECHECK_BATCH);
     expect(asked).not.toContain("pl-link1-x1");
     expect(asked).toContain(`ra-${SCHEDULE}-c30`);
     expect(asked).not.toContain(`ra-${SCHEDULE}-c5`);

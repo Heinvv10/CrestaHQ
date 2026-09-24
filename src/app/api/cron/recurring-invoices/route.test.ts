@@ -7,7 +7,7 @@ vi.mock("@/lib/automations/qstash", () => ({ verifyQStashSignature: vi.fn(), pub
 vi.mock("@/lib/server/recurring-invoice-service", () => ({ runRecurringInvoiceSweep: vi.fn() }));
 vi.mock("@/lib/server/auto-charge-stale-sweep", () => ({ recheckStaleAutoCharges: vi.fn() }));
 
-import { verifyQStashSignature } from "@/lib/automations/qstash";
+import { publishCallback, verifyQStashSignature } from "@/lib/automations/qstash";
 import { recheckStaleAutoCharges } from "@/lib/server/auto-charge-stale-sweep";
 import { runRecurringInvoiceSweep } from "@/lib/server/recurring-invoice-service";
 import { POST } from "./route";
@@ -24,7 +24,7 @@ beforeEach(() => {
 });
 
 it("re-checks stale card charges after the sweep and reports them", async () => {
-  const summary = { checked: 1, paid: 0, declined: 1, alerted: 0 };
+  const summary = { checked: 1, paid: 0, declined: 1, alerted: 0, overBudget: 0 };
   vi.mocked(recheckStaleAutoCharges).mockResolvedValue(summary);
   const res = await call();
   expect(res.status).toBe(200);
@@ -58,4 +58,27 @@ it("firestore.indexes.json has the composite the stale re-check queries (state, 
     queryScope: "COLLECTION",
     fields: ["state", "paymentLinkId", "createdAt"].map((fieldPath) => ({ fieldPath, order: "ASCENDING" })),
   });
+});
+
+it("a slow re-check never holds the continuation back: it runs only on the final page", async () => {
+  vi.mocked(runRecurringInvoiceSweep).mockResolvedValue({ processed: 50, hasMore: true } as never);
+  vi.mocked(publishCallback).mockResolvedValue(undefined as never);
+  vi.mocked(recheckStaleAutoCharges).mockImplementation(() => new Promise(() => {})); // e.g. 25 Paystack timeouts
+  const res = await call();
+  expect(publishCallback).toHaveBeenCalledTimes(1);
+  expect(await res.json()).toMatchObject({ continuationScheduled: true, staleCharges: null });
+  expect(recheckStaleAutoCharges).not.toHaveBeenCalled();
+});
+
+it("a sweep of three pages re-checks once, on the last", async () => {
+  vi.mocked(runRecurringInvoiceSweep)
+    .mockResolvedValueOnce({ processed: 50, hasMore: true } as never)
+    .mockResolvedValueOnce({ processed: 50, hasMore: true } as never)
+    .mockResolvedValueOnce({ processed: 3, hasMore: false } as never);
+  vi.mocked(publishCallback).mockResolvedValue(undefined as never);
+  vi.mocked(recheckStaleAutoCharges).mockResolvedValue({ checked: 25, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
+  await call();
+  await call();
+  await call();
+  expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
 });

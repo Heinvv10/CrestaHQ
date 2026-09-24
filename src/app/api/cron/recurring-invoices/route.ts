@@ -53,14 +53,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Card charges still unconfirmed: their own step, which never fails the sweep.
-  let staleCharges = null;
-  try {
-    staleCharges = await recheckStaleAutoCharges(new Date());
-  } catch (err) {
-    console.error("[cron/recurring-invoices] stale card-charge re-check failed", err);
-  }
-
   if (result.hasMore) {
     await publishCallback({
       pathname: "/api/cron/recurring-invoices",
@@ -76,6 +68,17 @@ export async function POST(request: Request) {
       // sweep; it must not fail the invoices already raised this run.
       console.error("[cron/recurring-invoices] continuation failed", err),
     );
+  }
+
+  // Card charges still unconfirmed: once, on the final page, after the
+  // continuation is queued, and never failing the sweep.
+  let staleCharges = null;
+  if (!result.hasMore) {
+    try {
+      staleCharges = await recheckStaleAutoCharges(new Date());
+    } catch (err) {
+      console.error("[cron/recurring-invoices] stale card-charge re-check failed", err);
+    }
   }
 
   return NextResponse.json({

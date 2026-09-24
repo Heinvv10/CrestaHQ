@@ -24,16 +24,22 @@ import type { Quote } from "@/types/quotes";
  *   failed / abandoned / reversed / not found
  *                    → declined: attempt refused (if still open), the invoice's
  *                      `autoCharge` declined, the decline counted on the card.
- *                      The invoice can then be sent with a pay link;
+ *                      The invoice can then be sent with a pay link — unless
+ *                      it was marked paid by hand meanwhile: then only the
+ *                      attempt is refused (`failed_but_paid`);
  *   anything else, or no answer → nothing changes.
  *
  * Fires no workflow trigger of its own; a success fires what the reconciler does.
  */
 
-export type RecheckOutcome = "paid" | "declined" | "pending" | "needs_attention";
-export type RecheckResult = { ok: true; outcome: RecheckOutcome } | { ok: false; status: number; error: string };
+export type RecheckOutcome = "paid" | "declined" | "failed_but_paid" | "pending" | "needs_attention";
+/** Why a re-check was refused: the connection (`flagStaleAttempts` owns those), a race, or the records themselves. */
+export type RecheckRefusal = "connection" | "changed" | "records";
+export type RecheckResult =
+  | { ok: true; outcome: RecheckOutcome }
+  | { ok: false; status: number; error: string; refusal: RecheckRefusal };
 
-const fail = (status: number, error: string) => ({ ok: false as const, status, error });
+const fail = (status: number, error: string, refusal: RecheckRefusal = "records") => ({ ok: false as const, status, error, refusal });
 const NOT_PAID = new Set(["failed", "abandoned", "reversed"]);
 const RECHECKABLE = new Set(["pending", "unknown"]);
 
@@ -52,10 +58,10 @@ export async function recheckCardCharge(subAccountId: string, invoiceId: string)
     return fail(409, "No record of this card charge was found. Check your Paystack dashboard.");
   }
   const conn = await readPaystackConnectionSecret(subAccountId);
-  if (!conn) return fail(409, "Connect Paystack under Settings → Payments first.");
+  if (!conn) return fail(409, "Connect Paystack under Settings → Payments first.", "connection");
   // Another key asks another Paystack account (or mode) about this reference.
   if (paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
-    return fail(409, "The Paystack key changed since this charge; check your Paystack dashboard.");
+    return fail(409, "The Paystack key changed since this charge; check your Paystack dashboard.", "connection");
   }
 
   let tx: PaystackVerifiedTransaction | null = null;
@@ -81,15 +87,26 @@ export async function recheckCardCharge(subAccountId: string, invoiceId: string)
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
   const declined = await db.runTransaction(async (t) => {
     const a = (await t.get(attemptRef)).data() as PaymentAttempt | undefined;
-    const live = ((await t.get(quoteRef)).data() as Quote | undefined)?.autoCharge;
-    if (!live || live.reference !== reference || !RECHECKABLE.has(live.state)) return false;
+    const invoice = (await t.get(quoteRef)).data() as Quote | undefined;
+    const live = invoice?.autoCharge;
+    if (!live || live.reference !== reference || !RECHECKABLE.has(live.state)) return null;
     // Settled or flagged: money may have arrived after all. Leave it to the operator.
-    if (a?.state !== "open" && a?.state !== "refused") return false;
-    if (a.state === "open") t.update(attemptRef, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+    if (a?.state !== "open" && a?.state !== "refused") return null;
+    const refuse = () => t.update(attemptRef, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+    // Marked paid by hand meanwhile: the card failed, but the invoice is not
+    // un-paid, re-sent or counted against the card. Only the call that closes
+    // the attempt reports it.
+    if (invoice.status === "paid") {
+      if (a.state !== "open") return null;
+      refuse();
+      return "failed_but_paid" as const;
+    }
+    if (a.state === "open") refuse();
     t.update(quoteRef, { autoCharge: { ...live, state: "declined", reason }, updatedAt: FieldValue.serverTimestamp() });
-    return true;
+    return "declined" as const;
   });
-  if (!declined) return fail(409, "This card charge changed while it was being re-checked. Reload and check again.");
+  if (!declined) return fail(409, "This card charge changed while it was being re-checked. Reload and check again.", "changed");
+  if (declined === "failed_but_paid") return { ok: true, outcome: declined };
 
   const schedule = attempt.recurringInvoiceId
     ? (await db.doc(`recurringInvoices/${attempt.recurringInvoiceId}`).get()).data()

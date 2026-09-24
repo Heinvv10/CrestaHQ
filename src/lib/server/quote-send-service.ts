@@ -128,6 +128,10 @@ export async function sendQuoteServerSide(input: {
     const denial = await input.actor.authorize(quote);
     if (denial) return fail("not_authorized", denial.status, denial.error);
   }
+  // A send flips the status to "sent": never over a recorded payment.
+  if (quote.status === "paid") {
+    return fail("already_paid", 409, `This ${quote.kind === "invoice" ? "invoice" : "quote"} is already paid.`);
+  }
 
   // 4. Load contact + email check
   // A quote can be written client-side naming any contact id, so the
