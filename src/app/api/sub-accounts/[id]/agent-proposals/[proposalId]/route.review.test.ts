@@ -167,6 +167,27 @@ describe("general review — PR #259", () => {
     expect(row(id)).toMatchObject({ contactId: "c1", territoryId: "north" });
   });
 
+  it("T1 (breaker repro): a re-tag that commits while approvalTarget runs → the row stores the current territory", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["t_south"] });
+    mem.seed("subAccounts/sa1/territories/t_south", { status: "active", name: "South" });
+    mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", territoryId: "t_north" });
+    const { PATCH } = await import("@/app/api/sub-accounts/[id]/contacts/[contactId]/territory/route");
+    outbound.approvalTarget = async (ctx, args) => {
+      const stale = await contactTarget("recipientId")(ctx, args); // reads t_north
+      // The re-tag commits and re-syncs now; the row does not exist yet.
+      await PATCH(
+        new Request("https://crm.test", { method: "PATCH", body: JSON.stringify({ territoryId: "t_south" }) }),
+        { params: Promise.resolve({ id: "sa1", contactId: "c1" }) }
+      );
+      return stale;
+    };
+    const id = await proposeId({ body: "x", recipientId: "c1" });
+    expect(row(id).territoryId).toBe("t_south");
+    caller.role = "collaborator";
+    expect((await decide(id, "approve")).status).toBe(200);
+  });
+
   it("F10/H4: the row stores what approvalTarget resolved (under the neutral preview ctx)", async () => {
     const seen: string[] = [];
     outbound.approvalTarget = async (ctx, args) => {

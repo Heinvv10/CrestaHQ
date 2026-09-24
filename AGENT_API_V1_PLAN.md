@@ -385,3 +385,8 @@ Later (out of v1): agency-wide keys.
 - **Extraction PRs change live routes**; each keeps response shape and its
   route test, adding one first where none exists.
 - **Approvals can pile up**; 7-day expiry + badge; no notification in v1.
+- **Deal/task-targeted proposals keep their propose-time territory (≤7 days).**
+  Only contact targets are re-synced on re-tag (and re-read inside
+  createProposal's transaction); a deal or task moved between territories
+  leaves its pending proposal scoped to the old one until it expires.
+  Follow-up: extend the deal/task territory writers to re-sync their rows.
