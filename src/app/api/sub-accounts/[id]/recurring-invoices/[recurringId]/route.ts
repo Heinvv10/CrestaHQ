@@ -7,7 +7,14 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { parseScheduleUpdate } from "@/lib/recurring/schedule-input";
 import { toDate } from "@/lib/server/recurring-invoice-cycle";
-import { commitWithProration, prorationFields, prorationForEdit, raiseProrationGaps } from "@/lib/server/recurring-prorate";
+import { readProration } from "@/lib/recurring/prorate-record";
+import {
+  alertOrphanedCredits,
+  commitWithProration,
+  prorationFields,
+  prorationForEdit,
+  raiseProrationGaps,
+} from "@/lib/server/recurring-prorate";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
 
 export const dynamic = "force-dynamic";
@@ -108,7 +115,12 @@ export async function PATCH(
   // state it was computed from.
   const proration = prorationForEdit(schedule, parsed.value, now);
   if (proration) {
-    Object.assign(updates, prorationFields(proration.record), { nextRunAt: Timestamp.fromDate(proration.next) });
+    // The end-date check in `parseScheduleUpdate` saw the pre-pro-ration next run.
+    const end = endAt !== undefined ? endAt : toDate(schedule.endAt);
+    if (end && proration.next.getTime() > end.getTime()) {
+      return NextResponse.json({ error: "The end date falls before the next billing date." }, { status: 400 });
+    }
+    Object.assign(updates, prorationFields(proration.record, now), { nextRunAt: Timestamp.fromDate(proration.next) });
   }
   try {
     if (!proration) await ref.update(updates);
@@ -127,6 +139,11 @@ export async function PATCH(
   }
 
   // Best effort: the daily sweep raises any gap this leaves pending.
-  if (proration?.record.gaps.some((g) => g.state === "pending")) await raiseProrationGaps(ref, now);
+  if (proration?.record.gaps.some((g) => g.state === "pending")) {
+    await raiseProrationGaps(ref, now).catch((err) => console.error("[recurring-invoices/patch] gap raise deferred to the sweep", err));
+  }
+  // Cancelled: no invoice will carry a credit still owed.
+  const owed = readProration(schedule.proration)?.credits.filter((c) => c.cycle === null) ?? [];
+  if (parsed.value.status === "cancelled" && owed.length) await alertOrphanedCredits(schedule, owed);
   return NextResponse.json({ ok: true });
 }

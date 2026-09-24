@@ -1,7 +1,7 @@
 import { utcFromWallClock } from "@/lib/booking/availability";
-import { formatCurrency } from "@/lib/format";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import { computeFirstRunAt, computeNextRunAt, startOfLocalDay, type Cadence } from "@/lib/recurring/cadence";
+import type { ProratedPeriod, ProrationGap, ProrationRecord } from "@/lib/recurring/prorate-record";
 import type { QuoteDiscount, QuoteLineItem } from "@/types/quotes";
 
 /**
@@ -17,8 +17,9 @@ import type { QuoteDiscount, QuoteLineItem } from "@/types/quotes";
  *           days, raised by the sweep (and best-effort at the edit);
  *   OVERLAP (next bill before coverage) — the next generated invoice carries a
  *           credit for the days paid twice.
- * Amount = template taxable × days ÷ days in the cycle those days start (old
- * anchor for a gap, new for an overlap), to the cent; tax as on any invoice.
+ * Amount = template taxable × days ÷ days in the cycle those days start (for a
+ * gap, on the billing day the paid-through date sits on as billed; for an
+ * overlap, the new one), to the cent; tax as on any invoice.
  *
  * Only anchor changes WITHIN one cadence pro-rate. A cadence change (monthly ↔
  * quarterly/weekly) redefines what a cycle is worth, so it never pro-rates.
@@ -26,46 +27,8 @@ import type { QuoteDiscount, QuoteLineItem } from "@/types/quotes";
  */
 
 const DAY = 86_400_000;
-/** Raised gaps kept on the schedule as history. */
-const RAISED_KEPT = 10;
-
-export interface ProratedPeriod {
-  from: Date;
-  /** Exclusive; labels show the day before. */
-  to: Date;
-  days: number;
-  cycleDays: number;
-  /** Pre-tax amount, in currency units, rounded to cents. */
-  taxable: number;
-  label: string;
-}
-
-export interface ProrationGap extends ProratedPeriod {
-  /** The quote doc id the invoice is raised under, fixed at the edit: a retaken claim cannot raise it twice. */
-  docId: string;
-  state: "pending" | "raising" | "raised";
-  claimedAt: Date | null;
-  invoiceId: string | null;
-  /** The billed period it belongs to. Only that period's PENDING gaps can be cancelled by a later edit. */
-  forLastDueAt: Date | null;
-}
-
-export interface ProrationCredit extends ProratedPeriod {
-  /** Goes on the first invoice generated for a cycle due at or after this. */
-  appliesToDueAt: Date;
-  /** The cycle number that took it; null while owed. */
-  cycle: number | null;
-}
-
-/** `recurringInvoices.proration` (Dates here, Timestamps stored). */
-export interface ProrationRecord {
-  /** `lastDueAt` of the billed cycle `coveredUntil` belongs to; stale after the next cycle bills. */
-  forLastDueAt: Date | null;
-  /** Paid through (exclusive) by billed cycles. Raised or raising gaps extend it; pending ones do not. */
-  coveredUntil: Date;
-  credit: ProrationCredit | null;
-  gaps: ProrationGap[];
-}
+/** Raised gaps and taken credits kept on the schedule as history. */
+const HISTORY_KEPT = 10;
 
 interface Template {
   lineItems: QuoteLineItem[];
@@ -104,11 +67,14 @@ export function planProration(input: {
       ? computeNextRunAt({ previous: before.lastDueAt, cadence: before.cadence, anchorDay: before.anchorDay, timezone })
       : before.nextRunAt; // billed before `lastDueAt` existed: the claim set nextRunAt one cycle on
   if (!base) return null;
-  const thisPeriod = (g: ProrationGap) => sameInstant(g.forLastDueAt, before.lastDueAt);
+  const thisPeriod = (x: { forLastDueAt: Date | null }) => sameInstant(x.forLastDueAt, before.lastDueAt);
   const priorGaps = prior?.gaps ?? [];
-  const covered = new Date(
-    Math.max(base.getTime(), ...priorGaps.filter((g) => thisPeriod(g) && g.state !== "pending").map((g) => g.to.getTime())),
-  );
+  // Paid through, and the billing day that date sits on as billed: the anchor
+  // a gap starting there measures its cycle with (not the anchor of today).
+  const baseAnchor = priorValid ? prior.coveredAnchorDay : before.anchorDay;
+  const { at: covered, anchor: coveredAnchor } = priorGaps
+    .filter((g) => thisPeriod(g) && g.state !== "pending")
+    .reduce((best, g) => (g.to.getTime() > best.at.getTime() ? { at: g.to, anchor: g.toAnchorDay } : best), { at: base, anchor: baseAnchor });
 
   // The new billing day in the month coverage ends, never at or before today or the last run.
   const floor = Math.max(startOfLocalDay(now, timezone).getTime() - 1, before.lastRunAt?.getTime() ?? -Infinity);
@@ -117,13 +83,11 @@ export function planProration(input: {
     next = computeNextRunAt({ previous: next, cadence: after.cadence, anchorDay: after.anchorDay, timezone });
   }
 
-  // A later edit replaces this period's gaps that were never raised; everything else stands.
-  const kept = priorGaps.filter((g) => !(thisPeriod(g) && g.state === "pending"));
-  const raised = kept.filter((g) => g.state === "raised").slice(-RAISED_KEPT);
-  const gaps = kept.filter((g) => g.state !== "raised" || raised.includes(g));
-  // A credit no cycle has taken yet is still owed (only reachable if a cycle was skipped).
-  const owed = prior?.credit && prior.credit.cycle === null && !priorValid ? prior.credit : null;
-  const record: ProrationRecord = { forLastDueAt: before.lastDueAt, coveredUntil: base, credit: owed, gaps };
+  // A later edit recomputes this period's unraised gaps and untaken credits;
+  // everything else (raised, taken, or owed from an earlier period) stands.
+  const gaps = history(priorGaps.filter((g) => !(thisPeriod(g) && g.state === "pending")), (g) => g.state === "raised");
+  const credits = history((prior?.credits ?? []).filter((c) => !(thisPeriod(c) && c.cycle === null)), (c) => c.cycle !== null);
+  const record: ProrationRecord = { forLastDueAt: before.lastDueAt, coveredUntil: base, coveredAnchorDay: baseAnchor, credits, gaps };
   if (next.getTime() === covered.getTime()) return { record, next };
 
   const isGap = next.getTime() > covered.getTime();
@@ -131,7 +95,7 @@ export function planProration(input: {
   const cycleEnd = computeNextRunAt({
     previous: from,
     cadence: after.cadence,
-    anchorDay: isGap ? before.anchorDay : after.anchorDay,
+    anchorDay: isGap ? coveredAnchor : after.anchorDay,
     timezone,
   });
   const days = wholeDays(from, to);
@@ -151,17 +115,19 @@ export function planProration(input: {
       claimedAt: null,
       invoiceId: null,
       forLastDueAt: before.lastDueAt,
+      toAnchorDay: after.anchorDay,
+      failureAlerted: false,
     };
     return { record: { ...record, gaps: [...gaps, gap] }, next };
   }
-  const label = `Pro-rated credit: ${range} (billing day changed)`;
-  return { record: { ...record, credit: { ...period, label, appliesToDueAt: next, cycle: null } }, next };
+  const credit = { ...period, label: `Pro-rated credit: ${range} (billing day changed)`, appliesToDueAt: next, cycle: null, forLastDueAt: before.lastDueAt };
+  return { record: { ...record, credits: [...credits, credit] }, next };
 }
 
-/** The credit a cycle due `dueAt` takes, if one is owed and due by then. */
-export function creditDueOn(proration: ProrationRecord | null, dueAt: Date): ProrationCredit | null {
-  const credit = proration?.credit;
-  return credit && credit.cycle === null && credit.appliesToDueAt.getTime() <= dueAt.getTime() ? credit : null;
+/** Keeps every item still in play, and the last few finished ones as history. */
+function history<T>(items: T[], done: (item: T) => boolean): T[] {
+  const kept = items.filter(done).slice(-HISTORY_KEPT);
+  return items.filter((item) => !done(item) || kept.includes(item));
 }
 
 /** The one-off gap invoice's money: one line, the template's tax, no discount. */
@@ -170,35 +136,6 @@ export function gapInvoiceTemplate(gap: ProratedPeriod, template: Template): Tem
     lineItems: [{ id: "prorate", description: gap.label, quantity: 1, unitPrice: gap.taxable, productId: null }],
     globalDiscount: null,
     globalTaxPercent: template.globalTaxPercent,
-  };
-}
-
-/**
- * The template with `credit` applied, or unchanged.
- *
- * Quote lines are clamped to ≥ 0 everywhere (calc, sanitiser, builder), so a
- * negative line would be zeroed the moment an operator saved a review-first
- * draft. The credit is therefore folded into a flat discount — which every
- * surface keeps and shows — and a zero-priced line names it for the customer.
- */
-export function withProratedCredit(template: Template, credit: ProrationCredit | null, currency: string): Template {
-  const { lineItems, globalDiscount, globalTaxPercent } = template;
-  if (!credit) return { lineItems, globalDiscount, globalTaxPercent };
-  const totals = computeQuoteTotals(template);
-  const amount = formatCurrency(credit.taxable, currency);
-  return {
-    lineItems: [
-      ...lineItems,
-      {
-        id: "prorate-credit",
-        description: `${credit.label}: −${amount} excl. tax, included in the discount`,
-        quantity: 1,
-        unitPrice: 0,
-        productId: null,
-      },
-    ],
-    globalDiscount: { type: "flat", value: round2(totals.discountAmount + credit.taxable) },
-    globalTaxPercent,
   };
 }
 
@@ -229,43 +166,3 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** A stored `proration` (Timestamps) back as a record (Dates); null if absent or malformed. */
-export function readProration(raw: unknown): ProrationRecord | null {
-  const r = asObject(raw);
-  const coveredUntil = asDate(r?.coveredUntil);
-  if (!r || !coveredUntil) return null;
-  const c = period(r.credit);
-  const credit = asObject(r.credit);
-  const appliesToDueAt = asDate(credit?.appliesToDueAt);
-  const gaps = (Array.isArray(r.gaps) ? r.gaps : []).flatMap((raw): ProrationGap[] => {
-    const g = asObject(raw);
-    const p = period(raw);
-    if (!g || !p || typeof g.docId !== "string") return [];
-    const state = g.state === "raising" || g.state === "raised" ? g.state : "pending";
-    const invoiceId = typeof g.invoiceId === "string" ? g.invoiceId : null;
-    return [{ ...p, docId: g.docId, state, claimedAt: asDate(g.claimedAt), invoiceId, forLastDueAt: asDate(g.forLastDueAt) }];
-  });
-  return {
-    forLastDueAt: asDate(r.forLastDueAt),
-    coveredUntil,
-    credit: c && appliesToDueAt ? { ...c, appliesToDueAt, cycle: typeof credit?.cycle === "number" ? credit.cycle : null } : null,
-    gaps,
-  };
-}
-
-function period(raw: unknown): ProratedPeriod | null {
-  const q = asObject(raw);
-  const [from, to] = [asDate(q?.from), asDate(q?.to)];
-  if (!q || !from || !to || typeof q.taxable !== "number") return null;
-  return { from, to, days: Number(q.days), cycleDays: Number(q.cycleDays), taxable: q.taxable, label: String(q.label ?? "") };
-}
-
-function asObject(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
-}
-
-function asDate(v: unknown): Date | null {
-  if (v instanceof Date) return v;
-  const t = v as { toDate?: () => Date } | null | undefined;
-  return typeof t?.toDate === "function" ? t.toDate() : null;
-}

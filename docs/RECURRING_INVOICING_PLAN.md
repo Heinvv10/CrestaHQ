@@ -208,24 +208,35 @@ extra cycle is used up and an after-count term stays whole. The uncovered
 15–19 Jul becomes one one-off invoice, "Pro-rated: 15 Jul – 19 Jul (billing day
 changed)". Moved the other way (20th → 15th), the next bill is 15 Jul and it
 carries a pro-rated credit for 15–19 Jul. Amount = the template's pre-tax
-total × days ÷ days in the cycle those days start (old anchor for a gap, new for
-an overlap), in the schedule's timezone, to the cent, with the template's tax.
+total × days ÷ days in the cycle those days start, in the schedule's timezone,
+to the cent, with the template's tax. A gap's cycle is measured on the billing
+day the paid-through date actually sits on as billed (15 → 10 → 20 in one
+period is still 5 ÷ 31 of the 15th's cycle); an overlap's on the new day.
 
 The PATCH records the gap as **pending**. The daily cron raises every pending
 gap before running cycles, and the edit also tries straight away (best
-effort). Each gap is claimed in a transaction under a quote id fixed at the
+effort). The queue is `prorationDueAt`, oldest first, and one schedule failing
+never stops the rest. A failed gap moves to the back of the queue for a day. Each gap is claimed in a transaction under a quote id fixed at the
 edit, so a claim retaken after a crash (15 min) finds the invoice instead of
-raising a second one. Every failure leaves the gap pending for the next run,
-with `lastError` and an operator Task. A gap only counts as paid-for once its
+raising a second one. Every failure leaves the gap pending for the next run
+and updates `lastError`. The first failure of each gap also raises an operator
+Task. A gap only counts as paid-for once its
 invoice exists: reverting 15 → 20 → 15 before it is raised cancels it, and
-nothing is credited. A cancelled schedule's pending gaps are dropped. The gap
+nothing is credited. A **paused** schedule's pending gap is still raised,
+because those days were delivered and are owed. A cancelled schedule's pending
+gaps are dropped. The gap
 invoice respects `reviewFirst` (a draft) and is **emailed even on a card
 schedule**, with a Task saying the difference is deliberate: the customer
 authorised one fixed amount per cycle, and this is not it.
 
-A credit is claimed by the first cycle due on or after the day it was
-computed for. If that cycle is skipped (too stale) or fails before its invoice
-exists, the credit carries forward. Quote lines are clamped to ≥ 0 everywhere
+Credits are a list, so a credit still owed is never overwritten. Each is
+claimed by the first cycle due on or after the day it was computed for. If that
+cycle is skipped (too stale) or fails before its invoice exists, the credit
+carries forward, including across a frequency change. When a credit is larger
+than what remains of the invoice (for example after a price cut), it takes what
+fits and the rest is owed by the next cycle. When a final cycle, or
+cancelling, leaves a credit that no invoice can carry, the operator gets a Task
+to credit it by hand. Quote lines are clamped to ≥ 0 everywhere
 (calc, sanitiser, builder), so the credit is a flat discount (added to any
 template discount) plus a zero-priced line naming it: a negative line would
 vanish as soon as an operator saved a review-first draft. A card cycle
@@ -235,11 +246,13 @@ period guard is checked first, so a too-soon cycle is reported as such.
 Pro-rated invoices are marked `prorated: "gap" | "credit"`, and are never
 offered a card-on-file link.
 
-What was pro-rated lives on the schedule as `proration` (paid-through date,
-credit, gaps and their state), plus `prorationPending` for the cron. An edit
+What was pro-rated lives on the schedule as `proration` (the paid-through date
+and the billing day it sits on, credits, gaps and their state), plus
+`prorationDueAt` for the cron. An edit
 and its pro-ration commit in one transaction against the state they were
-computed from; a concurrent edit or a claim in between gets a 409. Saving the
-same edit twice changes nothing.
+computed from; a concurrent edit or a claim in between gets a 409. The edit's
+end date is checked against the pro-rated next run. Saving the same edit twice
+changes nothing.
 
 Not pro-rated: a schedule that has never billed; a paused one; and any
 **frequency change** (monthly ↔ quarterly/weekly), which redefines what a cycle

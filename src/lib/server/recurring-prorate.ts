@@ -3,13 +3,10 @@ import "server-only";
 import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import {
-  gapInvoiceTemplate,
-  planProration,
-  readProration,
-  type ProrationGap,
-  type ProrationRecord,
-} from "@/lib/recurring/prorate";
+import { formatCurrency } from "@/lib/format";
+import { gapInvoiceTemplate, planProration } from "@/lib/recurring/prorate";
+import { takeCredits } from "@/lib/recurring/prorate-credit";
+import { readProration, type ProrationCredit, type ProrationGap, type ProrationRecord } from "@/lib/recurring/prorate-record";
 import type { ScheduleUpdateFields } from "@/lib/recurring/schedule-input";
 import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
 import {
@@ -25,10 +22,14 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  * The persistence half of pro-rating a billing-day change (`prorate.ts` is the
  * arithmetic): the PATCH route plans and commits; the daily sweep raises every
  * pending gap invoice, retrying until it exists; the edit also tries at once.
+ * A PAUSED schedule's pending gap is still raised — those days were delivered
+ * and are owed; only a cancelled schedule's pending gaps are dropped.
  */
 
 /** A claim older than this is presumed dead (a crashed raiser) and retaken. */
 export const GAP_CLAIM_STALE_MS = 15 * 60_000;
+/** A failed gap goes to the back of the queue for this long, so it cannot starve the others. */
+const GAP_RETRY_MS = 86_400_000;
 /** Schedules with pending gaps handled per sweep invocation. */
 const GAP_BATCH = 25;
 
@@ -66,9 +67,12 @@ export function prorationForEdit(
   });
 }
 
-/** The fields a pro-ration writes onto the schedule. */
-export function prorationFields(record: ProrationRecord): Record<string, unknown> {
-  return { proration: record, prorationPending: record.gaps.some((g) => g.state !== "raised") };
+/**
+ * The fields a pro-ration writes onto the schedule. `prorationDueAt` queues
+ * the schedule for the cron while a gap is unraised: when to (re)try it.
+ */
+export function prorationFields(record: ProrationRecord, dueAt: Date): Record<string, unknown> {
+  return { proration: record, prorationDueAt: record.gaps.some((g) => g.state !== "raised") ? dueAt : null };
 }
 
 /**
@@ -104,11 +108,22 @@ export async function commitWithProration(
   });
 }
 
-/** The sweep's half: raise the pending gaps of every schedule that has one. */
+/** The sweep's half: raise the pending gaps of every schedule that has one, longest-waiting first. */
 export async function raisePendingProrations(now: Date = new Date()): Promise<number> {
-  const snap = await schedulesCollection().where("prorationPending", "==", true).limit(GAP_BATCH).get();
+  const snap = await schedulesCollection()
+    .where("prorationDueAt", "<=", now)
+    .orderBy("prorationDueAt")
+    .limit(GAP_BATCH)
+    .get();
   let raised = 0;
-  for (const doc of snap.docs) raised += await raiseProrationGaps(doc.ref, now);
+  for (const doc of snap.docs) {
+    // One schedule's failure (bad data, a lost race) must not stop the rest.
+    try {
+      raised += await raiseProrationGaps(doc.ref, now);
+    } catch (err) {
+      console.error(`[recurring/prorate] pending gaps failed for ${doc.id}`, err);
+    }
+  }
   return raised;
 }
 
@@ -138,7 +153,7 @@ export async function raiseProrationGaps(ref: DocumentReference, now: Date): Pro
     const gaps = record.gaps.flatMap((g) =>
       cancelled && g.state === "pending" ? [] : [picked.includes(g) ? { ...g, state: "raising" as const, claimedAt: now } : g],
     );
-    tx.update(ref, prorationFields({ ...record, gaps }));
+    tx.update(ref, prorationFields({ ...record, gaps }, toDate(schedule.prorationDueAt) ?? now));
     return picked.length ? { schedule, picked } : null;
   });
   if (!claimed) return 0;
@@ -174,28 +189,31 @@ async function raiseOne(ref: DocumentReference, schedule: RecurringInvoiceDoc, g
         }
       }
     }
-    await markGap(ref, gap.docId, { state: "raised", invoiceId: gap.docId });
+    await markGap(ref, gap.docId, { state: "raised", invoiceId: gap.docId }, now);
     return true;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`[recurring/prorate] gap invoice failed for ${schedule.id}: ${reason}`);
     const created = (await getAdminDb().doc(`quotes/${gap.docId}`).get().catch(() => null))?.exists ?? false;
     const note = `${gap.label}: the pro-rated invoice could not be ${created ? "sent" : "raised"} (${reason}). ${created ? "Send it by hand." : "It will be retried on the next daily run."}`;
-    await markGap(ref, gap.docId, created ? { state: "raised", invoiceId: gap.docId } : { state: "pending", claimedAt: null }, note).catch(
-      (e: unknown) => console.error(`[recurring/prorate] gap state not written for ${schedule.id}`, e),
+    const patch = created ? { state: "raised" as const, invoiceId: gap.docId } : { state: "pending" as const, claimedAt: null };
+    const retryAt = new Date(now.getTime() + GAP_RETRY_MS);
+    await markGap(ref, gap.docId, { ...patch, failureAlerted: true }, retryAt, note).catch((e: unknown) =>
+      console.error(`[recurring/prorate] gap state not written for ${schedule.id}`, e),
     );
-    await alertProration(schedule, note);
+    // One Task per gap; a gap failing daily updates `lastError`, not the Task list.
+    if (!gap.failureAlerted) await alertProration(schedule, note);
     return false;
   }
 }
 
-async function markGap(ref: DocumentReference, docId: string, patch: Partial<ProrationGap>, lastError?: string): Promise<void> {
+async function markGap(ref: DocumentReference, docId: string, patch: Partial<ProrationGap>, dueAt: Date, lastError?: string): Promise<void> {
   await getAdminDb().runTransaction(async (tx) => {
     const record = readProration((await tx.get(ref)).data()?.proration);
     if (!record) return;
     const gaps = record.gaps.map((g) => (g.docId === docId ? { ...g, ...patch } : g));
     tx.update(ref, {
-      ...prorationFields({ ...record, gaps }),
+      ...prorationFields({ ...record, gaps }, dueAt),
       ...(lastError ? { lastError: lastError.slice(0, 500) } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -210,4 +228,32 @@ export async function alertProration(schedule: RecurringInvoiceDoc, note: string
   await raiseChargeTask(schedule, `Pro-rated invoice on "${schedule.name}"`, note).catch((err: unknown) =>
     console.error(`[recurring/prorate] task not raised for ${schedule.id}`, err),
   );
+}
+
+/**
+ * The credits a cycle due `dueAt` takes, claimed in the cycle's own
+ * transaction (`takeCredits`). `restore` undoes the claim when no invoice was
+ * raised, so the credit passes to the next cycle.
+ */
+export function claimCredits(
+  schedule: RecurringInvoiceDoc,
+  cycle: { dueAt: Date; number: number; final: boolean },
+): { applied: ProrationCredit[]; orphaned: ProrationCredit[]; update: Record<string, unknown>; restore: Record<string, unknown> } {
+  const record = readProration(schedule.proration);
+  const taken = takeCredits(record, { ...cycle, template: schedule });
+  if (!record || !taken) return { applied: [], orphaned: [], update: {}, restore: {} };
+  return {
+    applied: taken.applied,
+    orphaned: taken.orphaned,
+    update: { "proration.credits": taken.credits },
+    restore: { "proration.credits": record.credits },
+  };
+}
+
+/** Credits no invoice of this schedule will carry any more (it ended, or was cancelled): a Task each. */
+export async function alertOrphanedCredits(schedule: RecurringInvoiceDoc, credits: ProrationCredit[]): Promise<void> {
+  for (const c of credits) {
+    const amount = formatCurrency(c.taxable, schedule.currency);
+    await alertProration(schedule, `${c.label}: a credit of ${amount} excl. tax was not applied — the schedule has no invoice left to carry it. Credit it by hand.`);
+  }
 }

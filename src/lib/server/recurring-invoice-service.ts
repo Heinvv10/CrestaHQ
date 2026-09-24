@@ -8,7 +8,6 @@ import {
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { computeNextRunAt } from "@/lib/recurring/cadence";
-import { creditDueOn, readProration, type ProrationCredit } from "@/lib/recurring/prorate";
 import {
   generateInvoice,
   isAlreadyFinished,
@@ -21,6 +20,7 @@ import {
 } from "@/lib/server/recurring-invoice-cycle";
 import { chargeCycle } from "@/lib/server/recurring-auto-charge";
 import { recordClaimFailure } from "@/lib/server/recurring-claim-failure";
+import { alertOrphanedCredits, claimCredits } from "@/lib/server/recurring-prorate";
 import type {
   RecurringCycleOutcome,
   RecurringInvoiceDoc,
@@ -152,7 +152,7 @@ export async function runOneSchedule(
   let invoiceId: string | null = null;
 
   try {
-    const invoice = await generateInvoice(schedule, now, { credit: claim.credit });
+    const invoice = await generateInvoice(schedule, now, { credits: claim.credits.applied });
     invoiceId = invoice.invoiceId;
     let sent = false;
     if (!schedule.reviewFirst) {
@@ -166,6 +166,7 @@ export async function runOneSchedule(
       notifyDraftForReview(schedule, invoice);
     }
     await settleAfterCycle(schedule, invoiceId);
+    if (claim.credits.orphaned.length) await alertOrphanedCredits(schedule, claim.credits.orphaned);
     return { kind: "generated", invoiceId, sent };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -179,7 +180,7 @@ export async function runOneSchedule(
         lastError: reason.slice(0, 500),
         // Nothing was raised, so this period was not billed: the card guard
         // must not count it (it would refuse a legitimate re-raise).
-        ...(invoiceId ? {} : { lastDueAt: schedule.lastDueAt ?? null, ...(claim.credit ? { "proration.credit.cycle": null } : {}) }),
+        ...(invoiceId ? {} : { lastDueAt: schedule.lastDueAt ?? null, ...claim.credits.restore }),
         updatedAt: FieldValue.serverTimestamp(),
       })
       .catch(() => {});
@@ -198,7 +199,7 @@ async function claimCycle(
   scheduleId: string,
   now: Date,
 ): Promise<
-  | { ok: true; schedule: RecurringInvoiceDoc; cycle: number; dueAt: Date; credit: ProrationCredit | null }
+  | { ok: true; schedule: RecurringInvoiceDoc; cycle: number; dueAt: Date; credits: ReturnType<typeof claimCredits> }
   | { ok: false; reason: string }
 > {
   const ref = schedulesCollection().doc(scheduleId);
@@ -280,7 +281,7 @@ async function claimCycle(
     // next run and complete the schedule one cycle early, and anything that
     // threw after the claim would leave it active to bill once too many.
     const finished = isFinalCycle(schedule, cyclesGenerated, nextRunAt);
-    const credit = creditDueOn(readProration(schedule.proration), dueAt); // owed pro-rated credit (prorate.ts)
+    const credits = claimCredits(schedule, { dueAt, number: cyclesGenerated, final: finished }); // prorate-credit.ts
 
     if (schedule.lastError) {
       console.warn(`[recurring] ${scheduleId} claimed; clearing lastError: ${schedule.lastError}`);
@@ -292,12 +293,12 @@ async function claimCycle(
       // Card guard input (recurring-auto-charge.ts): billed cycles only; undone if no invoice is raised.
       lastDueAt: Timestamp.fromDate(dueAt),
       lastError: null,
-      ...(credit ? { "proration.credit.cycle": cyclesGenerated } : {}),
+      ...credits.update,
       ...(finished ? { status: "completed" } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
     // `cycle` numbers the auto-charge reference: one charge per cycle. `schedule`
     // is the pre-claim snapshot, so its `lastDueAt` is the PREVIOUS cycle's.
-    return { ok: true as const, schedule, cycle: cyclesGenerated, dueAt, credit };
+    return { ok: true as const, schedule, cycle: cyclesGenerated, dueAt, credits };
   });
 }

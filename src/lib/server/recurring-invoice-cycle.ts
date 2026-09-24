@@ -5,7 +5,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendPushForEvent } from "@/lib/push/send";
 import { issueQuoteNumber } from "@/lib/quotes/number";
-import { withProratedCredit, type ProrationCredit } from "@/lib/recurring/prorate";
+import { withProratedCredits } from "@/lib/recurring/prorate-credit";
+import type { ProrationCredit } from "@/lib/recurring/prorate-record";
 import {
   createTaskServerSide,
   territoryForContact,
@@ -30,11 +31,11 @@ export function schedulesCollection() {
   return getAdminDb().collection("recurringInvoices");
 }
 
-/** Mint an invoice from the schedule's template, with a pro-rated `credit` the claim gave this cycle. */
+/** Mint an invoice from the schedule's template, with the pro-rated `credits` the claim gave this cycle. */
 export async function generateInvoice(
   schedule: RecurringInvoiceDoc,
   now: Date,
-  opts: { credit?: ProrationCredit | null; docId?: string; prorated?: "gap" } = {},
+  opts: { credits?: ProrationCredit[]; docId?: string; prorated?: "gap" } = {},
 ): Promise<{ invoiceId: string; quoteNumber: string; territoryId: string }> {
   // Same stamp the hand-made path applies. Without it the rules read a null
   // territory and deny it to everyone but admins — so the rep who actually
@@ -59,8 +60,8 @@ export async function generateInvoice(
     contactId: schedule.contactId,
     quoteNumber,
     currency: schedule.currency,
-    ...withProratedCredit(schedule, opts.credit ?? null, schedule.currency),
-    ...(opts.prorated || opts.credit ? { prorated: opts.prorated ?? "credit" } : {}),
+    ...withProratedCredits(schedule, opts.credits ?? [], schedule.currency),
+    ...(opts.prorated || opts.credits?.length ? { prorated: opts.prorated ?? "credit" } : {}),
     termsAndNotes: schedule.termsAndNotes,
     billedToOrganization: schedule.billedToOrganization,
     billingAddress: schedule.billingAddress,

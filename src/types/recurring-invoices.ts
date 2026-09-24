@@ -134,8 +134,8 @@ export interface RecurringInvoiceDoc {
    * Shape: `ProrationRecord` in `lib/recurring/prorate.ts`, dates as Timestamps.
    */
   proration?: Record<string, unknown> | null;
-  /** A gap invoice is still to be raised; the daily cron queries this. */
-  prorationPending?: boolean;
+  /** When the daily cron should (re)try raising an unraised gap invoice; null when none is pending. */
+  prorationDueAt?: Timestamp | FieldValue | Date | null;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;
