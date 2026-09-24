@@ -1231,11 +1231,15 @@ service cloud.firestore {
       // `paidVia` (which payment rail marked it paid) is Admin-SDK-only: the
       // Paystack reconciler trusts it to tell its own payment from one made
       // another way, so a member forging it could hide a refund owed.
+      // `autoCharge` (a recurring card charge's state) likewise: it gates pay
+      // links and the decline path, so a forged one could hide a decline or a
+      // late success.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
       ) && !("paidVia" in request.resource.data)
+        && !("autoCharge" in request.resource.data)
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
       allow update: if canSeeScopedDoc(
@@ -1248,6 +1252,7 @@ service cloud.firestore {
           resource.data.agencyId
         )
         && request.resource.data.get("paidVia", null) == resource.data.get("paidVia", null)
+        && request.resource.data.get("autoCharge", null) == resource.data.get("autoCharge", null)
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
       allow delete: if canSeeScopedDoc(

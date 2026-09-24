@@ -142,6 +142,7 @@ const SETTLED_ATTEMPT = { ...ATTEMPT, state: "settled" };
 const LINK = { ...TENANT, invoiceId: "inv1", amountCents: 115000, currency: "ZAR", mode: "live", status: "open", active: true };
 const PAID_LINK = { ...LINK, status: "paid" };
 const QUOTE = { ...TENANT, kind: "invoice", status: "sent", quoteNumber: "INV-1", paidVia: null };
+const AUTO_CHARGE = { reference: "ra-s1-c1", mandateId: "m1", state: "declined", reason: "Declined" };
 const PAID_VIA = { rail: "paystack_link", linkId: "link1", reference: "pl-link1-0123456789abcdef" };
 
 const MANDATE = {
@@ -217,6 +218,15 @@ const CASES: [string, Case, Outcome][] = [
   ["quotes: admin creates a quote without paidVia (control)", { caller: saAdmin, method: "create", path: QTE, after: (({ paidVia: _, ...q }) => q)(QUOTE) }, "allow"],
   ["quotes: admin cannot create a quote carrying paidVia", { caller: saAdmin, method: "create", path: QTE, after: { ...QUOTE, paidVia: PAID_VIA } }, "deny"],
   ["quotes: admin cannot create a quote carrying paidVia: null", { caller: saAdmin, method: "create", path: QTE, after: QUOTE }, "deny"],
+
+  // ---- quotes.autoCharge: no client may write it ----
+  ["quotes: admin cannot set autoCharge", { caller: saAdmin, method: "update", path: QTE, before: QUOTE, after: { ...QUOTE, autoCharge: AUTO_CHARGE } }, "deny"],
+  ["quotes: admin cannot change autoCharge", { caller: saAdmin, method: "update", path: QTE, before: { ...QUOTE, autoCharge: AUTO_CHARGE }, after: { ...QUOTE, autoCharge: { ...AUTO_CHARGE, state: "paid" } } }, "deny"],
+  ["quotes: admin cannot clear autoCharge", { caller: saAdmin, method: "update", path: QTE, before: { ...QUOTE, autoCharge: AUTO_CHARGE }, after: QUOTE }, "deny"],
+  ["quotes: collaborator cannot set autoCharge", { caller: collaborator, method: "update", path: QTE, before: QUOTE, after: { ...QUOTE, autoCharge: AUTO_CHARGE } }, "deny"],
+  ["quotes: admin edits a quote with autoCharge untouched (control)", { caller: saAdmin, method: "update", path: QTE, before: { ...QUOTE, autoCharge: AUTO_CHARGE }, after: { ...QUOTE, autoCharge: AUTO_CHARGE, status: "viewed" } }, "allow"],
+  ["quotes: admin cannot create a quote carrying autoCharge", { caller: saAdmin, method: "create", path: QTE, after: { ...(({ paidVia: _, ...q }) => q)(QUOTE), autoCharge: AUTO_CHARGE } }, "deny"],
+  ["quotes: admin cannot create a quote carrying autoCharge: null", { caller: saAdmin, method: "create", path: QTE, after: { ...(({ paidVia: _, ...q }) => q)(QUOTE), autoCharge: null } }, "deny"],
 ];
 
 describe.skipIf(!haveCreds)("payment records — firestore rules", () => {
