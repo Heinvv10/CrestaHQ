@@ -203,7 +203,7 @@ Hein. Each one names the alternative that was rejected.
     errors propagate from routes.
 12. **Every other gate writer is unaudited, and each one is a named follow-up.**
     They all go through `applyFeatureGates`:
-    - **Workspace Assistant `set_feature_gate`**, in `src/lib/ai-suite/capabilities.ts`.
+    - **Workspace Assistant `set_feature_gate`**, in `src/lib/ai-suite/capabilities/agency.ts`.
       The actor would be `ai_agent` on behalf of the owner.
     - **Client Billing plan edit push** (`updatePlanForAgency`,
       `src/lib/server/billing-service.ts`), which re-applies an edited plan's

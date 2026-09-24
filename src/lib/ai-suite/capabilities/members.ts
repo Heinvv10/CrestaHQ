@@ -1,0 +1,165 @@
+import "server-only";
+
+import { getAdminDb } from "@/lib/firebase/admin";
+import {
+  createInviteServerSide,
+  MemberAddBlockedError,
+} from "@/lib/server/members-service";
+import { CapabilityUserError, type AiSuiteCapability } from "./types";
+import { EMAIL_RE, str } from "./helpers";
+
+export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
+  {
+    name: "list_members",
+    level: "sub-account",
+    requiredRole: "subAccountAdmin",
+    readonly: true,
+    menuLabel: "List this workspace's members and pending invites",
+    description:
+      "List this sub-account's members (name, email, role, status) and any pending invites. Use to answer questions about who has access, and ALWAYS use it before invite_member to check the person isn't already a member or already invited.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    validate: () => ({ ok: true, args: {} }),
+    summarize: () => "List this workspace's members and pending invites.",
+    execute: async (ctx) => {
+      const db = getAdminDb();
+      const [membersSnap, invitesSnap] = await Promise.all([
+        db
+          .collection(`subAccounts/${ctx.subAccountId!}/subAccountMembers`)
+          .limit(100)
+          .get(),
+        db
+          .collection("invites")
+          .where("subAccountId", "==", ctx.subAccountId!)
+          .where("acceptedByUid", "==", null)
+          .where("revokedAt", "==", null)
+          .limit(50)
+          .get(),
+      ]);
+      const memberLines = membersSnap.docs
+        .filter((d) => d.data().status !== "removed")
+        .map((d) => {
+          const data = d.data();
+          const who =
+            (data.displayName as string) || (data.email as string) || d.id;
+          const email =
+            data.displayName && data.email ? ` (${data.email})` : "";
+          return `- ${who}${email} — role: ${data.role ?? "member"}${
+            data.status && data.status !== "active" ? `, ${data.status}` : ""
+          }`;
+        });
+      const inviteLines = invitesSnap.docs.map((d) => {
+        const data = d.data();
+        return `- ${data.email} — invited as ${
+          data.subAccountRole ?? "collaborator"
+        }, pending (hasn't signed up yet)`;
+      });
+      return {
+        resultText: [
+          `Members (${memberLines.length}):`,
+          memberLines.length ? memberLines.join("\n") : "(none)",
+          "",
+          `Pending invites (${inviteLines.length}):`,
+          inviteLines.length ? inviteLines.join("\n") : "(none)",
+        ].join("\n"),
+      };
+    },
+  },
+  {
+    name: "invite_member",
+    level: "sub-account",
+    requiredRole: "subAccountAdmin",
+    menuLabel:
+      "Invite someone to this workspace by email (as admin or collaborator)",
+    description:
+      "Add someone (by email) to this sub-account as 'admin' (manages members + settings) or 'collaborator' (works the data, no member management). If the email is NEW, they get an email with a signup link and the invite stays pending until they sign up. If the email ALREADY has a verified account (or is already a member here), they're added to this workspace directly (nothing to accept) and emailed a notification — this is how someone already in another sub-account gets added here. Re-adding an existing member just updates their role. Ask which role the user wants if they didn't say; default to collaborator when they just say 'invite'.",
+    parameters: {
+      type: "object",
+      properties: {
+        email: {
+          type: "string",
+          description: "The invitee's email address.",
+        },
+        role: {
+          type: "string",
+          enum: ["admin", "collaborator"],
+          description:
+            "'admin' manages members + settings; 'collaborator' works the data only.",
+        },
+      },
+      required: ["email", "role"],
+      additionalProperties: false,
+    },
+    validate: (raw) => {
+      const email = str(raw, "email").toLowerCase();
+      if (!email || !EMAIL_RE.test(email)) {
+        return { ok: false, error: "a valid email address is required" };
+      }
+      const role = str(raw, "role");
+      if (role !== "admin" && role !== "collaborator") {
+        return {
+          ok: false,
+          error: "the role must be 'admin' or 'collaborator'",
+        };
+      }
+      return { ok: true, args: { email, role } };
+    },
+    summarize: (args) =>
+      `Invite ${args.email} to this workspace as ${
+        args.role === "admin" ? "an admin" : "a collaborator"
+      } (they'll get a signup email).`,
+    execute: async (ctx, args) => {
+      let res;
+      try {
+        res = await createInviteServerSide({
+          subAccountId: ctx.subAccountId!,
+          invitedByUid: ctx.uid,
+          // The assistant made the change; createdByUid records who asked it.
+          auditActor: { type: "ai_agent", id: "workspace-assistant" },
+          email: args.email as string,
+          role: args.role as "admin" | "collaborator",
+        });
+      } catch (err) {
+        if (err instanceof MemberAddBlockedError) {
+          throw new CapabilityUserError(err.message);
+        }
+        throw err;
+      }
+      const roleLabel = res.role === "admin" ? "Admin" : "Collaborator";
+
+      // Existing account → added directly (no signup step).
+      if (res.added) {
+        if (res.alreadyMember) {
+          return {
+            resultText: `${res.email} was already a member of “${res.subAccountName}” — their role is now ${roleLabel}.`,
+            ref: { kind: "subAccount", id: res.subAccountId },
+          };
+        }
+        const note = res.mailed ? " They've been emailed a notification." : "";
+        return {
+          resultText: `Added ${res.email} to “${res.subAccountName}” as ${roleLabel} (they already had an account, so there was nothing to accept).${note}`,
+          ref: { kind: "sub-account", id: res.subAccountId },
+        };
+      }
+
+      // New email → pending invite until they sign up.
+      const reusedNote = res.reused
+        ? " There was already a pending invite for them — it's been updated to this role and re-sent."
+        : "";
+      const delivery = res.mailed
+        ? `The invite email is on its way.`
+        : `No email was sent (${
+            res.mailError
+              ? "the send failed"
+              : "email isn't configured on this deployment"
+          }) — copy their invite link from Settings → Members → Pending invites and share it with them directly.`;
+      return {
+        resultText: `Invited ${res.email} to “${res.subAccountName}” as ${roleLabel}.${reusedNote} ${delivery} Pending invites are managed under Settings → Members.`,
+        ref: { kind: "invite", id: res.inviteId },
+      };
+    },
+  },
+];

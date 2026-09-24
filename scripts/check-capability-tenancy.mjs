@@ -21,23 +21,33 @@
  *
  * Runs as part of `pnpm lint` (see package.json). Zero dependencies.
  *
- * Usage: node scripts/check-capability-tenancy.mjs [path-to-capabilities.ts]
+ * Usage: node scripts/check-capability-tenancy.mjs [file-or-directory ...]
+ *
+ * Each argument is a .ts file or a directory (every non-test .ts directly
+ * inside it). The default is the registry index `capabilities.ts` plus the
+ * per-resource files in `capabilities/`.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_PATH = join(
-  __dirname,
-  "..",
-  "src",
-  "lib",
-  "ai-suite",
-  "capabilities.ts",
+const AI_SUITE_DIR = join(__dirname, "..", "src", "lib", "ai-suite");
+const DEFAULT_PATHS = [
+  join(AI_SUITE_DIR, "capabilities.ts"),
+  join(AI_SUITE_DIR, "capabilities"),
+];
+const inputPaths =
+  process.argv.length > 2 ? process.argv.slice(2) : DEFAULT_PATHS;
+const filePaths = inputPaths.flatMap((p) =>
+  statSync(p).isDirectory()
+    ? readdirSync(p)
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
+        .sort()
+        .map((f) => join(p, f))
+    : [p],
 );
-const filePath = process.argv[2] ?? DEFAULT_PATH;
 
 /**
  * Capabilities allowed to touch NO tenant data at all. Every entry must have
@@ -59,66 +69,69 @@ const EXTERNAL_ONLY = new Map([
  */
 const MIN_EXPECTED_CAPABILITIES = 25;
 
-const src = readFileSync(filePath, "utf8");
+const sources = filePaths.map((p) => readFileSync(p, "utf8"));
 
 // ── Split the registry into capability blocks ────────────────────────────
 // Literal entries all declare `    name: "<snake_case>",` at 4-space indent.
 // (Parameter properties like `name: { type: "string" }` don't match — they
 // have no quoted string value. The generated `_in_sub_account` wrapper uses
 // a template literal, so it's excluded; its re-anchor is asserted separately.)
+// Each file is split on its own, so a block never runs into the next file.
 const nameRe = /^ {4}name: "([a-z0-9_]+)",$/gm;
-const matches = [...src.matchAll(nameRe)];
 
 const failures = [];
 const checked = [];
 
-for (let i = 0; i < matches.length; i++) {
-  const name = matches[i][1];
-  const start = matches[i].index;
-  const end = i + 1 < matches.length ? matches[i + 1].index : src.length;
-  const block = src.slice(start, end);
+for (const src of sources) {
+  const matches = [...src.matchAll(nameRe)];
+  for (let i = 0; i < matches.length; i++) {
+    const name = matches[i][1];
+    const start = matches[i].index;
+    const end = i + 1 < matches.length ? matches[i + 1].index : src.length;
+    const block = src.slice(start, end);
 
-  const levelMatch = block.match(/^ {4}level: "(agency|sub-account)",$/m);
-  if (!levelMatch) {
-    // A `name:` line that isn't a capability entry (defensive) — but if it
-    // also declares requiredRole it IS one and the level is malformed.
-    if (/^ {4}requiredRole:/m.test(block)) {
+    const levelMatch = block.match(/^ {4}level: "(agency|sub-account)",$/m);
+    if (!levelMatch) {
+      // A `name:` line that isn't a capability entry (defensive) — but if it
+      // also declares requiredRole it IS one and the level is malformed.
+      if (/^ {4}requiredRole:/m.test(block)) {
+        failures.push(
+          `${name}: has requiredRole but no parseable \`level\` — capability shape changed; update this checker.`,
+        );
+      }
+      continue;
+    }
+    const level = levelMatch[1];
+    checked.push({ name, level });
+
+    if (EXTERNAL_ONLY.has(name)) {
+      if (block.includes("getAdminDb(")) {
+        failures.push(
+          `${name}: is allowlisted as external-only (${EXTERNAL_ONLY.get(name)}) but now touches Firestore (getAdminDb). Remove it from the allowlist and anchor its reads to the caller's tenant.`,
+        );
+      }
+      continue;
+    }
+
+    if (level === "agency") {
+      if (!block.includes("ctx.agencyId")) {
+        failures.push(
+          `${name} (agency): execute has no visible \`ctx.agencyId\` anchor. Every agency capability must scope its queries to the caller's agency or re-anchor model-supplied ids (doc.agencyId !== ctx.agencyId → refuse).`,
+        );
+      }
+      continue;
+    }
+
+    // sub-account level
+    const anchored =
+      block.includes("ctx.subAccountId") ||
+      // Self-scoped lookups keyed to the caller's own membership index.
+      block.includes("userMemberships/${ctx.uid}");
+    if (!anchored) {
       failures.push(
-        `${name}: has requiredRole but no parseable \`level\` — capability shape changed; update this checker.`,
+        `${name} (sub-account): execute has no visible tenant anchor. Scope every query/path with \`ctx.subAccountId\`, re-anchor any model-supplied document id (doc.subAccountId !== ctx.subAccountId → refuse), or — for a capability that reads no tenant data at all — add a justified EXTERNAL_ONLY entry in scripts/check-capability-tenancy.mjs.`,
       );
     }
-    continue;
-  }
-  const level = levelMatch[1];
-  checked.push({ name, level });
-
-  if (EXTERNAL_ONLY.has(name)) {
-    if (block.includes("getAdminDb(")) {
-      failures.push(
-        `${name}: is allowlisted as external-only (${EXTERNAL_ONLY.get(name)}) but now touches Firestore (getAdminDb). Remove it from the allowlist and anchor its reads to the caller's tenant.`,
-      );
-    }
-    continue;
-  }
-
-  if (level === "agency") {
-    if (!block.includes("ctx.agencyId")) {
-      failures.push(
-        `${name} (agency): execute has no visible \`ctx.agencyId\` anchor. Every agency capability must scope its queries to the caller's agency or re-anchor model-supplied ids (doc.agencyId !== ctx.agencyId → refuse).`,
-      );
-    }
-    continue;
-  }
-
-  // sub-account level
-  const anchored =
-    block.includes("ctx.subAccountId") ||
-    // Self-scoped lookups keyed to the caller's own membership index.
-    block.includes("userMemberships/${ctx.uid}");
-  if (!anchored) {
-    failures.push(
-      `${name} (sub-account): execute has no visible tenant anchor. Scope every query/path with \`ctx.subAccountId\`, re-anchor any model-supplied document id (doc.subAccountId !== ctx.subAccountId → refuse), or — for a capability that reads no tenant data at all — add a justified EXTERNAL_ONLY entry in scripts/check-capability-tenancy.mjs.`,
-    );
   }
 }
 
@@ -133,6 +146,7 @@ if (checked.length < MIN_EXPECTED_CAPABILITIES) {
 // inSubAccount() produces the `*_in_sub_account` variants at runtime; its
 // execute must verify the model-supplied sub-account belongs to the caller's
 // agency before delegating.
+const src = sources.find((s) => s.includes("function inSubAccount(")) ?? "";
 const wrapperStart = src.indexOf("function inSubAccount(");
 if (wrapperStart === -1) {
   failures.push(
@@ -163,7 +177,7 @@ if (failures.length > 0) {
   console.error("✖ AI Suite tenancy check FAILED:\n");
   for (const f of failures) console.error(`  • ${f}\n`);
   console.error(
-    `Checked ${checked.length} capabilities (${agencyCount} agency, ${subCount} sub-account) in ${filePath}`,
+    `Checked ${checked.length} capabilities (${agencyCount} agency, ${subCount} sub-account) in ${filePaths.length} file(s): ${inputPaths.join(", ")}`,
   );
   process.exit(1);
 }
