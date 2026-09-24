@@ -170,6 +170,27 @@ export async function getApiKey(
   return snapToDoc(snap.id, snap.data()!);
 }
 
+/**
+ * Registered by the Agent API's proposal layer (PR3) so revoking a key also
+ * sweeps its `pending` `agentProposals` rows to `rejected`. Stub for now —
+ * no registrant exists until PR3 ships `agent-proposals.ts`; `revokeApiKey`
+ * calls every registered hook after the revoke write, ignoring hooks that
+ * throw so a proposal-sweep failure never blocks the revoke itself.
+ */
+const keyRevokeHooks: Array<
+  (input: { subAccountId: string; keyId: string; revokedByUid: string }) => Promise<void>
+> = [];
+
+export function onApiKeyRevoked(
+  hook: (input: {
+    subAccountId: string;
+    keyId: string;
+    revokedByUid: string;
+  }) => Promise<void>,
+): void {
+  keyRevokeHooks.push(hook);
+}
+
 export async function revokeApiKey(
   subAccountId: string,
   keyId: string,
@@ -187,6 +208,16 @@ export async function revokeApiKey(
       },
       { merge: true },
     );
+
+  for (const hook of keyRevokeHooks) {
+    try {
+      await hook({ subAccountId, keyId, revokedByUid });
+    } catch (err) {
+      console.error(
+        `[api-keys] revoke hook failed subAccount=${subAccountId} key=${keyId} kind=${err instanceof Error ? err.name : typeof err}`,
+      );
+    }
+  }
 }
 
 /**

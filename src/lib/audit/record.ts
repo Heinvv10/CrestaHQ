@@ -41,6 +41,7 @@ const GATE_FIELDS: Record<AgencyGateField, true> = {
   aiSuiteEnabledByAgency: true,
   labsEnabledByAgency: true,
   reviewsAiEnabledByAgency: true,
+  agentApiEnabledByAgency: true,
   getLeadsEnabledByAgency: true,
   paymentsEnabledByAgency: true,
   webinar1EnabledByAgency: true,

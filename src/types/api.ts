@@ -27,8 +27,14 @@ export type ApiKeyMode = "live" | "test";
  *   - `forms-ingest` — write-only, restricted to `POST /api/v1/forms/{id}/
  *                      submissions`. Safe to embed in client-side JS on a
  *                      custom landing page (CORS open for this scope only).
+ *   - `agent`        — external LLM agent access over `POST /api/mcp` and
+ *                      `/api/v1/tools[/{name}]` (Agent API v1). Mutually
+ *                      exclusive with `admin` and `forms-ingest` — an agent
+ *                      key is scoped to the agent-surfaced capability set
+ *                      only, never the full admin surface or the forms
+ *                      ingest endpoint. Server-to-server only.
  */
-export type ApiKeyScope = "admin" | "forms-ingest";
+export type ApiKeyScope = "admin" | "forms-ingest" | "agent";
 
 /**
  * Firestore doc at `subAccounts/{subAccountId}/apiKeys/{keyId}`. Server-only

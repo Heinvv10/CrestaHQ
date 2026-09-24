@@ -68,6 +68,7 @@ interface PatchBody {
   googleEnabled?: boolean;
   googleCalendarEnabled?: boolean;
   reviewsAiEnabled?: boolean;
+  agentApiEnabled?: boolean;
   /**
    * Usage Metering v1 — per-workspace quota override. Not a gate: writes
    * directly like the hide flags. `null` clears back to plan/unlimited;
@@ -141,6 +142,7 @@ export async function PATCH(
   const wantsGoogle = typeof body.googleEnabled === "boolean";
   const wantsGoogleCalendar = typeof body.googleCalendarEnabled === "boolean";
   const wantsReviewsAi = typeof body.reviewsAiEnabled === "boolean";
+  const wantsAgentApi = typeof body.agentApiEnabled === "boolean";
   const wantsBroadcastsHidden =
     typeof body.broadcastsHiddenWhenDisabled === "boolean";
   const wantsWebsiteHidden =
@@ -188,6 +190,7 @@ export async function PATCH(
     !wantsGoogle &&
     !wantsGoogleCalendar &&
     !wantsReviewsAi &&
+    !wantsAgentApi &&
     !wantsBroadcastsHidden &&
     !wantsWebsiteHidden &&
     !wantsSocialPlannerHidden &&
@@ -306,6 +309,9 @@ export async function PATCH(
   if (typeof body.reviewsAiEnabled === "boolean") {
     gates.reviewsAiEnabledByAgency = body.reviewsAiEnabled;
   }
+  if (typeof body.agentApiEnabled === "boolean") {
+    gates.agentApiEnabledByAgency = body.agentApiEnabled;
+  }
 
   let clearedDomain = false;
   if (Object.keys(gates).length > 0) {
@@ -417,6 +423,7 @@ export async function PATCH(
       ? { googleCalendarEnabled: body.googleCalendarEnabled }
       : {}),
     ...(wantsReviewsAi ? { reviewsAiEnabled: body.reviewsAiEnabled } : {}),
+    ...(wantsAgentApi ? { agentApiEnabled: body.agentApiEnabled } : {}),
     ...(wantsWebinar1Hidden
       ? { webinar1HiddenWhenDisabled: body.webinar1HiddenWhenDisabled }
       : {}),

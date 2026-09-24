@@ -15,6 +15,13 @@ import type { ApiKeyScope } from "@/types/api";
  *                                              valve we actually care
  *                                              about; hour cap would
  *                                              be a poor proxy)
+ *   agent                       60        1,000 (same budget as admin —
+ *                                              an agent acts as sub-account
+ *                                              admin by design; MCP's
+ *                                              per-`tools/call` check reuses
+ *                                              this row so a JSON-RPC batch
+ *                                              can't multiply one request
+ *                                              into N writes)
  *
  * Mode-namespaced (live vs test maintain separate counters) so a burst of
  * test traffic can't lock out live integrations on the same key family.
@@ -51,6 +58,7 @@ interface Limits {
 const LIMITS_BY_SCOPE: Record<ApiKeyScope, Limits> = {
   admin: { perMinute: 60, perHour: 1000 },
   "forms-ingest": { perMinute: 300, perHour: null },
+  agent: { perMinute: 60, perHour: 1000 },
 };
 
 export interface RateLimitResult {
