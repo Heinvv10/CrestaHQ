@@ -86,20 +86,29 @@ export function QuoteDetail({
   // it, any later change (a webhook, another operator) hides it.
   const chargeView = `${quote.status}|${quote.autoCharge?.state ?? ""}`;
   const chargeViewRef = useRef(chargeView);
-  chargeViewRef.current = chargeView;
+  useEffect(() => {
+    chargeViewRef.current = chargeView;
+  }, [chargeView]);
   const [recheck, setRecheck] = useState<{ text: string; isError: boolean; views: string[] } | null>(null);
   const showRecheck = recheck && recheck.views.includes(chargeView) ? recheck : null;
+  // Bound per render, so `chargeView` here is the view when the button was
+  // clicked, and the ref the view when the answer arrived.
   const onRecheck = (text: string, isError: boolean, outcome?: string) => {
+    const clicked = chargeView;
     const now = chargeViewRef.current;
-    const after =
-      outcome === "paid"
-        ? "paid|paid"
-        : outcome === "failed_but_paid"
-          ? "paid|declined"
-          : outcome === "declined"
-            ? `${now.split("|")[0]}|declined`
-            : now;
-    setRecheck({ text, isError, views: [now, after] });
+    const [status, charge] = now.split("|");
+    // What the server writes for each outcome (auto-charge-recheck.ts and
+    // the reconciler). A paid charge lands in two writes: status, then charge.
+    const after: Record<string, string[]> = {
+      paid: [`paid|${charge}`, "paid|paid"],
+      declined: [`${status}|declined`],
+      failed_but_paid: ["paid|declined"],
+      needs_attention: [`${status}|needs_attention`, "paid|needs_attention"],
+    };
+    const own = outcome ? after[outcome] : undefined;
+    // An answer that writes nothing only holds if nothing else wrote meanwhile.
+    if (!own && clicked !== now) return setRecheck(null);
+    setRecheck({ text, isError, views: [now, ...(own ?? [])] });
   };
 
   const effStatus = effectiveQuoteStatus(quote);

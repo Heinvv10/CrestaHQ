@@ -24,7 +24,10 @@ const fetchMock = vi.fn();
 let container: HTMLDivElement;
 let root: Root;
 
-const invoice = (state: "unknown" | "declined" | "paid", status: "sent" | "paid" = "sent"): Quote =>
+const invoice = (
+  state: "unknown" | "pending" | "declined" | "paid" | "needs_attention",
+  status: "sent" | "viewed" | "paid" = "sent",
+): Quote =>
   ({
     id: "inv1",
     kind: "invoice",
@@ -120,4 +123,50 @@ it("drops a refusal when a webhook settles the charge afterwards", async () => {
   expect(recheckButton()).toBeDefined();
   await render(invoice("paid", "paid"));
   expect(container.textContent).not.toContain("Reload and check again.");
+});
+
+it("keeps a paid answer through the status write that lands before the charge write", async () => {
+  answer({ outcome: "paid" });
+  await click();
+  await render(invoice("unknown", "paid"));
+  expect(container.textContent).toContain("the invoice is now paid");
+  await render(invoice("paid", "paid"));
+  expect(container.textContent).toContain("the invoice is now paid");
+});
+
+it("keeps a needs-attention answer after its own write unmounts the button", async () => {
+  answer({ outcome: "needs_attention" });
+  await click();
+  await render(invoice("needs_attention"));
+  expect(recheckButton()).toBeUndefined();
+  expect(container.textContent).toContain("See the Task it raised");
+});
+
+it("keeps a pending answer while nothing changes, and drops it when the charge settles", async () => {
+  answer({ outcome: "pending" });
+  await click();
+  expect(container.textContent).toContain("no final answer yet");
+  await render(invoice("paid", "paid"));
+  expect(container.textContent).not.toContain("no final answer yet");
+});
+
+it("matches a declined answer against the status when it arrives, not when clicked", async () => {
+  let respond!: (r: Response) => void;
+  fetchMock.mockReturnValue(new Promise<Response>((r) => (respond = r)));
+  await click();
+  // The customer opens the invoice while the re-check is in flight.
+  await render(invoice("unknown", "viewed"));
+  await act(async () => respond(new Response(JSON.stringify({ outcome: "declined" }), { status: 200 })));
+  await render(invoice("declined", "viewed"));
+  expect(container.textContent).toContain("did not go through");
+});
+
+it("drops a pending answer when something else changed the invoice mid-flight", async () => {
+  let respond!: (r: Response) => void;
+  fetchMock.mockReturnValue(new Promise<Response>((r) => (respond = r)));
+  await click();
+  // Marked paid by hand while the re-check was in flight.
+  await render(invoice("unknown", "paid"));
+  await act(async () => respond(new Response(JSON.stringify({ outcome: "pending" }), { status: 200 })));
+  expect(container.textContent).not.toContain("no final answer yet");
 });
