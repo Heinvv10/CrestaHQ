@@ -1213,6 +1213,32 @@ service cloud.firestore {
       }
     }
 
+    // ---------- prospecting (docs/features/prospecting.md) ----------
+    // Saved Get Leads result sets and prospect audit reports. Member-read;
+    // ALL writes server-only (the lists route and, from Prospecting PR 2,
+    // the report runner). A report's status and headline are the runner's
+    // statement, not something a browser gets to assert.
+    match /prospectLists/{listId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
+    match /prospectReports/{reportId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
+    // Public share handle for a report. No client reads it at all — the
+    // public report route resolves it server-side, so share ids can't be
+    // listed or probed through the client SDK.
+    match /prospectReportShares/{shareId} {
+      allow read, write: if false;
+    }
+
     // ---------- quotes ----------
     // GHL-style "Estimates" — operator-built quote → public accept page.
     // Reads + edits by any active sub-account member (matches the
