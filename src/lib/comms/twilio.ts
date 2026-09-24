@@ -8,6 +8,11 @@ import { checkQuota, recordUsage } from "@/lib/server/usage-meter";
 import { sendSmsVia } from "@/lib/comms/sms/select";
 import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
+import {
+  QuietHoursDeferredError,
+  quietHoursHold,
+  type SendOrigin,
+} from "@/lib/comms/quiet-hours";
 import type { SubAccountDoc, TwilioConfig } from "@/types";
 
 /**
@@ -262,12 +267,22 @@ export async function sendSmsForSubAccount({
   subAccount,
   to,
   body,
+  origin,
+  selfTriggeredBookingAt,
 }: {
   subAccountId: string;
   subAccount?: SubAccountDoc | null;
   to: string;
   body: string;
+  /** Absent = "automated": held during the workspace's quiet hours. A person
+   *  sending passes "manual". See lib/comms/quiet-hours.ts. */
+  origin?: SendOrigin;
+  /** Booking confirmations of a customer's own booking only. */
+  selfTriggeredBookingAt?: Date | null;
 }): Promise<{ sid: string; mode: TwilioMode; from: string }> {
+  // Before the quota check and the carrier: a held send spends nothing.
+  const hold = quietHoursHold({ subAccount, origin, selfTriggeredBookingAt });
+  if (hold) throw new QuietHoursDeferredError(hold);
   // Usage Metering v1: quota check before spend (fails open), segments
   // metered after a successful create — this chokepoint covers every SMS
   // sender (manual, workflow, AI, MCTB, reviews) automatically.

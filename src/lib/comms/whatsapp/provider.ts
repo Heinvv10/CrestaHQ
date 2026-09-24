@@ -1,4 +1,5 @@
 import { mediaKindForMime, type WhatsappMediaKind } from "@/types/whatsapp-media";
+import type { QuietHoursHold } from "@/lib/comms/quiet-hours";
 
 /**
  * The WhatsApp rail contract. Three implementations are planned:
@@ -301,6 +302,9 @@ export interface WhatsAppSendResult {
   attempted?: boolean;
   /** True when a dry-run/test path short-circuited the real send. */
   simulated?: boolean;
+  /** Set with `refusedBy: "quiet_hours"` when the dispatcher itself held an
+   *  automated send for the workspace's quiet hours: when they end. */
+  quietHours?: QuietHoursHold;
 }
 
 /**

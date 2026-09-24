@@ -30,6 +30,7 @@ export interface DailyWindow {
  */
 export function computeWindowDeferralSeconds(
   window: DailyWindow | null | undefined,
+  now: Date = new Date(),
 ): number {
   if (!window) return 0;
   const { startHour, endHour, timezone } = window;
@@ -53,7 +54,7 @@ export function computeWindowDeferralSeconds(
       second: "2-digit",
       hour12: false,
     });
-    const parts = fmt.formatToParts(new Date());
+    const parts = fmt.formatToParts(now);
     const get = (t: string) =>
       parseInt(parts.find((p) => p.type === t)?.value ?? "0", 10);
     h = get("hour") % 24; // some Intl impls return 24 instead of 0 at midnight

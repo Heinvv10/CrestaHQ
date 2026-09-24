@@ -241,6 +241,9 @@ export type ActivityType =
   // An inbound call was forwarded but went unanswered, so Missed Call Text
   // Back auto-texted the caller. Written by /api/webhooks/twilio/voice/status.
   | "missed_call"
+  // An automated SMS/WhatsApp fell in the workspace's quiet hours and was
+  // held until they end (or could not be). lib/comms/quiet-hours-hold.ts.
+  | "quiet_hours_held"
   // Quote lifecycle — written by the quote API routes + the public
   // /q/[token] page on first view. See lib/quotes/lifecycle.ts.
   | "quote_sent"

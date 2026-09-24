@@ -89,6 +89,9 @@ export async function sendConversationSms(
       subAccount,
       to: prepared.to,
       body,
+      // A person's message (composer, or one they scheduled for a time they
+      // chose): never held for quiet hours.
+      origin: "manual",
     });
     sid = result.sid;
     mode = result.mode;

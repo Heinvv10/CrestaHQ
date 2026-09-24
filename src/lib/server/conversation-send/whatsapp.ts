@@ -119,6 +119,9 @@ export async function sendConversationWhatsapp(
       // window is a refusal — never a silent conversion to a template.
       template: null,
       humanReply: input.humanReply,
+      // A person's message (composer, or one they scheduled for a time they
+      // chose): never held for quiet hours.
+      origin: "manual",
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       attachment,
       sendViaTwilio: async () => {
