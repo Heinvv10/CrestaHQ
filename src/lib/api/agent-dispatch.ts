@@ -141,6 +141,11 @@ async function dispatch(
   if (cap.approval) {
     // The approver sees `preview` verbatim; a queued action without one
     // could not be judged, so it is a registry bug, not a proposal.
+    // Only the engine writes held enrolments (ruling Q); a capability that
+    // claims the class would let an agent forge one.
+    if (cap.approval === "workflow_enrolment") {
+      throw new Error(`${cap.name} claims workflow_enrolment, which only the engine may create`);
+    }
     if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
     if (!cap.approvalTarget) throw new Error(`${cap.name} has approval but no approvalTarget`);
     const previewCtx = buildPreviewContext(auth.agencyId, auth.subAccountId);

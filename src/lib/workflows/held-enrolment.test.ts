@@ -176,3 +176,108 @@ describe("hold failures are reported to the agent, and fail closed", () => {
     expect(await createContact()).toMatchObject({ ok: true, held: [], holdFailures: [{ workflowId: null, reason: "trigger_error" }] });
   });
 });
+
+describe("replaying a held deal trigger re-checks the deal", () => {
+  beforeEach(() => {
+    mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Ben", tags: [], customFields: {}, territoryId: "global" });
+    mem.seed("deals/d1", { subAccountId: "sa1", agencyId: "ag1", mode: "live", title: "Fibre 100", stageId: "proposal", contactId: "c1", value: 1, currency: "ZAR" });
+  });
+  const moveTo = (stage: string) =>
+    dispatchAgentTool(auth, "move_deal_stage", { dealId: "d1", dealTitle: "Fibre 100", stage });
+
+  it("the enrolment preview names the deal and its stage", async () => {
+    seedWorkflow("wf1", { type: "deal.won" });
+    await moveTo("won");
+    const won = proposals().find((p) => (p.args as { type: string }).type === "deal.won")!;
+    expect(won.preview).toEqual(expect.arrayContaining([
+      { label: "Deal", value: "Fibre 100" },
+      { label: "Stage", value: "won" },
+    ]));
+  });
+
+  it("breaker repro: a held deal.won approved after the deal moved to lost → failed (trigger_mismatch), 0 runs", async () => {
+    seedWorkflow("wf1", { type: "deal.won" });
+    await moveTo("won");
+    mem.seed("deals/d1", { ...mem.read("deals/d1"), stageId: "lost" });
+    const won = proposals().find((p) => (p.args as { type: string }).type === "deal.won")!;
+    const res = await decide(won.id, "approve");
+    expect(res.status).toBe(422);
+    expect(row(won.id)).toMatchObject({ status: "failed", error: expect.stringContaining("trigger_mismatch") });
+    expect(runs()).toEqual([]);
+  });
+
+  it("a held stage change approved after the deal moved on to another stage → failed, 0 runs", async () => {
+    seedWorkflow("wf1", { type: "pipeline.stage.changed" });
+    await moveTo("qualified");
+    mem.seed("deals/d1", { ...mem.read("deals/d1"), stageId: "contacted" });
+    const [p] = proposals();
+    expect((await decide(p!.id, "approve")).status).toBe(422);
+    expect(row(p!.id)).toMatchObject({ status: "failed", error: expect.stringContaining("trigger_mismatch") });
+    expect(runs()).toEqual([]);
+  });
+
+  it("a deal deleted since the proposal → failed, 0 runs", async () => {
+    seedWorkflow("wf1", { type: "pipeline.stage.changed" });
+    await moveTo("qualified");
+    await mem.db.doc("deals/d1").delete();
+    const [p] = proposals();
+    expect((await decide(p!.id, "approve")).status).toBe(422);
+    expect(runs()).toEqual([]);
+  });
+
+  it("a deal moved to another pipeline since the proposal → failed, 0 runs", async () => {
+    seedWorkflow("wf1", { type: "pipeline.stage.changed" });
+    await moveTo("qualified");
+    mem.seed("deals/d1", { ...mem.read("deals/d1"), pipelineId: "p_other" });
+    const [p] = proposals();
+    expect((await decide(p!.id, "approve")).status).toBe(422);
+    expect(runs()).toEqual([]);
+  });
+
+  it("a won deal whose stage lost its terminal flag → failed, 0 runs", async () => {
+    seedWorkflow("wf1", { type: "deal.won" });
+    await moveTo("won");
+    // The deal still sits on stage "won", but its pipeline no longer calls it won.
+    const { DEFAULT_PIPELINE_ID } = await import("@/types/deals");
+    const path = `subAccounts/sa1/pipelines/${DEFAULT_PIPELINE_ID}`;
+    const pipeline = mem.read(path)!;
+    mem.seed(path, { ...pipeline, stages: (pipeline.stages as Array<Record<string, unknown>>).map((st) => ({ ...st, terminal: undefined })) });
+    const won = proposals().find((p) => (p.args as { type: string }).type === "deal.won")!;
+    expect((await decide(won.id, "approve")).status).toBe(422);
+    expect(runs()).toEqual([]);
+  });
+
+  it("the deal still where the trigger said → approve enrols", async () => {
+    seedWorkflow("wf1", { type: "deal.won" });
+    await moveTo("won");
+    const won = proposals().find((p) => (p.args as { type: string }).type === "deal.won")!;
+    expect((await decide(won.id, "approve")).status).toBe(200);
+    expect(runs()).toHaveLength(1);
+  });
+});
+
+describe("a forged enrolment", () => {
+  it("dispatch refuses a capability claiming workflow_enrolment (500, logged, nothing queued)", async () => {
+    const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const forged = {
+      name: "__forged_enrolment", level: "sub-account" as const, requiredRole: "subAccountMember" as const,
+      approval: "workflow_enrolment" as const, menuLabel: "x", description: "x",
+      parameters: { type: "object", properties: {} },
+      validate: (raw: unknown) => ({ ok: true as const, args: (raw ?? {}) as Record<string, unknown> }),
+      summarize: () => "x",
+      preview: async () => [{ label: "x", value: "x" }],
+      approvalTarget: async () => ({ contactId: null, territoryId: null, scoped: false }),
+      execute: vi.fn(async () => ({ resultText: "ran" })),
+    };
+    AI_SUITE_CAPABILITIES.push(forged);
+    try {
+      expect(await dispatchAgentTool(auth, "__forged_enrolment", {})).toMatchObject({ code: "internal_error", httpStatus: 500 });
+      expect(logged).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: expect.stringContaining("only the engine") }));
+      expect(proposals()).toEqual([]);
+      expect(forged.execute).not.toHaveBeenCalled();
+    } finally {
+      AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(forged), 1);
+    }
+  });
+});

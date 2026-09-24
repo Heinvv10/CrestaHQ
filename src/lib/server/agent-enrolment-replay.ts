@@ -8,6 +8,8 @@ import {
 import { getAdminDb } from "@/lib/firebase/admin";
 import { reserveEnrolment, resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
+import { loadPipeline } from "@/lib/pipelines/server";
+import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
 import type { WorkflowTriggerType } from "@/types/workflows";
 
 const WHY: Record<string, string> = {
@@ -17,7 +19,34 @@ const WHY: Record<string, string> = {
   reentry_blocked: "The contact is already in (or has already been through) that workflow.",
   filters_not_met: "The contact no longer matches that workflow's filters.",
   trigger_mismatch: "The workflow's trigger no longer matches.",
+  deal_changed:
+    "The deal changed since this was proposed (it moved, left its pipeline or was deleted), so nobody was enrolled (trigger_mismatch).",
 };
+
+const DEAL_TRIGGERS = new Set(["deal.created", "deal.won", "deal.lost", "pipeline.stage.changed"]);
+
+/**
+ * A held deal trigger replays only while the deal is still where the trigger
+ * said: same stage, same pipeline, and for won/lost a stage with that
+ * terminal flag. Otherwise approving would enrol on a fact no longer true.
+ */
+async function dealStillMatches(
+  subAccountId: string,
+  type: string,
+  context: Record<string, unknown>
+): Promise<boolean> {
+  const snap = await getAdminDb().doc(`deals/${String(context.dealId)}`).get();
+  const deal = snap.data();
+  if (!deal || deal.subAccountId !== subAccountId) return false;
+  if (deal.stageId !== context.toStage) return false;
+  if (dealPipelineId(deal) !== context.pipelineId) return false;
+  if (type === "deal.won" || type === "deal.lost") {
+    const pipeline = await loadPipeline(subAccountId, dealPipelineId(deal));
+    const stage = pipeline ? findStage(pipeline, deal.stageId as string) : undefined;
+    return stage?.terminal === type.slice("deal.".length);
+  }
+  return true;
+}
 
 /**
  * Approving a `workflow_enrolment` proposal replays the held trigger for its
@@ -35,6 +64,9 @@ export async function replayHeldEnrolment(
   const subAccountId = proposal.subAccountId as string;
   const keyId = proposal.keyId as string;
   const workflowId = proposal.workflowId as string;
+  if (DEAL_TRIGGERS.has(args.type) && !(await dealStillMatches(subAccountId, args.type, args.context ?? {}))) {
+    throw new CapabilityUserError(WHY.deal_changed);
+  }
   const key = (await getAdminDb().doc(`subAccounts/${subAccountId}/apiKeys/${keyId}`).get()).data();
   const budget = await reserveEnrolment({
     subAccountId,

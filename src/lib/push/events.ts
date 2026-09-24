@@ -38,6 +38,9 @@ const CHANNEL_LABELS: Record<string, string> = {
   instagram: "Instagram",
 };
 
+/** The whole push body for a contact an API agent created. */
+export const AGENT_CONTACT_PUSH_BODY = "New contact added by an API agent";
+
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
@@ -72,6 +75,20 @@ export async function dispatchPushForWebhookEvent(
       case "contact.created": {
         const contact = rec(payload.contact);
         const id = str(contact.id);
+        if (input.byAgent) {
+          // Fixed copy: no agent-chosen name or source reaches a phone.
+          await sendPushForEvent({
+            ...base,
+            title: "New contact",
+            body: AGENT_CONTACT_PUSH_BODY,
+            url: id
+              ? `/sa/${input.subAccountId}/contacts/${id}`
+              : `/sa/${input.subAccountId}/contacts`,
+            tag: id ? `lead-${id}` : undefined,
+            territoryId: str(contact.territory_id),
+          });
+          return;
+        }
         const name = str(contact.name) ?? "New contact";
         const source = str(contact.source);
         const sourceLabel = source

@@ -164,6 +164,16 @@ which takes an `ApiAuthContext` the approve route does not have), reconciled
 by the engine's `finally`. Reject leaves the write in place and enrols
 nobody. Capabilities never see this: it is decided at the seam.
 
+**REVISED 2026-09-25** (PR #260 breaker): tenant-configured machine webhooks
+(`webhookSubscriptions` → `/api/webhooks-out/step`) are OUT of ruling Q's
+scope: they are the tenant's own integration, fired exactly as on the human
+path, so an agent write still delivers them. Staff push for an agent-made
+contact carries fixed copy only ("New contact added by an API agent"). A held
+deal trigger replays only while the deal is still on the proposed stage and
+pipeline (and, for won/lost, a stage with that terminal flag); otherwise
+approve fails `trigger_mismatch`. Only the engine may write
+`workflow_enrolment` rows — dispatch refuses a capability claiming that class.
+
 ### Feature gate — new `agentApiEnabledByAgency`
 
 Layered on `apiAccessEnabledByAgency` (already checked in auth). 5-step
@@ -247,6 +257,10 @@ so none can clobber a just-claimed `executing` row. The
 approver's identity is the actor on every provider call (`SendActor {uid,
 email}`), so quiet hours, opt-out, WhatsApp window and channel readiness are
 decided by the existing seam at approve time.
+
+**REVISED 2026-09-25** (PR #260 breaker): an approved action runs with human
+semantics — the approver did it — so the triggers its own write fires enrol
+normally (no `actor`, no hold); only the agent's direct writes are held.
 
 **REVISED 2026-09-24** (PR #259 review rounds): approve runs execute under a
 5-min deadline (`EXECUTE_DEADLINE_MS`, below the sweep's 10-min stale claim);
@@ -360,7 +374,10 @@ Later (out of v1): agency-wide keys.
    `not found` for a #1000 contact id.
 3. `create_contact` "Agent API smoke <ts>" with a tag that matches an ACTIVE
    test workflow → contact visible, **no run**, a `workflow_enrolment` row on
-   `/sa/1000/approvals`; approve → run appears.
+   `/sa/1000/approvals`; approve → run appears. (This also confirms live that
+   the replay's `onlyWorkflowId` filter — `__name__` equality added to the
+   subAccountId + status + trigger.type query — is served without a new
+   index; firestore.indexes.json has no `workflows` composite to confirm it.)
 4. `send_message` (sms) → proposal; approve in browser → SMS on the test
    handset; row `executed`; `aiSuiteActions` row with the approver's uid.
 5. `delete_contact` → proposal → approve → gone. `set_workflow_status active`

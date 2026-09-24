@@ -8,7 +8,11 @@ import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harne
  * every trigger they fire — while every outbound seam is spied: Twilio,
  * SMTP, Resend, Meta, WhatsApp Cloud, global fetch, QStash publish, the
  * review-request sender, and the workflow run writer (no workflowRuns doc).
- * Every one must stay at 0 calls. The real fireWorkflowTrigger is wrapped so
+ * Every one must stay at 0 calls — with ONE listed exemption: an active live
+ * webhook subscription is seeded, and QStash publishes to the tenant-webhook
+ * delivery step (/api/webhooks-out/step) are allowed, because a tenant's own
+ * machine webhooks are its integration and outside ruling Q (plan, REVISED
+ * 2026-09-25). Staff push is checked separately: fixed copy only. The real fireWorkflowTrigger is wrapped so
  * every trigger a row fires — awaited or leaked fire-and-forget — is awaited
  * (plus a macrotask flush) before that row asserts, so a leak is caught by
  * its own row even when it runs alone.
@@ -23,7 +27,7 @@ const spies = vi.hoisted(() => {
     sendSmsForSubAccount: fn(), sendWhatsappForSubAccount: fn(), sendWhatsappTemplateForSubAccount: fn(), sendSms: fn(),
     sendSmtpEmail: fn(), sendEmail: fn(), sendPlainTextBroadcast: fn(),
     sendMetaMessage: fn(), publishToFacebookPage: fn(), publishToInstagram: fn(), sendWhatsappCloud: fn(),
-    publishCallback: fn(), publishSocialPost: fn(), maybeSendReviewRequest: fn(),
+    publishSocialPost: fn(), maybeSendReviewRequest: fn(),
   };
 });
 const partial = (names: Array<keyof typeof spies>) => async (orig: () => Promise<unknown>) => ({
@@ -42,10 +46,16 @@ vi.mock("@/lib/comms/smtp", (orig) => partial(["sendSmtpEmail"])(orig));
 vi.mock("@/lib/comms/resend", (orig) => partial(["sendEmail", "sendPlainTextBroadcast"])(orig));
 vi.mock("@/lib/comms/meta", (orig) => partial(["sendMetaMessage", "publishToFacebookPage", "publishToInstagram"])(orig));
 vi.mock("@/lib/comms/whatsapp/cloud-client", (orig) => partial(["sendWhatsappCloud"])(orig));
+/** The one allowed QStash destination: the tenant-webhook delivery step. */
+const TENANT_WEBHOOK_STEP = "/api/webhooks-out/step";
+const publishCallback = vi.hoisted(() => vi.fn(async (_opts: { pathname: string }) => ({ messageId: "q" })));
+const sendPushForEvent = vi.hoisted(() => vi.fn(async (_input: { title: string; body: string }) => undefined));
 vi.mock("@/lib/automations/qstash", async (orig) => ({
-  ...(await partial(["publishCallback", "publishSocialPost"])(orig)),
+  ...(await partial(["publishSocialPost"])(orig)),
+  publishCallback,
   qstashIsConfigured: () => true,
 }));
+vi.mock("@/lib/push/send", () => ({ sendPushForEvent }));
 vi.mock("@/lib/reviews/request", (orig) => partial(["maybeSendReviewRequest"])(orig));
 const fired = vi.hoisted(() => [] as Promise<unknown>[]);
 vi.mock("@/lib/workflows/engine", async (orig) => {
@@ -94,6 +104,12 @@ const agentCaps = () =>
 beforeEach(() => {
   fired.length = 0;
   for (const s of Object.values(spies)) s.mockClear();
+  publishCallback.mockClear();
+  sendPushForEvent.mockClear();
+  mem.seed("subAccounts/sa1/webhookSubscriptions/sub1", {
+    subAccountId: "sa1", agencyId: "ag1", mode: "live", status: "active", events: [],
+    url: "https://tenant.example/hook", signingSecret: "whsec_test",
+  });
   mem.seed("contacts/c1", {
     subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Ann", email: "ann@x.io",
     phone: "+27821111111", tags: [], customFields: {}, territoryId: "global",
@@ -123,6 +139,8 @@ async function drain() {
 
 async function expectNothingSent() {
   await drain();
+  const published = publishCallback.mock.calls.map(([o]) => o.pathname);
+  expect(published.filter((p) => p !== TENANT_WEBHOOK_STEP), "non-webhook QStash publishes").toEqual([]);
   for (const [name, s] of Object.entries(spies)) expect(s, name).not.toHaveBeenCalled();
   expect(mem.list("workflowRuns")).toEqual([]);
 }
@@ -170,5 +188,23 @@ describe("MUTATION PROOF #2: every awaited trigger site returns its held enrolme
     );
     expect(mem.list("agentProposals")).toHaveLength(2);
     await expectNothingSent();
+  });
+});
+
+describe("staff push for an agent's contact carries fixed text only", () => {
+  it("create_contact: the push body is the fixed agent copy; the agent's name never appears", async () => {
+    const { AGENT_CONTACT_PUSH_BODY } = await import("@/lib/push/events");
+    await dispatchAgentTool(auth, "create_contact", { name: "Click evil.example NOW", email: "x@y.io" });
+    await drain();
+    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
+    const push = sendPushForEvent.mock.calls[0]![0];
+    expect(push).toMatchObject({ title: "New contact", body: AGENT_CONTACT_PUSH_BODY });
+    expect(JSON.stringify(push)).not.toContain("evil.example");
+  });
+
+  it("the tenant's own webhook still receives the event (exempt, like the human path)", async () => {
+    await dispatchAgentTool(auth, "create_contact", { name: "Webhook Contact" });
+    await drain();
+    expect(publishCallback.mock.calls.map(([o]) => o.pathname)).toContain(TENANT_WEBHOOK_STEP);
   });
 });

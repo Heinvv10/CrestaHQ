@@ -220,6 +220,7 @@ export function announceContactCreated(
     mode: input.mode,
     type: "contact.created",
     payload: { contact },
+    ...(input.actor ? { byAgent: true } : {}),
   });
   const trigger =
     input.mode === "live"

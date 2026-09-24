@@ -1,5 +1,6 @@
 import "server-only";
 
+import { getAdminDb } from "@/lib/firebase/admin";
 import { createProposal } from "@/lib/server/agent-proposals";
 import type { FireInput } from "@/lib/workflows/engine";
 import type { HeldEnrolment } from "@/lib/workflows/agent-hold";
@@ -20,6 +21,10 @@ export async function writeHeldEnrolment(
 ): Promise<HeldEnrolment | null> {
   const hold = input.hold!;
   const contactName = contact.name || "this contact";
+  // A deal trigger shows which deal and stage it is about.
+  const dealId = input.context?.dealId;
+  const deal =
+    typeof dealId === "string" ? (await getAdminDb().doc(`deals/${dealId}`).get()).data() : undefined;
   const created = await createProposal({
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
@@ -34,6 +39,12 @@ export async function writeHeldEnrolment(
       { label: "Workflow", value: wf.name },
       { label: "Trigger", value: input.type },
       { label: "Contact", value: contactName },
+      ...(deal
+        ? [
+            { label: "Deal", value: String(deal.title ?? dealId) },
+            { label: "Stage", value: String(input.context?.toStage ?? deal.stageId) },
+          ]
+        : []),
     ],
     pinned: { workflowId: wf.id, contactId: contact.id },
     // territoryId is re-read from the contact inside createProposal's transaction.
