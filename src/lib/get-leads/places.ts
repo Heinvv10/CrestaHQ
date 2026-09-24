@@ -5,7 +5,8 @@ import type { GetLeadsBusiness } from "@/types/get-leads";
 /**
  * Google Places API (New) Text Search — the Get Leads data source. One
  * agency-level key per deployment (GOOGLE_PLACES_API_KEY, restricted to
- * places.googleapis.com) shared by every sub-account.
+ * places.googleapis.com + the Geocoding API, which geocode.ts uses) shared
+ * by every sub-account.
  *
  * Cost control lives in two places: the field mask below (it decides the
  * billing SKU — adding review, photo or atmosphere fields moves every call

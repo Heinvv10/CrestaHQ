@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { placesIsConfigured, searchPlaces, PlacesError } from "@/lib/get-leads/places";
+import { geocodePlace, GeocodeError } from "@/lib/get-leads/geocode";
 import { enrichBusinesses } from "@/lib/get-leads/enrich";
 import {
   resolveBusinessType,
@@ -26,6 +27,11 @@ import type { SubAccountDoc } from "@/types";
  * agency's shared Places quota (a hard daily cap on the Google Cloud
  * project). The business type must come from the curated picklist so a
  * forged request can't run arbitrary queries on the agency's key.
+ *
+ * A request with a place name but no coordinates (free text typed on a
+ * deployment without a Mapbox token) is geocoded here with the same Google
+ * key — only after every other guard has passed, so a refused request never
+ * spends a lookup.
  */
 
 interface PostBody {
@@ -38,7 +44,10 @@ interface PostBody {
    * results is one billable Places call.
    */
   maxResults?: number;
-  /** Optional human-readable place name, folded into the search query. */
+  /**
+   * Human-readable place name, folded into the search query. Required (and
+   * geocoded server-side) when latitude/longitude are absent.
+   */
   locationLabel?: string;
 }
 
@@ -94,7 +103,14 @@ export async function POST(
       { status: 400 },
     );
   }
-  if (!isValidLatitude(body.latitude) || !isValidLongitude(body.longitude)) {
+  // Coordinates (a picked suggestion or "Use my location") win; without
+  // them the typed place name is geocoded below, after the remaining guards.
+  const hasCoords = isValidLatitude(body.latitude) && isValidLongitude(body.longitude);
+  const typedName =
+    typeof body.locationLabel === "string"
+      ? body.locationLabel.replace(/[\r\n\t]/g, " ").trim()
+      : "";
+  if (!hasCoords && (!typedName || typedName.length > 120)) {
     return NextResponse.json(
       { error: "A valid search location is required." },
       { status: 400 },
@@ -119,14 +135,46 @@ export async function POST(
     );
   }
 
+  let origin: { latitude: number; longitude: number };
+  let locationLabel: string;
+  if (hasCoords) {
+    origin = { latitude: body.latitude as number, longitude: body.longitude as number };
+    locationLabel = typedName.slice(0, 120);
+  } else {
+    try {
+      const place = await geocodePlace(typedName);
+      origin = { latitude: place.lat, longitude: place.lng };
+      locationLabel = place.formattedName.slice(0, 120);
+    } catch (err) {
+      console.error(
+        `[get-leads/search] geocode failed sa=${subAccountId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      if (err instanceof GeocodeError && err.reason === "not_found") {
+        return NextResponse.json(
+          { error: "We couldn't find that place — try a nearby town or suburb." },
+          { status: 400 },
+        );
+      }
+      if (err instanceof GeocodeError && err.reason === "quota") {
+        return NextResponse.json(
+          {
+            error:
+              "Daily location lookup limit reached — use “Use my location” or try again tomorrow.",
+          },
+          { status: 429 },
+        );
+      }
+      return NextResponse.json(
+        { error: "Couldn't look up that place. Please try again." },
+        { status: 502 },
+      );
+    }
+  }
+
   // The place name rides inside the text query ("plumbers in Gqeberha"),
-  // which helps ranking; the location bias anchors it regardless. Keep it tame.
-  const locationLabel =
-    typeof body.locationLabel === "string"
-      ? body.locationLabel.replace(/[\r\n\t]/g, " ").trim().slice(0, 120)
-      : "";
+  // which helps ranking; the location bias anchors it regardless.
   const textQuery = locationLabel ? `${type.query} in ${locationLabel}` : type.query;
-  const origin = { latitude: body.latitude, longitude: body.longitude };
 
   try {
     const found = await searchPlaces({
@@ -149,6 +197,7 @@ export async function POST(
       status: "success",
       businesses,
       totalBeforeRadiusFilter: found.length,
+      origin: { ...origin, label: locationLabel },
     });
   } catch (err) {
     console.error(

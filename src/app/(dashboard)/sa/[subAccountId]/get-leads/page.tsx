@@ -307,18 +307,14 @@ export default function GetLeadsPage() {
     setSuggestions([]);
 
     // Resolve the search origin: a picked suggestion / geolocation wins;
-    // otherwise one-shot geocode whatever was typed.
+    // otherwise one-shot geocode whatever was typed — in the browser via
+    // Mapbox when a token exists, else on the server (the route geocodes a
+    // place name sent without coordinates).
     let resolved: ResolvedLocation | null = null;
     const typed = locationText.trim();
     if (resolvedLoc && typed === resolvedLoc.label) {
       resolved = resolvedLoc;
-    } else if (typed) {
-      if (!process.env.NEXT_PUBLIC_MAPBOX_TOKEN) {
-        toast.error(
-          "Typed locations need NEXT_PUBLIC_MAPBOX_TOKEN configured — use “Use my location” instead.",
-        );
-        return;
-      }
+    } else if (typed && process.env.NEXT_PUBLIC_MAPBOX_TOKEN) {
       setPhase("submitting");
       try {
         resolved = (await fetchPlaces(typed, false))[0] ?? null;
@@ -330,14 +326,18 @@ export default function GetLeadsPage() {
         toast.error(`Couldn't find “${typed}” — try a fuller place name.`);
         return;
       }
-    } else {
+    } else if (!typed) {
       toast.error("Type a location or use “Use my location”.");
       return;
     }
 
     // Don't leak the geolocation placeholder into the Google Maps query —
     // coordinates anchor the search regardless.
-    const queryLabel = resolved.label === "Current location" ? "" : resolved.label;
+    const queryLabel = !resolved
+      ? typed
+      : resolved.label === "Current location"
+        ? ""
+        : resolved.label;
 
     setPhase("submitting");
     setBusinesses([]);
@@ -346,35 +346,37 @@ export default function GetLeadsPage() {
     setSavedListId(null);
     setFilter("all");
 
-    const searchOrigin: SearchOrigin = {
-      latitude: resolved.latitude,
-      longitude: resolved.longitude,
-      label: queryLabel,
-      radiusKm,
-      businessType,
-    };
-
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/get-leads/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           businessType,
-          latitude: searchOrigin.latitude,
-          longitude: searchOrigin.longitude,
+          latitude: resolved?.latitude,
+          longitude: resolved?.longitude,
           radiusKm,
           maxResults,
-          locationLabel: searchOrigin.label,
+          locationLabel: queryLabel,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         businesses?: GetLeadsBusiness[];
+        origin?: { latitude: number; longitude: number; label: string };
         error?: string;
       };
-      if (!res.ok || !data.ok) {
+      if (!res.ok || !data.ok || !data.origin) {
         throw new Error(data.error ?? "The search failed.");
       }
+      // The route echoes the origin it searched — for a server-geocoded
+      // name that's Google's formatted place name + coordinates.
+      const searchOrigin: SearchOrigin = {
+        latitude: data.origin.latitude,
+        longitude: data.origin.longitude,
+        label: data.origin.label,
+        radiusKm,
+        businessType,
+      };
       setOrigin(searchOrigin);
       setBusinesses(data.businesses ?? []);
       setImportTag(defaultImportTag(searchOrigin));

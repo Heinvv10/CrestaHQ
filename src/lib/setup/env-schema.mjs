@@ -299,7 +299,7 @@ export const GROUPS = [
     vars: [["GOOGLE_PLACES_API_KEY", "req"]],
     deep(add, env) {
       if (env.has("GOOGLE_PLACES_API_KEY") && !env.has("NEXT_PUBLIC_MAPBOX_TOKEN")) {
-        add("warn", "NEXT_PUBLIC_MAPBOX_TOKEN isn't set — Get Leads works, but without the results map or typed-location search (browser geolocation only)");
+        add("warn", "NEXT_PUBLIC_MAPBOX_TOKEN isn't set — Get Leads works (typed towns are geocoded server-side with GOOGLE_PLACES_API_KEY, which needs the Geocoding API enabled on the same project), but without the results map or location autocomplete");
       }
     },
   },
