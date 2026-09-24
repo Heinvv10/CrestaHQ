@@ -10,6 +10,7 @@ import {
   detectAiReplyLoop,
   pauseBotForReplyLoop,
   sendReplyLoopNotification,
+  sendReplyLoopPush,
   type AiLoopReason,
 } from "@/lib/comms/ai/loop-guard";
 import { sendMetaMessage } from "@/lib/comms/meta";
@@ -509,6 +510,8 @@ export async function maybeRespondWithAi(
       });
   if (loop) {
     const { paused, turnedOff } = await pauseBotForReplyLoop(contact.id);
+    const loopAppUrl =
+      process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
     if (eff.escalationNotifyEmail) {
       await sendReplyLoopNotification({
         to: eff.escalationNotifyEmail,
@@ -518,10 +521,20 @@ export async function maybeRespondWithAi(
         contactName: contact.name ?? "",
         paused,
         turnedOff,
-        appUrl:
-          process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev",
+        appUrl: loopAppUrl,
       });
     }
+    // Unconditional (unlike the email above): a workspace with no
+    // escalationNotifyEmail set would otherwise have nothing telling staff
+    // the bot went silent, and the customer can sit unanswered indefinitely.
+    await sendReplyLoopPush({
+      subAccountId,
+      agencyId: subAccount.agencyId,
+      contactId: contact.id,
+      contactName: contact.name ?? "",
+      turnedOff,
+      appUrl: loopAppUrl,
+    });
     const loopOutcome = turnedOff
       ? "This is the second loop within 24 hours; the bot is now turned OFF for this conversation until a human turns it back on."
       : paused

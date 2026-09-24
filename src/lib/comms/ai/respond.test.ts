@@ -28,6 +28,7 @@ const s = vi.hoisted(() => ({
   priorLoopPausedAtMs: null as number | null,
   escalations: [] as string[],
   loopEmails: [] as Array<{ to: string; subject: string }>,
+  loopPushes: [] as Array<{ subAccountId: string; agencyId: string; title: string; body: string; url: string }>,
   twilioSends: 0,
   conversationUpdates: [] as Array<Record<string, unknown>>,
   activities: [] as Array<Record<string, unknown>>,
@@ -119,6 +120,20 @@ vi.mock("@/lib/comms/resend", () => ({
     s.loopEmails.push(e);
     return { id: "e1" };
   },
+}));
+vi.mock("@/lib/push/send", () => ({
+  sendPushForEvent: async (e: {
+    subAccountId: string;
+    agencyId: string;
+    title: string;
+    body: string;
+    url: string;
+  }) => {
+    s.loopPushes.push(e);
+  },
+}));
+vi.mock("@/lib/push/events", () => ({
+  contactTerritoryId: async () => undefined,
 }));
 vi.mock("@/lib/comms/business-hours", () => ({ isWithinBusinessHours: () => true }));
 vi.mock("@/lib/comms/meta", () => ({ sendMetaMessage: async () => "mid" }));
@@ -220,6 +235,7 @@ beforeEach(() => {
   s.priorLoopPausedAtMs = null;
   s.escalations = [];
   s.loopEmails = [];
+  s.loopPushes = [];
   s.conversationUpdates = [];
   s.activities = [];
   s.llmCalls = 0;
@@ -262,6 +278,12 @@ describe("AI reply-loop guard", () => {
       expect.objectContaining({
         to: "ops@biz.test",
         subject: "AI auto-reply loop suspected — bot paused for 1h on Cust",
+      }),
+    ]);
+    expect(s.loopPushes).toEqual([
+      expect.objectContaining({
+        subAccountId: "sa",
+        title: "AI bot paused — reply loop",
       }),
     ]);
     expect(s.escalations).toEqual([]); // not the keyword-escalation template
@@ -309,9 +331,9 @@ describe("AI reply-loop guard", () => {
     expect(s.loopEmails[0].subject).toContain("pausing the bot FAILED");
   });
 
-  it("trips on an auto-reply that varies only by ticket number / timestamp", async () => {
+  it("trips on an auto-reply that varies only by ticket number", async () => {
     const varying = (i: number) =>
-      `We're away right now — ticket #482${i} logged at 10:1${i}am, we'll reply once we're back.`;
+      `We're away right now — ticket #482${i}, we'll reply once we're back.`;
     seedExchanges(2, 2_000, varying);
     s.thread[0].body = varying(9);
     const out = await respond("cloud");
@@ -340,9 +362,35 @@ describe("AI reply-loop guard", () => {
     expect(s.loopEmails.at(-1)).toEqual(
       expect.objectContaining({ subject: "AI auto-reply loop suspected — bot turned OFF on Cust" }),
     );
+    expect(s.loopPushes.at(-1)).toEqual(
+      expect.objectContaining({ title: "AI bot turned OFF — reply loop" }),
+    );
     expect(s.activities.at(-1)).toMatchObject({
       meta: { reason: "reply_loop", paused: true, turnedOff: true },
     });
+  });
+
+  it("pushes staff even when no escalationNotifyEmail is configured (email would otherwise be the only alert)", async () => {
+    const noEmailAgent = {
+      effective: { ...agent.effective, escalationNotifyEmail: "" },
+    } as unknown as ResolvedAiAgent;
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    const out = await maybeRespondWithAi({
+      subAccountId: "sa",
+      subAccount,
+      agent: noEmailAgent,
+      channelId: "whatsapp",
+      contact: { id: "c1", name: "Cust" } as Contact,
+      incomingMessage: "hello",
+      replyTo: "+27820000000",
+      inboundProvider: "cloud",
+    });
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.loopEmails).toEqual([]);
+    expect(s.loopPushes).toEqual([
+      expect.objectContaining({ subAccountId: "sa", title: "AI bot paused — reply loop" }),
+    ]);
   });
 
   it("resuming after a turn-off answers normally again", async () => {

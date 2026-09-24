@@ -94,3 +94,69 @@ it("a short inbox renders whole with no button", async () => {
   expect(m.rows().length).toBe(3);
   expect(m.moreButton()).toBeUndefined();
 });
+
+/**
+ * The AI reply-loop guard's "off"/"paused" state must be visible from the
+ * list — not only inside the thread — so a customer the bot has stopped
+ * answering doesn't sit unnoticed. See loop-guard.ts.
+ */
+function convo(overrides: Partial<ConversationDoc>): ConversationDoc[] {
+  return [
+    {
+      id: "c1",
+      contactName: "Ann",
+      lastMessagePreview: "hi",
+      lastChannel: "whatsapp",
+      lastDirection: "inbound",
+      unreadCount: 0,
+      ...overrides,
+    } as unknown as ConversationDoc,
+  ];
+}
+
+it("shows an 'AI off' badge when the loop guard turned the bot off", async () => {
+  const m = await mount(
+    convo({ botMode: "off", aiLoopPausedAt: new Date() as never }),
+  );
+  const badge = m.rows()[0].querySelector('[data-testid="row-ai-loop-badge"]');
+  expect(badge?.textContent).toBe("AI off — loop detected");
+});
+
+it("shows an 'AI paused' badge while the loop guard's 1h pause is active", async () => {
+  const m = await mount(
+    convo({
+      botMode: "auto",
+      aiLoopPausedAt: new Date() as never,
+      botPausedUntil: new Date(Date.now() + 30 * 60 * 1000) as never,
+    }),
+  );
+  const badge = m.rows()[0].querySelector('[data-testid="row-ai-loop-badge"]');
+  expect(badge?.textContent).toBe("AI paused — loop detected");
+});
+
+it("shows no loop badge once the pause has lapsed", async () => {
+  const m = await mount(
+    convo({
+      botMode: "auto",
+      aiLoopPausedAt: new Date(Date.now() - 2 * 3600 * 1000) as never,
+      botPausedUntil: new Date(Date.now() - 3600 * 1000) as never,
+    }),
+  );
+  expect(m.rows()[0].querySelector('[data-testid="row-ai-loop-badge"]')).toBeNull();
+});
+
+it("shows no loop badge once a human has replied since the trip", async () => {
+  const m = await mount(
+    convo({
+      botMode: "off",
+      aiLoopPausedAt: new Date(Date.now() - 60_000) as never,
+      lastHumanReplyAt: new Date() as never,
+    }),
+  );
+  expect(m.rows()[0].querySelector('[data-testid="row-ai-loop-badge"]')).toBeNull();
+});
+
+it("shows no loop badge for a manual bot-off with no loop trip", async () => {
+  const m = await mount(convo({ botMode: "off" }));
+  expect(m.rows()[0].querySelector('[data-testid="row-ai-loop-badge"]')).toBeNull();
+});

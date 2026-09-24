@@ -27,6 +27,24 @@ const CHANNEL_BADGE: Record<ConversationChannel, string> = {
   "web-chat": "bg-sky-500/10 text-sky-700 dark:text-sky-400",
 };
 
+/**
+ * Whether the AI reply-loop guard (not a manual mode change or a human
+ * takeover) is why the bot is currently quiet on this conversation — so the
+ * list can flag it before a customer goes unanswered indefinitely. A human
+ * reply since the guard's last trip, or a lapsed pause with no turn-off,
+ * clears it — same "reset marker" logic as getConversationControls.
+ */
+function aiLoopBadge(c: ConversationDoc): "off" | "paused" | null {
+  const loopAt = toDate(c.aiLoopPausedAt)?.getTime() ?? null;
+  if (loopAt === null) return null;
+  const humanAt = toDate(c.lastHumanReplyAt)?.getTime() ?? null;
+  if (humanAt !== null && humanAt > loopAt) return null;
+  if (c.botMode === "off") return "off";
+  const pausedUntil = toDate(c.botPausedUntil)?.getTime() ?? null;
+  if (pausedUntil !== null && pausedUntil > Date.now()) return "paused";
+  return null;
+}
+
 export function ConversationList({
   conversations,
   basePath,
@@ -85,6 +103,7 @@ export function ConversationList({
           const ts = toDate(c.lastMessageAt);
           const title = c.contactName || c.contactPhone || "Unknown contact";
           const active = c.id === activeId;
+          const loopBadge = aiLoopBadge(c);
           return (
             <div
               key={c.id}
@@ -140,6 +159,19 @@ export function ConversationList({
                       >
                         {CHANNEL_LABEL[c.lastChannel] ?? c.lastChannel}
                       </span>
+                      {loopBadge && (
+                        <span
+                          data-testid="row-ai-loop-badge"
+                          title={
+                            loopBadge === "off"
+                              ? "The AI reply-loop guard tripped twice within 24h and turned the bot off for this conversation. Turn it back on in AI controls."
+                              : "The AI reply-loop guard paused the bot on this conversation for 1 hour."
+                          }
+                          className="rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:text-rose-400"
+                        >
+                          {loopBadge === "off" ? "AI off — loop detected" : "AI paused — loop detected"}
+                        </span>
+                      )}
                       {c.lateButtonTap && (
                         <span
                           title={`Tapped "${c.lateButtonTap.text}" after the workflow stopped waiting — no automation will answer it. Clears when you reply.`}

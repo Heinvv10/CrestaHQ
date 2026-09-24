@@ -2,7 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
-import { escapeHtml } from "@/lib/comms/ai/loop-guard";
+import { escapeHtml, stripEol } from "@/lib/comms/ai/loop-guard";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -46,7 +46,7 @@ export async function sendEscalationNotification(
   params: EscalationNotificationParams,
 ): Promise<string | null> {
   const link = `${params.appUrl}/sa/${params.subAccountId}/contacts/${params.contactId}`;
-  const subject = `AI escalation: "${params.triggeredKeyword}" from ${params.contactName || params.contactPhone}`;
+  const subject = `AI escalation: "${stripEol(params.triggeredKeyword)}" from ${stripEol(params.contactName) || stripEol(params.contactPhone)}`;
 
   const text = `A lead just triggered an AI escalation for ${params.businessName}.
 

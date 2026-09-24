@@ -10,6 +10,7 @@ const s = vi.hoisted(() => ({
   storedAiLoopPausedAtMs: null as number | null,
   updates: [] as Array<Record<string, unknown>>,
   updateThrows: false,
+  sentEmails: [] as Array<{ subject: string }>,
 }));
 
 const fakeDb = {
@@ -35,8 +36,13 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => fakeDb }));
 vi.mock("@/lib/comms/resend", () => ({
   emailIsConfigured: () => true,
   tenantFrom: () => "bot@biz.test",
-  sendEmail: vi.fn(async () => ({ id: "e1" })),
+  sendEmail: vi.fn(async (e: { subject: string }) => {
+    s.sentEmails.push(e);
+    return { id: "e1" };
+  }),
 }));
+vi.mock("@/lib/push/send", () => ({ sendPushForEvent: vi.fn(async () => {}) }));
+vi.mock("@/lib/push/events", () => ({ contactTerritoryId: async () => undefined }));
 
 import {
   AI_LOOP_MIN_REPEAT_CHARS,
@@ -44,22 +50,26 @@ import {
   AI_LOOP_REPEAT_OFF_WINDOW_MS,
   loopReasonFromRows,
   pauseBotForReplyLoop,
+  sendReplyLoopNotification,
   escapeHtml,
+  stripEol,
 } from "./loop-guard";
+import type { SubAccountDoc } from "@/types";
 
 beforeEach(() => {
   s.storedAiLoopPausedAtMs = null;
   s.updates = [];
   s.updateThrows = false;
+  s.sentEmails = [];
 });
 
 describe("normalise (via loopReasonFromRows)", () => {
   const rows = (bodies: string[]) =>
     bodies.map((body) => ({ direction: "inbound", body, at: null }));
 
-  it("folds digit runs so a varying ticket number / timestamp still trips", () => {
+  it("folds a varying ticket number (3+ digits) so the auto-reply still trips", () => {
     const varying = (i: number) =>
-      `We're away right now — ticket #482${i} logged at 10:1${i}am, we'll reply once we're back.`;
+      `We're away right now — ticket #482${i}, we'll reply once we're back.`;
     const result = loopReasonFromRows(
       rows([varying(2), varying(1), varying(0)]),
       0,
@@ -78,6 +88,34 @@ describe("normalise (via loopReasonFromRows)", () => {
     expect(result).toBeNull();
     // Confirms *why*: normalised text collapses well under the min length.
     expect("order #".length).toBeLessThan(AI_LOOP_MIN_REPEAT_CHARS);
+  });
+
+  it("ACCEPTED TRADE-OFF: a long near-identical auto-reply varying only by a 3+ digit number still trips", () => {
+    // Documents the accepted trade-off explicitly (see the digit-fold comment
+    // in loop-guard.ts): a long boilerplate reply that differs only by a
+    // ticket/timestamp-sized number is exactly the case the fold exists for.
+    const varying = (n: number) =>
+      `Thanks for reaching out — your reference number is ${n}, a team member will respond within 24 hours.`;
+    const result = loopReasonFromRows(
+      rows([varying(48213), varying(48214), varying(48215)]),
+      0,
+      Date.now(),
+    );
+    expect(result).toBe("repeated_text");
+  });
+
+  it("does NOT trip on ≥40-char messages that are genuinely distinct apart from a 1-2 digit day/count", () => {
+    // Folding 1-2 digit runs too would collide "the 5th" with "the 6th" —
+    // real, distinct human messages about different days. Left unfolded, they
+    // normalise differently and correctly don't trip.
+    const day = (n: number) =>
+      `Can we reschedule the appointment to the ${n}th of this month please, morning works best for me`;
+    const result = loopReasonFromRows(
+      rows([day(5), day(6), day(7)]),
+      0,
+      Date.now(),
+    );
+    expect(result).toBeNull();
   });
 });
 
@@ -116,5 +154,29 @@ describe("escapeHtml", () => {
       "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
     );
     expect(escapeHtml('<a href="javascript:alert(1)">click</a>')).not.toContain("<a ");
+  });
+});
+
+describe("stripEol", () => {
+  it("collapses CR/LF to a space", () => {
+    expect(stripEol("Ann\r\nBcc: attacker@evil.test")).toBe("Ann Bcc: attacker@evil.test");
+    expect(stripEol("no newline here")).toBe("no newline here");
+  });
+
+  it("keeps the loop-alert subject free of CR/LF from a contact-controlled name", async () => {
+    const subAccount = {} as SubAccountDoc;
+    await sendReplyLoopNotification({
+      to: "ops@biz.test",
+      subAccountId: "sa",
+      subAccount,
+      contactId: "c1",
+      contactName: "Ann\r\nBcc: attacker@evil.test",
+      paused: true,
+      turnedOff: false,
+      appUrl: "https://app.test",
+    });
+    expect(s.sentEmails).toHaveLength(1);
+    expect(s.sentEmails[0].subject).not.toMatch(/[\r\n]/);
+    expect(s.sentEmails[0].subject).toContain("Ann Bcc: attacker@evil.test");
   });
 });

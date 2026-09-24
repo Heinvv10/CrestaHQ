@@ -7,7 +7,7 @@ import { beforeEach, expect, it, vi } from "vitest";
  */
 
 const s = vi.hoisted(() => ({
-  sent: [] as Array<{ html: string; text: string }>,
+  sent: [] as Array<{ html: string; text: string; subject: string }>,
 }));
 
 vi.mock("@/lib/firebase/admin", () => ({
@@ -18,7 +18,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 vi.mock("@/lib/comms/resend", () => ({
   emailIsConfigured: () => true,
   tenantFrom: () => "bot@biz.test",
-  sendEmail: vi.fn(async (e: { html: string; text: string }) => {
+  sendEmail: vi.fn(async (e: { html: string; text: string; subject: string }) => {
     s.sent.push(e);
     return { id: "e1" };
   }),
@@ -67,4 +67,22 @@ it("escapes an <a> tag injection in the contact name", async () => {
   const { html } = s.sent[0];
   expect(html).not.toContain('<a href="https://evil.test">');
   expect(html).toContain("&lt;a href=&quot;https://evil.test&quot;&gt;");
+});
+
+it("strips CR/LF from the contact name before building the email subject", async () => {
+  await sendEscalationNotification({
+    to: "ops@biz.test",
+    businessName: "Biz",
+    contactName: "Ann\r\nBcc: attacker@evil.test",
+    contactPhone: "+27820000000",
+    contactId: "c1",
+    subAccountId: "sa",
+    triggeredKeyword: "refund",
+    incomingMessage: "please help",
+    appUrl: "https://app.test",
+  });
+
+  const { subject } = s.sent[0];
+  expect(subject).not.toMatch(/[\r\n]/);
+  expect(subject).toContain("Ann Bcc: attacker@evil.test");
 });

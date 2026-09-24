@@ -2,6 +2,8 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { sendPushForEvent } from "@/lib/push/send";
+import { contactTerritoryId } from "@/lib/push/events";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -49,13 +51,19 @@ interface Row {
   at: number | null;
 }
 
-// Digit runs fold to a single "#" so an auto-reply that varies only by a
-// timestamp or ticket number ("Ticket #4821 opened 09:14" vs "#4822 09:17")
-// still normalises equal instead of evading the repeated-text check.
+// Digit runs of 3+ fold to a single "#" so an auto-reply that varies only by
+// a timestamp or ticket number ("Ticket #4821 opened 09:14" vs "#4822 09:17")
+// still normalises equal instead of evading the repeated-text check. 1-2
+// digit runs (a day-of-month like "5th", a small count) are left alone —
+// folding those would make genuinely distinct short messages collide.
+// Trade-off, accepted: a real auto-reply that varies ONLY by a 1-2 digit
+// number ("case 5 opened" / "case 6 opened") still evades this check, same
+// as before — the hard cap (AI_LOOP_HARD_CAP replies / AI_LOOP_WINDOW_MS)
+// remains the backstop for that case.
 const normalise = (s: string) =>
   s
     .toLowerCase()
-    .replace(/\d+/g, "#")
+    .replace(/\d{3,}/g, "#")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -192,6 +200,14 @@ export const escapeHtml = (v: string) =>
   v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 /**
+ * Strips CR/LF from a value before it's interpolated into an email subject.
+ * A subject built from customer-controlled text (contact name, message)
+ * must not carry a raw newline, which some mail stacks would otherwise let
+ * inject extra headers.
+ */
+export const stripEol = (v: string) => v.replace(/[\r\n]+/g, " ");
+
+/**
  * Staff alert for a tripped loop — its own wording, not the keyword-escalation
  * template. Best-effort: a failed or unconfigured send is logged, never thrown.
  */
@@ -210,7 +226,7 @@ export async function sendReplyLoopNotification(params: {
     console.warn("[ai/loop-guard] email not configured — loop alert skipped");
     return;
   }
-  const who = params.contactName || "a contact";
+  const who = stripEol(params.contactName) || "a contact";
   const subject = params.turnedOff
     ? `AI auto-reply loop suspected — bot turned OFF on ${who}`
     : params.paused
@@ -247,4 +263,34 @@ ${link}
   } catch (err) {
     console.error("[ai/loop-guard] loop alert send failed", err);
   }
+}
+
+/**
+ * Staff PUSH alert for a tripped loop, sent unconditionally (unlike the
+ * email above, which only fires when escalationNotifyEmail is configured).
+ * Otherwise a workspace with no escalation email set has nothing telling
+ * staff the bot went silent — the customer can sit unanswered indefinitely.
+ * Uses the existing territory-scoped push system (lib/push/send.ts); a
+ * missing VAPID config or no subscriptions is a silent no-op there.
+ */
+export async function sendReplyLoopPush(params: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  contactName: string;
+  turnedOff: boolean;
+  appUrl: string;
+}): Promise<void> {
+  const who = params.contactName || "a contact";
+  await sendPushForEvent({
+    subAccountId: params.subAccountId,
+    agencyId: params.agencyId,
+    title: params.turnedOff ? "AI bot turned OFF — reply loop" : "AI bot paused — reply loop",
+    body: params.turnedOff
+      ? `${who}: a second bot-to-bot loop tripped within 24h — the AI is off for this conversation until you turn it back on.`
+      : `${who}: looks like two bots are replying to each other — the AI is paused here for 1 hour.`,
+    url: `${params.appUrl}/sa/${params.subAccountId}/conversations/${params.contactId}`,
+    tag: `ai-loop-${params.contactId}`,
+    territoryId: await contactTerritoryId(params.contactId),
+  });
 }
