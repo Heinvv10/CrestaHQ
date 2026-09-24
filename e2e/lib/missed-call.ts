@@ -3,6 +3,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "./admin";
 import { E2E_PORT, FIXTURE_PRIMARY_NAME, appUrl, readEnv } from "./env";
 import { assertFixtureSubAccount, deleteScoped } from "./guard";
+import { seedTwilioToken } from "./twilio-secret";
 
 /**
  * SP2 row C5 — Missed Call Text Back fixtures for the E2E spec, fixture
@@ -42,13 +43,15 @@ const restoreValue = (v: unknown) => (v === undefined ? FieldValue.delete() : v)
 /**
  * Enable dedicated Twilio (fake creds) + the agency gate on the fixture
  * primary, MCTB left OFF so the settings-UI test can exercise the real
- * enable flow. Restores the two fields exactly afterwards.
+ * enable flow. Restores the two fields and the private token doc exactly
+ * afterwards.
  */
 export function missedCallLifecycle(test: {
   beforeAll: (fn: () => Promise<void>) => void;
   afterAll: (fn: () => Promise<void>) => void;
 }) {
   let prior: { twilioConfig: unknown; gate: unknown };
+  let restoreToken: (() => Promise<void>) | undefined;
   test.beforeAll(async () => {
     await guard();
     const data = (await primaryRef().get()).data() ?? {};
@@ -56,11 +59,12 @@ export function missedCallLifecycle(test: {
       twilioConfig: data.twilioConfig,
       gate: data.missedCallTextBackEnabledByAgency,
     };
+    restoreToken = await seedTwilioToken(primaryId(), FAKE_AUTH_TOKEN);
     await primaryRef().update({
       twilioConfig: {
         enabled: true,
         accountSid: FAKE_ACCOUNT_SID,
-        authToken: FAKE_AUTH_TOKEN,
+        authTokenSet: true,
         fromNumber: FAKE_FROM_NUMBER,
         whatsappFromNumber: null,
         whatsappSandbox: false,
@@ -79,6 +83,7 @@ export function missedCallLifecycle(test: {
       twilioConfig: restoreValue(prior.twilioConfig),
       missedCallTextBackEnabledByAgency: restoreValue(prior.gate),
     });
+    await restoreToken?.();
   });
 }
 

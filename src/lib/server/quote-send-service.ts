@@ -128,6 +128,10 @@ export async function sendQuoteServerSide(input: {
     const denial = await input.actor.authorize(quote);
     if (denial) return fail("not_authorized", denial.status, denial.error);
   }
+  // A send flips the status to "sent": never over a recorded payment.
+  if (quote.status === "paid") {
+    return fail("already_paid", 409, `This ${quote.kind === "invoice" ? "invoice" : "quote"} is already paid.`);
+  }
 
   // 4. Load contact + email check
   // A quote can be written client-side naming any contact id, so the
@@ -237,14 +241,19 @@ export async function sendQuoteServerSide(input: {
   // 8. Persist lifecycle update. Use viewedAt = null to RESET on re-send
   //    (each new token starts a fresh "have they opened it yet?" cycle).
   const wasResend = quote.status !== "draft";
+  //    Re-read in a transaction: a payment recorded while the email was out
+  //    keeps the invoice paid (the paid guard above read it earlier).
   try {
-    await quoteRef.update({
-      status: "sent",
-      sentAt: FieldValue.serverTimestamp(),
-      viewedAt: null,
-      publicTokenHash: hash,
-      updatedAt: FieldValue.serverTimestamp(),
-      ...(paymentLinkUpdate ?? {}),
+    await db.runTransaction(async (t) => {
+      const paid = (await t.get(quoteRef)).data()?.status === "paid";
+      t.update(quoteRef, {
+        ...(paid ? {} : { status: "sent" }),
+        sentAt: FieldValue.serverTimestamp(),
+        viewedAt: null,
+        publicTokenHash: hash,
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(paymentLinkUpdate ?? {}),
+      });
     });
   } catch (err) {
     console.error("[quotes/send] quote lifecycle write failed", err);
