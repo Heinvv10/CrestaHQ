@@ -227,6 +227,28 @@ describe("G1: a late executed settle after the next generation was already decid
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it("acknowledgePriorAttempt must be exactly true: the string \"true\" is still 409", async () => {
+    const id = await gen3AfterLateSend("reject");
+    const res = await decide(id, "approve", "sa1", row(id).rev, { acknowledgePriorAttempt: "true" });
+    expect(await res.json()).toMatchObject({ error: "previous_attempt_sent" });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("the deadline timer is cleared even when the settle rejects before it", async () => {
+    const id = await proposeId();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    quiet();
+    // The claim is the first transaction: let it through, fail the settle.
+    const original = mem.db.runTransaction.bind(mem.db);
+    let n = 0;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      if (++n === 2) throw new Error("firestore unavailable");
+      return original(fn as Parameters<typeof original>[0]);
+    });
+    await expect(decide(id, "approve")).rejects.toThrow("firestore unavailable");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(["reject", "expire"] as const)("gen 2 %s → acknowledgePriorAttempt re-sends deliberately; execute 2", async (end) => {
     const id = await gen3AfterLateSend(end);
     const res = await decide(id, "approve", "sa1", row(id).rev, { acknowledgePriorAttempt: true });

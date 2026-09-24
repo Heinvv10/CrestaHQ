@@ -134,8 +134,13 @@ export async function executeAndSettle(input: {
   const deadline = new Promise<"deadline">((resolve) => {
     timer = setTimeout(() => resolve("deadline"), EXECUTE_DEADLINE_MS);
   });
-  const outcome = await Promise.race([run, deadline]);
-  clearTimeout(timer);
+  let outcome: SettleOutcome | "deadline";
+  try {
+    outcome = await Promise.race([run, deadline]);
+  } finally {
+    // Also when `run` rejects (its settle threw), or the timer outlives us.
+    clearTimeout(timer);
+  }
   if (outcome === "deadline") {
     // `run` still settles in the background; its failure must be seen.
     run.catch((err) => console.error("[agent-proposals] post-deadline settle failed", err));
