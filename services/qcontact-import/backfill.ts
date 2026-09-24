@@ -40,7 +40,7 @@
 import { QContactClient, type CaseRow } from "./qcontact.ts";
 import { statusToStageId } from "./stage-sync.ts";
 import { leadstackDealEnsurer, type DealEnv, type DealResult } from "./deals.ts";
-import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
+import { leadstackFetch } from "./leadstack-fetch.ts";
 import {
   acquireLock,
   describeLockRefusal,
@@ -74,6 +74,7 @@ export function leadstackContactFinder(
   env: { LEADSTACK_API_URL: string; LEADSTACK_API_KEY: string },
   fetchImpl: typeof fetch = fetch,
 ): ContactFinder {
+  const lsFetch = leadstackFetch(fetchImpl);
   return async (caseIds) => {
     const remaining = new Set(caseIds);
     const found = new Map<string, CaseContactMatch>();
@@ -82,9 +83,8 @@ export function leadstackContactFinder(
       const url = new URL(`${env.LEADSTACK_API_URL}/api/v1/contacts`);
       url.searchParams.set("limit", "100");
       if (after) url.searchParams.set("starting_after", after);
-      const res = await fetchImpl(url.toString(), {
+      const res = await lsFetch(url.toString(), {
         headers: { Authorization: `Bearer ${env.LEADSTACK_API_KEY}` },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} listing contacts: ${(await res.text()).slice(0, 300)}`);
