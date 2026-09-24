@@ -240,6 +240,176 @@ Run through this with the client's real details before calling it done:
   link**. "The review link changed since you looked" → someone saved a
   different link meanwhile; reload and decide again.
 
+## Zero-downtime deploys (velo-server only)
+
+*Operator section for this repo's own deployment on velo-server. Buyer copies
+deploy to Vercel and can ignore it.*
+
+`scripts/deploy-velo.sh` deploys blue/green, so a deploy no longer refuses
+connections while Next restarts:
+
+- **`crestahq-proxy`** — unprivileged nginx on `127.0.0.1:4300`, the port
+  cloudflared and the WhatsApp bridge already use. Neither ever changes or
+  restarts. Config: `deploy/velo/crestahq-proxy.nginx.conf` (installed into
+  `~/crestahq-proxy/` by the deploy script); the live colour is the one line
+  in `~/crestahq-proxy/upstream.conf`. `127.0.0.1:4309` is a loopback-only
+  check port whose `X-CrestaHQ-Upstream` header names the live colour.
+- **`crestahq@4301` / `crestahq@4302`** — the two colours, from the template
+  `deploy/velo/crestahq@.service`. Each runs `~/crestahq-releases/<port>`, a
+  symlink to an immutable release dir `~/crestahq-releases/<sha>-<time>` that
+  carries its own `.runtime/node`.
+- **A deploy** runs every gate as before, stages a new release, starts it on
+  the idle colour, and switches the proxy only after that colour passes the
+  health check and the instrumentation check. It proves the switch on 4309,
+  waits for the old colour's in-flight requests to finish (up to 60 s), then
+  stops it. If anything fails before the switch, the old colour was never
+  touched and keeps serving.
+- **Rollback:** `bash scripts/deploy-velo.sh --rollback` starts the idle
+  colour on its release (the previous good deploy), checks it, and switches
+  back. It builds nothing. The business-hours rule and `--force` apply as
+  they do to a deploy.
+- **Scheduled work during the overlap.** For a few seconds both colours run.
+  Only the new colour cold-starts, so only it runs `instrumentation.ts`. That
+  registration is an upsert on stable QStash `scheduleId`s, so nothing
+  doubles. QStash calls the public URL, so each cron fires once, on
+  whichever colour the proxy routes to. If a deploy aborts after the new
+  colour has cold-started, its registration may already have run. The
+  script then cold-starts the live release on the idle port, with no
+  traffic, so the live build's registration runs last. It stops that boot
+  only once `[instrumentation] register() finished` is logged. Registration
+  only upserts; it never deletes. So a `scheduleId` that only the failed
+  build had keeps firing until someone deletes it in the QStash console.
+- **Safety checks.** A deploy refuses to start if `upstream.conf` names a
+  different colour from the one nginx reports on 4309. No colour is stopped
+  until 4309 has proven that traffic is on the other one. If a switch-back
+  cannot be proven, the script stops nothing, leaves both colours up, and
+  exits with `CRITICAL`. A second `--rollback` in a row is refused, because
+  the idle colour then holds the release the first one rolled away from.
+- **Script changes deploy themselves.** bash keeps executing the copy of the
+  script it started with. So when `git reset` brings in a changed deploy
+  script, the run re-executes the new copy once.
+
+### One-time migration (owner, after 17:00 SAST or at the weekend)
+
+Run as velo (`sudo -u velo -i`) once this change is on `origin/main`. The
+only outage is step 3: a single blip of under a second.
+
+**0. Deploy the merge once, the old way, BEFORE migrating.** The deploy
+checkout still holds the previous script. That old copy does not know about
+blue/green and restarts `crestahq.service` directly, and it cannot re-execute
+itself. Run it once now, while that is still correct:
+
+```bash
+cd ~/crestahq && bash scripts/deploy-velo.sh
+```
+
+This run is the old single-process deploy (the usual ~15 s restart). It
+leaves the new script on disk, and step 2 copies the build it just made.
+From here on, `deploy-velo.sh` refuses to deploy until step 3 is done.
+
+**1. Install the units and the proxy config.** This does not touch the
+running app or the deploy checkout.
+
+```bash
+cd ~/crestahq && git fetch origin main
+mkdir -p ~/crestahq-proxy/tmp ~/crestahq-releases
+git show origin/main:deploy/velo/crestahq@.service      > ~/.config/systemd/user/crestahq@.service
+git show origin/main:deploy/velo/crestahq-proxy.service > ~/.config/systemd/user/crestahq-proxy.service
+git show origin/main:deploy/velo/crestahq-proxy.nginx.conf > ~/crestahq-proxy/nginx.conf
+echo 'server 127.0.0.1:4301;' > ~/crestahq-proxy/upstream.conf
+systemctl --user daemon-reload
+/usr/sbin/nginx -t -q -p ~/crestahq-proxy/ -c nginx.conf -e stderr && echo "proxy config OK"
+```
+
+**2. Start blue on the build that is serving now.** The old service keeps
+serving throughout this step.
+
+```bash
+SHA=$(git -C ~/crestahq rev-parse --short HEAD)
+REL=~/crestahq-releases/$SHA-migrated
+cp -a ~/crestahq/.next/standalone "$REL"
+mkdir -p "$REL/.runtime"
+ln -s "$HOME/.nvm/versions/node/v$(cat ~/crestahq/.nvmrc)/bin/node" "$REL/.runtime/node"
+ln -s "$REL" ~/crestahq-releases/4301
+systemctl --user start crestahq@4301
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4301/login           # expect 200
+journalctl --user -u crestahq@4301 -o cat | grep -F '[instrumentation] register() ran'
+```
+
+Do not continue until both checks pass. If they fail, stop here with
+`systemctl --user stop crestahq@4301`. Nothing public has changed.
+
+**3. Cut over.** This is the one blip: the old service releases port 4300,
+then nginx binds it.
+
+```bash
+systemctl --user stop crestahq && systemctl --user start crestahq-proxy
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4300/login           # expect 200
+curl -sI http://127.0.0.1:4309/login | grep -i x-crestahq-upstream           # 127.0.0.1:4301
+curl -s -o /dev/null -w '%{http_code}\n' https://crm.crestahq.com/login        # expect 200
+```
+
+cloudflared needs no change. It still points at 4300, which nginx now
+answers. (Its unit's `After=crestahq.service` only orders boot, and
+cloudflared retries on its own, so leave it alone.)
+
+**4. Survive a reboot.**
+
+The old unit file is moved aside and then masked, so nothing can start it
+again and take 4300 back from nginx (it would crash-loop on `EADDRINUSE`
+every 5 s and could win the port during a proxy restart). `mask` refuses
+while a real unit file is in place, which is why it is moved first.
+
+```bash
+systemctl --user enable crestahq-proxy crestahq@4301
+systemctl --user disable crestahq
+mkdir -p ~/crestahq-legacy-unit
+mv ~/.config/systemd/user/crestahq.service ~/.config/systemd/user/crestahq.service.d ~/crestahq-legacy-unit/
+systemctl --user daemon-reload
+systemctl --user mask crestahq
+```
+
+**5. Prove it with the first blue/green deploy.** Keep a poller running in a
+second shell:
+
+```bash
+while sleep 0.2; do curl -s -o /dev/null -w '%{http_code}\n' https://crm.crestahq.com/login; done | grep -v '^200$'
+```
+
+Then run `bash scripts/deploy-velo.sh`. It should end with
+`Deployed <sha> to crestahq@4302`, and the poller should print nothing.
+
+**6. Tidy up, once step 5 has passed.** Delete the old rollback snapshot:
+`rm -rf ~/.cache/crestahq-prev ~/.cache/crestahq-prev.commit`. Keep
+`~/crestahq-legacy-unit/` for a week as the undo path, then delete it. `MALLOC_ARENA_MAX=2` now lives in the template,
+and the Node version comes from each release's `.runtime/node`.
+
+**Undo** (back to one process on 4300). The old unit serves
+`~/crestahq/.next/standalone`, which is the last build made in the deploy
+checkout.
+
+```bash
+systemctl --user unmask crestahq
+mv ~/crestahq-legacy-unit/crestahq.service ~/crestahq-legacy-unit/crestahq.service.d ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user stop crestahq-proxy && systemctl --user start crestahq
+systemctl --user disable crestahq-proxy crestahq@4301 crestahq@4302
+systemctl --user stop crestahq@4301 crestahq@4302
+systemctl --user enable crestahq
+```
+
+Then, in order:
+
+1. Revert this change on `main` (through a PR, as usual).
+2. Run `bash scripts/deploy-velo.sh` from the deploy checkout as normal.
+   The blue/green script on disk fetches and resets first, sees that the
+   deploy script changed, and re-executes the reverted single-service
+   script. That script ignores the proxy. The blue/green checks run only
+   after that hand-over, so they cannot block it. Never reset the deploy
+   checkout by hand: it is read-only.
+3. Once that deploy has passed, move the proxy dir aside so nothing reads
+   a stale `upstream.conf`: `mv ~/crestahq-proxy ~/crestahq-proxy.retired`.
+
 ---
 
 *Keep this document alongside SETUP.md. Setup is once per deployment;

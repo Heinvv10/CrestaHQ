@@ -1,0 +1,36 @@
+# CrestaHQ app, one instance per blue/green colour. The instance name IS the
+# port: crestahq@4301 and crestahq@4302. Nothing reaches a colour directly —
+# crestahq-proxy (127.0.0.1:4300, the port cloudflared and the WhatsApp bridge
+# already use) forwards to whichever colour scripts/deploy-velo.sh last
+# switched it to.
+#
+# Installed once by the owner (RUNBOOK.md, "Zero-downtime deploys"); the
+# deploy script never edits units.
+[Unit]
+Description=CrestaHQ CRM (Next.js standalone, colour port %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A symlink the deploy script points at an immutable release directory
+# (~/crestahq-releases/<sha>-<timestamp>). Never the deploy checkout: `next
+# build` wipes .next there, and the other colour may still be serving.
+WorkingDirectory=%h/crestahq-releases/%i
+# Secrets live OUTSIDE the deploy dir so `git reset --hard` can never touch them.
+EnvironmentFile=%h/crestahq-config/.env.production
+Environment=NODE_ENV=production
+Environment=PORT=%i
+Environment=HOSTNAME=127.0.0.1
+# Cap glibc malloc arenas for sharp/libvips (PR #175; was a drop-in on the
+# old crestahq.service).
+Environment=MALLOC_ARENA_MAX=2
+# Each release carries a symlink to the Node the deploy built it with
+# (NODE_BIN, resolved from .nvmrc), so a unit never pins a Node version that
+# can drift from the build — and a rollback runs the Node its build used.
+ExecStart=%h/crestahq-releases/%i/.runtime/node server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
