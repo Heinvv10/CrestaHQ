@@ -65,6 +65,8 @@ export interface PaymentAttempt {
 
   state: PaymentAttemptState;
   reason: string | null;
+  /** A card cycle's "still unconfirmed after 3 days" Task was raised (once). */
+  staleAlertedAt?: Timestamp | FieldValue;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;
