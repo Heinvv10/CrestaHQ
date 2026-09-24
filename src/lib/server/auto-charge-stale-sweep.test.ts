@@ -228,13 +228,13 @@ describe("still no final answer", () => {
     await cycle();
     verifyAnswers("pending");
     expect(await sweep(73 * HOUR)).toMatchObject({ alerted: 1 });
-    expect(await sweep(97 * HOUR)).toMatchObject({ checked: 1, alerted: 0, overBudget: 0 });
+    expect(await sweep(97 * HOUR)).toMatchObject({ checked: 0, alerted: 0 }); // flagged: out of the query
     const tasks = tasksAbout(STALE_TITLE);
     expect(tasks).toHaveLength(1);
     expect(tasks[0]!.title).toBe(
       `Card charge for invoice INV-2026-0004 is still unconfirmed after 3 days: check Paystack (reference ${REF})`,
     );
-    expect(attempt()).toMatchObject({ state: "open", staleAlertedAt: expect.any(Date) });
+    expect(attempt()).toMatchObject({ state: "flagged", staleAlertedAt: expect.any(Date) });
     expect(raised().autoCharge).toMatchObject({ state: "pending" });
   });
 
@@ -248,10 +248,10 @@ describe("still no final answer", () => {
   it("a Task that fails to create releases the claim, so the next run raises it", async () => {
     await cycle();
     verifyAnswers("pending");
-    failNextTasks(1);
+    failNextTasks(3); // every inline try
     await sweep(73 * HOUR);
     expect(tasksAbout(STALE_TITLE)).toHaveLength(0);
-    expect(attempt().staleAlertedAt).toBeUndefined();
+    expect([attempt().state, attempt().reason, attempt().staleAlertedAt]).toEqual(["open", null, undefined]);
     await sweep(74 * HOUR);
     expect(tasksAbout(STALE_TITLE)).toHaveLength(1);
   });

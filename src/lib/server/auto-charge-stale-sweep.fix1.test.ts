@@ -96,7 +96,10 @@ describe("R1: marked paid by hand while the charge was unconfirmed, then Paystac
     verifyAnswers("failed");
     expect(await sweep(2 * HOUR)).toMatchObject({ checked: 1, declined: 0, alerted: 1 });
     expect(raised().status).toBe("paid");
-    expect(raised().autoCharge).toMatchObject({ state: "unknown" });
+    expect(raised().autoCharge).toMatchObject({
+      state: "declined",
+      reason: "failed at Paystack after the invoice was marked paid by hand",
+    });
     expect(attempt().state).toBe("refused");
     expect(declines()).toBe(0);
     expect(sendEmail).not.toHaveBeenCalled();
@@ -258,7 +261,7 @@ describe("R2/R3: attempts the re-check can never resolve", () => {
   it("a Task that fails to create reopens the attempt, so the next run raises it", async () => {
     const ref = `ra-${SCHEDULE}-c9`;
     seedStuck(ref, "inv-crash", new Date(Date.now() - 2 * HOUR));
-    failNextTasks(1);
+    failNextTasks(3); // every inline try
     await sweep(80 * HOUR);
     expect(mem.read(`paymentAttempts/${ref}`)!.state).toBe("open");
     await sweep(81 * HOUR);

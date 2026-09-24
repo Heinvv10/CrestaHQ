@@ -82,3 +82,23 @@ it("a sweep of three pages re-checks once, on the last", async () => {
   await call();
   expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
 });
+
+it("breaker R4 rerun: the continuation is queued once and the chain re-checks once", async () => {
+  vi.mocked(runRecurringInvoiceSweep)
+    .mockResolvedValueOnce({ processed: 50, hasMore: true } as never)
+    .mockResolvedValueOnce({ processed: 3, hasMore: false } as never);
+  vi.mocked(publishCallback).mockResolvedValue(undefined as never);
+  vi.mocked(recheckStaleAutoCharges).mockResolvedValue({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
+  await call();
+  await call();
+  expect(publishCallback).toHaveBeenCalledTimes(1);
+  expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
+});
+
+it("R9: a continuation that could not be queued (e.g. the QStash cap) re-checks on this page", async () => {
+  vi.mocked(runRecurringInvoiceSweep).mockResolvedValue({ processed: 50, hasMore: true } as never);
+  vi.mocked(publishCallback).mockRejectedValue(new Error("QstashDailyRatelimitError"));
+  vi.mocked(recheckStaleAutoCharges).mockResolvedValue({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
+  expect((await call()).status).toBe(200);
+  expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
+});

@@ -53,8 +53,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let continued = false;
   if (result.hasMore) {
-    await publishCallback({
+    continued = await publishCallback({
       pathname: "/api/cron/recurring-invoices",
       body: {},
       delaySeconds: CONTINUATION_DELAY_SEC,
@@ -63,17 +64,20 @@ export async function POST(request: Request) {
       deduplicationId: `recurring-invoices_continuation_${Math.floor(
         Date.now() / 1000 / 60,
       )}`,
-    }).catch((err) =>
-      // A dropped continuation delays the remaining schedules to tomorrow's
-      // sweep; it must not fail the invoices already raised this run.
-      console.error("[cron/recurring-invoices] continuation failed", err),
-    );
+    })
+      .then(() => true)
+      .catch((err) => {
+        // A dropped continuation delays the remaining schedules to tomorrow's
+        // sweep; it must not fail the invoices already raised this run.
+        console.error("[cron/recurring-invoices] continuation failed", err);
+        return false;
+      });
   }
 
-  // Card charges still unconfirmed: once, on the final page, after the
-  // continuation is queued, and never failing the sweep.
+  // Card charges still unconfirmed: once, on the final page (or this one,
+  // if no continuation could be queued), and never failing the sweep.
   let staleCharges = null;
-  if (!result.hasMore) {
+  if (!continued) {
     try {
       staleCharges = await recheckStaleAutoCharges(new Date());
     } catch (err) {

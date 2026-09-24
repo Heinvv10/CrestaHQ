@@ -24,7 +24,10 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  *                     only by the call whose transaction moved the charge to
  *                     declined, so a racing button or webhook cannot double it;
  *   failed_but_paid → marked paid by hand meanwhile: ONE Task, nothing sent;
- *   pending         → left; after 72h ONE Task, claimed by `staleAlertedAt`;
+ *   (a Task whose attempt is already closed is retried inline, else its text
+ *    is written to the attempt's `reason`)
+ *   pending         → left; after 72h flagged (out of the sweep, still
+ *                     re-checkable by the button) and ONE Task;
  *   refused over the connection (key changed, disconnected) → left quietly,
  *                     for `flagStaleAttempts`;
  *   refused over its records (no invoice, no card charge on it, no schedule)
@@ -37,7 +40,11 @@ const ALERT_AGE_MS = 72 * 60 * 60 * 1000;
  *  before Paystack is asked do not count, so they cannot starve the batch. */
 export const STALE_RECHECK_BATCH = 25;
 const PAGE = 100;
-const BUDGET_MS = 60_000;
+/** Checked only before each re-check, and one can run ~20s (two Paystack
+ *  calls at their 10s timeout: the verify, then the reconciler's), so a 40s
+ *  budget keeps the worst case near 60s. */
+const BUDGET_MS = 40_000;
+const TASK_TRIES = 3;
 
 export type StaleRecheckSummary = {
   /** Re-checks that asked Paystack. */
@@ -92,7 +99,16 @@ async function recheckOne(attempt: PaymentAttempt, now: Date): Promise<Result> {
   const invoice = invoiceId ? ((await db.doc(`quotes/${invoiceId}`).get()).data() as Quote | undefined) : undefined;
   const label = invoice?.quoteNumber || invoiceId || "unknown";
   const owner = { ...attempt, contactId: invoice?.contactId ?? null };
-  const alert = (title: string, notes: string) => raiseChargeTask(owner, title, notes);
+  const alert = (title: string, notes: string) => raiseWithRetry(() => raiseChargeTask(owner, title, notes));
+  // A Task that outlives its only chance (the attempt is already closed): retried, else at least recorded.
+  const alertOrRecord = (title: string, notes: string) =>
+    alert(title, notes).catch(async (err: unknown) => {
+      console.error(`${tag} invoice=${label} Task not raised after ${TASK_TRIES} tries: ${title}`, err);
+      await db
+        .doc(`paymentAttempts/${ref}`)
+        .update({ reason: `${title} (No Task could be raised.)`, updatedAt: FieldValue.serverTimestamp() })
+        .catch((e: unknown) => console.error(`${tag} reason not recorded`, e));
+    });
   const created = toDate(attempt.createdAt);
   const stale = !!created && now.getTime() - created.getTime() >= ALERT_AGE_MS;
   const asked = (outcome: Outcome): Result => ({ asked: true, outcome });
@@ -102,7 +118,7 @@ async function recheckOne(attempt: PaymentAttempt, now: Date): Promise<Result> {
     if (!stale) return { asked: false, outcome: null };
     const flag = `Not confirmed automatically after 3 days (${why}). The card may have been charged: check Paystack.`;
     const title = `Card charge ${ref} (invoice ${label}) could not be confirmed automatically — the card may have been charged. Check Paystack.`;
-    return { asked: false, outcome: await alertOnce(ref, { state: "flagged", reason: flag }, () => alert(title, flag)) };
+    return { asked: false, outcome: await alertOnce(ref, flag, () => alert(title, flag)) };
   };
 
   if (!attempt.mandateId || !invoiceId || !invoice) return unresolvable("its card or invoice is missing");
@@ -121,24 +137,23 @@ async function recheckOne(attempt: PaymentAttempt, now: Date): Promise<Result> {
   }
   if (res.outcome === "paid") return asked("paid");
   if (res.outcome === "failed_but_paid") {
-    await alert(
+    await alertOrRecord(
       `Card charge ${ref} for invoice ${label} failed at Paystack, but the invoice was already marked paid by hand — confirm the payment you recorded.`,
       `Paystack reports the saved-card charge for invoice ${label} (reference ${ref}) did not go through. The invoice was marked paid by hand before that was known, so nothing was changed or sent.`,
     );
     return asked("alerted");
   }
   if (res.outcome === "declined") {
-    await declineFollowUp(schedule, invoiceId, label, tag, alert);
+    await declineFollowUp(schedule, invoiceId, label, tag, alertOrRecord);
     return asked("declined");
   }
   if (res.outcome !== "pending" || !stale) return asked(null);
+  const notes =
+    `Paystack still gives no final answer for the saved-card charge on invoice ${label} (reference ${ref}), so the daily sweep stops asking. ` +
+    `Check it in your Paystack dashboard, then use "Re-check card charge" on the invoice to record the outcome. Do not send a pay link: it would charge the customer twice.`;
   return asked(
-    await alertOnce(ref, {}, () =>
-      alert(
-        `Card charge for invoice ${label} is still unconfirmed after 3 days: check Paystack (reference ${ref})`,
-        `Paystack still gives no final answer for the saved-card charge on invoice ${label} (reference ${ref}). ` +
-          `Check it in your Paystack dashboard. Do not send a pay link: it would charge the customer twice.`,
-      ),
+    await alertOnce(ref, notes, () =>
+      alert(`Card charge for invoice ${label} is still unconfirmed after 3 days: check Paystack (reference ${ref})`, notes),
     ),
   );
 }
@@ -173,18 +188,30 @@ async function declineFollowUp(
   await fireChargeTrigger(schedule, "invoice.charge_failed");
 }
 
+async function raiseWithRetry(raise: () => Promise<void>): Promise<void> {
+  for (let i = 1; ; i += 1) {
+    try {
+      return await raise();
+    } catch (err) {
+      if (i >= TASK_TRIES) throw err;
+    }
+  }
+}
+
 /**
- * Claim the attempt's one alert (`staleAlertedAt`, with `update`) in a
- * transaction that finds it still open; raise it; release the claim if the
- * Task cannot be created, so the next run tries again.
+ * Claim the attempt's one alert in a transaction that finds it still open:
+ * `staleAlertedAt`, and `flagged` with `reason` so it leaves the sweep's
+ * query for good (the webhook still settles a flagged attempt; the button
+ * still re-checks one). Raise it; if the Task cannot be created, reopen the
+ * attempt so the next run tries again.
  */
-async function alertOnce(reference: string, update: Record<string, unknown>, raise: () => Promise<void>): Promise<Outcome> {
+async function alertOnce(reference: string, reason: string, raise: () => Promise<void>): Promise<Outcome> {
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
   const claimed = await db.runTransaction(async (t) => {
     const live = (await t.get(attemptRef)).data() as PaymentAttempt | undefined;
     if (live?.state !== "open" || live.staleAlertedAt) return false;
-    t.update(attemptRef, { ...update, staleAlertedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    t.update(attemptRef, { state: "flagged", reason, staleAlertedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     return true;
   });
   if (!claimed) return null;
@@ -195,8 +222,8 @@ async function alertOnce(reference: string, update: Record<string, unknown>, rai
       .runTransaction(async (t) => {
         const live = (await t.get(attemptRef)).data() as PaymentAttempt | undefined;
         // Only while still ours: a payment may have settled a flagged attempt since.
-        if (!live?.staleAlertedAt || (update.state && live.state !== update.state)) return;
-        t.update(attemptRef, { staleAlertedAt: FieldValue.delete(), ...(update.state ? { state: "open", reason: null } : {}) });
+        if (!live?.staleAlertedAt || live.state !== "flagged") return;
+        t.update(attemptRef, { state: "open", reason: null, staleAlertedAt: FieldValue.delete() });
       })
       .catch((e: unknown) => console.error(`[auto-charge/stale] ref=${reference} claim not released`, e));
     throw err;

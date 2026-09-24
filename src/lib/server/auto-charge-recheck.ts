@@ -22,11 +22,13 @@ import type { Quote } from "@/types/quotes";
  *
  *   success          → the auto-charge reconciler, exactly as the webhook;
  *   failed / abandoned / reversed / not found
- *                    → declined: attempt refused (if still open), the invoice's
+ *                    → declined: attempt refused (if open, or flagged by the
+ *                      stale sweep — `auto-charge-stale-sweep.ts`), the invoice's
  *                      `autoCharge` declined, the decline counted on the card.
  *                      The invoice can then be sent with a pay link — unless
- *                      it was marked paid by hand meanwhile: then only the
- *                      attempt is refused (`failed_but_paid`);
+ *                      it was marked paid by hand meanwhile: then the attempt
+ *                      is refused and the charge marked declined, nothing
+ *                      counted or sent (`failed_but_paid`);
  *   anything else, or no answer → nothing changes.
  *
  * Fires no workflow trigger of its own; a success fires what the reconciler does.
@@ -90,18 +92,24 @@ export async function recheckCardCharge(subAccountId: string, invoiceId: string)
     const invoice = (await t.get(quoteRef)).data() as Quote | undefined;
     const live = invoice?.autoCharge;
     if (!live || live.reference !== reference || !RECHECKABLE.has(live.state)) return null;
-    // Settled or flagged: money may have arrived after all. Leave it to the operator.
-    if (a?.state !== "open" && a?.state !== "refused") return null;
+    // Open, or flagged by the stale sweep for want of an answer: still ours to
+    // close. Settled, or flagged for any other reason (money may have arrived
+    // under another key or amount): leave it to the operator.
+    const closable = a?.state === "open" || (a?.state === "flagged" && !!a.staleAlertedAt);
+    if (!closable && a?.state !== "refused") return null;
     const refuse = () => t.update(attemptRef, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
     // Marked paid by hand meanwhile: the card failed, but the invoice is not
-    // un-paid, re-sent or counted against the card. Only the call that closes
-    // the attempt reports it.
+    // un-paid, re-sent or counted against the card; its charge is marked
+    // declined only so nothing offers to re-check it. Only the call that
+    // closes the attempt reports it.
     if (invoice.status === "paid") {
-      if (a.state !== "open") return null;
+      if (!closable) return null;
       refuse();
+      const why = "failed at Paystack after the invoice was marked paid by hand";
+      t.update(quoteRef, { autoCharge: { ...live, state: "declined", reason: why }, updatedAt: FieldValue.serverTimestamp() });
       return "failed_but_paid" as const;
     }
-    if (a.state === "open") refuse();
+    if (closable) refuse();
     t.update(quoteRef, { autoCharge: { ...live, state: "declined", reason }, updatedAt: FieldValue.serverTimestamp() });
     return "declined" as const;
   });
