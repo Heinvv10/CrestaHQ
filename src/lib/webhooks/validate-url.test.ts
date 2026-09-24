@@ -8,13 +8,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 // host → A answers (v4) and AAAA answers (v6); a missing entry is ENOTFOUND.
-const dnsAnswers = new Map<string, { v4?: string[]; v6?: string[] }>();
+// v4Error/v6Error simulate a transient resolver failure instead of "no
+// record" — e.g. ETIMEOUT, ESERVFAIL — distinct from an absent entry.
+const dnsAnswers = new Map<
+  string,
+  { v4?: string[]; v6?: string[]; v4Error?: string; v6Error?: string }
+>();
 const resolverOptions = vi.hoisted(() => [] as unknown[]);
 vi.mock("node:dns/promises", async () =>
-  (await import("@/test/fake-resolver")).fakeDnsModule(
-    (host, family) => dnsAnswers.get(host)?.[family === 4 ? "v4" : "v6"],
-    resolverOptions,
-  ),
+  (await import("@/test/fake-resolver")).fakeDnsModule((host, family) => {
+    const entry = dnsAnswers.get(host);
+    const errorCode = family === 4 ? entry?.v4Error : entry?.v6Error;
+    if (errorCode) {
+      throw Object.assign(new Error(`query${family === 4 ? "A" : "AAAA"} ${errorCode} ${host}`), {
+        code: errorCode,
+      });
+    }
+    return entry?.[family === 4 ? "v4" : "v6"];
+  }, resolverOptions),
 );
 
 import {
@@ -94,6 +105,17 @@ describe("validatePublicUrl (resolves DNS)", () => {
     });
   });
 
+  it("rejects a transient A-record failure even when AAAA resolves publicly", async () => {
+    dnsAnswers.set("v4timeout.example.com", {
+      v4Error: "ETIMEOUT",
+      v6: ["2606:4700::1"],
+    });
+    expect(await validatePublicUrl("https://v4timeout.example.com/")).toEqual({
+      ok: false,
+      error: "That URL's hostname could not be resolved.",
+    });
+  });
+
   it.each(["::1", "fd00::1", "::ffff:127.0.0.1", "fe80::1"])(
     "rejects a public A record paired with a private AAAA (%s)",
     async (v6) => {
@@ -151,6 +173,36 @@ describe("resolvePublicAddresses (c-ares)", () => {
     await expect(resolvePublicAddresses("nope.example.com")).rejects.toMatchObject({
       code: "ENOTFOUND",
     });
+  });
+
+  it("rejects with the A-record error (ETIMEOUT) even when AAAA has a public answer", async () => {
+    dnsAnswers.set("v4timeout.example.com", {
+      v4Error: "ETIMEOUT",
+      v6: ["2606:4700::1"],
+    });
+    await expect(resolvePublicAddresses("v4timeout.example.com")).rejects.toMatchObject({
+      code: "ETIMEOUT",
+    });
+  });
+
+  it("rejects with the A-record error (ESERVFAIL) even when AAAA has a public answer", async () => {
+    dnsAnswers.set("v4servfail.example.com", {
+      v4Error: "ESERVFAIL",
+      v6: ["2606:4700::1"],
+    });
+    await expect(resolvePublicAddresses("v4servfail.example.com")).rejects.toMatchObject({
+      code: "ESERVFAIL",
+    });
+  });
+
+  it("still resolves to the v6 answer when the A record is a genuine ENODATA (v6-only host)", async () => {
+    dnsAnswers.set("v4nodata.example.com", {
+      v4Error: "ENODATA",
+      v6: ["2606:4700::1"],
+    });
+    expect(await resolvePublicAddresses("v4nodata.example.com")).toEqual([
+      { address: "2606:4700::1", family: 6 },
+    ]);
   });
 
   it("bounds each query: a short per-try timeout and few tries, not glibc's 5 s retries", () => {
