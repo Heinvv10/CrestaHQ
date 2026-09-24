@@ -105,12 +105,17 @@ export async function reconcileAutoCharge(input: {
 
     if (!(await settleAttempt(reference))) {
       console.error(`${tag} succeeded at Paystack after it was recorded as declined`);
-      const why =
-        `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as declined and the invoice was emailed. ` +
-        `Check your Paystack dashboard: mark the invoice paid by hand, or refund a second payment.`;
-      await alertOnce(attempt, why, (invoice) => `Card charged after its decline: invoice ${invoice} may be paid twice`);
-      // The invoice still reads "declined" and offers a pay link; say otherwise.
       const quoteRef = getAdminDb().doc(`quotes/${attempt.invoiceId}`);
+      // Refused either by a decline (the invoice then emailed) or by a
+      // re-check that found the invoice already marked paid by hand.
+      const handPaid = ((await quoteRef.get()).data() as Quote | undefined)?.status === "paid";
+      const why = handPaid
+        ? `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as failed on an invoice marked paid by hand. ` +
+          `Check your Paystack dashboard: if the hand mark recorded a different payment, the customer paid twice and a refund may be owed.`
+        : `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as declined and the invoice was emailed. ` +
+          `Check your Paystack dashboard: mark the invoice paid by hand, or refund a second payment.`;
+      await alertOnce(attempt, why, (invoice) => `Card charged after its decline: invoice ${invoice} may be paid twice`);
+      // The invoice still reads "declined" (and, unpaid, offers a pay link); say otherwise.
       await getAdminDb().runTransaction(async (t) => {
         const live = ((await t.get(quoteRef)).data() as Quote | undefined)?.autoCharge;
         if (live?.reference !== reference || live.state !== "declined") return;

@@ -227,3 +227,13 @@ it("shows a needs-attention charge's reason", async () => {
   await render(invoice("needs_attention", "sent", "Paystack later reported this charge as paid"));
   expect(container.textContent).toContain("Card charge needs attention: Paystack later reported this charge as paid");
 });
+
+it("says nothing about a declined charge once the invoice was paid another way", async () => {
+  await render(invoice("declined", "paid", "Insufficient funds"));
+  expect(container.textContent).not.toContain("Card charge declined");
+});
+
+it("still shows a needs-attention charge on a paid invoice", async () => {
+  await render(invoice("needs_attention", "paid", "a refund may be owed"));
+  expect(container.textContent).toContain("Card charge needs attention: a refund may be owed");
+});

@@ -225,6 +225,52 @@ describe("what the webhook refuses to record", () => {
   });
 });
 
+describe("a success after a recorded decline, on the invoice", () => {
+  async function declinedCycle() {
+    stubAutoCharge({ charge: () => chargeAnswer("failed", "Declined") });
+    await runOneSchedule(SCHEDULE, NOW);
+    return raised();
+  }
+
+  it("leaves an invoice whose charge no longer reads that decline alone", async () => {
+    const inv = await declinedCycle();
+    for (const autoCharge of [
+      { reference: "ra-other-c9", mandateId: null, state: "declined", reason: "another cycle" },
+      { reference: REF, mandateId: null, state: "needs_attention", reason: "already flagged" },
+    ]) {
+      mem.seed(`quotes/${inv.id}`, { ...inv, autoCharge });
+      await deliver();
+      expect(raised().autoCharge).toEqual(autoCharge);
+    }
+  });
+
+  it("the invoice reads declined before the attempt is refused", async () => {
+    // A success landing between the two writes must find either an open
+    // attempt (settles normally) or a declined invoice (needs_attention).
+    // The invoice's charge state at each transaction that leaves the attempt refused.
+    const seen: unknown[] = [];
+    const run = mem.db.runTransaction.bind(mem.db);
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      const out = await run(fn as never);
+      if (mem.read(`paymentAttempts/${REF}`)?.state === "refused") {
+        seen.push((raised().autoCharge as { state?: string } | undefined)?.state);
+      }
+      return out;
+    });
+    await declinedCycle();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toBe("declined");
+  });
+
+  it("on an invoice marked paid by hand, says so rather than 'emailed'", async () => {
+    const inv = await declinedCycle();
+    mem.seed(`quotes/${inv.id}`, { ...inv, status: "paid" });
+    await deliver();
+    expect(raised().autoCharge).toMatchObject({ state: "needs_attention", reason: expect.stringMatching(/marked paid by hand/) });
+    expect((raised().autoCharge as { reason: string }).reason).not.toMatch(/emailed/);
+  });
+});
+
 describe("a connection change with an auto-charge open", () => {
   it("flagStaleAttempts flags it (it has no link)", async () => {
     await chargedCycle();

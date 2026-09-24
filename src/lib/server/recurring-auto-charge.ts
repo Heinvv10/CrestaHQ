@@ -128,10 +128,14 @@ export async function chargeCycle(
   // on this reference. A refused key says nothing about the card, so it is
   // not counted against the mandate — the operator has a connection to fix.
   const keyRefused = answer.kind === "key";
+  // Invoice first: a success landing between the two writes then finds the
+  // attempt still open and settles it, rather than finding it refused while
+  // the invoice does not yet read declined (the reconciler's needs_attention
+  // write keys on that).
+  await setInvoice({ ...base, state: "declined", reason: answer.reason });
   await refuseAttempt(reference, `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`).catch(
     (err: unknown) => console.error(`${tag} attempt not refused`, err),
   );
-  await setInvoice({ ...base, state: "declined", reason: answer.reason });
   let chargeNote = `Card declined for invoice ${label} (${answer.reason}).`;
   let task: TaskText | undefined;
   if (keyRefused) {
