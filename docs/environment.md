@@ -180,12 +180,12 @@ Without this, the AI Agents → Overview page still renders and the agent still 
 
 Single-page scrape only (`/v1/scrape` endpoint). The bot's stored snapshot is capped at 6000 chars (~1500 tokens) so it doesn't bloat the prompt on every reply. Re-crawl on demand; stale KB is cleared automatically whenever the operator changes the website URL.
 
-## Optional — Outscraper (powers the EXPERIMENTAL Get Leads feature)
+## Optional — Google Places (powers the EXPERIMENTAL Get Leads feature)
 | Var | Source |
 |---|---|
-| `OUTSCRAPER_API_KEY` | [outscraper.com](https://outscraper.com) → Profile → API. Usage-based billing (~$3–5 per 1,000 businesses with enrichment; ~$0.10–0.20 per search at the 40-result cap). One agency-level key shared across all sub-accounts. |
+| `GOOGLE_PLACES_API_KEY` | Google Cloud console → enable **Places API (New)** → Credentials → Create API key → restrict it to `places.googleapis.com`. Server-only. Text Search is free up to 1,000 calls a month at the field mask Get Leads uses; set a daily SearchText quota on the project (ours is 30/day) so a busy day can't run past the free tier. One agency-level key shared across all sub-accounts. |
 
-See [Get Leads](features/get-leads.md). Without this key, the Get Leads page still renders (for gated-on sub-accounts) but searches return 503 with a friendly "not configured" message. The results **map tab** additionally needs `NEXT_PUBLIC_MAPBOX_TOKEN` (same token as the dashboard Leads map — the list tab degrades gracefully without it; "Use my location" works regardless). The feature is also **off by default per sub-account** — flip the Get Leads gate in `/agency/sub-accounts` → Manage.
+See [Get Leads](features/get-leads.md). Without this key, the Get Leads page still renders (for gated-on sub-accounts) but searches return 503 with a friendly "not configured" message. When the project's daily quota is spent, searches return 429 "Daily search limit reached — try again tomorrow." The results **map tab** additionally needs `NEXT_PUBLIC_MAPBOX_TOKEN` (same token as the dashboard Leads map — the list tab degrades gracefully without it; "Use my location" works regardless). The feature is also **off by default per sub-account** — flip the Get Leads gate in `/agency/sub-accounts` → Manage.
 
 ## Optional — Vapi (powers the AI Voice Agent channel — inbound + Outbound Voice)
 | Var | Source |

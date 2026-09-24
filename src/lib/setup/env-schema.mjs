@@ -293,12 +293,12 @@ export const GROUPS = [
     vars: [["NEXT_PUBLIC_MAPBOX_TOKEN", "req", startsWith("pk.")]],
   },
   {
-    title: "Get Leads prospecting (Outscraper)",
+    title: "Get Leads prospecting (Google Places)",
     tier: "feature",
     off: "Get Leads searches return 'not configured' (page still renders; feature is also agency-gated per sub-account)",
-    vars: [["OUTSCRAPER_API_KEY", "req"]],
+    vars: [["GOOGLE_PLACES_API_KEY", "req"]],
     deep(add, env) {
-      if (env.has("OUTSCRAPER_API_KEY") && !env.has("NEXT_PUBLIC_MAPBOX_TOKEN")) {
+      if (env.has("GOOGLE_PLACES_API_KEY") && !env.has("NEXT_PUBLIC_MAPBOX_TOKEN")) {
         add("warn", "NEXT_PUBLIC_MAPBOX_TOKEN isn't set — Get Leads works, but without the results map or typed-location search (browser geolocation only)");
       }
     },
