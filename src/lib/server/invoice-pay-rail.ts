@@ -71,7 +71,8 @@ export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | nu
 
   let cardLinkError: string | null = null;
   const schedule = await loadActiveSchedule(quote.subAccountId, quote.recurringInvoiceId);
-  if (schedule?.chargeMode === "card") {
+  // A pro-rata is deliberately not the authorised amount: no card-on-file link, and nothing to "fix".
+  if (schedule?.chargeMode === "card" && !quote.prorated) {
     const mandate = paystackReady ? await paystackLink(quote, true) : null;
     if (mandate?.ok) return mandate;
     cardLinkError = mandate ? mandate.error : paystackBlocker;

@@ -8,6 +8,7 @@ import {
 } from "@/lib/automations/qstash";
 import { recheckStaleAutoCharges } from "@/lib/server/auto-charge-stale-sweep";
 import { runRecurringInvoiceSweep } from "@/lib/server/recurring-invoice-service";
+import { raisePendingProrations } from "@/lib/server/recurring-prorate";
 
 /**
  * Daily sweep that raises every recurring invoice that has come due.
@@ -37,6 +38,11 @@ export async function POST(request: Request) {
   }
 
   const startedAt = Date.now();
+  // Pro-rated gap invoices a billing-day edit left pending. Failures are
+  // recorded per schedule and retried tomorrow; they must not stop the cycles.
+  await raisePendingProrations().catch((err) =>
+    console.error("[cron/recurring-invoices] pending pro-rations failed", err),
+  );
   let result;
   try {
     result = await runRecurringInvoiceSweep();

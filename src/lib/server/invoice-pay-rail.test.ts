@@ -133,6 +133,15 @@ describe("card-mode recurring invoice", () => {
     expect(link.amountCents).toBe(100000);
     expect(emailText()).toContain(`/pay/link/${link.token}`);
   });
+
+  it("a billing-day pro-rata gets a plain Paystack link, and no fallback to 'fix'", async () => {
+    seedInvoice("inv1", { status: "draft", recurringInvoiceId: "rec1", globalTaxPercent: 0, prorated: "gap" });
+    const res = await send();
+    expect(res).toMatchObject({ ok: true, cardLinkFallback: null });
+    const [link] = links();
+    expect(link.mandate).toBeUndefined();
+    expect(link.amountCents).toBe(100000);
+  });
 });
 
 describe("unchanged rails", () => {

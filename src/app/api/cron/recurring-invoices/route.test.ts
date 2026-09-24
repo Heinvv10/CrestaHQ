@@ -6,10 +6,12 @@ import { beforeEach, expect, it, vi } from "vitest";
 vi.mock("@/lib/automations/qstash", () => ({ verifyQStashSignature: vi.fn(), publishCallback: vi.fn() }));
 vi.mock("@/lib/server/recurring-invoice-service", () => ({ runRecurringInvoiceSweep: vi.fn() }));
 vi.mock("@/lib/server/auto-charge-stale-sweep", () => ({ recheckStaleAutoCharges: vi.fn() }));
+vi.mock("@/lib/server/recurring-prorate", () => ({ raisePendingProrations: vi.fn() }));
 
 import { publishCallback, verifyQStashSignature } from "@/lib/automations/qstash";
 import { recheckStaleAutoCharges } from "@/lib/server/auto-charge-stale-sweep";
 import { runRecurringInvoiceSweep } from "@/lib/server/recurring-invoice-service";
+import { raisePendingProrations } from "@/lib/server/recurring-prorate";
 import { POST } from "./route";
 
 const call = () =>
@@ -20,6 +22,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(verifyQStashSignature).mockResolvedValue(true);
   vi.mocked(runRecurringInvoiceSweep).mockResolvedValue(SWEPT as never);
+  vi.mocked(raisePendingProrations).mockResolvedValue(0);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -103,4 +106,19 @@ it("R9: a continuation that could not be queued (publishCallback resolves null, 
   expect(res.status).toBe(200);
   expect(await res.json()).toMatchObject({ continuationScheduled: false });
   expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
+});
+
+// The daily cron is what guarantees a pro-rated gap invoice (recurring-prorate.ts):
+// it raises every pending one before the cycles run, and a failure there never stops them.
+it("raises pending pro-rated gaps, then runs the cycles", async () => {
+  expect((await call()).status).toBe(200);
+  expect(vi.mocked(raisePendingProrations).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(runRecurringInvoiceSweep).mock.invocationCallOrder[0]!,
+  );
+});
+
+it("a failure raising pending gaps does not stop the cycles", async () => {
+  vi.mocked(raisePendingProrations).mockRejectedValueOnce(new Error("firestore down"));
+  expect((await call()).status).toBe(200);
+  expect(runRecurringInvoiceSweep).toHaveBeenCalledTimes(1);
 });
