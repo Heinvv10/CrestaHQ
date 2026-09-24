@@ -161,6 +161,7 @@ const CASES: [string, Case, Outcome][] = [
   ["scoped collaborator reads their territory's proposal", { caller: northRep, method: "get", path: PRO, before: NORTH_ROW, gets: SCOPING_ON }, "allow"],
   ["scoped collaborator cannot read another territory's proposal", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "deny"],
   ["scoped collaborator cannot read another territory's history", { caller: northRep, method: "get", path: HIS, before: SOUTH_ROW, gets: { ...SCOPING_ON, [PRO]: SOUTH_ROW } }, "deny"],
+  ["scoped collaborator cannot read a proposal whose contact has no territory", { caller: northRep, method: "get", path: PRO, before: { ...ROW, contactId: "c_x", territoryId: null }, gets: SCOPING_ON }, "deny"],
   ["scoped collaborator reads a proposal with no contact", { caller: northRep, method: "get", path: PRO, before: ROW, gets: SCOPING_ON }, "allow"],
   ["collaborator reads another territory's proposal when scoping is off", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_OFF }, "allow"],
   ["sub-account admin reads another territory's proposal", { caller: saAdmin, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "allow"],

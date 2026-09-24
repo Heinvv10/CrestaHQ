@@ -168,4 +168,26 @@ describe("F5: an execute that may still be running", () => {
     await flush(() => row(id).status !== "unsettled");
     expect(row(id)).toMatchObject({ status: "executed", settledLate: true });
   });
+
+  it("L3: a settle that throws after the deadline is logged, never an unhandled rejection", async () => {
+    const { EXECUTE_DEADLINE_MS } = await import("@/lib/server/agent-proposals");
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const logged = quiet();
+    const id = await proposeId();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const a = hangNextExecute();
+    const approving = decide(id, "approve");
+    await flush(() => execute.mock.calls.length > 0);
+    vi.advanceTimersByTime(EXECUTE_DEADLINE_MS);
+    expect((await approving).status).toBe(202);
+    vi.useRealTimers();
+    vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(new Error("firestore unavailable"));
+    a.finish();
+    await flush(() => logged.mock.calls.some((c) => String(c[0]).includes("post-deadline settle failed")));
+    await new Promise((r) => setTimeout(r, 20));
+    process.off("unhandledRejection", unhandled);
+    expect(logged).toHaveBeenCalledWith("[agent-proposals] post-deadline settle failed", expect.any(Error));
+    expect(unhandled).not.toHaveBeenCalled();
+  });
 });

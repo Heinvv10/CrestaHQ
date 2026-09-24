@@ -180,6 +180,17 @@ describe("what the approver reviewed", () => {
       expect(sentTo).toEqual(["+27 11 111 1111"]);
     });
 
+    it("M1: only the pinned value changed (rows identical) → 409 preview_changed, execute 0", async () => {
+      // Rows show a masked number; pinned carries the full one.
+      outbound.preview = async () => ({ rows: [{ label: "To", value: `Ann (…${phone().slice(-4)})` }], pinned: { to: phone() } });
+      const id = await proposeId();
+      setPhone("+27 55 555 1111"); // same last four digits → same rows
+      const res = await decide(id, "approve");
+      expect(await res.json()).toMatchObject({ error: "preview_changed" });
+      expect(row(id)).toMatchObject({ status: "pending", pinned: { to: "+27 55 555 1111" } });
+      expect(execute).not.toHaveBeenCalled();
+    });
+
     it("the recipient changing between the recheck and execute never reaches the unreviewed number", async () => {
       const id = await proposeId();
       // The claim is the first transaction after the recheck.

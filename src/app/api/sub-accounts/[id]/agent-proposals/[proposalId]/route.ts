@@ -270,6 +270,8 @@ export async function POST(
   const outcome = await Promise.race([run, deadline]);
   clearTimeout(timer);
   if (outcome === "deadline") {
+    // `run` still settles in the background; its failure must be seen.
+    run.catch((err) => console.error("[agent-proposals] post-deadline settle failed", err));
     abort.abort();
     await transitionIf(proposalId, "executing", { status: "unsettled" }, { claimId });
     return NextResponse.json({ status: "unsettled" }, { status: 202 });

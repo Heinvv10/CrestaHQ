@@ -8,7 +8,8 @@ import { GLOBAL_TERRITORY_ID } from "@/types";
 
 /**
  * Re-tag a contact's territory and fan the change out to everything the
- * account owns — its deals, quotes, tasks, and events. Territory is an
+ * account owns — its deals, quotes, tasks, events, and the agent proposals
+ * that target it (their read rule is scoped by the copied territoryId). Territory is an
  * attribute of the contact (the account); child records inherit it, so
  * moving the contact moves the whole account to whoever covers the new
  * territory.
@@ -73,9 +74,9 @@ export async function PATCH(
     toTerritoryName = (tSnap.data()?.name as string | undefined) ?? "Unnamed";
   }
 
-  // Gather the account's child records across the four collections that
-  // carry a denormalised territoryId.
-  const childCollections = ["deals", "quotes", "tasks", "events"] as const;
+  // Gather the account's child records across the collections that carry a
+  // denormalised territoryId.
+  const childCollections = ["deals", "quotes", "tasks", "events", "agentProposals"] as const;
   const childSnaps = await Promise.all(
     childCollections.map((col) =>
       db
@@ -98,6 +99,7 @@ export async function PATCH(
     quotes: childSnaps[1].size,
     tasks: childSnaps[2].size,
     events: childSnaps[3].size,
+    agentProposals: childSnaps[4].size,
   };
 
   const stamp = FieldValue.serverTimestamp();

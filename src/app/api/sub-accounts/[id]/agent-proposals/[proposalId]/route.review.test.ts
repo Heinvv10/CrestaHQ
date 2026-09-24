@@ -97,6 +97,18 @@ describe("general review — PR #259", () => {
     expect(history(id)).toEqual([expect.objectContaining({ status: "expired", rev: oldRev })]);
   });
 
+  it("a contact with no territory is outside every scoped collaborator's territories (matches the rules)", async () => {
+    outbound.approvalContactId = (args) => String(args.recipientId);
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
+    mem.seed("contacts/c_untagged", { agencyId: "ag1", subAccountId: "sa1" });
+    const id = await proposeId({ body: "x", recipientId: "c_untagged" });
+    expect(row(id).territoryId).toBeNull();
+    caller.role = "collaborator";
+    expect((await decide(id, "approve")).status).toBe(403);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("F10: the row carries its contact's territoryId (null without one), for firestore.rules", async () => {
     outbound.approvalContactId = (args) => (typeof args.recipientId === "string" ? args.recipientId : null);
     mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });

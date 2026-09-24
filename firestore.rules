@@ -1513,9 +1513,10 @@ service cloud.firestore {
     // write is the server's — the dispatch that queues a row, and the decide
     // route / sweeps that move it.
     function canSeeProposal(p) {
-      return p.get("contactId", null) == null
-        ? canAccessSub(p.subAccountId, p.agencyId)
-        : canSeeScopedDoc(p.subAccountId, p.agencyId, p.get("territoryId", null));
+      return (p.get("contactId", null) == null
+          && canAccessSub(p.subAccountId, p.agencyId))
+        || (p.get("contactId", null) != null
+          && canSeeScopedDoc(p.subAccountId, p.agencyId, p.get("territoryId", null)));
     }
     match /agentProposals/{proposalId} {
       allow read: if canSeeProposal(resource.data);

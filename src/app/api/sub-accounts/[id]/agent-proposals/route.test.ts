@@ -42,6 +42,9 @@ it("hides rows whose contact is outside a scoped collaborator's territories; row
   mem.seed("contacts/cs", { subAccountId: "sa1", territoryId: "south" });
   mem.seed("agentProposals/p4", { subAccountId: "sa1", status: "pending", contactId: "cn", createdAt: new Date(4) });
   mem.seed("agentProposals/p5", { subAccountId: "sa1", status: "pending", contactId: "cs", createdAt: new Date(5) });
+  // A contact with no territory is hidden from a scoped collaborator, as in firestore.rules.
+  mem.seed("contacts/cx", { subAccountId: "sa1" });
+  mem.seed("agentProposals/p6", { subAccountId: "sa1", status: "pending", contactId: "cx", createdAt: new Date(6) });
   const res = (await (await list()).json()) as { proposals: { id: string }[] };
   expect(res.proposals.map((p) => p.id)).toEqual(["p4", "p2", "p1"]);
 });
