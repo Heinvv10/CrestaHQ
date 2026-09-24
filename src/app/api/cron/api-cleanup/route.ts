@@ -7,7 +7,7 @@ import {
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
 import { sweepOldWatchdogRuns } from "@/lib/server/agents-watchdog-service";
-import { sweepAgentProposals } from "@/lib/server/agent-proposals";
+import { sweepAgentProposals } from "@/lib/server/agent-proposals-sweeps";
 
 /**
  * Daily cleanup sweep for the public API's TTL'd collections.

@@ -18,7 +18,7 @@ vi.mock("@/lib/automations/qstash", () => ({
 const setup = vi.hoisted(() => ({ failing: new Set<string>(), capped: new Set<string>() }));
 const sweepOldWatchdogRuns = vi.hoisted(() => vi.fn(async () => 2));
 vi.mock("@/lib/server/agents-watchdog-service", () => ({ sweepOldWatchdogRuns }));
-vi.mock("@/lib/server/agent-proposals", () => ({
+vi.mock("@/lib/server/agent-proposals-sweeps", () => ({
   sweepAgentProposals: async () => ({ collection: "agentProposals", deleted: 0, hitCap: false }),
 }));
 

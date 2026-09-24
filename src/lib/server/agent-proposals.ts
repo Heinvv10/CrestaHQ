@@ -4,6 +4,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
+import {
+  canonical,
+  millis,
+  type PreviewRows,
+} from "@/lib/server/agent-proposals-encoding";
 
 /**
  * The Agent API approval queue (`agentProposals/{id}`). An agent call on a
@@ -32,7 +37,6 @@ export const STALE_CLAIM_MS = 10 * 60 * 1000;
 export const EXECUTE_DEADLINE_MS = 5 * 60 * 1000;
 /** mark_sent / mark_not_sent are refused until this long after the claim. */
 export const MARK_MIN_AGE_MS = 60 * 60 * 1000;
-const SWEEP_LIMIT = 500;
 
 export const OUTCOME_UNKNOWN_MESSAGE =
   "A previous approval of this exact action may have sent; check the conversation before re-proposing.";
@@ -55,15 +59,6 @@ export interface ProposalInput {
   contactId: string | null;
 }
 
-export type PreviewRows = Array<{ label: string; value: string }>;
-
-/** A capability's preview result, in the one shape the row stores. */
-export function normalizePreview(
-  p: PreviewRows | { rows: PreviewRows; pinned?: Record<string, unknown> }
-): { rows: PreviewRows; pinned: Record<string, unknown> | null } {
-  return Array.isArray(p) ? { rows: p, pinned: null } : { rows: p.rows, pinned: p.pinned ?? null };
-}
-
 export type CreateProposalResult =
   | {
       ok: true;
@@ -78,31 +73,6 @@ export type CreateProposalResult =
 /** Transition outcome: moved, the row is not in `from`, or `rev` mismatch. */
 export type TransitionResult = "ok" | "conflict" | "stale";
 
-/**
- * A type-tagged, key-sorted encoding, so the same value always hashes the
- * same and no two different values encode alike (every value is prefixed by
- * its type, so a Date can never collide with `{"$date": …}`). Undefined keys
- * are skipped (Firestore drops them too); any other non-plain object throws.
- */
-export function canonical(v: unknown): string {
-  if (v === null || v === undefined) return "z";
-  if (Array.isArray(v)) return `a[${v.map(canonical).join(",")}]`;
-  if (v instanceof Date) return `d${JSON.stringify(v.toISOString())}`;
-  if (typeof v === "string") return `s${JSON.stringify(v)}`;
-  if (typeof v === "number") return `n${String(v)}`;
-  if (typeof v === "boolean") return `b${String(v)}`;
-  const proto = typeof v === "object" ? Object.getPrototypeOf(v) : undefined;
-  if (proto !== Object.prototype && proto !== null) {
-    throw new Error("canonical: only plain objects, arrays, Dates and primitives are supported");
-  }
-  const obj = v as Record<string, unknown>;
-  return `o{${Object.keys(obj)
-    .filter((k) => obj[k] !== undefined)
-    .sort()
-    .map((k) => `${JSON.stringify(k)}:${canonical(obj[k])}`)
-    .join(",")}}`;
-}
-
 /** A fresh per-generation nonce: a decision must name the generation it saw. */
 const newRev = () => randomBytes(12).toString("hex");
 
@@ -115,15 +85,6 @@ export function proposalId(input: ProposalInput): string {
     input.workflowId ?? "",
   ].join("|");
   return `p_${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
-}
-
-/** Firestore Timestamp / Date → epoch ms (null when absent). */
-export function millis(v: unknown): number | null {
-  if (v instanceof Date) return v.getTime();
-  if (v && typeof (v as { toMillis?: unknown }).toMillis === "function") {
-    return (v as { toMillis: () => number }).toMillis();
-  }
-  return null;
 }
 
 const proposalRef = (id: string) => getAdminDb().doc(`agentProposals/${id}`);
@@ -262,10 +223,9 @@ export async function refreshPreview(
 
 /**
  * Settle a claimed row and write its `aiSuiteActions` row in one
- * transaction. If OUR claim was flipped to `unsettled`, or a person guessed
- * its outcome wrongly (`not_sent_confirmed` / a human `mark_sent` that in fact
- * failed), the outcome is now known, so the row resolves to it
- * (`settledLate`). Otherwise the outcome goes to `history`, logged — and an
+ * transaction. If OUR claim was flipped to `unsettled`, or a person marked
+ * it (`mark_sent` / `mark_not_sent` are guesses), the outcome is now known,
+ * so the row resolves to it (`settledLate`, plus `overrodeHuman`). Otherwise the outcome goes to `history`, logged — and an
  * `executed` outcome rejects a newer `pending` generation in the same
  * transaction, since approving it would do the action twice.
  */
@@ -295,14 +255,12 @@ export async function settleProposal(
     const snap = await tx.get(ref);
     const cur = snap.data();
     const ours = cur?.claimId === claimId;
-    // A person who marked OUR unsettled claim "not sent" guessed; the real
-    // outcome beats the guess (else a re-propose could send it twice).
+    // Any late settle on OUR claim overrides a person's mark_*: they guessed,
+    // this is the real outcome.
     const overridesHuman =
       ours &&
       ((cur?.status === "rejected" && cur?.reason === "not_sent_confirmed") ||
-        (cur?.status === "executed" &&
-          cur?.settledBy === "human" &&
-          outcome.status === "failed"));
+        (cur?.status === "executed" && cur?.settledBy === "human"));
     const v =
       ours && cur?.status === "executing"
         ? "settled"
@@ -337,66 +295,4 @@ export async function settleProposal(
     console.error(`[agent-proposals] late settle of ${id} (${outcome.status}) recorded in history`);
   }
   return verdict;
-}
-
-/** Revoking a key rejects its still-pending rows (never an executing one). */
-export async function sweepRevokedKeyProposals(input: {
-  subAccountId: string;
-  keyId: string;
-}): Promise<number> {
-  const snap = await getAdminDb()
-    .collection("agentProposals")
-    .where("keyId", "==", input.keyId)
-    .where("status", "==", "pending")
-    .get();
-  let rejected = 0;
-  for (const doc of snap.docs) {
-    if (doc.data().subAccountId !== input.subAccountId) continue;
-    const moved = await transitionIf(doc.id, "pending", {
-      status: "rejected",
-      reason: "key_revoked",
-      decidedAt: new Date(),
-    });
-    if (moved === "ok") rejected++;
-  }
-  return rejected;
-}
-
-/**
- * Daily (api-cleanup): expire `pending` rows past `expiresAt`, and flip
- * `executing` rows claimed over STALE_CLAIM_MS ago to `unsettled`.
- */
-export async function sweepAgentProposals(
-  now: Date
-): Promise<{ collection: string; deleted: number; hitCap: boolean }> {
-  const db = getAdminDb();
-  const [expiring, stale] = await Promise.all([
-    db.collection("agentProposals")
-      .where("status", "==", "pending")
-      .where("expiresAt", "<", now)
-      .limit(SWEEP_LIMIT)
-      .get(),
-    db.collection("agentProposals")
-      .where("status", "==", "executing")
-      .where("claimedAt", "<", new Date(now.getTime() - STALE_CLAIM_MS))
-      .limit(SWEEP_LIMIT)
-      .get(),
-  ]);
-  let moved = 0;
-  for (const doc of expiring.docs) {
-    if ((await transitionIf(doc.id, "pending", { status: "expired", decidedAt: now })) === "ok") {
-      moved++;
-    }
-  }
-  for (const doc of stale.docs) {
-    const claimId = doc.data().claimId as string;
-    if ((await transitionIf(doc.id, "executing", { status: "unsettled" }, { claimId })) === "ok") {
-      moved++;
-    }
-  }
-  return {
-    collection: "agentProposals",
-    deleted: moved,
-    hitCap: expiring.size >= SWEEP_LIMIT || stale.size >= SWEEP_LIMIT,
-  };
 }

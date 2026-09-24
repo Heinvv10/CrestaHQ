@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { millis } from "@/lib/server/agent-proposals";
+import { millis } from "@/lib/server/agent-proposals-encoding";
 import {
   beforeNextTransaction, caller, claim, decide, execute, history, later, mem, outbound, proposeId,
   revoke, row, setupAgentProposalTests, sweep,

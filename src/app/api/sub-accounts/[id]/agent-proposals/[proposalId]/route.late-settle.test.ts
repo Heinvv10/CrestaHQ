@@ -60,17 +60,25 @@ describe("the claim's own late settle", () => {
     expect(row(id)).toMatchObject({ status: "failed", settledLate: true, overrodeHuman: true, error: "The recipient's number is invalid." });
   });
 
-  it("an executed settle agreeing with a person's mark_sent lands in history, row unchanged", async () => {
+  it("an executed settle after a person's mark_sent still replaces the guess with the real outcome", async () => {
     const id = await proposeId();
     const a = await approveHangingThenUnsettle(id);
     await ageClaim(id);
     expect((await decide(id, "mark_sent")).status).toBe(200);
-    quiet();
     a.finish();
     await a.approving;
-    expect(row(id)).toMatchObject({ status: "executed", settledBy: "human" });
-    expect(row(id).overrodeHuman).toBeUndefined();
-    expect(history(id)).toEqual([expect.objectContaining({ lateSettle: true, status: "executed" })]);
+    expect(row(id)).toMatchObject({ status: "executed", settledLate: true, overrodeHuman: true, result: { resultText: "sent" } });
+    expect(history(id)).toEqual([]);
+  });
+
+  it("a failed settle after a person's mark_not_sent resolves the row to failed (any late settle wins)", async () => {
+    const id = await proposeId();
+    const a = await approveHangingThenUnsettle(id);
+    await ageClaim(id);
+    expect((await decide(id, "mark_not_sent")).status).toBe(200);
+    a.fail(new CapabilityUserError("Provider refused the message."));
+    await a.approving;
+    expect(row(id)).toMatchObject({ status: "failed", settledLate: true, overrodeHuman: true, error: "Provider refused the message." });
   });
 });
 

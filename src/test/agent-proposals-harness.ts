@@ -105,7 +105,7 @@ export async function claim(id: string, uid = "u_other") {
   return (await lib()).claimProposal(id, { uid, email: "" }, row(id).rev as string);
 }
 export async function sweep(now: Date) {
-  return (await lib()).sweepAgentProposals(now);
+  return (await import("@/lib/server/agent-proposals-sweeps")).sweepAgentProposals(now);
 }
 /** Make the row's claim old enough for mark_sent / mark_not_sent. */
 export async function ageClaim(id: string) {

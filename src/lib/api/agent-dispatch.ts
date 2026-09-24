@@ -11,10 +11,10 @@ import {
 } from "@/lib/ai-suite/capabilities";
 import {
   createProposal,
-  normalizePreview,
   OUTCOME_UNKNOWN_MESSAGE,
   type ProposalStatus,
 } from "@/lib/server/agent-proposals";
+import { normalizePreview } from "@/lib/server/agent-proposals-encoding";
 
 export type AgentDispatchResult =
   | { ok: true; resultText: string; ref?: { kind: string; id: string } }

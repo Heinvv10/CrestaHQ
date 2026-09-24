@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
-const { canonical } = await import("./agent-proposals");
+const { canonical } = await import("./agent-proposals-encoding");
 
 // canonical() keys the proposal id and compares previews, so two values
 // that differ must never encode the same (breaker R5).

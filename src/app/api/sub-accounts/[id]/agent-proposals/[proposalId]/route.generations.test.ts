@@ -138,6 +138,27 @@ describe("what the approver reviewed", () => {
     expect((await decide(id, "approve")).status).toBe(200);
   });
 
+  it("a preview that can no longer be built → 409 preview_unavailable, row pending; anything else → 500 logged", async () => {
+    const id = await proposeId();
+    outbound.preview = async () => {
+      throw new CapabilityUserError("That contact no longer exists.");
+    };
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "preview_unavailable", message: "That contact no longer exists." });
+    expect(row(id).status).toBe("pending");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    outbound.preview = async () => {
+      throw new Error("firestore down: secret detail");
+    };
+    const crash = await decide(id, "approve");
+    expect(crash.status).toBe(500);
+    expect(JSON.stringify(await crash.json())).not.toContain("secret detail");
+    expect(logged).toHaveBeenCalled();
+    expect(row(id).status).toBe("pending");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   describe("F1: pinned targets", () => {
     const sentTo: string[] = [];
     beforeEach(() => {

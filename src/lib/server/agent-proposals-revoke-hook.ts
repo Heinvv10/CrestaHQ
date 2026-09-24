@@ -1,7 +1,7 @@
 import "server-only";
 
 import { onApiKeyRevoked } from "@/lib/firestore/api-keys";
-import { sweepRevokedKeyProposals } from "@/lib/server/agent-proposals";
+import { sweepRevokedKeyProposals } from "@/lib/server/agent-proposals-sweeps";
 
 // Imported for its side effect by every route that revokes a key: the hook
 // registry is module-level, so a route that never loads this module would

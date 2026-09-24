@@ -11,13 +11,11 @@ import {
 } from "@/lib/ai-suite/capabilities";
 import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import { buildPreviewContext } from "@/lib/api/agent-context";
+import { canonical, millis, normalizePreview } from "@/lib/server/agent-proposals-encoding";
 import {
-  canonical,
   claimProposal,
   EXECUTE_DEADLINE_MS,
   MARK_MIN_AGE_MS,
-  millis,
-  normalizePreview,
   refreshPreview,
   settleProposal,
   transitionIf,
@@ -197,9 +195,19 @@ export async function POST(
   // Same neutral ctx as at propose time, so who approves cannot change it.
   let pinned = (proposal.pinned ?? null) as Record<string, unknown> | null;
   if (!enrolment && cap?.preview) {
-    const fresh = normalizePreview(
-      await cap.preview(buildPreviewContext(proposal.agencyId as string, subAccountId), args),
-    );
+    let fresh: ReturnType<typeof normalizePreview>;
+    try {
+      fresh = normalizePreview(
+        await cap.preview(buildPreviewContext(proposal.agencyId as string, subAccountId), args),
+      );
+    } catch (err) {
+      // e.g. the contact was deleted: nothing to review, nothing claimed.
+      if (err instanceof CapabilityUserError) {
+        return NextResponse.json({ error: "preview_unavailable", message: err.message }, { status: 409 });
+      }
+      console.error(`[agent-proposals] preview for ${proposalId} failed:`, err);
+      return NextResponse.json({ error: "The preview could not be built." }, { status: 500 });
+    }
     const stored = { rows: proposal.preview, pinned };
     if (canonical(fresh) !== canonical(stored)) {
       const nextRev = await refreshPreview(proposalId, rev, fresh);
