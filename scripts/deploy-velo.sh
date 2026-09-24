@@ -103,8 +103,7 @@ SELF_HASH="$(script_hash "$(dirname "$SELF")")"
 # ── Lock ────────────────────────────────────────────────────────────────────
 if [ -f "$LOCK" ]; then
   pid=$(cat "$LOCK" 2>/dev/null || echo "")
-  # Our own pid: this run re-executed itself after `git reset` (see below).
-  if [ "$pid" != "$$" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     die "another deploy is running (pid $pid). Wait for it to finish."
   fi
   echo "clearing stale lock (pid ${pid:-none} is gone)"
@@ -123,30 +122,13 @@ if [ "$dow" -le 5 ] && [ "$hour" -ge 8 ] && [ "$hour" -lt 17 ]; then
   echo "WARNING: deploying inside business hours because --force was passed."
 fi
 
-# ── Blue/green layout must exist (cheap, so before minutes of gates) ────────
-# `|| true`: under set -e + pipefail a missing upstream.conf would exit here
-# silently, before `die` could say why.
-active="$(active_port || true)"
-case "$active" in
-  "$BLUE_PORT"|"$GREEN_PORT") ;;
-  *) die "no live colour in $PROXY_DIR/upstream.conf — the zero-downtime layout is not set up. Do the one-time migration in RUNBOOK.md (\"Zero-downtime deploys\") first." ;;
-esac
-# Never act on what the file says alone: if nginx routes somewhere else (a
-# hand edit, a reload that never happened), the "idle" colour could be the one
-# production is on, and this deploy would stop it.
-routed="$(routed_port || true)"
-[ "$routed" = "$active" ] \
-  || die "$PROXY_DIR/upstream.conf says $active but $PROXY_SERVICE actually routes to '${routed:-nothing}' (check port $CHECK_PORT). Refusing: resolve the mismatch by hand first."
-idle="$(other_port "$active")"
-idle_prev_link=""
-idle_started=0
-echo "live colour: $SERVICE@$active (proven on :$CHECK_PORT); idle colour: $SERVICE@$idle"
-
 # Written by a successful --rollback: the release it rolled AWAY from, which
 # is now what the idle colour holds. A second --rollback would put it back.
 ROLLED_BACK_FROM="$RELEASES_DIR/.rolled-back-from"
 
 if [ "$ROLLBACK" -eq 1 ]; then
+  # A rollback builds nothing and never fetches, so it checks here.
+  find_live_colour
   prev="$(readlink "$RELEASES_DIR/$idle" || true)"
   [ -n "$prev" ] && [ -d "$prev" ] \
     || die "nothing to roll back to: $RELEASES_DIR/$idle does not point at a release"
@@ -188,10 +170,20 @@ if [ "$(script_hash "$DEPLOY_DIR/scripts")" != "$SELF_HASH" ]; then
   [ -z "${DEPLOY_VELO_REEXEC:-}" ] \
     || die "the deploy script still differs from $DEPLOY_DIR/scripts after re-executing it — refusing."
   echo "deploy script changed in $after — re-executing the new one"
+  # Released first: the next script may be an older one that does not know
+  # this pid is itself, and would refuse its own lock. It retakes the lock at
+  # once; exec leaves no EXIT trap behind.
+  rm -f "$LOCK"
   DEPLOY_VELO_REEXEC=1 DEPLOY_VELO_BEFORE="$before" exec bash "$DEPLOY_DIR/scripts/deploy-velo.sh" "$@"
 fi
 echo "$before -> $after"
 [ "$before" = "$after" ] && echo "(no new commits — redeploying the same tree)"
+
+# ── Blue/green layout: after the reset + re-exec, before any gate ──────────
+# Not earlier: if main has reverted blue/green (RUNBOOK "Undo"), the re-exec
+# above must get the chance to hand over to the old single-service script,
+# which ignores the proxy. Still before the gates, which take minutes.
+find_live_colour
 
 # ── Refuse the dev/CI-only fake providers (GBP, WhatsApp settings, SMS, GCal, Reviews AI)
 # Pre-build half of scripts/gbp-deploy-check.mjs: no env parsing — any .env*

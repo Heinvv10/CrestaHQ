@@ -45,6 +45,21 @@ describe("register", () => {
     expect(console.info).toHaveBeenCalledWith("[instrumentation] register() ran");
   });
 
+  it("logs the finished line only once schedule registration has settled", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.crestahq.com";
+    let settle!: () => void;
+    ensureSchedulesRegistered.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (settle = resolve)),
+    );
+    const running = register();
+    await vi.waitFor(() => expect(ensureSchedulesRegistered).toHaveBeenCalledOnce());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(console.info).not.toHaveBeenCalledWith("[instrumentation] register() finished");
+    settle();
+    await running;
+    expect(console.info).toHaveBeenCalledWith("[instrumentation] register() finished");
+  });
+
   it.each([
     "http://127.0.0.1:3100",
     "http://localhost:3777",

@@ -30,6 +30,28 @@ wait_routed() {  # wait_routed <port>: up to 10s for the proxy to prove it route
 }
 other_port() { if [ "$1" = "$BLUE_PORT" ]; then echo "$GREEN_PORT"; else echo "$BLUE_PORT"; fi; }
 
+# Sets active / idle / idle_prev_link / idle_started, or dies. upstream.conf
+# must name a colour, and nginx must actually route to it: if it routes
+# somewhere else (a hand edit, a reload that never happened), the "idle"
+# colour could be the one production is on, and this run would stop it.
+find_live_colour() {
+  # `|| true`: under set -e + pipefail a missing upstream.conf would exit
+  # here silently, before `die` could say why.
+  active="$(active_port || true)"
+  case "$active" in
+    "$BLUE_PORT"|"$GREEN_PORT") ;;
+    *) die "no live colour in $PROXY_DIR/upstream.conf — the zero-downtime layout is not set up. Do the one-time migration in RUNBOOK.md (\"Zero-downtime deploys\") first." ;;
+  esac
+  local routed
+  routed="$(routed_port || true)"
+  [ "$routed" = "$active" ] \
+    || die "$PROXY_DIR/upstream.conf says $active but $PROXY_SERVICE actually routes to '${routed:-nothing}' (check port $CHECK_PORT). Refusing: resolve the mismatch by hand first."
+  idle="$(other_port "$active")"
+  idle_prev_link=""
+  idle_started=0
+  echo "live colour: $SERVICE@$active (proven on :$CHECK_PORT); idle colour: $SERVICE@$idle"
+}
+
 wait_healthy() {
   local url="$1" code i
   for i in $(seq 1 "$HEALTH_TRIES"); do
@@ -42,11 +64,11 @@ wait_healthy() {
 
 # instrumentation.ts register() fails by never running: the server answers
 # 200 either way. Its one log line is the only proof it ran.
-instrumentation_ran() {
-  local unit="$1" since="$2" i
-  for i in $(seq 1 10); do
+instrumentation_ran() {  # <unit> <since> [line] [seconds]
+  local unit="$1" since="$2" line="${3:-[instrumentation] register() ran}" i
+  for i in $(seq 1 "${4:-10}"); do
     if journalctl --user -u "$unit" --since "@$since" -o cat --no-pager 2>/dev/null \
-        | grep -qF "[instrumentation] register() ran"; then return 0; fi
+        | grep -qF "$line"; then return 0; fi
     sleep 1
   done
   return 1
@@ -138,8 +160,10 @@ reconcile_schedules() {
   say "Re-registering schedules from the live build ($(basename "$live"))"
   point_colour "$idle" "$live" || return 0
   started_at="$(date +%s)"
+  # Stop only on "register() finished": "register() ran" is logged BEFORE
+  # the registration is awaited, so stopping on it could cut it short.
   if $SYSTEMCTL start "$SERVICE@$idle" && wait_healthy "http://127.0.0.1:$idle/login" \
-      && instrumentation_ran "$SERVICE@$idle" "$started_at"; then
+      && instrumentation_ran "$SERVICE@$idle" "$started_at" "[instrumentation] register() finished" 30; then
     echo "schedules re-registered by the live build $(basename "$live")"
   else
     echo "WARNING: could not re-run registration from the live build — QStash schedules may match the FAILED build. Fix: $SYSTEMCTL restart $SERVICE@$active after hours." >&2

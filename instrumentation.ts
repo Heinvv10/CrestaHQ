@@ -65,4 +65,10 @@ export async function register() {
       console.warn("[instrumentation] gitpage heartbeat threw", err);
     }),
   ]);
+
+  // scripts/deploy-velo-bluegreen.sh waits for this line before stopping a
+  // boot whose only job was re-running registration. "register() ran" above
+  // fires BEFORE the awaits, so stopping on it could cut registration short.
+  // Logged whether or not each call succeeded: both swallow their own errors.
+  console.info("[instrumentation] register() finished");
 }

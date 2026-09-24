@@ -275,7 +275,10 @@ connections while Next restarts:
   whichever colour the proxy routes to. If a deploy aborts after the new
   colour has cold-started, its registration may already have run. The
   script then cold-starts the live release on the idle port, with no
-  traffic, so the live build's registration runs last.
+  traffic, so the live build's registration runs last. It stops that boot
+  only once `[instrumentation] register() finished` is logged. Registration
+  only upserts; it never deletes. So a `scheduleId` that only the failed
+  build had keeps firing until someone deletes it in the QStash console.
 - **Safety checks.** A deploy refuses to start if `upstream.conf` names a
   different colour from the one nginx reports on 4309. No colour is stopped
   until 4309 has proven that traffic is on the other one. If a switch-back
@@ -395,8 +398,17 @@ systemctl --user stop crestahq@4301 crestahq@4302
 systemctl --user enable crestahq
 ```
 
-Then revert this change on `main` before the next deploy. While it is on
-`main`, the script refuses to deploy unless the proxy is answering.
+Then, in order:
+
+1. Revert this change on `main` (through a PR, as usual).
+2. Run `bash scripts/deploy-velo.sh` from the deploy checkout as normal.
+   The blue/green script on disk fetches and resets first, sees that the
+   deploy script changed, and re-executes the reverted single-service
+   script. That script ignores the proxy. The blue/green checks run only
+   after that hand-over, so they cannot block it. Never reset the deploy
+   checkout by hand: it is read-only.
+3. Once that deploy has passed, move the proxy dir aside so nothing reads
+   a stale `upstream.conf`: `mv ~/crestahq-proxy ~/crestahq-proxy.retired`.
 
 ---
 
