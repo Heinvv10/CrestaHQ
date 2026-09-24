@@ -14,7 +14,8 @@ import type { Timestamp, FieldValue } from "firebase/firestore";
 
 /**
  * The feature gates a plan can bundle. Mirrors the agency Manage-dialog
- * gate set MINUS Get Leads (parked — see GET_LEADS_PARKED). Assigning /
+ * gate set MINUS the standalone gates (Get Leads, Payments, Webinar1, Google
+ * Business, Google Calendar — see AgencyGateField). Assigning /
  * activating a plan writes EXACTLY these fields on the sub-account doc,
  * so a plan is the single source of truth for a managed client's gates.
  * The `*HiddenWhenDisabled` presentation overrides are deliberately NOT
@@ -38,6 +39,7 @@ export const PLAN_GATE_KEYS = [
   "aiSuiteEnabledByAgency",
   "labsEnabledByAgency",
   "reviewsAiEnabledByAgency",
+  "prospectingEnabledByAgency",
 ] as const;
 
 export type PlanGateKey = (typeof PLAN_GATE_KEYS)[number];
@@ -61,6 +63,7 @@ export const PLAN_GATE_LABELS: Record<PlanGateKey, string> = {
   aiSuiteEnabledByAgency: "AI Suite assistant",
   labsEnabledByAgency: "Labs (pre-release features)",
   reviewsAiEnabledByAgency: "Reviews AI (sentiment and reply drafts)",
+  prospectingEnabledByAgency: "Prospecting",
 };
 
 /** Full gate bundle a plan carries — every key present, true = enabled. */

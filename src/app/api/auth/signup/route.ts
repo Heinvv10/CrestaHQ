@@ -296,6 +296,7 @@ export async function POST(request: Request) {
         websiteEnabledByAgency: false,
         communityEnabledByAgency: false,
         getLeadsEnabledByAgency: false,
+        prospectingEnabledByAgency: false,
         missedCallTextBackEnabledByAgency: false,
         labsEnabledByAgency: false,
         paymentsEnabledByAgency: false,

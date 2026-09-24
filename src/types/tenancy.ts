@@ -346,6 +346,22 @@ export interface SubAccountDoc {
    */
   getLeadsEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for Prospecting — saved prospect lists (and, from
+   * Prospecting PR 2, audit reports). Only the agency owner can flip it
+   * (PATCH /api/agency/sub-accounts/[id]/feature-gates). When `false` (or
+   * undefined on legacy docs): the Prospecting sidebar entry is locked or
+   * hidden and every `/api/sub-accounts/[id]/prospecting/*` route, plus a Get
+   * Leads import that names a list, answers 403 `gate_off`. Defaults to
+   * `false` at creation. Read `=== true`. In `PLAN_GATE_KEYS`.
+   */
+  prospectingEnabledByAgency?: boolean;
+  /**
+   * Monthly prospect-report quota, set by the agency owner (integer 0–1000).
+   * Undefined reads as `PROSPECT_REPORT_QUOTA_DEFAULT` (50) — see
+   * lib/prospecting/quota.ts. Enforced by the report route (Prospecting PR 2).
+   */
+  prospectingReportQuota?: number;
+  /**
    * Get Leads: operator-defined custom service types shown in the business-
    * type picker alongside the curated list. Plain display labels (each
    * doubles as the Google Maps query, ≤60 chars, ≤30 entries). Written only
@@ -552,6 +568,7 @@ export interface SubAccountDoc {
   socialPlannerHiddenWhenDisabled?: boolean;
   communityHiddenWhenDisabled?: boolean;
   getLeadsHiddenWhenDisabled?: boolean;
+  prospectingHiddenWhenDisabled?: boolean;
   aiSuiteHiddenWhenDisabled?: boolean;
   labsHiddenWhenDisabled?: boolean;
   paymentsHiddenWhenDisabled?: boolean;
