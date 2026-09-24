@@ -311,7 +311,7 @@ export function QuoteDetail({
             {isInvoice && canMarkPaid && (
               <PaystackInvoiceLinkButton invoiceId={quote.id} recurring={!!quote.recurringInvoiceId} />
             )}
-            {isInvoice && (quote.autoCharge?.state === "pending" || quote.autoCharge?.state === "unknown") && (
+            {isInvoice && quote.status !== "paid" && (quote.autoCharge?.state === "pending" || quote.autoCharge?.state === "unknown") && (
               <RecheckCardChargeButton subAccountId={scope.subAccountId} invoiceId={quote.id} />
             )}
             {(canMarkPaid || canMarkCardDraftPaid) && (
