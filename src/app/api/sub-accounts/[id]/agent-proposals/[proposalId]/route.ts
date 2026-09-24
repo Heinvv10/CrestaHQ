@@ -10,11 +10,14 @@ import {
   type AiSuiteActionContext,
 } from "@/lib/ai-suite/capabilities";
 import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
+import { buildPreviewContext } from "@/lib/api/agent-context";
 import {
   canonical,
   claimProposal,
+  EXECUTE_DEADLINE_MS,
+  MARK_MIN_AGE_MS,
   millis,
-  previousAttemptSent,
+  normalizePreview,
   refreshPreview,
   settleProposal,
   transitionIf,
@@ -34,8 +37,10 @@ type Decision = (typeof DECISIONS)[number];
  * CLAIMS the row (`pending` → `executing` in a transaction) before running
  * anything, so two approvers can never both execute it. `reject` is legal
  * only on `pending`; `mark_sent` / `mark_not_sent` only on `unsettled`. Every
- * decision names the row generation (`rev`) the approver saw: a row
- * re-proposed or refreshed since is 409 `stale_proposal`.
+ * decision but `reject` (refusing is always safe) names the row generation
+ * (`rev`) the approver saw: a row re-proposed or refreshed since is 409
+ * `stale_proposal`. `mark_*` wait MARK_MIN_AGE_MS after the claim, so a
+ * person cannot guess the outcome of an execute that may still be running.
  */
 export async function POST(
   request: Request,
@@ -55,10 +60,10 @@ export async function POST(
   if (!DECISIONS.includes(decision)) {
     return NextResponse.json({ error: "Unknown decision" }, { status: 400 });
   }
-  if (typeof body.rev !== "string" || !body.rev) {
+  if (decision !== "reject" && (typeof body.rev !== "string" || !body.rev)) {
     return NextResponse.json({ error: "`rev` is required" }, { status: 400 });
   }
-  const rev = body.rev;
+  const rev = body.rev as string;
 
   const db = getAdminDb();
   const snap = await db.doc(`agentProposals/${proposalId}`).get();
@@ -112,15 +117,18 @@ export async function POST(
       { status: 409 },
     );
   if (decision === "reject") {
-    const moved = await transitionIf(
-      proposalId,
-      "pending",
-      { status: "rejected", reason: "rejected_by_approver", ...decided },
-      { rev },
-    );
+    const moved = await transitionIf(proposalId, "pending", {
+      status: "rejected",
+      reason: "rejected_by_approver",
+      ...decided,
+    });
     return moved === "ok" ? NextResponse.json({ status: "rejected" }) : refused(moved);
   }
   if (decision === "mark_sent" || decision === "mark_not_sent") {
+    const claimedAtMs = millis(proposal.claimedAt);
+    if (claimedAtMs !== null && Date.now() < claimedAtMs + MARK_MIN_AGE_MS) {
+      return NextResponse.json({ error: "claim_too_recent" }, { status: 409 });
+    }
     const moved = await transitionIf(
       proposalId,
       "unsettled",
@@ -184,69 +192,80 @@ export async function POST(
       : refused(moved);
   }
 
-  // An earlier generation's approval may have sent after all (its settle
-  // landed after a person marked it "not sent" and it was re-proposed).
-  if (await previousAttemptSent(proposalId, millis(proposal.createdAt) ?? 0)) {
-    const moved = await transitionIf(
-      proposalId,
-      "pending",
-      { status: "rejected", reason: "previous_attempt_sent", decidedAt: new Date() },
-      { rev },
-    );
-    return moved === "ok"
-      ? NextResponse.json({ error: "previous_attempt_sent" }, { status: 409 })
-      : refused(moved);
-  }
-
   // execute reads live data; the preview was computed when proposed. If
   // what would happen now differs, store it and make the approver look again.
+  // Same neutral ctx as at propose time, so who approves cannot change it.
+  let pinned = (proposal.pinned ?? null) as Record<string, unknown> | null;
   if (!enrolment && cap?.preview) {
-    const fresh = await cap.preview(actionCtx, args);
-    if (canonical(fresh) !== canonical(proposal.preview)) {
+    const fresh = normalizePreview(
+      await cap.preview(buildPreviewContext(proposal.agencyId as string, subAccountId), args),
+    );
+    const stored = { rows: proposal.preview, pinned };
+    if (canonical(fresh) !== canonical(stored)) {
       const nextRev = await refreshPreview(proposalId, rev, fresh);
       return nextRev
         ? NextResponse.json(
-            { error: "preview_changed", rev: nextRev, preview: fresh },
+            { error: "preview_changed", rev: nextRev, preview: fresh.rows },
             { status: 409 },
           )
         : NextResponse.json({ error: "stale_proposal" }, { status: 409 });
     }
+    pinned = fresh.pinned;
   }
 
   const claim = await claimProposal(proposalId, access, rev);
   if (typeof claim === "string") return refused(claim);
   const { claimId } = claim;
 
-  let outcome: Parameters<typeof settleProposal>[2];
-  try {
-    const result = enrolment
-      ? await replayHeldEnrolment({ id: proposalId, ...proposal }, actionCtx)
-      : await cap!.execute(actionCtx, args);
-    outcome = {
-      status: "executed",
-      result: { resultText: result.resultText, ref: result.ref ?? null },
-    };
-  } catch (err) {
-    if (!(err instanceof CapabilityUserError)) {
-      console.error(`[agent-proposals] approve ${proposalId} failed:`, err);
+  // Run and settle under a hard deadline, well inside the sweep's stale-claim
+  // window: past it, this process marks the row `unsettled` itself and the
+  // real outcome, whenever it lands, arrives through the late-settle path.
+  const abort = new AbortController();
+  const execCtx = { ...actionCtx, approved: { pinned }, signal: abort.signal };
+  const run = (async () => {
+    let outcome: Parameters<typeof settleProposal>[2];
+    try {
+      const result = enrolment
+        ? await replayHeldEnrolment({ id: proposalId, ...proposal }, execCtx)
+        : await cap!.execute(execCtx, args);
+      outcome = {
+        status: "executed",
+        result: { resultText: result.resultText, ref: result.ref ?? null },
+      };
+    } catch (err) {
+      if (!(err instanceof CapabilityUserError)) {
+        console.error(`[agent-proposals] approve ${proposalId} failed:`, err);
+      }
+      outcome = {
+        status: "failed",
+        error:
+          err instanceof CapabilityUserError
+            ? err.message
+            : "The action failed to run.",
+      };
     }
-    outcome = {
-      status: "failed",
-      error:
-        err instanceof CapabilityUserError
-          ? err.message
-          : "The action failed to run.",
-    };
-  }
-  await settleProposal(proposalId, claimId, outcome, {
-    agencyId: proposal.agencyId as string,
-    subAccountId,
-    capability: proposal.capability as string,
-    args,
-    summary: proposal.summary as string,
-    confirmedByUid: access.uid,
-    confirmedByEmail: access.email,
+    await settleProposal(proposalId, claimId, outcome, {
+      agencyId: proposal.agencyId as string,
+      subAccountId,
+      capability: proposal.capability as string,
+      args,
+      summary: proposal.summary as string,
+      confirmedByUid: access.uid,
+      confirmedByEmail: access.email,
+    });
+    return outcome;
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => resolve("deadline"), EXECUTE_DEADLINE_MS);
   });
+  const outcome = await Promise.race([run, deadline]);
+  clearTimeout(timer);
+  if (outcome === "deadline") {
+    abort.abort();
+    await transitionIf(proposalId, "executing", { status: "unsettled" }, { claimId });
+    return NextResponse.json({ status: "unsettled" }, { status: 202 });
+  }
   return outcome.status === "executed"
     ? NextResponse.json({ status: "executed", resultText: outcome.result.resultText })
     : NextResponse.json({ status: "failed", error: outcome.error }, { status: 422 });

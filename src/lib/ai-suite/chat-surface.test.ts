@@ -158,4 +158,19 @@ describe("registry invariants", () => {
     );
     expect(missing).toEqual([]);
   });
+
+  // Vacuous today: no shipped capability sets `approval` yet (PR8+ add them).
+  // Each one must then add sample args here; a missing entry fails the test.
+  const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {};
+
+  it("every approval capability's preview is pure: same result under two different callers", async () => {
+    const tenant = { agencyId: "ag1", subAccountId: "sa1" };
+    const admin = { ...tenant, uid: "u_admin", email: "admin@x.io", displayName: "A", subAccountRole: "admin" };
+    const rep = { ...tenant, uid: "u_rep", email: "rep@x.io", displayName: "R", subAccountRole: "collaborator" };
+    for (const cap of AI_SUITE_CAPABILITIES.filter((c) => c.approval)) {
+      const args = PREVIEW_SAMPLE_ARGS[cap.name];
+      expect(args, `${cap.name} needs PREVIEW_SAMPLE_ARGS`).toBeDefined();
+      expect(await cap.preview!(rep, args!)).toEqual(await cap.preview!(admin, args!));
+    }
+  });
 });

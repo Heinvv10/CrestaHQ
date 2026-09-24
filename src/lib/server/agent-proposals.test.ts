@@ -13,9 +13,18 @@ describe("canonical", () => {
 
   it("encodes a Date as its instant, not as {}", () => {
     const d = new Date("2026-09-24T10:00:00.000Z");
-    expect(canonical({ at: d })).toBe('{"at":{"$date":"2026-09-24T10:00:00.000Z"}}');
     expect(canonical({ at: d })).not.toBe(canonical({ at: new Date("2026-09-25T10:00:00.000Z") }));
     expect(canonical({ at: d })).not.toBe(canonical({ at: {} }));
+  });
+
+  it("type-tags every value, so no JSON value collides with a Date (breaker R5 leftover)", () => {
+    const iso = "2026-09-24T10:00:00.000Z";
+    expect(canonical({ at: new Date(iso) })).not.toBe(canonical({ at: { $date: iso } }));
+    expect(canonical(new Date(iso))).not.toBe(canonical(iso));
+    expect(canonical("1")).not.toBe(canonical(1));
+    expect(canonical(true)).not.toBe(canonical("true"));
+    expect(canonical(null)).not.toBe(canonical("null"));
+    expect(canonical([1, 2])).not.toBe(canonical({ 0: 1, 1: 2 }));
   });
 
   it("throws on any other non-plain object", () => {

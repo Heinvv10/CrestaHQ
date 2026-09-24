@@ -10,7 +10,9 @@ import { beforeAll, describe, expect, it } from "vitest";
  *
  * What must hold: members of the proposal's sub-account (and the agency
  * owner) read a row and its history; another sub-account's member is refused;
- * no client writes anything — the dispatch, decide route and sweeps own it.
+ * a row targeting a contact is territory-scoped like that contact (a scoped
+ * collaborator cannot read another territory's row or its history); no client
+ * writes anything — the dispatch, decide route and sweeps own it.
  */
 
 const creds = {
@@ -34,7 +36,7 @@ interface Caller {
   agencyId: string;
   agencyRole: "owner" | "none";
   /** Sub-account membership docs the rules may get(). null = no such doc. */
-  memberships?: Record<string, { status: string; role: string } | null>;
+  memberships?: Record<string, { status: string; role: string; assignedTerritoryIds?: string[] } | null>;
 }
 
 interface Case {
@@ -126,6 +128,16 @@ const ROW = {
   approval: "outbound",
   status: "pending",
 };
+const northRep: Caller = {
+  uid: "rep_n",
+  agencyId: "agency_a",
+  agencyRole: "none",
+  memberships: { sa_1: { status: "active", role: "collaborator", assignedTerritoryIds: ["north"] } },
+};
+const SOUTH_ROW = { ...ROW, contactId: "c_s", territoryId: "south" };
+const NORTH_ROW = { ...ROW, contactId: "c_n", territoryId: "north" };
+const SCOPING_ON = { "subAccounts/sa_1": { agencyId: "agency_a", territoryScopingEnabled: true } };
+const SCOPING_OFF = { "subAccounts/sa_1": { agencyId: "agency_a", territoryScopingEnabled: false } };
 const PRO = "agentProposals/p_1";
 const HIS = "agentProposals/p_1/history/h1";
 const PARENT = { [PRO]: ROW };
@@ -144,6 +156,15 @@ const CASES: [string, Case, Outcome][] = [
   ["sub-account admin reads a history entry", { caller: saAdmin, method: "get", path: HIS, before: ROW, gets: PARENT }, "allow"],
   ["sa2's admin cannot read sa1's history", { caller: otherSaAdmin, method: "get", path: HIS, before: ROW, gets: PARENT }, "deny: not a member"],
   ["admin cannot write a history entry", { caller: saAdmin, method: "create", path: HIS, after: ROW, gets: PARENT }, "deny"],
+
+  // ---- territory scoping (the row carries its contact's territoryId) ----
+  ["scoped collaborator reads their territory's proposal", { caller: northRep, method: "get", path: PRO, before: NORTH_ROW, gets: SCOPING_ON }, "allow"],
+  ["scoped collaborator cannot read another territory's proposal", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "deny"],
+  ["scoped collaborator cannot read another territory's history", { caller: northRep, method: "get", path: HIS, before: SOUTH_ROW, gets: { ...SCOPING_ON, [PRO]: SOUTH_ROW } }, "deny"],
+  ["scoped collaborator reads a proposal with no contact", { caller: northRep, method: "get", path: PRO, before: ROW, gets: SCOPING_ON }, "allow"],
+  ["collaborator reads another territory's proposal when scoping is off", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_OFF }, "allow"],
+  ["sub-account admin reads another territory's proposal", { caller: saAdmin, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "allow"],
+  ["scoped collaborator cannot write their territory's proposal", { caller: northRep, method: "update", path: PRO, before: NORTH_ROW, after: { ...NORTH_ROW, status: "executing" }, gets: SCOPING_ON }, "deny"],
 ];
 
 describe.skipIf(!haveCreds)("agentProposals — firestore rules", () => {

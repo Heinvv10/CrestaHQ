@@ -1,118 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextResponse } from "next/server";
-import { createMemoryFirestore } from "@/test/memory-firestore";
-import type { ApiAuthContext } from "@/lib/api/auth";
-import type { AiSuiteCapability } from "@/lib/ai-suite/capabilities";
+import { describe, expect, it, vi } from "vitest";
+import {
+  ageClaim, auth, beforeNextTransaction, caller, claim, decide, execute, history, later, mem,
+  outbound, propose, proposeId, revoke, row, setupAgentProposalTests, sweep,
+} from "@/test/agent-proposals-harness";
 
 /**
- * The agent approval queue end to end: proposals come from the real
- * dispatchAgentTool, decisions go through this real route, sweeps are the
- * real ones, all over an in-memory Firestore. `__test_outbound` is a
- * test-only capability (approval "outbound") whose execute is a spy.
+ * The agent approval queue's core paths: approve, reject, the pending-only
+ * precondition, key revoke, re-proposing. Breaker / review rounds live in the
+ * sibling route.*.test.ts files; all share src/test/agent-proposals-harness.ts.
  */
 
-const mem = createMemoryFirestore();
-vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
-const caller = { uid: "u_admin", email: "admin@x.io", role: "admin" as string };
-vi.mock("@/lib/auth/require-tenancy", () => {
-  const member = async (_req: Request, subAccountId: string) =>
-    subAccountId === "sa1" || subAccountId === "sa2"
-      ? { uid: caller.uid, email: caller.email, agencyId: "ag1", subAccountId, subAccountRole: caller.role }
-      : NextResponse.json({ error: "Not a member" }, { status: 403 });
-  return { requireSubAccountMember: member, requireSubAccountAdmin: member };
-});
-vi.mock("@/lib/server/agent-enrolment-replay", async (importOriginal) => {
-  const real = await importOriginal<typeof import("@/lib/server/agent-enrolment-replay")>();
-  return { replayHeldEnrolment: vi.fn(real.replayHeldEnrolment) };
-});
+vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposals-harness")).adminMock());
+vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/agent-proposals-harness")).tenancyMock());
+vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
+  (await import("@/test/agent-proposals-harness")).replayMock(orig)
+);
 
-const { POST } = await import("./route");
-const { DELETE } = await import("../../api-keys/[keyId]/route");
-const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
-const { claimProposal, millis, sweepAgentProposals } = await import("@/lib/server/agent-proposals");
-const { replayHeldEnrolment } = await import("@/lib/server/agent-enrolment-replay");
-const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
-
-const auth: ApiAuthContext = {
-  agencyId: "ag1",
-  subAccountId: "sa1",
-  keyId: "key1",
-  keyPrefix: "abcd1234",
-  keyName: "Agent key",
-  mode: "live",
-  scopes: ["agent"],
-  enrolmentCapPerHour: 50,
-  requestId: "req_1",
-  apiVersion: "2026-01-01",
-};
-
-const validateAny: AiSuiteCapability["validate"] = (raw) => ({ ok: true, args: (raw ?? {}) as Record<string, unknown> });
-const execute = vi.fn(async () => ({ resultText: "sent", ref: { kind: "message", id: "m1" } }));
-const outbound: AiSuiteCapability = {
-  name: "__test_outbound",
-  level: "sub-account",
-  requiredRole: "subAccountMember",
-  approval: "outbound",
-  menuLabel: "fixture",
-  description: "fixture",
-  parameters: { type: "object", properties: {} },
-  validate: validateAny,
-  summarize: (args) => `Send “${args.body}”`,
-  preview: async (_ctx, args) => [{ label: "Body", value: String(args.body) }],
-  execute,
-};
-
-async function propose(args: Record<string, unknown> = { body: "hi" }, key = auth) {
-  return dispatchAgentTool(key, "__test_outbound", args);
-}
-async function proposeId(args?: Record<string, unknown>, key = auth): Promise<string> {
-  const r = await propose(args, key);
-  if (!("proposal" in r)) throw new Error(`expected a proposal, got ${JSON.stringify(r)}`);
-  return r.proposal.id;
-}
-/** Decide as an approver whose page shows generation `rev` (default: the current one). */
-function decide(id: string, decision: string, subAccountId = "sa1", rev = mem.read(`agentProposals/${id}`)?.rev) {
-  return POST(
-    new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ decision, rev }) }),
-    { params: Promise.resolve({ id: subAccountId, proposalId: id }) }
-  );
-}
-const claim = (id: string, uid = "u_other") => claimProposal(id, { uid, email: "" }, row(id).rev as string);
-const row = (id: string) => mem.read(`agentProposals/${id}`)!;
-const history = (id: string) => mem.list(`agentProposals/${id}/history`);
-const later = (ms: number) => new Date(Date.now() + ms);
-
-/** Run `during` between a caller's read and its first transaction. */
-function beforeNextTransaction(during: () => Promise<unknown>) {
-  const original = mem.db.runTransaction.bind(mem.db);
-  vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
-    await during();
-    return original(fn as Parameters<typeof original>[0]);
-  });
-}
-
-beforeEach(() => {
-  mem.clear();
-  const gates = { agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true };
-  mem.seed("subAccounts/sa1", { agencyId: "ag1", ...gates });
-  mem.seed("subAccounts/sa2", { agencyId: "ag1", ...gates });
-  for (const keyId of ["key1", "key2"]) {
-    mem.seed(`subAccounts/sa1/apiKeys/${keyId}`, { subAccountId: "sa1", agencyId: "ag1", name: "Agent key", mode: "live", prefix: "abcd1234", scopes: ["agent"], revokedAt: null });
-  }
-  caller.role = "admin";
-  execute.mockClear();
-  vi.mocked(replayHeldEnrolment).mockClear();
-  outbound.requiredRole = "subAccountMember";
-  outbound.approval = "outbound";
-  outbound.validate = validateAny;
-  delete outbound.approvalContactId;
-  AI_SUITE_CAPABILITIES.push(outbound);
-});
-
-afterEach(() => {
-  AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(outbound), 1);
-  vi.restoreAllMocks();
-});
+setupAgentProposalTests();
+const STALE = later(11 * 60_000);
 
 describe("approve", () => {
   it("runs the capability once, as the approver, and settles executed with an aiSuiteActions row", async () => {
@@ -139,8 +44,7 @@ describe("approve", () => {
 
   it("a proposal from another sub-account → 404, nothing runs", async () => {
     const id = await proposeId();
-    const res = await decide(id, "approve", "sa2");
-    expect(res.status).toBe(404);
+    expect((await decide(id, "approve", "sa2")).status).toBe(404);
     expect(row(id).status).toBe("pending");
     expect(execute).not.toHaveBeenCalled();
   });
@@ -176,6 +80,7 @@ describe("approve", () => {
   );
 
   it("a workflow_enrolment row replays the held trigger and never calls execute", async () => {
+    const { replayHeldEnrolment } = await import("@/lib/server/agent-enrolment-replay");
     mem.seed("agentProposals/p_enrol", {
       agencyId: "ag1",
       subAccountId: "sa1",
@@ -187,7 +92,6 @@ describe("approve", () => {
       status: "pending",
       rev: "r1",
     });
-    mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", name: "Ann" });
     const res = await decide("p_enrol", "approve");
     expect(execute).not.toHaveBeenCalled();
     expect(replayHeldEnrolment).toHaveBeenCalledTimes(1);
@@ -217,23 +121,18 @@ describe("reject and the pending-only precondition", () => {
     const id = await proposeId();
     mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
     beforeNextTransaction(() => claim(id, "u_other"));
-    await sweepAgentProposals(new Date());
+    await sweep(new Date());
     expect(row(id).status).toBe("executing");
   });
 
   it("the expiry sweep expires a pending row past expiresAt", async () => {
     const id = await proposeId();
-    await sweepAgentProposals(later(8 * 24 * 3600_000));
+    await sweep(later(8 * 24 * 3600_000));
     expect(row(id).status).toBe("expired");
   });
 });
 
 describe("key revoke (through DELETE /api-keys/[keyId])", () => {
-  const revoke = () =>
-    DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
-      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
-    });
-
   it("rejects the key's pending rows; another key's and a claimed row are untouched", async () => {
     const pending = await proposeId({ body: "a" });
     const claimed = await proposeId({ body: "b" });
@@ -266,7 +165,7 @@ describe("re-proposing", () => {
   it("a stale claim is swept to unsettled; re-proposing it → outcome_unknown, no new pending", async () => {
     const id = await proposeId();
     await claim(id, "u_admin");
-    await sweepAgentProposals(later(11 * 60_000));
+    await sweep(STALE);
     expect(row(id).status).toBe("unsettled");
     expect(await propose()).toMatchObject({ ok: false, code: "outcome_unknown", httpStatus: 409 });
     expect(row(id).status).toBe("unsettled");
@@ -276,7 +175,8 @@ describe("re-proposing", () => {
   it("mark_not_sent on an unsettled row → rejected, and the next re-propose is a fresh pending", async () => {
     const id = await proposeId();
     await claim(id, "u_admin");
-    await sweepAgentProposals(later(11 * 60_000));
+    await sweep(STALE);
+    await ageClaim(id);
     expect((await decide(id, "mark_not_sent")).status).toBe(200);
     expect(row(id)).toMatchObject({ status: "rejected", reason: "not_sent_confirmed" });
     await proposeId();
@@ -288,334 +188,9 @@ describe("re-proposing", () => {
     expect((await decide(id, "mark_sent")).status).toBe(409);
     expect(row(id).status).toBe("pending");
     await claim(id, "u_admin");
-    await sweepAgentProposals(later(11 * 60_000));
+    await sweep(STALE);
+    await ageClaim(id);
     expect((await decide(id, "mark_sent")).status).toBe(200);
     expect(row(id)).toMatchObject({ status: "executed", settledBy: "human" });
-  });
-
-  it("the claim's own late settle resolves the unsettled row to its real outcome; mark_* then 409 (breaker R3)", async () => {
-    const id = await proposeId();
-    const staleRev = row(id).rev;
-    let finish!: () => void;
-    execute.mockImplementationOnce(
-      () => new Promise((resolve) => (finish = () => resolve({ resultText: "sent", ref: { kind: "message", id: "m1" } })))
-    );
-    const approving = decide(id, "approve");
-    await vi.waitFor(() => expect(execute).toHaveBeenCalled());
-    await sweepAgentProposals(later(11 * 60_000));
-    expect(row(id).status).toBe("unsettled");
-    finish();
-    await approving;
-    expect(row(id)).toMatchObject({ status: "executed", settledLate: true, result: { resultText: "sent" } });
-    expect(history(id)).toEqual([]);
-    expect((await decide(id, "mark_not_sent")).status).toBe(409);
-    // The breaker's follow-up: re-propose, then approve from the page that
-    // still shows the old generation → refused; the action ran once.
-    await proposeId();
-    expect((await decide(id, "approve", "sa1", staleRev)).status).toBe(409);
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(mem.list("aiSuiteActions")).toHaveLength(1);
-  });
-
-  it("a settle arriving after a person already marked the unsettled row lands in history", async () => {
-    const id = await proposeId();
-    let finish!: () => void;
-    execute.mockImplementationOnce(
-      () => new Promise((resolve) => (finish = () => resolve({ resultText: "sent", ref: null as never })))
-    );
-    const approving = decide(id, "approve");
-    await vi.waitFor(() => expect(execute).toHaveBeenCalled());
-    await sweepAgentProposals(later(11 * 60_000));
-    expect((await decide(id, "mark_sent")).status).toBe(200);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    finish();
-    await approving;
-    expect(row(id)).toMatchObject({ status: "executed", settledBy: "human" });
-    expect(history(id)).toEqual([expect.objectContaining({ lateSettle: true, status: "executed" })]);
-  });
-});
-
-describe("row generations (rev) — breaker R1", () => {
-  it("approve with the rev from before a reject + re-propose → 409 stale_proposal, execute 0", async () => {
-    const id = await proposeId();
-    const oldRev = row(id).rev;
-    await decide(id, "reject");
-    await proposeId();
-    expect(row(id).rev).not.toBe(oldRev);
-    const res = await decide(id, "approve", "sa1", oldRev);
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "stale_proposal" });
-    expect(row(id).status).toBe("pending");
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("a double-click after executed + a re-propose does not run the new generation", async () => {
-    const id = await proposeId();
-    const rev1 = row(id).rev;
-    expect((await decide(id, "approve", "sa1", rev1)).status).toBe(200);
-    await proposeId();
-    expect((await decide(id, "approve", "sa1", rev1)).status).toBe(409);
-    expect(row(id).status).toBe("pending");
-    expect(execute).toHaveBeenCalledTimes(1);
-  });
-
-  it("every decision requires a rev", async () => {
-    const id = await proposeId();
-    for (const d of ["approve", "reject", "mark_sent", "mark_not_sent"]) {
-      const res = await POST(
-        new Request("http://localhost/x", { method: "POST", body: JSON.stringify({ decision: d }) }),
-        { params: Promise.resolve({ id: "sa1", proposalId: id }) }
-      );
-      expect(res.status).toBe(400);
-    }
-    expect(row(id).status).toBe("pending");
-  });
-});
-
-describe("revoked keys — breaker R2", () => {
-  it("a key revoked after the row was written (sweep missed it) → approve rejects the row, 409", async () => {
-    const id = await proposeId();
-    mem.seed("subAccounts/sa1/apiKeys/key1", { ...mem.read("subAccounts/sa1/apiKeys/key1"), revokedAt: new Date() });
-    const res = await decide(id, "approve");
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "key_revoked" });
-    expect(row(id)).toMatchObject({ status: "rejected", reason: "key_revoked" });
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("a revoke whose sweep throws still returns 200 and logs; the row stays unapprovable", async () => {
-    const id = await proposeId();
-    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const collection = mem.db.collection.bind(mem.db);
-    vi.spyOn(mem.db, "collection").mockImplementation((name: string) => {
-      if (name === "agentProposals") throw new Error("index missing");
-      return collection(name);
-    });
-    const res = await DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
-      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
-    });
-    vi.mocked(mem.db.collection).mockRestore();
-    expect(res.status).toBe(200);
-    expect(logged).toHaveBeenCalledWith(expect.stringContaining("revoke hook failed"));
-    expect(row(id).status).toBe("pending");
-    expect((await decide(id, "approve")).status).toBe(409);
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("a proposal attempted after the key was revoked is refused and queues nothing", async () => {
-    await DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
-      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
-    });
-    expect(await propose()).toMatchObject({ ok: false, code: "key_revoked" });
-    expect(mem.list("agentProposals")).toEqual([]);
-  });
-});
-
-describe("preview drift — breaker R4", () => {
-  const phoneOf = async () => String(mem.read("contacts/c1")?.phone);
-  beforeEach(() => {
-    mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", name: "Ann", phone: "+27 11 111 1111" });
-    outbound.preview = async () => [{ label: "To", value: await phoneOf() }];
-    execute.mockImplementation(async () => ({ resultText: `sent to ${await phoneOf()}`, ref: { kind: "message", id: "m1" } }));
-  });
-  afterEach(() => {
-    outbound.preview = async (_ctx, args) => [{ label: "Body", value: String(args.body) }];
-    execute.mockImplementation(async () => ({ resultText: "sent", ref: { kind: "message", id: "m1" } }));
-  });
-
-  it("a changed preview → 409 preview_changed with the new rev; approving that sends to what it shows", async () => {
-    const id = await proposeId();
-    const oldRev = row(id).rev;
-    mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone: "+27 22 222 2222" });
-    const res = await decide(id, "approve", "sa1", oldRev);
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as { error: string; rev: string };
-    expect(body.error).toBe("preview_changed");
-    expect(execute).not.toHaveBeenCalled();
-    expect(row(id)).toMatchObject({ status: "pending", rev: body.rev, preview: [{ label: "To", value: "+27 22 222 2222" }] });
-    expect(body.rev).not.toBe(oldRev);
-    expect(await (await decide(id, "approve", "sa1", body.rev)).json()).toEqual({
-      status: "executed",
-      resultText: "sent to +27 22 222 2222",
-    });
-  });
-
-  it("re-proposing a pending row refreshes a changed preview under a new rev", async () => {
-    const id = await proposeId();
-    const oldRev = row(id).rev;
-    mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone: "+27 33 333 3333" });
-    expect(await propose()).toMatchObject({ proposal: { preview: [{ label: "To", value: "+27 33 333 3333" }] } });
-    expect(row(id).rev).not.toBe(oldRev);
-    expect((await decide(id, "approve", "sa1", oldRev)).status).toBe(409);
-    expect(execute).not.toHaveBeenCalled();
-  });
-});
-
-describe("general review — PR #259", () => {
-  /** Hang the next execute until the returned function is called. */
-  function hangNextExecute(): () => void {
-    let finish!: () => void;
-    execute.mockImplementationOnce(
-      () => new Promise((resolve) => (finish = () => resolve({ resultText: "sent", ref: { kind: "message", id: "m1" } })))
-    );
-    return () => finish();
-  }
-
-  it("M1: A's late settle after mark_not_sent + re-propose + B's claim goes to history; B's row untouched", async () => {
-    const id = await proposeId();
-    const finishA = hangNextExecute();
-    const approvingA = decide(id, "approve");
-    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
-    await sweepAgentProposals(later(11 * 60_000));
-    expect((await decide(id, "mark_not_sent")).status).toBe(200);
-    await proposeId();
-    const finishB = hangNextExecute();
-    const approvingB = decide(id, "approve");
-    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
-    const bClaim = row(id).claimId;
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    finishA();
-    await approvingA;
-    expect(row(id)).toMatchObject({ status: "executing", claimId: bClaim });
-    expect(history(id)).toContainEqual(expect.objectContaining({ lateSettle: true, status: "executed" }));
-    finishB();
-    await approvingB;
-    expect(row(id).status).toBe("executed");
-  });
-
-  it("M2 + L4: a scoped collaborator cannot approve or reject a proposal targeting another territory's contact", async () => {
-    // The fixture names its target `recipientId`; approvalContactId says so.
-    outbound.approvalContactId = (args) => String(args.recipientId);
-    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
-    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
-    mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });
-    mem.seed("contacts/c_north", { agencyId: "ag1", subAccountId: "sa1", territoryId: "north" });
-    const south = await proposeId({ body: "x", recipientId: "c_south" });
-    const north = await proposeId({ body: "y", recipientId: "c_north" });
-    expect(row(south).contactId).toBe("c_south");
-    caller.role = "collaborator";
-    expect((await decide(south, "approve")).status).toBe(403);
-    expect((await decide(south, "reject")).status).toBe(403);
-    expect(row(south).status).toBe("pending");
-    expect((await decide(north, "approve")).status).toBe(200);
-    expect(execute).toHaveBeenCalledTimes(1);
-  });
-
-  it("M3: a key already revoked before the proposal row existed is caught at approve (breaker 2b)", async () => {
-    // Row written, then the key revoked with no sweep having run for it.
-    const id = await proposeId();
-    mem.seed("subAccounts/sa1/apiKeys/key1", { ...mem.read("subAccounts/sa1/apiKeys/key1"), revokedAt: new Date() });
-    const again = await DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
-      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
-    });
-    expect(await again.json()).toEqual({ ok: true, alreadyRevoked: true });
-    expect(row(id).status).toBe("pending");
-    expect((await decide(id, "approve")).status).toBe(409);
-    expect(row(id)).toMatchObject({ status: "rejected", reason: "key_revoked" });
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("L1: a claim that replaced the stale one between the sweep's query and its write is not flipped", async () => {
-    const id = await proposeId();
-    await claim(id, "u_a");
-    beforeNextTransaction(async () => {
-      mem.seed(`agentProposals/${id}`, { ...row(id), claimId: "fresh_claim", claimedAt: new Date() });
-    });
-    await sweepAgentProposals(later(11 * 60_000));
-    expect(row(id)).toMatchObject({ status: "executing", claimId: "fresh_claim" });
-  });
-
-  it("L2: stored args that no longer validate → 400 before the claim; execute 0, row stays pending", async () => {
-    const id = await proposeId();
-    outbound.validate = () => ({ ok: false, error: "body is too long" });
-    const res = await decide(id, "approve");
-    expect(res.status).toBe(400);
-    expect(row(id).status).toBe("pending");
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("L3: the revoke sweep skips a row with the same keyId in another sub-account", async () => {
-    await proposeId();
-    mem.seed("agentProposals/p_other_sa", { subAccountId: "sa2", keyId: "key1", status: "pending", rev: "r" });
-    await DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
-      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
-    });
-    expect(row("p_other_sa").status).toBe("pending");
-  });
-
-  it("L5: approving an expired pending row flips it to expired → 409 expired, execute 0", async () => {
-    const id = await proposeId();
-    mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
-    const res = await decide(id, "approve");
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "expired" });
-    expect(row(id).status).toBe("expired");
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("L5: re-proposing an expired pending row rolls it to history as expired and starts a fresh pending", async () => {
-    const id = await proposeId();
-    const oldRev = row(id).rev;
-    mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
-    await proposeId();
-    expect(row(id).status).toBe("pending");
-    expect(row(id).rev).not.toBe(oldRev);
-    expect(millis(row(id).expiresAt)!).toBeGreaterThan(Date.now());
-    expect(history(id)).toEqual([expect.objectContaining({ status: "expired", rev: oldRev })]);
-  });
-});
-
-describe("a late executed settle after a person's mark_not_sent", () => {
-  function hangNextExecute(): () => void {
-    let finish!: () => void;
-    execute.mockImplementationOnce(
-      () => new Promise((resolve) => (finish = () => resolve({ resultText: "sent", ref: { kind: "message", id: "m1" } })))
-    );
-    return () => finish();
-  }
-  async function markedNotSentWhileInFlight(id: string) {
-    const finish = hangNextExecute();
-    const approving = decide(id, "approve");
-    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
-    await sweepAgentProposals(later(11 * 60_000));
-    expect((await decide(id, "mark_not_sent")).status).toBe(200);
-    return async () => {
-      finish();
-      await approving;
-    };
-  }
-
-  it("(a) settle lands before any re-propose → the real outcome overrides the guess", async () => {
-    const id = await proposeId();
-    const settle = await markedNotSentWhileInFlight(id);
-    await settle();
-    expect(row(id)).toMatchObject({ status: "executed", settledLate: true, overrodeHuman: true });
-    expect(history(id)).toEqual([]);
-  });
-
-  it("(b) settle lands after a re-propose → history; approving the new generation → 409 previous_attempt_sent", async () => {
-    const id = await proposeId();
-    const settle = await markedNotSentWhileInFlight(id);
-    await proposeId();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    await settle();
-    expect(row(id).status).toBe("pending");
-    expect(history(id)).toContainEqual(expect.objectContaining({ lateSettle: true, status: "executed" }));
-    const res = await decide(id, "approve");
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "previous_attempt_sent" });
-    expect(row(id)).toMatchObject({ status: "rejected", reason: "previous_attempt_sent" });
-    expect(execute).toHaveBeenCalledTimes(1);
-  });
-
-  it("an executed late settle from BEFORE the current generation does not block it", async () => {
-    const id = await proposeId();
-    mem.seed(`agentProposals/${id}/history/old`, {
-      lateSettle: true,
-      status: "executed",
-      settledAt: new Date(millis(row(id).createdAt)! - 60_000),
-    });
-    expect((await decide(id, "approve")).status).toBe(200);
-    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

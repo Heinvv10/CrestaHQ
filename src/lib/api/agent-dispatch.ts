@@ -2,7 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { ApiAuthContext } from "@/lib/api/auth";
-import { buildAgentContext } from "@/lib/api/agent-context";
+import { buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
 import {
   availableOn,
   CapabilityUserError,
@@ -11,6 +11,7 @@ import {
 } from "@/lib/ai-suite/capabilities";
 import {
   createProposal,
+  normalizePreview,
   OUTCOME_UNKNOWN_MESSAGE,
   type ProposalStatus,
 } from "@/lib/server/agent-proposals";
@@ -128,6 +129,9 @@ async function dispatch(
     // The approver sees `preview` verbatim; a queued action without one
     // could not be judged, so it is a registry bug, not a proposal.
     if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
+    const reviewed = normalizePreview(
+      await cap.preview(buildPreviewContext(auth.agencyId, auth.subAccountId), validated.args)
+    );
     const created = await createProposal({
       agencyId: auth.agencyId,
       subAccountId: auth.subAccountId,
@@ -137,7 +141,8 @@ async function dispatch(
       approval: cap.approval,
       args: validated.args,
       summary: cap.summarize(validated.args),
-      preview: await cap.preview(ctx, validated.args),
+      preview: reviewed.rows,
+      pinned: reviewed.pinned,
       contactId: cap.approvalContactId
         ? cap.approvalContactId(validated.args)
         : typeof validated.args.contactId === "string"

@@ -29,6 +29,13 @@ export interface AiSuiteActionContext {
   agencyId: string;
   subAccountId?: string;
   subAccountRole?: string;
+  /** Approve path only: what the approver reviewed. An outbound capability
+   *  sends to `approved.pinned` values and refuses when the live target
+   *  differs, never to a target nobody reviewed. */
+  approved?: { pinned: Record<string, unknown> | null };
+  /** Aborted when the approve path's execute deadline passes; provider calls
+   *  should honour it. */
+  signal?: AbortSignal;
   /** Set only on the agent surface: the API key the call arrived on. */
   apiKey?: Pick<
     ApiAuthContext,
@@ -101,9 +108,20 @@ export interface AiSuiteCapability {
   /** The contact an approval capability targets, for the approver's
    *  territory gate. Default: `args.contactId` when it is a string. */
   approvalContactId?: (args: Record<string, unknown>) => string | null;
-  /** Label/value rows the approvals UI renders verbatim for a proposal. */
+  /**
+   * Label/value rows the approvals UI renders verbatim for a proposal, plus
+   * optional `pinned` values (e.g. the resolved recipient) that execute
+   * receives as `ctx.approved.pinned` and must act on. Required when
+   * `approval` is set. MUST be a pure function of the tenant, the args and
+   * stored data — never of `ctx.uid` / `email` / role, never of the clock —
+   * because approve recomputes it (with a neutral ctx) and refuses on any
+   * difference; an impure preview would never be approvable.
+   */
   preview?: (
     ctx: AiSuiteActionContext,
     args: Record<string, unknown>
-  ) => Promise<Array<{ label: string; value: string }>>;
+  ) => Promise<
+    | Array<{ label: string; value: string }>
+    | { rows: Array<{ label: string; value: string }>; pinned?: Record<string, unknown> }
+  >;
 }

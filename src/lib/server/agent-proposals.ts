@@ -27,6 +27,11 @@ const TERMINAL: ProposalStatus[] = ["executed", "failed", "rejected", "expired"]
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** An `executing` row older than this lost its process mid-action. */
 export const STALE_CLAIM_MS = 10 * 60 * 1000;
+/** The approve path gives up waiting on execute after this (< STALE_CLAIM_MS)
+ *  and marks the row `unsettled` itself. */
+export const EXECUTE_DEADLINE_MS = 5 * 60 * 1000;
+/** mark_sent / mark_not_sent are refused until this long after the claim. */
+export const MARK_MIN_AGE_MS = 60 * 60 * 1000;
 const SWEEP_LIMIT = 500;
 
 export const OUTCOME_UNKNOWN_MESSAGE =
@@ -41,11 +46,22 @@ export interface ProposalInput {
   approval: CapabilityApproval;
   args: Record<string, unknown>;
   summary: string;
-  preview: Array<{ label: string; value: string }>;
+  preview: PreviewRows;
+  /** Values the reviewed action is pinned to (see AiSuiteCapability.preview). */
+  pinned: Record<string, unknown> | null;
   /** workflow_enrolment rows only: one row per matched workflow. */
   workflowId?: string;
   /** The contact the action targets, for the approver's territory gate. */
   contactId: string | null;
+}
+
+export type PreviewRows = Array<{ label: string; value: string }>;
+
+/** A capability's preview result, in the one shape the row stores. */
+export function normalizePreview(
+  p: PreviewRows | { rows: PreviewRows; pinned?: Record<string, unknown> }
+): { rows: PreviewRows; pinned: Record<string, unknown> | null } {
+  return Array.isArray(p) ? { rows: p, pinned: null } : { rows: p.rows, pinned: p.pinned ?? null };
 }
 
 export type CreateProposalResult =
@@ -63,26 +79,28 @@ export type CreateProposalResult =
 export type TransitionResult = "ok" | "conflict" | "stale";
 
 /**
- * Key-sorted JSON, so the same args always hash the same. Undefined keys
- * are skipped (Firestore drops them too), a Date is `{"$date": iso}`, and
- * any other non-plain object throws rather than hashing as `{}`.
+ * A type-tagged, key-sorted encoding, so the same value always hashes the
+ * same and no two different values encode alike (every value is prefixed by
+ * its type, so a Date can never collide with `{"$date": …}`). Undefined keys
+ * are skipped (Firestore drops them too); any other non-plain object throws.
  */
 export function canonical(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
-  if (v instanceof Date) return canonical({ $date: v.toISOString() });
-  if (v && typeof v === "object") {
-    const proto = Object.getPrototypeOf(v);
-    if (proto !== Object.prototype && proto !== null) {
-      throw new Error("canonical: only plain objects, arrays and Dates are supported");
-    }
-    const obj = v as Record<string, unknown>;
-    return `{${Object.keys(obj)
-      .filter((k) => obj[k] !== undefined)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonical(obj[k])}`)
-      .join(",")}}`;
+  if (v === null || v === undefined) return "z";
+  if (Array.isArray(v)) return `a[${v.map(canonical).join(",")}]`;
+  if (v instanceof Date) return `d${JSON.stringify(v.toISOString())}`;
+  if (typeof v === "string") return `s${JSON.stringify(v)}`;
+  if (typeof v === "number") return `n${String(v)}`;
+  if (typeof v === "boolean") return `b${String(v)}`;
+  const proto = typeof v === "object" ? Object.getPrototypeOf(v) : undefined;
+  if (proto !== Object.prototype && proto !== null) {
+    throw new Error("canonical: only plain objects, arrays, Dates and primitives are supported");
   }
-  return JSON.stringify(v) ?? "null";
+  const obj = v as Record<string, unknown>;
+  return `o{${Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonical(obj[k])}`)
+    .join(",")}}`;
 }
 
 /** A fresh per-generation nonce: a decision must name the generation it saw. */
@@ -112,11 +130,13 @@ const proposalRef = (id: string) => getAdminDb().doc(`agentProposals/${id}`);
 const historyRef = (id: string) => proposalRef(id).collection("history").doc();
 
 /**
- * Dedupe is pending-only: a `pending` or `executing` row returns its id (a
- * pending row's preview is refreshed, with a new `rev`, if it changed), an
- * `unsettled` row refuses (its action may already have happened), and a
- * terminal row moves to `history` so the id is re-used as a fresh `pending`
- * generation with a new `rev`. A revoked or missing key queues nothing.
+ * Dedupe is pending-only: a `pending` or `executing` row returns its id
+ * unchanged (only the approve recheck refreshes a preview, so an agent
+ * re-proposing cannot keep bumping `rev` under an approver), an `unsettled`
+ * row refuses (its action may already have happened), and a terminal row
+ * moves to `history` so the id is re-used as a fresh `pending` generation
+ * with a new `rev`. A revoked or missing key queues nothing. The row stores
+ * its contact's `territoryId` so firestore.rules can scope reads.
  */
 export async function createProposal(input: ProposalInput): Promise<CreateProposalResult> {
   const id = proposalId(input);
@@ -124,24 +144,22 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
   const db = getAdminDb();
   const keyRef = db.doc(`subAccounts/${input.subAccountId}/apiKeys/${input.keyId}`);
   return db.runTransaction(async (tx) => {
-    const [snap, keySnap] = await Promise.all([tx.get(ref), tx.get(keyRef)]);
+    const contactRef = input.contactId ? db.doc(`contacts/${input.contactId}`) : null;
+    const [snap, keySnap, contactSnap] = await Promise.all([
+      tx.get(ref),
+      tx.get(keyRef),
+      contactRef ? tx.get(contactRef) : null,
+    ]);
     if (!keySnap.exists || keySnap.data()?.revokedAt) {
       return { ok: false, code: "key_revoked", id };
     }
     const cur = snap.data();
     const status = cur?.status as ProposalStatus | undefined;
-    if (status === "executing") {
-      return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
-    }
+
     // A pending row past its expiry is dead: roll it over like a terminal one.
     const expired = status === "pending" && (millis(cur!.expiresAt) ?? Infinity) < Date.now();
-    if (status === "pending" && !expired) {
-      if (canonical(cur!.preview) === canonical(input.preview)) {
-        return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
-      }
-      const rev = newRev();
-      tx.update(ref, { preview: input.preview, rev });
-      return { ok: true, id, status, rev, summary: cur!.summary, preview: input.preview };
+    if (status === "executing" || (status === "pending" && !expired)) {
+      return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
     }
     if (status === "unsettled") return { ok: false, code: "outcome_unknown", id };
     if (expired) tx.set(historyRef(id), { ...cur!, status: "expired" });
@@ -159,7 +177,9 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       args: input.args,
       summary: input.summary,
       preview: input.preview,
+      pinned: input.pinned,
       contactId: input.contactId,
+      territoryId: contactSnap?.data()?.territoryId ?? null,
       workflowId: input.workflowId ?? null,
       status: "pending",
       rev,
@@ -226,39 +246,28 @@ export async function claimProposal(
   return moved === "ok" ? { claimId } : moved;
 }
 
-/**
- * True when an earlier generation's claim settled `executed` in `history`
- * after the current generation was created: the action this row repeats has
- * already happened, so approving it would do it twice.
- */
-export async function previousAttemptSent(id: string, createdAtMs: number): Promise<boolean> {
-  const snap = await proposalRef(id)
-    .collection("history")
-    .where("lateSettle", "==", true)
-    .where("status", "==", "executed")
-    .get();
-  // `>=`: a settle in the same millisecond as the re-proposal still counts.
-  return snap.docs.some((d) => (millis(d.data().settledAt) ?? 0) >= createdAtMs);
-}
-
 /** Store a freshly computed preview under a new `rev` (pending generation
  *  `rev` only). Returns the new rev, or null when the row moved on. */
 export async function refreshPreview(
   id: string,
   rev: string,
-  preview: Array<{ label: string; value: string }>
+  preview: { rows: PreviewRows; pinned: Record<string, unknown> | null }
 ): Promise<string | null> {
   const next = newRev();
-  return (await transitionIf(id, "pending", { preview, rev: next }, { rev })) === "ok"
+  const patch = { preview: preview.rows, pinned: preview.pinned, rev: next };
+  return (await transitionIf(id, "pending", patch, { rev })) === "ok"
     ? next
     : null;
 }
 
 /**
  * Settle a claimed row and write its `aiSuiteActions` row in one
- * transaction. If the sweep flipped OUR claim to `unsettled`, the outcome is
- * now known, so the row resolves to it (`settledLate`) and `mark_*` no
- * longer apply. Any other moved row gets the outcome in `history`, logged.
+ * transaction. If OUR claim was flipped to `unsettled`, or a person guessed
+ * its outcome wrongly (`not_sent_confirmed` / a human `mark_sent` that in fact
+ * failed), the outcome is now known, so the row resolves to it
+ * (`settledLate`). Otherwise the outcome goes to `history`, logged — and an
+ * `executed` outcome rejects a newer `pending` generation in the same
+ * transaction, since approving it would do the action twice.
  */
 export async function settleProposal(
   id: string,
@@ -289,7 +298,11 @@ export async function settleProposal(
     // A person who marked OUR unsettled claim "not sent" guessed; the real
     // outcome beats the guess (else a re-propose could send it twice).
     const overridesHuman =
-      ours && cur?.status === "rejected" && cur?.reason === "not_sent_confirmed";
+      ours &&
+      ((cur?.status === "rejected" && cur?.reason === "not_sent_confirmed") ||
+        (cur?.status === "executed" &&
+          cur?.settledBy === "human" &&
+          outcome.status === "failed"));
     const v =
       ours && cur?.status === "executing"
         ? "settled"
@@ -301,6 +314,13 @@ export async function settleProposal(
       tx.update(ref, { ...fields, settledLate: true, ...(overridesHuman ? { overrodeHuman: true } : {}) });
     } else {
       tx.set(historyRef(id), { lateSettle: true, claimId, settledAt: new Date(), ...fields });
+      if (cur?.status === "pending" && outcome.status === "executed") {
+        tx.update(ref, {
+          status: "rejected",
+          reason: "previous_attempt_sent",
+          decidedAt: new Date(),
+        });
+      }
     }
     tx.set(db.collection("aiSuiteActions").doc(), {
       level: "sub-account",
