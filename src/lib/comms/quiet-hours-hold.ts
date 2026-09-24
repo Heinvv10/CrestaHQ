@@ -61,8 +61,12 @@ function holdLabel(p: HoldPayload): string {
  * would otherwise park five replies that all go out at 08:00 together, each
  * answering a stale moment — so a new held AI reply supersedes the contact's
  * older pending ones (they never send). Single-field query, filtered here.
+ *
+ * Not transactional, by choice: two replies held at the same instant can both
+ * stay pending and both go out. That is an accepted duplicate, never a loss —
+ * the direction to err in for a reply to a customer.
  */
-async function supersedeOlderAiReplyHolds(subAccountId: string, contactId: string): Promise<void> {
+async function supersedeOlderAiReplyHolds(subAccountId: string, contactId: string, keepId: string): Promise<void> {
   const db = getAdminDb();
   const snap = await db
     .collection(`subAccounts/${subAccountId}/quietHoursHolds`)
@@ -72,7 +76,12 @@ async function supersedeOlderAiReplyHolds(subAccountId: string, contactId: strin
     snap.docs
       .filter((d) => {
         const h = d.data() as HoldDoc;
-        return h.status === "pending" && h.payload?.kind === "message" && h.payload.message.source === "ai_reply";
+        return (
+          d.id !== keepId &&
+          h.status === "pending" &&
+          h.payload?.kind === "message" &&
+          h.payload.message.source === "ai_reply"
+        );
       })
       .map((d) => d.ref.update({ status: "superseded", outcome: "newer_ai_reply" })),
   );
@@ -95,9 +104,6 @@ export async function holdForQuietHours(input: {
     payload.kind === "message" ? payload.message.contactId : payload.request.contactId;
   const db = getAdminDb();
   try {
-    if (payload.kind === "message" && payload.message.source === "ai_reply") {
-      await supersedeOlderAiReplyHolds(subAccountId, contactId);
-    }
     const ref = db.collection(`subAccounts/${subAccountId}/quietHoursHolds`).doc();
     const doc: HoldDoc = {
       agencyId,
@@ -118,6 +124,11 @@ export async function holdForQuietHours(input: {
     });
     const ok = res !== null;
     if (!ok) await ref.update({ status: "failed", outcome: "schedule_failed" });
+    // Only once THIS one is certain to be released: superseding first would
+    // lose both replies when the publish fails.
+    if (ok && payload.kind === "message" && payload.message.source === "ai_reply") {
+      await supersedeOlderAiReplyHolds(subAccountId, contactId, ref.id);
+    }
     await writeHoldActivity(
       contactId,
       ok

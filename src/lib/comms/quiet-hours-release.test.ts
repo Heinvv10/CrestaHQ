@@ -190,12 +190,37 @@ describe("held AI replies", () => {
     expect(sendSms).toHaveBeenCalledOnce();
   });
 
-  it("is dropped when the contact wrote again after it was held", async () => {
+  it("still goes out when the contact sent a photo after it was held (no newer reply exists)", async () => {
     const id = await holdSms("ai_reply");
-    mem.seed("contacts/c1/messages/in2", { direction: "inbound", body: "hello?", createdAt: new Date(NIGHT.getTime() + 60_000) });
+    mem.seed("contacts/c1/messages/in2", { direction: "inbound", body: "", mediaType: "image", createdAt: new Date(NIGHT.getTime() + 60_000) });
     vi.setSystemTime(OPEN);
-    await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "skipped", reason: "newer_inbound" });
+    await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "released" });
+    expect(sendSms).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["a person", { sentByUid: "uid_operator" }],
+    ["the AI", { sentByUid: "ai", aiGenerated: true }],
+  ])("is dropped when %s answered after it was held", async (_who, row) => {
+    const id = await holdSms("ai_reply");
+    mem.seed("contacts/c1/messages/out", { direction: "outbound", ...row, createdAt: new Date(NIGHT.getTime() + 60_000) });
+    vi.setSystemTime(OPEN);
+    await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "skipped", reason: "already_answered" });
     expect(sendSms).not.toHaveBeenCalled();
+  });
+
+  it("an automated outbound after it was held (a workflow step) is not an answer: it still goes out", async () => {
+    const id = await holdSms("ai_reply");
+    mem.seed("contacts/c1/messages/wf", { direction: "outbound", sentByUid: "workflow", createdAt: new Date(NIGHT.getTime() + 60_000) });
+    vi.setSystemTime(OPEN);
+    await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "released" });
+  });
+
+  it("a newer held reply whose release cannot be scheduled does not supersede the older one", async () => {
+    const first = await holdSms("ai_reply");
+    publishCallback.mockResolvedValueOnce(null);
+    await holdSms("ai_reply");
+    expect(mem.read(`subAccounts/sa1/quietHoursHolds/${first}`)?.status).toBe("pending");
   });
 
   it("names the release time in the workspace's timezone, on one row per hold", async () => {

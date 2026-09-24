@@ -136,12 +136,14 @@ async function releaseMessage(hold: HoldDoc, m: HeldMessage): Promise<ReleaseRes
     if ((controls.botPausedUntilMs ?? 0) > Date.now() || controls.botMode !== "auto") {
       return notSent("bot_off", "the bot was paused or switched off on this conversation meanwhile");
     }
-    // The contact wrote again after this reply was held: that message got
-    // (or is holding) its own, newer reply, and this one answers a stale turn.
-    const lastInbound = await lastInboundMs(contact.id, m.channel);
+    // Someone already answered after this was held — a person, or a later AI
+    // reply that went out. NOT a newer inbound: a photo, a voice note, or a
+    // message whose AI run was skipped writes an inbound and holds no reply,
+    // so keying on inbounds would drop the only answer. Bursts of held
+    // replies are handled where they are held (supersedeOlderAiReplyHolds).
     const heldAtMs = toMs(hold.heldAt);
-    if (lastInbound !== null && heldAtMs !== null && lastInbound > heldAtMs) {
-      return notSent("newer_inbound", "the contact wrote again after it was held");
+    if (heldAtMs !== null && (await answeredSince(contact.id, m.channel, heldAtMs))) {
+      return notSent("already_answered", "the conversation was answered after it was held");
     }
   }
 
@@ -229,16 +231,24 @@ function toMs(v: unknown): number | null {
   return t && typeof t.toMillis === "function" ? t.toMillis() : null;
 }
 
-/** When the contact last wrote on this channel's thread. */
-async function lastInboundMs(contactId: string, channel: "sms" | "whatsapp"): Promise<number | null> {
+/**
+ * Whether a person or the AI replied on this channel's thread after `sinceMs`.
+ * Automated rows (workflow, review request, missed-call text-back) are not an
+ * answer to the customer and do not count.
+ */
+async function answeredSince(contactId: string, channel: "sms" | "whatsapp", sinceMs: number): Promise<boolean> {
   const snap = await getAdminDb()
     .collection(`contacts/${contactId}/${channel === "sms" ? "messages" : "whatsappMessages"}`)
     .orderBy("createdAt", "desc")
     .limit(20)
     .get();
-  for (const d of snap.docs) {
-    const row = d.data() as { direction?: string; createdAt?: unknown };
-    if (row.direction === "inbound") return toMs(row.createdAt);
-  }
-  return null;
+  return snap.docs.some((d) => {
+    const row = d.data() as { direction?: string; createdAt?: unknown; sentByUid?: unknown; aiGenerated?: unknown };
+    const at = toMs(row.createdAt);
+    if (row.direction !== "outbound" || at === null || at <= sinceMs) return false;
+    return (
+      row.aiGenerated === true ||
+      (typeof row.sentByUid === "string" && row.sentByUid !== "workflow" && row.sentByUid !== "review-request")
+    );
+  });
 }
