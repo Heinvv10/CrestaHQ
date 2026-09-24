@@ -292,13 +292,17 @@ export const GROUPS = [
     off: "dashboard shows a 'Mapbox not configured' card (data still captured)",
     vars: [["NEXT_PUBLIC_MAPBOX_TOKEN", "req", startsWith("pk.")]],
   },
-  // Get Leads (Outscraper) group removed while the feature is PARKED — see
-  // GET_LEADS_PARKED in src/lib/get-leads/business-types.ts. When un-parking,
-  // restore:
-  //   { title: "Get Leads prospecting (Outscraper)", tier: "feature",
-  //     off: "Get Leads searches return 'not configured' (page still renders; feature is also agency-gated per sub-account)",
-  //     vars: [["OUTSCRAPER_API_KEY", "req"]],
-  //     deep(add, env) { if (env.has("OUTSCRAPER_API_KEY") && !env.has("NEXT_PUBLIC_MAPBOX_TOKEN")) add("warn", "NEXT_PUBLIC_MAPBOX_TOKEN isn't set — Get Leads works, but without the results map or typed-location search (browser geolocation only)"); } },
+  {
+    title: "Get Leads prospecting (Outscraper)",
+    tier: "feature",
+    off: "Get Leads searches return 'not configured' (page still renders; feature is also agency-gated per sub-account)",
+    vars: [["OUTSCRAPER_API_KEY", "req"]],
+    deep(add, env) {
+      if (env.has("OUTSCRAPER_API_KEY") && !env.has("NEXT_PUBLIC_MAPBOX_TOKEN")) {
+        add("warn", "NEXT_PUBLIC_MAPBOX_TOKEN isn't set — Get Leads works, but without the results map or typed-location search (browser geolocation only)");
+      }
+    },
+  },
   {
     title: "Live chat / support (Crisp)",
     tier: "feature",

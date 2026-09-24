@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   List,
+  BookmarkPlus,
   Loader2,
   LocateFixed,
   Lock,
@@ -49,7 +50,9 @@ import type { GetLeadsBusiness } from "@/types/get-leads";
  * websites, SEO, or automation services. Pick a business type + location +
  * radius; results come back from an Outscraper Google Maps search with
  * email/social enrichment (1–3 min) and render on a Mapbox map + an
- * enriched list. Selected rows import as contacts (source "get-leads").
+ * enriched list. Selected rows import as contacts (source "prospecting").
+ * With the Prospecting gate on, "Save as list" keeps the result set as a
+ * `prospectLists` doc and every later import from it carries its listId.
  *
  * Results are ephemeral — navigate away and they're gone. Imports are the
  * durable output. Gated by `getLeadsEnabledByAgency`.
@@ -127,6 +130,7 @@ function defaultImportTag(origin: SearchOrigin): string {
 export default function GetLeadsPage() {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const gateOn = subAccount?.getLeadsEnabledByAgency === true;
+  const prospectingOn = subAccount?.prospectingEnabledByAgency === true;
 
   // Service types — admin-managed via the Manage dialog. Custom additions
   // live on `getLeadsCustomTypes`; deleted built-ins on `getLeadsHiddenTypes`
@@ -222,10 +226,14 @@ export default function GetLeadsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
-  // Tag applied to this import batch (alongside the constant "get-leads"
+  // Tag applied to this import batch (alongside the constant "prospecting"
   // tag). Pre-filled from the search; editable so the operator can target
   // it later in workflow triggers / broadcast audiences / voice campaigns.
   const [importTag, setImportTag] = useState("");
+  // The saved prospect list for THIS result set (null until "Save as list").
+  // Every import after saving sends it; a new search clears it.
+  const [savedListId, setSavedListId] = useState<string | null>(null);
+  const [savingList, setSavingList] = useState(false);
 
   // Invalidate any in-flight poll loop on unmount.
   useEffect(() => {
@@ -346,6 +354,7 @@ export default function GetLeadsPage() {
     setBusinesses([]);
     setSelected(new Set());
     setImportedIds(new Set());
+    setSavedListId(null);
     setFilter("all");
 
     const searchOrigin: SearchOrigin = {
@@ -484,6 +493,7 @@ export default function GetLeadsPage() {
         body: JSON.stringify({
           businesses: rows,
           tag: importTag.trim(),
+          ...(savedListId ? { listId: savedListId } : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -512,6 +522,44 @@ export default function GetLeadsPage() {
       toast.error(err instanceof Error ? err.message : "Import failed.");
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function handleSaveList() {
+    if (savingList || savedListId || !origin) return;
+    const typeLabel =
+      [...customOptions, ...BUSINESS_TYPES].find(
+        (t) => t.value === origin.businessType,
+      )?.label ?? origin.businessType.replace(/^custom:/, "");
+    const name = `${typeLabel} — ${origin.label || "your location"}`.slice(0, 100);
+    setSavingList(true);
+    try {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/prospecting/lists`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          query: {
+            businessType: origin.businessType,
+            placeName: origin.label,
+            lat: origin.latitude,
+            lng: origin.longitude,
+            radiusKm: origin.radiusKm,
+          },
+          count: businesses.length,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        id?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.id) throw new Error(data.error ?? "Couldn't save the list.");
+      setSavedListId(data.id);
+      toast.success(`Saved “${name}”. Imports from these results are linked to it.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't save the list.");
+    } finally {
+      setSavingList(false);
     }
   }
 
@@ -723,6 +771,25 @@ export default function GetLeadsPage() {
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {prospectingOn && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSaveList}
+                  disabled={savingList || savedListId !== null}
+                  title="Keep this search as a prospect list (Sidebar → Prospecting)"
+                >
+                  {savedListId ? (
+                    <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                  ) : savingList ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <BookmarkPlus className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  {savedListId ? "Saved as list" : "Save as list"}
+                </Button>
+              )}
               <Label htmlFor="gl-tag" className="whitespace-nowrap">
                 Tag as
               </Label>
@@ -733,7 +800,7 @@ export default function GetLeadsPage() {
                 disabled={importing}
                 placeholder="e.g. plumbers-brisbane"
                 className="h-8 w-52 text-sm"
-                title="Imported contacts get this tag (plus 'get-leads') — target it in Workflows, Broadcasts, and voice campaigns"
+                title="Imported contacts get this tag (plus 'prospecting') — target it in Workflows, Broadcasts, and voice campaigns"
               />
               <Button
                 type="button"
