@@ -1,9 +1,9 @@
 /**
  * Get Leads v1 — geo helpers. Client-safe.
  *
- * Outscraper's coordinates param anchors the Google Maps search but Google
- * decides its own spill-over area, so the picked radius is enforced by
- * distance-filtering results against the search origin.
+ * The Places location bias is only a preference — Google still returns
+ * spill-over — so the picked radius is enforced by distance-filtering
+ * results against the search origin.
  */
 
 const EARTH_RADIUS_KM = 6371;
