@@ -29,26 +29,40 @@ export interface SiteContacts {
 export async function enrichBusinesses(
   businesses: GetLeadsBusiness[],
 ): Promise<GetLeadsBusiness[]> {
-  const out = [...businesses];
-  let next = 0;
-  async function worker() {
-    while (next < out.length) {
-      const i = next++;
-      const b = out[i]!;
-      if (!b.website) continue;
-      const page = await fetchHomepage(b.website);
-      if (!page) continue;
+  return Promise.all(
+    businesses.map(async (b) => {
+      if (!b.website) return b;
+      const website = b.website;
+      const page = await withFetchSlot(() => fetchHomepage(website));
+      if (!page) return b;
       const found = extractContacts(page.html, page.url);
-      out[i] = {
+      return {
         ...b,
         email: b.email ?? found.email,
         facebook: b.facebook ?? found.facebook,
         instagram: b.instagram ?? found.instagram,
       };
-    }
+    }),
+  );
+}
+
+// ENRICH_CONCURRENCY is a process-wide cap: every enrichBusinesses call —
+// however many searches run at once — shares these slots. A slot is handed
+// straight to the next waiter (FIFO) on release. The per-site timeout starts
+// only once a slot is held, so queued sites never time out while waiting.
+let activeFetches = 0;
+const fetchQueue: (() => void)[] = [];
+
+async function withFetchSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeFetches < ENRICH_CONCURRENCY) activeFetches++;
+  else await new Promise<void>((resolve) => fetchQueue.push(resolve));
+  try {
+    return await fn();
+  } finally {
+    const next = fetchQueue.shift();
+    if (next) next();
+    else activeFetches--;
   }
-  await Promise.all(Array.from({ length: ENRICH_CONCURRENCY }, worker));
-  return out;
 }
 
 function httpUrl(raw: string, base?: string): URL | null {
@@ -85,7 +99,16 @@ async function fetchHomepage(website: string): Promise<{ html: string; url: stri
   }
 }
 
-const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}/gi;
+// Email extraction is linear in the page size: rather than one unanchored
+// regex (`[local]+@domain` backtracks quadratically over a long run of
+// local-part characters with no "@"), we visit each "@" once and match a
+// bounded window on either side of it — the local part scanning left (at
+// most 64 chars, never into the previous match), the domain anchored right
+// of the "@" (at most 253 chars).
+const LOCAL_MAX = 64;
+const DOMAIN_MAX = 253;
+const LOCAL_CHAR = /^[a-z0-9._%+-]$/i;
+const DOMAIN_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}/i;
 const ASSET_TLD = /\.(png|jpe?g|gif|webp|avif|svg|ico|css|js|mjs|woff2?|ttf)$/i;
 const NOISE_DOMAIN = /(^|\.)(sentry\.io|sentry-next\.wixpress\.com|wixpress\.com)$/i;
 
@@ -114,9 +137,9 @@ export function extractContacts(html: string, siteUrl: string): SiteContacts {
     } catch {
       // Malformed %-escape: keep the raw text; the email regex decides.
     }
-    candidates.push(...(decoded.match(EMAIL_RE) ?? []));
+    candidates.push(...findEmails(decoded));
   }
-  candidates.push(...(text.match(EMAIL_RE) ?? []));
+  candidates.push(...findEmails(text));
 
   const emails = candidates
     .map((e) => e.toLowerCase())
@@ -136,6 +159,22 @@ export function extractContacts(html: string, siteUrl: string): SiteContacts {
     facebook: firstProfile(text, FACEBOOK_RE, FACEBOOK_RESERVED, "https://www.facebook.com/"),
     instagram: firstProfile(text, INSTAGRAM_RE, INSTAGRAM_RESERVED, "https://www.instagram.com/"),
   };
+}
+
+function findEmails(text: string): string[] {
+  const found: string[] = [];
+  let lastEnd = 0;
+  for (let at = text.indexOf("@"); at !== -1; at = text.indexOf("@", at + 1)) {
+    let start = at;
+    while (start > lastEnd && at - start < LOCAL_MAX && LOCAL_CHAR.test(text[start - 1]!)) start--;
+    if (start === at) continue;
+    const domain = DOMAIN_RE.exec(text.slice(at + 1, at + 1 + DOMAIN_MAX));
+    if (!domain) continue;
+    found.push(text.slice(start, at + 1) + domain[0]);
+    lastEnd = at + 1 + domain[0].length;
+    at = lastEnd - 1;
+  }
+  return found;
 }
 
 function firstProfile(

@@ -14,6 +14,8 @@ vi.mock("node:dns/promises", () => ({
   lookup: vi.fn(async (host: string) => {
     const q = dnsQueue.get(host);
     const address = q && q.length > 1 ? q.shift()! : q?.[0];
+    // A nameserver that never answers.
+    if (address === "HANG") return new Promise(() => {});
     if (!address) throw Object.assign(new Error(`ENOTFOUND ${host}`), { code: "ENOTFOUND" });
     return [{ address, family: 4 }];
   }),
@@ -73,6 +75,39 @@ describe("publicFetch — production", () => {
       /not a public/,
     );
     expect(hits).toEqual([]);
+  });
+});
+
+describe("publicFetch — production, DNS that never answers", () => {
+  beforeEach(() => vi.stubEnv("NODE_ENV", "production"));
+
+  it("the pre-check gives up when the caller's signal fires", async () => {
+    dnsQueue.set("silent-ns.example", ["HANG"]);
+    const t0 = performance.now();
+    await expect(
+      publicFetch(`http://silent-ns.example:${port}/x`, { signal: AbortSignal.timeout(200) }),
+    ).rejects.toThrow(/timed out|abort/i);
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(hits).toEqual([]);
+  });
+
+  it("the connect-time lookup gives up when the caller's signal fires", async () => {
+    dnsQueue.set("silent-later.example", ["93.184.216.34", "HANG"]);
+    const t0 = performance.now();
+    await expect(
+      publicFetch(`http://silent-later.example:${port}/x`, { signal: AbortSignal.timeout(200) }),
+    ).rejects.toThrow(/timed out|abort/i);
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(hits).toEqual([]);
+  });
+
+  it("an already-aborted signal refuses before any lookup", async () => {
+    dnsQueue.set("silent-ns.example", ["HANG"]);
+    const ac = new AbortController();
+    ac.abort(new Error("caller aborted"));
+    await expect(
+      publicFetch(`http://silent-ns.example:${port}/x`, { signal: ac.signal }),
+    ).rejects.toThrow(/caller aborted/);
   });
 });
 

@@ -45,8 +45,9 @@ interface PostBody {
    */
   maxResults?: number;
   /**
-   * Human-readable place name, folded into the search query. Required (and
-   * geocoded server-side) when latitude/longitude are absent.
+   * Human-readable place name. Required (and geocoded server-side) when
+   * latitude/longitude are absent. Alongside coordinates it is only echoed
+   * back for display — client text never reaches the Places query.
    */
   locationLabel?: string;
 }
@@ -137,6 +138,8 @@ export async function POST(
 
   let origin: { latitude: number; longitude: number };
   let locationLabel: string;
+  // Only a name Google itself returned may ride in the text query.
+  let queryPlace: string | null = null;
   if (hasCoords) {
     origin = { latitude: body.latitude as number, longitude: body.longitude as number };
     locationLabel = typedName.slice(0, 120);
@@ -145,6 +148,7 @@ export async function POST(
       const place = await geocodePlace(typedName);
       origin = { latitude: place.lat, longitude: place.lng };
       locationLabel = place.formattedName.slice(0, 120);
+      queryPlace = locationLabel;
     } catch (err) {
       console.error(
         `[get-leads/search] geocode failed sa=${subAccountId}:`,
@@ -172,9 +176,11 @@ export async function POST(
     }
   }
 
-  // The place name rides inside the text query ("plumbers in Gqeberha"),
-  // which helps ranking; the location bias anchors it regardless.
-  const textQuery = locationLabel ? `${type.query} in ${locationLabel}` : type.query;
+  // With client coordinates the query is the allowlisted term alone — the
+  // location bias anchors it, and a forged label must not become free text
+  // on the agency's key. A server-geocoded name (Google's own formatted
+  // address) rides along ("plumbers in Gqeberha, South Africa") for ranking.
+  const textQuery = queryPlace ? `${type.query} in ${queryPlace}` : type.query;
 
   try {
     const found = await searchPlaces({

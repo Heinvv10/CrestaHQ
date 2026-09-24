@@ -148,3 +148,72 @@ describe("enrichBusinesses", () => {
     expect(peak).toBe(6);
   });
 });
+
+describe("extractContacts — linear time on hostile pages (ReDoS)", () => {
+  // A homepage is owner-controlled and up to HOMEPAGE_MAX_BYTES; extraction
+  // runs on the event loop, so a pathological page must not stall it.
+  const SIZE = 500 * 1024;
+  const fill = (unit: string, size = SIZE) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+  const hostile: [string, string][] = [
+    ["40 KB of 'a'", fill("a", 40 * 1024)],
+    ["500 KB of 'a'", fill("a")],
+    ["500 KB of 'a@'", fill("a@")],
+    ["500 KB of 'a.a.'", fill("a.a.")],
+    ["500 KB of '@a.a'", fill("@a.a")],
+    ["500 KB of 'a@a.'", fill("a@a.")],
+    ["500 KB of 'mailto:a'", fill("mailto:a")],
+    ["500 KB of facebook links", fill("https://www.facebook.com/")],
+    ["500 KB of instagram links", fill("https://instagram.com/a")],
+    ["500 KB of '&#0'", fill("&#0")],
+  ];
+  it.each(hostile)("%s completes in < 200 ms", (_name, page) => {
+    const t0 = performance.now();
+    extractContacts(page, "https://x.example");
+    const ms = performance.now() - t0;
+    expect(ms).toBeLessThan(200);
+  });
+
+  it("still finds an email at the end of a long run of local-part characters", () => {
+    expect(extractContacts(`${"a".repeat(100_000)} hi@site.example`, "https://site.example").email).toBe(
+      "hi@site.example",
+    );
+    // A local part longer than 64 characters keeps its last 64.
+    expect(extractContacts(`${"b".repeat(70)}@site.example`, "https://site.example").email).toBe(
+      `${"b".repeat(64)}@site.example`,
+    );
+  });
+
+  it("never lets one match's domain become the next match's local part", () => {
+    expect(extractContacts("a@one.example@two.example", "https://x.example").email).toBe(
+      "a@one.example",
+    );
+    // On two.example's own site, a phantom "one.example@two.example" would
+    // win the own-domain preference; the old regex never produced it.
+    expect(extractContacts("x a@one.example@two.example", "https://two.example").email).toBe(
+      "a@one.example",
+    );
+  });
+});
+
+describe("enrichBusinesses — concurrency is process-wide", () => {
+  beforeEach(() => publicFetch.mockReset());
+
+  it("5 parallel searches of 40 sites keep no more than ENRICH_CONCURRENCY fetches in flight", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    publicFetch.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 2));
+      inFlight--;
+      return html("");
+    });
+    await Promise.all(
+      Array.from({ length: 5 }, (_, s) =>
+        enrichBusinesses(Array.from({ length: 40 }, (_, i) => biz(i, `https://s${s}-${i}.example`))),
+      ),
+    );
+    expect(publicFetch).toHaveBeenCalledTimes(200);
+    expect(peak).toBe(ENRICH_CONCURRENCY);
+  });
+});

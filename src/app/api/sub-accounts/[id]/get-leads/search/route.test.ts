@@ -80,7 +80,9 @@ describe("POST /get-leads/search", () => {
       googlePlaceId: "ChIJfixture0001",
       email: "office@fixture-plumbing.example",
     });
-    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).textQuery).toBe("plumbers in Gqeberha");
+    // Client-sent coordinates: the query is the allowlisted term alone; the
+    // location bias anchors it.
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).textQuery).toBe("plumbers");
     // Only the in-radius row's site was fetched.
     expect(publicFetch).toHaveBeenCalledTimes(1);
   });
@@ -89,6 +91,17 @@ describe("POST /get-leads/search", () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(placesPage([])), { status: 200 }));
     expect((await search("sa1", { ...body, locationLabel: "" })).status).toBe(200);
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body).textQuery).toBe("plumbers");
+  });
+
+  it("never puts a client-sent label into the Places query, but still echoes it", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(placesPage([])), { status: 200 }));
+    const forged = "casinos OR payday loans near anywhere";
+    const res = await search("sa1", { ...body, locationLabel: forged });
+    expect(res.status).toBe(200);
+    const sent = String(fetchMock.mock.calls[0]![1].body);
+    expect(JSON.parse(sent).textQuery).toBe("plumbers");
+    expect(sent).not.toContain("casinos");
+    expect((await res.json()).origin.label).toBe(forged);
   });
 
   it("403s when the agency gate is off, without calling Google", async () => {
